@@ -1,7 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQuery } from "@tanstack/react-query";
 import { Download, RefreshCw, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown, { defaultUrlTransform } from "react-markdown";
 import rehypeSlug from "rehype-slug";
@@ -86,18 +86,18 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 		}
 	};
 	const file = query.data;
-	const content = useRef<HTMLDivElement>(null);
+	const [content, setContent] = useState<HTMLDivElement | null>(null);
 	useEffect(() => {
-		if (!file || raw || target.fragment === undefined) return;
+		if (!file || !content || raw || target.fragment === undefined) return;
 		if (target.fragment === "") {
-			content.current?.scrollTo({ top: 0 });
+			content.scrollTo({ top: 0 });
 			return;
 		}
-		const heading = Array.from(content.current?.querySelectorAll("[id]") ?? []).find(
+		const heading = Array.from(content.querySelectorAll("[id]")).find(
 			(element) => element.id === `project-document-${target.fragment}`,
 		);
 		heading?.scrollIntoView({ block: "start" });
-	}, [file, raw, target]);
+	}, [content, file, raw, target]);
 	const markdown = /\.md(?:own|arkdown)?$/i.test(target.path);
 	return (
 		<Dialog.Portal>
@@ -145,7 +145,7 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 						</Button>
 					</Dialog.Close>
 				</div>
-				<div ref={content} className="min-h-0 flex-1 overflow-auto p-6">
+				<div ref={setContent} className="min-h-0 flex-1 overflow-auto p-6">
 					{query.isPending && (
 						<p role="status">{t("projectDocuments.loading", { defaultValue: "Loading document…" })}</p>
 					)}
