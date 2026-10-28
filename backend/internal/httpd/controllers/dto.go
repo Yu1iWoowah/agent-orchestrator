@@ -15,6 +15,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
@@ -3983,3 +3984,6 @@ type HandoffEvidenceAttemptParam struct {
 type HandoffEvidenceFileParam struct {
 	Path string `path:"path" required:"true"`
 }
+
+// SessionAgentSettingsResponse reads preferences without authorizing mutation.
+type SessionAgentSettingsResponse = agentsettings.Snapshot

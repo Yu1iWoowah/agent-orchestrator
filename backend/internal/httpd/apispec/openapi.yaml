@@ -6308,6 +6308,46 @@ paths:
       summary: Upload a file into the host's agent browser
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/agent-settings:
+    get:
+      operationId: getSessionAgentSettings
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAgentSettingsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read durable agent preferences and saved capability evidence without
+        waking the provider
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/artifact-files:
     delete:
       operationId: deleteSessionArtifactFile
@@ -13987,6 +14027,25 @@ components:
       - id
       - label
       type: object
+    AgentModelSettingsCapabilities:
+      properties:
+        efforts:
+          items:
+            type: string
+          type: array
+        fast:
+          enum:
+          - unknown
+          - supported
+          - unsupported
+          type: string
+        model:
+          type: string
+      required:
+      - model
+      - efforts
+      - fast
+      type: object
     AgentModelsResponse:
       properties:
         agentId:
@@ -14116,6 +14175,23 @@ components:
       - authentication
       - effectiveReadiness
       - usageCount
+      type: object
+    AgentSettings:
+      properties:
+        effort:
+          type: string
+        fastMode:
+          enum:
+          - default
+          - "on"
+          - "off"
+          type: string
+        model:
+          type: string
+      required:
+      - model
+      - effort
+      - fastMode
       type: object
     AgentUpdateAdvisory:
       properties:
@@ -19878,6 +19954,57 @@ components:
           type: string
         codex:
           type: string
+      type: object
+    SessionAgentSettingsCapabilities:
+      properties:
+        accountId:
+          type: string
+        controllerGeneration:
+          type: string
+        generation:
+          format: int64
+          type: integer
+        models:
+          items:
+            $ref: '#/components/schemas/AgentModelSettingsCapabilities'
+          type: array
+        observedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        reason:
+          type: string
+        source:
+          type: string
+        state:
+          enum:
+          - unknown
+          - supported
+          - unsupported
+          type: string
+      required:
+      - state
+      - controllerGeneration
+      - generation
+      - models
+      type: object
+    SessionAgentSettingsResponse:
+      properties:
+        capabilities:
+          $ref: '#/components/schemas/SessionAgentSettingsCapabilities'
+        revision:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        settings:
+          $ref: '#/components/schemas/AgentSettings'
+      required:
+      - sessionId
+      - settings
+      - revision
+      - capabilities
       type: object
     SessionArchiveSummary:
       properties:

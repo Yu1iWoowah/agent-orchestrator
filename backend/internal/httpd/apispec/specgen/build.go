@@ -159,6 +159,10 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"AgentsettingsSnapshot":                                "SessionAgentSettingsResponse",
+	"AgentsettingsCapabilities":                            "SessionAgentSettingsCapabilities",
+	"AgentsettingsModelCapabilities":                       "AgentModelSettingsCapabilities",
+	"DomainAgentSettings":                                  "AgentSettings",
 	"ControllersProjectDocumentsInfoResponse":              "ProjectDocumentsInfoResponse",
 	"ControllersProjectDocumentFileResponse":               "ProjectDocumentFileResponse",
 	"ControllersProjectDocumentLeaseRequest":               "ProjectDocumentLeaseRequest",
@@ -1472,6 +1476,12 @@ func shellTerminalOperations() []operation {
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/agent-settings", id: "getSessionAgentSettings", tag: "sessions",
+			summary:    "Read durable agent preferences and saved capability evidence without waking the provider",
+			pathParams: []any{controllers.SessionIDParam{}},
+			resps:      []respUnit{{http.StatusOK, controllers.SessionAgentSettingsResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPatch, path: "/api/v1/sessions/{sessionId}/conversation/settings", id: "setSessionConversationTurnSettings", tag: "conversations",
