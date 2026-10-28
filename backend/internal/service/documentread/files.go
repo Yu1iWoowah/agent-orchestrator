@@ -22,12 +22,12 @@ func subdir(parent *os.Root, name string) (*os.Root, error) {
 	}
 	opened, e := child.Stat(".")
 	if e != nil {
-		child.Close()
+		_ = child.Close()
 		return nil, e
 	}
 	after, e := parent.Lstat(name)
 	if e != nil || !os.SameFile(before, opened) || !os.SameFile(before, after) {
-		child.Close()
+		_ = child.Close()
 		return nil, unavailable()
 	}
 	return child, nil
@@ -53,7 +53,7 @@ func (s *Service) openRoot(full string) (*os.Root, error) {
 	}
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		next, e := subdir(root, part)
-		root.Close()
+		_ = root.Close()
 		if e != nil {
 			return nil, e
 		}
@@ -77,7 +77,7 @@ func (s *Service) metadata(ctx context.Context, root *os.Root, rootPath, p strin
 	if e != nil {
 		return nil, unavailable()
 	}
-	defer checked.Close()
+	defer func() { _ = checked.Close() }()
 	original, e := root.Stat(".")
 	if e != nil {
 		return nil, unavailable()
@@ -90,7 +90,7 @@ func (s *Service) metadata(ctx context.Context, root *os.Root, rootPath, p strin
 	if e != nil || !os.SameFile(info, actual) {
 		return nil, unavailable()
 	}
-	if e = ctx.Err(); e != nil {
+	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
 	return info, nil
@@ -108,7 +108,7 @@ func documentInfo(root *os.Root, p string) (os.FileInfo, error) {
 	var opened []*os.Root
 	defer func() {
 		for _, r := range opened {
-			r.Close()
+			_ = r.Close()
 		}
 	}()
 	parts := strings.Split(p, "/")
@@ -129,7 +129,7 @@ func documentInfo(root *os.Root, p string) (os.FileInfo, error) {
 	if e != nil {
 		return nil, unavailable()
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, e := file.Stat()
 	if e != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) {
 		return nil, unavailable()

@@ -3,8 +3,9 @@
 package documentread
 
 import (
-	"golang.org/x/sys/unix"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 func openRegular(root *os.Root, name string) (*os.File, error) {

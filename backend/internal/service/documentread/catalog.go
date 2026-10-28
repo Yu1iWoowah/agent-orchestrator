@@ -111,7 +111,7 @@ func (s *Service) Catalog(ctx context.Context, projectID string, q CatalogQuery)
 	})
 	visited := 0
 	for _, src := range sources {
-		if e = ctx.Err(); e != nil {
+		if e := ctx.Err(); e != nil {
 			return out, e
 		}
 		items, code, err := s.scan(ctx, src, &visited)
@@ -177,7 +177,7 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 	if e != nil {
 		return items, "DOCUMENT_SOURCE_UNAVAILABLE", nil
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	code := ""
 	var walk func(*os.Root, string, int) error
 	walk = func(dir *os.Root, prefix string, depth int) error {
@@ -193,7 +193,7 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 			code = "DOCUMENT_SOURCE_UNAVAILABLE"
 			return nil
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		for {
 			entries, e := f.ReadDir(128)
 			if e != nil && e != io.EOF {
@@ -225,7 +225,7 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 						continue
 					}
 					e = walk(child, rel, depth+1)
-					child.Close()
+					_ = child.Close()
 					if e != nil {
 						return e
 					}
@@ -250,7 +250,7 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 		}
 		return nil
 	}
-	if e = walk(root, "", 0); e != nil {
+	if e := walk(root, "", 0); e != nil {
 		return nil, "", e
 	}
 	return items, code, nil

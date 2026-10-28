@@ -88,7 +88,6 @@ type Input struct {
 	value any
 }
 
-// Inline union branches keep request parameter reflection from caching empty JSON definitions.
 // InlineJSONSchema embeds this variant in source unions.
 func (ArtifactTarget) InlineJSONSchema() {}
 

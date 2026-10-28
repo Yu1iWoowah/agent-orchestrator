@@ -122,7 +122,7 @@ func (s *Service) resolve(ctx context.Context, root, p string, t Target) (Resolv
 	if e != nil {
 		return Resolved{}, unavailable()
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	info, e := s.metadata(ctx, r, root, p)
 	if e != nil {
 		return Resolved{}, e
@@ -137,10 +137,13 @@ func (s *Service) resolveLocal(ctx context.Context, value string) (Resolved, err
 	var fragment *string
 	if strings.HasPrefix(strings.ToLower(value), "file:") {
 		u, e := url.Parse(value)
-		if e != nil || u.Scheme != "file" || u.Opaque != "" || u.User != nil || (u.Host != "" && u.Host != "localhost") || u.RawQuery != "" || u.ForceQuery {
+		if e != nil || !strings.EqualFold(u.Scheme, "file") || u.Opaque != "" || u.User != nil || (u.Host != "" && !strings.EqualFold(u.Host, "localhost")) || u.RawQuery != "" || u.ForceQuery {
 			return Resolved{}, invalid()
 		}
 		value = u.Path
+		if filepath.Separator == '\\' && len(value) >= 3 && value[0] == '/' && value[2] == ':' {
+			value = filepath.FromSlash(value[1:])
+		}
 		if u.Fragment != "" {
 			fragment = &u.Fragment
 		}
@@ -152,7 +155,7 @@ func (s *Service) resolveLocal(ctx context.Context, value string) (Resolved, err
 		}
 		value = home + string(filepath.Separator) + value[2:]
 	}
-	if !filepath.IsAbs(value) || strings.Contains(value, "\\") || strings.ContainsFunc(value, unicode.IsControl) {
+	if !filepath.IsAbs(value) || (filepath.Separator != '\\' && strings.Contains(value, "\\")) || strings.HasPrefix(value, "\\\\") || strings.ContainsFunc(value, unicode.IsControl) {
 		return Resolved{}, invalid()
 	}
 	// Do not clean away traversal before filesystem validation.
@@ -189,7 +192,7 @@ func (s *Service) resolveLocal(ctx context.Context, value string) (Resolved, err
 				continue
 			}
 			if rel, ok := within(root, value); ok {
-				return s.Resolve(ctx, Input{value: ArtifactTarget{Kind: "artifact", ProjectID: string(project.ID), SessionID: string(rec.ID), Path: filepath.ToSlash(rel), Fragment: fragment}})
+				return s.Resolve(ctx, Input{value: ArtifactTarget{Kind: "artifact", ProjectID: project.ID, SessionID: string(rec.ID), Path: filepath.ToSlash(rel), Fragment: fragment}})
 			}
 		}
 		root, e := s.shared.ReadRoot(ctx, domain.ProjectID(project.ID))
@@ -197,7 +200,7 @@ func (s *Service) resolveLocal(ctx context.Context, value string) (Resolved, err
 			continue
 		}
 		if rel, ok := within(root, value); ok {
-			return s.Resolve(ctx, Input{value: SharedTarget{Kind: "shared", ProjectID: string(project.ID), Path: filepath.ToSlash(rel), Fragment: fragment}})
+			return s.Resolve(ctx, Input{value: SharedTarget{Kind: "shared", ProjectID: project.ID, Path: filepath.ToSlash(rel), Fragment: fragment}})
 		}
 	}
 	return Resolved{}, unavailable()

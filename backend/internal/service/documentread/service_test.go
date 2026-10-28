@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ type readStore struct {
 
 func (f *readStore) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
 	for _, p := range f.projects {
-		if string(p.ID) == id {
+		if p.ID == id {
 			return p, true, nil
 		}
 	}
@@ -105,7 +106,11 @@ func TestResolveRegisteredSourcesAndLocalPaths(t *testing.T) {
 			if r.LocalPath != want || r.CanonicalURI != tc.uri || r.Size == 0 || r.Fingerprint == "" {
 				t.Fatalf("resolved=%+v want path=%s uri=%s", r, want, tc.uri)
 			}
-			for _, value := range []string{want, "file://" + filepath.ToSlash(want), "file://localhost" + filepath.ToSlash(want)} {
+			urlPath := filepath.ToSlash(want)
+			if !strings.HasPrefix(urlPath, "/") {
+				urlPath = "/" + urlPath
+			}
+			for _, value := range []string{want, (&url.URL{Scheme: "file", Path: urlPath}).String(), (&url.URL{Scheme: "file", Host: "localhost", Path: urlPath}).String(), (&url.URL{Scheme: "file", Host: "LOCALHOST", Path: urlPath}).String()} {
 				b, _ := json.Marshal(map[string]string{"kind": "local-path", "value": value})
 				rr, e := f.s.Resolve(ctx, input(t, string(b)))
 				if e != nil || rr.LocalPath != want {
@@ -178,7 +183,7 @@ func TestMetadataRejectsRootReplacedAfterOpening(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	if e = os.Rename(rootPath, rootPath+"-old"); e != nil {
 		t.Fatal(e)
 	}
@@ -304,6 +309,7 @@ func TestCatalogDetectsMetadataChangeWithoutAddingFiles(t *testing.T) {
 func TestResolveDoesNotNormalizeTraversalDuringHomeExpansion(t *testing.T) {
 	f := setup(t)
 	t.Setenv("HOME", f.data)
+	t.Setenv("USERPROFILE", f.data)
 	if _, err := f.s.Resolve(context.Background(), input(t, `{"kind":"local-path","value":"~/artifacts/p-1/../p-1/notes hello.md"}`)); err == nil {
 		t.Fatal("home expansion silently normalized traversal")
 	}

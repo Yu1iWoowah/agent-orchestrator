@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -54,12 +55,12 @@ func TestDocumentReadAPIUsesRegisteredReadRootsWithoutMutatingOwnership(t *testi
 		return w
 	}
 	body := fmtTarget(t, string(rec.ID))
-	r := request("POST", "/api/v1/local-documents/resolve", body)
+	r := request(http.MethodPost, "/api/v1/local-documents/resolve", body)
 	if r.Code != 200 || !strings.Contains(r.Body.String(), filepath.ToSlash(dir)) || strings.Contains(r.Body.String(), "private document") || r.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("resolve %d %s", r.Code, r.Body.String())
 	}
 	for _, bad := range []string{body + ` {}`, `{"kind":"shared","projectId":"docs","sessionId":"forged","path":"report.md"}`, `{"kind":"artifact","projectId":"other","sessionId":"` + string(rec.ID) + `","path":"report.md"}`, `{"kind":"local-path","value":"` + filepath.ToSlash(filepath.Join(data, "ao.db")) + `"}`} {
-		w := request("POST", "/api/v1/local-documents/resolve", bad)
+		w := request(http.MethodPost, "/api/v1/local-documents/resolve", bad)
 		if w.Code != 400 && w.Code != 404 {
 			t.Errorf("bad target: %d %s", w.Code, w.Body.String())
 		}
@@ -68,13 +69,13 @@ func TestDocumentReadAPIUsesRegisteredReadRootsWithoutMutatingOwnership(t *testi
 		}
 	}
 	for _, query := range []string{"", "?source=orchestrator&archive=archive&limit=1"} {
-		w := request("GET", "/api/v1/projects/docs/document-catalog"+query, "")
+		w := request(http.MethodGet, "/api/v1/projects/docs/document-catalog"+query, "")
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "report.md") || strings.Contains(w.Body.String(), data) || strings.Contains(w.Body.String(), "localPath") {
 			t.Errorf("catalog %d %s", w.Code, w.Body.String())
 		}
 	}
 	for _, query := range []string{"?limit=0", "?limit=201", "?limit=bad", "?source=all&source=shared", "?archive=bad"} {
-		if w := request("GET", "/api/v1/projects/docs/document-catalog"+query, ""); w.Code != 400 {
+		if w := request(http.MethodGet, "/api/v1/projects/docs/document-catalog"+query, ""); w.Code != 400 {
 			t.Errorf("query %s: %d", query, w.Code)
 		}
 	}
@@ -109,7 +110,7 @@ func TestDocumentResolverBlockedOnAuthenticatedLANAndTunnel(t *testing.T) {
 	m := NewMobileLAN(router, "test-host", 0, nil, nil)
 	m.SetPasswordHash(mobilebridge.HashPassword("secret-password"))
 	for _, path := range []string{"/api/v1/local-documents/resolve", "/api/v1/local%2Ddocuments/resolve", "/api/v1/local-documents%2Fresolve", "/api/v1/./local-documents/resolve"} {
-		r := httptest.NewRequest("POST", path, strings.NewReader(`{}`))
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		r.Host = "127.0.0.1"
 		r.Header.Set("Origin", "app://renderer")
 		r.Header.Set("Authorization", "Bearer secret-password")
