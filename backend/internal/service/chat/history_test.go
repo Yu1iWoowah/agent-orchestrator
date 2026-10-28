@@ -133,14 +133,14 @@ func completeTurn(t *testing.T, h *harness, text, providerTurn string) string {
 		t.Fatalf("Send %q: %v", text, err)
 	}
 	h.conv.emit(
-		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: providerTurn},
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: providerTurn, ProviderConversationID: h.conv.ProviderConversationID()},
 		ports.ChatEvent{
 			Kind: ports.ChatEventMessageCompleted, ProviderTurnID: providerTurn,
 			ProviderItemID: "msg-" + providerTurn, Text: "reply to " + text,
 		},
 		ports.ChatEvent{
 			Kind: ports.ChatEventTurnCompleted, ProviderTurnID: providerTurn,
-			TurnState: domain.TurnStateCompleted,
+			TurnState: domain.TurnStateCompleted, ProviderConversationID: h.conv.ProviderConversationID(),
 		},
 	)
 	return turn.ID

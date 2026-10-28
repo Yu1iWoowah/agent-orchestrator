@@ -52,6 +52,9 @@ func TestResumeNamespacesRepeatedNativeHistoryByOwnershipScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, event := range events {
+			if event.ProviderConversationID != threadID {
+				t.Fatalf("replayed event %s lost native thread provenance: %q", event.Kind, event.ProviderConversationID)
+			}
 			if event.Kind == ports.ChatEventUserMessageCompleted {
 				message := domain.ConversationMessage{ID: scope + "-user", Role: domain.MessageRoleUser, Text: event.Text, ProviderItemID: event.ProviderItemID, ClientMessageID: event.ClientMessageID}
 				if err := st.AppendImportedUserMessage(ctx, conversation.ID, turn, message, now); err != nil {

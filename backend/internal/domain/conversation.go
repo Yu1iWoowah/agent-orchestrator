@@ -531,6 +531,15 @@ type ConversationSettings struct {
 	AutoCompactWindow string `json:"autoCompactWindow,omitempty"`
 }
 
+// ConversationNativeThreadEvidence is an archived provider's declaration of a
+// turn's native thread. Branch and provider-turn identities must be matched
+// together: unscoped legacy turn IDs can recur under different branches.
+type ConversationNativeThreadEvidence struct {
+	BranchID               string
+	ProviderTurnID         string
+	ProviderConversationID string
+}
+
 // ConversationTurn is one user or automation request plus the agent work it
 // caused.
 type ConversationTurn struct {

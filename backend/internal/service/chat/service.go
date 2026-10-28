@@ -1090,6 +1090,12 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			}
 		}
 		if cfg.HistoryMode == ports.ChatHistoryRequired {
+			if cfg.Harness == domain.HarnessCodex {
+				if err := s.loadNativeThreadCheckpoint(ctx, &replayCheckpoint, activeBranch, existing.Turns, cfg); err != nil {
+					_ = cleanupUnpublishedConversation(conv, false)
+					return nil, fmt.Errorf("load native thread checkpoint: %w", err)
+				}
+			}
 			replayCheckpoint.captureAOHighWater(
 				cfg.SessionID, existing.Turns, existing.Messages, existing.Activities,
 			)

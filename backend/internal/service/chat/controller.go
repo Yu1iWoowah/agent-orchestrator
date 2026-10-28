@@ -497,6 +497,8 @@ type nativeHistoryCheckpoint struct {
 	aoHighWater             nativeHistoryHighWater
 	aoHighWaterPeers        []nativeHistoryHighWater
 	replayIndex             *nativeHistoryTurnIndex
+	nativeThreads           map[nativeThreadTurnKey]string
+	nativeThreadRoots       map[string]string
 }
 
 // dropUnsettledHookFacts retires legacy checkpoint text that AO recorded on a
@@ -618,6 +620,7 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	// alone cannot order an empty response after a reordered queued prompt.
 
 	var latest *domain.ConversationTurn
+	unverifiedThread := false
 	for i := range turns {
 		turn := &turns[i]
 		// Only completed turns anchor the high-water mark. A provider promises to
@@ -639,6 +642,17 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 				continue
 			}
 		}
+		if p.nativeThreadRoots != nil {
+			owner, known := p.nativeThreads[nativeThreadTurnKey{turn.BranchID, turn.ProviderTurnID}]
+			root := p.nativeThreadRoots[turn.BranchID]
+			if !known || owner == "" || root == "" {
+				unverifiedThread = true
+				continue
+			}
+			if owner != root {
+				continue // Keep child work in the timeline, outside the root replay checkpoint.
+			}
+		}
 		if latest == nil || turn.RequestedAt.After(latest.RequestedAt) {
 			latest = turn
 			p.aoHighWaterPeers = nil
@@ -650,6 +664,9 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 			}
 			p.aoHighWaterPeers = append(p.aoHighWaterPeers, evidence(turn))
 		}
+	}
+	if unverifiedThread {
+		p.hardMismatches = append(p.hardMismatches, ports.ChatHistoryMismatchAOHighWater)
 	}
 	if latest == nil {
 		return

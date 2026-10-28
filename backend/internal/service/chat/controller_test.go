@@ -1339,6 +1339,7 @@ func TestResumeImportsNativeHistoryBeforeTheChatControllerStarts(t *testing.T) {
 	if err := st.BindTurnToProvider(context.Background(), "existing-turn", "native-turn-1", now); err != nil {
 		t.Fatalf("BindTurnToProvider: %v", err)
 	}
+	archiveNativeTurnIdentity(t, st, existing.ID, "old-generation", "native-turn-1", "thread-1", now)
 	if err := st.SettleAssistantMessage(context.Background(), existing.ID,
 		"native-answer-1", "native-turn-1", "Nothing is dirty.", "existing-answer", now); err != nil {
 		t.Fatalf("SettleAssistantMessage: %v", err)
@@ -2318,6 +2319,7 @@ func TestInterfaceHandoffAOHighWaterFallbackMustStayInItsTurn(t *testing.T) {
 	if err := st.BindTurnToProvider(ctx, "expected-turn", "expected-provider-turn", now); err != nil {
 		t.Fatalf("bind turn: %v", err)
 	}
+	archiveNativeTurnIdentity(t, st, conversation.ID, "chat-generation", "expected-provider-turn", "thread-1", now)
 	if err := st.SettleAssistantMessage(
 		ctx, conversation.ID, "expected-assistant-item", "expected-provider-turn",
 		"repeated high water", "expected-assistant", now,
@@ -2401,6 +2403,7 @@ func TestInterfaceHandoffAOHighWaterAcceptsMappedReassignedTurn(t *testing.T) {
 	if err := st.BindTurnToProvider(ctx, "expected-turn", "expected-provider-turn", now); err != nil {
 		t.Fatalf("bind turn: %v", err)
 	}
+	archiveNativeTurnIdentity(t, st, conversation.ID, "chat-generation", "expected-provider-turn", "thread-1", now)
 	if err := st.SettleAssistantMessage(
 		ctx, conversation.ID, "expected-assistant-item", "expected-provider-turn",
 		"reassigned high water", "expected-assistant", now,
@@ -2624,6 +2627,7 @@ func TestInterfaceHandoffDoesNotAnchorReplayCheckpointOnFailedTurn(t *testing.T)
 	if err := st.BindTurnToProvider(context.Background(), "settled-turn", "native-turn-1", now); err != nil {
 		t.Fatalf("BindTurnToProvider settled: %v", err)
 	}
+	archiveNativeTurnIdentity(t, st, existing.ID, "old-generation", "native-turn-1", "thread-1", now)
 	if err := st.SettleAssistantMessage(context.Background(), existing.ID,
 		"native-answer-1", "native-turn-1", "Nothing is dirty.", "settled-answer", now); err != nil {
 		t.Fatalf("SettleAssistantMessage settled: %v", err)

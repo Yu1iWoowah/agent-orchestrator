@@ -78,6 +78,7 @@ func TestNativeReplayDoesNotSupersedeNewHooksWithRepeatedText(t *testing.T) {
 				if err := st.BindTurnToProvider(ctx, id, id, at); err != nil {
 					t.Fatal(err)
 				}
+				archiveNativeTurnIdentity(t, st, conversation.ID, "old-generation", id, "thread-1", at)
 				if err := st.SettleAssistantMessage(ctx, conversation.ID, id+"-answer", id, answer, id+"-message", at); err != nil {
 					t.Fatal(err)
 				}
