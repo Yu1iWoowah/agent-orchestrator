@@ -143,3 +143,50 @@ func TestProjectDocumentsRejectEscapingPathBeforeDaemon(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectDocumentWriteRejectsInvalidUTF8BeforeDaemon(t *testing.T) {
+	cfg := setConfigEnv(t)
+	t.Setenv("AO_SESSION_ID", "owner")
+	t.Setenv("AO_BROWSER_CAPABILITY", "secret")
+	original := "original document"
+	document := original
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			return
+		}
+		calls++
+		switch {
+		case r.URL.Path == "/api/v1/projects/demo":
+			fmt.Fprint(w, `{"project":{"id":"demo","path":"/demo"}}`)
+		case strings.HasSuffix(r.URL.Path, "/lease"):
+			fmt.Fprint(w, `{"lease":{"epoch":1,"token":"lease-secret"}}`)
+		case r.Method == http.MethodPut:
+			var in projectDocumentWriteRequest
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+				return
+			}
+			if in.ExpectedHash == "current-hash" {
+				document = in.Content
+			}
+			fmt.Fprint(w, `{"file":{"path":"note.md","hash":"changed"}}`)
+		default:
+			t.Errorf("unexpected request: %s", r.URL)
+		}
+	}))
+	defer srv.Close()
+	writeRunFileFor(t, cfg, srv)
+	draft := filepath.Join(t.TempDir(), "draft")
+	if err := os.WriteFile(draft, []byte{'b', 'a', 'd', 0xff}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "project", "documents", "write", "note.md", "--project", "demo", "--file", draft, "--expected-hash", "current-hash")
+	var misuse usageError
+	if !errors.As(err, &misuse) {
+		t.Errorf("expected usage error for invalid UTF-8, got %v", err)
+	}
+	if calls != 0 || document != original {
+		t.Fatalf("invalid draft reached daemon: calls=%d document=%q", calls, document)
+	}
+}
