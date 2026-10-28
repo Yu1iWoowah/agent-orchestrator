@@ -209,3 +209,52 @@ func TestSideRestoredRunningTurnReconcilesTerminalHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestSideCleanupCompletesWithoutRetry(t *testing.T) {
+	svc := New(Options{DataDir: t.TempDir(), AppRunID: "run"})
+	conv := &sideCleanupTestConversation{}
+	svc.controllers["session"] = &Controller{conv: conv}
+	store := svc.sides.store.(*memorySideStore)
+	side := domain.SideConversation{SessionID: "session"}
+	if err := svc.sides.writeForkRecord(t.Context(), side, "fork", false); err != nil {
+		t.Fatal(err)
+	}
+	store.cleanup["fork"] = domain.SideProviderCleanup{ForkID: "fork", SessionID: "session"}
+	for range 3 {
+		svc.sides.retryCleanup()
+	}
+	pending, err := store.SideProviderCleanupPending(t.Context())
+	if err != nil || len(pending) != 0 || len(conv.deleted) != 1 {
+		t.Fatalf("cleanup did not complete once: pending=%v deleted=%v err=%v", pending, conv.deleted, err)
+	}
+	// A recovered service must not resurrect a completed provider deletion.
+	recovered := New(Options{DataDir: svc.dataDir, AppRunID: "next-run"})
+	if err := recovered.sides.recoverForkRecords(t.Context(), "next-run"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = recovered.sides.store.SideProviderCleanupPending(t.Context())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("completed cleanup recovered: %v %v", pending, err)
+	}
+}
+
+func TestSideCleanupRetriesRealErrorsUntilSuccess(t *testing.T) {
+	svc := New(Options{AppRunID: "run"})
+	conv := &sideCleanupTestConversation{deleteErr: errors.New("provider unavailable")}
+	svc.controllers["session"] = &Controller{conv: conv}
+	store := svc.sides.store.(*memorySideStore)
+	store.cleanup["fork"] = domain.SideProviderCleanup{ForkID: "fork", SessionID: "session"}
+	for attempt := 1; attempt <= 3; attempt++ {
+		svc.sides.retryCleanup()
+		pending, err := store.SideProviderCleanupPending(t.Context())
+		if err != nil || len(pending) != 1 || len(conv.deleted) != attempt {
+			t.Fatalf("attempt %d: pending=%v deleted=%v err=%v", attempt, pending, conv.deleted, err)
+		}
+	}
+	conv.deleteErr = nil
+	svc.sides.retryCleanup()
+	svc.sides.retryCleanup()
+	if len(conv.deleted) != 4 || len(store.cleanup) != 0 {
+		t.Fatalf("cleanup did not settle: %v %v", conv.deleted, store.cleanup)
+	}
+}

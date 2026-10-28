@@ -174,11 +174,28 @@ func (c *conversation) DeleteFork(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: ACP agent does not advertise session/delete", ports.ErrChatCapabilityUnavailable)
 	}
 	_, err := c.conn.UnstableDeleteSession(ctx, acpsdk.UnstableDeleteSessionRequest{SessionId: acpsdk.SessionId(id)})
-	if isACPResourceNotFound(err) {
+	if isACPResourceNotFound(err) || isACPDeletedSessionAbsent(err, id) {
+		c.log.Info("chat: ACP fork already absent", "providerConversationID", id)
 		return nil
 	}
 	if err != nil {
 		return normalizeACPError("ACP session/delete", err)
 	}
 	return nil
+}
+
+// Some ACP agents report an absent session as an internal error instead of
+// ResourceNotFound. Match only the observed details for this exact delete target;
+// other internal errors must remain retryable.
+func isACPDeletedSessionAbsent(err error, id string) bool {
+	var requestErr *acpsdk.RequestError
+	if !errors.As(err, &requestErr) || requestErr.Code != -32603 {
+		return false
+	}
+	data, ok := requestErr.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	details, ok := data["details"].(string)
+	return ok && details == "Session "+id+" not found in any project directory"
 }
