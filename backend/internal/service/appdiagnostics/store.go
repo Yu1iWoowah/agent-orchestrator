@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -162,6 +163,46 @@ func (s *diskStore) remove(dir, id string) error {
 	}
 	return nil
 }
+
+// removeEntry pins and verifies the managed directory before unlinking one
+// basename. Root.Remove does not follow the final symlink; it never recurses.
+func (s *diskStore) removeEntry(dir, name string) error {
+	if (dir != "audit" && dir != "snapshots") || filepath.IsAbs(name) || filepath.Base(name) != name || name == "." || name == ".." {
+		return errors.New("invalid diagnostic cleanup entry")
+	}
+	before, err := s.root.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if err := privateDirectoryInfo(before); err != nil {
+		return err
+	}
+	root, err := s.root.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	if err := secureOpenedFile(file, true); err != nil {
+		return err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(before, opened) {
+		return errors.New("diagnostic cleanup directory changed")
+	}
+	if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (s *diskStore) entries(dir string) ([]os.DirEntry, error) {
 	if err := s.checkDir(dir); err != nil {
 		return nil, err
@@ -174,7 +215,7 @@ func (s *diskStore) entries(dir string) ([]os.DirEntry, error) {
 	return f.ReadDir(-1)
 }
 func (s *diskStore) removeGrant(id string) error {
-	rows, err := documents[Record](s, "snapshots")
+	rows, err := documents[Record](s, "snapshots", validSnapshotRecord)
 	if err != nil {
 		return err
 	}
@@ -216,9 +257,9 @@ type document[T any] struct {
 	size  int64
 }
 
-// Unknown future schemas and unrelated files are ignored individually. No file
-// name or content enters the audit; one bounded summary records the reason.
-func documents[T any](s *diskStore, dir string) ([]document[T], error) {
+// Invalid audit documents are skipped; invalid snapshot files are unlinked.
+// No file name or content enters the audit; one bounded summary records the reason.
+func documents[T any](s *diskStore, dir string, validate func(string, T) bool) ([]document[T], error) {
 	entries, err := s.entries(dir)
 	if err != nil {
 		return nil, err
@@ -237,11 +278,19 @@ func documents[T any](s *diskStore, dir string) ([]document[T], error) {
 		if valid {
 			valid = s.read(dir, key, &value) == nil
 		}
+		if valid && validate != nil {
+			valid = validate(key, value)
+		}
 		if !valid {
 			identity := dir + "/" + name
 			if !s.invalid[identity] {
 				s.invalid[identity] = true
 				s.skipped++
+			}
+			if dir == "snapshots" && !entry.IsDir() {
+				if err := s.removeEntry(dir, name); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}
@@ -252,6 +301,20 @@ func documents[T any](s *diskStore, dir string) ([]document[T], error) {
 		out = append(out, document[T]{key, value, info.Size()})
 	}
 	return out, nil
+}
+
+// Only a validated envelope can establish ownership of a retained snapshot.
+func validSnapshotRecord(id string, row Record) bool {
+	if row.ID != id || row.CreatedAt.IsZero() {
+		return false
+	}
+	for _, value := range []string{row.GrantID, row.RequestID} {
+		if parsed, err := uuid.Parse(value); err != nil || parsed == uuid.Nil {
+			return false
+		}
+	}
+	snapshot := row.Snapshot
+	return snapshot.SchemaVersion == 1 && snapshot.InstanceID != "" && snapshot.WindowID != "" && snapshot.Generation > 0 && !snapshot.CapturedAt.IsZero() && snapshot.Completeness == "partial"
 }
 
 // reset never revives a credential or payload from another daemon epoch.
@@ -279,7 +342,27 @@ func (s *diskStore) reset(now time.Time) error {
 			}
 		}
 	}
-	rows, err := documents[Audit](s, "audit")
+	entries, err := s.entries("audit")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".tmp" {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".tmp")
+		if len(stem) != 36 {
+			continue
+		}
+		if _, err := uuid.Parse(stem); err != nil {
+			continue
+		}
+		if err := s.removeEntry("audit", name); err != nil {
+			return err
+		}
+	}
+	rows, err := documents[Audit](s, "audit", nil)
 	if err != nil {
 		return err
 	}
@@ -296,7 +379,7 @@ func (s *diskStore) reset(now time.Time) error {
 	return s.prune(now)
 }
 func (s *diskStore) prune(now time.Time) error {
-	rows, err := documents[Record](s, "snapshots")
+	rows, err := documents[Record](s, "snapshots", validSnapshotRecord)
 	if err != nil {
 		return err
 	}
@@ -316,7 +399,7 @@ func (s *diskStore) prune(now time.Time) error {
 		count--
 		total -= row.size
 	}
-	audits, err := documents[Audit](s, "audit")
+	audits, err := documents[Audit](s, "audit", nil)
 	if err != nil {
 		return err
 	}

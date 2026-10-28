@@ -98,8 +98,11 @@ type grantState struct {
 
 // Service serializes grant revocation, audit and snapshot commits.
 type Service struct {
-	deniedID    string
-	deniedCount uint64
+	deniedID         string
+	deniedCount      uint64
+	unavailableID    string
+	unavailableCount uint64
+
 	mu          sync.Mutex
 	sessions    sessionReader
 	runtime     Runtime
@@ -120,7 +123,7 @@ func New(dataDir string, sessions sessionReader, runtime Runtime, now func() tim
 	if now == nil {
 		now = time.Now
 	}
-	s := &Service{sessions: sessions, runtime: runtime, now: now, store: store, grants: map[string]*grantState{}, deniedID: uuid.NewString()}
+	s := &Service{sessions: sessions, runtime: runtime, now: now, store: store, grants: map[string]*grantState{}, deniedID: uuid.NewString(), unavailableID: uuid.NewString()}
 	if err := store.reset(now()); err != nil {
 		_ = store.root.Close()
 		return nil, err
@@ -218,10 +221,23 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 	s.mu.Lock()
 	g, err := s.authorize(ctx, token)
 	if err != nil {
-		if s.deniedCount < ^uint64(0) {
-			s.deniedCount++
+		audit := Audit{RequestID: s.deniedID, At: s.now(), Outcome: "denied"}
+		var typed *Error
+		if errors.As(err, &typed) && typed.Code == "APP_DIAGNOSTICS_SESSION_UNAVAILABLE" {
+			if s.unavailableCount < ^uint64(0) {
+				s.unavailableCount++
+			}
+			audit.RequestID = s.unavailableID
+			audit.Outcome = "unavailable"
+			audit.ReasonCode = "APP_DIAGNOSTICS_SESSION_UNAVAILABLE"
+			audit.Count = s.unavailableCount
+		} else {
+			if s.deniedCount < ^uint64(0) {
+				s.deniedCount++
+			}
+			audit.Count = s.deniedCount
 		}
-		if auditErr := s.store.audit(Audit{RequestID: s.deniedID, At: s.now(), Outcome: "denied", Count: s.deniedCount}); auditErr != nil {
+		if auditErr := s.store.audit(audit); auditErr != nil {
 			s.mu.Unlock()
 			return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 		}
@@ -353,7 +369,7 @@ func (s *Service) Read(ctx context.Context, token, id string) (Record, error) {
 		return Record{}, err
 	}
 	var out Record
-	if s.store.read("snapshots", id, &out) != nil || out.GrantID != g.credential.ID || !s.now().Before(out.CreatedAt.Add(24*time.Hour)) {
+	if s.store.read("snapshots", id, &out) != nil || !validSnapshotRecord(id, out) || out.GrantID != g.credential.ID || !s.now().Before(out.CreatedAt.Add(24*time.Hour)) {
 		return Record{}, failure("APP_SNAPSHOT_NOT_FOUND", 404)
 	}
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "read"}); err != nil {
@@ -448,7 +464,7 @@ func (s *Service) List(ctx context.Context, token string) ([]Record, error) {
 	if err := s.store.prune(s.now()); err != nil {
 		return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
-	docs, err := documents[Record](s.store, "snapshots")
+	docs, err := documents[Record](s.store, "snapshots", validSnapshotRecord)
 	if err != nil {
 		return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
@@ -479,7 +495,7 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
-	docs, err := documents[Audit](s.store, "audit")
+	docs, err := documents[Audit](s.store, "audit", nil)
 	if err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
