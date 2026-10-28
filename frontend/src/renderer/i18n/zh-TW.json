@@ -1,4 +1,5 @@
 {
+	"documents.catalog.localOnly": "文件清單只能在這台電腦使用。",
 	"documents.connection.localOnly": "文件路徑查詢只能在這台電腦使用。",
 	"documents.read.error": "無法載入文件。",
 	"settings.replyLanguage.label": "agent 回覆語言",

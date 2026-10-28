@@ -72,21 +72,10 @@ func (s *Service) metadata(ctx context.Context, root *os.Root, rootPath, p strin
 	if e != nil {
 		return nil, e
 	}
-	// The returned physical path must still identify the tree we opened.
-	checked, e := s.openRoot(rootPath)
-	if e != nil {
-		return nil, unavailable()
+	if e := s.validateRoot(ctx, root, rootPath); e != nil {
+		return nil, e
 	}
-	defer func() { _ = checked.Close() }()
-	original, e := root.Stat(".")
-	if e != nil {
-		return nil, unavailable()
-	}
-	now, e := checked.Stat(".")
-	if e != nil || !os.SameFile(original, now) {
-		return nil, unavailable()
-	}
-	actual, e := documentInfo(checked, p)
+	actual, e := documentInfo(root, p)
 	if e != nil || !os.SameFile(info, actual) {
 		return nil, unavailable()
 	}
@@ -94,6 +83,27 @@ func (s *Service) metadata(ctx context.Context, root *os.Root, rootPath, p strin
 		return nil, e
 	}
 	return info, nil
+}
+
+// validateRoot checks that a physical path still identifies the opened tree.
+func (s *Service) validateRoot(ctx context.Context, root *os.Root, rootPath string) error {
+	if e := ctx.Err(); e != nil {
+		return e
+	}
+	checked, e := s.openRoot(rootPath)
+	if e != nil {
+		return unavailable()
+	}
+	defer func() { _ = checked.Close() }()
+	original, e := root.Stat(".")
+	if e != nil {
+		return unavailable()
+	}
+	now, e := checked.Stat(".")
+	if e != nil || !os.SameFile(original, now) {
+		return unavailable()
+	}
+	return ctx.Err()
 }
 func updatedAt(info os.FileInfo) *time.Time {
 	t := info.ModTime().UTC()

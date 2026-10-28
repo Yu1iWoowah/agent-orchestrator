@@ -1,4 +1,5 @@
 {
+	"documents.catalog.localOnly": "文档列表只能在这台电脑上使用。",
 	"documents.connection.localOnly": "文档路径查询只能在这台电脑上使用。",
 	"documents.read.error": "无法加载文档。",
 	"settings.replyLanguage.label": "智能体回复语言",

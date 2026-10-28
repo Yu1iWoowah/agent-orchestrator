@@ -73,7 +73,11 @@ func (s *Service) Catalog(ctx context.Context, projectID string, q CatalogQuery)
 	if q.Source != "shared" {
 		rows, err := s.store.ListSessions(ctx, domain.ProjectID(projectID))
 		if err != nil {
-			out.Errors = append(out.Errors, SourceError{Source: "worker", Code: "DOCUMENT_SOURCE_UNAVAILABLE"}, SourceError{Source: "orchestrator", Code: "DOCUMENT_SOURCE_UNAVAILABLE"})
+			for _, kind := range []string{"worker", "orchestrator"} {
+				if q.Source == "all" || q.Source == kind {
+					out.Errors = append(out.Errors, SourceError{Source: kind, Code: "DOCUMENT_SOURCE_UNAVAILABLE"})
+				}
+			}
 		}
 		for _, rec := range rows {
 			if rec.ProjectID != domain.ProjectID(projectID) {
@@ -234,7 +238,7 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 					}
 					continue
 				}
-				info, e := s.metadata(ctx, root, src.root, rel)
+				info, e := documentInfo(root, rel)
 				if e != nil {
 					if ctx.Err() != nil {
 						return ctx.Err()
@@ -252,6 +256,13 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 	}
 	if e := walk(root, "", 0); e != nil {
 		return nil, "", e
+	}
+	// Every entry was confined to the opened tree; validate its physical identity once per scan.
+	if e := s.validateRoot(ctx, root, src.root); e != nil {
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+		return nil, "DOCUMENT_SOURCE_UNAVAILABLE", nil
 	}
 	return items, code, nil
 }

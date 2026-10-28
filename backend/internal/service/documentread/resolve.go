@@ -33,8 +33,9 @@ func validPath(s string) bool {
 		if part == "." || part == ".." || part == ".versions" || strings.HasPrefix(part, ".ao-") {
 			return false
 		}
+		// A literal percent (such as 50%.md) is not an encoded path segment.
 		decoded, e := url.PathUnescape(part)
-		if e != nil || decoded != part {
+		if e == nil && decoded != part {
 			return false
 		}
 	}
@@ -140,6 +141,11 @@ func (s *Service) resolveLocal(ctx context.Context, value string) (Resolved, err
 		if e != nil || !strings.EqualFold(u.Scheme, "file") || u.Opaque != "" || u.User != nil || (u.Host != "" && !strings.EqualFold(u.Host, "localhost")) || u.RawQuery != "" || u.ForceQuery {
 			return Resolved{}, invalid()
 		}
+		// Reject transport-encoded separators before u.Path loses that distinction.
+		escaped := strings.ToLower(u.EscapedPath())
+		if strings.Contains(escaped, "%2f") || strings.Contains(escaped, "%5c") {
+			return Resolved{}, invalid()
+		}
 		value = u.Path
 		if filepath.Separator == '\\' && len(value) >= 3 && value[0] == '/' && value[2] == ':' {
 			value = filepath.FromSlash(value[1:])
@@ -158,13 +164,10 @@ func (s *Service) resolveLocal(ctx context.Context, value string) (Resolved, err
 	if !filepath.IsAbs(value) || (filepath.Separator != '\\' && strings.Contains(value, "\\")) || strings.HasPrefix(value, "\\\\") || strings.ContainsFunc(value, unicode.IsControl) {
 		return Resolved{}, invalid()
 	}
-	// Do not clean away traversal before filesystem validation.
-	for _, p := range strings.Split(filepath.ToSlash(value), "/") {
-		if p == ".." || p == "." {
-			return Resolved{}, invalid()
-		}
-		decoded, e := url.PathUnescape(p)
-		if e != nil || decoded != p {
+	// Do not clean away traversal. Managed prefixes may contain projectKey escapes;
+	// Resolve validates encoding only in the relative document path after matching a root.
+	for i, p := range strings.Split(filepath.ToSlash(value), "/") {
+		if p == ".." || p == "." || i > 0 && p == "" {
 			return Resolved{}, invalid()
 		}
 	}

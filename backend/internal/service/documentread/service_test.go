@@ -15,8 +15,9 @@ import (
 )
 
 type readStore struct {
-	projects []domain.ProjectRecord
-	sessions []domain.SessionRecord
+	projects    []domain.ProjectRecord
+	sessions    []domain.SessionRecord
+	sessionsErr error
 }
 
 func (f *readStore) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
@@ -31,6 +32,9 @@ func (f *readStore) ListProjects(context.Context) ([]domain.ProjectRecord, error
 	return f.projects, nil
 }
 func (f *readStore) ListSessions(_ context.Context, id domain.ProjectID) ([]domain.SessionRecord, error) {
+	if f.sessionsErr != nil {
+		return nil, f.sessionsErr
+	}
 	var r []domain.SessionRecord
 	for _, s := range f.sessions {
 		if s.ProjectID == id {
@@ -128,10 +132,20 @@ func TestResolveRejectsUnmanagedPathsAndMalformedSources(t *testing.T) {
 	f.write(t, "artifacts/p-1-other/notes.md", "private")
 	f.write(t, "artifacts/unregistered/report.md", "private")
 	f.write(t, "artifacts/p-1/.versions/old.md", "private")
-	for _, p := range []string{"ao.db", "keys/token", "electron/Default/Preferences", "artifacts/p-1-other/notes.md", "artifacts/unregistered/report.md", "artifacts/p-1/.versions/old.md"} {
-		b, _ := json.Marshal(map[string]string{"kind": "local-path", "value": filepath.Join(f.data, p)})
-		if _, e := f.s.Resolve(context.Background(), input(t, string(b))); e == nil {
-			t.Errorf("accepted %s", p)
+	for _, p := range []string{"artifacts/p-1/%2e%2e/notes.md", "artifacts/p-1/%252e%252e/notes.md", "artifacts/p-1/%2fnotes.md"} {
+		f.write(t, p, "encoded unsafe name")
+	}
+	for _, p := range []string{"ao.db", "keys/token", "electron/Default/Preferences", "artifacts/p-1-other/notes.md", "artifacts/unregistered/report.md", "artifacts/p-1/.versions/old.md", "artifacts/p-1/%2e%2e/notes.md", "artifacts/p-1/%252e%252e/notes.md", "artifacts/p-1/%2fnotes.md"} {
+		full := filepath.Join(f.data, p)
+		urlPath := filepath.ToSlash(full)
+		if !strings.HasPrefix(urlPath, "/") {
+			urlPath = "/" + urlPath
+		}
+		for _, value := range []string{full, (&url.URL{Scheme: "file", Path: urlPath}).String()} {
+			b, _ := json.Marshal(map[string]string{"kind": "local-path", "value": value})
+			if _, e := f.s.Resolve(context.Background(), input(t, string(b))); e == nil {
+				t.Errorf("accepted %s", value)
+			}
 		}
 	}
 	for _, s := range []string{
@@ -192,6 +206,13 @@ func TestMetadataRejectsRootReplacedAfterOpening(t *testing.T) {
 	}
 	if _, e = f.s.metadata(context.Background(), root, rootPath, "notes hello.md"); e == nil {
 		t.Fatal("returned path after managed root was replaced")
+	}
+	if e := os.Remove(rootPath); e != nil {
+		t.Fatal(e)
+	}
+	f.write(t, "artifacts/p-1/notes hello.md", "replacement in a different regular tree")
+	if _, e = f.s.metadata(context.Background(), root, rootPath, "notes hello.md"); e == nil {
+		t.Fatal("returned path after managed root was replaced by another regular directory")
 	}
 }
 func TestCatalogIncludesAllSourcesAndArchiveWithoutLocalPaths(t *testing.T) {
@@ -347,5 +368,77 @@ func TestCatalogReportsMissingManagedRootInsteadOfCompleteEmptySource(t *testing
 	result, e = f.s.Catalog(context.Background(), "p", CatalogQuery{})
 	if e != nil || result.Incomplete || len(result.Errors) != 0 || len(result.Items) != 2 {
 		t.Fatalf("existing empty root was reported missing: %+v %v", result, e)
+	}
+}
+
+func TestLiteralPercentDocumentsResolveAndRemainInCompleteCatalog(t *testing.T) {
+	f := setup(t)
+	for _, p := range []string{"artifacts/p-1/50%.md", "projects/p/orchestrator/shared/50%.md"} {
+		f.write(t, p, "literal percent")
+		full := filepath.Join(f.data, filepath.FromSlash(p))
+		urlPath := filepath.ToSlash(full)
+		if !strings.HasPrefix(urlPath, "/") {
+			urlPath = "/" + urlPath
+		}
+		for _, value := range []string{full, (&url.URL{Scheme: "file", Path: urlPath}).String()} {
+			resolved, e := f.s.Resolve(context.Background(), Input{value: LocalPathTarget{Kind: "local-path", Value: value}})
+			if e != nil || resolved.LocalPath != full || !strings.HasSuffix(resolved.CanonicalURI, "/50%25.md") {
+				t.Fatalf("literal percent %q: %+v %v", value, resolved, e)
+			}
+		}
+	}
+	catalog, e := f.s.Catalog(context.Background(), "p", CatalogQuery{})
+	if e != nil || catalog.Incomplete || len(catalog.Errors) != 0 || len(catalog.Items) != 5 {
+		t.Fatalf("literal percent removed documents or made catalog incomplete: %+v %v", catalog, e)
+	}
+}
+
+func TestCatalogSessionErrorsRespectSourceFilter(t *testing.T) {
+	f := setup(t)
+	f.store.sessionsErr = fmt.Errorf("synthetic session read failure")
+	for _, tc := range []struct {
+		source string
+		want   []string
+	}{
+		{"worker", []string{"worker"}}, {"orchestrator", []string{"orchestrator"}},
+		{"all", []string{"worker", "orchestrator"}}, {"shared", nil},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			result, e := f.s.Catalog(context.Background(), "p", CatalogQuery{Source: tc.source})
+			if e != nil || len(result.Errors) != len(tc.want) || result.Incomplete != (len(tc.want) > 0) {
+				t.Fatalf("source %s: %+v %v", tc.source, result, e)
+			}
+			for i, source := range tc.want {
+				if result.Errors[i].Source != source || result.Errors[i].Code != "DOCUMENT_SOURCE_UNAVAILABLE" {
+					t.Fatalf("unexpected source error: %+v", result.Errors[i])
+				}
+			}
+		})
+	}
+}
+
+func TestLocalPathsRejectEncodedSeparatorsAndEmptySegments(t *testing.T) {
+	f := setup(t)
+	f.write(t, "artifacts/p-1/report.md", "report")
+	f.write(t, "artifacts/p-1/sub/nested.md", "nested")
+	root := filepath.Join(f.data, "artifacts", "p-1")
+	urlPath := filepath.ToSlash(root)
+	if !strings.HasPrefix(urlPath, "/") {
+		urlPath = "/" + urlPath
+	}
+	fileRoot := (&url.URL{Scheme: "file", Path: urlPath}).String()
+	bad := []string{
+		root + "//report.md", root + "/sub//nested.md", root + "/sub/./nested.md", root + "/sub/../report.md",
+		fileRoot + "//report.md", fileRoot + "/sub//nested.md",
+		fileRoot + "/sub/%2e%2e/report.md", fileRoot + "/sub/%252e%252e/report.md",
+	}
+	for _, encoded := range []string{"%2F", "%2f", "%5C", "%5c", "%252F", "%252f", "%255C", "%255c"} {
+		bad = append(bad, fileRoot+encoded+"report.md", fileRoot+"/sub"+encoded+"nested.md")
+	}
+	for _, value := range bad {
+		resolved, e := f.s.Resolve(context.Background(), Input{value: LocalPathTarget{Kind: "local-path", Value: value}})
+		if e == nil {
+			t.Errorf("accepted ambiguous local path %q: %+v", value, resolved)
+		}
 	}
 }

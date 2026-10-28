@@ -1,4 +1,5 @@
 {
+	"documents.catalog.localOnly": "Le catalogue de documents est disponible uniquement sur cet ordinateur.",
 	"documents.connection.localOnly": "La recherche de chemins de documents est disponible uniquement sur cet ordinateur.",
 	"documents.read.error": "Impossible de charger les documents.",
 	"settings.replyLanguage.label": "Langue de réponse des agents",

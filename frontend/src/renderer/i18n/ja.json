@@ -1,4 +1,5 @@
 {
+	"documents.catalog.localOnly": "ドキュメント一覧はこのコンピューターでのみ利用できます。",
 	"documents.connection.localOnly": "ドキュメントのパス検索はこのコンピューターでのみ利用できます。",
 	"documents.read.error": "ドキュメントを読み込めません。",
 	"settings.replyLanguage.label": "エージェントの返信言語",

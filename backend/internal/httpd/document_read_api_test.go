@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,74 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
+
+func TestDocumentReadLocalPathsUseEncodedManagedProjectRoots(t *testing.T) {
+	ctx := context.Background()
+	db := sqlitetest.MustOpenAt(t, t.TempDir())
+	data := t.TempDir()
+	shared := projectdocuments.New(projectdocuments.Deps{Store: db, DataDir: data})
+	router := NewRouterWithControl(config.Config{DataDir: data}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+		APIDeps{DocumentRead: documentread.New(documentread.Deps{Store: db, Shared: shared, DataDir: data})}, ControlDeps{})
+	for _, id := range []string{"next.js", "MyApp", "con"} {
+		t.Run(id, func(t *testing.T) {
+			if e := db.UpsertProject(ctx, domain.ProjectRecord{ID: id, Path: t.TempDir(), RegisteredAt: time.Now()}); e != nil {
+				t.Fatal(e)
+			}
+			// ReadRoot uses production projectKey; do not construct its encoded directory in the fixture.
+			root, e := shared.ReadRoot(ctx, domain.ProjectID(id))
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = os.MkdirAll(root, 0o700); e != nil {
+				t.Fatal(e)
+			}
+			full := filepath.Join(root, "guide.md")
+			if e = os.WriteFile(full, []byte("shared guide"), 0o600); e != nil {
+				t.Fatal(e)
+			}
+			urlPath := filepath.ToSlash(full)
+			if !strings.HasPrefix(urlPath, "/") {
+				urlPath = "/" + urlPath
+			}
+			for _, target := range []any{
+				documentread.SharedTarget{Kind: "shared", ProjectID: id, Path: "guide.md"},
+				documentread.LocalPathTarget{Kind: "local-path", Value: full},
+				documentread.LocalPathTarget{Kind: "local-path", Value: (&url.URL{Scheme: "file", Path: urlPath}).String()},
+			} {
+				body, e := json.Marshal(target)
+				if e != nil {
+					t.Fatal(e)
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/local-documents/resolve", bytes.NewReader(body)))
+				var response struct {
+					Document struct {
+						LocalPath    string `json:"localPath"`
+						CanonicalURI string `json:"canonicalUri"`
+					} `json:"document"`
+				}
+				if e = json.Unmarshal(w.Body.Bytes(), &response); e != nil {
+					t.Fatal(e)
+				}
+				if w.Code != http.StatusOK || response.Document.LocalPath != full || response.Document.CanonicalURI != "ao://projects/"+id+"/shared/guide.md" {
+					t.Errorf("target %s: HTTP %d %s", body, w.Code, w.Body.String())
+				}
+			}
+			rootURL := (&url.URL{Scheme: "file", Path: strings.TrimSuffix(urlPath, "/guide.md")}).String()
+			for _, value := range []string{root + "//guide.md", rootURL + "//guide.md", rootURL + "%2Fguide.md", rootURL + "%2fguide.md", rootURL + "/%252Fguide.md"} {
+				body, e := json.Marshal(documentread.LocalPathTarget{Kind: "local-path", Value: value})
+				if e != nil {
+					t.Fatal(e)
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/local-documents/resolve", bytes.NewReader(body)))
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "DOCUMENT_PATH_INVALID") {
+					t.Errorf("ambiguous path %q: HTTP %d %s", value, w.Code, w.Body.String())
+				}
+			}
+		})
+	}
+}
 
 func TestDocumentReadAPIUsesRegisteredReadRootsWithoutMutatingOwnership(t *testing.T) {
 	ctx := context.Background()

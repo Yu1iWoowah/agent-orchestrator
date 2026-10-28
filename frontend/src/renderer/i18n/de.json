@@ -1,4 +1,5 @@
 {
+	"documents.catalog.localOnly": "Der Dokumentkatalog ist nur auf diesem Computer verfügbar.",
 	"documents.connection.localOnly": "Die Suche nach Dokumentpfaden ist nur auf diesem Computer verfügbar.",
 	"documents.read.error": "Dokumente konnten nicht geladen werden.",
 	"settings.replyLanguage.label": "Antwortsprache der Agenten",

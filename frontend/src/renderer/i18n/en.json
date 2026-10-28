@@ -1,4 +1,5 @@
 {
+	"documents.catalog.localOnly": "The document catalog is only available on this computer.",
 	"documents.connection.localOnly": "Document path lookup is only available on this computer.",
 	"documents.read.error": "Unable to load documents.",
 	"settings.replyLanguage.label": "Agent reply language",
