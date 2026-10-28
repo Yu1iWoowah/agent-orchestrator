@@ -73,6 +73,7 @@ addresses change on restart.
 | `ao session rename <id> <name>`     | `PATCH /api/v1/sessions/{id}`                  |
 | `ao session cleanup`                | `POST /api/v1/sessions/cleanup`                |
 | `ao session claim-pr [<id>] <pr-ref>` | `POST /api/v1/sessions/{id}/pr/claim`        |
+| `ao pr merge <pr-number> --pr-url <url> --expected-head <sha>` | `POST /api/v1/prs/{id}/merge` |
 | `ao orchestrator ls`                | `GET /api/v1/orchestrators`                    |
 | `ao send`                           | `POST /api/v1/sessions/{id}/send`              |
 | `ao report ...`                     | `POST /api/v1/reports`                         |
@@ -203,8 +204,28 @@ query values are redacted.
 
 `go run .` in `backend/` remains a compatibility wrapper around the daemon.
 
-PR actions are available through `ao pr merge` and
-`ao pr resolve-comments`. Review actions are available through `ao review ls`,
+### 合併 PR
+
+`ao pr merge <pr-number>` 必須提供完整的 `--pr-url` 與已審查 commit 的
+`--expected-head`。CLI 透過 daemon 的 `POST /api/v1/prs/{id}/merge` 傳送
+`prUrl` 與 `expectedHeadSha`，不會自行查詢 provider 或自動接受最新 head。
+
+```bash
+ao pr merge 42 --pr-url https://github.com/owner/repo/pull/42 \
+  --expected-head 0123456789abcdef0123456789abcdef01234567
+```
+
+URL 必須是與 PR 編號相符的完整 HTTPS PR/MR URL；GitLab 可使用巢狀群組的
+`/-/merge_requests/<number>` URL。SHA 必須是 40 或 64 位十六進位字元，不能使用縮寫。
+CLI 會將 URL 的 host 轉為小寫，並移除尾斜線、query、fragment 與 repository 的 `.git` 尾綴，
+再將 canonical URL 傳給 daemon。缺少或不合法的參數回傳 exit 2，且不送出合併請求。
+
+請指定你認可的已審查 SHA。daemon 會核對已追蹤的 head 與 provider 的最新 head，
+並將相同的 SHA 作為合併條件交給 provider。若 head 已改變，回傳
+`PR_HEAD_CHANGED`（exit 1，保留錯誤 code 與 request ID）；應先審查新 commit，
+再指定新的 SHA，避免直接把最新 head 當作已認可版本。
+
+`ao pr resolve-comments` 可處理 review threads。Review actions are available through `ao review ls`,
 `ao review trigger` (also `execute` and `restart`), `ao review cancel` (also
 `stop`), and `ao review submit`.
 

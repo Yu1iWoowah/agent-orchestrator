@@ -4,11 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+var mergeHeadSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+
+type mergePRRequest struct {
+	PRURL           string `json:"prUrl"`
+	ExpectedHeadSHA string `json:"expectedHeadSha"`
+}
 
 type mergePRResponse struct {
 	OK       bool   `json:"ok"`
@@ -36,17 +44,31 @@ func newPRCommand(ctx *commandContext) *cobra.Command {
 }
 
 func newPRMergeCommand(ctx *commandContext) *cobra.Command {
-	return &cobra.Command{
+	var prURL, expectedHead string
+	cmd := &cobra.Command{
 		Use:   "merge <pr-number>",
 		Short: "Merge a pull request",
-		Args:  usageArgs(cobra.ExactArgs(1)),
+		Long: "Merge a pull request at the explicitly approved head. Pass --pr-url and " +
+			"--expected-head with the full commit SHA you reviewed; a changed head is rejected.",
+		Example: "  ao pr merge 42 --pr-url https://github.com/owner/repo/pull/42 --expected-head 0123456789abcdef0123456789abcdef01234567",
+		Args:    usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prNumber, err := normalizePRNumber(args[0])
 			if err != nil {
 				return err
 			}
+			prURL = strings.TrimSpace(prURL)
+			host, owner, repo, urlNumber, err := cliParsePRURL(prURL)
+			if err != nil || owner == "" || repo == "" || strconv.Itoa(urlNumber) != prNumber {
+				return usageError{errors.New("--pr-url must be a full HTTPS PR/MR URL matching the PR number")}
+			}
+			prURL = cliPRURLFromParts(strings.ToLower(host), owner, repo, urlNumber)
+			expectedHead = strings.TrimSpace(expectedHead)
+			if !mergeHeadSHAPattern.MatchString(expectedHead) {
+				return usageError{errors.New("--expected-head must be the full reviewed commit SHA (40 or 64 hexadecimal characters)")}
+			}
 			var res mergePRResponse
-			if err := ctx.postJSON(cmd.Context(), "prs/"+url.PathEscape(prNumber)+"/merge", struct{}{}, &res); err != nil {
+			if err := ctx.postJSON(cmd.Context(), "prs/"+url.PathEscape(prNumber)+"/merge", mergePRRequest{PRURL: prURL, ExpectedHeadSHA: expectedHead}, &res); err != nil {
 				return err
 			}
 			if method := strings.TrimSpace(res.Method); method != "" {
@@ -57,6 +79,9 @@ func newPRMergeCommand(ctx *commandContext) *cobra.Command {
 			return err
 		},
 	}
+	cmd.Flags().StringVar(&prURL, "pr-url", "", "Full PR/MR URL matching the PR number (required)")
+	cmd.Flags().StringVar(&expectedHead, "expected-head", "", "Full reviewed commit SHA; reject a changed head (required)")
+	return cmd
 }
 
 func newPRResolveCommentsCommand(ctx *commandContext) *cobra.Command {

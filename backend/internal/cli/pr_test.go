@@ -7,80 +7,133 @@ import (
 	"testing"
 )
 
+const testMergePRURL = "https://github.com/owner/repo/pull/42"
+const testMergeHead = "0123456789abcdef0123456789abcdef01234567"
+
 func TestPRMergePostsToDaemon(t *testing.T) {
-	cfg := setConfigEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"ok":true,"prNumber":42,"method":"squash"}`)
-	writeRunFileFor(t, cfg, srv)
+	for _, tt := range []struct {
+		name         string
+		number       string
+		prURL        string
+		canonicalURL string
+		head         string
+		response     string
+		want         string
+	}{
+		{"squash", "#42", testMergePRURL, testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42,"method":"squash"}`, "merged PR #42 using squash\n"},
+		{"no method", "42", testMergePRURL, testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"sha256 and gitlab", "42", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", strings.Repeat("aB", 32), `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"trailing slash", "42", "https://github.com/owner/repo/pull/42/", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"query", "42", "https://github.com/owner/repo/pull/42?notification_referrer_id=x", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"fragment", "42", "https://github.com/owner/repo/pull/42#discussion_r1", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"git suffix", "42", "https://github.com/owner/repo.git/pull/42", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"uppercase host", "42", "https://GitHub.COM/owner/repo/pull/42", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"gitlab decorated URL", "42", "https://GitLab.Example.COM/group/subgroup/repo.git/-/merge_requests/42/?notification_referrer_id=x#note_1", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, capture := reviewServer(t, http.StatusOK, tt.response)
+			writeRunFileFor(t, cfg, srv)
 
-	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", "#42")
-	if err != nil {
-		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
-	}
-	if capture.method != http.MethodPost || capture.path != "/api/v1/prs/42/merge" {
-		t.Fatalf("request = %s %s", capture.method, capture.path)
-	}
-	if strings.TrimSpace(capture.body) != "{}" {
-		t.Fatalf("body = %q, want {}", capture.body)
-	}
-	if !strings.Contains(out, "merged PR #42 using squash") {
-		t.Fatalf("stdout = %q", out)
-	}
-}
-
-func TestPRMergeOmitsMissingMethodFromOutput(t *testing.T) {
-	cfg := setConfigEnv(t)
-	srv, _ := reviewServer(t, http.StatusOK, `{"ok":true,"prNumber":42}`)
-	writeRunFileFor(t, cfg, srv)
-
-	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", "42")
-	if err != nil {
-		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
-	}
-	if out != "merged PR #42\n" {
-		t.Fatalf("stdout = %q, want %q", out, "merged PR #42\n")
-	}
-}
-
-func TestPRMergeRejectsInvalidNumber(t *testing.T) {
-	setConfigEnv(t)
-
-	for _, number := range []string{"0", "-1", "abc", "#"} {
-		t.Run(number, func(t *testing.T) {
-			_, _, err := executeCLI(t, aliveDeps(), "pr", "merge", number)
-			if got := ExitCode(err); got != 2 {
-				t.Fatalf("exit code = %d, want 2; err=%v", got, err)
+			out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", tt.number, "--pr-url", tt.prURL, "--expected-head", tt.head)
+			if err != nil {
+				t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+			}
+			if capture.method != http.MethodPost || capture.path != "/api/v1/prs/42/merge" {
+				t.Fatalf("request = %s %s", capture.method, capture.path)
+			}
+			var body map[string]string
+			if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if len(body) != 2 || body["prUrl"] != tt.canonicalURL || body["expectedHeadSha"] != tt.head {
+				t.Fatalf("body = %s, want prUrl=%q expectedHeadSha=%q", capture.body, tt.canonicalURL, tt.head)
+			}
+			if out != tt.want {
+				t.Fatalf("stdout = %q, want %q", out, tt.want)
 			}
 		})
 	}
 }
 
-func TestPRMergeRequiresExactlyOneArgument(t *testing.T) {
-	setConfigEnv(t)
-
-	for _, args := range [][]string{
-		{"pr", "merge"},
-		{"pr", "merge", "42", "43"},
+func TestPRMergeRejectsInvalidInput(t *testing.T) {
+	validFlags := []string{"--pr-url", testMergePRURL, "--expected-head", testMergeHead}
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no number", validFlags, "accepts 1 arg"},
+		{"extra number", append([]string{"42", "43"}, validFlags...), "accepts 1 arg"},
+		{"zero", append([]string{"0"}, validFlags...), "positive integer"},
+		{"negative", append(append([]string{}, validFlags...), "--", "-1"), "positive integer"},
+		{"not a number", append([]string{"abc"}, validFlags...), "positive integer"},
+		{"bare hash", append([]string{"#"}, validFlags...), "positive integer"},
+		{"missing flags", []string{"42"}, "--pr-url"},
+		{"missing url", []string{"42", "--expected-head", testMergeHead}, "--pr-url"},
+		{"missing head", []string{"42", "--pr-url", testMergePRURL}, "--expected-head"},
+		{"blank url", []string{"42", "--pr-url", " ", "--expected-head", testMergeHead}, "--pr-url"},
+		{"relative url", []string{"42", "--pr-url", "owner/repo/pull/42", "--expected-head", testMergeHead}, "--pr-url"},
+		{"missing host", []string{"42", "--pr-url", "https:///pull/42", "--expected-head", testMergeHead}, "--pr-url"},
+		{"invalid url", []string{"42", "--pr-url", "https://%zz/pull/42", "--expected-head", testMergeHead}, "--pr-url"},
+		{"number mismatch", []string{"42", "--pr-url", "https://github.com/owner/repo/pull/43", "--expected-head", testMergeHead}, "--pr-url"},
+		{"not a PR url", []string{"42", "--pr-url", "https://github.com/owner/repo", "--expected-head", testMergeHead}, "--pr-url"},
+		{"invalid scheme", []string{"42", "--pr-url", "file:///pull/42", "--expected-head", testMergeHead}, "--pr-url"},
+		{"blank head", []string{"42", "--pr-url", testMergePRURL, "--expected-head", " "}, "--expected-head"},
+		{"short head", []string{"42", "--pr-url", testMergePRURL, "--expected-head", "abcdef1"}, "--expected-head"},
+		{"non hex head", []string{"42", "--pr-url", testMergePRURL, "--expected-head", strings.Repeat("z", 40)}, "--expected-head"},
+		{"wrong head length", []string{"42", "--pr-url", testMergePRURL, "--expected-head", strings.Repeat("a", 41)}, "--expected-head"},
 	} {
-		_, _, err := executeCLI(t, aliveDeps(), args...)
-		if got := ExitCode(err); got != 2 {
-			t.Fatalf("args = %v, exit code = %d, want 2; err=%v", args, got, err)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, capture := reviewServer(t, http.StatusOK, `{"ok":true,"prNumber":42}`)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, aliveDeps(), append([]string{"pr", "merge"}, tt.args...)...)
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("exit code = %d, want 2; err=%v", got, err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %q, want %q", err, tt.want)
+			}
+			if strings.HasSuffix(capture.path, "/merge") {
+				t.Fatalf("invalid input sent %s %s", capture.method, capture.path)
+			}
+		})
 	}
 }
 
 func TestPRMergeSurfacesDaemonError(t *testing.T) {
-	cfg := setConfigEnv(t)
-	srv, _ := reviewServer(t, http.StatusConflict, `{"message":"PR is not mergeable","code":"PR_NOT_MERGEABLE","requestId":"req-1"}`)
-	writeRunFileFor(t, cfg, srv)
-
-	_, _, err := executeCLI(t, aliveDeps(), "pr", "merge", "42")
-	if got := ExitCode(err); got != 1 {
-		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
-	}
-	for _, want := range []string{"PR is not mergeable", "PR_NOT_MERGEABLE", "req-1"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("err = %q, want %q", err, want)
-		}
+	for _, tt := range []struct {
+		name    string
+		status  int
+		message string
+		code    string
+	}{
+		{"head changed", http.StatusConflict, "PR head changed; refresh before merging", "PR_HEAD_CHANGED"},
+		{"not mergeable", http.StatusConflict, "PR is not mergeable", "PR_NOT_MERGEABLE"},
+		{"preconditions", http.StatusUnprocessableEntity, "PR merge preconditions are not met", "PR_PRECONDITIONS_UNMET"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			body, err := json.Marshal(map[string]string{"message": tt.message, "code": tt.code, "requestId": "req-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv, _ := reviewServer(t, tt.status, string(body))
+			writeRunFileFor(t, cfg, srv)
+			out, _, err := executeCLI(t, aliveDeps(), "pr", "merge", "42", "--pr-url", testMergePRURL, "--expected-head", testMergeHead)
+			if got := ExitCode(err); got != 1 {
+				t.Fatalf("exit code = %d, want 1; err=%v", got, err)
+			}
+			for _, want := range []string{tt.message, tt.code, "req-1"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("err = %q, want %q", err, want)
+				}
+			}
+			if out != "" {
+				t.Fatalf("stdout = %q on failed merge", out)
+			}
+		})
 	}
 }
 
