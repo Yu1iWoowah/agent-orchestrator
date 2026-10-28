@@ -12181,3 +12181,40 @@ func TestResumeAgent_RuntimeFailureNamesRelaunchStep(t *testing.T) {
 		t.Fatalf("resume error = %v, want RelaunchError step runtime", err)
 	}
 }
+
+type replyLanguageSource struct {
+	language string
+	err      error
+}
+
+func (s *replyLanguageSource) ReplyLanguage(context.Context) (string, error) {
+	return s.language, s.err
+}
+
+func TestReplyLanguageReadAtEachPromptBuild(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		for _, chat := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/chat=%t", kind, chat), func(t *testing.T) {
+				st := newFakeStore()
+				st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: t.TempDir()}
+				source := &replyLanguageSource{}
+				m := New(Deps{Store: st, ReplyLanguage: source})
+				before, err := m.buildSystemPrompt(ctx, kind, "mer", "mer-1", "", chat)
+				if err != nil {
+					t.Fatal(err)
+				}
+				source.language = "zh-TW"
+				after, err := m.buildSystemPrompt(ctx, kind, "mer", "mer-1", "", chat)
+				if err != nil || !strings.Contains(after, "Traditional Chinese (zh-TW)") {
+					t.Fatalf("language missing: %v", err)
+				}
+				source.language = ""
+				disabled, err := m.buildSystemPrompt(ctx, kind, "mer", "mer-1", "", chat)
+				if err != nil || disabled != before {
+					t.Fatalf("disabled prompt changed: %v", err)
+				}
+			})
+		}
+	}
+}

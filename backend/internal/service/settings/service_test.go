@@ -19,6 +19,9 @@ func (*hibernationSettingsStore) SetDefaultSessionMode(context.Context, domain.S
 	return nil
 }
 func (*hibernationSettingsStore) SetCloudOffering(context.Context, bool, time.Time) error { return nil }
+func (*hibernationSettingsStore) SetReplyLanguage(context.Context, string, time.Time) error {
+	return nil
+}
 func (*hibernationSettingsStore) SetVersionRefresh(context.Context, bool, time.Time) error {
 	return nil
 }

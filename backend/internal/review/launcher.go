@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
@@ -65,6 +67,7 @@ type Launcher interface {
 
 // LaunchSpec is the engine's request to (re)launch a reviewer for one pass.
 type LaunchSpec struct {
+	ReplyLanguage   string
 	RunID           string
 	BatchID         string
 	ReviewSessionID string
@@ -153,13 +156,14 @@ type reviewerRuntime interface {
 // runtime. The reviewer reuses the worker's worktree (a fresh session worktree
 // would branch off the default branch and so would not contain the PR changes).
 type agentLauncher struct {
-	reviewers  ports.ReviewerResolver
-	runtime    reviewerRuntime
-	dataDir    string
-	runFile    string
-	auth       agentAuthResolver
-	executable func() (string, error)
-	chat       ReviewerChatController
+	replyLanguage settingssvc.ReplyLanguageSource
+	reviewers     ports.ReviewerResolver
+	runtime       reviewerRuntime
+	dataDir       string
+	runFile       string
+	auth          agentAuthResolver
+	executable    func() (string, error)
+	chat          ReviewerChatController
 }
 
 type preLaunchReviewer interface {
@@ -208,6 +212,11 @@ func WithRunFilePath(path string) LauncherOption {
 	return func(l *agentLauncher) {
 		l.runFile = path
 	}
+}
+
+// WithReplyLanguage reads the global preference at reviewer launch or restore.
+func WithReplyLanguage(source settingssvc.ReplyLanguageSource) LauncherOption {
+	return func(l *agentLauncher) { l.replyLanguage = source }
 }
 
 // NewLauncher builds the production reviewer launcher.
@@ -342,9 +351,22 @@ func (l *agentLauncher) invocation(spec LaunchSpec) ports.ReviewInvocation {
 // Reviewer panes are shared by desktop, mobile, and direct runtime attaches,
 // so keeping the full text out of the PTY is the only device-independent way
 // to hide it.
-func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec) (ports.ReviewInvocation, error) {
+func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec, launching bool) (ports.ReviewInvocation, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.ReviewInvocation{}, err
+	}
+	if launching && l.replyLanguage != nil {
+		language, err := l.replyLanguage.ReplyLanguage(ctx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ports.ReviewInvocation{}, ctxErr
+			}
+			slog.WarnContext(ctx, "reply language preference read failed; continuing without language instructions",
+				"workerID", spec.WorkerID, "error", err)
+			spec.ReplyLanguage = ""
+		} else {
+			spec.ReplyLanguage = language
+		}
 	}
 	inv := l.invocation(spec)
 	if strings.TrimSpace(l.dataDir) == "" {
@@ -372,8 +394,12 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec) 
 	systemPrompt := strings.TrimRight(inv.SystemPrompt, "\n") + "\n\n" +
 		"AO stores each review task in an immutable file. Whenever AO asks you to start a review task, " +
 		"read the exact file path in that request first and follow it completely.\n"
-	if err := os.WriteFile(systemPath, []byte(systemPrompt), 0o600); err != nil {
-		return ports.ReviewInvocation{}, fmt.Errorf("write reviewer system prompt: %w", err)
+	// A notification only queues a task for the existing process. Keep that
+	// process's standing instructions frozen until its next launch or restore.
+	if launching {
+		if err := os.WriteFile(systemPath, []byte(systemPrompt), 0o600); err != nil {
+			return ports.ReviewInvocation{}, fmt.Errorf("write reviewer system prompt: %w", err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return ports.ReviewInvocation{}, err
@@ -386,11 +412,23 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec) 
 	return inv, nil
 }
 
-func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvocation, error) {
+func (l *agentLauncher) prepareIdleInvocation(ctx context.Context, spec LaunchSpec) (ports.ReviewInvocation, error) {
 	promptRoot := filepath.Join(l.dataDir, "prompts", string(spec.WorkerID), "reviewer")
 	systemPath := filepath.Join(promptRoot, "system.md")
 	systemPrompt := reviewSystemPrompt() + "\n\n" +
 		"AO may restore your terminal before a new review task exists. In that state, wait for AO to send a review task file path before reviewing or submitting results.\n"
+	if l.replyLanguage != nil {
+		language, err := l.replyLanguage.ReplyLanguage(ctx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ports.ReviewInvocation{}, ctxErr
+			}
+			slog.WarnContext(ctx, "reply language preference read failed; continuing without language instructions",
+				"workerID", spec.WorkerID, "error", err)
+		} else if section := settingssvc.ReplyLanguagePrompt(language); section != "" {
+			systemPrompt += "\n\n" + section
+		}
+	}
 	if err := os.MkdirAll(promptRoot, 0o700); err != nil {
 		return ports.ReviewInvocation{}, fmt.Errorf("create reviewer prompt directory: %w", err)
 	}
@@ -454,7 +492,7 @@ func truncateReviewHistoryBody(body string) string {
 }
 
 func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (LaunchResult, error) {
-	inv, err := l.prepareInvocation(ctx, spec)
+	inv, err := l.prepareInvocation(ctx, spec, true)
 	if err != nil {
 		return LaunchResult{}, err
 	}
@@ -471,7 +509,7 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (LaunchResul
 }
 
 func (l *agentLauncher) RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error) {
-	inv, err := l.prepareIdleInvocation(spec)
+	inv, err := l.prepareIdleInvocation(ctx, spec)
 	if err != nil {
 		return LaunchResult{}, err
 	}
@@ -746,7 +784,7 @@ func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec Launch
 	if !ok {
 		return fmt.Errorf("no reviewer adapter for harness %q", spec.Harness)
 	}
-	inv, err := l.prepareInvocation(ctx, spec)
+	inv, err := l.prepareInvocation(ctx, spec, false)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,7 @@
 {
+	"settings.replyLanguage.label": "에이전트 응답 언어",
+	"settings.replyLanguage.off": "끄기",
+	"settings.replyLanguage.description": "인터페이스 언어와 별도로 설정됩니다. 새로 시작하거나 재개 또는 재시작한 에이전트에 적용됩니다. 실행 중인 에이전트는 기존 지침을 유지합니다.",
 	"sideChat.closingTab": "닫는 중",
 	"sideChat.closing": "사이드 채팅을 닫는 중입니다. 종료가 확인되면 사라집니다.",
 	"sideChat.retryClose": "닫기 재시도",

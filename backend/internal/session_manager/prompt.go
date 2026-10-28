@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 )
 
 type sessionPromptRole string
@@ -33,6 +35,7 @@ type taskPromptConfig struct {
 }
 
 type systemPromptConfig struct {
+	ReplyLanguage         string
 	Role                  sessionPromptRole
 	Standalone            bool
 	Project               promptProject
@@ -104,6 +107,9 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 		if section := strings.TrimSpace(section); section != "" {
 			sections = append(sections, section)
 		}
+	}
+	if language := settingssvc.ReplyLanguagePrompt(cfg.ReplyLanguage); language != "" {
+		sections = append(sections, language)
 	}
 	return strings.Join(sections, "\n\n")
 }

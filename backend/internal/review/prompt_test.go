@@ -64,3 +64,21 @@ func TestReviewPromptRequiresInlineCommentsForRequiredChanges(t *testing.T) {
 		t.Fatalf("review prompt still makes inline comments optional:\n%s", prompt)
 	}
 }
+
+func TestReviewerReplyLanguagePrompt(t *testing.T) {
+	spec := launchSpec()
+	originalTask, originalSystem := reviewTexts(spec)
+	spec.ReplyLanguage = "zh-TW"
+	task, system := reviewTexts(spec)
+	if task != originalTask {
+		t.Fatal("language preference changed review task")
+	}
+	if !strings.Contains(system, "Traditional Chinese (zh-TW)") {
+		t.Fatal("reviewer missing reply language")
+	}
+	spec.ReplyLanguage = ""
+	_, system = reviewTexts(spec)
+	if system != originalSystem {
+		t.Fatal("disabled preference changed reviewer prompt")
+	}
+}

@@ -15,6 +15,7 @@ import (
 
 // SettingsService is the controller-facing preferences contract.
 type SettingsService interface {
+	SetReplyLanguage(ctx context.Context, language string) (settingssvc.Snapshot, error)
 	Get(ctx context.Context) (settingssvc.Snapshot, error)
 	SetDefaultSessionMode(ctx context.Context, mode domain.SessionMode) (settingssvc.Snapshot, error)
 	SetCloudOffering(ctx context.Context, enabled bool) (settingssvc.Snapshot, error)
@@ -37,6 +38,7 @@ type SettingsController struct {
 // Register mounts the settings routes.
 func (c *SettingsController) Register(r chi.Router) {
 	r.Get("/settings", c.get)
+	r.Patch("/settings/reply-language", c.setReplyLanguage)
 	r.Patch("/settings/session-interface", c.setSessionInterface)
 	r.Patch("/settings/cloud-offering", c.setCloudOffering)
 	r.Patch("/settings/chat-hibernation", c.setChatHibernation)
@@ -160,6 +162,7 @@ func (c *SettingsController) response(snapshot settingssvc.Snapshot) SettingsRes
 	}
 	offering := c.Svc.Offering()
 	return SettingsResponse{
+		ReplyLanguage:          snapshot.ReplyLanguage,
 		DefaultSessionMode:     string(snapshot.DefaultSessionMode),
 		HarnessDefaults:        snapshot.HarnessDefaults,
 		ChatHarnesses:          names,
@@ -195,6 +198,31 @@ func (c *SettingsController) setHarnessDefault(w http.ResponseWriter, r *http.Re
 	}
 	if errors.Is(err, settingssvc.ErrInvalidHarnessDefault) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "HARNESS_DEFAULT_INVALID", err.Error(), nil)
+		return
+	}
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, c.response(snapshot))
+}
+
+func (c *SettingsController) setReplyLanguage(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PATCH", "/api/v1/settings/reply-language")
+		return
+	}
+	var req UpdateReplyLanguageRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	if req.ReplyLanguage == nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "REPLY_LANGUAGE_INVALID", "replyLanguage is required; use an empty string to disable", nil)
+		return
+	}
+	snapshot, err := c.Svc.SetReplyLanguage(r.Context(), *req.ReplyLanguage)
+	if errors.Is(err, settingssvc.ErrInvalidReplyLanguage) {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "REPLY_LANGUAGE_INVALID", err.Error(), nil)
 		return
 	}
 	if err != nil {

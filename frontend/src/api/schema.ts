@@ -4109,6 +4109,23 @@ export interface paths {
         patch: operations["updateHarnessDefault"];
         trace?: never;
     };
+    "/api/v1/settings/reply-language": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Choose the reply language for newly started or resumed agents */
+        patch: operations["updateReplyLanguage"];
+        trace?: never;
+    };
     "/api/v1/settings/session-interface": {
         parameters: {
             query?: never;
@@ -7292,6 +7309,11 @@ export interface components {
                 [key: string]: components["schemas"]["HarnessDefault"];
             };
             localEnabled: boolean;
+            /**
+             * @description Agent reply language, independent of UI locale. Empty disables injection. Applies at spawn, resume and restart.
+             * @enum {string}
+             */
+            replyLanguage: "" | "de" | "en" | "es" | "fr" | "ja" | "ko" | "pt-BR" | "zh-CN" | "zh-TW";
             trackerIntakeEnabled: boolean;
             /** @description After a harness update, idle open sessions restart on the new release instead of running the old one until they happen to restart. */
             versionRefresh: boolean;
@@ -7768,6 +7790,10 @@ export interface components {
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
             displayName: string;
+        };
+        UpdateReplyLanguageRequest: {
+            /** @enum {null|string} */
+            replyLanguage: "" | "de" | "en" | "es" | "fr" | "ja" | "ko" | "pt-BR" | "zh-CN" | "zh-TW" | null;
         };
         UpdateSessionInterfaceRequest: {
             /** @enum {string} */
@@ -23380,6 +23406,57 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateReplyLanguage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateReplyLanguageRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -394,3 +394,26 @@ func TestBuildSystemPrompt_WorkerNativeReviewFollowsProjectPolicy(t *testing.T) 
 		t.Fatalf("a project with no remote has no PRs to review:\n%s", local)
 	}
 }
+
+func TestReplyLanguagePrompt(t *testing.T) {
+	for _, role := range []sessionPromptRole{sessionPromptRoleWorker, sessionPromptRoleOrchestrator} {
+		t.Run(string(role), func(t *testing.T) {
+			cfg := systemPromptConfig{Role: role, AdditionalSections: []string{"last standing section"}}
+			original := buildSystemPromptText(cfg)
+			cfg.ReplyLanguage = "zh-TW"
+			got := buildSystemPromptText(cfg)
+			for _, want := range []string{"Traditional Chinese (zh-TW)", "every reply", "ao report", "code, paths, commands and identifiers"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("prompt missing %q", want)
+				}
+			}
+			if strings.Index(got, "Traditional Chinese") < strings.Index(got, "last standing section") {
+				t.Fatal("language preference must be last")
+			}
+			cfg.ReplyLanguage = ""
+			if got := buildSystemPromptText(cfg); got != original {
+				t.Fatal("disabled preference changed existing prompt")
+			}
+		})
+	}
+}

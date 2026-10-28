@@ -3577,6 +3577,7 @@ type SetConversationTitleResponse struct {
 
 // SettingsResponse is the daemon-owned preference set.
 type SettingsResponse struct {
+	ReplyLanguage string `json:"replyLanguage" enum:",de,en,es,fr,ja,ko,pt-BR,zh-CN,zh-TW" description:"Agent reply language, independent of UI locale. Empty disables injection. Applies at spawn, resume and restart."`
 	// HarnessDefaults are per-harness picker preferences, keyed by harness id.
 	HarnessDefaults map[string]domain.HarnessDefault `json:"harnessDefaults,omitempty"`
 	// DefaultSessionMode applies to sessions created from now on. Changing it
@@ -3628,6 +3629,11 @@ type UpdateHarnessDefaultRequest struct {
 type UpdateCloudOfferingRequest struct {
 	// Enabled turns the cloud offering on or off for this machine's user.
 	Enabled *bool `json:"enabled"`
+}
+
+// UpdateReplyLanguageRequest selects a global agent reply language; empty disables injection.
+type UpdateReplyLanguageRequest struct {
+	ReplyLanguage *string `json:"replyLanguage" required:"true" enum:",de,en,es,fr,ja,ko,pt-BR,zh-CN,zh-TW"`
 }
 
 // UpdateVersionRefreshRequest flips whether open sessions move to new harness releases.

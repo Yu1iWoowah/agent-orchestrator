@@ -18,6 +18,7 @@ import (
 // AppSettings is the durable preference set. Field-compatible with
 // service/settings.Snapshot, which the daemon wiring adapts.
 type AppSettings struct {
+	ReplyLanguage   string
 	HarnessDefaults map[string]domain.HarnessDefault
 	// DefaultSessionMode is the interface a new session gets when the spawn does
 	// not name one. Never applied to an existing session: only an explicit
@@ -44,6 +45,7 @@ func (s *Store) GetAppSettings(ctx context.Context) (AppSettings, error) {
 		return AppSettings{}, fmt.Errorf("read harness defaults: %w", err)
 	}
 	return AppSettings{
+		ReplyLanguage:   row.ReplyLanguage,
 		HarnessDefaults: defaults,
 		// Normalized on read: a value written by a build that knows a mode this
 		// one does not must still resolve to something dispatchable.
@@ -110,4 +112,14 @@ func (s *Store) SetHarnessDefault(ctx context.Context, agent domain.AgentHarness
 		return err
 	}
 	return s.qw.SetHarnessDefault(ctx, gen.SetHarnessDefaultParams{HarnessPath: path, Config: string(data), UpdatedAt: now})
+}
+
+// SetReplyLanguage persists the global language preference independently of UI locale.
+func (s *Store) SetReplyLanguage(ctx context.Context, language string, now time.Time) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.SetReplyLanguage(ctx, gen.SetReplyLanguageParams{ReplyLanguage: language, UpdatedAt: now}); err != nil {
+		return fmt.Errorf("set reply language: %w", err)
+	}
+	return nil
 }
