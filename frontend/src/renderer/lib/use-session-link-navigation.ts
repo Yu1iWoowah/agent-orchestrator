@@ -6,7 +6,7 @@ import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSummary } from "../types/workspace";
 import { LOCAL_HOST } from "./hosts";
 import { useNavigateToSession } from "./navigate-to-session";
-import { parseArtifactLink, parseSessionLink, resolveSessionLink } from "./session-links";
+import { parseArtifactLink, parseProjectDocumentLink, parseSessionLink, resolveSessionLink } from "./session-links";
 
 export type SessionLinkSource = {
 	ready: boolean;
@@ -62,9 +62,19 @@ export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cl
 	const source = useSessionLinkSource(sourceHostId, sourceKind);
 	const navigateToSession = useNavigateToSession();
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
+	const setProjectDocumentTarget = useUiStore((state) => state.setProjectDocumentTarget);
 	const requestWorkspaceFileOpen = useUiStore((state) => state.requestWorkspaceFileOpen);
 	return useCallback((url: string) => {
-		const artifact = parseArtifactLink(url);
+		const document = parseProjectDocumentLink(url);
+  if (document) {
+   if (remoteHostId || sourceKind === "cloud" || !source.ready || !source.workspaces.some((project) => project.id === document.projectId)) {
+    showGlobalToast("This project document is unavailable on this connection.", undefined, { tone: "error", placement: "top-center", dismissible: true, dedupeKey: "project-document:error" });
+    return false;
+   }
+   setProjectDocumentTarget(document);
+   return true;
+  }
+  const artifact = parseArtifactLink(url);
 		const target = parseSessionLink(url) ?? artifact;
 		if (!target) {
 			showGlobalToast("This AO session link is malformed or unsupported.", undefined, {
@@ -108,5 +118,5 @@ export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cl
 		if (remoteHostId) navigateToSession(resolved.projectId, resolved.sessionId, remoteHostId);
 		else navigateToSession(resolved.projectId, resolved.sessionId);
 		return true;
-	}, [navigateToSession, remoteHostId, requestWorkspaceFileOpen, showGlobalToast, source, sourceKind]);
+	}, [setProjectDocumentTarget, navigateToSession, remoteHostId, requestWorkspaceFileOpen, showGlobalToast, source, sourceKind]);
 }

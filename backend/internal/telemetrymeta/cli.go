@@ -28,6 +28,9 @@ var routineInternalCLICommands = []string{
 	"ao session history",
 	"ao project ls",
 	"ao project get",
+	"ao project documents info",
+	"ao project documents read",
+	"ao project documents download",
 	"ao orchestrator ls",
 	"ao hooks",
 	"ao pty-host",
@@ -76,6 +79,13 @@ var legacyActorlessSystemCLICommands = map[string]struct{}{
 }
 
 var legacyActorlessUserCLICommands = map[string]struct{}{
+	"ao project documents":          {},
+	"ao project documents info":     {},
+	"ao project documents read":     {},
+	"ao project documents download": {},
+	"ao project documents write":    {},
+	"ao project documents adopt":    {},
+
 	"ao agent":                  {},
 	"ao agent ls":               {},
 	"ao automation":             {},

@@ -107,7 +107,14 @@ type containerReapConfig struct {
 // projectConfig mirrors the daemon's typed domain.ProjectConfig for the CLI
 // client. The CLI sets common fields via flags and the whole object via
 // --config-json.
+type orchestratorHandoffConfig struct {
+	SharedDir    string `json:"sharedDir,omitempty"`
+	DocumentPath string `json:"documentPath,omitempty"`
+}
+
 type projectConfig struct {
+	OrchestratorHandoff orchestratorHandoffConfig `json:"orchestratorHandoff,omitempty,omitzero"`
+
 	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`
 	CanonicalRepoURL  string               `json:"canonicalRepoURL,omitempty"`
 	DefaultBranch     string               `json:"defaultBranch,omitempty"`
@@ -183,6 +190,7 @@ func newProjectCommand(ctx *commandContext) *cobra.Command {
 		Use:   "project",
 		Short: "Manage projects",
 	}
+	cmd.AddCommand(newProjectDocumentsCommand(ctx))
 	cmd.AddCommand(newProjectListCommand(ctx))
 	cmd.AddCommand(newProjectGetCommand(ctx))
 	cmd.AddCommand(newProjectAddCommand(ctx))

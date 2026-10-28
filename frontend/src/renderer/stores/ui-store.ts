@@ -1,3 +1,4 @@
+import type { ProjectDocumentTarget } from "../lib/session-links";
 import { create } from "zustand";
 import { aoBridge } from "../lib/bridge";
 import { developerModeStorageKey, windowTranslucencyStorageKey } from "../lib/window-translucency";
@@ -197,6 +198,8 @@ export type UiState = {
 	newTaskRequest: { projectId: string; hostId?: string; nonce: number } | null;
 	/** Transient one-shot request to reveal a path in a session's existing Files UI. */
 	workspaceFileOpenRequest: WorkspaceFileOpenRequest | null;
+ projectDocumentTarget: ProjectDocumentTarget | null;
+ setProjectDocumentTarget: (target: ProjectDocumentTarget | null) => void;
 	chatMessageFocusRequest: ChatMessageFocusRequest | null;
 	// Bumps to ask the sidebar's create-project flow to open (the ⌘N fallback
 	// when no project is in scope).
@@ -407,6 +410,8 @@ export const useUiStore = create<UiState>((set, get) => ({
 	globalToastSequence: 0,
 	newTaskRequest: null,
 	workspaceFileOpenRequest: null,
+ projectDocumentTarget: null,
+ setProjectDocumentTarget: (target) => set({ projectDocumentTarget: target }),
 	chatMessageFocusRequest: null,
 	createProjectNonce: 0,
 	folderDropRequest: null,

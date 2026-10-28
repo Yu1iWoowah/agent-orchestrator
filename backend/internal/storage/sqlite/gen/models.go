@@ -588,6 +588,12 @@ type Project struct {
 	Kind          string
 }
 
+type ProjectDocumentState struct {
+	ProjectID string
+	Revision  int64
+	StateJson string
+}
+
 type Report struct {
 	ID                 string
 	SessionID          string

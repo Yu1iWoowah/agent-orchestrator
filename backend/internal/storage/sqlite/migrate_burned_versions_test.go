@@ -20,6 +20,8 @@ import (
 // session list). Renaming, renumbering, or deleting a shipped migration
 // produces exactly that class of failure, so this list is append-only.
 var shippedMigrations = map[int64]string{
+	20261027182945073: "20261027182945073_project_documents.sql",
+
 	1:   "0001_init.sql",
 	2:   "0002_remove_activity_source.sql",
 	3:   "0003_add_session_display_name.sql",

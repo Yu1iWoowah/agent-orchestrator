@@ -156,7 +156,24 @@ func schemaName(_ reflect.Type, defaultName string) string {
 // schemaNames is the exhaustive default→clean mapping for every type reflected
 // by projectOperations(). Add an entry when a new contract type is introduced;
 // the drift test fails until the spec is regenerated, which flags the gap.
-var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names include reset-credit contracts; no credential value is stored here.
+//
+//nolint:gosec // Public schema type names are not credential values.
+var schemaNames = map[string]string{
+	"ControllersProjectDocumentsInfoResponse":              "ProjectDocumentsInfoResponse",
+	"ControllersProjectDocumentFileResponse":               "ProjectDocumentFileResponse",
+	"ControllersProjectDocumentLeaseRequest":               "ProjectDocumentLeaseRequest",
+	"ControllersProjectDocumentLeaseResponse":              "ProjectDocumentLeaseResponse",
+	"ControllersProjectDocumentWriteRequest":               "ProjectDocumentWriteRequest",
+	"ControllersProjectDocumentAdoptRequest":               "ProjectDocumentAdoptRequest",
+	"ControllersProjectDocumentAdoptResponse":              "ProjectDocumentAdoptResponse",
+	"ProjectdocumentsInfo":                                 "ProjectDocumentsInfo",
+	"ProjectdocumentsFile":                                 "ProjectDocumentFile",
+	"ProjectdocumentsActor":                                "ProjectDocumentActor",
+	"ProjectdocumentsGrant":                                "ProjectDocumentGrant",
+	"ProjectdocumentsLeaseView":                            "ProjectDocumentLease",
+	"DomainProjectDocumentAdoption":                        "ProjectDocumentAdoption",
+	"DomainProjectDocumentEntry":                           "ProjectDocumentEntry",
+	"DomainOrchestratorHandoffConfig":                      "OrchestratorHandoffConfig",
 	"ControllersTelemetryIdentityResponse":                 "TelemetryIdentityResponse",
 	"ControllersAgentAccountIDParam":                       "AgentAccountIDParam",
 	"ControllersAgentAccountLoginIDParam":                  "AgentAccountLoginIDParam",
@@ -732,6 +749,7 @@ func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
+	ops = append(ops, projectDocumentOperations()...)
 	ops = append(ops, sessionOperations()...)
 	ops = append(ops, automationOperations()...)
 	ops = append(ops, prOperations()...)
@@ -3757,5 +3775,86 @@ func awakeOperations() []operation {
 		common(http.MethodPost, "/api/v1/awake/recover", "recoverAwake", nil, nil),
 		common(http.MethodDelete, "/api/v1/awake/history", "clearAwakeHistory", nil, nil),
 		common(http.MethodPost, "/api/v1/awake/downloads", "awakeDownloads", controllers.AwakeDownloadsRequest{}, nil),
+	}
+}
+
+func projectDocumentOperations() []operation {
+	return []operation{
+		{method: http.MethodGet, path: "/api/v1/projects/{id}/documents", id: "getProjectDocuments", tag: "projects",
+			summary:    "Describe the shared living documents",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.ProjectDocumentsInfoResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{method: http.MethodGet, path: "/api/v1/projects/{id}/documents/file", id: "getProjectDocument", tag: "projects",
+			summary:    "Read one shared living document",
+			pathParams: []any{controllers.ProjectIDParam{}, controllers.ProjectDocumentPathQuery{}},
+			resps: []respUnit{{http.StatusOK, controllers.ProjectDocumentFileResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{method: http.MethodGet, path: "/api/v1/projects/{id}/documents/files/*", id: "getProjectDocumentFile", tag: "projects",
+			summary:    "Serve a confined shared document without script execution",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			resps: []respUnit{{http.StatusOK, ""},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+			contentTypes: map[int]string{http.StatusOK: "application/octet-stream"},
+		},
+		{method: http.MethodPost, path: "/api/v1/projects/{id}/documents/lease", id: "acquireProjectDocumentLease", tag: "projects",
+			summary:    "Acquire the current orchestrator write lease",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			reqBody:    controllers.ProjectDocumentLeaseRequest{},
+			resps: []respUnit{{http.StatusOK, controllers.ProjectDocumentLeaseResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{method: http.MethodPut, path: "/api/v1/projects/{id}/documents/file", id: "writeProjectDocument", tag: "projects",
+			summary:    "Write a shared document with a lease and expected hash",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			reqBody:    controllers.ProjectDocumentWriteRequest{},
+			resps: []respUnit{{http.StatusOK, controllers.ProjectDocumentFileResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{method: http.MethodPost, path: "/api/v1/projects/{id}/documents/adopt", id: "adoptProjectDocuments", tag: "projects",
+			summary:    "Adopt legacy living files once without overwriting",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			reqBody:    controllers.ProjectDocumentAdoptRequest{},
+			resps: []respUnit{{http.StatusOK, controllers.ProjectDocumentAdoptResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
 	}
 }

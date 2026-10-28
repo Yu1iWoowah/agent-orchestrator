@@ -225,6 +225,11 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		_, _ = io.CopyN(io.Discard, resp.Body, maxDrainedBodyBytes)
 		return nil
 	}
+	// A streaming caller receives the successful response bytes directly.
+	if writer, ok := out.(io.Writer); ok {
+		_, err := io.Copy(writer, resp.Body)
+		return err
+	}
 	// A 204 carries no body by contract; a zero-value out is the legitimate
 	// result. Any other 2xx with a required decoded result must carry a
 	// JSON document — an empty body is a broken contract, not success.

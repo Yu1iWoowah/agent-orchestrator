@@ -6,6 +6,8 @@ import (
 	"sort"
 	"time"
 
+	projectdocs "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/devimport"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/legacyimport"
@@ -3904,4 +3906,40 @@ type SwitchSessionAgentAccountRequest struct {
 	// StopTurn cancels a turn in progress, for an agent stuck waiting on the old
 	// account's limit. Otherwise the move waits for the turn to finish.
 	StopTurn bool `json:"stopTurn,omitempty"`
+}
+
+// ProjectDocumentsInfoResponse describes living files independently of sessions.
+type ProjectDocumentsInfoResponse struct {
+	Documents projectdocs.Info `json:"documents"`
+}
+
+// ProjectDocumentFileResponse returns bounded file content and its hash.
+type ProjectDocumentFileResponse struct {
+	File projectdocs.File `json:"file"`
+}
+
+// ProjectDocumentLeaseRequest authenticates the current orchestrator.
+type ProjectDocumentLeaseRequest struct {
+	Actor projectdocs.Actor `json:"actor"`
+}
+
+// ProjectDocumentLeaseResponse returns the private writer grant.
+type ProjectDocumentLeaseResponse struct {
+	Lease projectdocs.Grant `json:"lease"`
+}
+
+// ProjectDocumentWriteRequest requires an expected hash and writer lease.
+type ProjectDocumentWriteRequest projectdocs.WriteInput
+
+// ProjectDocumentAdoptRequest selects the legacy source for one-time adoption.
+type ProjectDocumentAdoptRequest projectdocs.AdoptInput
+
+// ProjectDocumentAdoptResponse returns the durable adoption receipt.
+type ProjectDocumentAdoptResponse struct {
+	Adoption domain.ProjectDocumentAdoption `json:"adoption"`
+}
+
+// ProjectDocumentPathQuery selects a relative file within the shared root.
+type ProjectDocumentPathQuery struct {
+	Path string `query:"path" required:"true"`
 }

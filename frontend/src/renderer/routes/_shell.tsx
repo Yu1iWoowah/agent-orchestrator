@@ -1,3 +1,4 @@
+import { ProjectDocumentViewer } from "../components/ProjectDocumentViewer";
 import { useWindowZoomFactor } from "../hooks/useWindowZoomFactor";
 import { AppBrowserLinkContext } from "../components/AppLink";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
@@ -1630,6 +1631,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 						zoomFactor={windowZoomFactor}
 					/>
 				</SidebarProvider>
+				<ProjectDocumentViewer />
 				<OrchestratorReplacementDialog
 					pending={Boolean(replacementErrorProjectId && restartingProjectIds.has(replacementErrorProjectId))}
 					pendingCount={replacementErrorCount}

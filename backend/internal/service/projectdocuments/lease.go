@@ -1,0 +1,150 @@
+package projectdocuments
+
+import (
+	"context"
+	"crypto/subtle"
+	"strconv"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+)
+
+func (s *Service) authorize(ctx context.Context, id domain.ProjectID, a Actor) (domain.SessionRecord, error) {
+	rec, ok, err := s.store.GetSession(ctx, a.SessionID)
+	if err != nil {
+		return rec, err
+	}
+	if !ok || rec.ProjectID != id || rec.IsTerminated || rec.Kind != domain.KindOrchestrator || s.capabilities == nil || !s.capabilities.Valid(rec.ID, a.Capability, rec.Metadata.BrowserCapabilityVerifier) {
+		return rec, apierr.Forbidden("PROJECT_DOCUMENT_WRITER_REQUIRED", "Only the current orchestrator capability may write project documents")
+	}
+	sessions, err := s.store.ListSessions(ctx, id)
+	if err != nil {
+		return rec, err
+	}
+	for _, other := range sessions {
+		if other.Kind == domain.KindOrchestrator && !other.IsTerminated && other.ID != rec.ID {
+			return rec, conflict("PROJECT_DOCUMENT_OWNER_AMBIGUOUS", "More than one orchestrator is active")
+		}
+	}
+	if rec.Mode == domain.SessionModeChat && rec.Metadata.ControllerGeneration == "" || rec.Mode != domain.SessionModeChat && rec.Metadata.RuntimeLaunchID == "" {
+		return rec, conflict("PROJECT_DOCUMENT_CONTROLLER_UNAVAILABLE", "The current controller identity is not ready")
+	}
+	return rec, nil
+}
+func (s *Service) validate(ctx context.Context, id domain.ProjectID, a Actor, g Grant, state domain.ProjectDocumentState, allowFrozen bool) error {
+	rec, err := s.authorize(ctx, id, a)
+	if err != nil {
+		return err
+	}
+	lease := state.Lease
+	if lease == nil || lease.SessionID != rec.ID || lease.Owner != rec.ControllerOwner() || lease.Epoch != g.Epoch || subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(g.Token)))) != 1 || g.Token == "" {
+		return apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "The writer lease is stale or invalid")
+	}
+	if lease.Frozen && !allowFrozen {
+		return conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen for handoff")
+	}
+	return nil
+}
+
+func grantFor(id domain.ProjectID, a Actor, epoch int64) Grant {
+	return Grant{Epoch: epoch, Token: hash([]byte("AO-project-documents\x00" + string(id) + "\x00" + string(a.SessionID) + "\x00" + strconv.FormatInt(epoch, 10) + "\x00" + a.Capability))}
+}
+
+// Acquire returns the current controller lease without stealing a prior owner.
+func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Grant, error) {
+	unlock := s.lock(id)
+	defer unlock()
+	rec, err := s.authorize(ctx, id, a)
+	if err != nil {
+		return Grant{}, err
+	}
+	state, root, _, err := s.state(ctx, id)
+	if err != nil {
+		return Grant{}, err
+	}
+	epoch := int64(1)
+	if lease := state.Lease; lease != nil {
+		if lease.Frozen {
+			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen")
+		}
+		if lease.SessionID != rec.ID {
+			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_HELD", "A previous orchestrator still owns the project lease")
+		}
+		if lease.Owner == rec.ControllerOwner() {
+			grant := grantFor(id, a, lease.Epoch)
+			if subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(grant.Token)))) != 1 {
+				return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Controller capability no longer matches the lease")
+			}
+			return grant, nil
+		}
+		epoch = lease.Epoch + 1
+	}
+	grant := grantFor(id, a, epoch)
+	if err := s.ensureRoot(root); err != nil {
+		return Grant{}, err
+	}
+	state.Lease = &domain.ProjectDocumentLease{SessionID: rec.ID, Owner: rec.ControllerOwner(), Epoch: epoch, TokenHash: hash([]byte(grant.Token))}
+	if err := s.save(ctx, id, &state); err != nil {
+		return Grant{}, err
+	}
+	return grant, nil
+}
+
+// Freeze drains managed writes and durably fences the source lease.
+func (s *Service) Freeze(ctx context.Context, id domain.ProjectID, a Actor, g Grant) error {
+	unlock := s.lock(id)
+	defer unlock()
+	state, _, _, err := s.state(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.validate(ctx, id, a, g, state, true); err != nil {
+		return err
+	}
+	if state.Lease.Frozen {
+		return nil
+	}
+	state.Lease.Frozen = true
+	return s.save(ctx, id, &state)
+}
+
+// Transfer is the internal handoff boundary. Call only after conclusive source
+// retirement and successor verification; it never steals an unfrozen lease.
+func (s *Service) Transfer(ctx context.Context, id domain.ProjectID, previous Grant, target Actor) (Grant, error) {
+	unlock := s.lock(id)
+	defer unlock()
+	state, _, _, err := s.state(ctx, id)
+	if err != nil {
+		return Grant{}, err
+	}
+	old := state.Lease
+	if old == nil || !old.Frozen || old.Epoch != previous.Epoch || subtle.ConstantTimeCompare([]byte(old.TokenHash), []byte(hash([]byte(previous.Token)))) != 1 {
+		return Grant{}, conflict("PROJECT_DOCUMENT_TRANSFER_STALE", "Frozen predecessor lease is required")
+	}
+	source, ok, err := s.store.GetSession(ctx, old.SessionID)
+	if err != nil {
+		return Grant{}, err
+	}
+	if !ok || !source.IsTerminated {
+		return Grant{}, conflict("PROJECT_DOCUMENT_SOURCE_NOT_RETIRED", "The predecessor has not retired")
+	}
+	rec, err := s.authorize(ctx, id, target)
+	if err != nil {
+		return Grant{}, err
+	}
+	grant := grantFor(id, target, old.Epoch+1)
+	state.Lease = &domain.ProjectDocumentLease{SessionID: rec.ID, Owner: rec.ControllerOwner(), Epoch: old.Epoch + 1, TokenHash: hash([]byte(grant.Token))}
+	if err := s.save(ctx, id, &state); err != nil {
+		return Grant{}, err
+	}
+	return grant, nil
+}
+
+// revalidateWriter runs under the project coordinator immediately before publishing.
+func (s *Service) revalidateWriter(ctx context.Context, id domain.ProjectID, actor Actor, grant Grant) error {
+	current, _, _, err := s.state(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.validate(ctx, id, actor, grant, current, false)
+}
