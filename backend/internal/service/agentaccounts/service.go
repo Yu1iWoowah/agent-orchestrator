@@ -589,7 +589,7 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 		return "", nil, err
 	}
 	if err := provider.Prepare(op.home); err != nil {
-		s.log.Warn("prepare account folder", "account", op.id, "error", err)
+		s.log.Warn("prepare account folder", "account", op.id, "reasonCode", "account_prepare_failed")
 	}
 	s.endLogin(ctx, op, false)
 	s.read(ctx, account)

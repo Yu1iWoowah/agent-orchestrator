@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -56,11 +58,14 @@ var _ ports.AgentAccountProviderCLI = (*Codex)(nil)
 func (*Codex) Provider() domain.AgentAccountProvider { return domain.AgentAccountProviderCodex }
 
 // LaunchEnv points Codex at home.
-func (*Codex) LaunchEnv(home string) map[string]string {
+func (c *Codex) LaunchEnv(home string) map[string]string {
 	if home == "" {
 		return nil
 	}
 	env := map[string]string{"CODEX_HOME": home}
+	if managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
+		env[agentlaunch.ManagedCodexAccountEnv] = "1"
+	}
 	neutralize(env, codexCredentialEnv...)
 	return env
 }
@@ -72,15 +77,23 @@ func (c *Codex) LoginArgv(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{bin, "-c", `cli_auth_credentials_store="file"`, "login", "--device-auth"}, nil
+	argv := []string{bin}
+	if runtime.GOOS == "linux" {
+		argv = append(argv, "-c", `cli_auth_credentials_store="file"`)
+	}
+	return append(argv, "login", "--device-auth"), nil
 }
 
 func (c *Codex) open(ctx context.Context, home string) (ports.CodexAccountClient, error) {
-	managed := home != ""
-	if !managed {
+	managed := managedCodexAccount(runtime.GOOS, home, c.DeviceHome)
+	if home == "" {
 		home = c.DeviceHome
 	}
 	return c.Accounts.Open(ctx, ports.CodexAccountContext{Home: home, Managed: managed})
+}
+
+func managedCodexAccount(platform, home, deviceHome string) bool {
+	return platform == "linux" && home != "" && home != deviceHome
 }
 
 // Logout asks Codex to sign home out, revocation included.

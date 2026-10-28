@@ -321,7 +321,11 @@ func TestCodexManagedLoginUsesFileCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(argv, " ") != `/fake/codex -c cli_auth_credentials_store="file" login --device-auth` {
+	want := `/fake/codex login --device-auth`
+	if runtime.GOOS == "linux" {
+		want = `/fake/codex -c cli_auth_credentials_store="file" login --device-auth`
+	}
+	if strings.Join(argv, " ") != want {
 		t.Fatalf("managed login can use OS credential storage: %q", argv)
 	}
 }
@@ -341,7 +345,18 @@ func TestCodexManagedProbesUseFileStoreWithoutChangingDevicePolicy(t *testing.T)
 	c := &Codex{Accounts: factory, DeviceHome: "/fake-device"}
 	_, _ = c.Identity(context.Background(), "/fake-managed")
 	_, _ = c.Identity(context.Background(), "")
-	if len(factory.contexts) != 2 || factory.contexts[0].Home != "/fake-managed" || !factory.contexts[0].Managed || factory.contexts[1].Home != "/fake-device" || factory.contexts[1].Managed {
+	if len(factory.contexts) != 2 || factory.contexts[0].Home != "/fake-managed" || factory.contexts[0].Managed != (runtime.GOOS == "linux") || factory.contexts[1].Home != "/fake-device" || factory.contexts[1].Managed {
 		t.Fatalf("wrong credential context: %+v", factory.contexts)
+	}
+}
+
+func TestManagedCodexAccountIsLinuxOnly(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin", "windows"} {
+		for _, home := range []string{"", "/fake-device", "/fake-managed"} {
+			want := platform == "linux" && home == "/fake-managed"
+			if got := managedCodexAccount(platform, home, "/fake-device"); got != want {
+				t.Errorf("managedCodexAccount(%q, %q) = %v, want %v", platform, home, got, want)
+			}
+		}
 	}
 }
