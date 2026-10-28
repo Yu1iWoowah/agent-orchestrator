@@ -21,6 +21,7 @@ afterEach(async () => {
 		// Complete both the handoff and its delayed fade reset before removing
 		// the DOM, so finish() also disconnects every handoff observer.
 		await vi.runAllTimersAsync();
+		expect(vi.getTimerCount()).toBe(0);
 		expect(standIn()).toBeNull();
 		expect(document.documentElement.dataset.modalHandoff).toBeUndefined();
 	} finally {
@@ -31,6 +32,27 @@ afterEach(async () => {
 });
 
 describe("beginModalHandoff", () => {
+	it("leaves no observer that can adopt a backdrop after teardown", ({ onTestFinished }) => {
+		onTestFinished(async () => {
+			// A leaked observer would adopt this backdrop and queue a fade reset.
+			// Keep that post-teardown probe on a controlled clock too.
+			vi.useFakeTimers();
+			try {
+				const later = addOverlay("open");
+				await flushObservers();
+				expect(later.hasAttribute("data-modal-handoff")).toBe(false);
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				await vi.runAllTimersAsync();
+				vi.useRealTimers();
+				document.body.innerHTML = "";
+				delete document.documentElement.dataset.modalHandoff;
+			}
+		});
+		beginModalHandoff();
+		expect(standIn()).not.toBeNull();
+	});
+
 	it("holds a stand-in backdrop until the next modal's backdrop arrives, then marks that one", async () => {
 		const palette = addOverlay();
 		beginModalHandoff();
