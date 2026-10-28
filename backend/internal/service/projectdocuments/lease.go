@@ -3,6 +3,7 @@ package projectdocuments
 import (
 	"context"
 	"crypto/subtle"
+	"log/slog"
 	"strconv"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -50,7 +51,8 @@ func grantFor(id domain.ProjectID, a Actor, epoch int64) Grant {
 	return Grant{Epoch: epoch, Token: hash([]byte("AO-project-documents\x00" + string(id) + "\x00" + string(a.SessionID) + "\x00" + strconv.FormatInt(epoch, 10) + "\x00" + a.Capability))}
 }
 
-// Acquire returns the current controller lease without stealing a prior owner.
+// Acquire returns the current controller lease, reclaiming an unfrozen lease
+// only when its previous session is conclusively terminated.
 func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Grant, error) {
 	unlock := s.lock(id)
 	defer unlock()
@@ -68,9 +70,14 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen")
 		}
 		if lease.SessionID != rec.ID {
-			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_HELD", "A previous orchestrator still owns the project lease")
-		}
-		if lease.Owner == rec.ControllerOwner() {
+			previous, ok, err := s.store.GetSession(ctx, lease.SessionID)
+			if err != nil {
+				return Grant{}, err
+			}
+			if !ok || !previous.IsTerminated {
+				return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_HELD", "Project lease is held by session "+string(lease.SessionID))
+			}
+		} else if lease.Owner == rec.ControllerOwner() {
 			grant := grantFor(id, a, lease.Epoch)
 			if subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(grant.Token)))) != 1 {
 				return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Controller capability no longer matches the lease")
@@ -83,9 +90,15 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 	if err := s.ensureRoot(root); err != nil {
 		return Grant{}, err
 	}
+	previous := state.Lease
 	state.Lease = &domain.ProjectDocumentLease{SessionID: rec.ID, Owner: rec.ControllerOwner(), Epoch: epoch, TokenHash: hash([]byte(grant.Token))}
 	if err := s.save(ctx, id, &state); err != nil {
 		return Grant{}, err
+	}
+	if previous != nil && previous.SessionID != rec.ID {
+		slog.InfoContext(ctx, "Reclaimed project document lease from terminated session",
+			"project_id", id, "previous_session_id", previous.SessionID, "previous_epoch", previous.Epoch,
+			"session_id", rec.ID, "epoch", epoch)
 	}
 	return grant, nil
 }
