@@ -22,6 +22,7 @@ const maxFiles = 4096
 
 // Store persists document ownership using revision-based compare-and-swap.
 type Store interface {
+	LoadTranscriptSourceSnapshot(context.Context, domain.SessionID) (domain.TranscriptSourceSnapshot, error)
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)

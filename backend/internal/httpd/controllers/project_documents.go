@@ -20,6 +20,8 @@ import (
 
 // ProjectDocumentService defines the daemon boundary for living documents.
 type ProjectDocumentService interface {
+	ReadEvidence(context.Context, domain.ProjectID, string, string, string) (docs.File, error)
+	OpenEvidence(context.Context, domain.ProjectID, string, string, string) (*os.File, error)
 	Info(context.Context, domain.ProjectID) (docs.Info, error)
 	Read(context.Context, domain.ProjectID, string) (docs.File, error)
 	Open(context.Context, domain.ProjectID, string) (*os.File, error)
@@ -33,6 +35,8 @@ type ProjectDocumentsController struct{ Svc ProjectDocumentService }
 
 // Register mounts project document routes.
 func (c *ProjectDocumentsController) Register(r chi.Router) {
+	r.Get("/projects/{id}/handoffs/{operationId}/{attemptId}/file", c.evidenceRead)
+	r.Get("/projects/{id}/handoffs/{operationId}/{attemptId}/files/{path}", c.evidenceDownload)
 	r.Get("/projects/{id}/documents", c.info)
 	r.Get("/projects/{id}/documents/file", c.read)
 	r.Get("/projects/{id}/documents/files/*", c.file)

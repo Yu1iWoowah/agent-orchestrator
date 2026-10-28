@@ -222,7 +222,9 @@ function visitMarkdown(node: MarkdownNode, find: (text: string) => TextMatch[]):
 }
 
 
-export type ProjectDocumentTarget = { kind: "shared"; projectId: string; path: string; fragment?: string };
+type ProjectDocumentLocation = { projectId: string; path: string; fragment?: string };
+export type ProjectDocumentTarget = ProjectDocumentLocation &
+	({ kind: "shared" } | { kind: "evidence"; operationId: string; attemptId: string });
 const PROJECT_LINK_PREFIX = "ao://projects/";
 function documentSegment(value: string): string | undefined {
 	const decoded = decodeSegment(value);
@@ -240,7 +242,31 @@ export function parseProjectDocumentLink(value: string): ProjectDocumentTarget |
 	const section = splitDocumentFragment(value);
 	if (!section || !section.path.startsWith(PROJECT_LINK_PREFIX) || section.path.includes("?")) return undefined;
 	const [project, scope, ...parts] = section.path.slice(PROJECT_LINK_PREFIX.length).split("/");
-	if (scope !== "shared" || !project || parts.length === 0) return undefined;
+	if (!project || parts.length === 0) return undefined;
+	if (scope === "handoffs") {
+		const [operationId, attemptId, file, ...extra] = parts;
+		if (
+			!operationId ||
+			!attemptId ||
+			!file ||
+			extra.length ||
+			!evidenceId(operationId) ||
+			!evidenceId(attemptId) ||
+			!evidencePath(file)
+		)
+			return undefined;
+		const projectId = documentSegment(project);
+		if (!projectId) return undefined;
+		return {
+			kind: "evidence",
+			projectId,
+			operationId,
+			attemptId,
+			path: file,
+			...(section.fragment === undefined ? {} : { fragment: section.fragment }),
+		};
+	}
+	if (scope !== "shared") return undefined;
 	const projectId = documentSegment(project);
 	if (!projectId) return undefined;
 	const decoded: string[] = [];
@@ -309,4 +335,24 @@ export function relativeProjectDocumentPath(current: string, href: string): stri
 		parts.push(decoded);
 	}
 	return parts.length ? parts.join("/") : undefined;
+}
+
+function evidenceId(id: string): boolean {
+	return (
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) &&
+		id !== "00000000-0000-0000-0000-000000000000"
+	);
+}
+function evidencePath(path: string): boolean {
+	return path === "handoff.md" || path === "transcript.md" || path === "manifest.json";
+}
+/** Preserve the source boundary when following relative Markdown links. */
+export function projectDocumentTargetLink(
+	target: ProjectDocumentTarget,
+	path = target.path,
+	fragment?: string,
+): string | undefined {
+	if (target.kind === "shared") return projectDocumentLink(target.projectId, path, fragment);
+	if (!evidencePath(path)) return undefined;
+	return `${PROJECT_LINK_PREFIX}${encodeURIComponent(target.projectId)}/handoffs/${target.operationId}/${target.attemptId}/${path}${fragment === undefined ? "" : `#${encodeURIComponent(fragment)}`}`;
 }

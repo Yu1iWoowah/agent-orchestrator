@@ -507,7 +507,7 @@ type nativeHistoryCheckpoint struct {
 	aoHighWater             nativeHistoryHighWater
 	aoHighWaterPeers        []nativeHistoryHighWater
 	replayIndex             *nativeHistoryTurnIndex
-	nativeThreads           map[nativeThreadTurnKey]string
+	nativeThreads           domain.NativeThreadEvidenceIndex
 	nativeThreadRoots       map[string]string
 }
 
@@ -656,13 +656,12 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 			}
 		}
 		if p.nativeThreadRoots != nil {
-			owner, known := p.nativeThreads[nativeThreadTurnKey{turn.BranchID, turn.ProviderTurnID}]
-			root := p.nativeThreadRoots[turn.BranchID]
-			if !known || owner == "" || root == "" {
+			provenance := p.nativeThreads.Classify(turn.BranchID, turn.ProviderTurnID, p.nativeThreadRoots[turn.BranchID])
+			if provenance == domain.NativeThreadUnknown {
 				unverifiedThread = true
 				continue
 			}
-			if owner != root {
+			if provenance == domain.NativeThreadChild {
 				continue // Keep child work in the timeline, outside the root replay checkpoint.
 			}
 		}

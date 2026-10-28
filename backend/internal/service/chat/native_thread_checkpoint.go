@@ -10,12 +10,8 @@ type nativeThreadEvidenceReader interface {
 	ConversationNativeThreadEvidence(context.Context, string, domain.SessionID) ([]domain.ConversationNativeThreadEvidence, error)
 }
 
-type nativeThreadTurnKey struct {
-	branchID, providerTurnID string
-}
-
 func (s *Service) loadNativeThreadCheckpoint(ctx context.Context, checkpoint *nativeHistoryCheckpoint, active domain.ConversationBranch, turns []domain.ConversationTurn, cfg StartConfig) error {
-	checkpoint.nativeThreads = make(map[nativeThreadTurnKey]string)
+	checkpoint.nativeThreads = domain.IndexNativeThreadEvidence(nil)
 	checkpoint.nativeThreadRoots = map[string]string{active.ID: cfg.ProviderConversationID}
 	// Native forks replay their ancestors' main turns as well. A different
 	// native thread is a child only relative to the branch that owned its turn.
@@ -41,15 +37,6 @@ func (s *Service) loadNativeThreadCheckpoint(ctx context.Context, checkpoint *na
 	if err != nil {
 		return err
 	}
-	for _, item := range evidence {
-		key := nativeThreadTurnKey{item.BranchID, item.ProviderTurnID}
-		previous, found := checkpoint.nativeThreads[key]
-		if found && previous != item.ProviderConversationID {
-			// Once conflicting, a later duplicate must not make ownership known.
-			checkpoint.nativeThreads[key] = ""
-		} else if !found {
-			checkpoint.nativeThreads[key] = item.ProviderConversationID
-		}
-	}
+	checkpoint.nativeThreads = domain.IndexNativeThreadEvidence(evidence)
 	return nil
 }

@@ -10,7 +10,7 @@ import { apiClient, apiErrorMessage, getApiBaseUrl } from "../lib/api-client";
 import { mediaCrossOrigin } from "../lib/file-media";
 import {
 	isAoLink,
-	projectDocumentLink,
+	projectDocumentTargetLink,
 	relativeProjectDocumentPath,
 	relativeProjectDocumentLink,
 	type ProjectDocumentTarget,
@@ -21,7 +21,10 @@ import { Button } from "./ui/button";
 import "github-markdown-css/github-markdown.css";
 
 function fileUrl(target: ProjectDocumentTarget, path = target.path): string {
-	return `${getApiBaseUrl()}/api/v1/projects/${encodeURIComponent(target.projectId)}/documents/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+	const base = `${getApiBaseUrl()}/api/v1/projects/${encodeURIComponent(target.projectId)}`;
+	return target.kind === "shared"
+		? `${base}/documents/files/${path.split("/").map(encodeURIComponent).join("/")}`
+		: `${base}/handoffs/${target.operationId}/${target.attemptId}/files/${encodeURIComponent(path)}`;
 }
 
 export function ProjectDocumentViewer() {
@@ -34,7 +37,7 @@ export function ProjectDocumentViewer() {
 				if (!open) setTarget(null);
 			}}
 		>
-			{target && <ProjectDocumentContent key={`${target.projectId}/${target.path}`} target={target} />}
+			{target && <ProjectDocumentContent key={fileUrl(target)} target={target} />}
 		</Dialog.Root>
 	);
 }
@@ -46,14 +49,23 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 	const [downloading, setDownloading] = useState(false);
 	const navigateLink = useSessionLinkNavigation();
 	const query = useQuery({
-		queryKey: ["project-document", target.projectId, target.path],
+		queryKey: ["project-document", fileUrl(target)],
 		staleTime: 0,
 		retry: false,
 		queryFn: async ({ signal }) => {
-			const { data, error } = await apiClient.GET("/api/v1/projects/{id}/documents/file", {
-				params: { path: { id: target.projectId }, query: { path: target.path } },
-				signal,
-			});
+			const { data, error } =
+				target.kind === "shared"
+					? await apiClient.GET("/api/v1/projects/{id}/documents/file", {
+							params: { path: { id: target.projectId }, query: { path: target.path } },
+							signal,
+						})
+					: await apiClient.GET("/api/v1/projects/{id}/handoffs/{operationId}/{attemptId}/file", {
+							params: {
+								path: { id: target.projectId, operationId: target.operationId, attemptId: target.attemptId },
+								query: { path: target.path },
+							},
+							signal,
+						});
 			if (error) throw new Error(`${error.code}: ${apiErrorMessage(error)}`);
 			if (!data) throw new Error("Document response is missing");
 			return data.file;
@@ -63,12 +75,25 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 		setDownloading(true);
 		setDownloadError(null);
 		try {
-			const { data, error } = await apiClient.GET("/api/v1/projects/{id}/documents/files/*", {
-				params: { path: { id: target.projectId } },
-				pathSerializer: () =>
-					`/api/v1/projects/${encodeURIComponent(target.projectId)}/documents/files/${target.path.split("/").map(encodeURIComponent).join("/")}`,
-				parseAs: "blob",
-			});
+			const { data, error } =
+				target.kind === "shared"
+					? await apiClient.GET("/api/v1/projects/{id}/documents/files/*", {
+							params: { path: { id: target.projectId } },
+							pathSerializer: () =>
+								`/api/v1/projects/${encodeURIComponent(target.projectId)}/documents/files/${target.path.split("/").map(encodeURIComponent).join("/")}`,
+							parseAs: "blob",
+						})
+					: await apiClient.GET("/api/v1/projects/{id}/handoffs/{operationId}/{attemptId}/files/{path}", {
+							params: {
+								path: {
+									id: target.projectId,
+									operationId: target.operationId,
+									attemptId: target.attemptId,
+									path: target.path,
+								},
+							},
+							parseAs: "blob",
+						});
 			if (error) throw new Error(`${error.code}: ${apiErrorMessage(error)}`);
 			if (!data) throw new Error("Download response is missing");
 			const url = URL.createObjectURL(data);
@@ -107,8 +132,12 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 					<div className="min-w-0 flex-1">
 						<Dialog.Title className="truncate font-medium">{target.path}</Dialog.Title>
 						<Dialog.Description className="text-xs text-muted-foreground">
-							{t("projectDocuments.readOnly", { defaultValue: "Shared project document · Read only" })} ·{" "}
-							{target.projectId}
+							{target.kind === "shared"
+								? t("projectDocuments.readOnly", { defaultValue: "Shared project document · Read only" })
+								: t("projectDocuments.evidenceReadOnly", {
+										defaultValue: "Immutable handoff evidence · Read only",
+									})}{" "}
+							· {target.projectId}
 						</Dialog.Description>
 					</div>
 					{markdown && file && !file.binary && (
@@ -179,7 +208,7 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 											if (!href) return <>{children}</>;
 											const relative = relativeProjectDocumentLink(target.path, href);
 											const link = relative
-												? projectDocumentLink(target.projectId, relative.path, relative.fragment)
+												? (projectDocumentTargetLink(target, relative.path, relative.fragment) ?? "")
 												: href;
 											return isAoLink(link) ? (
 												<a
@@ -197,7 +226,9 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 										},
 										img: ({ src, alt }) => {
 											const relative =
-												typeof src === "string" ? relativeProjectDocumentPath(target.path, src) : undefined;
+												target.kind === "shared" && typeof src === "string"
+													? relativeProjectDocumentPath(target.path, src)
+													: undefined;
 											return relative ? (
 												<img
 													src={fileUrl(target, relative)}

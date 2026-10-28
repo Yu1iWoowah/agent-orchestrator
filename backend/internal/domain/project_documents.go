@@ -56,8 +56,17 @@ type ProjectDocumentAdoption struct {
 
 // ProjectDocumentState contains internal control facts, never display status.
 type ProjectDocumentState struct {
-	Revision  int64                    `json:"-"`
-	SharedDir string                   `json:"sharedDir"`
-	Lease     *ProjectDocumentLease    `json:"lease,omitempty"`
-	Adoption  *ProjectDocumentAdoption `json:"adoption,omitempty"`
+	Evidence  map[string]HandoffEvidenceReceipt `json:"handoffEvidence,omitempty"`
+	Revision  int64                             `json:"-"`
+	SharedDir string                            `json:"sharedDir"`
+	Lease     *ProjectDocumentLease             `json:"lease,omitempty"`
+	Adoption  *ProjectDocumentAdoption          `json:"adoption,omitempty"`
+}
+
+// HandoffEvidenceReceipt survives source session deletion and is never updated
+// by progress or lease transitions. The manifest does not hash itself.
+type HandoffEvidenceReceipt struct {
+	Directory    string `json:"directory"`
+	ManifestHash string `json:"manifestHash"`
+	InputHash    string `json:"inputHash"`
 }
