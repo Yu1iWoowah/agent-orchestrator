@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
@@ -83,6 +84,7 @@ func (r *reading) knownUnusable() bool {
 }
 
 type login struct {
+	kind     domain.AgentAccountProfileKind
 	id       string
 	provider domain.AgentAccountProvider
 	home     string
@@ -194,8 +196,17 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 	r := &reading{at: s.now()}
 	var identity domain.AgentAccountIdentityCheck
 	err := s.checkAccountProfile(account.Home)
+	if err == nil && account.ProfileKind == domain.AgentAccountProfileContained {
+		err = s.prepare(provider, account.Home, account.ProfileKind)
+	}
 	if err == nil {
 		identity, err = provider.Identity(ctx, account.Home)
+	}
+	if err == nil && identity.LoggedIn {
+		err = s.checkCredentialStore(account.Provider, account.Home)
+		if err != nil {
+			identity = domain.AgentAccountIdentityCheck{}
+		}
 	}
 	r.identity = identity
 	if err != nil {
@@ -203,7 +214,7 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 		// A failed check (a timeout under load) says nothing about the login:
 		// keep what the last good one found, so it does not read as signed out.
 		s.mu.Lock()
-		if prev := s.readings[account.ID]; prev != nil && prev.identityErr == "" && !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) && !errors.Is(err, ports.ErrAgentAccountStorageUnavailable) {
+		if prev := s.readings[account.ID]; prev != nil && prev.identityErr == "" && !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) && !errors.Is(err, ports.ErrAgentAccountStorageUnavailable) && !errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported) {
 			r.identity, r.limits = prev.identity, prev.limits
 		}
 		s.mu.Unlock()
@@ -309,6 +320,9 @@ func (s *Service) DefaultSignIn(ctx context.Context, harness domain.AgentHarness
 	account, err := s.find(ctx, def)
 	if err != nil {
 		return identity, false
+	}
+	if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+		return identity, true
 	}
 	s.mu.Lock()
 	r := s.readings[account.ID]
@@ -493,9 +507,11 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 	}
 	id := uuid.NewString()
 	home := filepath.Join(s.root, string(p), id)
+	kind := domain.AgentAccountProfileContained
 	title := map[domain.AgentAccountProvider]string{domain.AgentAccountProviderClaude: "Add Claude account", domain.AgentAccountProviderCodex: "Add Codex account"}[p]
 	if account != nil {
 		home = account.Home
+		kind = account.ProfileKind
 		title = map[domain.AgentAccountProvider]string{domain.AgentAccountProviderClaude: "Sign in to Claude account", domain.AgentAccountProviderCodex: "Sign in to Codex account"}[p]
 	}
 	// A saved account's folder is never removed here; only a new one is.
@@ -508,7 +524,7 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		return LoginStart{}, err
 	}
 	// Linking first means the sign-in never creates a private copy of a shared folder.
-	if err := s.prepare(provider, home); err != nil {
+	if err := s.prepare(provider, home, kind); err != nil {
 		discard()
 		return LoginStart{}, err
 	}
@@ -523,7 +539,7 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		return LoginStart{}, fmt.Errorf("open sign-in terminal: %w", err)
 	}
 	s.mu.Lock()
-	s.logins[id] = &login{id: id, provider: p, home: home, terminal: terminal.HandleID, account: account}
+	s.logins[id] = &login{id: id, provider: p, home: home, terminal: terminal.HandleID, account: account, kind: kind}
 	s.mu.Unlock()
 	return LoginStart{OperationID: id, Provider: p, Terminal: terminal}, nil
 }
@@ -554,12 +570,20 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 	if err := s.checkAccountProfile(op.home); err != nil {
 		return "", nil, err
 	}
+	if op.kind == domain.AgentAccountProfileContained {
+		if err := s.prepare(provider, op.home, op.kind); err != nil {
+			return "", nil, err
+		}
+	}
 	identity, err := provider.Identity(ctx, op.home)
 	if err != nil {
 		return "", nil, fmt.Errorf("check sign-in: %w", err)
 	}
 	if !identity.SignedIn {
 		return LoginWaiting, nil, nil
+	}
+	if err := s.checkCredentialStore(op.provider, op.home); err != nil {
+		return "", nil, err
 	}
 	views, err := s.List(ctx, false)
 	if err != nil {
@@ -583,12 +607,12 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 	if op.account != nil {
 		return s.finishSignInAgain(ctx, op, identity, views)
 	}
-	account := domain.AgentAccount{ID: op.id, Provider: op.provider, Home: op.home, Email: identity.Email, Plan: identity.Plan, CreatedAt: s.now()}
+	account := domain.AgentAccount{ID: op.id, Provider: op.provider, Home: op.home, Email: identity.Email, Plan: identity.Plan, CreatedAt: s.now(), ProfileKind: op.kind}
 	if err := s.store.CreateAgentAccount(ctx, account); err != nil {
 		s.releaseLogin(op) // still pending: a later check can save it
 		return "", nil, err
 	}
-	if err := provider.Prepare(op.home); err != nil {
+	if err := s.prepare(provider, op.home, op.kind); err != nil {
 		s.log.Warn("prepare account folder", "account", op.id, "reasonCode", "account_prepare_failed")
 	}
 	s.endLogin(ctx, op, false)
@@ -798,7 +822,10 @@ func (s *Service) BindSession(ctx context.Context, id domain.SessionID, harness 
 		if err != nil {
 			return err
 		}
-		if err := s.prepare(s.providers[p], account.Home); err != nil {
+		if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
+			return err
+		}
+		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
 			return err
 		}
 		return s.store.BindSessionAgentAccount(ctx, id, p, account.ID, s.now())
@@ -852,6 +879,9 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 	if account.Provider != p {
 		return domain.AgentAccount{}, ports.ErrAgentAccountProviderMismatch
 	}
+	if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+		return domain.AgentAccount{}, err
+	}
 	if err := s.checkAccountProfile(account.Home); err != nil {
 		return domain.AgentAccount{}, err
 	}
@@ -869,7 +899,7 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 	if r == nil || !r.identity.SignedIn {
 		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
-	if err := s.prepare(s.providers[p], account.Home); err != nil {
+	if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
 		return domain.AgentAccount{}, err
 	}
 	return account, nil
@@ -885,14 +915,31 @@ func (s *Service) checkAccountProfile(home string) error {
 }
 
 // prepare refuses unsafe storage and unshared history before a launch.
-func (s *Service) prepare(provider ports.AgentAccountProviderCLI, home string) error {
+func (s *Service) prepare(provider ports.AgentAccountProviderCLI, home string, kind domain.AgentAccountProfileKind) error {
 	if home == "" {
 		return nil
 	}
 	if err := s.checkAccountProfile(home); err != nil {
 		return err
 	}
-	err := provider.Prepare(home)
+	var err error
+	if legacy, ok := provider.(interface{ PrepareLegacy(string) error }); ok && kind != domain.AgentAccountProfileContained {
+		err = legacy.PrepareLegacy(home)
+	} else {
+		err = provider.Prepare(home)
+	}
+	if kind == domain.AgentAccountProfileContained && err != nil {
+		switch {
+		case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
+			return ports.ErrAgentAccountStorageUnsafe
+		case errors.Is(err, ports.ErrAgentAccountStorageUnsupported):
+			return ports.ErrAgentAccountStorageUnsupported
+		case errors.Is(err, ports.ErrAgentAccountUnshared):
+			return ports.ErrAgentAccountUnshared
+		default:
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+	}
 	if errors.Is(err, ports.ErrAgentAccountUnshared) {
 		return err
 	}
@@ -1067,10 +1114,15 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if account.Device() {
 			continue
 		}
-		// ponytail: a later link failure is only logged here, as this path cannot
-		// refuse the launch; binding and moves already refused it.
-		if err := s.prepare(provider, account.Home); err != nil {
+		// Revalidate before producing the launch environment, even when the
+		// account identity is still cached.
+		if err := s.prepare(provider, account.Home, account.ProfileKind); err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+			errs = append(errs, err)
+			continue
 		}
 		for key, value := range provider.LaunchEnv(account.Home) {
 			env[key] = value
@@ -1150,4 +1202,16 @@ func (s *Service) Usage(ctx context.Context, days int) ([]AccountUsage, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AccountID < out[j].AccountID })
 	return out, nil
+}
+
+// File evidence is required only for Linux managed Codex profiles. The profile
+// boundary verifies AO-root containment before this metadata-only check.
+func (s *Service) checkCredentialStore(p domain.AgentAccountProvider, home string) error {
+	if runtime.GOOS != "linux" || home == "" || p != domain.AgentAccountProviderCodex {
+		return nil
+	}
+	if err := s.checkAccountProfile(home); err != nil {
+		return err
+	}
+	return agentlaunch.ValidateCodexFileStore(home)
 }

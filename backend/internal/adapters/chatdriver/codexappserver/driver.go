@@ -517,6 +517,9 @@ func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string
 
 // connect spawns app-server and completes the initialize handshake.
 func (d *Driver) connect(ctx context.Context, workdir string, env map[string]string, providerScopeID string) (*conversation, error) {
+	if err := agentlaunch.ValidateManagedCodexEnv(env); err != nil {
+		return nil, err
+	}
 	bin, err := d.plugin.ResolveBinary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
@@ -577,17 +580,20 @@ func (d *Driver) connectSession(
 		Env:           providerEnv,
 		Argv:          append([]string{bin}, accountAppServerArgs(providerEnv)...),
 	}
-	if prepareEnv != nil {
-		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
-			preparedEnv, prepareErr := prepareEnv(prepareCtx)
-			if prepareErr != nil {
-				return persistenthost.PreparedProvider{}, prepareErr
+	hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
+		preparedEnv := env
+		if prepareEnv != nil {
+			var err error
+			preparedEnv, err = prepareEnv(prepareCtx)
+			if err != nil {
+				return persistenthost.PreparedProvider{}, err
 			}
-			providerEnv := envSlice(preparedEnv)
-			return persistenthost.PreparedProvider{
-				Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...),
-			}, nil
 		}
+		if err := agentlaunch.ValidateManagedCodexEnv(preparedEnv); err != nil {
+			return persistenthost.PreparedProvider{}, err
+		}
+		providerEnv := envSlice(preparedEnv)
+		return persistenthost.PreparedProvider{Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...)}, nil
 	}
 	transport, err := d.connectHost(ctx, hostConfig)
 	if err != nil {

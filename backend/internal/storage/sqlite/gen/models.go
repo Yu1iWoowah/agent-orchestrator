@@ -13,12 +13,13 @@ import (
 )
 
 type AgentAccount struct {
-	ID        string
-	Provider  string
-	Home      string
-	Email     string
-	Plan      string
-	CreatedAt time.Time
+	ID          string
+	Provider    string
+	Home        string
+	Email       string
+	Plan        string
+	CreatedAt   time.Time
+	ProfileKind string
 }
 
 type AgentAccountDefault struct {

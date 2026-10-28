@@ -12,7 +12,25 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestManagedChatRefusesMissingFileEvidenceBeforeSpawn(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux managed profiles")
+	}
+	d := New(fixedCodexPlugin("fake-codex"), nil)
+	d.persistent = false
+	spawned := false
+	d.spawn = func(context.Context, string, string, []string) (*process, error) {
+		spawned = true
+		return nil, errors.New("fake spawn")
+	}
+	_, err := d.connect(context.Background(), t.TempDir(), map[string]string{agentlaunch.ManagedCodexAccountEnv: "1", "CODEX_HOME": t.TempDir()}, "")
+	if !errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported) || spawned {
+		t.Fatalf("missing file evidence reached provider: spawned=%v err=%v", spawned, err)
+	}
+}
 
 func TestPersistentManagedAccountStartsWithFileStore(t *testing.T) {
 	if runtime.GOOS != "linux" {
@@ -20,7 +38,14 @@ func TestPersistentManagedAccountStartsWithFileStore(t *testing.T) {
 	}
 	for _, prepared := range []bool{false, true} {
 		d := New(fixedCodexPlugin("fake-codex"), nil)
-		env := map[string]string{agentlaunch.ManagedCodexAccountEnv: "1", "CODEX_HOME": "/fake/account"}
+		home := t.TempDir()
+		if err := os.Chmod(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte("fake-credential"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{agentlaunch.ManagedCodexAccountEnv: "1", "CODEX_HOME": home}
 		var prepare func(context.Context) (map[string]string, error)
 		if prepared {
 			prepare = func(context.Context) (map[string]string, error) { return env, nil }

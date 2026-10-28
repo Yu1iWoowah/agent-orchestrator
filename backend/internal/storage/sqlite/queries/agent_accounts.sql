@@ -4,8 +4,8 @@
 SELECT * FROM agent_accounts ORDER BY provider, created_at, id;
 
 -- name: CreateAgentAccount :exec
-INSERT INTO agent_accounts (id, provider, home, email, plan, created_at)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO agent_accounts (id, provider, home, email, plan, created_at, profile_kind)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: DeleteAgentAccount :exec
 DELETE FROM agent_accounts WHERE id = ?;

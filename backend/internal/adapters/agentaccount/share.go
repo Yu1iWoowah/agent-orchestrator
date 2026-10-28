@@ -1,7 +1,7 @@
 // Package agentaccount runs Claude Code and Codex under subscription accounts
 // that are config folders of the CLIs themselves. Each folder keeps only its
-// own login; everything a conversation needs to resume under another account
-// is a link to the computer's own folder. Nothing here reads a token.
+// own login. New profiles share only AO-owned history; legacy profiles keep
+// their explicit device-linked preparation. Nothing here reads a token.
 package agentaccount
 
 import (

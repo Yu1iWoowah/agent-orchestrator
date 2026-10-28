@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,21 +10,36 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agentaccount"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestManagedAccountLaunchUsesFileCredentialsDespiteSharedKeyringConfig(t *testing.T) {
+func TestManagedLaunchRefusesMissingFileEvidence(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux managed profiles")
+	}
+	p := &Plugin{resolvedBinary: "/fake/codex"}
+	env := map[string]string{agentlaunch.ManagedCodexAccountEnv: "1", "CODEX_HOME": t.TempDir()}
+	if _, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{Env: env}); !errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported) {
+		t.Fatalf("launch accepted missing evidence: %v", err)
+	}
+}
+
+func TestManagedAccountLaunchUsesFileCredentialsDespiteDeviceKeyringConfig(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("new file-only managed profiles are Linux-only")
 	}
 	device := t.TempDir()
-	home := filepath.Join(t.TempDir(), "account")
+	home := filepath.Join(t.TempDir(), "accounts", "codex", "account")
 	config := []byte("cli_auth_credentials_store = \"keyring\"\n")
 	if err := os.WriteFile(filepath.Join(device, "config.toml"), config, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	account := &agentaccount.Codex{DeviceHome: device}
 	if err := account.Prepare(home); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte("fake-credential"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	p := &Plugin{resolvedBinary: "codex"}

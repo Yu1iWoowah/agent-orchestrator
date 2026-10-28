@@ -98,6 +98,11 @@ func managedCodexAccount(platform, home, deviceHome string) bool {
 
 // Logout asks Codex to sign home out, revocation included.
 func (c *Codex) Logout(ctx context.Context, home string) error {
+	if managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
+		if err := agentlaunch.ValidateCodexFileStore(home); err != nil {
+			return err
+		}
+	}
 	client, err := c.open(ctx, home)
 	if err != nil {
 		return err
@@ -123,6 +128,11 @@ func (c *Codex) Identity(ctx context.Context, home string) (domain.AgentAccountI
 	}
 	if account.Email != nil {
 		out.Email = *account.Email
+	}
+	if out.LoggedIn && managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
+		if err := agentlaunch.ValidateCodexFileStore(home); err != nil {
+			return domain.AgentAccountIdentityCheck{}, err
+		}
 	}
 	if out.SignedIn {
 		if capacity, err := client.ReadCapacity(ctx); err == nil && capacity.Plan != nil {
@@ -209,10 +219,10 @@ func codexWindowLabel(minutes *int64) string {
 	}
 }
 
-// Prepare shares everything in the computer's own Codex home with home except
+// PrepareLegacy shares everything in the computer's own Codex home with home except
 // its private entries. Directory links keep the rollout files real, which
 // `codex resume` requires.
-func (c *Codex) Prepare(home string) error {
+func (c *Codex) PrepareLegacy(home string) error {
 	if home == "" {
 		return nil
 	}
