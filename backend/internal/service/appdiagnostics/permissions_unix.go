@@ -3,7 +3,6 @@
 package appdiagnostics
 
 import (
-	"errors"
 	"os"
 	"syscall"
 )
@@ -22,14 +21,14 @@ func privateDir(name string) error {
 func privateDirectoryInfo(info os.FileInfo) error {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || int64(st.Uid) != int64(os.Geteuid()) {
-		return errors.New("unsafe diagnostic directory")
+		return invalidFile("unsafe diagnostic directory")
 	}
 	return nil
 }
 func privateFile(info os.FileInfo) error {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || int64(st.Uid) != int64(os.Geteuid()) || st.Nlink != 1 {
-		return errors.New("unsafe diagnostic file")
+		return invalidFile("unsafe diagnostic file")
 	}
 	return nil
 }

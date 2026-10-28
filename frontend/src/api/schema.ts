@@ -4874,8 +4874,10 @@ export interface components {
             bytes?: number;
             count?: number;
             grantId: string;
+            invalidSnapshotDeletedCount?: number;
             outcome: string;
             partial?: null | boolean;
+            readErrorCount?: number;
             reasonCode?: string;
             redactionSchemaVersion?: number;
             requestId: string;
@@ -4885,9 +4887,12 @@ export interface components {
         };
         AppDiagnosticsAuditLog: {
             droppedCount: number;
+            invalidSnapshotDeletedCount?: number;
             /** Format: date-time */
             oldestRetainedAt: null | string;
+            readErrorCount?: number;
             records: components["schemas"]["AppDiagnosticsAudit"][];
+            skippedCount?: number;
         };
         AppDiagnosticsCaptureRequest: {
             projectId?: string;

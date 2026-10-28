@@ -14757,12 +14757,18 @@ components:
           type: integer
         grantId:
           type: string
+        invalidSnapshotDeletedCount:
+          minimum: 0
+          type: integer
         outcome:
           type: string
         partial:
           type:
           - "null"
           - boolean
+        readErrorCount:
+          minimum: 0
+          type: integer
         reasonCode:
           type: string
         redactionSchemaVersion:
@@ -14788,15 +14794,24 @@ components:
         droppedCount:
           minimum: 0
           type: integer
+        invalidSnapshotDeletedCount:
+          minimum: 0
+          type: integer
         oldestRetainedAt:
           format: date-time
           type:
           - "null"
           - string
+        readErrorCount:
+          minimum: 0
+          type: integer
         records:
           items:
             $ref: '#/components/schemas/AppDiagnosticsAudit'
           type: array
+        skippedCount:
+          minimum: 0
+          type: integer
       required:
       - records
       - oldestRetainedAt

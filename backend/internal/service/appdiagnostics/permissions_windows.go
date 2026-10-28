@@ -3,7 +3,6 @@
 package appdiagnostics
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,13 +49,13 @@ func privateDir(name string) error {
 }
 func privateDirectoryInfo(info os.FileInfo) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("unsafe diagnostic directory")
+		return invalidFile("unsafe diagnostic directory")
 	}
 	return nil
 }
 func privateFile(info os.FileInfo) error {
 	if !info.Mode().IsRegular() {
-		return errors.New("unsafe diagnostic file")
+		return invalidFile("unsafe diagnostic file")
 	}
 	return nil
 }
@@ -66,7 +65,7 @@ func validateWindowsHandle(handle windows.Handle, directory bool) error {
 		return fmt.Errorf("inspect diagnostic file identity: %w", err)
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (!directory && info.NumberOfLinks != 1) {
-		return errors.New("unsafe diagnostic file identity")
+		return invalidFile("unsafe diagnostic file identity")
 	}
 	sid, err := currentUserSID()
 	if err != nil {
@@ -78,11 +77,11 @@ func validateWindowsHandle(handle windows.Handle, directory bool) error {
 	}
 	owner, _, err := sd.Owner()
 	if err != nil || owner == nil || !owner.Equals(sid) {
-		return errors.New("unsafe diagnostic owner")
+		return invalidFile("unsafe diagnostic owner")
 	}
 	acl, _, err := sd.DACL()
 	if err != nil || acl == nil || acl.AceCount == 0 {
-		return errors.New("unsafe diagnostic ACL")
+		return invalidFile("unsafe diagnostic ACL")
 	}
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
@@ -94,11 +93,11 @@ func validateWindowsHandle(handle windows.Handle, directory bool) error {
 			return err
 		}
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
-			return errors.New("unsupported diagnostic ACL")
+			return invalidFile("unsupported diagnostic ACL")
 		}
 		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 		if !principal.Equals(sid) && !principal.Equals(system) {
-			return errors.New("diagnostics ACL permits another account")
+			return invalidFile("diagnostics ACL permits another account")
 		}
 	}
 	return nil

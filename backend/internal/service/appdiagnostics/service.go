@@ -59,25 +59,30 @@ type Credential struct {
 
 // Audit records bounded identifiers and outcomes, never snapshot contents.
 type Audit struct {
-	WindowID               string           `json:"windowId,omitempty"`
-	Bytes                  int              `json:"bytes,omitempty"`
-	Partial                *bool            `json:"partial,omitempty"`
-	RedactionSchemaVersion int              `json:"redactionSchemaVersion,omitempty"`
-	SkippedCount           uint64           `json:"skippedCount,omitempty"`
-	ReasonCode             string           `json:"reasonCode,omitempty"`
-	Count                  uint64           `json:"count,omitempty"`
-	RequestID              string           `json:"requestId"`
-	GrantID                string           `json:"grantId"`
-	SessionID              domain.SessionID `json:"sessionId"`
-	At                     time.Time        `json:"at"`
-	Outcome                string           `json:"outcome"`
+	ReadErrorCount              uint64           `json:"readErrorCount,omitempty"`
+	InvalidSnapshotDeletedCount uint64           `json:"invalidSnapshotDeletedCount,omitempty"`
+	WindowID                    string           `json:"windowId,omitempty"`
+	Bytes                       int              `json:"bytes,omitempty"`
+	Partial                     *bool            `json:"partial,omitempty"`
+	RedactionSchemaVersion      int              `json:"redactionSchemaVersion,omitempty"`
+	SkippedCount                uint64           `json:"skippedCount,omitempty"`
+	ReasonCode                  string           `json:"reasonCode,omitempty"`
+	Count                       uint64           `json:"count,omitempty"`
+	RequestID                   string           `json:"requestId"`
+	GrantID                     string           `json:"grantId"`
+	SessionID                   domain.SessionID `json:"sessionId"`
+	At                          time.Time        `json:"at"`
+	Outcome                     string           `json:"outcome"`
 }
 
 // AuditLog explicitly marks when retained history has been truncated.
 type AuditLog struct {
-	Records          []Audit    `json:"records"`
-	OldestRetainedAt *time.Time `json:"oldestRetainedAt"`
-	DroppedCount     uint64     `json:"droppedCount"`
+	ReadErrorCount              uint64     `json:"readErrorCount,omitempty"`
+	InvalidSnapshotDeletedCount uint64     `json:"invalidSnapshotDeletedCount,omitempty"`
+	SkippedCount                uint64     `json:"skippedCount,omitempty"`
+	Records                     []Audit    `json:"records"`
+	OldestRetainedAt            *time.Time `json:"oldestRetainedAt"`
+	DroppedCount                uint64     `json:"droppedCount"`
 }
 
 // Runtime is the daemon-to-main port. Browser runtime does not implement this protocol.
@@ -310,7 +315,7 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		}
 		return Record{}, failure("APP_RENDERER_UNAVAILABLE", 503)
 	}
-	if snapshot.SchemaVersion != 1 || snapshot.InstanceID != state.InstanceID || snapshot.WindowID != in.WindowID || snapshot.Generation != generation || snapshot.Completeness != "partial" || snapshot.CapturedAt.IsZero() {
+	if !validSnapshotV1(snapshot) || snapshot.InstanceID != state.InstanceID || snapshot.WindowID != in.WindowID || snapshot.Generation != generation {
 		audit.Outcome = "invalid_payload"
 		_ = s.store.audit(audit)
 		return Record{}, failure("APP_DIAGNOSTICS_INVALID_PAYLOAD", 502)
@@ -396,7 +401,7 @@ func (s *Service) revoke(g *grantState) error {
 	if err := s.store.remove("grants", g.credential.ID); err != nil {
 		return failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
-	if err := s.store.removeGrant(g.credential.ID); err != nil {
+	if err := s.store.removeGrant(g.credential.ID, s.now()); err != nil {
 		return failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "revoked"}); err != nil {
@@ -512,7 +517,7 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 		first := out[0].At
 		oldest = &first
 	}
-	return AuditLog{Records: out, OldestRetainedAt: oldest, DroppedCount: s.store.dropped}, nil
+	return AuditLog{Records: out, OldestRetainedAt: oldest, DroppedCount: s.store.dropped, ReadErrorCount: s.store.readErrors, InvalidSnapshotDeletedCount: s.store.invalidSnapshotDeleted, SkippedCount: s.store.skipped}, nil
 }
 
 // RevokeID rejects a guessed grant id rather than revoking a different resource.

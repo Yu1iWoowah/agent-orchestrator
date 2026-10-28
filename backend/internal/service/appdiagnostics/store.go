@@ -1,8 +1,10 @@
 package appdiagnostics
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,12 +16,16 @@ import (
 )
 
 type diskStore struct {
-	writeContent func(*os.File, []byte) (int, error)
-	root         *os.Root
-	dropped      uint64
-	skipped      uint64
-	invalid      map[string]bool
-	auditTimes   map[string]time.Time
+	writeContent           func(*os.File, []byte) (int, error)
+	readContent            func(*os.File) ([]byte, error)
+	root                   *os.Root
+	dropped                uint64
+	readErrors             uint64
+	invalidSnapshotDeleted uint64
+	pendingRevocations     map[string]bool
+	skipped                uint64
+	invalid                map[string]bool
+	auditTimes             map[string]time.Time
 }
 
 func openStore(dataDir string) (*diskStore, error) {
@@ -31,7 +37,7 @@ func openStore(dataDir string) (*diskStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &diskStore{root: root, writeContent: (*os.File).Write, invalid: map[string]bool{}, auditTimes: map[string]time.Time{}}
+	s := &diskStore{root: root, writeContent: (*os.File).Write, readContent: readDocumentContent, invalid: map[string]bool{}, auditTimes: map[string]time.Time{}, pendingRevocations: map[string]bool{}}
 	for _, dir := range []string{"grants", "snapshots", "audit"} {
 		if err := privateDir(filepath.Join(name, dir)); err != nil {
 			_ = root.Close()
@@ -110,6 +116,10 @@ func (s *diskStore) checkDir(dir string) error {
 	defer func() { _ = file.Close() }()
 	return secureOpenedFile(file, true)
 }
+func readDocumentContent(file *os.File) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(file, (1<<20)+1))
+}
+
 func (s *diskStore) read(dir, id string, value any) error {
 	name, err := s.name(dir, id)
 	if err != nil {
@@ -138,15 +148,22 @@ func (s *diskStore) read(dir, id string, value any) error {
 		return err
 	}
 	if !os.SameFile(info, opened) {
-		return errors.New("diagnostic file changed")
+		return invalidFile("diagnostic file changed")
 	}
-	dec := json.NewDecoder(io.LimitReader(f, (1<<20)+1))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(value); err != nil {
+	data, err := s.readContent(f)
+	if err != nil {
 		return err
 	}
+	if len(data) > 1<<20 {
+		return invalidFile("diagnostic document exceeds limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(value); err != nil {
+		return invalidFile("invalid diagnostic document")
+	}
 	if dec.Decode(new(any)) != io.EOF {
-		return errors.New("invalid diagnostic document")
+		return invalidFile("invalid diagnostic document")
 	}
 	return nil
 }
@@ -214,19 +231,24 @@ func (s *diskStore) entries(dir string) ([]os.DirEntry, error) {
 	defer func() { _ = f.Close() }()
 	return f.ReadDir(-1)
 }
-func (s *diskStore) removeGrant(id string) error {
-	rows, err := documents[Record](s, "snapshots", validSnapshotRecord)
-	if err != nil {
-		return err
+func (s *diskStore) removeGrant(id string, now time.Time) (result error) {
+	s.pendingRevocations[id] = true
+	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
+	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
+	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
+		return readErr
 	}
 	for _, row := range rows {
 		if row.value.GrantID == id {
 			if err := s.remove("snapshots", row.id); err != nil {
-				return err
+				return errors.Join(readErr, err)
 			}
 		}
 	}
-	return nil
+	if readErr == nil {
+		delete(s.pendingRevocations, id)
+	}
+	return readErr
 }
 func (s *diskStore) audit(row Audit) error {
 	if err := s.write("audit", row.RequestID, row); err != nil {
@@ -262,9 +284,14 @@ type document[T any] struct {
 func documents[T any](s *diskStore, dir string, validate func(string, T) bool) ([]document[T], error) {
 	entries, err := s.entries(dir)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, errInvalidFile) {
+			return nil, err
+		}
+		s.recordReadError()
+		return nil, errReadUnavailable
 	}
 	out := make([]document[T], 0, len(entries))
+	readFailed := false
 	for _, entry := range entries {
 		name := entry.Name()
 		key := name
@@ -276,31 +303,58 @@ func documents[T any](s *diskStore, dir string, validate func(string, T) bool) (
 		}
 		var value T
 		if valid {
-			valid = s.read(dir, key, &value) == nil
+			err = s.read(dir, key, &value)
+			if err != nil && !errors.Is(err, errInvalidFile) {
+				s.recordReadError()
+				readFailed = true
+				continue
+			}
+			valid = err == nil
 		}
 		if valid && validate != nil {
 			valid = validate(key, value)
 		}
 		if !valid {
-			identity := dir + "/" + name
-			if !s.invalid[identity] {
-				s.invalid[identity] = true
-				s.skipped++
-			}
 			if dir == "snapshots" && !entry.IsDir() {
 				if err := s.removeEntry(dir, name); err != nil {
 					return nil, err
+				}
+				if s.invalidSnapshotDeleted < ^uint64(0) {
+					s.invalidSnapshotDeleted++
+				}
+			} else {
+				identity := dir + "/" + name
+				if !s.invalid[identity] {
+					s.invalid[identity] = true
+					if s.skipped < ^uint64(0) {
+						s.skipped++
+					}
 				}
 			}
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil, err
+			s.recordReadError()
+			readFailed = true
+			continue
 		}
 		out = append(out, document[T]{key, value, info.Size()})
 	}
+	if readFailed {
+		return out, errReadUnavailable
+	}
 	return out, nil
+}
+
+var errInvalidFile = errors.New("diagnostic file failed validation")
+var errReadUnavailable = errors.New("APP_DIAGNOSTICS_READ_UNAVAILABLE")
+
+func invalidFile(reason string) error { return fmt.Errorf("%w: %s", errInvalidFile, reason) }
+func (s *diskStore) recordReadError() {
+	if s.readErrors < ^uint64(0) {
+		s.readErrors++
+	}
 }
 
 // Only a validated envelope can establish ownership of a retained snapshot.
@@ -313,7 +367,10 @@ func validSnapshotRecord(id string, row Record) bool {
 			return false
 		}
 	}
-	snapshot := row.Snapshot
+	return validSnapshotV1(row.Snapshot)
+}
+
+func validSnapshotV1(snapshot Snapshot) bool {
 	return snapshot.SchemaVersion == 1 && snapshot.InstanceID != "" && snapshot.WindowID != "" && snapshot.Generation > 0 && !snapshot.CapturedAt.IsZero() && snapshot.Completeness == "partial"
 }
 
@@ -325,6 +382,8 @@ func (s *diskStore) reset(now time.Time) error {
 	if err := s.read("audit", retentionID, &summary); err == nil {
 		s.dropped = summary.Count
 		s.skipped = summary.SkippedCount
+		s.readErrors = summary.ReadErrorCount
+		s.invalidSnapshotDeleted = summary.InvalidSnapshotDeletedCount
 	}
 	for _, dir := range []string{"grants", "snapshots"} {
 		entries, err := s.entries(dir)
@@ -378,10 +437,11 @@ func (s *diskStore) reset(now time.Time) error {
 	}
 	return s.prune(now)
 }
-func (s *diskStore) prune(now time.Time) error {
-	rows, err := documents[Record](s, "snapshots", validSnapshotRecord)
-	if err != nil {
-		return err
+func (s *diskStore) prune(now time.Time) (result error) {
+	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
+	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
+	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
+		return readErr
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].value.CreatedAt.Before(rows[j].value.CreatedAt) })
 	var total int64
@@ -390,7 +450,7 @@ func (s *diskStore) prune(now time.Time) error {
 	}
 	count := len(rows)
 	for _, row := range rows {
-		if now.Before(row.value.CreatedAt.Add(24*time.Hour)) && count <= 20 && total <= 20<<20 {
+		if !s.pendingRevocations[row.value.GrantID] && now.Before(row.value.CreatedAt.Add(24*time.Hour)) && count <= 20 && total <= 20<<20 {
 			continue
 		}
 		if err := s.remove("snapshots", row.id); err != nil {
@@ -399,9 +459,12 @@ func (s *diskStore) prune(now time.Time) error {
 		count--
 		total -= row.size
 	}
+	if readErr == nil {
+		clear(s.pendingRevocations)
+	}
 	audits, err := documents[Audit](s, "audit", nil)
 	if err != nil {
-		return err
+		return errors.Join(readErr, err)
 	}
 	sort.Slice(audits, func(i, j int) bool { return audits[i].value.At.Before(audits[j].value.At) })
 	s.auditTimes = make(map[string]time.Time, len(audits))
@@ -423,14 +486,18 @@ func (s *diskStore) prune(now time.Time) error {
 		delete(s.auditTimes, row.id)
 		s.dropped++
 	}
-	return s.retentionSummary(now)
+	return readErr
 }
 func (s *diskStore) retentionSummary(now time.Time) error {
-	if s.dropped == 0 && s.skipped == 0 {
+	if s.dropped == 0 && s.skipped == 0 && s.readErrors == 0 && s.invalidSnapshotDeleted == 0 {
 		return nil
 	}
-	row := Audit{RequestID: retentionID, At: now, Outcome: "retention", Count: s.dropped, SkippedCount: s.skipped}
-	if s.skipped > 0 {
+	row := Audit{RequestID: retentionID, At: now, Outcome: "retention", Count: s.dropped, SkippedCount: s.skipped, ReadErrorCount: s.readErrors, InvalidSnapshotDeletedCount: s.invalidSnapshotDeleted}
+	if s.readErrors > 0 {
+		row.ReasonCode = "APP_DIAGNOSTICS_READ_UNAVAILABLE"
+	} else if s.invalidSnapshotDeleted > 0 {
+		row.ReasonCode = "APP_DIAGNOSTICS_INVALID_SNAPSHOT_REMOVED"
+	} else if s.skipped > 0 {
 		row.ReasonCode = "APP_DIAGNOSTICS_DOCUMENT_INVALID"
 	}
 	return s.write("audit", retentionID, row)
