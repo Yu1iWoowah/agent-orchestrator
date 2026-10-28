@@ -5999,9 +5999,14 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 	if m.replyLanguage != nil {
 		language, err := m.replyLanguage.ReplyLanguage(ctx)
 		if err != nil {
-			return "", fmt.Errorf("read reply language: %w", err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", ctxErr
+			}
+			m.logger.WarnContext(ctx, "reply language preference read failed; continuing without language instructions",
+				"sessionID", sessionID, "kind", kind, "error", err)
+		} else {
+			cfg.ReplyLanguage = language
 		}
-		cfg.ReplyLanguage = language
 	}
 	return buildSystemPromptText(cfg), nil
 }

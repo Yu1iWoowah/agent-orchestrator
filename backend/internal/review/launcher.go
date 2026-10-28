@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -357,9 +358,15 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec, 
 	if launching && l.replyLanguage != nil {
 		language, err := l.replyLanguage.ReplyLanguage(ctx)
 		if err != nil {
-			return ports.ReviewInvocation{}, fmt.Errorf("read reply language: %w", err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ports.ReviewInvocation{}, ctxErr
+			}
+			slog.WarnContext(ctx, "reply language preference read failed; continuing without language instructions",
+				"workerID", spec.WorkerID, "error", err)
+			spec.ReplyLanguage = ""
+		} else {
+			spec.ReplyLanguage = language
 		}
-		spec.ReplyLanguage = language
 	}
 	inv := l.invocation(spec)
 	if strings.TrimSpace(l.dataDir) == "" {
@@ -413,9 +420,12 @@ func (l *agentLauncher) prepareIdleInvocation(ctx context.Context, spec LaunchSp
 	if l.replyLanguage != nil {
 		language, err := l.replyLanguage.ReplyLanguage(ctx)
 		if err != nil {
-			return ports.ReviewInvocation{}, fmt.Errorf("read reply language: %w", err)
-		}
-		if section := settingssvc.ReplyLanguagePrompt(language); section != "" {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ports.ReviewInvocation{}, ctxErr
+			}
+			slog.WarnContext(ctx, "reply language preference read failed; continuing without language instructions",
+				"workerID", spec.WorkerID, "error", err)
+		} else if section := settingssvc.ReplyLanguagePrompt(language); section != "" {
 			systemPrompt += "\n\n" + section
 		}
 	}

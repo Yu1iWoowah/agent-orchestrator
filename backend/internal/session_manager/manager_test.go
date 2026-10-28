@@ -12214,10 +12214,6 @@ func TestReplyLanguageReadAtEachPromptBuild(t *testing.T) {
 				if err != nil || disabled != before {
 					t.Fatalf("disabled prompt changed: %v", err)
 				}
-				source.err = errors.New("settings unavailable")
-				if _, err := m.buildSystemPrompt(ctx, kind, "mer", "mer-1", "", chat); err == nil {
-					t.Fatal("silently dropped preference on read failure")
-				}
 			})
 		}
 	}

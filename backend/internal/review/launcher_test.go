@@ -1318,13 +1318,6 @@ func TestReviewerReplyLanguageReadAtLaunchAndRestore(t *testing.T) {
 			}
 		}
 	}
-	source.err = errors.New("settings unavailable")
-	if _, err := launcher.prepareInvocation(ctx, launchSpec(), true); err == nil {
-		t.Fatal("launch ignored preference read failure")
-	}
-	if _, err := launcher.prepareIdleInvocation(ctx, launchSpec()); err == nil {
-		t.Fatal("restore ignored preference read failure")
-	}
 }
 
 func TestReviewerReplyLanguageDoesNotHotUpdate(t *testing.T) {
