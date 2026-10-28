@@ -3529,7 +3529,7 @@
 	"settings.defaultSandbox.single": "Wo deine Cloud-Sitzungen laufen. Es ist nur eine Sandbox verfügbar.",
 	"settings.defaultSandbox.adminOnly": "Nur Organisationsadmins können das ändern.",
 	"settings.defaultSandbox.saveFailed": "Die Standard-Sandbox konnte nicht gespeichert werden. Versuche es erneut.",
-	"settings.agentAccounts.storageUnsafe": "Der Kontospeicher ist unsicher. Korrigiere die Berechtigungen und versuche es erneut.",
+	"settings.agentAccounts.storageUnsafe": "Der Kontospeicher ist unsicher. Prüfe die Ordnerberechtigungen und symbolischen Links und versuche es erneut.",
 	"settings.agentAccounts.storageUnavailable": "Der Kontospeicher ist vorübergehend nicht verfügbar. Versuche es später erneut.",
 	"settings.agentAccounts.storageUnsupported": "Private Account-Profile werden derzeit nur unter Linux unterstützt.",
 	"settings.agentAccounts.cliLoginOf": "{{provider}}-CLI-Anmeldung",
