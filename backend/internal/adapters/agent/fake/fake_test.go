@@ -47,8 +47,8 @@ func TestGetLaunchCommandIsScriptedTimeline(t *testing.T) {
 	}
 	// argv[0] must be the RESOLVED shell path (what Manager.Spawn validates), not
 	// a bare "sh" — see ResolveBinary / #2692 review.
-	if len(cmd) != 3 || cmd[1] != "-lc" || !strings.HasSuffix(cmd[0], "sh") || !strings.Contains(cmd[0], "/") {
-		t.Fatalf("launch command shape = %#v, want [<resolved sh path> -lc <script>]", cmd)
+	if len(cmd) != 3 || cmd[1] != "-c" || !strings.HasSuffix(cmd[0], "sh") || !strings.Contains(cmd[0], "/") {
+		t.Fatalf("launch command shape = %#v, want [<resolved sh path> -c <script>]", cmd)
 	}
 
 	script := cmd[2]
@@ -286,8 +286,13 @@ func (s *lifecycleStore) ListSessions(_ context.Context, _ domain.ProjectID) ([]
 // that the terminal state is a deterministic ActivityExited without terminating
 // the still-available runtime, not an incidental idle.
 func TestFullLifecycleSpawnToTermination(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
 		t.Skip("no POSIX shell on PATH")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep on PATH")
 	}
 
 	// A very high speedup so the six phase sleeps are ~1ms each: the run must be
@@ -299,6 +304,24 @@ func TestFullLifecycleSpawnToTermination(t *testing.T) {
 	// hooks actually fired. Its own stdout/stderr are redirected to /dev/null by
 	// the script, so it must persist through a file.
 	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A login profile must not replace the daemon-pinned ao with a user's
+	// installation. Both candidates here are local recording shims; neither can
+	// reach an installed AO or send a hook to a real daemon, even before the fix.
+	profileBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(profileBin, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	profileShim := "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$AO_PROFILE_HOOK_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(profileBin, "ao"), []byte(profileShim), 0o755); err != nil { //nolint:gosec // test shim must be executable
+		t.Fatal(err)
+	}
+	profile := "export PATH=\"$HOME/.local/bin:$PATH\"\n"
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profileHookLog := filepath.Join(home, "profile-events.log")
 	hookLog := filepath.Join(dir, "events.log")
 	shim := "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$AO_HOOK_LOG\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "ao"), []byte(shim), 0o755); err != nil { //nolint:gosec // test shim must be executable
@@ -314,8 +337,9 @@ func TestFullLifecycleSpawnToTermination(t *testing.T) {
 	// Hooks fire: run the script with the stub `ao` ahead of the real PATH.
 	run := exec.Command(cmd[0], cmd[1:]...) //nolint:gosec // argv is the harness's own launch command
 	run.Env = append(os.Environ(),
-		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+strings.Join([]string{dir, filepath.Dir(sh), filepath.Dir(sleep)}, string(os.PathListSeparator)),
 		"AO_HOOK_LOG="+hookLog,
+		"AO_PROFILE_HOOK_LOG="+profileHookLog,
 		"AO_SESSION_ID=fake-1",
 	)
 	start := time.Now()
@@ -325,6 +349,9 @@ func TestFullLifecycleSpawnToTermination(t *testing.T) {
 	elapsed := time.Since(start)
 	if elapsed > 5*time.Second {
 		t.Fatalf("sped-up run took %v, want well under a second (speedup not applied?)", elapsed)
+	}
+	if raw, err := os.ReadFile(profileHookLog); !os.IsNotExist(err) { //nolint:gosec // path is under the test's own TempDir
+		t.Fatalf("login profile redirected hooks away from the daemon shim: events=%q, read error=%v", raw, err)
 	}
 
 	raw, err := os.ReadFile(hookLog) //nolint:gosec // path is under the test's own TempDir
