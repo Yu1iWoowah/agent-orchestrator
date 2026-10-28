@@ -22,7 +22,7 @@ ao project set-config my-app \
 
 When `trackerIntake.provider` is omitted, Orchestrator infers the provider from the project's Git remote. GitHub hosts select `github`; other remote hosts select `gitlab`. An empty or unparseable remote falls back to `github`. When the repository is omitted, Orchestrator can also derive it from that remote.
 
-For an explicit GitLab intake configuration, set `trackerIntake.provider` to `gitlab` in the full configuration object through the daemon API. The CLI has no `--tracker-provider` flag on `project set-config`; that flag belongs to `spawn`. If you use `--config-json`, preserve all other project settings and heed the effort-loss warning above. The intake portion of the object is:
+For an explicit GitLab intake configuration, set `trackerIntake.provider` to `gitlab` in the full configuration object through the daemon API. The CLI has no `--tracker-provider` flag on `project set-config`; that flag belongs to `spawn`. If you use `--config-json`, preserve all other project settings and heed the full-config warning above. A replacement object that omits effort clears existing effort values. The intake portion of the object is:
 
 ```json
 {
@@ -35,7 +35,7 @@ For an explicit GitLab intake configuration, set `trackerIntake.provider` to `gi
 }
 ```
 
-This is a fragment to merge into the full configuration, not a replacement for it. Use `ao project get my-app --json` to inspect the stored configuration, keeping in mind that its output omits effort.
+This is a fragment to merge into the full configuration, not a replacement for it. Use `ao project get my-app --json` to inspect the stored configuration, including effort and `preRemove`. Modify the returned `project.config` object and pass the complete object to `--config-json` to preserve those settings.
 
 If `AO_TRACKER_INTAKE` is unset, the project config is still stored and validated, but no sessions are spawned. The daemon logs a warning at startup naming how many projects have intake configured while the flag is off.
 
