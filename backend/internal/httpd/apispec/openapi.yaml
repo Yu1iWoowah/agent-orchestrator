@@ -3936,6 +3936,61 @@ paths:
       summary: Fetch link-preview metadata (Open Graph) for an external URL
       tags:
       - link-preview
+  /api/v1/local-documents/resolve:
+    post:
+      operationId: resolveLocalDocument
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveDocumentRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveDocumentResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Resolve a registered document location (desktop loopback only)
+      tags:
+      - projects
   /api/v1/mobile/browser-control:
     post:
       operationId: setMobileBrowserRemoteAccess
@@ -4880,6 +4935,84 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Replace a project's per-project config
+      tags:
+      - projects
+  /api/v1/projects/{id}/document-catalog:
+    get:
+      operationId: getProjectDocumentCatalog
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      - in: query
+        name: source
+        schema:
+          enum:
+          - all
+          - worker
+          - orchestrator
+          - shared
+          type: string
+      - in: query
+        name: archive
+        schema:
+          enum:
+          - all
+          - current
+          - archive
+          type: string
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      - in: query
+        name: limit
+        schema:
+          maximum: 200
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentCatalogResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Page through registered worker, orchestrator and shared document metadata
       tags:
       - projects
   /api/v1/projects/{id}/documents:
@@ -18382,6 +18515,128 @@ components:
       required:
       - report
       type: object
+    DocumentCatalog:
+      properties:
+        errors:
+          items:
+            $ref: '#/components/schemas/DocumentSourceError'
+          type: array
+        incomplete:
+          type: boolean
+        items:
+          items:
+            $ref: '#/components/schemas/DocumentCatalogItem'
+          type: array
+        nextCursor:
+          type: string
+        revision:
+          type: string
+      required:
+      - items
+      - errors
+      - incomplete
+      - revision
+      type: object
+    DocumentCatalogItem:
+      properties:
+        archived:
+          type: boolean
+        fingerprint:
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+        size:
+          format: int64
+          type: integer
+        source:
+          enum:
+          - worker
+          - orchestrator
+          - shared
+          type: string
+        target:
+          $ref: '#/components/schemas/DocumentTarget'
+        updatedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - target
+      - path
+      - name
+      - source
+      - archived
+      - size
+      - fingerprint
+      type: object
+    DocumentCatalogResponse:
+      properties:
+        catalog:
+          $ref: '#/components/schemas/DocumentCatalog'
+      required:
+      - catalog
+      type: object
+    DocumentSourceError:
+      properties:
+        code:
+          type: string
+        sessionId:
+          type: string
+        source:
+          enum:
+          - worker
+          - orchestrator
+          - shared
+          type: string
+      required:
+      - source
+      - code
+      type: object
+    DocumentTarget:
+      oneOf:
+      - properties:
+          fragment:
+            type:
+            - "null"
+            - string
+          kind:
+            enum:
+            - artifact
+            type: string
+          path:
+            type: string
+          projectId:
+            type: string
+          sessionId:
+            type: string
+        required:
+        - kind
+        - projectId
+        - sessionId
+        - path
+        type: object
+      - properties:
+          fragment:
+            type:
+            - "null"
+            - string
+          kind:
+            enum:
+            - shared
+            type: string
+          path:
+            type: string
+          projectId:
+            type: string
+        required:
+        - kind
+        - projectId
+        - path
+        type: object
+      type: object
     DomainActivity:
       properties:
         lastActivityAt:
@@ -20567,6 +20822,75 @@ components:
       required:
       - action
       type: object
+    ResolveDocumentRequest:
+      oneOf:
+      - properties:
+          fragment:
+            type:
+            - "null"
+            - string
+          kind:
+            enum:
+            - artifact
+            type: string
+          path:
+            type: string
+          projectId:
+            type: string
+          sessionId:
+            type: string
+        required:
+        - kind
+        - projectId
+        - sessionId
+        - path
+        type: object
+      - properties:
+          fragment:
+            type:
+            - "null"
+            - string
+          kind:
+            enum:
+            - shared
+            type: string
+          path:
+            type: string
+          projectId:
+            type: string
+        required:
+        - kind
+        - projectId
+        - path
+        type: object
+      - properties:
+          kind:
+            enum:
+            - local-path
+            type: string
+          value:
+            type: string
+        required:
+        - kind
+        - value
+        type: object
+      properties:
+        kind:
+          enum:
+          - artifact
+          - shared
+          - local-path
+          type: string
+      required:
+      - kind
+      type: object
+    ResolveDocumentResponse:
+      properties:
+        document:
+          $ref: '#/components/schemas/ResolvedDocument'
+      required:
+      - document
+      type: object
     ResolveFileReferenceResponse:
       properties:
         endLine:
@@ -20592,6 +20916,35 @@ components:
           type: string
       required:
       - state
+      type: object
+    ResolvedDocument:
+      properties:
+        canonicalUri:
+          type: string
+        fingerprint:
+          description: Metadata validator, not a content hash.
+          type: string
+        localPath:
+          type: string
+        mediaType:
+          type: string
+        size:
+          format: int64
+          type: integer
+        target:
+          $ref: '#/components/schemas/DocumentTarget'
+        updatedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - target
+      - canonicalUri
+      - localPath
+      - size
+      - mediaType
+      - fingerprint
       type: object
     RestoreArtifactVersionRequest:
       properties:
