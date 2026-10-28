@@ -328,3 +328,24 @@ func TestCatalogUsesExistingArtifactIgnoredEntryRules(t *testing.T) {
 		t.Fatalf("tool internals entered artifact catalog: %+v", result.Items)
 	}
 }
+
+func TestCatalogReportsMissingManagedRootInsteadOfCompleteEmptySource(t *testing.T) {
+	f := setup(t)
+	if e := os.RemoveAll(filepath.Join(f.data, "artifacts", "p-1")); e != nil {
+		t.Fatal(e)
+	}
+	result, e := f.s.Catalog(context.Background(), "p", CatalogQuery{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !result.Incomplete || len(result.Errors) != 1 || result.Errors[0].Code != "DOCUMENT_SOURCE_MISSING" || result.Errors[0].SessionID != "p-1" || len(result.Items) != 2 {
+		t.Fatalf("missing source was not distinguished from complete empty inventory: %+v", result)
+	}
+	if e := os.Mkdir(filepath.Join(f.data, "artifacts", "p-1"), 0o755); e != nil {
+		t.Fatal(e)
+	}
+	result, e = f.s.Catalog(context.Background(), "p", CatalogQuery{})
+	if e != nil || result.Incomplete || len(result.Errors) != 0 || len(result.Items) != 2 {
+		t.Fatalf("existing empty root was reported missing: %+v %v", result, e)
+	}
+}

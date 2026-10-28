@@ -172,7 +172,7 @@ func (s *Service) scan(ctx context.Context, src catalogSource, visited *int) ([]
 	items := []CatalogItem{}
 	root, e := s.openRoot(src.root)
 	if errors.Is(e, fs.ErrNotExist) {
-		return items, "", nil
+		return items, "DOCUMENT_SOURCE_MISSING", nil
 	}
 	if e != nil {
 		return items, "DOCUMENT_SOURCE_UNAVAILABLE", nil
