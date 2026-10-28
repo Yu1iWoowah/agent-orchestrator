@@ -623,6 +623,9 @@ func (p *nativeHistoryCheckpoint) captureAOHighWater(
 	evidence := func(turn *domain.ConversationTurn) nativeHistoryHighWater {
 		boundary := turnEvidence[turn.ID]
 		boundary.providerTurnID = turn.ProviderTurnID
+		if boundary.kind == ports.ChatEventUserMessageCompleted && turn.ProviderInputText != "" {
+			boundary.text = turn.ProviderInputText
+		}
 		return boundary
 	}
 	// Queue reordering updates RequestedAt, not the message sequence. Preserve
