@@ -19,8 +19,10 @@ func TestSpawnSettingsNegotiatesBeforeSendingNewWire(t *testing.T) {
 	}{
 		{"fast on", `{"agentSettingsVersion":1}`, []string{"--fast", "on"}, map[string]any{"fastMode": "on"}, false},
 		{"resets", `{"agentSettingsVersion":1}`, []string{"--model", "default", "--effort", "default", "--fast", "default"}, map[string]any{"model": nil, "effort": nil, "fastMode": "default"}, false},
+		{"empty resets", `{"agentSettingsVersion":1}`, []string{"--model", "", "--effort", ""}, map[string]any{"model": nil, "effort": nil}, false},
 		{"old daemon", "404", []string{"--fast", "off"}, nil, true},
 		{"old daemon reset", "404", []string{"--model", "default"}, nil, true},
+		{"old daemon empty reset", "404", []string{"--model", "", "--effort", ""}, nil, true},
 		{"missing declaration", `{}`, []string{"--fast", "on"}, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,6 +72,25 @@ func TestSpawnSettingsNegotiatesBeforeSendingNewWire(t *testing.T) {
 				t.Fatalf("spawn err=%v posted=%v", err, posted)
 			}
 		})
+	}
+}
+
+func TestSpawnStaleCatalogSuggestsRefreshAndPreservesError(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"message":"agent settings capabilities unavailable: catalog_stale","code":"AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE","requestId":"stale-request"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+	_, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--standalone", "--agent", "codex", "--name", "test", "--skip-agent-check")
+	if err == nil || !strings.Contains(err.Error(), "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE") || !strings.Contains(err.Error(), "stale-request") || !strings.Contains(stderr, "refresh") {
+		t.Fatalf("stderr=%q err=%v", stderr, err)
 	}
 }
 

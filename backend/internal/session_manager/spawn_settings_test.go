@@ -43,6 +43,32 @@ func TestSpawnFastConfigPrecedence(t *testing.T) {
 	}
 }
 
+func TestSpawnIgnoresProjectFastForUnsupportedHarness(t *testing.T) {
+	for _, harness := range []domain.AgentHarness{domain.HarnessAmp, domain.HarnessOpenCode} {
+		t.Run(string(harness), func(t *testing.T) {
+			m, st, _, ws := newManager()
+			project := st.projects["mer"]
+			project.Config.AgentConfig.FastMode = domain.AgentFastOn
+			project.Config.Worker.Harness = harness
+			st.projects["mer"] = project
+			rec, _, _, err := m.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+			if err != nil {
+				t.Fatalf("project fast blocked unsupported harness %s: %v", harness, err)
+			}
+			resolution := rec.Metadata.SpawnAgentSettings
+			if ws.createCount != 1 || resolution == nil || resolution.Settings.FastMode != domain.AgentFastDefault || resolution.Sources.FastMode != "provider:project_fast_unsupported" {
+				t.Fatalf("workspace=%d resolution=%+v", ws.createCount, resolution)
+			}
+			// An explicit request is still authoritative and needs validation.
+			on := domain.AgentFastOn
+			_, explicit, _, err := resolveSpawnSettings(ports.SpawnConfig{Harness: harness, Kind: domain.KindWorker, AgentSettings: &domain.AgentSettingsPatch{FastMode: &on}}, project.Config)
+			if err != nil || explicit.Settings.FastMode != on || explicit.Sources.FastMode != "request" {
+				t.Fatalf("explicit fast was silently ignored: %+v err=%v", explicit, err)
+			}
+		})
+	}
+}
+
 type spawnSettingsPreflight struct {
 	accounts *transitionAccounts
 	t        *testing.T

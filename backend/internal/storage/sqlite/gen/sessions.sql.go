@@ -2088,6 +2088,26 @@ func (q *Queries) SetTaskPreparationBase(ctx context.Context, arg SetTaskPrepara
 	return result.RowsAffected()
 }
 
+const setTaskPreparationHarness = `-- name: SetTaskPreparationHarness :execrows
+UPDATE sessions SET harness = ?1
+WHERE id = ?2 AND is_task_preparation = 1 AND is_terminated = 0 AND harness = ''
+`
+
+type SetTaskPreparationHarnessParams struct {
+	Harness domain.AgentHarness
+	ID      domain.SessionID
+}
+
+// Select the claimed preparation's harness before account binding and settings
+// validation, without publishing it or overwriting concurrent workspace facts.
+func (q *Queries) SetTaskPreparationHarness(ctx context.Context, arg SetTaskPreparationHarnessParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTaskPreparationHarness, arg.Harness, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateBrowserCapabilityVerifier = `-- name: UpdateBrowserCapabilityVerifier :execrows
 UPDATE sessions SET
     browser_capability_verifier = ?1

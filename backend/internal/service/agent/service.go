@@ -492,9 +492,19 @@ func (s *Service) revalidateChangedInputs(agentID, projectID, cachedFingerprint 
 }
 
 func (s *Service) modelCatalogInputsChanged(ctx context.Context, agentID, projectID, cachedFingerprint string) bool {
+	current, err := s.CatalogFingerprint(ctx, agentID, projectID)
+	return err == nil && current != cachedFingerprint
+}
+
+// CatalogFingerprint computes current discovery inputs without refreshing the
+// catalog. Strict spawn validation shares this path with background revalidation.
+func (s *Service) CatalogFingerprint(ctx context.Context, agentID, projectID string) (string, error) {
+	if s.discoverer == nil {
+		return "", apierr.Internal("MODEL_DISCOVERY_UNAVAILABLE", "Model discovery is unavailable")
+	}
 	item, ok := s.agent(agentID)
 	if !ok {
-		return false
+		return "", apierr.NotFound("AGENT_NOT_FOUND", "Unknown agent adapter")
 	}
 	var binary string
 	if resolver, ok := item.Agent.(ports.AgentBinaryResolver); ok {
@@ -503,15 +513,15 @@ func (s *Service) modelCatalogInputsChanged(ctx context.Context, agentID, projec
 		resolved, err := resolver.ResolveBinary(ctx)
 		lock.Unlock()
 		if err != nil {
-			return false
+			return "", err
 		}
 		binary = resolved
 	}
 	request, err := s.modelDiscoveryRequest(agentID, projectID, binary)
 	if err != nil {
-		return false
+		return "", err
 	}
-	return s.discoverer.CatalogFingerprint(ctx, request) != cachedFingerprint
+	return s.discoverer.CatalogFingerprint(ctx, request), nil
 }
 
 // credentialScopePrefix marks a model-catalog scope that is not a project but a

@@ -383,6 +383,7 @@ type Store interface {
 	SetSessionBranchNaming(ctx context.Context, id domain.SessionID, naming bool) error
 	ClearSessionBranchNaming(ctx context.Context) error
 	SetTaskPreparationBase(ctx context.Context, id domain.SessionID, baseSHA, baseRef string) (bool, error)
+	SetTaskPreparationHarness(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (bool, error)
 	PromoteTaskPreparation(ctx context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error)
 	DeleteTaskPreparation(ctx context.Context, id domain.SessionID) (bool, error)
 }
@@ -1143,6 +1144,17 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	var rec domain.SessionRecord
 	if prep != nil {
 		rec = prep.record
+		updated, err := m.store.SetTaskPreparationHarness(ctx, rec.ID, cfg.Harness)
+		if err != nil || !updated {
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			m.discardClaimedTaskPreparation(cleanupCtx, prep)
+			cancel()
+			if err == nil {
+				err = errors.New("task preparation is no longer available")
+			}
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(rec.ID, ErrSpawnCreate, err)
+		}
+		rec.Harness = cfg.Harness
 	} else {
 		seed := seedRecord(cfg, project.Config, m.clock())
 		if mode == domain.SessionModeChat {
@@ -2363,6 +2375,9 @@ func roleConfigName(kind domain.SessionKind) string {
 // harness-neutral and is always inherited.
 func effectiveAgentConfig(harness domain.AgentHarness, kind domain.SessionKind, cfg domain.ProjectConfig) ports.AgentConfig {
 	merged := cfg.AgentConfig
+	if !harness.SupportsFastMode() {
+		merged.FastMode = ""
+	}
 	role := roleOverride(kind, cfg)
 	override := role.AgentConfig
 	harnessMatches := role.Harness == "" || role.Harness == harness

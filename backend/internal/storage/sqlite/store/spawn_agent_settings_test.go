@@ -11,6 +11,33 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestPreparedHarnessSelectionPreservesWorkspaceAndVisibility(t *testing.T) {
+	ctx := context.Background()
+	st, db, rec := settingsFixture(t)
+	if changed, err := st.SetTaskPreparationHarness(ctx, rec.ID, domain.HarnessCodex); err != nil || changed {
+		t.Fatalf("visible session changed: changed=%v err=%v", changed, err)
+	}
+	if _, err := db.Exec("UPDATE sessions SET is_task_preparation=1,harness='',branch='prepared',workspace_path='/prepared',workspace_repo_path='/repo' WHERE id=?", rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, _, err := st.GetSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.SetTaskPreparationHarness(ctx, rec.ID, domain.HarnessCodex); err != nil || !changed {
+		t.Fatalf("select harness: changed=%v err=%v", changed, err)
+	}
+	after, _, err := st.GetSession(ctx, rec.ID)
+	before.Harness = domain.HarnessCodex
+	before.Revision++ // Existing AFTER UPDATE trigger owns session revision.
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("harness selection changed workspace/visibility facts: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if changed, err := st.SetTaskPreparationHarness(ctx, rec.ID, domain.HarnessClaudeCode); err != nil || changed {
+		t.Fatalf("selected harness overwritten: changed=%v err=%v", changed, err)
+	}
+}
+
 func TestSpawnAgentSettingsPinsSelectionAndSources(t *testing.T) {
 	ctx := context.Background()
 	st, db, rec := settingsFixture(t)

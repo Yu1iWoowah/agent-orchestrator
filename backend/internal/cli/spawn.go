@@ -212,6 +212,10 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			var res spawnResult
 			if err := ctx.postSetupJSON(cmd.Context(), "sessions", req, &res); err != nil {
+				var apiErr apiResponseError
+				if errors.As(err, &apiErr) && apiErr.ErrorBody.Code == "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" && strings.Contains(apiErr.ErrorBody.Message, "catalog_stale") {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "hint: refresh the agent model catalog, then retry spawn.")
+				}
 				return err
 			}
 			if strings.TrimSpace(res.Session.ID) == "" {

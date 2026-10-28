@@ -2036,9 +2036,9 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 			state = live
 			caps = controller.Capabilities()
 		}
-		// Fast and plan mode live with the controller, not in the stored row.
+		// Overlay current controller choices; plan mode remains live-only.
 		live := controller.Settings()
-		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.PlanMode
+		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.AgentFastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.AgentFastMode, live.PlanMode
 	}
 
 	return Snapshot{
@@ -2144,9 +2144,9 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 			state = live
 			caps = controller.Capabilities()
 		}
-		// Fast and plan mode live with the controller, not in the stored row.
+		// Overlay current controller choices; plan mode remains live-only.
 		live := controller.Settings()
-		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.PlanMode
+		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.AgentFastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.AgentFastMode, live.PlanMode
 	}
 	return Snapshot{
 		Conversation:                     rows.Conversation,

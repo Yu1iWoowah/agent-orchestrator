@@ -1810,6 +1810,17 @@ func (c *Controller) Settings() domain.ConversationSettings {
 // The row is written first: if that fails, the in-memory copy must not move, or a
 // restart would silently revert a choice the user watched take effect.
 func (c *Controller) SetSettings(ctx context.Context, settings domain.ConversationSettings) error {
+	previous := c.Settings()
+	if settings.FastMode {
+		settings.AgentFastMode = domain.AgentFastOn
+	} else if settings.AgentFastMode == domain.AgentFastOn {
+		settings.AgentFastMode = domain.AgentFastOff
+	} else if settings.AgentFastMode == "" {
+		settings.AgentFastMode = previous.AgentFastMode
+		if previous.FastMode || previous.AgentFastMode == domain.AgentFastOn {
+			settings.AgentFastMode = domain.AgentFastOff
+		}
+	}
 	if err := c.store.SetConversationSettings(ctx, c.conversation.ID, settings, c.now()); err != nil {
 		return fmt.Errorf("record conversation settings: %w", err)
 	}

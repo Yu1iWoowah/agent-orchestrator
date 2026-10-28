@@ -23,11 +23,21 @@ func (s *Service) ValidateSpawn(ctx context.Context, id domain.SessionID, settin
 	if err != nil {
 		return settings, err
 	}
-	if settings.FastMode != domain.AgentFastDefault && snapshot.Harness != domain.HarnessCodex && snapshot.Harness != domain.HarnessClaudeCode {
+	if settings.FastMode != domain.AgentFastDefault && !snapshot.Harness.SupportsFastMode() {
 		return settings, fmt.Errorf("%w: fast_unsupported", ports.ErrAgentSettingsUnsupported)
 	}
 	if snapshot.Capabilities.State != CapabilitySupported {
 		return settings, fmt.Errorf("%w: %s", ports.ErrAgentSettingsCapabilitiesUnavailable, snapshot.Capabilities.Reason)
+	}
+	if s.catalogInputs == nil || snapshot.catalogFingerprint == "" {
+		return settings, fmt.Errorf("%w: catalog_inputs_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
+	}
+	current, err := s.catalogInputs.CatalogFingerprint(ctx, string(snapshot.Harness), "")
+	if err != nil || current == "" {
+		return settings, fmt.Errorf("%w: catalog_inputs_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
+	}
+	if current != snapshot.catalogFingerprint {
+		return settings, fmt.Errorf("%w: catalog_stale", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
 	var selected *ModelCapabilities
 	for i := range snapshot.Capabilities.Models {

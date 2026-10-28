@@ -325,7 +325,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	// thread/start has no top-level effort field either; carry the durable AO
 	// choice as a config override like thread/resume does, so a fresh thread
 	// does not silently fall back to the provider default.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers, cfg.FastMode); len(config) > 0 {
+	config, err := conv.threadConfig(ctx, cfg.Effort, cfg.MCPServers, cfg.FastMode, cfg.Model)
+	if err != nil {
+		_ = conv.Close()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	if cfg.SystemPrompt != "" {
@@ -408,7 +413,12 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	// thread/resume has no top-level effort field. Codex exposes persistent
 	// reasoning effort as a config override, so carry the durable AO choice into
 	// the resumed thread instead of silently falling back to the provider default.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers, cfg.FastMode); len(config) > 0 {
+	config, err := conv.threadConfig(ctx, cfg.Effort, cfg.MCPServers, cfg.FastMode, cfg.Model)
+	if err != nil {
+		_ = conv.Close()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	// Developer instructions are launch context, not durable conversation
@@ -481,16 +491,26 @@ func codexThreadMissing(err error) bool {
 // Verified live on codex-cli 0.160.1: a tool not marked read-only raised that
 // request under on-request and was refused under never/read-only, and
 // default_tools_approval_mode "approve" removed both.
-func threadConfig(effort string, servers []ports.ChatMCPServerConfig, fastModes ...domain.AgentFastMode) map[string]any {
-	config := map[string]any{}
-	if len(fastModes) > 0 {
-		switch fastModes[0] {
-		case domain.AgentFastOn:
-			config["service_tier"] = "priority"
-		case domain.AgentFastOff:
-			config["service_tier"] = "default"
+func (c *conversation) threadConfig(ctx context.Context, effort string, servers []ports.ChatMCPServerConfig, fastMode domain.AgentFastMode, model string) (map[string]any, error) {
+	config := threadConfig(effort, servers)
+	switch fastMode {
+	case domain.AgentFastOn:
+		catalogCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+		defer cancel()
+		if _, err := c.ListModels(catalogCtx); err != nil {
+			return nil, fmt.Errorf("fast thread config: %w", err)
 		}
+		c.sendMu.Lock()
+		config["service_tier"] = c.fastServiceTier(model)
+		c.sendMu.Unlock()
+	case domain.AgentFastOff:
+		config["service_tier"] = "default"
 	}
+	return config, nil
+}
+
+func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string]any {
+	config := map[string]any{}
 	if effort != "" {
 		config["model_reasoning_effort"] = effort
 	}
@@ -865,7 +885,12 @@ func (d *Driver) ForkIntoHost(ctx context.Context, sourceProviderConversationID,
 	}
 	// Same overrides as thread/start and thread/resume: without the MCP servers
 	// a fresh fork has no AO tools until a restart resumes it.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers, cfg.FastMode); len(config) > 0 {
+	config, err := conv.threadConfig(ctx, cfg.Effort, cfg.MCPServers, cfg.FastMode, cfg.Model)
+	if err != nil {
+		_ = conv.Close()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	if cfg.SystemPrompt != "" {

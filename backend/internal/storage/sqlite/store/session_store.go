@@ -292,6 +292,18 @@ func (s *Store) SetSessionBranchState(ctx context.Context, id domain.SessionID, 
 	return rows > 0, nil
 }
 
+// SetTaskPreparationHarness selects a claimed hidden row's account provider
+// without touching workspace facts still being published in the background.
+func (s *Store) SetTaskPreparationHarness(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetTaskPreparationHarness(ctx, gen.SetTaskPreparationHarnessParams{ID: id, Harness: harness})
+	if err != nil {
+		return false, fmt.Errorf("set task preparation harness %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // PromoteTaskPreparation makes a hidden speculative row visible without
 // touching workspace facts that may be published by the preparation goroutine.
 func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error) {

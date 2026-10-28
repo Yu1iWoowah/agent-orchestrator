@@ -25,6 +25,12 @@ const (
 	AgentFastOff     AgentFastMode = "off"
 )
 
+// SupportsFastMode reports whether AO's adapter implements an explicit fast
+// preference. Model/account support still requires qualified catalog evidence.
+func (h AgentHarness) SupportsFastMode() bool {
+	return h == HarnessCodex || h == HarnessClaudeCode
+}
+
 // AgentSettings describes a committed preference, never a claim about the
 // provider's effective model or the settings of an already dispatched turn.
 type AgentSettings struct {

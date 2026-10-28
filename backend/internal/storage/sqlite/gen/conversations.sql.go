@@ -5264,7 +5264,8 @@ const updateConversationTurnSettings = `-- name: UpdateConversationTurnSettings 
 UPDATE conversations
 SET model=?1,reasoning_effort=?2,approval_mode=?3,
  opencode_mode=?4,auto_compact_window=?5,updated_at=?6,
- agent_fast_mode=CASE WHEN CAST(?7 AS TEXT)='' THEN agent_fast_mode ELSE CAST(?7 AS TEXT) END
+ agent_fast_mode=CASE WHEN CAST(?7 AS TEXT)<>'' THEN CAST(?7 AS TEXT)
+ WHEN agent_fast_mode='on' THEN 'off' ELSE agent_fast_mode END
 WHERE id=?8
 `
 

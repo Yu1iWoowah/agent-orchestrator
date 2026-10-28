@@ -383,6 +383,12 @@ WHERE harness = sqlc.arg(harness) AND is_terminated = 0 AND session_mode = 'tui'
     AND native_transcript_path <> ''
 ORDER BY id;
 
+-- name: SetTaskPreparationHarness :execrows
+-- Select the claimed preparation's harness before account binding and settings
+-- validation, without publishing it or overwriting concurrent workspace facts.
+UPDATE sessions SET harness = sqlc.arg(harness)
+WHERE id = sqlc.arg(id) AND is_task_preparation = 1 AND is_terminated = 0 AND harness = '';
+
 -- name: PromoteTaskPreparation :execrows
 -- Claim the hidden row without touching branch/workspace facts that may be
 -- published concurrently by speculative worktree creation.

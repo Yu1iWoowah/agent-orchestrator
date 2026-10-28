@@ -1999,17 +1999,22 @@ func (s *Store) ListVisibleRunningTurnProviderIDs(
 //
 // An empty field is stored as NULL rather than as an empty string, so "the user
 // cleared this" and "the user never chose" stay the same thing: fall back to the
-// provider's default.
+// provider's default. Fast is different: turning the live boolean off must
+// replace an existing paid-tier preference with an explicit off.
 func (s *Store) SetConversationSettings(
 	ctx context.Context,
 	conversationID string,
 	settings domain.ConversationSettings,
 	now time.Time,
 ) error {
+	fastMode := settings.AgentFastMode
+	if fastMode == "" && settings.FastMode {
+		fastMode = domain.AgentFastOn
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.qw.UpdateConversationTurnSettings(ctx, gen.UpdateConversationTurnSettingsParams{
-		FastMode:        string(settings.AgentFastMode),
+		FastMode:        string(fastMode),
 		Model:           nullableString(settings.Model),
 		ReasoningEffort: nullableString(settings.ReasoningEffort),
 		ApprovalMode:    nullableString(string(settings.ApprovalMode)),

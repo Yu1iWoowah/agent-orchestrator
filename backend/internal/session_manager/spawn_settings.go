@@ -18,13 +18,17 @@ func resolveSpawnSettings(cfg ports.SpawnConfig, project domain.ProjectConfig) (
 	resolution := domain.SpawnAgentSettingsResolution{Sources: domain.AgentSettingsSources{Model: "provider", Effort: "provider", FastMode: "provider"}, Validation: "native-validation", Reason: "legacy_selection_unconfirmed"}
 	role := roleOverride(cfg.Kind, project)
 	matched := role.Harness == "" || role.Harness == cfg.Harness
+	projectFast := project.AgentConfig.FastMode
+	if !cfg.Harness.SupportsFastMode() {
+		projectFast = ""
+	}
 	for _, field := range []struct {
 		project, role, task string
 		source              *string
 	}{
 		{project.AgentConfig.Model, role.AgentConfig.Model, cfg.AgentConfig.Model, &resolution.Sources.Model},
 		{project.AgentConfig.Effort, role.AgentConfig.Effort, cfg.AgentConfig.Effort, &resolution.Sources.Effort},
-		{string(project.AgentConfig.FastMode), string(role.AgentConfig.FastMode), string(cfg.AgentConfig.FastMode), &resolution.Sources.FastMode},
+		{string(projectFast), string(role.AgentConfig.FastMode), string(cfg.AgentConfig.FastMode), &resolution.Sources.FastMode},
 	} {
 		if field.project != "" {
 			*field.source = "project"
@@ -73,6 +77,9 @@ func resolveSpawnSettings(cfg ports.SpawnConfig, project domain.ProjectConfig) (
 	config.Effort = string(settings.Effort)
 	config.FastMode = settings.FastMode
 	resolution.Settings = settings
+	if project.AgentConfig.FastMode != "" && projectFast == "" && resolution.Sources.FastMode == "provider" {
+		resolution.Sources.FastMode = "provider:project_fast_unsupported"
+	}
 	modelChanged = modelChanged || resolution.Sources.Effort == "project" && resolution.Sources.Model != "project" && settings.Model != domain.AgentModelSelection(project.AgentConfig.Model)
 	return config, resolution, modelChanged && !explicitEffort, nil
 }

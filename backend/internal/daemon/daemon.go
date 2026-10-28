@@ -586,6 +586,7 @@ func Run(buildVersion string) error {
 	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
 	agentSettingsSvc := agentsettings.New(store, time.Now)
+	agentSettingsSvc.SetCatalogFingerprintSource(agentSvc)
 	if wired, ok := sessMgr.(interface {
 		SetAgentSettingsPreflight(ports.AgentSettingsPreflight)
 	}); ok {

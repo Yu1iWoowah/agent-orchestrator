@@ -3,6 +3,7 @@ package agentsettings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -47,10 +48,12 @@ func TestSpawnSettingsPreflightUsesBoundAccountEvidence(t *testing.T) {
 			if tc.stale {
 				observed = now.AddDate(0, 0, -1)
 			}
-			if err = st.UpsertAgentModelCatalog(ctx, ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), LastSuccessAt: observed, FetchedAt: observed}); err != nil {
+			if err = st.UpsertAgentModelCatalog(ctx, ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), LastSuccessAt: observed, FetchedAt: observed, InputFingerprint: "stable"}); err != nil {
 				t.Fatal(err)
 			}
-			validator, ok := any(New(st, func() time.Time { return now })).(interface {
+			reader := New(st, func() time.Time { return now })
+			reader.SetCatalogFingerprintSource(fixedCatalogFingerprint("stable"))
+			validator, ok := any(reader).(interface {
 				ValidateSpawn(context.Context, domain.SessionID, domain.AgentSettings, bool) (domain.AgentSettings, error)
 			})
 			if !ok {
@@ -65,6 +68,53 @@ func TestSpawnSettingsPreflightUsesBoundAccountEvidence(t *testing.T) {
 			}
 			if err != nil || string(got.Effort) != tc.wantEffort {
 				t.Fatalf("got %+v err=%v", got, err)
+			}
+		})
+	}
+}
+
+// A fake owner fingerprint; no credentials or executable discovery is performed.
+type fixedCatalogFingerprint string
+
+func (f fixedCatalogFingerprint) CatalogFingerprint(context.Context, string, string) (string, error) {
+	return string(f), nil
+}
+
+type failedCatalogFingerprint struct{}
+
+func (failedCatalogFingerprint) CatalogFingerprint(context.Context, string, string) (string, error) {
+	return "", errors.New("inputs unavailable")
+}
+
+func TestStrictSpawnRequiresVerifiedCurrentCatalogInputs(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name, saved, reason string
+		source              CatalogFingerprintSource
+	}{
+		{"missing source", "saved", "catalog_inputs_unverified", nil},
+		{"missing saved fingerprint", "", "catalog_inputs_unverified", fixedCatalogFingerprint("current")},
+		{"empty current fingerprint", "saved", "catalog_inputs_unverified", fixedCatalogFingerprint("")},
+		{"failed input resolution", "saved", "catalog_inputs_unverified", failedCatalogFingerprint{}},
+		{"mismatched inputs", "saved", "catalog_stale", fixedCatalogFingerprint("current")},
+		{"matching inputs", "saved", "", fixedCatalogFingerprint("saved")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := json.Marshal(ports.AgentModelCatalog{AgentID: "codex", Models: []ports.AgentModelInfo{{ID: "native", IsDefault: true, SupportsFast: true}}})
+			st := catalogEvidenceStore{settings: domain.SessionAgentSettings{SessionID: "worker", Harness: domain.HarnessCodex, AccountID: "device-codex"}, catalog: ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), LastSuccessAt: now, FetchedAt: now, RefreshState: "idle", InputFingerprint: tc.saved}}
+			svc := New(st, func() time.Time { return now })
+			svc.SetCatalogFingerprintSource(tc.source)
+			_, err := svc.ValidateSpawn(context.Background(), "worker", domain.AgentSettings{FastMode: domain.AgentFastOn}, false)
+			if tc.reason == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("unverified inputs accepted: err=%v want=%s", err, tc.reason)
+			}
+			// Provider-default reset does not claim any saved capability evidence.
+			if _, err := svc.ValidateSpawn(context.Background(), "worker", domain.AgentSettings{FastMode: domain.AgentFastDefault}, false); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
