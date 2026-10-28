@@ -11,8 +11,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-const catalogFreshFor = 6 * time.Hour
-
 // Store reads preference and capability evidence without starting a provider.
 type Store interface {
 	SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error)
@@ -120,8 +118,7 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 		result.Capabilities.Reason = "catalog_unverified"
 		return result, nil
 	}
-	now := s.now()
-	if observed.After(now) || now.Sub(observed) > catalogFreshFor {
+	if domain.AgentModelCatalogNeedsRevalidation(observed, s.now()) {
 		result.Capabilities.Reason = "catalog_stale"
 		return result, nil
 	}

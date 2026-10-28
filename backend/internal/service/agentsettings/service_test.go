@@ -43,7 +43,7 @@ func TestReadSettingsCapabilitiesDoNotCrossAccountOrTrustStaleCatalog(t *testing
 	if got.Capabilities.State != CapabilitySupported || got.Capabilities.AccountID != "device-codex" || got.Capabilities.Generation != 7 || len(got.Capabilities.Models) != 2 || got.Capabilities.Models[0].Fast != CapabilitySupported || got.Capabilities.Models[1].Fast != CapabilityUnknown {
 		t.Fatalf("fresh: %+v", got.Capabilities)
 	}
-	cached.LastSuccessAt = now.Add(-7 * time.Hour)
+	cached.LastSuccessAt = now.AddDate(0, 0, -1)
 	cached.FetchedAt = cached.LastSuccessAt
 	if err = s.UpsertAgentModelCatalog(ctx, cached); err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestReadSettingsRequiresValidSuccessfulCatalog(t *testing.T) {
 		{name: "never successful", state: "idle", reason: "catalog_unverified"},
 		{name: "queued with prior success", state: "queued", lastSuccess: now, reason: "catalog_stale"},
 		{name: "refreshing with prior success", state: "refreshing", lastSuccess: now, reason: "catalog_stale"},
-		{name: "expired success", state: "idle", lastSuccess: now.Add(-6*time.Hour - time.Nanosecond), reason: "catalog_stale"},
+		{name: "previous day success", state: "idle", lastSuccess: now.AddDate(0, 0, -1), reason: "catalog_stale"},
 		{name: "future success", state: "idle", lastSuccess: now.Add(time.Second), reason: "catalog_stale"},
 		{name: "stale catalog", state: "idle", lastSuccess: now, stale: true, reason: "catalog_stale"},
 		{name: "refresh failed", state: "error", lastSuccess: now, reason: "catalog_stale"},
@@ -155,16 +155,16 @@ func TestReadSettingsRequiresValidSuccessfulCatalog(t *testing.T) {
 	}
 }
 
-type unknownHarnessStore struct {
+type catalogEvidenceStore struct {
 	settings domain.SessionAgentSettings
 	catalog  ports.CachedAgentModelCatalog
 }
 
-func (s unknownHarnessStore) SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error) {
+func (s catalogEvidenceStore) SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error) {
 	return s.settings, nil
 }
 
-func (s unknownHarnessStore) GetAgentModelCatalog(context.Context, string, string) (ports.CachedAgentModelCatalog, bool, error) {
+func (s catalogEvidenceStore) GetAgentModelCatalog(context.Context, string, string) (ports.CachedAgentModelCatalog, bool, error) {
 	return s.catalog, true, nil
 }
 
@@ -176,13 +176,51 @@ func TestReadSettingsDoesNotTrustUnknownHarnessCatalog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store := unknownHarnessStore{
+			store := catalogEvidenceStore{
 				settings: domain.SessionAgentSettings{SessionID: "unknown", Harness: harness},
 				catalog:  ports.CachedAgentModelCatalog{AgentID: string(harness), CatalogJSON: string(raw), FetchedAt: now, LastSuccessAt: now, RefreshState: "idle", Generation: 7},
 			}
 			got, err := New(store, func() time.Time { return now }).Read(context.Background(), "unknown")
 			if err != nil || got.Capabilities.State != CapabilityUnknown || got.Capabilities.Reason != "harness_unknown" || len(got.Capabilities.Models) != 0 {
 				t.Fatalf("unknown harness evidence promoted: %+v, %v", got.Capabilities, err)
+			}
+		})
+	}
+}
+
+func TestReadSettingsCatalogFreshnessUsesLocalCalendarDay(t *testing.T) {
+	local := time.FixedZone("UTC+14", 14*60*60)
+	for _, tc := range []struct {
+		name             string
+		now, lastSuccess time.Time
+		want             CapabilityState
+	}{
+		{"same day over six hours", time.Date(2026, 10, 30, 20, 0, 0, 0, local), time.Date(2026, 10, 30, 9, 0, 0, 0, local), CapabilitySupported},
+		{"previous day", time.Date(2026, 10, 30, 20, 0, 0, 0, local), time.Date(2026, 10, 29, 20, 0, 0, 0, local), CapabilityUnknown},
+		{"before midnight", time.Date(2026, 10, 30, 23, 59, 0, 0, local), time.Date(2026, 10, 30, 0, 1, 0, 0, local), CapabilitySupported},
+		{"after midnight", time.Date(2026, 10, 30, 0, 1, 0, 0, local), time.Date(2026, 10, 29, 23, 59, 0, 0, local), CapabilityUnknown},
+		{"future same day", time.Date(2026, 10, 30, 9, 0, 0, 0, local), time.Date(2026, 10, 30, 9, 1, 0, 0, local), CapabilityUnknown},
+		{"UTC timestamp same local day", time.Date(2026, 10, 30, 9, 0, 0, 0, local), time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), CapabilitySupported},
+		{"UTC day matches but local day differs", time.Date(2026, 10, 30, 0, 1, 0, 0, local), time.Date(2026, 10, 29, 9, 59, 0, 0, time.UTC), CapabilityUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := catalogEvidenceStore{
+				settings: domain.SessionAgentSettings{SessionID: "worker", Harness: domain.HarnessCodex, AccountID: "device-codex"},
+				catalog: ports.CachedAgentModelCatalog{
+					AgentID: "codex", CatalogJSON: `{"agentId":"codex","models":[{"id":"model","supportsFast":true}]}`,
+					LastSuccessAt: tc.lastSuccess.UTC(), FetchedAt: tc.lastSuccess.UTC(), RefreshState: "idle", Generation: 7,
+				},
+			}
+			got, err := New(store, func() time.Time { return tc.now }).Read(context.Background(), "worker")
+			if err != nil || got.Capabilities.State != tc.want {
+				t.Fatalf("calendar-day evidence: %+v, %v; want %s", got.Capabilities, err, tc.want)
+			}
+			if tc.want == CapabilitySupported {
+				if got.Capabilities.Reason != "" || len(got.Capabilities.Models) != 1 || got.Capabilities.Models[0].Fast != CapabilitySupported {
+					t.Fatalf("valid same-day evidence lost: %+v", got.Capabilities)
+				}
+			} else if got.Capabilities.Reason != "catalog_stale" || len(got.Capabilities.Models) != 0 {
+				t.Fatalf("untrusted evidence exposed: %+v", got.Capabilities)
 			}
 		})
 	}
