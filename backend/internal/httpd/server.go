@@ -107,6 +107,7 @@ func (s *Server) run(ctx context.Context, onReady func()) error {
 		StartedAt:             time.Now().UTC(),
 		Owner:                 os.Getenv("AO_OWNER"),
 		AppRunID:              s.cfg.AppRunID,
+		AppDiagnosticsAddress: os.Getenv("AO_APP_DIAGNOSTICS_ADDRESS"),
 		BrowserRuntimeAddress: os.Getenv("AO_BROWSER_RUNTIME_ADDRESS"),
 		BrowserStreamAddress:  os.Getenv("AO_BROWSER_STREAM_ADDRESS"),
 	}

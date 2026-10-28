@@ -107,6 +107,18 @@ function previewAssetPath(entry: string, requested: string): string {
 	return path.posix.join(root, clean.startsWith(`${root}/`) ? clean.slice(root.length + 1) : clean);
 }
 
+function isAppDiagnosticPath(target: string | null, prefix: string): boolean {
+ if (target === null) return false;
+ try {
+  const normalized = path.posix.normalize(decodeURIComponent(target.split("?", 1)[0]));
+  const base = prefix ? path.posix.normalize(decodeURIComponent(prefix)) : "";
+  const route = normalized.slice(base.length);
+  return route === "/api/v1/desktop/diagnostics" || route.startsWith("/api/v1/desktop/diagnostics/");
+ } catch {
+  return true;
+ }
+}
+
 const RENDERER_ORIGIN = "app://renderer";
 // Hop-by-hop or wrong-machine headers that must not transit the proxy.
 const STRIP_REQUEST_HEADERS = [
@@ -116,6 +128,7 @@ const STRIP_REQUEST_HEADERS = [
 	"x-ao-preview-app-authorization",
 	"x-ao-preview-app-origin",
 	"x-ao-expected-host-id",
+	"x-ao-app-diagnostics-capability",
 	...HOP_BY_HOP_HEADERS,
 ];
 
@@ -655,6 +668,11 @@ export async function startRemoteProxy(entry: RemoteEntry, rendererOrigin = REND
 		const host = req.headers.host ?? (req as Http2ServerRequest).authority;
 		const preview = previewPath(host, req.url, req.method, scheme);
 		const path = preview?.path ?? stripToken(req.url);
+		if (isAppDiagnosticPath(path, prefix)) {
+			res.writeHead(403, { "content-type": "application/json", ...corsHeaders });
+			res.end('{"code":"APP_DIAGNOSTICS_LOCAL_ONLY"}');
+			return;
+		}
 		if (path === null) {
 			res.writeHead(404, {
 				"content-type": "application/json",
@@ -713,6 +731,10 @@ export async function startRemoteProxy(entry: RemoteEntry, rendererOrigin = REND
 			return;
 		}
 		const path = preview ? preview.path : stripToken(req.url);
+		if (isAppDiagnosticPath(path, prefix)) {
+			socket.destroy();
+			return;
+		}
 		if (path === null) {
 			socket.destroy();
 			return;

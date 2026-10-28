@@ -38,6 +38,7 @@ type Seen = {
 	origin: string | undefined;
 	appAuth: string | undefined;
 	appOrigin: string | undefined;
+ appDiagnosticCapability: string | undefined;
 	body: string;
 };
 
@@ -84,6 +85,7 @@ async function startUpstream(
 				origin: req.headers.origin,
 				appAuth: req.headers["x-ao-preview-app-authorization"] as string | undefined,
 				appOrigin: req.headers["x-ao-preview-app-origin"] as string | undefined,
+ appDiagnosticCapability: req.headers["x-ao-app-diagnostics-capability"] as string | undefined,
 				body,
 			});
 			const out = handler(req, seen);
@@ -1057,6 +1059,7 @@ describe("startRemoteProxy over HTTP/2", () => {
 				origin: req.headers.origin,
 				appAuth: req.headers["x-ao-preview-app-authorization"] as string | undefined,
 				appOrigin: req.headers["x-ao-preview-app-origin"] as string | undefined,
+ appDiagnosticCapability: req.headers["x-ao-app-diagnostics-capability"] as string | undefined,
 				body: "",
 			});
 			res.writeHead(200, { "content-type": "application/json" });
@@ -1163,7 +1166,7 @@ describe("startRemoteProxy through an HTTPS host's tunnel", () => {
 		const state = { port: 0, direct: [] as string[], tunneled: [] as Seen[], tunnels: 0 };
 		const identity = JSON.stringify({ hostId: "h_workbox", apiVersion: 1 });
 		const inner = createHttp2Server((req, res) => {
-			state.tunneled.push({ url: req.url, auth: req.headers.authorization, expectedHost: undefined, origin: undefined, appAuth: undefined, appOrigin: undefined, body: req.httpVersion });
+			state.tunneled.push({ url: req.url, auth: req.headers.authorization, expectedHost: undefined, origin: undefined, appAuth: undefined, appOrigin: undefined, appDiagnosticCapability: undefined, body: req.httpVersion });
 			res.end(req.url === "/api/v1/identity" ? identity : JSON.stringify({ proto: req.httpVersion }));
 		});
 		const sockets = new WebSocketServer({ noServer: true });
@@ -1777,4 +1780,25 @@ describe("remote mobile control browser boundary", () => {
 		expect(media.status).toBe(200);
 		expect(fetchSites[1]).toBeUndefined();
 	});
+});
+
+describe("app diagnostic isolation", () => {
+ it("strips diagnostic credentials from ordinary forwarded requests", async () => {
+  const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
+  proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}`, password: "pw" });
+  const result = await fetch(`${proxy.base}/api/v1/sessions`, {headers:{Origin:"app://renderer","X-AO-App-Diagnostics-Capability":"must-stay-local"}});
+  expect(result.status).toBe(200);
+  expect(seen).toHaveLength(1);
+  expect(seen[0].appDiagnosticCapability).toBeUndefined();
+ });
+
+ it("does not forward local-only diagnostics even with a trusted renderer origin", async () => {
+  const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
+  proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}`, password: "pw" });
+  for (const route of ["status", "snapshots", "%73tatus"]) {
+   const result = await fetch(`${proxy.base}/api/v1/desktop/diagnostics/${route}`, {headers: {Origin:"app://renderer", "X-AO-App-Diagnostics-Capability":"must-not-forward"}});
+   expect(result.status).toBe(403);
+  }
+  expect(seen).toHaveLength(0);
+ });
 });

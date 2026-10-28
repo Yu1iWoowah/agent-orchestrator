@@ -33,6 +33,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/systemexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry/policyauthority"
+	appruntime "github.com/aoagents/agent-orchestrator/backend/internal/appdiagnostics"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/autoreview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
@@ -57,6 +58,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
+	appdiag "github.com/aoagents/agent-orchestrator/backend/internal/service/appdiagnostics"
 	awakesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/awake"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
@@ -134,8 +136,11 @@ func Run(buildVersion string) error {
 
 	log := newLogger()
 	var browserRuntimeToken string
+	var appRuntimeToken string
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
-		browserRuntimeToken, err = browserruntime.ReadRuntimeToken(os.Stdin)
+		var credentials appruntime.Credentials
+		credentials, err = appruntime.ReadCredentials(os.Stdin)
+		browserRuntimeToken, appRuntimeToken = credentials.BrowserToken, credentials.AppToken
 		if err != nil {
 			return err
 		}
@@ -146,6 +151,7 @@ func Run(buildVersion string) error {
 			return err
 		}
 	}
+	appBroker := appruntime.New(appRuntimeToken)
 	browserAuthority := browsersvc.NewAuthority()
 	browserBroker := browserruntime.New(log, browserRuntimeToken)
 	chrome := newChromeMode(cfg, log)
@@ -738,6 +744,32 @@ func Run(buildVersion string) error {
 	// HostID is assigned below, once the identity file has been read.
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
+	var appDiagnostics *appdiag.Service
+	var appDiagnosticsAPI controllers.AppDiagnosticsService
+	if appRuntimeToken != "" {
+		appDiagnostics, err = appdiag.New(cfg.DataDir, sessionSvc, appBroker, time.Now)
+		if err != nil {
+			log.Warn("app diagnostics: storage unavailable")
+		} else {
+			appBroker.BindAuthority(appDiagnostics)
+			appDiagnosticsAPI = appDiagnostics
+			defer func() { _ = appDiagnostics.Close() }()
+			go func() {
+				ticker := time.NewTicker(time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if err := appDiagnostics.Sweep(ctx); err != nil {
+							log.Warn("app diagnostics: cleanup failed")
+						}
+					}
+				}
+			}()
+		}
+	}
 	var browserChrome controllers.BrowserChromeService
 	if chrome != nil {
 		browserService.UseChrome(chrome.broker, chrome.targets, log)
@@ -1043,6 +1075,7 @@ func Run(buildVersion string) error {
 				return sqlite.OpenReadOnly(ctx, dataDir)
 			},
 		}),
+		AppDiagnostics:           appDiagnosticsAPI,
 		Browser:                  browserService,
 		BrowserChrome:            browserChrome,
 		LinkPreview:              linkpreviewsvc.New(nil),
@@ -1061,6 +1094,22 @@ func Run(buildVersion string) error {
 	browserLive.SetLoopbackBaseURL("http://" + srv.Addr().String())
 	previewDone := preview.NewPoller(store, sessionSvc, "http://"+srv.Addr().String(), preview.PollerConfig{Logger: log}).Start(ctx)
 	_ = os.Unsetenv(browserruntime.RuntimeAddressEnv)
+	_ = os.Unsetenv("AO_APP_DIAGNOSTICS_ADDRESS")
+	if appDiagnostics != nil {
+		if ln, addr, listenErr := appruntime.Listen(cfg.DataDir); listenErr != nil {
+			log.Warn("app diagnostics: listener unavailable")
+		} else {
+			if err := os.Setenv("AO_APP_DIAGNOSTICS_ADDRESS", addr); err != nil {
+				_ = ln.Close()
+				return err
+			}
+			go func() {
+				if err := appBroker.Serve(ctx, ln); err != nil {
+					log.Warn("app diagnostics: runtime stopped")
+				}
+			}()
+		}
+	}
 	if ln, addr, err := browserruntime.Listen(cfg.RunFilePath); err != nil {
 		log.Warn("browser runtime: listener unavailable; agent browser control disabled", "err", err)
 	} else {
