@@ -2877,6 +2877,567 @@ paths:
         shell terminal
       tags:
       - cues
+  /api/v1/desktop/diagnostics/audit:
+    get:
+      operationId: getAppDiagnosticsAudit
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsAuditLog'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: Read this diagnostic grant's local audit records
+      tags:
+      - system
+  /api/v1/desktop/diagnostics/grants/{grantId}:
+    delete:
+      operationId: revokeAppDiagnosticsGrant
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      - in: path
+        name: grantId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsRevokeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: Revoke the caller's diagnostic grant and remove its snapshots
+      tags:
+      - system
+  /api/v1/desktop/diagnostics/snapshots:
+    get:
+      operationId: listAppSnapshots
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsSnapshotList'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: List readable snapshots with safe cumulative I/O error counts
+      tags:
+      - system
+    post:
+      operationId: captureAppSnapshot
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppDiagnosticsCaptureRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsRecord'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: Capture a read-only app diagnostic snapshot
+      tags:
+      - system
+  /api/v1/desktop/diagnostics/snapshots/{snapshotId}:
+    get:
+      operationId: getAppSnapshot
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      - in: path
+        name: snapshotId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsRecord'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: Read a snapshot owned by this diagnostic grant
+      tags:
+      - system
+  /api/v1/desktop/diagnostics/status:
+    get:
+      operationId: getAppDiagnosticsStatus
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsRuntimeState'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: Read local app diagnostic status with a session grant
+      tags:
+      - system
+  /api/v1/desktop/diagnostics/windows:
+    get:
+      operationId: getAppDiagnosticsWindows
+      parameters:
+      - in: header
+        name: X-AO-App-Diagnostics-Capability
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppDiagnosticsRuntimeState'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Gateway
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Gateway Timeout
+      summary: List authorized opaque app shell windows
+      tags:
+      - system
   /api/v1/desktop/sessions/{sessionId}/artifacts:
     get:
       operationId: getDesktopSessionArtifacts
@@ -14494,6 +15055,177 @@ components:
       required:
       - liveSessions
       - level
+      type: object
+    AppDiagnosticsAudit:
+      properties:
+        at:
+          format: date-time
+          type: string
+        bytes:
+          type: integer
+        count:
+          minimum: 0
+          type: integer
+        grantId:
+          type: string
+        invalidSnapshotDeletedCount:
+          minimum: 0
+          type: integer
+        outcome:
+          type: string
+        partial:
+          type:
+          - "null"
+          - boolean
+        readErrorCount:
+          minimum: 0
+          type: integer
+        reasonCode:
+          type: string
+        redactionSchemaVersion:
+          type: integer
+        requestId:
+          type: string
+        sessionId:
+          type: string
+        skippedCount:
+          minimum: 0
+          type: integer
+        windowId:
+          type: string
+      required:
+      - requestId
+      - grantId
+      - sessionId
+      - at
+      - outcome
+      type: object
+    AppDiagnosticsAuditLog:
+      properties:
+        droppedCount:
+          minimum: 0
+          type: integer
+        invalidSnapshotDeletedCount:
+          minimum: 0
+          type: integer
+        oldestRetainedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        readErrorCount:
+          minimum: 0
+          type: integer
+        records:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsAudit'
+          type: array
+        skippedCount:
+          minimum: 0
+          type: integer
+      required:
+      - records
+      - oldestRetainedAt
+      - droppedCount
+      type: object
+    AppDiagnosticsCaptureRequest:
+      properties:
+        projectId:
+          type: string
+        windowId:
+          type: string
+      type: object
+    AppDiagnosticsRecord:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        grantId:
+          type: string
+        id:
+          type: string
+        requestId:
+          type: string
+        snapshot:
+          $ref: '#/components/schemas/AppDiagnosticsSnapshot'
+      required:
+      - id
+      - grantId
+      - requestId
+      - createdAt
+      - snapshot
+      type: object
+    AppDiagnosticsRevokeResponse:
+      properties:
+        revoked:
+          type: boolean
+      required:
+      - revoked
+      type: object
+    AppDiagnosticsRuntimeState:
+      properties:
+        epoch:
+          type: string
+        instanceId:
+          type: string
+        ready:
+          type: boolean
+        windows:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsWindow'
+          type: array
+      required:
+      - instanceId
+      - epoch
+      - ready
+      - windows
+      type: object
+    AppDiagnosticsSnapshot:
+      properties:
+        capturedAt:
+          format: date-time
+          type: string
+        completeness:
+          type: string
+        instanceId:
+          type: string
+        rendererGeneration:
+          minimum: 0
+          type: integer
+        schemaVersion:
+          type: integer
+        windowId:
+          type: string
+      required:
+      - schemaVersion
+      - instanceId
+      - windowId
+      - rendererGeneration
+      - capturedAt
+      - completeness
+      type: object
+    AppDiagnosticsSnapshotList:
+      properties:
+        readErrorCount:
+          minimum: 0
+          type: integer
+        records:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsRecord'
+          type: array
+      required:
+      - records
+      type: object
+    AppDiagnosticsWindow:
+      properties:
+        generation:
+          minimum: 0
+          type: integer
+        id:
+          type: string
+      required:
+      - id
+      - generation
       type: object
     AppMemoryResponse:
       properties:

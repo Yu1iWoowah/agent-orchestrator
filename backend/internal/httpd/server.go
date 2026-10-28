@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	appruntime "github.com/aoagents/agent-orchestrator/backend/internal/appdiagnostics"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -107,6 +108,7 @@ func (s *Server) run(ctx context.Context, onReady func()) error {
 		StartedAt:             time.Now().UTC(),
 		Owner:                 os.Getenv("AO_OWNER"),
 		AppRunID:              s.cfg.AppRunID,
+		AppDiagnosticsAddress: os.Getenv(appruntime.RuntimeAddressEnv),
 		BrowserRuntimeAddress: os.Getenv("AO_BROWSER_RUNTIME_ADDRESS"),
 		BrowserStreamAddress:  os.Getenv("AO_BROWSER_STREAM_ADDRESS"),
 	}

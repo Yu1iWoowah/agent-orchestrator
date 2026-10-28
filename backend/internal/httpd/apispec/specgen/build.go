@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	diag "github.com/aoagents/agent-orchestrator/backend/internal/service/appdiagnostics"
 
 	jsonschema "github.com/swaggest/jsonschema-go"
 	openapi "github.com/swaggest/openapi-go"
@@ -167,6 +168,18 @@ var schemaNames = map[string]string{
 	"DomainAgentSettingsSources":                           "AgentSettingsSources",
 	"DomainSpawnAgentSettingsResolution":                   "SpawnAgentSettingsResolution",
 	"ControllersSpawnCapabilitiesResponse":                 "SpawnCapabilitiesResponse",
+	"DomainAppDiagnosticsRuntimeState":                     "AppDiagnosticsRuntimeState",
+	"DomainAppDiagnosticsWindow":                           "AppDiagnosticsWindow",
+	"DomainAppDiagnosticsCaptureRequest":                   "AppDiagnosticsCaptureRequest",
+	"AppdiagnosticsRecord":                                 "AppDiagnosticsRecord",
+	"DomainAppDiagnosticsSnapshot":                         "AppDiagnosticsSnapshot",
+	"AppdiagnosticsAuditLog":                               "AppDiagnosticsAuditLog",
+	"AppdiagnosticsSnapshotList":                           "AppDiagnosticsSnapshotList",
+	"AppdiagnosticsAudit":                                  "AppDiagnosticsAudit",
+	"ControllersAppDiagnosticsRevokeResponse":              "AppDiagnosticsRevokeResponse",
+	"ControllersAppDiagnosticsCapabilityHeader":            "AppDiagnosticsCapabilityHeader",
+	"ControllersAppSnapshotIDParam":                        "AppSnapshotIDParam",
+	"ControllersAppGrantIDParam":                           "AppGrantIDParam",
 	"ControllersProjectDocumentsInfoResponse":              "ProjectDocumentsInfoResponse",
 	"ControllersProjectDocumentFileResponse":               "ProjectDocumentFileResponse",
 	"ControllersProjectDocumentLeaseRequest":               "ProjectDocumentLeaseRequest",
@@ -781,6 +794,7 @@ func operations() []operation {
 	ops = append(ops, awakeOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
 	ops = append(ops, browserOperations()...)
+	ops = append(ops, appDiagnosticsOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
 	ops = append(ops, cueOperations()...)
 	ops = append(ops, systemOperations()...)
@@ -3956,5 +3970,21 @@ func projectDocumentOperations() []operation {
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
+	}
+}
+
+func appDiagnosticsOperations() []operation {
+	header := controllers.AppDiagnosticsCapabilityHeader{}
+	common := []respUnit{{400, envelope.APIError{}}, {403, envelope.APIError{}}, {404, envelope.APIError{}}, {409, envelope.APIError{}}, {413, envelope.APIError{}}, {429, envelope.APIError{}}, {500, envelope.APIError{}}, {502, envelope.APIError{}}, {503, envelope.APIError{}}, {504, envelope.APIError{}}}
+	response := func(status int, body any) []respUnit { return append([]respUnit{{status, body}}, common...) }
+	prefix := "/api/v1/desktop/diagnostics"
+	return []operation{
+		{method: http.MethodGet, path: prefix + "/status", id: "getAppDiagnosticsStatus", tag: "system", summary: "Read local app diagnostic status with a session grant", pathParams: []any{header}, resps: response(200, diag.RuntimeState{})},
+		{method: http.MethodGet, path: prefix + "/windows", id: "getAppDiagnosticsWindows", tag: "system", summary: "List authorized opaque app shell windows", pathParams: []any{header}, resps: response(200, diag.RuntimeState{})},
+		{method: http.MethodPost, path: prefix + "/snapshots", id: "captureAppSnapshot", tag: "system", summary: "Capture a read-only app diagnostic snapshot", pathParams: []any{header}, reqBody: diag.CaptureRequest{}, resps: response(201, diag.Record{})},
+		{method: http.MethodGet, path: prefix + "/snapshots", id: "listAppSnapshots", tag: "system", summary: "List readable snapshots with safe cumulative I/O error counts", pathParams: []any{header}, resps: response(200, diag.SnapshotList{})},
+		{method: http.MethodGet, path: prefix + "/snapshots/{snapshotId}", id: "getAppSnapshot", tag: "system", summary: "Read a snapshot owned by this diagnostic grant", pathParams: []any{header, controllers.AppSnapshotIDParam{}}, resps: response(200, diag.Record{})},
+		{method: http.MethodGet, path: prefix + "/audit", id: "getAppDiagnosticsAudit", tag: "system", summary: "Read this diagnostic grant's local audit records", pathParams: []any{header}, resps: response(200, diag.AuditLog{})},
+		{method: http.MethodDelete, path: prefix + "/grants/{grantId}", id: "revokeAppDiagnosticsGrant", tag: "system", summary: "Revoke the caller's diagnostic grant and remove its snapshots", pathParams: []any{header, controllers.AppGrantIDParam{}}, resps: response(200, controllers.AppDiagnosticsRevokeResponse{})},
 	}
 }
