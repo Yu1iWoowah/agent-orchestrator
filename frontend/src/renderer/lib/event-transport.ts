@@ -1,3 +1,4 @@
+import { sessionPlanQueryKey } from "../hooks/useSessionPlan";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { aoBridge } from "./bridge";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
@@ -150,6 +151,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
 			};
 			const refreshRemote = (hostId: string, reconnect = false) => {
+				invalidate(["remote-session-plan", hostId]);
 				invalidate(["remote-workspaces", hostId]);
 				invalidate(["project", hostId]);
 				invalidate(["project-config", hostId]);
@@ -235,6 +237,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const flushPending = () => {
 				if (allConversationsInvalidationPending) {
 					invalidate(conversationQueryRoot);
+					invalidate(["session-plan"]);
 					invalidate(reviewerConversationQueryRoot);
 					allConversationsInvalidationPending = false;
 				}
@@ -264,6 +267,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				}
 				for (const sessionId of pendingConversationSessions) {
 					invalidate(conversationQueryKey(sessionId));
+					invalidate(sessionPlanQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
 				for (const sessionId of pendingReviewSessions) {

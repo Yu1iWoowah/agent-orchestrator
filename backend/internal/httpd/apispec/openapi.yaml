@@ -9522,6 +9522,121 @@ paths:
       summary: Pin a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/plan:
+    get:
+      operationId: getSessionPlan
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionPlanResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read the latest visible session plan independently of transcript pagination
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/plan/history:
+    get:
+      operationId: getSessionPlanHistory
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Read plan snapshots older than this durable sequence.
+        in: query
+        name: beforeSequence
+        schema:
+          description: Read plan snapshots older than this durable sequence.
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      - description: Maximum saved plans to return. Defaults to 20.
+        in: query
+        name: limit
+        schema:
+          description: Maximum saved plans to return. Defaults to 20.
+          maximum: 100
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPlanHistoryResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read bounded saved plans on the active conversation lineage
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/pr:
     get:
       operationId: listSessionPRs
@@ -16600,6 +16715,25 @@ components:
       - models
       - selected
       type: object
+    ConversationPlanHistoryResponse:
+      properties:
+        activeBranchId:
+          type: string
+        conversationId:
+          type: string
+        hasMoreBefore:
+          type: boolean
+        nextBeforeSequence:
+          format: int64
+          type: integer
+        versions:
+          items:
+            $ref: '#/components/schemas/ConversationPlanVersionResponse'
+          type: array
+      required:
+      - versions
+      - hasMoreBefore
+      type: object
     ConversationPlanResponse:
       properties:
         explanation:
@@ -16626,6 +16760,32 @@ components:
       required:
       - text
       - status
+      type: object
+    ConversationPlanVersionResponse:
+      properties:
+        branchId:
+          type: string
+        plan:
+          $ref: '#/components/schemas/ConversationPlanResponse'
+        revision:
+          format: int64
+          type: integer
+        sequence:
+          format: int64
+          type: integer
+        sourceActivityId:
+          type: string
+        turnId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - branchId
+      - sequence
+      - revision
+      - updatedAt
+      - plan
       type: object
     ConversationPromptSuggestionRequest:
       properties:
@@ -20445,6 +20605,23 @@ components:
       - reviewerId
       - count
       - links
+      type: object
+    SessionPlanResponse:
+      properties:
+        activeBranchId:
+          type: string
+        conversationId:
+          type: string
+        state:
+          enum:
+          - absent
+          - cleared
+          - present
+          type: string
+        version:
+          $ref: '#/components/schemas/ConversationPlanVersionResponse'
+      required:
+      - state
       type: object
     SessionPreviewResponse:
       properties:

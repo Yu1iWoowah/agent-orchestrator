@@ -47,6 +47,30 @@ describe("useResizable", () => {
 		expect(releasePointerCapture).toHaveBeenCalledWith(7);
 	});
 
+	it("cancels a controlled drag without committing and resizes from keyboard", () => {
+		const onCommit = vi.fn();
+		const { result } = renderHook(() => useResizable({ cssVar: "--test-resizable-w", defaultWidth: 200, min: 100, max: 400, edge: "left", onCommit }));
+		press(result, 200);
+		pointer("pointermove", 150);
+		act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+		expect(widthVar()).toBe("200px");
+		expect(onCommit).not.toHaveBeenCalled();
+		act(() => result.current.onKeyDown({ key: "ArrowLeft", preventDefault: vi.fn() } as unknown as React.KeyboardEvent<HTMLElement>));
+		expect(widthVar()).toBe("216px");
+		expect(onCommit).toHaveBeenLastCalledWith(216);
+	});
+
+	it("uses the vertical axis, cancels pointer movement and resets to the standard size", () => {
+		const onCommit = vi.fn();
+		const { result } = renderHook(() => useResizable({ cssVar: "--test-resizable-w", defaultWidth: 300, resetSize: 480, axis: "y", edge: "right", min: 200, max: 800, onCommit }));
+		act(() => result.current.onPointerDown({ preventDefault: vi.fn(), clientX: 100, clientY: 100, pointerId: 3, currentTarget: document.createElement("div") } as unknown as React.PointerEvent<HTMLElement>));
+		act(() => window.dispatchEvent(new PointerEvent("pointermove", { clientY: 180, pointerId: 3 })));
+		act(() => window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 3 })));
+		expect(widthVar()).toBe("300px"); expect(onCommit).not.toHaveBeenCalled();
+		act(() => result.current.onDoubleClick());
+		expect(widthVar()).toBe("480px"); expect(onCommit).toHaveBeenLastCalledWith(480);
+	});
+
 	function widthVar() {
 		return document.documentElement.style.getPropertyValue("--test-resizable-w");
 	}

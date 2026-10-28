@@ -1782,7 +1782,10 @@ func finalizeCompletedTurnPlan(
 	}); err != nil {
 		return fmt.Errorf("finalize plan activity for turn %s: %w", turn.ID, err)
 	}
-	return nil
+	if err := q.FinalizeConversationPlanHead(ctx, gen.FinalizeConversationPlanHeadParams{ConversationID: turn.ConversationID, TurnID: turn.ID, PlanJson: string(encodedPlan), UpdatedAt: now}); err != nil {
+		return err
+	}
+	return q.FinalizeConversationPlanVersion(ctx, gen.FinalizeConversationPlanVersionParams{ConversationID: turn.ConversationID, TurnID: turn.ID, PlanJson: string(encodedPlan), UpdatedAt: now})
 }
 
 // terminalActivityStatus mirrors why the enclosing turn ended. Interrupted work
@@ -3083,6 +3086,16 @@ func (s *Store) UpsertActivity(
 	q, unlock := s.conversationWriter(ctx)
 	defer unlock()
 
+	if activity.Kind == domain.ActivityKindPlan {
+		return s.inTx(ctx, "project plan activity", func(txq *gen.Queries) error {
+			txctx := context.WithValue(ctx, conversationProjectionTxKey{}, txq)
+			return s.upsertActivity(txctx, txq, conversationID, providerTurnID, activity, now)
+		})
+	}
+	return s.upsertActivity(ctx, q, conversationID, providerTurnID, activity, now)
+}
+
+func (s *Store) upsertActivity(ctx context.Context, q *gen.Queries, conversationID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error {
 	detail := string(activity.Detail)
 
 	if activity.ProviderItemID != "" {
@@ -3092,10 +3105,19 @@ func (s *Store) UpsertActivity(
 				ProviderItemID: activity.ProviderItemID,
 			})
 		if err == nil {
+			if activity.Kind == domain.ActivityKindPlan && row.Status == activity.Status &&
+				row.Summary == activity.Summary && row.DetailJson == detail {
+				return nil
+			}
 			if activity.Kind == domain.ActivityKindAOAction &&
 				activity.Status == domain.ActivityStatusRunning &&
 				aoActionStatusSettled(row.Status) {
 				return nil
+			}
+			if activity.Kind == domain.ActivityKindPlan {
+				if err := q.InsertLegacyPlanVersion(ctx, row.ID); err != nil {
+					return err
+				}
 			}
 			if settleErr := q.SettleConversationActivity(ctx,
 				gen.SettleConversationActivityParams{
@@ -3107,6 +3129,9 @@ func (s *Store) UpsertActivity(
 					ProviderItemID: activity.ProviderItemID,
 				}); settleErr != nil {
 				return fmt.Errorf("settle activity %s: %w", activity.ProviderItemID, settleErr)
+			}
+			if activity.Kind == domain.ActivityKindPlan {
+				return projectPlanActivity(ctx, q, conversationID, row.ID, now)
 			}
 			return nil
 		}
@@ -3127,7 +3152,7 @@ func (s *Store) UpsertActivity(
 		if err := recordSteerInteraction(ctx, q, conversationID, activity, now); err != nil {
 			return err
 		}
-		return q.InsertConversationActivity(ctx, gen.InsertConversationActivityParams{
+		if err := q.InsertConversationActivity(ctx, gen.InsertConversationActivityParams{
 			ID:             activity.ID,
 			ConversationID: conversationID,
 			TurnID:         turnID,
@@ -3140,7 +3165,13 @@ func (s *Store) UpsertActivity(
 			ProviderItemID: activity.ProviderItemID,
 			CreatedAt:      now,
 			UpdatedAt:      now,
-		})
+		}); err != nil {
+			return err
+		}
+		if activity.Kind == domain.ActivityKindPlan {
+			return projectPlanActivity(ctx, q, conversationID, activity.ID, now)
+		}
+		return nil
 	})
 }
 
@@ -4083,14 +4114,15 @@ func (s *Store) LoadConversationSnapshotPage(
 	return snapshot, nil
 }
 
-func (s *Store) conversationVisibleAfterSequence(
-	ctx context.Context,
-	conv gen.Conversation,
-) (int64, error) {
+func (s *Store) conversationVisibleAfterSequence(ctx context.Context, conv gen.Conversation) (int64, error) {
+	return s.conversationVisibleAfterSequenceQueries(ctx, s.qr, conv)
+}
+
+func (s *Store) conversationVisibleAfterSequenceQueries(ctx context.Context, q *gen.Queries, conv gen.Conversation) (int64, error) {
 	if conv.Scope != domain.ConversationScopeProject || conv.CurrentSessionID == nil || *conv.CurrentSessionID == "" {
 		return 0, nil
 	}
-	sequence, err := s.qr.SelectConversationContextResetSequence(ctx, gen.SelectConversationContextResetSequenceParams{
+	sequence, err := q.SelectConversationContextResetSequence(ctx, gen.SelectConversationContextResetSequenceParams{
 		ConversationID: conv.ID,
 		ProviderItemID: domain.ConversationContextResetProviderItemID(*conv.CurrentSessionID),
 	})
@@ -4098,7 +4130,7 @@ func (s *Store) conversationVisibleAfterSequence(
 		return 0, fmt.Errorf("select context reset boundary for conversation %s: %w", conv.ID, err)
 	}
 	if sequence == 0 {
-		pending, pendingErr := s.projectConversationResetPending(ctx, conv)
+		pending, pendingErr := s.projectConversationResetPendingQueries(ctx, q, conv)
 		if pendingErr != nil {
 			return 0, pendingErr
 		}
@@ -4110,13 +4142,17 @@ func (s *Store) conversationVisibleAfterSequence(
 }
 
 func (s *Store) projectConversationResetPending(ctx context.Context, conv gen.Conversation) (bool, error) {
+	return s.projectConversationResetPendingQueries(ctx, s.qr, conv)
+}
+
+func (s *Store) projectConversationResetPendingQueries(ctx context.Context, q *gen.Queries, conv gen.Conversation) (bool, error) {
 	if conv.Scope != domain.ConversationScopeProject ||
 		conv.CurrentSessionID == nil ||
 		*conv.CurrentSessionID == "" ||
 		conv.LatestSequence <= 0 {
 		return false, nil
 	}
-	current, err := s.qr.GetSession(ctx, *conv.CurrentSessionID)
+	current, err := q.GetSession(ctx, *conv.CurrentSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -4126,7 +4162,7 @@ func (s *Store) projectConversationResetPending(ctx context.Context, conv gen.Co
 	if current.ProviderConversationID != "" {
 		return false, nil
 	}
-	active, err := s.qr.SelectConversationBranch(ctx, gen.SelectConversationBranchParams{
+	active, err := q.SelectConversationBranch(ctx, gen.SelectConversationBranchParams{
 		ConversationID: conv.ID,
 		BranchID:       conv.ActiveBranchID,
 	})
