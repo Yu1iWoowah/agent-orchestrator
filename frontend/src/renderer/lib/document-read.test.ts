@@ -63,3 +63,14 @@ it("keeps an explicit top fragment separate from cached unanchored metadata", ()
 	expect(cache.getQueryData(documentTargetKey(local, { ...target, fragment: "" }))).toBeUndefined();
 	cache.clear();
 });
+
+it("recognizes a never-created shared root from the existing catalog status without treating unreadable roots as missing",async()=>{
+	setApiBaseUrl("http://127.0.0.1:34646");
+	const fetch=vi.spyOn(globalThis,"fetch");
+	const failure=()=>new Response(JSON.stringify({code:"DOCUMENT_SOURCE_UNAVAILABLE",message:"unavailable"}),{status:503,headers:{"Content-Type":"application/json"}});
+	const catalog=(code:string)=>new Response(JSON.stringify({catalog:{items:[],errors:[{source:"shared",code}],incomplete:true,revision:"r"}}),{headers:{"Content-Type":"application/json"}});
+	fetch.mockResolvedValueOnce(failure()).mockResolvedValueOnce(catalog("DOCUMENT_SOURCE_MISSING"));
+	await expect(resolveDocument(local,{kind:"shared",projectId:"new",path:"guide.md"})).rejects.toMatchObject({code:"DOCUMENT_SOURCE_MISSING"});
+	fetch.mockResolvedValueOnce(failure()).mockResolvedValueOnce(catalog("DOCUMENT_SOURCE_UNAVAILABLE"));
+	await expect(resolveDocument(local,{kind:"shared",projectId:"new",path:"guide.md"})).rejects.toMatchObject({code:"DOCUMENT_SOURCE_UNAVAILABLE"});
+});

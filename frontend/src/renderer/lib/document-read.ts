@@ -37,6 +37,14 @@ export async function resolveDocument(
 		"/api/v1/local-documents/resolve",
 		{ body: target, signal },
 	);
+	if(error?.code === "DOCUMENT_SOURCE_UNAVAILABLE" && target.kind === "shared") {
+		let notCreated=false;
+		try {
+			const catalog=await fetchDocumentCatalog(connection,target.projectId,{source:"shared",limit:1},signal);
+			notCreated=catalog.errors.some(source=>source.source==="shared"&&source.code==="DOCUMENT_SOURCE_MISSING");
+		}catch{/* Retain the resolver error if the catalog cannot establish source state. */}
+		if(notCreated)throw new DocumentReadError("DOCUMENT_SOURCE_MISSING",appI18n.t("documents.sheet.notCreated"),error.requestId);
+	}
 	if (error)
 		throw new DocumentReadError(
 			error.code,
