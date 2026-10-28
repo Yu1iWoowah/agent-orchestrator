@@ -1,3 +1,4 @@
+vi.mock("../DocumentCode",()=>({DocumentCode:({text}:{text:string})=><pre>{text}</pre>}));
 import { DocumentReadError } from "../../lib/document-read";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {

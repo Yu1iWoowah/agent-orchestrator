@@ -11,9 +11,12 @@ export async function copyDocument(
 	kind: "path" | "link",
 ) {
 	const document = await resolveDocument(connection, input);
-	if (!window.ao && !navigator.clipboard?.writeText)
-		throw new Error("Clipboard unavailable");
-	await aoBridge.clipboard.writeText(
+	await writeDocumentText(
 		kind === "path" ? document.localPath : document.canonicalUri,
 	);
+}
+export async function writeDocumentText(text: string) {
+	if (!window.ao && !navigator.clipboard?.writeText)
+		throw new Error("Clipboard unavailable");
+	await aoBridge.clipboard.writeText(text);
 }

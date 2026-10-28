@@ -38,7 +38,7 @@ async function setup(page: Page) {
 							revision: 0,
 							role: "assistant",
 							origin: "agent",
-							text: `[Worker guide](${root}guide.md) · [Unsafe HTML](${root}unsafe.html) · [Shared](ao://projects/next.js/shared/guide.md) · [Missing](ao://projects/new/shared/guide.md)`,
+							text: `[Code](${root}code.ts) · [Worker guide](${root}guide.md) · [Unsafe HTML](${root}unsafe.html) · [Shared](ao://projects/next.js/shared/guide.md) · [Missing](ao://projects/new/shared/guide.md)`,
 							streaming: false,
 							createdAt: now,
 						},
@@ -83,11 +83,13 @@ async function setup(page: Page) {
 			});
 			return;
 		}
-		const body = input.path.endsWith("html")
-			? `<script>top.__documentPwn=1;fetch('/api/v1/pwn')</script><img src="https://document-sink.invalid/image" onerror="top.__documentPwn=2"><form action="http://127.0.0.1:19999/pwn"><button>submit</button></form><meta http-equiv="refresh" content="0;url=https://document-sink.invalid/refresh"><svg onload="top.__documentPwn=3"></svg><style>@import 'https://document-sink.invalid/style';p{background:url(http://127.0.0.1:19999/css)}</style><a href="javascript:top.__documentPwn=4">bad</a><p>Static safe content</p>`
-			: "# Guide\n\n[Second heading](#second)\n\n" +
-				"Paragraph\n\n".repeat(120) +
-				"## Second\n\nEnd";
+		const body = input.path.endsWith(".ts")
+			? "const answer = 42;\nconsole.log(answer);"
+			: input.path.endsWith("html")
+				? `<script>top.__documentPwn=1;fetch('/api/v1/pwn')</script><img src="https://document-sink.invalid/image" onerror="top.__documentPwn=2"><form action="http://127.0.0.1:19999/pwn"><button>submit</button></form><meta http-equiv="refresh" content="0;url=https://document-sink.invalid/refresh"><svg onload="top.__documentPwn=3"></svg><style>@import 'https://document-sink.invalid/style';p{background:url(http://127.0.0.1:19999/css)}</style><a href="javascript:top.__documentPwn=4">bad</a><p>Static safe content</p>`
+				: "# Guide\n\n[Second heading](#second)\n\n" +
+					"Paragraph\n\n".repeat(120) +
+					"## Second\n\nEnd";
 		await route.fulfill({ contentType: "application/octet-stream", body });
 	});
 	await page.goto(`/#/projects/fake-proj/sessions/${sessionId}`);
@@ -150,4 +152,22 @@ test("static HTML has no executable side effects or network/API/top-navigation s
 	).toBeUndefined();
 	expect(sinks).toEqual([]);
 	expect(page.url()).toBe(before);
+});
+
+test("read-only code keeps line numbers, copy contents, and original-byte download @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.getByRole("link", { name: "Code", exact: true }).click();
+	const frame = page.getByRole("region", { name: "code.ts", exact: true });
+	await expect(
+		frame.locator("diffs-container").locator("[data-line]").first(),
+	).toBeVisible();
+	await expect(frame.locator('[contenteditable="true"]')).toHaveCount(0);
+	await expect(
+		frame.getByRole("button", { name: "Copy contents", exact: true }),
+	).toBeVisible();
+	const download = page.waitForEvent("download");
+	await frame.getByRole("button", { name: "Download", exact: true }).click();
+	expect((await download).suggestedFilename()).toBe("code.ts");
 });

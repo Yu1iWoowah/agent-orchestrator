@@ -2,7 +2,11 @@ import createDOMPurify from "dompurify";
 import * as css from "css-tree";
 import type { DocumentTarget } from "./document-targets";
 import { relativeDocumentTarget, documentFileKey } from "./document-targets";
-import { classifyDocument, DocumentContentError, DOCUMENT_TEXT_LIMIT } from "./document-content";
+import {
+	classifyDocument,
+	DocumentContentError,
+	DOCUMENT_TEXT_LIMIT,
+} from "./document-content";
 const RESOURCE_LIMIT = 64,
 	RESOURCE_BYTES = 10 * 1024 * 1024,
 	TOTAL_BYTES = 20 * 1024 * 1024;
@@ -20,6 +24,8 @@ export interface DocumentResources {
 		declarations?: boolean,
 	) => Promise<string>;
 	dispose: () => void;
+	limited: () => boolean;
+	blockedLinks: () => string[];
 }
 /** Each reader owns its budget, in-flight resources and blobs; no app/global URL cache. */
 export function createDocumentResources(
@@ -27,7 +33,9 @@ export function createDocumentResources(
 	load: (target: DocumentTarget) => Promise<ArrayBuffer>,
 ): DocumentResources {
 	const blobs = new Set<string>();
-	const images = new Map<string,Promise<string|null>>();
+	const blocked = new Set<string>();
+	let limited = false;
+	const images = new Map<string, Promise<string | null>>();
 	const cache = new Map<string, Promise<ArrayBuffer>>();
 	let count = 0,
 		total = 0,
@@ -40,33 +48,49 @@ export function createDocumentResources(
 	};
 	const resolve = (ref: string, from: DocumentTarget) => {
 		// Resources stay in this descriptor. Cross-source canonical links are only explicit navigation.
-		if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)) return null;
+		if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)) {
+			blocked.add(ref);
+			return null;
+		}
 		return relativeDocumentTarget(from, ref);
 	};
 	const read = (target: DocumentTarget) => {
 		const key = documentFileKey(target);
 		const saved = cache.get(key);
 		if (saved) return saved;
-		if (++count > RESOURCE_LIMIT)
+		if (++count > RESOURCE_LIMIT) {
+			limited = true;
 			return Promise.reject(
 				new DocumentContentError("DOCUMENT_RESOURCE_LIMIT"),
 			);
+		}
 		const request = load(target).then((data) => {
 			if (disposed) throw new DOMException("Aborted", "AbortError");
 			total += data.byteLength;
-			if (data.byteLength > RESOURCE_BYTES || total > TOTAL_BYTES)
+			if (data.byteLength > RESOURCE_BYTES || total > TOTAL_BYTES) {
+				limited = true;
 				throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
+			}
 			return data;
-		});
+		}).catch(error=>{if(error&&typeof error==="object"&&"code" in error&&error.code==="DOCUMENT_TOO_LARGE")limited=true;throw error;});
 		cache.set(key, request);
 		return request;
 	};
 	const resources: DocumentResources = {
-		async image(ref,from=base){
-			const target=resolve(ref,from);if(!target)return null;
-			const key=documentFileKey(target);const saved=images.get(key);if(saved)return saved;
-			const request=read(target).then(data=>{const content=classifyDocument(target.path,new Uint8Array(data));return content.kind==="image"?blob(data,content.mime):null;});
-			images.set(key,request);return request;
+		limited: () => limited,
+		blockedLinks: () => [...blocked],
+		async image(ref, from = base) {
+			const target = resolve(ref, from);
+			if (!target) return null;
+			const key = documentFileKey(target);
+			const saved = images.get(key);
+			if (saved) return saved;
+			const request = read(target).then((data) => {
+				const content = classifyDocument(target.path, new Uint8Array(data));
+				return content.kind === "image" ? blob(data, content.mime) : null;
+			});
+			images.set(key, request);
+			return request;
 		},
 		async stylesheet(ref, from = base, ancestors = new Set()) {
 			const target = resolve(ref, from);
@@ -99,6 +123,8 @@ export function createDocumentResources(
 			let invalid = false;
 			css.walk(tree, (node) => {
 				if (node.type === "Raw") invalid = true;
+				if (node.type === "Url" && /^(?:https?:|\/\/)/i.test(node.value))
+					blocked.add(node.value);
 				if (
 					node.type === "Function" &&
 					!/^(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color|color-mix|calc|min|max|clamp|linear-gradient|radial-gradient|repeating-linear-gradient|repeating-radial-gradient|translate[xyz]?|scale[xyz]?|rotate[xyz]?|matrix|cubic-bezier|steps)$/i.test(
@@ -156,8 +182,11 @@ export function createDocumentResources(
 					node.value = "";
 				}
 			}
-			const result=imported.join("\n")+css.generate(tree);
-			if(result.length>DOCUMENT_TEXT_LIMIT)throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
+			const result = imported.join("\n") + css.generate(tree);
+			if (result.length > DOCUMENT_TEXT_LIMIT) {
+				limited = true;
+				throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
+			}
 			return result;
 		},
 		dispose() {
@@ -260,5 +289,8 @@ export async function staticDocumentHtml(
 	csp.content =
 		"default-src 'none'; script-src 'none'; connect-src 'none'; img-src blob:; style-src 'unsafe-inline' blob:; font-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
 	doc.head.prepend(csp);
+	for (const href of resources.blockedLinks())
+		if (/^https?:/i.test(href) && !links.some((link) => link.href === href))
+			links.push({ label: href, href });
 	return { html: "<!doctype html>" + doc.documentElement.outerHTML, links };
 }

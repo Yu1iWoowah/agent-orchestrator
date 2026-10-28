@@ -3688,7 +3688,7 @@
 	"documents.sheet.forward": "下一份",
 	"documents.sheet.close": "關閉 Document",
 	"documents.sheet.binary": "無法預覽這個二進位檔案。",
-	"documents.sheet.tooLarge": "這個檔案超過 document 預覽上限。",
+	"documents.sheet.tooLarge": "超過預覽上限：UTF-8 文字 2 MiB、圖片與 PDF 20 MiB。你仍可複製路徑或下載。",
 	"documents.sheet.unsafeImage": "圖片格式無效，或超過 4,000 萬像素。",
 	"documents.sheet.parseError": "無法解析這份 document。",
 	"documents.sheet.blockedImage": "無法載入圖片（僅能載入受管的本機資源）。",
@@ -3699,5 +3699,10 @@
 	"documents.sheet.external": "開啟外部連結",
 	"documents.sheet.path": "檔案路徑",
 	"documents.sheet.connection": "只能在這台電腦的連線預覽 document。",
-	"documents.sheet.metadata": "{{size}} bytes · {{media}}"
+	"documents.sheet.metadata": "{{size}} bytes · {{media}}",
+	"documents.sheet.copyContents": "複製內容",
+	"documents.sheet.download": "下載",
+	"documents.sheet.downloadError": "下載失敗。請重新整理後再試一次。",
+	"documents.sheet.staticHtml": "此預覽不執行 script，也不自動載入遠端資源。你可明確開啟下方外部連結。",
+	"documents.sheet.resourceLimit": "已限制資源：最多 64 個、單檔 10 MiB、總量 20 MiB。"
 }

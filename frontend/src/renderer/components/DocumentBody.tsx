@@ -1,3 +1,4 @@
+import { DocumentCode } from "./DocumentCode";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -189,12 +190,11 @@ export function DocumentBody({
 			) : visit.mode === "source" ||
 			  content.kind === "source" ||
 			  content.kind === "text" ? (
-				<pre
-					className="whitespace-pre-wrap break-words font-mono text-xs"
-					style={{ fontSize: `${visit.position.zoom}em` }}
-				>
-					{"text" in content ? content.text : ""}
-				</pre>
+				<DocumentCode
+					text={"text" in content ? content.text : ""}
+					path={document.target.path}
+					zoom={visit.position.zoom}
+				/>
 			) : content.kind === "html" ? (
 				<DocumentHtml
 					text={content.text}
@@ -357,6 +357,16 @@ function DocumentImage({
 	) : (
 		<span className="text-muted-foreground">
 			{alt || t("documents.sheet.blockedImage")}
+			{isWebLink(reference) ? (
+				<Button
+					variant="ghost"
+					size="sm"
+					onClick={() => void openLinkInSystemBrowser(reference)}
+				>
+					{t("documents.sheet.external")}
+				</Button>
+			) : null}
+			{resources.limited() ? t("documents.sheet.resourceLimit") : null}
 		</span>
 	);
 }
@@ -392,6 +402,14 @@ function DocumentHtml({
 	if (error) return <p role="alert">{t("documents.sheet.parseError")}</p>;
 	return result ? (
 		<>
+			<p className="mb-2 text-xs text-muted-foreground">
+				{t("documents.sheet.staticHtml")}
+			</p>
+			{resources.limited() ? (
+				<p role="status" className="text-xs">
+					{t("documents.sheet.resourceLimit")}
+				</p>
+			) : null}
 			<iframe
 				data-document-static=""
 				title={t("documents.sheet.preview")}

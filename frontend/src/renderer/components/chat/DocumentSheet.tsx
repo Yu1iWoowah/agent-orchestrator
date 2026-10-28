@@ -1,3 +1,4 @@
+import { downloadDocument } from "../../lib/document-download";
 import { aoBridge } from "../../lib/bridge";
 import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -10,6 +11,7 @@ import {
 	ZoomIn,
 	ZoomOut,
 	ArrowUpRight,
+	Download,
 } from "lucide-react";
 import { useDocumentReader } from "../../lib/document-reading-context";
 import {
@@ -86,6 +88,7 @@ function DocumentSheetReader({
 		(state) => state.documentSizes[preferenceKey] ?? defaultSize,
 	);
 	const setSize = useConversationFrameStore((state) => state.setDocumentSize);
+	const [downloading, setDownloading] = useState(false);
 	const [preview, setPreview] = useState<{ width?: number; height?: number }>(
 		{},
 	);
@@ -257,6 +260,32 @@ function DocumentSheetReader({
 							<ZoomIn className="size-4" />,
 						)}
 						{control(
+							t("documents.sheet.download"),
+							async () => {
+								setDownloading(true);
+								try {
+									await downloadDocument(
+										reader.connection,
+										visit.document.target,
+									);
+								} catch {
+									useUiStore
+										.getState()
+										.showGlobalToast(
+											t("documents.sheet.downloadError"),
+											undefined,
+											{ tone: "error" },
+										);
+								} finally {
+									setDownloading(false);
+								}
+							},
+							<Download className="size-4" />,
+							downloading ||
+								(visit.document.target.kind === "artifact" &&
+									visit.document.size > 50 * 1024 * 1024),
+						)}
+						{control(
 							t("documents.sheet.copyPath"),
 							() => void copy("path"),
 							<Copy className="size-4" />,
@@ -320,10 +349,20 @@ function DocumentSheetReader({
 			) : visit ? (
 				<>
 					<div
-						className="shrink-0 break-all border-b py-2 font-mono text-xs text-muted-foreground"
+						className="min-w-0 shrink-0 border-b py-2 font-mono text-xs text-muted-foreground"
 						title={visit.document.localPath}
 					>
-						{visit.document.localPath}
+						<p className="truncate">{visit.document.localPath}</p>
+						<div className="truncate">
+							{t("documents.sheet.metadata", {
+								size: visit.document.size,
+								media: visit.document.mediaType,
+							})}{" "}
+							· {visit.document.target.kind} · {visit.document.target.projectId}
+							{visit.document.target.kind === "artifact"
+								? ` / ${visit.document.target.sessionId}`
+								: ""}
+						</div>
 					</div>
 					{metadata.data &&
 					metadata.data.fingerprint !== visit.document.fingerprint ? (
