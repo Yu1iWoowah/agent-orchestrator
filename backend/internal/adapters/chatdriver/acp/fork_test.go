@@ -1,9 +1,11 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -333,5 +335,64 @@ func TestACPForkRecordsChildBeforeLoad(t *testing.T) {
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("cancelled load succeeded")
+	}
+}
+
+func TestACPDeleteForkMissingSession(t *testing.T) {
+	missing := "Session child not found in any project directory"
+	for _, tt := range []struct {
+		name    string
+		err     error
+		cleaned bool
+	}{
+		{"deleted", nil, true},
+		{"resource not found", &acpsdk.RequestError{Code: acpResourceNotFound, Message: "Resource not found"}, true},
+		{"known missing session", acpsdk.NewInternalError(map[string]any{"details": missing}), true},
+		{"different session", acpsdk.NewInternalError(map[string]any{"details": "Session other not found in any project directory"}), false},
+		{"extra details", acpsdk.NewInternalError(map[string]any{"details": missing + ": permission denied"}), false},
+		{"permission denied", acpsdk.NewInternalError(map[string]any{"details": "Permission denied"}), false},
+		{"io failure", acpsdk.NewInternalError(map[string]any{"details": "Input/output error"}), false},
+		{"wrong code", acpsdk.NewInvalidParams(map[string]any{"details": missing}), false},
+		{"auth required", acpsdk.NewAuthRequired(map[string]any{"details": missing}), false},
+		{"message only", &acpsdk.RequestError{Code: -32603, Message: missing}, false},
+		{"wrong field", acpsdk.NewInternalError(map[string]any{"error": missing}), false},
+		{"unstructured data", acpsdk.NewInternalError(missing), false},
+		{"non string details", acpsdk.NewInternalError(map[string]any{"details": 42}), false},
+		{"transport failure", errors.New(missing), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &fakeAgent{deleteErr: tt.err, capabilities: &acpsdk.AgentCapabilities{
+				SessionCapabilities: acpsdk.SessionCapabilities{Delete: &acpsdk.SessionDeleteCapabilities{}},
+			}}
+			driver := forkTestDriver(agent)
+			var logs bytes.Buffer
+			driver.log = slog.New(slog.NewJSONHandler(&logs, nil))
+			parent, err := driver.Start(t.Context(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = parent.Close() }()
+			err = parent.(ports.ChatForkDeleter).DeleteFork(t.Context(), "owned:child")
+			if (err == nil) != tt.cleaned {
+				t.Fatalf("DeleteFork() = %v, want cleaned=%v", err, tt.cleaned)
+			}
+			if !tt.cleaned {
+				if !strings.Contains(err.Error(), "ACP session/delete") {
+					t.Fatalf("missing operation: %v", err)
+				}
+				var requestErr *acpsdk.RequestError
+				if !errors.As(err, &requestErr) {
+					t.Fatalf("lost structured error: %v", err)
+				}
+			}
+			if tt.cleaned && tt.err != nil && !strings.Contains(logs.String(), "ACP fork already absent") {
+				t.Fatalf("missing already-cleaned log: %s", logs.String())
+			}
+			agent.mu.Lock()
+			defer agent.mu.Unlock()
+			if len(agent.deletedForks) != 1 || agent.deletedForks[0] != "child" {
+				t.Fatalf("deletions: %v", agent.deletedForks)
+			}
+		})
 	}
 }
