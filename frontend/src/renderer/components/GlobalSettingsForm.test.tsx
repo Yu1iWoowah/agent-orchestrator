@@ -428,6 +428,18 @@ describe("GlobalSettingsForm", () => {
 		expect(useLocaleStore.getState().locale).toBe("zh-CN");
 	});
 
+	it("switches to Traditional Chinese and persists the independent UI locale", async () => {
+		const user = userEvent.setup();
+		renderForm();
+		await user.click(await screen.findByLabelText("Language"));
+		await user.click(await screen.findByRole("menuitem", { name: "繁體中文" }));
+		await waitFor(() => expect(setUiSettings).toHaveBeenCalledWith({ locale: "zh-TW" }));
+		await waitFor(() => expect(screen.getByText("語言")).toBeInTheDocument());
+		expect(screen.getByText("主題")).toBeInTheDocument();
+		expect(document.documentElement.lang).toBe("zh-TW");
+		expect(useLocaleStore.getState().locale).toBe("zh-TW");
+	});
+
 	it("toggles sound notifications on and persists the change", async () => {
 		const user = userEvent.setup();
 		renderForm();

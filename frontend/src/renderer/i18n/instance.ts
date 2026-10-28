@@ -11,6 +11,7 @@ type Catalog = Record<string, string | string[]>;
 // fallback; the rest load only when the user's saved locale asks for them.
 const localeLoaders: Record<Exclude<AppLocale, "en">, () => Promise<{ default: Catalog }>> = {
 	"zh-CN": () => import("./zh-CN.json"),
+	"zh-TW": () => import("./zh-TW.json"),
 	ja: () => import("./ja.json"),
 	ko: () => import("./ko.json"),
 	es: () => import("./es.json"),

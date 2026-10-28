@@ -11,11 +11,13 @@ import {
 	koMessages,
 	ptBRMessages,
 	zhCNMessages,
+	zhTWMessages,
 } from "./all-messages";
 
 const allCatalogs = {
 	en: enMessages,
 	"zh-CN": zhCNMessages,
+	"zh-TW": zhTWMessages,
 	ja: jaMessages,
 	ko: koMessages,
 	es: esMessages,
@@ -32,6 +34,7 @@ describe("coerceLocale", () => {
 	it("accepts all supported locales", () => {
 		expect(coerceLocale("en")).toBe("en");
 		expect(coerceLocale("zh-CN")).toBe("zh-CN");
+		expect(coerceLocale("zh-TW")).toBe("zh-TW");
 		expect(coerceLocale("ja")).toBe("ja");
 		expect(coerceLocale("ko")).toBe("ko");
 		expect(coerceLocale("es")).toBe("es");
@@ -76,6 +79,7 @@ describe("app i18next instance", () => {
 		const labels = {
 			en: "settings.language.en",
 			"zh-CN": "settings.language.zhCN",
+			"zh-TW": "settings.language.zhTW",
 			ja: "settings.language.ja",
 			ko: "settings.language.ko",
 			es: "settings.language.es",
@@ -86,6 +90,7 @@ describe("app i18next instance", () => {
 		const expected = {
 			en: "English",
 			"zh-CN": "简体中文",
+			"zh-TW": "繁體中文",
 			ja: "日本語",
 			ko: "한국어",
 			es: "Español",

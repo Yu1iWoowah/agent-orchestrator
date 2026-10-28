@@ -244,6 +244,7 @@ export function GeneralSettingsSection({
 	const languageOptions = [
 		{ value: "en", label: t("settings.language.en") },
 		{ value: "zh-CN", label: t("settings.language.zhCN") },
+		{ value: "zh-TW", label: t("settings.language.zhTW") },
 		{ value: "ja", label: t("settings.language.ja") },
 		{ value: "ko", label: t("settings.language.ko") },
 		{ value: "es", label: t("settings.language.es") },

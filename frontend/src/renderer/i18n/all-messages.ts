@@ -1,6 +1,7 @@
 // Every locale catalog, eagerly. For tests and build tooling only: importing
-// this from runtime code puts all 8 catalogs (~1.5 MB) back on the startup path.
+// this from runtime code puts all catalogs (~1.5 MB) back on the startup path.
 import zhCN from "./zh-CN.json";
+import zhTW from "./zh-TW.json";
 import ja from "./ja.json";
 import ko from "./ko.json";
 import es from "./es.json";
@@ -15,6 +16,7 @@ import { enMessages, type MessageCatalog } from "./messages";
 
 export { enMessages };
 export const zhCNMessages = zhCN;
+export const zhTWMessages = zhTW;
 export const jaMessages = ja;
 export const koMessages = ko;
 export const esMessages = es;
@@ -25,6 +27,7 @@ export const ptBRMessages = ptBR;
 export const appCatalogs: TranslationCatalogs = {
 	en: enMessages,
 	"zh-CN": zhCNMessages,
+	"zh-TW": zhTWMessages,
 	ja: jaMessages,
 	ko: koMessages,
 	es: esMessages,

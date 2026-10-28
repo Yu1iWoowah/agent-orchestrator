@@ -1,0 +1,162 @@
+---
+title: 安裝
+description: 下載 AO 桌面應用程式，並連接您的程式設計工具。
+translatedFrom: 7460247266d0
+---
+
+如需最新穩定版桌面應用程式，請先前往 [Orchestrator 官方下載頁面](https://orchestrator.inc/download/)，該頁也列有每日建置版與行動應用程式。若要直接下載桌面安裝套件，請從下方選取：
+
+<InstallDownloads />
+
+在手機上安裝 [Orchestrator Mobile（iPhone 或 iPad）](https://apps.apple.com/app/ao-mobile/id6792552173) 或 [Orchestrator Mobile（Android）](https://play.google.com/store/apps/details?id=aoagents.dev)，再透過桌面應用程式中的 [Connect Mobile](/configuration/remote-access) 進行配對。
+
+桌面應用程式是主要安裝方式。它會管理本機背景服務，不需要全域的 `ao` 指令，並在啟動後及執行期間檢查更新。
+
+<span id="optional-macos-install-with-homebrew" />
+## 選用：在 macOS 透過 Homebrew 安裝
+
+建議使用上方的桌面應用程式下載連結。在 macOS 上，也可以安裝既有的 Homebrew cask：
+
+```bash
+brew install --cask agentwrapper/tap/agent-orchestrator
+```
+
+桌面應用程式通常會自行更新。若要更新由 Homebrew 管理的安裝，請先更新 Homebrew，再升級 cask：
+
+```bash
+brew update
+brew upgrade --cask agentwrapper/tap/agent-orchestrator
+```
+
+<span id="prerequisites" />
+## 必要工具
+
+| 工具 | 何時需要 | 用途 |
+| --- | --- | --- |
+| Git | 使用儲存庫的專案 | 建立並管理隔離的 worktree 與分支。 |
+| GitHub CLI `gh` | GitHub 專案 | 使用您既有的登入資訊，執行儲存庫與 PR 操作。 |
+| 外部程式設計 agent（Orchestrator 稱為 harness） | 使用已安裝 CLI 的 agent session | 安裝 Claude Code、Codex、Cursor、Aider 或 OpenCode 等受支援工具。目前清單及介面支援請參閱[agent 目錄](/plugins/agents)。macOS 與 Linux 上的 Orchestrator 內建 Unreal Agent，可用於對話介面。 |
+| tmux | macOS 啟動前檢查，以及舊版／備援終端機 session | macOS／Linux 桌面套件已隨附。從原始碼啟動時可能需要系統上的 tmux；請參閱[執行環境](/plugins/runtimes)。 |
+
+Orchestrator 會使用電腦上已安裝的程式設計 agent 及其登入資訊。**設定 → harness**提供受支援 agent 的設定與就緒檢查；部分工具必須在 Orchestrator 外部安裝或登入。Unreal Agent 是例外：它內建於應用程式、僅支援對話介面，且有自己的平台與權限限制。請參閱[agent 目錄](/plugins/agents)。
+
+<span id="set-up-ao" />
+<span id="set-up-orchestrator" />
+## 設定 Orchestrator
+
+<Steps>
+<Step>
+
+<span id="install-and-open-the-desktop-app" />
+### 安裝並開啟桌面應用程式
+
+從上方選取適合您平台的下載項目，安裝後開啟 **Orchestrator**。應用程式會自動啟動並監督本機 Go 背景服務。
+
+</Step>
+<Step>
+
+<span id="authenticate-github" />
+### 完成 GitHub 身分驗證
+
+如果使用 GitHub 儲存庫，請視需要先[安裝 GitHub CLI](https://cli.github.com/)，再登入：
+
+```bash
+gh auth login
+gh auth status
+```
+
+請使用可讀取該儲存庫，且具備您預期 agent 執行之分支與 PR 操作權限的帳號。
+
+如果使用 GitLab，請以 GitLab 權杖或 `glab` 登入。請參閱[版本控制設定](/plugins/scm)。
+
+</Step>
+<Step>
+
+<span id="install-and-sign-in-to-an-agent" />
+<span id="install-and-sign-in-to-an-external-agent" />
+### 安裝並登入外部 agent
+
+使用外部安裝的 harness 時，請先安裝工具，並在 Orchestrator 外執行一次，完成登入流程。建立 session 時，Orchestrator 會偵測可用的 harness。若使用內建 Unreal Agent，請略過此步驟，直接在受支援的 macOS 或 Linux 上為對話 session 選取它。
+
+是否支援對話介面，取決於 harness 與已安裝的版本；請參閱[agent 能力目錄](/plugins/agents#chat-versus-terminal-ui)。
+
+</Step>
+<Step>
+
+<span id="add-a-project" />
+### 新增專案
+
+在桌面應用程式中選擇**新增專案**，再選取既有的本機 Git 儲存庫。Orchestrator 會將它註冊為專案，不會移動原有副本。每個 worker 的 session 都會取得獨立、隔離的 worktree。
+
+</Step>
+</Steps>
+
+不需要儲存庫的工作，也可以啟動未連結專案的獨立任務。選用的 CLI 寫法為 `ao spawn --standalone --agent codex --name notes --prompt "Draft release notes"`；獨立 worker 無法 claim PR，也不能使用 Git／專案旗標。
+
+<span id="legacy-npm-cli" />
+## 舊版 npm CLI
+
+<details className="ao-legacy-cli-details">
+<summary>
+	<span className="ao-legacy-cli-summary-copy">
+		<span className="ao-legacy-cli-summary-title">已經安裝 npm CLI？</span>
+		<span className="ao-legacy-cli-summary-note"><code>@aoagents/ao</code> 已凍結於 <code>0.10.0</code>，不再是建議的安裝方式。</span>
+	</span>
+	<span className="ao-legacy-cli-summary-icon" aria-hidden="true" />
+</summary>
+
+<div className="ao-legacy-cli-details__content">
+
+`0.10.0` 是最後一個 npm 版本。此套件僅保留給既有使用者，作為舊版啟動入口，不會再加入新產品功能。從該安裝執行 `ao start`，會取得並開啟桌面版本。
+
+```bash
+npm install -g @aoagents/ao
+ao start
+```
+
+新使用者請直接安裝桌面應用程式。
+
+</div>
+</details>
+
+<span id="where-ao-stores-data" />
+<span id="where-orchestrator-stores-data" />
+## Orchestrator 的資料儲存位置
+
+Orchestrator 預設將所有應用程式狀態儲存在 `~/.ao`，包括背景服務資料庫、執行狀態檔、受管理的 worktree、Electron 瀏覽器資料及行動配對設定。進階安裝可以透過 `AO_DATA_DIR` 與 `AO_RUN_FILE` 覆寫背景服務路徑。
+
+<span id="common-installation-problems" />
+## 常見安裝問題
+
+<Accordions>
+	<Accordion title="沒有可用的 agent">
+		使用外部 harness 時，請安裝工具、執行一次以完成驗證，再重新啟動 Orchestrator，讓桌面應用程式啟動的背景服務取得更新後的登入 shell 環境。受支援的 macOS 與 Linux 版 Orchestrator 已內建 Unreal Agent，可直接選取它使用對話介面，不必安裝 CLI。
+	</Accordion>
+	<Accordion title="缺少 GitHub 資料">
+		請執行 `gh auth status`，確認目前使用的帳號可以存取該儲存庫及其 PR。
+	</Accordion>
+	<Accordion title="macOS 或 Linux 無法啟動終端機介面">
+		安裝套件已隨附 tmux。新的 session 通常使用原生 PTY 主機；macOS 仍會檢查 tmux 是否可用，較舊的 session 也可能需要它。從原始碼安裝與備援行為請參閱[執行環境診斷](/plugins/runtimes/tmux)。
+	</Accordion>
+	<Accordion title="找不到舊版 `ao` 指令">
+		桌面應用程式不需要此指令。只有刻意使用已凍結的舊版 CLI 時，才需要檢查套件管理工具的全域 bin 路徑。
+	</Accordion>
+	<Accordion title="macOS 顯示無法驗證開發者">
+		在 Finder 中以右鍵按一下 Orchestrator，選擇「打開」，再於確認對話方塊中選擇「打開」。若 macOS 仍封鎖應用程式，請執行下列診斷，並在回報議題時附上輸出：
+		```bash
+		sw_vers
+		codesign -dvvv "/Applications/Agent Orchestrator.app"
+		spctl -a -t exec -vvv --ignore-cache --no-cache "/Applications/Agent Orchestrator.app"
+		log show --last 10m --predicate 'subsystem == "com.apple.syspolicy"'
+		```
+	</Accordion>
+</Accordions>
+
+<span id="next" />
+## 接下來
+
+<Cards>
+	<Card title="快速開始" description="建立專案，執行第一個 worker。" href="/quickstart" />
+	<Card title="平台" description="查看各平台下載項目與終端機行為。" href="/platforms" />
+	<Card title="疑難排解" description="診斷桌面應用程式、背景服務與 agent 問題。" href="/troubleshooting" />
+</Cards>

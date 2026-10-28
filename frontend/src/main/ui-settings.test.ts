@@ -24,9 +24,9 @@ describe("ui-settings", () => {
 		expect(await readUiSettings(dir)).toEqual(DEFAULT_UI_SETTINGS);
 	});
 
-	it("round-trips written locale", async () => {
-		await writeUiSettings(dir, { locale: "zh-CN" });
-		expect(await readUiSettings(dir)).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "zh-CN" });
+	it.each(["zh-CN", "zh-TW"] as const)("round-trips written locale %s", async (locale) => {
+		await writeUiSettings(dir, { locale });
+		expect(await readUiSettings(dir)).toEqual({ ...DEFAULT_UI_SETTINGS, locale });
 		await writeUiSettings(dir, { locale: "en" });
 		expect(await readUiSettings(dir)).toEqual(DEFAULT_UI_SETTINGS);
 	});
