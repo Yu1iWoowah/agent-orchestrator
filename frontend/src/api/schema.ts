@@ -5713,6 +5713,7 @@ export interface components {
             truncated?: boolean;
         };
         ConversationTurnResponse: {
+            batchInputTurnIds?: string[];
             completedAt?: null | string;
             diff?: components["schemas"]["ConversationTurnDiffResponse"];
             errorMessage?: string;

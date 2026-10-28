@@ -123,6 +123,8 @@ export interface ConversationTurn {
 	 */
 	rolledBack?: boolean;
 	providerTurnId?: string;
+	/** Original receipt turns consumed in this batch, including off-page inputs. */
+	batchInputTurnIds?: string[];
 	/** Failed source whose durable prompt created this retry attempt. */
 	retryOfTurnId?: string;
 	/** A retry attempt exists, even if that child is outside the active branch. */

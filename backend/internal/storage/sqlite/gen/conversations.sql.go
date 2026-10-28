@@ -2411,6 +2411,84 @@ func (q *Queries) SelectConversationActivityByProviderItem(ctx context.Context, 
 	return i, err
 }
 
+const selectConversationBatchInputs = `-- name: SelectConversationBatchInputs :many
+WITH RECURSIVE active_path(branch_id, max_sequence) AS (
+    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    FROM conversations
+    WHERE conversations.id = ?1
+    UNION ALL
+    SELECT branch.parent_branch_id,
+           CASE
+               WHEN path.max_sequence IS NULL THEN branch.fork_after_sequence
+               WHEN branch.fork_after_sequence < path.max_sequence THEN branch.fork_after_sequence
+               ELSE path.max_sequence
+           END
+    FROM active_path AS path
+    JOIN conversation_branches AS branch ON branch.id = path.branch_id
+    WHERE branch.parent_branch_id IS NOT NULL
+)
+SELECT source.id AS input_turn_id, target.id AS consuming_turn_id
+FROM conversation_turns AS source
+JOIN conversation_turns AS target ON target.id = source.promoted_to_turn_id
+JOIN conversation_messages AS message ON message.turn_id = source.id
+    AND message.conversation_id = source.conversation_id AND message.role = 'user'
+JOIN active_path AS path ON path.branch_id = message.branch_id
+WHERE source.conversation_id = ?1
+  AND target.conversation_id = ?1
+  AND target.id IN (/*SLICE:turn_ids*/?)
+  AND source.batched_input = 1
+  AND source.rolled_back_at IS NULL AND target.rolled_back_at IS NULL
+  AND source.state <> 'cancelled'
+  AND (path.max_sequence IS NULL OR message.sequence <= path.max_sequence)
+ORDER BY message.sequence
+`
+
+type SelectConversationBatchInputsParams struct {
+	ConversationID string
+	TurnIds        []string
+}
+
+type SelectConversationBatchInputsRow struct {
+	InputTurnID     string
+	ConsumingTurnID string
+}
+
+// Batch receipts for visible consuming turns, independent of the message page.
+// This lets clients reconcile older cached inputs without widening page bounds.
+func (q *Queries) SelectConversationBatchInputs(ctx context.Context, arg SelectConversationBatchInputsParams) ([]SelectConversationBatchInputsRow, error) {
+	query := selectConversationBatchInputs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ConversationID)
+	if len(arg.TurnIds) > 0 {
+		for _, v := range arg.TurnIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:turn_ids*/?", strings.Repeat(",?", len(arg.TurnIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:turn_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SelectConversationBatchInputsRow{}
+	for rows.Next() {
+		var i SelectConversationBatchInputsRow
+		if err := rows.Scan(&i.InputTurnID, &i.ConsumingTurnID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectConversationBranch = `-- name: SelectConversationBranch :one
 WITH RECURSIVE lineage(id, parent_branch_id, replaced_turn_id, provider_scope_id, depth) AS (
     SELECT branch.id, branch.parent_branch_id, branch.replaced_turn_id,

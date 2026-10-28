@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1478,7 +1479,7 @@ func TestReservedEditRecoversAfterControllerStopAndResume(t *testing.T) {
 		t.Fatalf("retry after controller resume = %+v, %v; want one accepted replacement", result, err)
 	}
 	replay, err := h.svc.EditMessage(context.Background(), testSession, first, msg)
-	if err != nil || replay != result || driver.fresh.sendCallCount() != 1 {
+	if err != nil || !reflect.DeepEqual(replay, result) || driver.fresh.sendCallCount() != 1 {
 		t.Fatalf("receipt replay = %+v, %v; provider sends=%d", replay, err, driver.fresh.sendCallCount())
 	}
 }
@@ -2147,7 +2148,7 @@ func TestAcceptedEditReplaysBeforeAnchorLookupAndRejectsChangedPayload(t *testin
 	if err != nil {
 		t.Fatalf("replayed EditMessage: %v", err)
 	}
-	if replayed != original {
+	if !reflect.DeepEqual(replayed, original) {
 		t.Fatalf("replayed result = %+v, want original %+v", replayed, original)
 	}
 	if sent := driver.fresh.sentTexts(); len(sent) != 1 || sent[0] != "A edited" {
@@ -2445,7 +2446,7 @@ func TestAcceptedEditReplaysAfterControllerRestartWithoutProviderRedispatch(t *t
 	if err != nil {
 		t.Fatalf("EditMessage after restart: %v", err)
 	}
-	if replayed != original {
+	if !reflect.DeepEqual(replayed, original) {
 		t.Fatalf("restart replay = %+v, want %+v", replayed, original)
 	}
 	if sent := restartedProvider.sentTexts(); len(sent) != 0 {

@@ -16696,6 +16696,10 @@ components:
       type: object
     ConversationTurnResponse:
       properties:
+        batchInputTurnIds:
+          items:
+            type: string
+          type: array
         completedAt:
           type:
           - "null"

@@ -328,6 +328,7 @@ func TestConversationSnapshotCarriesTheSendersClientMessageID(t *testing.T) {
 func TestConversationSnapshotExposesBatchConsumingTurn(t *testing.T) {
 	body := conversationSnapshotBody(t, chatsvc.Snapshot{
 		Conversation: domain.ConversationRecord{ID: "conversation-1"}, SessionID: "p1-1",
+		Turns: []domain.ConversationTurn{{ID: "leader", State: domain.TurnStateCompleted, BatchInputTurnIDs: []string{"follower"}}, {ID: "ordinary", State: domain.TurnStateCompleted}},
 		Messages: []domain.ConversationMessage{
 			{ID: "leader-message", TurnID: "leader", Sequence: 1, Role: domain.MessageRoleUser},
 			{ID: "follower-message", TurnID: "follower", ConsumedByTurnID: "leader", Sequence: 2, Role: domain.MessageRoleUser},
@@ -344,6 +345,15 @@ func TestConversationSnapshotExposesBatchConsumingTurn(t *testing.T) {
 			t.Fatalf("non-follower has consuming turn: %#v", messages[i])
 		}
 	}
+	turns := body["turns"].([]any)
+	inputs := turns[0].(map[string]any)["batchInputTurnIds"].([]any)
+	if len(inputs) != 1 || inputs[0] != "follower" {
+		t.Fatalf("consuming turn omitted batch receipts: %#v", turns[0])
+	}
+	if _, ok := turns[1].(map[string]any)["batchInputTurnIds"]; ok {
+		t.Fatalf("ordinary turn has batch receipts: %#v", turns[1])
+	}
+
 }
 
 func TestConversationSnapshotCarriesHumanPromptFactWithoutPagedMessage(t *testing.T) {

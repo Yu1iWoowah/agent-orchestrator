@@ -557,6 +557,10 @@ type ConversationTurn struct {
 	HandledByReviewID string `json:"handledByReviewId,omitempty"`
 	// ProviderTurnID correlates back to the provider's own turn. Opaque.
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	// BatchInputTurnIDs are the original receipt turns consumed by this turn.
+	// They remain available even when those input messages are outside the page.
+	BatchInputTurnIDs []string `json:"batchInputTurnIds,omitempty"`
+
 	// ProviderInputText identifies a combined native prompt during history replay.
 	// The public transcript continues to use the individual message rows.
 	ProviderInputText string `json:"-"`

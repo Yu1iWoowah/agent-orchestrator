@@ -3098,6 +3098,9 @@ type ConversationTurnResponse struct {
 	ID             string `json:"id"`
 	State          string `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	// BatchInputTurnIDs identifies consumed inputs outside this message page too.
+	BatchInputTurnIDs []string `json:"batchInputTurnIds,omitempty"`
+
 	// RetryOfTurnID is the failed source whose durable prompt created this turn.
 	RetryOfTurnID string `json:"retryOfTurnId,omitempty"`
 	// HasRetryAttempt remains true when the attempt is outside the active branch.

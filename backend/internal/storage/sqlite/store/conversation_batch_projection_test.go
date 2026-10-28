@@ -160,6 +160,39 @@ func TestBatchConversationProjection(t *testing.T) {
 		}
 	})
 
+	t.Run("branch prefix excludes later batch inputs", func(t *testing.T) {
+		root := snapshot.Conversation.ActiveBranchID
+		child := domain.ConversationBranch{ID: "batch-prefix", ConversationID: conversation, SessionID: session,
+			ParentBranchID: root, ProviderConversationID: "prefix-thread", ForkAfterTurnID: "leader", ForkAfterSequence: 1}
+		if err := s.CreateConversationBranch(ctx, child, histClock); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ActivateConversationBranch(ctx, session, conversation, child.ID, "prefix-thread", "gen-prefix", histClock); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := s.ActivateConversationBranch(ctx, session, conversation, root, "", "gen-1", histClock); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		for _, load := range []func() (store.ConversationSnapshot, error){
+			func() (store.ConversationSnapshot, error) { return s.LoadConversationSnapshot(ctx, conversation) },
+			func() (store.ConversationSnapshot, error) {
+				return s.LoadConversationSnapshotPage(ctx, conversation, 0, 10)
+			},
+		} {
+			got, err := load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, turn := range got.Turns {
+				if len(turn.BatchInputTurnIDs) != 0 {
+					t.Fatalf("batch receipts crossed branch prefix: %+v", turn)
+				}
+			}
+		}
+	})
+
 	t.Run("rollback", func(t *testing.T) {
 		if _, err := s.RollbackTurns(ctx, conversation, "leader", histClock.Add(3*time.Minute)); err != nil {
 			t.Fatal(err)
@@ -173,6 +206,11 @@ func TestBatchConversationProjection(t *testing.T) {
 			got, err := load()
 			if err != nil {
 				t.Fatal(err)
+			}
+			for _, turn := range got.Turns {
+				if len(turn.BatchInputTurnIDs) != 0 {
+					t.Fatalf("rolled-back batch receipts visible: %+v", turn)
+				}
 			}
 			if len(got.Messages) != 0 {
 				t.Fatalf("rolled-back batch visible: %+v", got.Messages)

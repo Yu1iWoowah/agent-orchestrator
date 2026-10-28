@@ -35,6 +35,8 @@ export type ConversationTurn = {
 	id: string;
 	state: TurnState;
 	providerTurnId?: string;
+	/** Original receipt turns consumed in this batch, including off-page inputs. */
+	batchInputTurnIds?: string[];
 	errorMessage?: string;
 	requestedAt: string;
 	startedAt?: string;

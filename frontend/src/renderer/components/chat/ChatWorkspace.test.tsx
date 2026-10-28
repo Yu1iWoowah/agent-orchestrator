@@ -1,4 +1,5 @@
-import { toSnapshot } from "../../hooks/useConversation";
+import cachedBatch from "../../../../../test/fixtures/batch-conversation-pages.json";
+import { mergeConversationPages, toSnapshot } from "../../hooks/useConversation";
 import batchFixture from "../../../../../test/fixtures/batch-conversation.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { captureFileReference } from "../../../shared/chat-file-reference";
@@ -541,6 +542,24 @@ describe("Chat message timestamps", () => {
 });
 
 describe("ChatWorkspace timeline", () => {
+	it("shows off-page batch followers after merging a refreshed live page", () => {
+		type BatchPage = Pick<Parameters<typeof toSnapshot>[0],
+			"turns" | "messages" | "oldestSequence" | "latestSequence" | "hasMoreBefore">;
+		const raw: { before: BatchPage[]; live: BatchPage } = JSON.parse(JSON.stringify(cachedBatch));
+		const fromWire = (value: BatchPage) => toSnapshot({
+			...value, conversationId: "conv-1", sessionId: "hist-1", harness: "codex", mode: "chat",
+			controller: "ready", settings: {}, activities: [], branchedFromEarlierMessage: false,
+			continueTurnId: "", nativeForkAvailableAfterSequence: 0,
+		});
+		const snapshot = mergeConversationPages([fromWire(raw.live), ...raw.before.slice(1).map(fromWire)]);
+		if (!snapshot) throw new Error("missing snapshot");
+		render(<ChatWorkspace snapshot={snapshot} />);
+		const follower = within(screen.getByRole("log")).getByText("follower");
+		const answer = within(screen.getByRole("log")).getByText("Shared batch answer");
+		expect(follower.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(snapshot.items.find((item) => item.id === "follower-message")).toMatchObject({ turnId: "follower", consumedByTurnId: "leader" });
+	});
+
 	it("places SQLite batch followers before the shared answer", () => {
 		const fixture: Pick<Parameters<typeof toSnapshot>[0], "turns" | "messages"> = JSON.parse(JSON.stringify(batchFixture));
 		const snapshot = toSnapshot({

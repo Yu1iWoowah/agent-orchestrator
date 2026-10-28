@@ -4064,6 +4064,10 @@ func (s *Store) LoadConversationSnapshotPage(
 		presentation.filterInactiveProviderTurn(&turn)
 		snapshot.Turns = append(snapshot.Turns, turn)
 	}
+	if err := s.attachConversationBatchInputs(ctx, conversationID, snapshot.Turns); err != nil {
+		return ConversationSnapshot{}, err
+	}
+
 	// SQL returns newest-first so LIMIT is useful; the API contract remains
 	// oldest-first inside each page.
 	for i := len(messageRows) - 1; i >= 0; i-- {
@@ -4211,6 +4215,10 @@ func (s *Store) LoadConversationSnapshot(
 		presentation.filterInactiveProviderTurn(&turn)
 		snapshot.Turns = append(snapshot.Turns, turn)
 	}
+	if err := s.attachConversationBatchInputs(ctx, conversationID, snapshot.Turns); err != nil {
+		return ConversationSnapshot{}, err
+	}
+
 	for _, row := range messageRows {
 		snapshot.Messages = append(snapshot.Messages, snapshotMessageToDomain(row))
 	}
@@ -4218,6 +4226,27 @@ func (s *Store) LoadConversationSnapshot(
 		snapshot.Activities = append(snapshot.Activities, activityToDomain(row))
 	}
 	return snapshot, nil
+}
+
+func (s *Store) attachConversationBatchInputs(ctx context.Context, conversationID string, turns []domain.ConversationTurn) error {
+	if len(turns) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(turns))
+	indexes := make(map[string]int, len(turns))
+	for i, turn := range turns {
+		ids = append(ids, turn.ID)
+		indexes[turn.ID] = i
+	}
+	rows, err := s.qr.SelectConversationBatchInputs(ctx, gen.SelectConversationBatchInputsParams{ConversationID: conversationID, TurnIds: ids})
+	if err != nil {
+		return fmt.Errorf("select conversation batch inputs: %w", err)
+	}
+	for _, row := range rows {
+		turn := &turns[indexes[row.ConsumingTurnID]]
+		turn.BatchInputTurnIDs = append(turn.BatchInputTurnIDs, row.InputTurnID)
+	}
+	return nil
 }
 
 func (s *Store) conversationRetriedSources(ctx context.Context, conversationID string) (map[string]bool, error) {

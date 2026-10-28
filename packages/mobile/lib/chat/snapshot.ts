@@ -107,13 +107,32 @@ export function withLivePage(pages: ConversationPage[], live: ConversationPage):
 	if (!current) return [live];
 	if (current.conversationId && current.conversationId !== live.conversationId) return [live];
 	if (current.activeBranchId && live.activeBranchId && current.activeBranchId !== live.activeBranchId) return [live];
-	return [live, ...pages.slice(1)];
+	return [live, ...pages.slice(1).map((page) => reconcileBatchInputs(page, live.turns))];
 }
 
 /** Whether an older page still belongs behind the live one; a branch switch while it loaded makes it stale. */
 export function olderPageFits(pages: ConversationPage[], older: ConversationPage): boolean {
 	const live = pages[0];
 	return Boolean(live) && (!live.activeBranchId || !older.activeBranchId || live.activeBranchId === older.activeBranchId);
+}
+
+/** Persist durable batch receipts even after the consumer leaves the live page. */
+function reconcileBatchInputs(snapshot: ConversationPage, latestTurns: ConversationTurn[]): ConversationPage {
+	const consumers = new Map(latestTurns.filter((turn) => turn.batchInputTurnIds?.length).map((turn) => [turn.id, turn]));
+	if (consumers.size === 0) return snapshot;
+	const consumedBy = new Map<string, string>();
+	for (const turn of consumers.values()) {
+		for (const inputTurnId of turn.batchInputTurnIds ?? []) consumedBy.set(inputTurnId, turn.id);
+	}
+	return {
+		...snapshot,
+		items: snapshot.items.map((item) => {
+			if (item.kind !== "message" || !item.turnId) return item;
+			const consumedByTurnId = consumedBy.get(item.turnId);
+			return consumedByTurnId ? { ...item, consumedByTurnId } : item;
+		}),
+		turns: snapshot.turns.filter((turn) => !consumedBy.has(turn.id)).map((turn) => consumers.get(turn.id) ?? turn),
+	};
 }
 
 /** Merge historical pages behind the current live page without duplicating revisions. */
@@ -129,11 +148,11 @@ export function mergeConversationPages(pages: ConversationPage[]): ConversationS
 		for (const turn of page.turns) turns.set(turn.id, turn);
 	}
 	const oldest = pages[pages.length - 1] ?? live;
-	return {
+	return reconcileBatchInputs({
 		...live,
 		oldestSequence: oldest.oldestSequence,
 		hasMoreBefore: oldest.hasMoreBefore,
 		items: [...items.values()].sort((a, b) => a.sequence - b.sequence),
 		turns: [...turns.values()].sort((a, b) => a.requestedAt.localeCompare(b.requestedAt)),
-	};
+	}, [...turns.values()]);
 }
