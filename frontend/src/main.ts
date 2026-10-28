@@ -1713,6 +1713,8 @@ function establishAppDiagnosticsLink(): void {
 	const identity = `${info.pid}:${info.startedAtMs}:${address}`;
 	if (identity === appDiagnosticsLinkIdentity) return;
 	disposeAppDiagnosticsLink();
+	// This handle owns reconnect/backoff for the daemon identity until disposed.
+	// A rejected capability stops retries inside the handle until identity changes.
 	appDiagnosticsLink = connectAppDiagnostics({ path: address }, appDiagnosticsToken, appRunId);
 	appDiagnosticsLinkIdentity = identity;
 }

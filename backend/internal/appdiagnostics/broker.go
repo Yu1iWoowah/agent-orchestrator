@@ -20,6 +20,9 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// RuntimeAddressEnv publishes the non-secret private diagnostic locator.
+const RuntimeAddressEnv = "AO_APP_DIAGNOSTICS_ADDRESS"
+
 // Credentials are consumed exactly once from the app's private stdin pipe.
 type Credentials struct {
 	Version      int    `json:"version"`

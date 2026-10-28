@@ -58,7 +58,6 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
-	appdiag "github.com/aoagents/agent-orchestrator/backend/internal/service/appdiagnostics"
 	awakesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/awake"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
@@ -744,32 +743,29 @@ func Run(buildVersion string) error {
 	// HostID is assigned below, once the identity file has been read.
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
-	var appDiagnostics *appdiag.Service
-	var appDiagnosticsAPI controllers.AppDiagnosticsService
-	if appRuntimeToken != "" {
-		appDiagnostics, err = appdiag.New(cfg.DataDir, sessionSvc, appBroker, time.Now)
-		if err != nil {
-			log.Warn("app diagnostics: storage unavailable")
-		} else {
-			appBroker.BindAuthority(appDiagnostics)
-			appDiagnosticsAPI = appDiagnostics
-			defer func() { _ = appDiagnostics.Close() }()
-			go func() {
-				ticker := time.NewTicker(time.Minute)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-ticker.C:
-						if err := appDiagnostics.Sweep(ctx); err != nil {
-							log.Warn("app diagnostics: cleanup failed")
-						}
+	// Storage cleanup is independent of the desktop token. A headless restart
+	// must discard prior credentials/payloads and enforce audit retention too.
+	appDiagnostics, appDiagnosticsAPI, err := newAppDiagnosticsServices(cfg.DataDir, sessionSvc, appBroker, appRuntimeToken != "")
+	if err != nil {
+		log.Warn("app diagnostics: storage unavailable", "err", err)
+	} else {
+		defer func() { _ = appDiagnostics.Close() }()
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := appDiagnostics.Sweep(ctx); err != nil {
+						log.Warn("app diagnostics: cleanup failed", "err", err)
 					}
 				}
-			}()
-		}
+			}
+		}()
 	}
+
 	var browserChrome controllers.BrowserChromeService
 	if chrome != nil {
 		browserService.UseChrome(chrome.broker, chrome.targets, log)
@@ -1094,18 +1090,18 @@ func Run(buildVersion string) error {
 	browserLive.SetLoopbackBaseURL("http://" + srv.Addr().String())
 	previewDone := preview.NewPoller(store, sessionSvc, "http://"+srv.Addr().String(), preview.PollerConfig{Logger: log}).Start(ctx)
 	_ = os.Unsetenv(browserruntime.RuntimeAddressEnv)
-	_ = os.Unsetenv("AO_APP_DIAGNOSTICS_ADDRESS")
-	if appDiagnostics != nil {
+	_ = os.Unsetenv(appruntime.RuntimeAddressEnv)
+	if appDiagnosticsAPI != nil {
 		if ln, addr, listenErr := appruntime.Listen(cfg.DataDir); listenErr != nil {
-			log.Warn("app diagnostics: listener unavailable")
+			log.Warn("app diagnostics: listener unavailable", "err", listenErr)
 		} else {
-			if err := os.Setenv("AO_APP_DIAGNOSTICS_ADDRESS", addr); err != nil {
+			if err := os.Setenv(appruntime.RuntimeAddressEnv, addr); err != nil {
 				_ = ln.Close()
 				return err
 			}
 			go func() {
 				if err := appBroker.Serve(ctx, ln); err != nil {
-					log.Warn("app diagnostics: runtime stopped")
+					log.Warn("app diagnostics: runtime stopped", "err", err)
 				}
 			}()
 		}

@@ -4871,11 +4871,17 @@ export interface components {
         AppDiagnosticsAudit: {
             /** Format: date-time */
             at: string;
+            bytes?: number;
             count?: number;
             grantId: string;
             outcome: string;
+            partial?: null | boolean;
+            reasonCode?: string;
+            redactionSchemaVersion?: number;
             requestId: string;
             sessionId: string;
+            skippedCount?: number;
+            windowId?: string;
         };
         AppDiagnosticsAuditLog: {
             droppedCount: number;

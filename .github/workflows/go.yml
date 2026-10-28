@@ -206,7 +206,7 @@ jobs:
         run: go test -race -count=1 -timeout=10m ./internal/adapters/agent/binaryutil ./internal/adapters/agent/goose
 
       - name: Test app diagnostic Windows permissions and protocol
-        run: go test -race -count=1 ./internal/service/appdiagnostics ./internal/appdiagnostics
+        run: go test -race -count=1 -v ./internal/service/appdiagnostics ./internal/appdiagnostics
 
       - name: Test OpenCode Windows npm shim version probe
         run: go test -race -count=1 -run '^TestResolveBinaryForMajorAcceptsSlowShim$' ./internal/adapters/agent/opencode

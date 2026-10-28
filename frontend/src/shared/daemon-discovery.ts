@@ -97,7 +97,7 @@ export function parseRunFile(contents: string): RunFileInfo | null {
 		owner?: unknown;
 		appRunId?: unknown;
 		appDiagnosticsAddress?: unknown;
-	browserRuntimeAddress?: unknown;
+		browserRuntimeAddress?: unknown;
 		browserStreamAddress?: unknown;
 	};
 	if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) return null;
@@ -109,7 +109,7 @@ export function parseRunFile(contents: string): RunFileInfo | null {
 		owner: typeof owner === "string" ? owner : undefined,
 		appRunId: typeof appRunId === "string" ? appRunId : undefined,
 		appDiagnosticsAddress: typeof appDiagnosticsAddress === "string" ? appDiagnosticsAddress : undefined,
-	browserRuntimeAddress: typeof browserRuntimeAddress === "string" ? browserRuntimeAddress : undefined,
+		browserRuntimeAddress: typeof browserRuntimeAddress === "string" ? browserRuntimeAddress : undefined,
 		browserStreamAddress: typeof browserStreamAddress === "string" ? browserStreamAddress : undefined,
 	};
 }

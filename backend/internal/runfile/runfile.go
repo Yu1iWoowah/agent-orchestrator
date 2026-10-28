@@ -38,11 +38,12 @@ type Info struct {
 	// BrowserRuntimeAddress is the exact Unix socket or Windows named-pipe
 	// address selected by the backend for this daemon launch. It is a locator,
 	// not an authentication secret; the runtime token stays out of this file.
-	AppDiagnosticsAddress string `json:"appDiagnosticsAddress,omitempty"`
 	BrowserRuntimeAddress string `json:"browserRuntimeAddress,omitempty"`
 	// BrowserStreamAddress is the private Electron media socket locator. It is
 	// authenticated with the same per-launch token as the command runtime.
 	BrowserStreamAddress string `json:"browserStreamAddress,omitempty"`
+	// AppDiagnosticsAddress locates the independent authenticated diagnostic channel.
+	AppDiagnosticsAddress string `json:"appDiagnosticsAddress,omitempty"`
 }
 
 // Write atomically writes running.json at path, creating parent directories

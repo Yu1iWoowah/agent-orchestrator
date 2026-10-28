@@ -14750,6 +14750,8 @@ components:
         at:
           format: date-time
           type: string
+        bytes:
+          type: integer
         count:
           minimum: 0
           type: integer
@@ -14757,9 +14759,22 @@ components:
           type: string
         outcome:
           type: string
+        partial:
+          type:
+          - "null"
+          - boolean
+        reasonCode:
+          type: string
+        redactionSchemaVersion:
+          type: integer
         requestId:
           type: string
         sessionId:
+          type: string
+        skippedCount:
+          minimum: 0
+          type: integer
+        windowId:
           type: string
       required:
       - requestId

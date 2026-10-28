@@ -38,7 +38,7 @@ type Seen = {
 	origin: string | undefined;
 	appAuth: string | undefined;
 	appOrigin: string | undefined;
- appDiagnosticCapability: string | undefined;
+	appDiagnosticCapability: string | undefined;
 	body: string;
 };
 
@@ -85,7 +85,7 @@ async function startUpstream(
 				origin: req.headers.origin,
 				appAuth: req.headers["x-ao-preview-app-authorization"] as string | undefined,
 				appOrigin: req.headers["x-ao-preview-app-origin"] as string | undefined,
- appDiagnosticCapability: req.headers["x-ao-app-diagnostics-capability"] as string | undefined,
+				appDiagnosticCapability: req.headers["x-ao-app-diagnostics-capability"] as string | undefined,
 				body,
 			});
 			const out = handler(req, seen);
@@ -1059,7 +1059,7 @@ describe("startRemoteProxy over HTTP/2", () => {
 				origin: req.headers.origin,
 				appAuth: req.headers["x-ao-preview-app-authorization"] as string | undefined,
 				appOrigin: req.headers["x-ao-preview-app-origin"] as string | undefined,
- appDiagnosticCapability: req.headers["x-ao-app-diagnostics-capability"] as string | undefined,
+				appDiagnosticCapability: req.headers["x-ao-app-diagnostics-capability"] as string | undefined,
 				body: "",
 			});
 			res.writeHead(200, { "content-type": "application/json" });
@@ -1783,22 +1783,36 @@ describe("remote mobile control browser boundary", () => {
 });
 
 describe("app diagnostic isolation", () => {
- it("strips diagnostic credentials from ordinary forwarded requests", async () => {
-  const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
-  proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}`, password: "pw" });
-  const result = await fetch(`${proxy.base}/api/v1/sessions`, {headers:{Origin:"app://renderer","X-AO-App-Diagnostics-Capability":"must-stay-local"}});
-  expect(result.status).toBe(200);
-  expect(seen).toHaveLength(1);
-  expect(seen[0].appDiagnosticCapability).toBeUndefined();
- });
+	it("strips diagnostic credentials from ordinary forwarded requests", async () => {
+		const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
+		proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}`, password: "pw" });
+		const result = await fetch(`${proxy.base}/api/v1/sessions`, {
+			headers: { Origin: "app://renderer", "X-AO-App-Diagnostics-Capability": "must-stay-local" },
+		});
+		expect(result.status).toBe(200);
+		expect(seen).toHaveLength(1);
+		expect(seen[0].appDiagnosticCapability).toBeUndefined();
+	});
 
- it("does not forward local-only diagnostics even with a trusted renderer origin", async () => {
-  const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
-  proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}`, password: "pw" });
-  for (const route of ["status", "snapshots", "%73tatus"]) {
-   const result = await fetch(`${proxy.base}/api/v1/desktop/diagnostics/${route}`, {headers: {Origin:"app://renderer", "X-AO-App-Diagnostics-Capability":"must-not-forward"}});
-   expect(result.status).toBe(403);
-  }
-  expect(seen).toHaveLength(0);
- });
+	it("does not forward local-only diagnostics even with a trusted renderer origin", async () => {
+		const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
+		proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}`, password: "pw" });
+		for (const route of ["status", "snapshots", "%73tatus"]) {
+			const result = await fetch(`${proxy.base}/api/v1/desktop/diagnostics/${route}`, {
+				headers: { Origin: "app://renderer", "X-AO-App-Diagnostics-Capability": "must-not-forward" },
+			});
+			expect(result.status).toBe(403);
+		}
+		expect(seen).toHaveLength(0);
+	});
+});
+
+describe("diagnostic prefix traversal", () => {
+	it("rejects a normalized diagnostic route outside an upstream prefix", async () => {
+		const { port, seen } = await startUpstream(() => ({ status: 200, body: "{}" }));
+		proxy = await startRemoteProxy({ label: "box", url: `http://127.0.0.1:${port}/nested`, password: "pw" });
+		const response = await fetch(`${proxy.base}/%2e%2e%2fapi/v1/desktop/diagnostics/status`, { headers: { Origin: "app://renderer" } });
+		expect(response.status).toBe(403);
+		expect(seen).toHaveLength(0);
+	});
 });

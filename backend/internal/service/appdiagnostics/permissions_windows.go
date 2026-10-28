@@ -4,7 +4,9 @@ package appdiagnostics
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -61,7 +63,7 @@ func privateFile(info os.FileInfo) error {
 func validateWindowsHandle(handle windows.Handle, directory bool) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		return err
+		return fmt.Errorf("inspect diagnostic file identity: %w", err)
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (!directory && info.NumberOfLinks != 1) {
 		return errors.New("unsafe diagnostic file identity")
@@ -72,7 +74,7 @@ func validateWindowsHandle(handle windows.Handle, directory bool) error {
 	}
 	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		return err
+		return fmt.Errorf("inspect diagnostic security descriptor: %w", err)
 	}
 	owner, _, err := sd.Owner()
 	if err != nil || owner == nil || !owner.Equals(sid) {
@@ -106,4 +108,37 @@ func secureCreatedFile(file *os.File) error {
 }
 func secureOpenedFile(file *os.File, directory bool) error {
 	return validateWindowsHandle(windows.Handle(file.Fd()), directory)
+}
+
+// NtCreateFile is relative to the already-confined parent handle. Supplying an
+// explicit owner avoids relying on the token's default owner (which may be Administrators)
+// while retaining the current-user/SYSTEM-only protected DACL from creation.
+func createPrivateFile(root *os.Root, name string) (*os.File, error) {
+	parent, err := root.Open(filepath.Dir(name))
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if err := secureOpenedFile(parent, true); err != nil {
+		return nil, err
+	}
+	sid, err := currentUserSID()
+	if err != nil {
+		return nil, err
+	}
+	sd, err := windows.SecurityDescriptorFromString("O:" + sid.String() + "D:P(A;;FA;;;" + sid.String() + ")(A;;FA;;;SY)")
+	if err != nil {
+		return nil, err
+	}
+	base, err := windows.NewNTUnicodeString(filepath.Base(name))
+	if err != nil {
+		return nil, err
+	}
+	attrs := windows.OBJECT_ATTRIBUTES{Length: uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})), RootDirectory: windows.Handle(parent.Fd()), ObjectName: base, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE, SecurityDescriptor: sd}
+	var handle windows.Handle
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_WRITE|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES, &attrs, &windows.IO_STATUS_BLOCK{}, nil, windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_CREATE, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("create diagnostic private file: %w", err)
+	}
+	return os.NewFile(uintptr(handle), name), nil
 }

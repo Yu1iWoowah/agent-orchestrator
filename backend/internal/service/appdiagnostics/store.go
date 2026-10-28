@@ -16,6 +16,9 @@ type diskStore struct {
 	writeContent func(*os.File, []byte) (int, error)
 	root         *os.Root
 	dropped      uint64
+	skipped      uint64
+	invalid      map[string]bool
+	auditTimes   map[string]time.Time
 }
 
 func openStore(dataDir string) (*diskStore, error) {
@@ -27,7 +30,7 @@ func openStore(dataDir string) (*diskStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &diskStore{root: root, writeContent: (*os.File).Write}
+	s := &diskStore{root: root, writeContent: (*os.File).Write, invalid: map[string]bool{}, auditTimes: map[string]time.Time{}}
 	for _, dir := range []string{"grants", "snapshots", "audit"} {
 		if err := privateDir(filepath.Join(name, dir)); err != nil {
 			_ = root.Close()
@@ -69,7 +72,7 @@ func (s *diskStore) write(dir, id string, value any) error {
 		return err
 	}
 	tmp := filepath.Join(dir, uuid.NewString()+".tmp")
-	f, err := s.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := createPrivateFile(s.root, tmp)
 	if err != nil {
 		return err
 	}
@@ -171,22 +174,13 @@ func (s *diskStore) entries(dir string) ([]os.DirEntry, error) {
 	return f.ReadDir(-1)
 }
 func (s *diskStore) removeGrant(id string) error {
-	entries, err := s.entries("snapshots")
+	rows, err := documents[Record](s, "snapshots")
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		var row Record
-		key := entry.Name()
-		if filepath.Ext(key) != ".json" {
-			continue
-		}
-		key = key[:len(key)-5]
-		if err := s.read("snapshots", key, &row); err != nil {
-			return err
-		}
-		if row.GrantID == id {
-			if err := s.remove("snapshots", key); err != nil {
+	for _, row := range rows {
+		if row.value.GrantID == id {
+			if err := s.remove("snapshots", row.id); err != nil {
 				return err
 			}
 		}
@@ -197,7 +191,67 @@ func (s *diskStore) audit(row Audit) error {
 	if err := s.write("audit", row.RequestID, row); err != nil {
 		return err
 	}
-	return s.prune(row.At)
+	s.auditTimes[row.RequestID] = row.At
+	// The index is built at startup/Sweep. Appending an audit never reads
+	// snapshots or decodes the retained audit history under the service mutex.
+	for len(s.auditTimes) > 9999 {
+		var oldest string
+		for id, at := range s.auditTimes {
+			if oldest == "" || at.Before(s.auditTimes[oldest]) {
+				oldest = id
+			}
+		}
+		if err := s.remove("audit", oldest); err != nil {
+			return err
+		}
+		delete(s.auditTimes, oldest)
+		s.dropped++
+	}
+	return s.retentionSummary(row.At)
+}
+
+type document[T any] struct {
+	id    string
+	value T
+	size  int64
+}
+
+// Unknown future schemas and unrelated files are ignored individually. No file
+// name or content enters the audit; one bounded summary records the reason.
+func documents[T any](s *diskStore, dir string) ([]document[T], error) {
+	entries, err := s.entries(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]document[T], 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		key := name
+		valid := !entry.IsDir() && filepath.Ext(name) == ".json"
+		if valid {
+			key = name[:len(name)-5]
+			_, err = uuid.Parse(key)
+			valid = err == nil
+		}
+		var value T
+		if valid {
+			valid = s.read(dir, key, &value) == nil
+		}
+		if !valid {
+			identity := dir + "/" + name
+			if !s.invalid[identity] {
+				s.invalid[identity] = true
+				s.skipped++
+			}
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, document[T]{key, value, info.Size()})
+	}
+	return out, nil
 }
 
 // reset never revives a credential or payload from another daemon epoch.
@@ -207,8 +261,7 @@ func (s *diskStore) reset(now time.Time) error {
 	var summary Audit
 	if err := s.read("audit", retentionID, &summary); err == nil {
 		s.dropped = summary.Count
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		s.skipped = summary.SkippedCount
 	}
 	for _, dir := range []string{"grants", "snapshots"} {
 		entries, err := s.entries(dir)
@@ -217,36 +270,25 @@ func (s *diskStore) reset(now time.Time) error {
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
-				return errors.New("unexpected diagnostic directory")
+				s.invalid[dir+"/"+entry.Name()] = true
+				s.skipped++
+				continue
 			}
 			if err := s.root.Remove(filepath.Join(dir, entry.Name())); err != nil {
 				return err
 			}
 		}
 	}
-	entries, err := s.entries("audit")
+	rows, err := documents[Audit](s, "audit")
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) == ".tmp" {
-			if err := s.root.Remove(filepath.Join("audit", entry.Name())); err != nil {
-				return err
-			}
-			continue
-		}
-		key := entry.Name()
-		if len(key) < 5 {
-			return errors.New("invalid audit file")
-		}
-		var row Audit
-		if err := s.read("audit", key[:len(key)-5], &row); err != nil {
-			return err
-		}
+	for _, doc := range rows {
+		row := doc.value
 		if row.Outcome == "accepted" {
 			row.At = now
 			row.Outcome = "interrupted"
-			if err := s.write("audit", row.RequestID, row); err != nil {
+			if err := s.write("audit", doc.id, row); err != nil {
 				return err
 			}
 		}
@@ -254,74 +296,59 @@ func (s *diskStore) reset(now time.Time) error {
 	return s.prune(now)
 }
 func (s *diskStore) prune(now time.Time) error {
-	type item struct {
-		id   string
-		at   time.Time
-		size int64
+	rows, err := documents[Record](s, "snapshots")
+	if err != nil {
+		return err
 	}
-	for _, dir := range []string{"snapshots", "audit"} {
-		entries, err := s.entries(dir)
-		if err != nil {
+	sort.Slice(rows, func(i, j int) bool { return rows[i].value.CreatedAt.Before(rows[j].value.CreatedAt) })
+	var total int64
+	for _, row := range rows {
+		total += row.size
+	}
+	count := len(rows)
+	for _, row := range rows {
+		if now.Before(row.value.CreatedAt.Add(24*time.Hour)) && count <= 20 && total <= 20<<20 {
+			continue
+		}
+		if err := s.remove("snapshots", row.id); err != nil {
 			return err
 		}
-		items := make([]item, 0, len(entries))
-		var total int64
-		for _, entry := range entries {
-			key := entry.Name()
-			if filepath.Ext(key) != ".json" {
-				return errors.New("unexpected diagnostic file")
-			}
-			key = key[:len(key)-5]
-			if dir == "audit" && key == retentionID {
-				continue
-			}
-			var at time.Time
-			if dir == "snapshots" {
-				var row Record
-				if err := s.read(dir, key, &row); err != nil {
-					return err
-				}
-				at = row.CreatedAt
-			} else {
-				var row Audit
-				if err := s.read(dir, key, &row); err != nil {
-					return err
-				}
-				at = row.At
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			items = append(items, item{key, at, info.Size()})
-			total += info.Size()
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].at.Before(items[j].at) })
-		count := len(items)
-		for _, entry := range items {
-			limit := 20
-			ttl := 24 * time.Hour
-			if dir == "audit" {
-				limit = 9999
-				ttl = 7 * 24 * time.Hour
-			}
-			if now.Before(entry.at.Add(ttl)) && count <= limit && (dir != "snapshots" || total <= 20<<20) {
-				continue
-			}
-			if err := s.remove(dir, entry.id); err != nil {
-				return err
-			}
-			count--
-			if dir == "audit" {
-				s.dropped++
-			}
-			total -= entry.size
+		count--
+		total -= row.size
+	}
+	audits, err := documents[Audit](s, "audit")
+	if err != nil {
+		return err
+	}
+	sort.Slice(audits, func(i, j int) bool { return audits[i].value.At.Before(audits[j].value.At) })
+	s.auditTimes = make(map[string]time.Time, len(audits))
+	for _, row := range audits {
+		if row.id != retentionID {
+			s.auditTimes[row.id] = row.value.At
 		}
 	}
-	if s.dropped > 0 {
-		if err := s.write("audit", retentionID, Audit{RequestID: retentionID, At: now, Outcome: "retention", Count: s.dropped}); err != nil {
+	for _, row := range audits {
+		if row.id == retentionID {
+			continue
+		}
+		if now.Before(row.value.At.Add(7*24*time.Hour)) && len(s.auditTimes) <= 9999 {
+			continue
+		}
+		if err := s.remove("audit", row.id); err != nil {
 			return err
 		}
+		delete(s.auditTimes, row.id)
+		s.dropped++
 	}
-	return nil
+	return s.retentionSummary(now)
+}
+func (s *diskStore) retentionSummary(now time.Time) error {
+	if s.dropped == 0 && s.skipped == 0 {
+		return nil
+	}
+	row := Audit{RequestID: retentionID, At: now, Outcome: "retention", Count: s.dropped, SkippedCount: s.skipped}
+	if s.skipped > 0 {
+		row.ReasonCode = "APP_DIAGNOSTICS_DOCUMENT_INVALID"
+	}
+	return s.write("audit", retentionID, row)
 }

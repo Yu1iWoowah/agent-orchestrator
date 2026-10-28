@@ -108,15 +108,17 @@ function previewAssetPath(entry: string, requested: string): string {
 }
 
 function isAppDiagnosticPath(target: string | null, prefix: string): boolean {
- if (target === null) return false;
- try {
-  const normalized = path.posix.normalize(decodeURIComponent(target.split("?", 1)[0]));
-  const base = prefix ? path.posix.normalize(decodeURIComponent(prefix)) : "";
-  const route = normalized.slice(base.length);
-  return route === "/api/v1/desktop/diagnostics" || route.startsWith("/api/v1/desktop/diagnostics/");
- } catch {
-  return true;
- }
+	if (target === null) return false;
+	try {
+		const normalized = path.posix.normalize(decodeURIComponent(target.split("?", 1)[0]));
+		const base = prefix ? path.posix.normalize(decodeURIComponent(prefix)) : "";
+		const diagnostic = "/api/v1/desktop/diagnostics";
+		// Compare complete normalized paths. Traversal may have escaped a nonempty
+		// upstream prefix, so removing base.length bytes can hide the actual route.
+		return [diagnostic, path.posix.join(base, diagnostic)].some((route) => normalized === route || normalized.startsWith(`${route}/`));
+	} catch {
+		return true;
+	}
 }
 
 const RENDERER_ORIGIN = "app://renderer";

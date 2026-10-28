@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
 // Error is the fixed safe failure vocabulary shared with the private runtime.
@@ -57,12 +59,18 @@ type Credential struct {
 
 // Audit records bounded identifiers and outcomes, never snapshot contents.
 type Audit struct {
-	Count     uint64           `json:"count,omitempty"`
-	RequestID string           `json:"requestId"`
-	GrantID   string           `json:"grantId"`
-	SessionID domain.SessionID `json:"sessionId"`
-	At        time.Time        `json:"at"`
-	Outcome   string           `json:"outcome"`
+	WindowID               string           `json:"windowId,omitempty"`
+	Bytes                  int              `json:"bytes,omitempty"`
+	Partial                *bool            `json:"partial,omitempty"`
+	RedactionSchemaVersion int              `json:"redactionSchemaVersion,omitempty"`
+	SkippedCount           uint64           `json:"skippedCount,omitempty"`
+	ReasonCode             string           `json:"reasonCode,omitempty"`
+	Count                  uint64           `json:"count,omitempty"`
+	RequestID              string           `json:"requestId"`
+	GrantID                string           `json:"grantId"`
+	SessionID              domain.SessionID `json:"sessionId"`
+	At                     time.Time        `json:"at"`
+	Outcome                string           `json:"outcome"`
 }
 
 // AuditLog explicitly marks when retained history has been truncated.
@@ -177,7 +185,15 @@ func (s *Service) authorize(ctx context.Context, token string) (*grantState, err
 	}
 	state := s.runtime.State()
 	row, err := s.sessions.Get(ctx, found.credential.SessionID)
-	if err != nil || row.ID != found.credential.SessionID || row.ProjectID != found.credential.ProjectID || row.IsTerminated || row.Kind != domain.KindOrchestrator || launchID(row) != found.launch || !state.Ready || state.InstanceID != found.credential.InstanceID || state.Epoch != found.epoch {
+	var lookup *apierr.Error
+	missing := errors.As(err, &lookup) && lookup.Code == "SESSION_NOT_FOUND"
+	if !state.Ready || state.InstanceID != found.credential.InstanceID || state.Epoch != found.epoch {
+		code = "APP_DIAGNOSTICS_CAPABILITY_INVALID"
+	}
+	if err != nil && !missing && code == "" {
+		return nil, failure("APP_DIAGNOSTICS_SESSION_UNAVAILABLE", 503)
+	}
+	if missing || (err == nil && (row.ID != found.credential.SessionID || row.ProjectID != found.credential.ProjectID || row.IsTerminated || row.Kind != domain.KindOrchestrator || launchID(row) != found.launch)) {
 		code = "APP_DIAGNOSTICS_CAPABILITY_INVALID"
 	}
 	if code != "" {
@@ -212,6 +228,11 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		s.mu.Unlock()
 		return Record{}, err
 	}
+	if in.ProjectID != "" && in.ProjectID != string(g.credential.ProjectID) {
+		s.mu.Unlock()
+		return Record{}, failure("APP_DIAGNOSTICS_CAPABILITY_INVALID", 403)
+	}
+	in.ProjectID = string(g.credential.ProjectID)
 	if s.busy {
 		s.mu.Unlock()
 		return Record{}, failure("APP_DIAGNOSTICS_BUSY", 429)
@@ -238,7 +259,7 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		s.mu.Unlock()
 		return Record{}, failure("APP_WINDOW_GONE", 409)
 	}
-	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "accepted"}
+	audit := Audit{WindowID: in.WindowID, RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "accepted"}
 	if err := s.store.audit(audit); err != nil {
 		s.mu.Unlock()
 		return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
@@ -254,7 +275,7 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 	defer cancel()
 	s.busy = false
 	g.cancel = nil
-	_, authErr := s.authorize(ctx, token)
+	_, authErr := s.authorize(context.WithoutCancel(ctx), token)
 	if captureErr != nil || callCtx.Err() != nil || authErr != nil {
 		audit.At = s.now()
 		audit.Outcome = "failed"
@@ -292,6 +313,18 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		return Record{}, failure("APP_RENDERER_CHANGED", 409)
 	}
 
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		audit.Outcome = "invalid_payload"
+		_ = s.store.audit(audit)
+		return Record{}, failure("APP_DIAGNOSTICS_INVALID_PAYLOAD", 502)
+	}
+	partial := snapshot.Completeness == "partial"
+	audit.Bytes = len(encoded)
+	audit.Partial = &partial
+	// PR1's metadata-only allowlist is redaction schema v1. A future collector
+	// must explicitly version its own field/redaction contract.
+	audit.RedactionSchemaVersion = 1
 	record := Record{ID: uuid.NewString(), GrantID: g.credential.ID, RequestID: audit.RequestID, CreatedAt: s.now(), Snapshot: snapshot}
 	if err := s.store.write("snapshots", record.ID, record); err != nil {
 		audit.Outcome = "storage_failed"
@@ -360,16 +393,28 @@ func (s *Service) revoke(g *grantState) error {
 func (s *Service) Sweep(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var failures []error
 	for _, g := range s.grants {
+		// Use the same deterministic fences as HTTP authorization. Transient lookup
+		// errors leave the credential and existing snapshots intact.
 		row, err := s.sessions.Get(ctx, g.credential.SessionID)
 		state := s.runtime.State()
-		if err != nil || row.IsTerminated || row.ProjectID != g.credential.ProjectID || launchID(row) != g.launch || !s.now().Before(g.credential.ExpiresAt) || !state.Ready || state.Epoch != g.epoch || state.InstanceID != g.credential.InstanceID {
+		var lookup *apierr.Error
+		missing := errors.As(err, &lookup) && lookup.Code == "SESSION_NOT_FOUND"
+		invalid := missing || !s.now().Before(g.credential.ExpiresAt) || !state.Ready || state.Epoch != g.epoch || state.InstanceID != g.credential.InstanceID
+		if err == nil {
+			invalid = invalid || row.ID != g.credential.SessionID || row.Kind != domain.KindOrchestrator || row.IsTerminated || row.ProjectID != g.credential.ProjectID || launchID(row) != g.launch
+		}
+		if invalid {
 			if err := s.revoke(g); err != nil {
-				return err
+				failures = append(failures, err)
 			}
+		} else if err != nil {
+			failures = append(failures, failure("APP_DIAGNOSTICS_SESSION_UNAVAILABLE", 503))
 		}
 	}
-	return s.store.prune(s.now())
+	failures = append(failures, s.store.prune(s.now()))
+	return errors.Join(failures...)
 }
 
 // Close revokes all grants before closing confined storage.
@@ -403,20 +448,13 @@ func (s *Service) List(ctx context.Context, token string) ([]Record, error) {
 	if err := s.store.prune(s.now()); err != nil {
 		return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
-	entries, err := s.store.entries("snapshots")
+	docs, err := documents[Record](s.store, "snapshots")
 	if err != nil {
 		return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	out := []Record{}
-	for _, entry := range entries {
-		var row Record
-		name := entry.Name()
-		if len(name) < 5 {
-			return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
-		}
-		if err := s.store.read("snapshots", name[:len(name)-5], &row); err != nil {
-			return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
-		}
+	for _, doc := range docs {
+		row := doc.value
 		if row.GrantID == g.credential.ID {
 			out = append(out, row)
 		}
@@ -441,20 +479,13 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
-	entries, err := s.store.entries("audit")
+	docs, err := documents[Audit](s.store, "audit")
 	if err != nil {
-		return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	out := []Audit{}
-	for _, entry := range entries {
-		var row Audit
-		name := entry.Name()
-		if len(name) < 5 {
-			return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
-		}
-		if err := s.store.read("audit", name[:len(name)-5], &row); err != nil {
-			return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
-		}
+	for _, doc := range docs {
+		row := doc.value
 		if row.GrantID == g.credential.ID {
 			out = append(out, row)
 		}
