@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setApiBaseUrl, setApiDaemonStatus } from "./api-client";
 import { documentTargetKey, fetchDocumentCatalog, resolveDocument } from "./document-read";
@@ -49,4 +50,11 @@ describe("document read client", () => {
   expect(base).not.toEqual(documentTargetKey(local, { ...target, projectId: "other" }));
   expect(base).not.toEqual(documentTargetKey(local, { kind: "shared", projectId: "p", path: target.path }));
  });
+});
+
+it("keeps an explicit top fragment separate from cached unanchored metadata", () => {
+ const cache = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
+ cache.setQueryData(documentTargetKey(local, target), { target, canonicalUri: "ao://sessions/p/p-1/artifacts/notes%20hello.md" });
+ expect(cache.getQueryData(documentTargetKey(local, { ...target, fragment: "" }))).toBeUndefined();
+ cache.clear();
 });

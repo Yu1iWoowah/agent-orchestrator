@@ -34,7 +34,7 @@ export async function fetchDocumentCatalog(connection: DocumentConnection, proje
 /** Metadata cache identities never collide across hosts, projects or source kinds. */
 export function documentTargetKey(connection: DocumentConnection, target: DocumentInput) {
  const source = target.kind === "local-path" ? [target.value]
-  : target.kind === "artifact" ? [target.projectId, target.sessionId, target.path, target.fragment ?? ""]
-   : [target.projectId, target.path, target.fragment ?? ""];
+  : target.kind === "artifact" ? [target.projectId, target.sessionId, target.path, target.fragment ?? null]
+   : [target.projectId, target.path, target.fragment ?? null];
  return ["document-resolve", connection.kind, connection.identity, target.kind, ...source] as const;
 }
