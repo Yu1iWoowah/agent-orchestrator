@@ -4,7 +4,7 @@ description: 新增專案、啟動 worker，並追蹤從任務到 PR 的過程�
 translatedFrom: 2a6d0fee1ff2
 ---
 
-本指南帶您在桌面應用程式中完成第一項任務：新增儲存庫、啟動 worker、追蹤工作進度，並審查成果。
+本指南帶你在桌面應用程式中完成第一項任務：新增儲存庫、啟動 worker、追蹤工作進度，並審查成果。
 
 <Callout type="info" title="開始之前">
 	請先安裝 Orchestrator；使用 GitHub 專案時，也請透過 `gh` 登入。若選用外部程式設計 agent，請先安裝並完成登入。Orchestrator 將這類工具稱為 harness。macOS 與 Linux 版已內建 Unreal Agent，可用於對話介面。請參閱[安裝](/installation)。
@@ -13,7 +13,7 @@ translatedFrom: 2a6d0fee1ff2
 <span id="pick-a-safe-first-task" />
 ## 選擇安全的第一項任務
 
-選擇您可以建立分支與 PR 的儲存庫。適合入門的任務應有明確的完成條件：
+選擇你可以建立分支與 PR 的儲存庫。適合入門的任務應有明確的完成條件：
 
 - 修正一個可以重現失敗的小問題。
 - 新增一項聚焦的測試。
@@ -76,7 +76,7 @@ Keep this change limited to the API route. Do not refactor the shared client.
 <span id="review-the-pull-request" />
 ### 審查 PR
 
-worker 建立或 claim PR 後，Orchestrator 會以簡潔摘要顯示 CI、reviewer、未解決的審查意見及是否可合併。您可以執行 reviewer、將修改要求傳回 worker、解決審查意見，或在適當時機合併。
+worker 建立或 claim PR 後，Orchestrator 會以簡潔摘要顯示 CI、reviewer、未解決的審查意見及是否可合併。你可以執行 reviewer、將修改要求傳回 worker、解決審查意見，或在適當時機合併。
 
 Orchestrator 不會強制刪除含有未提交變更的 worktree。無法安全移除 session 的工作區時，清理流程會保留使用者的工作成果。
 
