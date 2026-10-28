@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -316,5 +317,78 @@ func TestConversationPlansPreserveLegacyTurnBeforeItsFirstActivity(t *testing.T)
 	plans, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(plans) != 1 || plans[0].Plan.Steps[0].Text != "legacy before update" {
 		t.Fatalf("legacy fork revision = %+v, %v", plans, err)
+	}
+}
+
+func TestConversationPlansReadWithoutWaitingForProviderWriter(t *testing.T) {
+	for _, source := range []string{"absent", "projected", "backfilled-legacy"} {
+		t.Run(source, func(t *testing.T) {
+			s, session, conversation := conversationFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if source != "absent" {
+				appendPlanTurn(t, s, conversation, session, "first", histClock)
+				plan := domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: "saved Plan", Status: domain.PlanStepPending}}}
+				if source == "projected" {
+					writePlan(t, s, conversation, "first", plan, histClock)
+				} else if _, err := s.SetTurnPlan(ctx, conversation, "provider-first", plan); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The legacy case materializes its missing projection on this first read.
+			want, wantBranch, err := s.ConversationPlans(ctx, conversation, 0, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			writerDone := make(chan error, 1)
+			go func() {
+				_, err := s.ProjectProviderEvent(ctx, conversation, session, "gen-1", "held-provider-event", "test.pending", `{}`, histClock, func(context.Context) error {
+					close(entered)
+					select {
+					case <-release:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
+				writerDone <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				close(release)
+				<-writerDone
+				t.Fatal("provider writer did not enter its transaction")
+			}
+			type result struct {
+				plans  []domain.ConversationPlanVersion
+				branch string
+				err    error
+			}
+			readDone := make(chan result, 1)
+			go func() {
+				plans, branch, err := s.ConversationPlans(ctx, conversation, 0, 10)
+				readDone <- result{plans, branch, err}
+			}()
+			var got result
+			timedOut := false
+			select {
+			case got = <-readDone:
+			case <-time.After(2 * time.Second):
+				timedOut = true
+			}
+			close(release)
+			if err := <-writerDone; err != nil {
+				t.Fatal(err)
+			}
+			if timedOut {
+				<-readDone
+				t.Fatal("a fully projected Plan read waited for the provider writer; it must stay read-only")
+			}
+			if got.err != nil || got.branch != wantBranch || !reflect.DeepEqual(got.plans, want) {
+				t.Fatalf("read changed Plan snapshot: %+v, want plans=%+v branch=%q", got, want, wantBranch)
+			}
+		})
 	}
 }

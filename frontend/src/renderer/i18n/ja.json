@@ -3664,6 +3664,7 @@
 	"frames.reset": "パネルのサイズをリセット",
 	"frames.resizeWidth": "{{title}}の幅を変更",
 	"frames.resizeHeight": "{{title}}の高さを変更",
+	"plan.title": "プラン",
 	"plan.latest": "最新",
 	"plan.history": "履歴",
 	"plan.retry": "再試行",

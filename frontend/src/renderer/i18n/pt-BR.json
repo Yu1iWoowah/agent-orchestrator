@@ -3733,6 +3733,7 @@
 	"frames.reset": "Redefinir tamanho do painel",
 	"frames.resizeWidth": "Ajustar largura de {{title}}",
 	"frames.resizeHeight": "Ajustar altura de {{title}}",
+	"plan.title": "Plano",
 	"plan.latest": "Mais recente",
 	"plan.history": "Histórico",
 	"plan.retry": "Tentar novamente",

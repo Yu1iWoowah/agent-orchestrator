@@ -3733,6 +3733,7 @@
 	"frames.reset": "Restablecer tamaño del panel",
 	"frames.resizeWidth": "Cambiar ancho de {{title}}",
 	"frames.resizeHeight": "Cambiar alto de {{title}}",
+	"plan.title": "Plan",
 	"plan.latest": "Más reciente",
 	"plan.history": "Historial",
 	"plan.retry": "Reintentar",

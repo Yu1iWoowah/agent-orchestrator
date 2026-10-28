@@ -18,6 +18,8 @@ interface UseResizableOptions {
 	value?: number;
 	resetSize?: number;
 	onPreview?: (size: number | null) => void;
+	/** Expanded drags may opt into restoring size on interruption. Rails keep commit semantics. */
+	cancelOnInterrupt?: boolean;
 	defaultWidth: number;
 	min: ResizableConstraint;
 	max: ResizableConstraint;
@@ -77,15 +79,19 @@ export function useResizable({
 	value,
 	resetSize,
 	onPreview,
+	cancelOnInterrupt = false,
 }: UseResizableOptions) {
 	const previewRef = useRef(onPreview);
 	previewRef.current = onPreview;
 	const commitRef = useRef(onCommit);
 	commitRef.current = onCommit;
-	const persist = useCallback((size: number) => {
-		if (storageKey) window.localStorage.setItem(storageKey, String(size));
-		commitRef.current?.(size);
-	}, [storageKey]);
+	const persist = useCallback(
+		(size: number) => {
+			if (storageKey) window.localStorage.setItem(storageKey, String(size));
+			commitRef.current?.(size);
+		},
+		[storageKey],
+	);
 	const widthRef = useRef(defaultWidth);
 	// The width the user asked for, before the live clamp.
 	const preferredWidthRef = useRef(defaultWidth);
@@ -111,7 +117,7 @@ export function useResizable({
 			for (const target of targets) {
 				if (target.style.getPropertyValue(cssVar) !== `${clamped}px`) {
 					target.style.setProperty(cssVar, `${clamped}px`);
-			}
+				}
 				appliedTargetsRef.current.add(target);
 			}
 		},
@@ -126,7 +132,10 @@ export function useResizable({
 				frameRef.current = null;
 				const pending = pendingWidthRef.current;
 				pendingWidthRef.current = null;
-				if (pending !== null) { apply(pending); previewRef.current?.(widthRef.current); }
+				if (pending !== null) {
+					apply(pending);
+					previewRef.current?.(widthRef.current);
+				}
 			});
 		},
 		[apply],
@@ -147,7 +156,8 @@ export function useResizable({
 	useLayoutEffect(() => {
 		const saved = Number(storageKey ? window.localStorage.getItem(storageKey) : defaultWidth);
 		const restored = Number.isFinite(saved) && saved > 0 ? saved : defaultWidth;
-		preferredWidthRef.current = restoreMin === undefined ? restored : Math.max(restoreMin, restored);
+		preferredWidthRef.current =
+			restoreMin === undefined ? restored : Math.max(restoreMin, restored);
 		apply(preferredWidthRef.current);
 		return () => {
 			activeDragCleanupRef.current?.();
@@ -157,7 +167,9 @@ export function useResizable({
 		};
 	}, [apply, cssVar, defaultWidth, restoreMin, storageKey]);
 
-	useLayoutEffect(() => { if (value !== undefined && !activeDragCleanupRef.current) apply(value); }, [value, apply]);
+	useLayoutEffect(() => {
+		if (value !== undefined && !activeDragCleanupRef.current) apply(value);
+	}, [value, apply]);
 
 	useEffect(() => {
 		if (!reclampOnWindowResize) return;
@@ -189,10 +201,16 @@ export function useResizable({
 			const startX = axis === "y" ? event.clientY : event.clientX;
 			// Seed from the painted box when CSS max-width holds width below the var.
 			const visualWidth = cssTargets()
-				.map((target) => axis === "y" ? target.getBoundingClientRect().height : target.getBoundingClientRect().width)
+				.map((target) =>
+					axis === "y"
+						? target.getBoundingClientRect().height
+						: target.getBoundingClientRect().width,
+				)
 				.find((width) => width > 0);
 			const seedWidth =
-				visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5 ? visualWidth : widthRef.current;
+				visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5
+					? visualWidth
+					: widthRef.current;
 			const startWidth = Math.min(maxValue(), Math.max(minValue(), seedWidth));
 			const sign = edge === "right" ? 1 : -1;
 			// Nothing is written or persisted until the width actually changes: a
@@ -209,7 +227,8 @@ export function useResizable({
 				window.removeEventListener("blur", onBlur);
 				flushPending();
 				document.body.classList.remove(axis === "y" ? "is-resizing-y" : "is-resizing-x");
-				if (captureTarget.hasPointerCapture?.(pointerId)) captureTarget.releasePointerCapture(pointerId);
+				if (captureTarget.hasPointerCapture?.(pointerId))
+					captureTarget.releasePointerCapture(pointerId);
 				if (cancelled) apply(startWidth);
 				if (changed && !cancelled) {
 					preferredWidthRef.current = widthRef.current;
@@ -219,15 +238,27 @@ export function useResizable({
 				previewRef.current?.(null);
 			};
 			const onEnd = (e: PointerEvent) => {
-				if (e.pointerId === pointerId) finish(e.type === "pointercancel");
+				if (e.pointerId === pointerId) finish(cancelOnInterrupt && e.type === "pointercancel");
 			};
-			const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(true); } };
-			window.addEventListener("keydown", onKey, true);
+			const onKey = (e: KeyboardEvent) => {
+				if (e.key === "Escape") {
+					e.preventDefault();
+					e.stopPropagation();
+					finish(true);
+				}
+			};
+			if (cancelOnInterrupt) window.addEventListener("keydown", onKey, true);
 			// Keep only the newest pointer position for the next paint.
 			// Collapse stays on explicit controls — `apply` clamps at `min`.
 			const onMove = (e: PointerEvent) => {
 				if (e.pointerId !== pointerId) return;
-				const next = Math.min(maxValue(), Math.max(minValue(), startWidth + sign * ((axis === "y" ? e.clientY : e.clientX) - startX)));
+				const next = Math.min(
+					maxValue(),
+					Math.max(
+						minValue(),
+						startWidth + sign * ((axis === "y" ? e.clientY : e.clientX) - startX),
+					),
+				);
 				if (!changed && Math.abs(next - startWidth) < 0.5) return;
 				changed = true;
 				applyOnFrame(next);
@@ -235,11 +266,22 @@ export function useResizable({
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onEnd);
 			window.addEventListener("pointercancel", onEnd);
-			const onBlur = () => finish(true);
+			const onBlur = () => finish(cancelOnInterrupt);
 			window.addEventListener("blur", onBlur);
-			activeDragCleanupRef.current = () => finish(true);
+			activeDragCleanupRef.current = () => finish(cancelOnInterrupt);
 		},
-		[apply, applyOnFrame, cssTargets, edge, flushPending, maxValue, minValue, persist, axis],
+		[
+			apply,
+			applyOnFrame,
+			cssTargets,
+			edge,
+			flushPending,
+			maxValue,
+			minValue,
+			persist,
+			axis,
+			cancelOnInterrupt,
+		],
 	);
 
 	const onCollapsedPointerDown = useCallback(
@@ -260,7 +302,8 @@ export function useResizable({
 				window.removeEventListener("blur", finish);
 				flushPending();
 				document.body.classList.remove(axis === "y" ? "is-resizing-y" : "is-resizing-x");
-				if (captureTarget.hasPointerCapture?.(pointerId)) captureTarget.releasePointerCapture(pointerId);
+				if (captureTarget.hasPointerCapture?.(pointerId))
+					captureTarget.releasePointerCapture(pointerId);
 				if (expanded) {
 					preferredWidthRef.current = widthRef.current;
 					persist(widthRef.current);
@@ -286,7 +329,16 @@ export function useResizable({
 			window.addEventListener("blur", finish);
 			activeDragCleanupRef.current = finish;
 		},
-		[applyOnFrame, edge, expandDragThreshold, flushPending, minValue, onExpand, persist, axis],
+		[
+			applyOnFrame,
+			edge,
+			expandDragThreshold,
+			flushPending,
+			minValue,
+			onExpand,
+			persist,
+			axis,
+		],
 	);
 
 	/** Double-click the handle to reset to the default width. */
@@ -296,14 +348,20 @@ export function useResizable({
 		persist(resetSize ?? defaultWidth);
 	}, [apply, defaultWidth, persist, resetSize]);
 
-	const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
-		const smaller = axis === "y" ? "ArrowUp" : edge === "left" ? "ArrowRight" : "ArrowLeft";
-		const larger = axis === "y" ? "ArrowDown" : edge === "left" ? "ArrowLeft" : "ArrowRight";
-		if (event.key !== smaller && event.key !== larger) return;
-		event.preventDefault();
-		apply(widthRef.current + (event.key === larger ? 16 : -16));
-		preferredWidthRef.current = widthRef.current;
-		persist(widthRef.current);
-	}, [apply, axis, edge, persist]);
+	const onKeyDown = useCallback(
+		(event: React.KeyboardEvent<HTMLElement>) => {
+			const smaller = axis === "y" ? "ArrowUp" : edge === "left" ? "ArrowRight" : "ArrowLeft";
+			const larger = axis === "y" ? "ArrowDown" : edge === "left" ? "ArrowLeft" : "ArrowRight";
+			if (event.key !== smaller && event.key !== larger) return;
+			event.preventDefault();
+			const previous = widthRef.current;
+			apply(previous + (event.key === larger ? 16 : -16));
+			if (widthRef.current !== previous) {
+				preferredWidthRef.current = widthRef.current;
+				persist(widthRef.current);
+			}
+		},
+		[apply, axis, edge, persist],
+	);
 	return { onPointerDown, onCollapsedPointerDown, onDoubleClick, onKeyDown };
 }

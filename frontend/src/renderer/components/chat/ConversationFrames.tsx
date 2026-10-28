@@ -259,13 +259,18 @@ function FrameChrome({
 	const size = useConversationFrameStore((state) => state.setFrameSize);
 	const swap = useConversationFrameStore((state) => state.swapFrameSlots);
 	const initial = useRef({ width: rect.width, height: rect.height });
+	const maxHeightPx = Math.min(
+		limits.maxHeight,
+		maxHeight,
+		safeRect.top + safeRect.height - rect.top,
+	);
 	const liveMax = useRef({
 		width: Math.min(limits.maxWidth, safeRect.width),
-		height: Math.min(limits.maxHeight, maxHeight),
+		height: maxHeightPx,
 	});
 	liveMax.current = {
 		width: Math.min(limits.maxWidth, safeRect.width),
-		height: Math.min(limits.maxHeight, maxHeight),
+		height: maxHeightPx,
 	};
 	const maxWidthValue = useCallback(() => liveMax.current.width, []);
 	const maxHeightValue = useCallback(() => liveMax.current.height, []);
@@ -276,6 +281,7 @@ function FrameChrome({
 		defaultWidth: initial.current.width,
 		value: rect.width,
 		resetSize: limits.width,
+		cancelOnInterrupt: true,
 		onPreview: (value) => onPreview("x", value),
 		min: limits.minWidth,
 		max: maxWidthValue,
@@ -288,6 +294,7 @@ function FrameChrome({
 		defaultWidth: initial.current.height,
 		value: rect.height,
 		resetSize: limits.height,
+		cancelOnInterrupt: true,
 		onPreview: (value) => onPreview("y", value),
 		min: limits.minHeight,
 		max: maxHeightValue,
@@ -370,7 +377,7 @@ function FrameChrome({
 				aria-orientation="horizontal"
 				aria-valuenow={rect.height}
 				aria-valuemin={limits.minHeight}
-				aria-valuemax={Math.min(limits.maxHeight, safeRect.top + safeRect.height - rect.top)}
+				aria-valuemax={maxHeightPx}
 				className="absolute inset-x-2 -bottom-1 h-2 cursor-row-resize touch-none"
 				onPointerDown={height.onPointerDown}
 				onKeyDown={height.onKeyDown}

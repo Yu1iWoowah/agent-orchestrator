@@ -3664,6 +3664,7 @@
 	"frames.reset": "Fenstergröße zurücksetzen",
 	"frames.resizeWidth": "Breite von {{title}} ändern",
 	"frames.resizeHeight": "Höhe von {{title}} ändern",
+	"plan.title": "Plan",
 	"plan.latest": "Aktuell",
 	"plan.history": "Verlauf",
 	"plan.retry": "Erneut versuchen",

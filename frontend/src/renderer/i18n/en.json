@@ -3645,6 +3645,7 @@
 	"frames.reset": "Reset frame size",
 	"frames.resizeWidth": "Resize {{title}} width",
 	"frames.resizeHeight": "Resize {{title}} height",
+	"plan.title": "Plan",
 	"plan.latest": "Latest",
 	"plan.history": "History",
 	"plan.retry": "Retry",

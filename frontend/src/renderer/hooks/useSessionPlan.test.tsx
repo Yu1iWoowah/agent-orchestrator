@@ -59,4 +59,39 @@ describe("session Plan reads", () => {
 		await waitFor(() => expect(result.current.isError).toBe(true));
 		expect(result.current.data).toBeUndefined();
 	});
+	it("uses the history sequence cursor and stops after the last page", async () => {
+		get.mockImplementation((_host, _path, request) => {
+			const lastPage = request.params.query.beforeSequence === 20;
+			return Promise.resolve({
+				data: {
+					activeBranchId: "root",
+					versions: [{ sequence: lastPage ? 10 : 20 }],
+					hasMoreBefore: !lastPage,
+					nextBeforeSequence: lastPage ? undefined : 20,
+				},
+			});
+		});
+		const { result } = renderHook(() => useSessionPlanHistory("session", undefined, "root", true), {
+			wrapper: wrapper(),
+		});
+		await waitFor(() => expect(result.current.hasNextPage).toBe(true));
+		await act(async () => {
+			await result.current.fetchNextPage();
+		});
+		expect(get).toHaveBeenLastCalledWith(
+			undefined,
+			"/api/v1/sessions/{sessionId}/plan/history",
+			expect.objectContaining({
+				params: { path: { sessionId: "session" }, query: { beforeSequence: 20, limit: 20 } },
+			}),
+		);
+		await waitFor(() =>
+			expect(
+				result.current.data?.pages.flatMap((page) =>
+					page.versions.map((version) => version.sequence),
+				),
+			).toEqual([20, 10]),
+		);
+		expect(result.current.hasNextPage).toBe(false);
+	});
 });

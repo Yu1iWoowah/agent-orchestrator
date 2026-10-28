@@ -3664,6 +3664,7 @@
 	"frames.reset": "패널 크기 초기화",
 	"frames.resizeWidth": "{{title}} 너비 조절",
 	"frames.resizeHeight": "{{title}} 높이 조절",
+	"plan.title": "계획",
 	"plan.latest": "최신",
 	"plan.history": "기록",
 	"plan.retry": "다시 시도",

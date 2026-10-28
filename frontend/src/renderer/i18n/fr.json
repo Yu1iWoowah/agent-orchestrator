@@ -3733,6 +3733,7 @@
 	"frames.reset": "Réinitialiser la taille du panneau",
 	"frames.resizeWidth": "Redimensionner la largeur de {{title}}",
 	"frames.resizeHeight": "Redimensionner la hauteur de {{title}}",
+	"plan.title": "Plan",
 	"plan.latest": "Dernier",
 	"plan.history": "Historique",
 	"plan.retry": "Réessayer",

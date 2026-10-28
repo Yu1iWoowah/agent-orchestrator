@@ -1,5 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { I18nextProvider } from "react-i18next";
+import { createFullAppI18n } from "../../i18n/all-messages";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionPlanFrames } from "./SessionPlanFrames";
@@ -52,6 +54,31 @@ afterEach(() => {
 	surface.remove();
 });
 describe("session Plan states", () => {
+	it("uses the current locale for the Plan entry and frame title", async () => {
+		get.mockResolvedValue({
+			data: { state: "absent", activeBranchId: "root" },
+			response: { status: 200 },
+		});
+		const i18n = createFullAppI18n("ja");
+		render(
+			<I18nextProvider i18n={i18n}>
+				<QueryClientProvider client={client}>
+					<TooltipProvider>
+						<SessionPlanFrames
+							sessionId="localized-plan"
+							surfaceRef={{ current: surface }}
+							composerRef={{ current: null }}
+						/>
+					</TooltipProvider>
+				</QueryClientProvider>
+			</I18nextProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: i18n.t("frames.open", { title: "プラン" }) }),
+		);
+		expect(screen.getByRole("region", { name: "プラン" })).toBeVisible();
+	});
+
 	it("keeps an open frame while the independent Plan request is loading", () => {
 		get.mockImplementation(() => new Promise(() => {}));
 		show();
@@ -113,5 +140,33 @@ describe("session Plan states", () => {
 		);
 		fireEvent.click(screen.getByText(/Unknown turn/, { selector: "summary" }));
 		expect(screen.getByText("Explicit clear")).toBeVisible();
+	});
+	it("loads the next history page once and removes the older-plans button at the end", async () => {
+		get.mockImplementation((path: string, request) => {
+			if (!path.endsWith("/history"))
+				return Promise.resolve({
+					data: { state: "absent", activeBranchId: "root" },
+					response: { status: 200 },
+				});
+			const last = request.params.query.beforeSequence === 4;
+			return Promise.resolve({
+				data: {
+					activeBranchId: "root",
+					versions: [
+						{ ...version, sequence: last ? 2 : 4, turnId: last ? "older-turn" : "latest-turn" },
+					],
+					hasMoreBefore: !last,
+					nextBeforeSequence: last ? undefined : 4,
+				},
+			});
+		});
+		show();
+		await screen.findByText("No structured Plan yet.");
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("tab", { name: "History" }));
+		await user.click(await screen.findByRole("button", { name: "Load older plans" }));
+		expect(await screen.findByText(/older-turn/, { selector: "summary" })).toBeVisible();
+		expect(screen.getByText(/latest-turn/, { selector: "summary" })).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Load older plans" })).not.toBeInTheDocument();
 	});
 });

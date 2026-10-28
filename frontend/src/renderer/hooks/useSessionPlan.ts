@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import type { components } from "../../api/schema";
+import type { components, paths } from "../../api/schema";
 import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 
@@ -40,9 +40,13 @@ export function useSessionPlanHistory(
 		enabled,
 		initialPageParam: undefined as number | undefined,
 		queryFn: async ({ pageParam, signal }) => {
+			const query = {
+				beforeSequence: pageParam,
+				limit: 20,
+			} satisfies paths["/api/v1/sessions/{sessionId}/plan/history"]["get"]["parameters"]["query"];
 			const { data, error } = await clientForSessionHost(hostId).GET(
 				"/api/v1/sessions/{sessionId}/plan/history",
-				{ params: { path: { sessionId }, query: { before: pageParam, limit: 20 } }, signal },
+				{ params: { path: { sessionId }, query }, signal },
 			);
 			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load Plan history."));
 			if (branchId && data.activeBranchId !== branchId)

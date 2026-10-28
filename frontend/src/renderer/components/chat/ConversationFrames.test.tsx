@@ -88,6 +88,39 @@ describe("conversation frames", () => {
 		expect(frame.style.getPropertyValue("--frame-width")).toBe("376px");
 		surface.remove();
 	});
+	it.each(["blur", "pointercancel", "unmount"] as const)(
+		"keeps frame cancellation on %s without persisting the preview",
+		async (end) => {
+			const surface = document.createElement("section");
+			document.body.append(surface);
+			const view = render(
+				<ConversationFrames
+					sessionId="interrupt-frame"
+					surface={surface}
+					safeRect={{ left: 16, top: 48, width: 700, height: 600 }}
+					frames={[{ kind: "plan", title: "Plan", summary: "", content: <p>Plan content</p> }]}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: "Plan", expanded: false }));
+			const frame = screen.getByRole("region", { name: "Plan" });
+			fireEvent.pointerDown(screen.getByRole("separator", { name: "Resize Plan width" }), {
+				clientX: 400,
+				pointerId: 7,
+			});
+			fireEvent.pointerMove(window, { clientX: 384, pointerId: 7 });
+			await waitFor(() => expect(frame.style.getPropertyValue("--frame-width")).toBe("376px"));
+			if (end === "unmount") view.unmount();
+			else if (end === "blur") fireEvent(window, new Event("blur"));
+			else fireEvent.pointerCancel(window, { pointerId: 7 });
+			expect(
+				useConversationFrameStore.getState().sessions[JSON.stringify(["local", "interrupt-frame"])]
+					.plan.preferredWidth,
+			).toBe(360);
+			if (end !== "unmount") expect(frame.style.getPropertyValue("--frame-width")).toBe("360px");
+			surface.remove();
+		},
+	);
+
 	it("keeps a compact focus panel mounted while the window grows", () => {
 		const surface = document.createElement("section");
 		document.body.append(surface);

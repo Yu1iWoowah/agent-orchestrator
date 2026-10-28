@@ -125,7 +125,7 @@ export function SessionPlanFrames({
 			hostId={hostId}
 			surface={bounds.surface}
 			safeRect={bounds.rect}
-			frames={[{ kind: "plan", title: "Plan", summary, content }]}
+			frames={[{ kind: "plan", title: t("plan.title"), summary, content }]}
 		/>
 	);
 }

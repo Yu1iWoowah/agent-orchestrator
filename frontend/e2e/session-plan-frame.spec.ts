@@ -201,3 +201,19 @@ test("frames and compact Sheets stay inside a viewport narrower than the Chat su
 	if (!box || !dock) throw Error("Missing compact bounds");
 	expect(box.y + box.height).toBeLessThanOrEqual(dock.y - 15);
 });
+
+test("each height separator reports the reachable maximum with both frames open @T0", async ({
+	page,
+}) => {
+	await page.setViewportSize({ width: 1280, height: 1000 });
+	await page.goto("/e2e/conversation-frames/harness.html?session=height-aria-e2e");
+	await page.getByRole("button", { name: "Plan 1/4", expanded: false }).click();
+	for (const title of ["Awaiting you", "Plan"]) {
+		const frame = page.getByRole("region", { name: title, exact: true });
+		const height = frame.getByRole("separator", { name: `Resize ${title} height`, exact: true });
+		const maximum = Number(await height.getAttribute("aria-valuemax"));
+		for (let i = 0; i < 50; i++) await height.press("ArrowDown");
+		await expect.poll(async () => (await frame.boundingBox())?.height).toBeCloseTo(maximum, 0);
+		expect(Number(await height.getAttribute("aria-valuenow"))).toBeCloseTo(maximum, 0);
+	}
+});

@@ -3646,6 +3646,7 @@
 	"frames.reset": "重置浮框大小",
 	"frames.resizeWidth": "调整{{title}}宽度",
 	"frames.resizeHeight": "调整{{title}}高度",
+	"plan.title": "计划",
 	"plan.latest": "最新",
 	"plan.history": "历史",
 	"plan.retry": "重试",
