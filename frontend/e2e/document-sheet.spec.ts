@@ -126,7 +126,7 @@ test("documents stay beside the current Chat and warm-cache fragments restore in
 	await page.keyboard.press("Escape");
 	await page.getByRole("link", { name: "Missing", exact: true }).click();
 	await expect(
-		page.getByText("Not created yet", { exact: true }),
+		page.getByRole("status").filter({ hasText: "Not created yet" }),
 	).toBeVisible();
 });
 test("static HTML has no executable side effects or network/API/top-navigation sinks @T0", async ({
@@ -186,6 +186,6 @@ test("document hover previews do not intercept the next link @T0", async ({
 	).toHaveCSS("pointer-events", "none");
 	await page.getByRole("link", { name: "Missing", exact: true }).click();
 	await expect(
-		page.getByText("Not created yet", { exact: true }),
+		page.getByRole("status").filter({ hasText: "Not created yet" }),
 	).toBeVisible();
 });

@@ -1,4 +1,6 @@
-vi.mock("../DocumentCode",()=>({DocumentCode:({text}:{text:string})=><pre>{text}</pre>}));
+vi.mock("../DocumentCode", () => ({
+	DocumentCode: ({ text }: { text: string }) => <pre>{text}</pre>,
+}));
 import { DocumentReadError } from "../../lib/document-read";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -134,7 +136,7 @@ it("keeps a missing shared root as not created and lets Plan foreground collapse
 	act(() =>
 		useDocumentReadingStore.getState().open(reader.key, target("missing.md")),
 	);
-	await screen.findByText("Not created yet");
+	await waitFor(()=>expect(screen.getByRole("status")).toHaveTextContent("Not created yet"));
 	act(() => surface.dispatchEvent(new CustomEvent("ao:frame-foreground")));
 	expect(useDocumentReadingStore.getState().sessions.current.foreground).toBe(
 		false,

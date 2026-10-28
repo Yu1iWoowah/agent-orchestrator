@@ -68,13 +68,55 @@ describe("opaque static documents", () => {
 	});
 });
 
-it("shares identical image blobs and enforces per-resource, total and source-count budgets",async()=>{
-	const create=vi.spyOn(URL,"createObjectURL").mockReturnValue("blob:owned");const revoke=vi.spyOn(URL,"revokeObjectURL").mockImplementation(()=>{});
-	const png=(size:number)=>{const b=new Uint8Array(size);b.set([137,80,78,71,13,10,26,10]);new DataView(b.buffer).setUint32(16,1);new DataView(b.buffer).setUint32(20,1);return b.buffer;};
-	let resources=createDocumentResources(base,async()=>png(24));
-	await Promise.all(Array.from({length:100},()=>resources.image("same.png")));expect(create).toHaveBeenCalledTimes(1);
-	for(let i=1;i<64;i++)await resources.image(i+".png");await expect(resources.image("65.png")).rejects.toMatchObject({code:"DOCUMENT_RESOURCE_LIMIT"});resources.dispose();
-	resources=createDocumentResources(base,async()=>png(10*1024*1024+1));await expect(resources.image("big.png")).rejects.toMatchObject({code:"DOCUMENT_RESOURCE_LIMIT"});resources.dispose();
-	resources=createDocumentResources(base,async()=>png(8*1024*1024));await resources.image("a.png");await resources.image("b.png");await expect(resources.image("c.png")).rejects.toMatchObject({code:"DOCUMENT_RESOURCE_LIMIT"});resources.dispose();
-	create.mockRestore();revoke.mockRestore();
+it("shares identical image blobs and enforces per-resource, total and source-count budgets", async () => {
+	const create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:owned");
+	const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+	const png = (size: number) => {
+		const b = new Uint8Array(size);
+		b.set([137, 80, 78, 71, 13, 10, 26, 10]);
+		new DataView(b.buffer).setUint32(16, 1);
+		new DataView(b.buffer).setUint32(20, 1);
+		return b.buffer;
+	};
+	let resources = createDocumentResources(base, async () => png(24));
+	await Promise.all(
+		Array.from({ length: 100 }, () => resources.image("same.png")),
+	);
+	expect(create).toHaveBeenCalledTimes(1);
+	for (let i = 1; i < 64; i++) await resources.image(i + ".png");
+	await expect(resources.image("65.png")).rejects.toMatchObject({
+		code: "DOCUMENT_RESOURCE_LIMIT",
+	});
+	resources.dispose();
+	resources = createDocumentResources(base, async () =>
+		png(10 * 1024 * 1024 + 1),
+	);
+	await expect(resources.image("big.png")).rejects.toMatchObject({
+		code: "DOCUMENT_RESOURCE_LIMIT",
+	});
+	resources.dispose();
+	resources = createDocumentResources(base, async () => png(8 * 1024 * 1024));
+	await resources.image("a.png");
+	await resources.image("b.png");
+	await expect(resources.image("c.png")).rejects.toMatchObject({
+		code: "DOCUMENT_RESOURCE_LIMIT",
+	});
+	resources.dispose();
+	create.mockRestore();
+	revoke.mockRestore();
+});
+
+it("transports only verified raster bytes inline for an opaque HTML origin, rejecting supplied data URLs", async () => {
+	const png = new Uint8Array(24);
+	png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+	new DataView(png.buffer).setUint32(16, 1);
+	new DataView(png.buffer).setUint32(20, 1);
+	const load = vi.fn(async () => png.buffer);
+	const resources = createDocumentResources(base, load, "inline-raster");
+	expect(await resources.image("pic.png")).toMatch(/^data:image\/png;base64,/);
+	expect(
+		await resources.image('data:image/svg+xml,<svg onload="x()"/>'),
+	).toBeNull();
+	expect(load).toHaveBeenCalledTimes(1);
+	resources.dispose();
 });

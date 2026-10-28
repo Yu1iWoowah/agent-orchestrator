@@ -454,7 +454,9 @@ function DocumentSheetReader({
 							id={id}
 							frame={{
 								title: opening
-									? t("documents.sheet.loading")
+									? opening.status === "loading"
+										? t("documents.sheet.loading")
+										: t(documentErrorKey(opening))
 									: (visit?.document.target.path.split("/").at(-1) ??
 										t("documents.sheet.title")),
 								summary: session

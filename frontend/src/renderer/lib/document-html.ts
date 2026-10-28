@@ -2,11 +2,7 @@ import createDOMPurify from "dompurify";
 import * as css from "css-tree";
 import type { DocumentTarget } from "./document-targets";
 import { relativeDocumentTarget, documentFileKey } from "./document-targets";
-import {
-	classifyDocument,
-	DocumentContentError,
-	DOCUMENT_TEXT_LIMIT,
-} from "./document-content";
+import { classifyDocument, DocumentContentError } from "./document-content";
 const RESOURCE_LIMIT = 64,
 	RESOURCE_BYTES = 10 * 1024 * 1024,
 	TOTAL_BYTES = 20 * 1024 * 1024;
@@ -31,11 +27,15 @@ export interface DocumentResources {
 export function createDocumentResources(
 	base: DocumentTarget,
 	load: (target: DocumentTarget) => Promise<ArrayBuffer>,
+	transport: "blob" | "inline-raster" = "blob",
 ): DocumentResources {
 	const blobs = new Set<string>();
 	const blocked = new Set<string>();
 	let limited = false;
+	let embeddedCharacters = 0;
+	const readers = new Set<FileReader>();
 	const images = new Map<string, Promise<string | null>>();
+	const stylesheets = new Map<string, Promise<string>>();
 	const cache = new Map<string, Promise<ArrayBuffer>>();
 	let count = 0,
 		total = 0,
@@ -64,15 +64,26 @@ export function createDocumentResources(
 				new DocumentContentError("DOCUMENT_RESOURCE_LIMIT"),
 			);
 		}
-		const request = load(target).then((data) => {
-			if (disposed) throw new DOMException("Aborted", "AbortError");
-			total += data.byteLength;
-			if (data.byteLength > RESOURCE_BYTES || total > TOTAL_BYTES) {
-				limited = true;
-				throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
-			}
-			return data;
-		}).catch(error=>{if(error&&typeof error==="object"&&"code" in error&&error.code==="DOCUMENT_TOO_LARGE")limited=true;throw error;});
+		const request = load(target)
+			.then((data) => {
+				if (disposed) throw new DOMException("Aborted", "AbortError");
+				total += data.byteLength;
+				if (data.byteLength > RESOURCE_BYTES || total > TOTAL_BYTES) {
+					limited = true;
+					throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
+				}
+				return data;
+			})
+			.catch((error) => {
+				if (
+					error &&
+					typeof error === "object" &&
+					"code" in error &&
+					error.code === "DOCUMENT_TOO_LARGE"
+				)
+					limited = true;
+				throw error;
+			});
 		cache.set(key, request);
 		return request;
 	};
@@ -83,26 +94,64 @@ export function createDocumentResources(
 			const target = resolve(ref, from);
 			if (!target) return null;
 			const key = documentFileKey(target);
-			const saved = images.get(key);
-			if (saved) return saved;
-			const request = read(target).then((data) => {
-				const content = classifyDocument(target.path, new Uint8Array(data));
-				return content.kind === "image" ? blob(data, content.mime) : null;
-			});
-			images.set(key, request);
-			return request;
+			let request = images.get(key);
+			if (!request) {
+				request = read(target).then(async (data) => {
+					const content = classifyDocument(target.path, new Uint8Array(data));
+					if (content.kind !== "image") return null;
+					if (transport === "blob") return blob(data, content.mime);
+					// Opaque origins cannot dereference a parent-origin blob URL. Only bytes
+					// classified as passive raster formats become this inline representation.
+					return new Promise<string>((resolve, reject) => {
+						const reader = new FileReader();
+						readers.add(reader);
+						const finish = () => readers.delete(reader);
+						reader.onload = () => {
+							finish();
+							if (disposed || typeof reader.result !== "string")
+								reject(new DOMException("Aborted", "AbortError"));
+							else resolve(reader.result);
+						};
+						reader.onerror = () => {
+							finish();
+							reject(reader.error);
+						};
+						reader.onabort = () => {
+							finish();
+							reject(new DOMException("Aborted", "AbortError"));
+						};
+						reader.readAsDataURL(new Blob([data], { type: content.mime }));
+					});
+				});
+				images.set(key, request);
+			}
+			const url = await request;
+			if (url && transport === "inline-raster") {
+				embeddedCharacters += url.length;
+				if (embeddedCharacters > 28 * 1024 * 1024) {
+					limited = true;
+					return null;
+				}
+			}
+			return url;
 		},
 		async stylesheet(ref, from = base, ancestors = new Set()) {
 			const target = resolve(ref, from);
 			if (!target) return "";
 			const key = documentFileKey(target);
 			if (ancestors.has(key)) return "";
+			const saved = stylesheets.get(key);
+			if (saved) return saved;
 			const next = new Set(ancestors);
 			next.add(key);
-			const data = await read(target);
-			const content = classifyDocument(target.path, new Uint8Array(data));
-			if (!("text" in content)) return "";
-			return resources.css(content.text, target, next);
+			const request = read(target).then((data) => {
+				const content = classifyDocument(target.path, new Uint8Array(data));
+				return "text" in content
+					? resources.css(content.text, target, next)
+					: "";
+			});
+			stylesheets.set(key, request);
+			return request;
 		},
 		async css(
 			source,
@@ -183,7 +232,7 @@ export function createDocumentResources(
 				}
 			}
 			const result = imported.join("\n") + css.generate(tree);
-			if (result.length > DOCUMENT_TEXT_LIMIT) {
+			if (result.length > 28 * 1024 * 1024) {
 				limited = true;
 				throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
 			}
@@ -191,9 +240,12 @@ export function createDocumentResources(
 		},
 		dispose() {
 			disposed = true;
+			for (const reader of readers) reader.abort();
+			readers.clear();
 			for (const url of blobs) URL.revokeObjectURL(url);
 			blobs.clear();
 			images.clear();
+			stylesheets.clear();
 			cache.clear();
 		},
 	};
@@ -287,7 +339,7 @@ export async function staticDocumentHtml(
 	const csp = doc.createElement("meta");
 	csp.httpEquiv = "Content-Security-Policy";
 	csp.content =
-		"default-src 'none'; script-src 'none'; connect-src 'none'; img-src blob:; style-src 'unsafe-inline' blob:; font-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
+		"default-src 'none'; script-src 'none'; connect-src 'none'; img-src data: blob:; style-src 'unsafe-inline' blob:; font-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
 	doc.head.prepend(csp);
 	for (const href of resources.blockedLinks())
 		if (/^https?:/i.test(href) && !links.some((link) => link.href === href))

@@ -92,16 +92,20 @@ export function DocumentBody({
 	});
 	const resources = useMemo(() => {
 		const abort = new AbortController();
-		const owned = createDocumentResources(document.target, async (target) => {
-			const meta = await resolveDocument(connection, target, abort.signal);
-			return readDocumentContent(
-				connection,
-				meta.target,
-				10 * 1024 * 1024,
-				meta.fingerprint,
-				abort.signal,
-			);
-		});
+		const owned = createDocumentResources(
+			document.target,
+			async (target) => {
+				const meta = await resolveDocument(connection, target, abort.signal);
+				return readDocumentContent(
+					connection,
+					meta.target,
+					10 * 1024 * 1024,
+					meta.fingerprint,
+					abort.signal,
+				);
+			},
+			/\.html?$/i.test(document.target.path) ? "inline-raster" : "blob",
+		);
 		return {
 			...owned,
 			dispose() {
