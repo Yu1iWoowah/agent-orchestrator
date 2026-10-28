@@ -5,11 +5,14 @@ ALTER TABLE conversations ADD COLUMN agent_fast_mode TEXT NOT NULL DEFAULT 'defa
 
 -- Chat never persisted a fast choice. Only unambiguous terminal launch choices
 -- are evidence of a historical preference; never infer one from a transcript.
+-- Skip unchanged rows: even a no-op UPDATE advances the general session revision.
 UPDATE sessions SET agent_fast_mode = CASE
-    WHEN json_type(launch_options,'$.fastMode') = 'true' AND (json_type(launch_options,'$.fastModeOff') IS NULL OR json_type(launch_options,'$.fastModeOff') = 'false') THEN 'on'
-    WHEN json_type(launch_options,'$.fastModeOff') = 'true' AND (json_type(launch_options,'$.fastMode') IS NULL OR json_type(launch_options,'$.fastMode') = 'false') THEN 'off'
-    ELSE 'default' END
-WHERE session_mode = 'tui' AND json_valid(launch_options);
+    WHEN json_type(launch_options,'$.fastMode') = 'true' THEN 'on'
+    ELSE 'off' END
+WHERE session_mode = 'tui' AND CASE WHEN json_valid(launch_options) THEN
+    (json_type(launch_options,'$.fastMode') = 'true' AND (json_type(launch_options,'$.fastModeOff') IS NULL OR json_type(launch_options,'$.fastModeOff') = 'false'))
+    OR (json_type(launch_options,'$.fastModeOff') = 'true' AND (json_type(launch_options,'$.fastMode') IS NULL OR json_type(launch_options,'$.fastMode') = 'false'))
+    ELSE 0 END;
 
 CREATE TABLE session_agent_settings_operations (
     id TEXT PRIMARY KEY,
