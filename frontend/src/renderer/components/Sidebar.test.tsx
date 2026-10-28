@@ -2748,6 +2748,19 @@ describe("Sidebar", () => {
 		expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(SIDEBAR_MIN_WIDTH + 5));
 	});
 
+	it.each(["blur", "pointercancel", "unmount"] as const)("preserves the Sidebar drag width on %s", (end) => {
+		renderSidebar();
+		const handle = screen.getByTestId("resize-handle");
+		const width = SIDEBAR_MIN_WIDTH + 35;
+		fireEvent.pointerDown(handle, { clientX: SIDEBAR_DEFAULT_WIDTH, pointerId: 7 });
+		fireEvent.pointerMove(window, { clientX: width, pointerId: 7 });
+		if (end === "unmount") cleanup();
+		else if (end === "blur") fireEvent(window, new Event("blur"));
+		else fireEvent.pointerCancel(window, { pointerId: 7 });
+		expect(window.localStorage.getItem("ao-sidebar-w")).toBe(String(width));
+		expect(document.body).not.toHaveClass("is-resizing-x");
+	});
+
 	it("never drops the floor below SIDEBAR_MIN_WIDTH and grows when the brand moves right", async () => {
 		// Titlebar brand as in native fullscreen: no traffic-light reserve, so the
 		// label alone would fit a sidebar narrower than the footer needs.

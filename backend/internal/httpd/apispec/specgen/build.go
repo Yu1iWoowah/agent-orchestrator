@@ -284,6 +284,9 @@ var schemaNames = map[string]string{
 	"ControllersConversationRateLimitsPayload":             "ConversationRateLimitsPayload",
 	"ControllersConversationPlanResponse":                  "ConversationPlanResponse",
 	"ControllersConversationPlanStepResponse":              "ConversationPlanStepResponse",
+	"ControllersSessionPlanResponse":                       "SessionPlanResponse",
+	"ControllersConversationPlanVersionResponse":           "ConversationPlanVersionResponse",
+	"ControllersConversationPlanHistoryResponse":           "ConversationPlanHistoryResponse",
 	"ControllersConversationModelReroutePayload":           "ConversationModelReroutePayload",
 	"ControllersConversationAccountPayload":                "ConversationAccountPayload",
 	"ControllersConversationThreadStatePayload":            "ConversationThreadStatePayload",
@@ -1019,6 +1022,11 @@ type conversationSnapshotQuery struct {
 	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"500" description:"Maximum messages to return; tool activity between them comes along without counting. Defaults to 200."`
 }
 
+type conversationPlanHistoryQuery struct {
+	BeforeSequence *int64 `query:"beforeSequence,omitempty" minimum:"1" description:"Read plan snapshots older than this durable sequence."`
+	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"100" description:"Maximum saved plans to return. Defaults to 20."`
+}
+
 func usageOperations() []operation {
 	return []operation{
 		{
@@ -1149,6 +1157,31 @@ func shellTerminalOperations() []operation {
 			reqBody:    controllers.SetChatViewRequest{},
 			resps: []respUnit{
 				{http.StatusNoContent, nil},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/plan", id: "getSessionPlan", tag: "conversations",
+			summary:    "Read the latest visible session plan independently of transcript pagination",
+			pathParams: []any{controllers.SessionIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SessionPlanResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/plan/history", id: "getSessionPlanHistory", tag: "conversations",
+			summary:    "Read bounded saved plans on the active conversation lineage",
+			pathParams: []any{controllers.SessionIDParam{}, conversationPlanHistoryQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ConversationPlanHistoryResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
