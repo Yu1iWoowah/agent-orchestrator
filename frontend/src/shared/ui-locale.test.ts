@@ -10,9 +10,10 @@ import {
 
 describe("shared UI locale schema", () => {
 	it("accepts only supported locale identifiers", () => {
-		expect(APP_LOCALES).toEqual(["en", "zh-CN", "ja", "ko", "es", "fr", "de", "pt-BR"]);
+		expect(APP_LOCALES).toEqual(["en", "zh-CN", "zh-TW", "ja", "ko", "es", "fr", "de", "pt-BR"]);
 		expect(coerceLocale("en")).toBe("en");
 		expect(coerceLocale("zh-CN")).toBe("zh-CN");
+		expect(coerceLocale("zh-TW")).toBe("zh-TW");
 		expect(coerceLocale("ja")).toBe("ja");
 		expect(coerceLocale("ko")).toBe("ko");
 		expect(coerceLocale("es")).toBe("es");
@@ -26,6 +27,7 @@ describe("shared UI locale schema", () => {
 
 	it("normalizes persisted settings through the shared locale validator", () => {
 		expect(coerceUiSettings({ locale: "zh-CN" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "zh-CN" });
+		expect(coerceUiSettings({ locale: "zh-TW" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "zh-TW" });
 		expect(coerceUiSettings({ locale: "ja" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "ja" });
 		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "pt-BR" });
 		expect(coerceUiSettings({ locale: "pt" })).toEqual(DEFAULT_UI_SETTINGS);

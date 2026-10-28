@@ -1466,6 +1466,7 @@
 	"settings.language.ptBR": "Português (Brasil)",
 	"settings.language.saveFailed": "无法保存语言偏好设置。",
 	"settings.language.zhCN": "简体中文",
+	"settings.language.zhTW": "繁體中文",
 	"settings.models.autoRouteLabel": "自动",
 	"settings.models.browse": "浏览",
 	"settings.models.custom": "输入模型 ID…",

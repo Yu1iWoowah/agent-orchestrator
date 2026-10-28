@@ -38,6 +38,17 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"zone.merge": "可合并",
 		"zone.action": "需要你处理"
 	},
+	"zh-TW": {
+		"tray.untitledSession": "未命名的 session",
+		"tray.attentionTooltip_one": "{{count}} 個 session 需要處理",
+		"tray.attentionTooltip_other": "{{count}} 個 session 需要處理",
+		"tray.empty": "沒有需要處理的 session",
+		"tray.more": "更多",
+		"tray.show": "顯示 Agent Orchestrator",
+		"tray.quit": "完全結束 AO",
+		"zone.merge": "可合併",
+		"zone.action": "需要你處理"
+	},
 	"ja": {
 		"tray.untitledSession": "無題のセッション",
 		"tray.attentionTooltip_one": "{{count}} 件のセッションに対応が必要です",

@@ -1,0 +1,125 @@
+---
+title: 快速開始
+description: 新增專案、啟動 worker，並追蹤從任務到 PR 的過程。
+translatedFrom: 2a6d0fee1ff2
+---
+
+本指南帶你在桌面應用程式中完成第一項任務：新增儲存庫、啟動 worker、追蹤工作進度，並審查成果。
+
+<Callout type="info" title="開始之前">
+	請先安裝 Orchestrator；使用 GitHub 專案時，也請透過 `gh` 登入。若選用外部程式設計 agent，請先安裝並完成登入。Orchestrator 將這類工具稱為 harness。macOS 與 Linux 版已內建 Unreal Agent，可用於對話介面。請參閱[安裝](/installation)。
+</Callout>
+
+<span id="pick-a-safe-first-task" />
+## 選擇安全的第一項任務
+
+選擇你可以建立分支與 PR 的儲存庫。適合入門的任務應有明確的完成條件：
+
+- 修正一個可以重現失敗的小問題。
+- 新增一項聚焦的測試。
+- 更新一篇簡短的說明文件。
+- 進行範圍有限、具備明確驗收條件的重構。
+
+<span id="run-the-first-session" />
+## 執行第一個 session
+
+<Steps>
+<Step>
+
+<span id="add-the-repository" />
+### 新增儲存庫
+
+開啟 Orchestrator，選擇**新增專案**，再選取本機儲存庫。桌面應用程式會將它註冊為專案，並保留原有副本。
+
+</Step>
+<Step>
+
+<span id="create-a-worker" />
+### 建立 worker
+
+在專案中按一下**新增任務**以開啟新對話，選取可用的程式設計 agent，再傳送明確的提示。傳送後就會啟動 session。外部 agent 會在安裝後出現在清單中；受支援的 macOS 與 Linux 版 Orchestrator 已內建 Unreal Agent，可用於對話介面。agent 清單位於設定中的**harness**。
+
+新 session 會使用**設定 → 一般**中指定的介面；不支援對話介面的 agent 則會以原生終端機介面啟動：
+
+- **對話（Chat）**：適合結構化對話、活動、核准、計畫及可保留的歷史紀錄。
+- **終端機介面（Terminal UI）**：使用 harness 原生的互動式終端機。
+
+Orchestrator 會先為 session 建立隔離的 Git worktree 與分支，再啟動所選的控制器。
+
+</Step>
+<Step>
+
+<span id="follow-the-session" />
+### 追蹤 session
+
+在側邊欄或看板中選取 session。主面板會顯示對話或即時終端機；檢視器則顯示 session 詳細資訊、PR 狀態、審查、變更檔案與瀏覽器預覽。
+
+Orchestrator 會結合活動狀態（工作中、閒置、等待輸入、遭阻擋或已結束）與 PR 資訊，顯示 session 狀態。
+
+</Step>
+<Step>
+
+<span id="give-feedback" />
+### 提供意見
+
+透過對話輸入框或 session 訊息控制項傳送後續指示。修正要求請具體明確，例如：
+
+```text
+Keep this change limited to the API route. Do not refactor the shared client.
+```
+
+使用終端機介面的 session 時，仍可直接在終端機互動。
+
+</Step>
+<Step>
+
+<span id="review-the-pull-request" />
+### 審查 PR
+
+worker 建立或 claim PR 後，Orchestrator 會以簡潔摘要顯示 CI、reviewer、未解決的審查意見及是否可合併。你可以執行 reviewer、將修改要求傳回 worker、解決審查意見，或在適當時機合併。
+
+Orchestrator 不會強制刪除含有未提交變更的 worktree。無法安全移除 session 的工作區時，清理流程會保留使用者的工作成果。
+
+</Step>
+</Steps>
+
+<span id="try-a-browser-preview" />
+## 試用瀏覽器預覽
+
+處理網頁任務時，請在 session 內啟動應用程式，再透過選用的 CLI 指定網址：
+
+```bash
+ao preview http://127.0.0.1:5173
+```
+
+若儲存庫含有 `.ao/launch.json`，可透過 `ao preview start` 啟動已設定的開發伺服器。「瀏覽器」分頁會顯示所選目標。Orchestrator 不會只因 worker 存在，就自行猜測預覽目標。
+
+<span id="try-switching-interfaces" />
+## 試用介面切換
+
+支援的 session 會顯示**切換至對話介面**或**切換至終端機介面**。選項取決於 agent 與是否正在工作。切換時，Orchestrator 會保留相同的 session 與 worktree，一次只替換一個控制器。
+
+若有**完成工作後切換**選項，系統會等待已接受的工作完成；**立即停止並切換**則會中斷工作。部分終端機 session 需要**終止後再切換**。請詳閱對話方塊，因為草稿、附件或佇列中的訊息可能需要重新傳送。對話紀錄的處理方式請參閱[看板：切換介面](/dashboard#switch-interfaces)。
+
+<span id="optional-cli" />
+## 選用的 CLI
+
+CLI 是應用程式所管理背景服務的精簡用戶端。它適合指令碼與以終端機為主的工作流程，但一般桌面操作不需要 CLI。
+
+```bash
+ao status
+ao session ls
+ao send --session <session-id> --message "Run the focused tests before you finish."
+```
+
+預設介面在**設定 → 一般**中選擇。專案的 agent 設定用來選取程式設計 agent、模型、推理強度及供應商執行模式，不會變更全域的對話或終端機介面預設值。
+
+<span id="next" />
+<span id="next-steps" />
+## 接下來
+
+<Cards>
+	<Card title="看板" description="認識看板、session 畫面、檢視器、對話與終端機。" href="/dashboard" />
+	<Card title="架構" description="了解桌面應用程式與背景服務如何協調 session。" href="/architecture" />
+	<Card title="範例" description="試用目前的桌面應用程式與 CLI 工作流程。" href="/examples" />
+</Cards>
