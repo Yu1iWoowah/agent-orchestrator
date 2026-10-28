@@ -206,6 +206,7 @@ func seedRecoveryCheckpointHistory(t *testing.T, st *sqlite.Store, state domain.
 	if err := st.BindTurnToProvider(ctx, "prior-turn", "prior-provider-turn", now.Add(-time.Minute)); err != nil {
 		t.Fatalf("bind prior turn: %v", err)
 	}
+	archiveNativeTurnIdentity(t, st, conversation.ID, "chat-generation", "prior-provider-turn", "thread-1", now.Add(-time.Minute))
 	if err := st.SettleAssistantMessage(ctx, conversation.ID, "prior-answer-item", "prior-provider-turn",
 		"Earlier answer", "prior-answer", now.Add(-time.Minute)); err != nil {
 		t.Fatalf("record prior answer: %v", err)

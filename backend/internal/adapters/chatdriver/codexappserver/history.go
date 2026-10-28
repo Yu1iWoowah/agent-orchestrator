@@ -206,6 +206,7 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 		events = append(events, completed)
 	}
 	for i := range events {
+		events[i].ProviderConversationID = c.threadID
 		events[i] = c.scopedEvent(events[i])
 	}
 	return events, nil

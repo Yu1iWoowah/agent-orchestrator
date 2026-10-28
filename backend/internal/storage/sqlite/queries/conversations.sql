@@ -1862,6 +1862,21 @@ WHERE conversation_id = ?
   AND client_message_id = ?
   AND state = 'reserved';
 
+-- Native-thread ownership is taken only from explicit archived lifecycle events.
+-- name: SelectConversationNativeThreadEvidence :many
+SELECT DISTINCT branch_id,
+    CAST(json_extract(payload_json, '$.providerTurnId') AS TEXT) AS provider_turn_id,
+    CAST(json_extract(payload_json, '$.providerConversationId') AS TEXT) AS provider_conversation_id
+FROM conversation_provider_events
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND session_id = sqlc.arg(session_id)
+  AND method IN ('turn.started', 'turn.completed')
+  AND json_valid(payload_json)
+  AND json_type(payload_json, '$.providerTurnId') = 'text'
+  AND json_type(payload_json, '$.providerConversationId') = 'text'
+  AND json_extract(payload_json, '$.providerTurnId') <> ''
+  AND json_extract(payload_json, '$.providerConversationId') <> '';
+
 -- A completed turn proves usable authentication only for the current controller
 -- and active provider branch, after the last rejection/account change.
 -- name: SelectVerifiedAuthenticationTurn :one

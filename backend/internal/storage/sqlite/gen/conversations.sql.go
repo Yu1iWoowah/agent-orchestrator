@@ -3313,6 +3313,56 @@ func (q *Queries) SelectConversationNativeForkAvailableAfterSequence(ctx context
 	return column_1, err
 }
 
+const selectConversationNativeThreadEvidence = `-- name: SelectConversationNativeThreadEvidence :many
+SELECT DISTINCT branch_id,
+    CAST(json_extract(payload_json, '$.providerTurnId') AS TEXT) AS provider_turn_id,
+    CAST(json_extract(payload_json, '$.providerConversationId') AS TEXT) AS provider_conversation_id
+FROM conversation_provider_events
+WHERE conversation_id = ?1
+  AND session_id = ?2
+  AND method IN ('turn.started', 'turn.completed')
+  AND json_valid(payload_json)
+  AND json_type(payload_json, '$.providerTurnId') = 'text'
+  AND json_type(payload_json, '$.providerConversationId') = 'text'
+  AND json_extract(payload_json, '$.providerTurnId') <> ''
+  AND json_extract(payload_json, '$.providerConversationId') <> ''
+`
+
+type SelectConversationNativeThreadEvidenceParams struct {
+	ConversationID string
+	SessionID      domain.SessionID
+}
+
+type SelectConversationNativeThreadEvidenceRow struct {
+	BranchID               string
+	ProviderTurnID         string
+	ProviderConversationID string
+}
+
+// Native-thread ownership is taken only from explicit archived lifecycle events.
+func (q *Queries) SelectConversationNativeThreadEvidence(ctx context.Context, arg SelectConversationNativeThreadEvidenceParams) ([]SelectConversationNativeThreadEvidenceRow, error) {
+	rows, err := q.db.QueryContext(ctx, selectConversationNativeThreadEvidence, arg.ConversationID, arg.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SelectConversationNativeThreadEvidenceRow{}
+	for rows.Next() {
+		var i SelectConversationNativeThreadEvidenceRow
+		if err := rows.Scan(&i.BranchID, &i.ProviderTurnID, &i.ProviderConversationID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectConversationProviderEvents = `-- name: SelectConversationProviderEvents :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)

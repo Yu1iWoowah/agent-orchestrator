@@ -27,10 +27,10 @@ func TestOriginalBranchTUIRoundtripDoesNotInheritEditedBranchCheckpoint(t *testi
 		t.Fatalf("edit original message: %v", err)
 	}
 	editedDriver.fresh.emit(
-		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-101", ProviderConversationID: "thread-fresh"},
 		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: "provider-turn-101",
 			ProviderItemID: "msg-provider-turn-101", Text: "reply to edited"},
-		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", TurnState: domain.TurnStateCompleted},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-101", ProviderConversationID: "thread-fresh", TurnState: domain.TurnStateCompleted},
 	)
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateCompleted
@@ -68,16 +68,16 @@ func TestOriginalBranchTUIRoundtripDoesNotInheritEditedBranchCheckpoint(t *testi
 	commitMode(domain.SessionModeTUI, domain.SessionModeChat, "thread-fresh")
 
 	// The provider returns only the requested branch, never the other branch's suffix.
-	replayTurn := func(id, text string) []ports.ChatEvent {
+	replayTurn := func(id, text, threadID string) []ports.ChatEvent {
 		return []ports.ChatEvent{
-			{Kind: ports.ChatEventTurnStarted, ProviderEventID: "start-" + id, ProviderTurnID: id},
+			{Kind: ports.ChatEventTurnStarted, ProviderEventID: "start-" + id, ProviderTurnID: id, ProviderConversationID: threadID},
 			{Kind: ports.ChatEventUserMessageCompleted, ProviderEventID: "user-" + id, ProviderTurnID: id, ProviderItemID: "user-" + id, Text: text},
 			{Kind: ports.ChatEventMessageCompleted, ProviderEventID: "answer-" + id, ProviderTurnID: id, ProviderItemID: "msg-" + id, Text: "reply to " + text},
-			{Kind: ports.ChatEventTurnCompleted, ProviderEventID: "complete-" + id, ProviderTurnID: id, TurnState: domain.TurnStateCompleted},
+			{Kind: ports.ChatEventTurnCompleted, ProviderEventID: "complete-" + id, ProviderTurnID: id, ProviderConversationID: threadID, TurnState: domain.TurnStateCompleted},
 		}
 	}
-	originalReplay := replayTurn("provider-turn-1", "original")
-	editedReplay := append(replayTurn("provider-turn-101", "edited"), replayTurn("provider-turn-102", "edited terminal")...)
+	originalReplay := replayTurn("provider-turn-1", "original", "thread-1")
+	editedReplay := append(replayTurn("provider-turn-101", "edited", "thread-fresh"), replayTurn("provider-turn-102", "edited terminal", "thread-fresh")...)
 	driver := fakeDriver{resume: func(cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
 		conv := newFakeConversation()
 		conv.providerConversationID = cfg.ProviderConversationID
