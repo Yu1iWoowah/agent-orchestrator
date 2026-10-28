@@ -364,6 +364,28 @@ type ConversationMessagesFt struct {
 	Text string
 }
 
+type ConversationPlanHead struct {
+	ConversationID   string
+	BranchID         string
+	SourceActivityID string
+	TurnID           string
+	AcceptedSequence int64
+	Revision         int64
+	PlanJson         string
+	UpdatedAt        time.Time
+}
+
+type ConversationPlanVersion struct {
+	ConversationID   string
+	BranchID         string
+	SourceActivityID string
+	TurnID           string
+	AcceptedSequence int64
+	Revision         int64
+	PlanJson         string
+	UpdatedAt        time.Time
+}
+
 type ConversationProviderEvent struct {
 	ID              int64
 	ConversationID  string

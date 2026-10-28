@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
-import { beforeEach, expect } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 import { appI18n } from "../i18n";
 import { appCatalogs } from "../i18n/all-messages";
 import { coerceUiSettings, DEFAULT_UI_SETTINGS } from "../../shared/ui-locale";
@@ -21,6 +22,16 @@ expect.extend(jestDomMatchers);
 // routes setupFiles here, so only install the DOM stubs when a DOM exists.
 // ponytail: single guard; node env has no DOM to stub.
 if (typeof window !== "undefined") {
+	const { cleanup } = await import("@testing-library/react/pure");
+
+	// Radix defers focus restoration until after unmount. Finish that work in
+	// this DOM realm, preserving fake clocks and leaving future timers alone.
+	afterEach(async () => {
+		cleanup();
+		if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+		await delay(0);
+	});
+
 	const emptyRect = () => ({
 		bottom: 0,
 		height: 0,
