@@ -44,6 +44,7 @@ type Manifest struct {
 	ChildPolicy           string                          `json:"childPolicy"`
 	ExcludedChildTurns    int                             `json:"excludedChildTurns"`
 	AOOnlyMessages        int                             `json:"aoOnlyMessages"`
+	Steers                []SteerCoverage                 `json:"steers"`
 	CoverageLinks         []CoverageLink                  `json:"coverageLinks"`
 	CoveredTurns          []string                        `json:"coveredTurns"`
 	UnknownRecords        int                             `json:"unknownRecords"`
@@ -175,9 +176,34 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	for _, b := range s.Branches {
 		branches[b.ID] = b
 	}
+	inputs, members, e := batchInputs(s)
+	if e != nil {
+		return out, e
+	}
+	details, e := steerDetails(s)
+	if e != nil {
+		return out, e
+	}
+	childDispatch := map[string]bool{}
+	initialCaptured := map[string]bool{}
 	index := domain.IndexNativeThreadEvidence(s.NativeThreads)
 	queued := map[string]bool{}
 	for _, turn := range s.Turns {
+		if members[turn.ID] != "" {
+			continue
+		}
+		if input, ok := inputs[turn.ID]; ok {
+			turn.ProviderInputText = input.ProviderInputText
+		}
+		// Legacy first-batch steers were stored on the active turn. Their receipt
+		// identifies that this field is guidance, not the original prompt.
+		for _, activity := range s.Activities {
+			detail, ok := details[activity.ID]
+			if ok && activity.TurnID == turn.ID && detail.StoredOnTurn && detail.ProviderInputText == turn.ProviderInputText {
+				turn.ProviderInputText = ""
+			}
+		}
+
 		if turn.State == domain.TurnStateQueued && turn.ProviderTurnID == "" {
 			queued[turn.ID] = true
 			continue
@@ -205,11 +231,13 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 		switch provenance {
 		case domain.NativeThreadChild:
 			m.ExcludedChildTurns++
+			childDispatch[turn.ID] = true
 			continue
 		case domain.NativeThreadUnknown:
 			return out, incomplete("TRANSCRIPT_PROVENANCE_UNKNOWN", "AO turn lacks unambiguous native-thread ownership")
 		}
 
+		initialCaptured[turn.ID] = turn.ProviderInputText != ""
 		link, e := correlateTurn(turn, s.Messages, nativeIdentities[root], nativePrompts[root])
 		if e != nil {
 			return out, e
@@ -223,6 +251,46 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 		m.CoverageLinks = append(m.CoverageLinks, link)
 		m.CoveredTurns = append(m.CoveredTurns, turn.ID)
 	}
+	steers, steeredMembers, e := verifySteerInputs(s, segments, m.CoverageLinks, members, details)
+	if e != nil {
+		return out, e
+	}
+	m.Steers = steers
+	leads := map[string]CoverageLink{}
+	for _, link := range m.CoverageLinks {
+		leads[link.AOTurnID] = link
+	}
+	for _, turn := range s.Turns {
+		leadID := members[turn.ID]
+		if leadID == "" {
+			continue
+		}
+		if childDispatch[leadID] {
+			m.ExcludedChildTurns++
+			continue
+		}
+		link, ok := leads[leadID]
+		if !ok {
+			return out, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "batch dispatch is not covered")
+		}
+		if steeredMembers[turn.ID] == "" && !initialCaptured[leadID] {
+			return out, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "member lacks captured initial input or steer receipt")
+		}
+		link.AOTurnID = turn.ID
+		link.DispatchTurnID = leadID
+		link.Method = "batch-member/" + link.Method
+		if receipt := steeredMembers[turn.ID]; receipt != "" {
+			for _, steer := range steers {
+				if steer.ActivityID == receipt {
+					link.NativePromptID = steer.NativeRecordID
+					link.Method = "steered-batch-member"
+				}
+			}
+		}
+		m.CoverageLinks = append(m.CoverageLinks, link)
+		m.CoveredTurns = append(m.CoveredTurns, turn.ID)
+	}
+
 	for _, t := range s.Terminal {
 		found := ""
 		for _, p := range nativePrompts[t.NativeID] {

@@ -15,19 +15,20 @@ import (
 )
 
 type exportRecord struct {
-	Meta       bool   `json:"isMeta"`
-	Companion  bool   `json:"turnCompanion"`
-	UUID       string `json:"uuid"`
-	ParentUUID string `json:"parentUuid"`
-	SessionID  string `json:"sessionId"`
-	AgentID    string `json:"agentId"`
-	PromptID   string `json:"promptId"`
-	Type       string `json:"type"`
-	Subtype    string `json:"subtype"`
-	Sidechain  *bool  `json:"isSidechain"`
-	Version    string `json:"version"`
-	Timestamp  string `json:"timestamp"`
-	Message    struct {
+	CompactSummary bool   `json:"isCompactSummary"`
+	Meta           bool   `json:"isMeta"`
+	Companion      bool   `json:"turnCompanion"`
+	UUID           string `json:"uuid"`
+	ParentUUID     string `json:"parentUuid"`
+	SessionID      string `json:"sessionId"`
+	AgentID        string `json:"agentId"`
+	PromptID       string `json:"promptId"`
+	Type           string `json:"type"`
+	Subtype        string `json:"subtype"`
+	Sidechain      *bool  `json:"isSidechain"`
+	Version        string `json:"version"`
+	Timestamp      string `json:"timestamp"`
+	Message        struct {
 		Content    json.RawMessage `json:"content"`
 		StopReason string          `json:"stop_reason"`
 		Model      string          `json:"model"`
@@ -143,6 +144,19 @@ func decodeTranscriptRecord(raw []byte, native string, line int, request ports.N
 	}
 	if out.ID == "" {
 		return out, "", transcriptFailure("TRANSCRIPT_PROVENANCE_UNKNOWN", "main record lacks native identity")
+	}
+	if in.CompactSummary {
+		if in.Type != "user" {
+			return out, "", transcriptFailure("TRANSCRIPT_SCHEMA_UNSUPPORTED", "invalid compaction summary envelope")
+		}
+		if in.ParentUUID == "" {
+			return out, "", transcriptFailure("TRANSCRIPT_ANCESTRY_INCOMPLETE", "compaction summary has no original ancestry")
+		}
+		out.Meta = true
+		out.Excluded = "compaction-summary"
+		out.State = "compaction-summary"
+		out.ProvenanceRule = "explicit-compaction-summary"
+		return out, in.Version, nil
 	}
 	var err error
 	switch in.Type {

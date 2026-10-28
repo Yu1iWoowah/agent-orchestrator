@@ -11,6 +11,7 @@ type TranscriptSourceSnapshot struct {
 	ConversationCutoffs map[string]int64
 	Branches            []ConversationBranch
 	Turns               []ConversationTurn
+	Inputs              []TranscriptTurnInput
 	Messages            []ConversationMessage
 	Activities          []ConversationActivity
 	NativeThreads       []ConversationNativeThreadEvidence
@@ -39,4 +40,13 @@ type TranscriptNativeSession struct {
 	ConfigDir      string
 	TranscriptPath string
 	CreatedAt      time.Time
+}
+
+// TranscriptTurnInput retains upstream dispatch/member facts hidden by UI DTOs.
+type TranscriptTurnInput struct {
+	TurnID            string
+	ProviderInputText string
+	PromotedToTurnID  string
+	BatchedInput      bool
+	Reserved          bool
 }

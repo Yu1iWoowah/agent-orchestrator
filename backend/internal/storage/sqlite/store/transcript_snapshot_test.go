@@ -72,3 +72,44 @@ func TestTranscriptSnapshotIgnoresUsageTouchOrdering(t *testing.T) {
 		t.Fatal("usage timestamp reordered immutable proof")
 	}
 }
+
+func TestTranscriptSnapshotRetainsCapturedBatchInput(t *testing.T) {
+	st, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"lead", "member"} {
+		if _, e := st.AppendUserMessage(ctx, conversation, session, "gen-1", domain.ConversationMessage{ID: id + "-message", ClientMessageID: id + "-client", Text: id, Origin: domain.MessageOriginHuman}, id, histClock); e != nil {
+			t.Fatal(e)
+		}
+	}
+	batch, e := st.ClaimQueuedBatch(ctx, conversation, true, 0, histClock)
+	if e != nil || len(batch) != 2 {
+		t.Fatalf("claim: %+v %v", batch, e)
+	}
+	if e = st.BindTurnToProvider(ctx, "lead", "native-provider", histClock); e != nil {
+		t.Fatal(e)
+	}
+	if e = st.RecordProviderInput(ctx, "lead", "exact combined input"); e != nil {
+		t.Fatal(e)
+	}
+	a, e := st.LoadTranscriptSourceSnapshot(ctx, session)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if a.Turns[0].ProviderInputText != "exact combined input" {
+		t.Fatal("raw snapshot lost upstream provider input")
+	}
+	if len(a.Inputs) != 2 || a.Inputs[1].PromotedToTurnID != "" {
+		t.Fatal("missing reservation proof")
+	}
+	// Settle a queued member against the dispatch lead without adding timeline rows.
+	if e = st.CompleteQueuedBatch(ctx, conversation, []string{"member"}, "native-provider", histClock); e != nil {
+		t.Fatal(e)
+	}
+	b, e := st.LoadTranscriptSourceSnapshot(ctx, session)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if b.Inputs[1].PromotedToTurnID != "lead" || !b.Inputs[1].BatchedInput || b.Fingerprint == a.Fingerprint || b.CutoffSequence != a.CutoffSequence {
+		t.Fatal("membership change absent from fixed snapshot proof")
+	}
+}

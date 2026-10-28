@@ -96,14 +96,16 @@ func TestTranscriptVerifiedParentEpochAncestry(t *testing.T) {
 		return b.String()
 	}
 	ancestor := makeRows(old, "u1", "a1", "", "old question")
-	current := ancestor + makeRows(next, "u2", "a2", "a1", "new question")
+	summary, _ := json.Marshal(map[string]any{"uuid": "summary", "parentUuid": "a1", "sessionId": old, "type": "user", "isSidechain": false, "isCompactSummary": true, "version": "2.1.0", "message": map[string]any{"content": "provider compaction summary"}})
+	ancestor += string(summary) + "\n"
+	current := ancestor + makeRows(next, "u2", "a2", "summary", "new question")
 	for id, data := range map[string]string{old: ancestor, next: current} {
 		if e := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(data), 0o600); e != nil {
 			t.Fatal(e)
 		}
 	}
 	s := domain.TranscriptSourceSnapshot{Session: domain.SessionRecord{ID: "source", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode}, Fingerprint: "fixed", NativeSessions: []domain.TranscriptNativeSession{{Harness: domain.HarnessClaudeCode, NativeID: old, ConfigDir: root}, {Harness: domain.HarnessClaudeCode, NativeID: next, ConfigDir: root}}}
-	cuts := []EpochCutoff{{NativeID: old, Bytes: int64(len(ancestor)), LeafID: "a1", Schema: ports.ClaudeTranscriptSchemaV1}, {NativeID: next, Bytes: int64(len(current)), LeafID: "a2", Schema: ports.ClaudeTranscriptSchemaV1}}
+	cuts := []EpochCutoff{{NativeID: old, Bytes: int64(len(ancestor)), LeafID: "summary", Schema: ports.ClaudeTranscriptSchemaV1}, {NativeID: next, Bytes: int64(len(current)), LeafID: "a2", Schema: ports.ClaudeTranscriptSchemaV1}}
 	out, e := Build(context.Background(), s, cuts, claudecode.New())
 	if e != nil {
 		t.Fatal(e)
@@ -122,5 +124,59 @@ func TestTranscriptVerifiedParentEpochAncestry(t *testing.T) {
 	cuts[1].Bytes = int64(len(changed))
 	if _, e = Build(context.Background(), s, cuts, claudecode.New()); e == nil {
 		t.Fatal("conflicting ancestor record accepted")
+	}
+}
+
+func TestTranscriptNativeBatchAndSteerRetainSenderAndAttachmentReferences(t *testing.T) {
+	root := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "projects/workspace")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	combined := "AO pending messages in enqueue order. Each JSON item is one complete message; kind steer identifies active-turn guidance. Content blocks follow the same item order, using contentStart and contentCount indices.\n" +
+		`[{"kind":"message","text":"first","origin":"human","senderSessionId":"sender-one","contentCount":1},{"kind":"message","text":"second","origin":"automation","senderSessionId":"sender-two","contentStart":1}]`
+	rows := []map[string]any{
+		{"uuid": "u", "parentUuid": "", "type": "user", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": combined}, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "data": "fixture"}}}}},
+		{"uuid": "q", "parentUuid": "u", "type": "attachment", "attachment": map[string]any{"type": "queued_command", "prompt": "steered third message"}},
+		{"uuid": "a", "parentUuid": "q", "type": "assistant", "message": map[string]any{"content": "combined answer", "stop_reason": "end_turn"}},
+	}
+	var body strings.Builder
+	for _, row := range rows {
+		row["sessionId"], row["isSidechain"], row["version"], row["promptId"] = id, false, "2.1.0", "native-prompt"
+		data, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body.Write(data)
+		body.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := json.Marshal(map[string]any{"event": "steer", "providerInputCaptured": true, "providerInputText": "steered third message", "providerInputSourceTurnIds": []string{"steered"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := domain.TranscriptSourceSnapshot{
+		Session: domain.SessionRecord{ID: "source", ProjectID: "project", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode}, Fingerprint: "fixed",
+		NativeSessions: []domain.TranscriptNativeSession{{Harness: domain.HarnessClaudeCode, NativeID: id, ConfigDir: root}},
+		Branches:       []domain.ConversationBranch{{ID: "b", ProviderConversationID: id}},
+		NativeThreads:  []domain.ConversationNativeThreadEvidence{{BranchID: "b", ProviderTurnID: "opaque", ProviderConversationID: id}},
+		Turns:          []domain.ConversationTurn{{ID: "lead", BranchID: "b", ProviderTurnID: "opaque", State: domain.TurnStateCompleted}, {ID: "second", BranchID: "b", State: domain.TurnStateCompleted}, {ID: "steered", BranchID: "b", State: domain.TurnStateCompleted}},
+		Inputs:         []domain.TranscriptTurnInput{{TurnID: "lead", ProviderInputText: combined}, {TurnID: "second", PromotedToTurnID: "lead", BatchedInput: true}, {TurnID: "steered", PromotedToTurnID: "lead", BatchedInput: true}},
+		Activities:     []domain.ConversationActivity{{ID: "steer-receipt", TurnID: "lead", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Detail: detail}},
+	}
+	out, err := Build(context.Background(), s, []EpochCutoff{{NativeID: id, Bytes: int64(body.Len()), LeafID: "a", Schema: ports.ClaudeTranscriptSchemaV1}}, claudecode.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Manifest.CoveredTurns) != 3 || len(out.Manifest.Steers) != 1 || out.Manifest.Segments[0].Counts.Attachments != 1 {
+		t.Fatal("lost member, steer or attachment coverage")
+	}
+	for _, text := range []string{"sender-one", "sender-two", "steered third message", "image sha256:"} {
+		if strings.Count(string(out.Transcript), text) != 1 {
+			t.Fatalf("missing or duplicated native source %q", text)
+		}
 	}
 }

@@ -276,3 +276,28 @@ func TestClaudeTranscriptExceedsTerminalSummaryRetention(t *testing.T) {
 		t.Fatal("native history was reduced to summary retention")
 	}
 }
+
+func TestClaudeTranscriptCompactionSummaryIsNotHumanInput(t *testing.T) {
+	summary := mainRow("summary", "a1", "user", "This session is being continued from a previous conversation that ran out of context. Summary: prior work.")
+	summary["isCompactSummary"] = true
+	request := transcriptFixture(t, []map[string]any{mainRow("u1", "", "user", "original human"), mainRow("a1", "u1", "assistant", "original answer"), summary, mainRow("u2", "summary", "user", "new human"), mainRow("a", "u2", "assistant", "new answer")})
+	segment, e := New().ReadNativeTranscript(context.Background(), request)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if segment.Counts.UserRecords != 2 || segment.Counts.MetadataRecords != 1 || segment.Records[2].Excluded != "compaction-summary" {
+		t.Fatal("provider summary became human input")
+	}
+	// Prefix alone does not classify a real user's text as provider metadata.
+	human := mainRow("u", "", "user", "This session is being continued from a previous conversation that ran out of context. I am quoting this sentence.")
+	request = transcriptFixture(t, []map[string]any{human, mainRow("a", "u", "assistant", "answer")})
+	segment, e = New().ReadNativeTranscript(context.Background(), request)
+	if e != nil || segment.Counts.UserRecords != 1 {
+		t.Fatal("human prefix dropped", e)
+	}
+	summary["parentUuid"] = ""
+	request = transcriptFixture(t, []map[string]any{summary, mainRow("a", "summary", "assistant", "after summary")})
+	if _, e = New().ReadNativeTranscript(context.Background(), request); e == nil {
+		t.Fatal("summary substituted for missing original ancestry")
+	}
+}

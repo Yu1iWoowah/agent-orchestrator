@@ -9,6 +9,7 @@ import (
 
 // CoverageLink records how one AO turn maps to an owned native prompt.
 type CoverageLink struct {
+	DispatchTurnID string `json:"dispatchTurnId,omitempty"`
 	AOTurnID       string `json:"aoTurnId"`
 	NativeID       string `json:"nativeId"`
 	NativePromptID string `json:"nativePromptId"`
@@ -46,7 +47,7 @@ func recordText(r ports.NativeTranscriptRecord) string {
 }
 func correlateTurn(turn domain.ConversationTurn, messages []domain.ConversationMessage, identities map[string]bool, prompts []nativePrompt) (CoverageLink, error) {
 	link := CoverageLink{AOTurnID: turn.ID, NativePromptID: turn.ProviderTurnID, Method: "native-turn-identity"}
-	if identities[turn.ProviderTurnID] {
+	if turn.ProviderInputText == "" && identities[turn.ProviderTurnID] {
 		return link, nil
 	}
 	var user, assistant string
@@ -54,18 +55,21 @@ func correlateTurn(turn domain.ConversationTurn, messages []domain.ConversationM
 		if m.TurnID != turn.ID {
 			continue
 		}
-		if m.DeliveryContentJSON != "" {
+		if turn.ProviderInputText == "" && m.DeliveryContentJSON != "" {
 			return link, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "legacy ACP non-text delivery requires identity correlation")
 		}
 		switch m.Role {
 		case domain.MessageRoleUser:
-			if user != "" {
+			if user != "" && turn.ProviderInputText == "" {
 				return link, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "multiple AO user deliveries require native identity")
 			}
 			user = m.Text
 		case domain.MessageRoleAssistant:
 			assistant = m.Text
 		}
+	}
+	if turn.ProviderInputText != "" {
+		user = turn.ProviderInputText
 	}
 	if user == "" {
 		return link, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "owned AO main turn is absent from its native epoch")

@@ -73,6 +73,7 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 	proof = append(proof, turns)
 	for _, r := range turns {
 		out.Turns = append(out.Turns, turnToDomain(r))
+		out.Inputs = append(out.Inputs, domain.TranscriptTurnInput{TurnID: r.ID, ProviderInputText: r.ProviderInputText, PromotedToTurnID: r.PromotedToTurnID.String, BatchedInput: r.BatchedInput != 0, Reserved: r.PromotionStartedAt.Valid})
 	}
 	messages, err := q.SelectTranscriptMessages(ctx, id)
 	if err != nil {

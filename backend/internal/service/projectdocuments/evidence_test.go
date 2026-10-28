@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	docs "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/transcriptexport"
@@ -223,6 +224,39 @@ func TestHandoffEvidenceRejectsRotationDuringFinalAuthorization(t *testing.T) {
 		t.Fatal("failed authorization occupied final evidence directory", e)
 	}
 }
+
+func TestHandoffEvidenceRejectsProviderInputChangedWithoutTimelineEvent(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	now := time.Now()
+	conversation, err := f.db.CreateConversation(ctx, "batch", domain.ConversationScopeProject, "demo", f.owner.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.db.AppendUserMessage(ctx, conversation.ID, f.owner.ID, "epoch-1", domain.ConversationMessage{ID: "queued-message", ClientMessageID: "queued-client", Text: "queued", Origin: domain.MessageOriginHuman}, "queued-turn", now); err != nil {
+		t.Fatal(err)
+	}
+	in := evidenceInput(t, f)
+	if err = f.db.RecordProviderInput(ctx, "queued-turn", "new captured batch input"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.db.LoadTranscriptSourceSnapshot(ctx, f.owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CutoffSequence != in.Export.Manifest.CutoffSequence {
+		t.Fatal("fixture added a timeline event instead of changing only the input receipt")
+	}
+	_, err = f.service.PublishEvidence(ctx, "demo", in)
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Code != "HANDOFF_EVIDENCE_SOURCE_CHANGED" {
+		t.Fatalf("changed batch input published: %v", err)
+	}
+	if _, err = f.service.ReadEvidence(ctx, "demo", in.OperationID, in.AttemptID, "transcript.md"); err == nil {
+		t.Fatal("stale evidence became readable")
+	}
+}
+
 func TestEvidenceCannotBeEditedThroughSharedRoot(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

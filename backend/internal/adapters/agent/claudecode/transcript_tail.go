@@ -11,6 +11,9 @@ func verifyTranscriptTail(segment *ports.NativeTranscriptSegment, nodes map[stri
 	results := map[string]bool{}
 	for _, id := range lineage {
 		r := nodes[id]
+		if r.State == "compaction-summary" || r.Excluded != "" && r.Excluded != "ancestor" {
+			continue
+		}
 		switch r.Type {
 		case "user":
 			state = "pending"

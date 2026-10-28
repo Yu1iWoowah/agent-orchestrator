@@ -42,7 +42,7 @@ func readEpochs(ctx context.Context, epochs map[string]string, cuts map[string]E
 			segments = append(segments, segment)
 			progress = true
 			for _, record := range segment.Records {
-				if record.Provenance != domain.NativeThreadMain || record.Excluded != "" || record.ID == "" {
+				if record.Provenance != domain.NativeThreadMain || record.Excluded != "" && record.Excluded != "metadata" && record.Excluded != "compaction-summary" || record.ID == "" {
 					continue
 				}
 				proof := record
