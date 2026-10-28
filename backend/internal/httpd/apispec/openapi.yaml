@@ -3051,9 +3051,7 @@ paths:
           content:
             application/json:
               schema:
-                items:
-                  $ref: '#/components/schemas/AppDiagnosticsRecord'
-                type: array
+                $ref: '#/components/schemas/AppDiagnosticsSnapshotList'
           description: OK
         "400":
           content:
@@ -3115,7 +3113,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Gateway Timeout
-      summary: List this diagnostic grant's snapshots
+      summary: List readable snapshots with safe cumulative I/O error counts
       tags:
       - system
     post:
@@ -15153,6 +15151,18 @@ components:
       - rendererGeneration
       - capturedAt
       - completeness
+      type: object
+    AppDiagnosticsSnapshotList:
+      properties:
+        readErrorCount:
+          minimum: 0
+          type: integer
+        records:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsRecord'
+          type: array
+      required:
+      - records
       type: object
     AppDiagnosticsWindow:
       properties:

@@ -1159,7 +1159,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List this diagnostic grant's snapshots */
+        /** List readable snapshots with safe cumulative I/O error counts */
         get: operations["listAppSnapshots"];
         put?: never;
         /** Capture a read-only app diagnostic snapshot */
@@ -5003,6 +5003,10 @@ export interface components {
             rendererGeneration: number;
             schemaVersion: number;
             windowId: string;
+        };
+        AppDiagnosticsSnapshotList: {
+            readErrorCount?: number;
+            records: components["schemas"]["AppDiagnosticsRecord"][];
         };
         AppDiagnosticsWindow: {
             generation: number;
@@ -12474,7 +12478,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AppDiagnosticsRecord"][];
+                    "application/json": components["schemas"]["AppDiagnosticsSnapshotList"];
                 };
             };
             /** @description Bad Request */

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -83,6 +84,12 @@ type AuditLog struct {
 	Records                     []Audit    `json:"records"`
 	OldestRetainedAt            *time.Time `json:"oldestRetainedAt"`
 	DroppedCount                uint64     `json:"droppedCount"`
+}
+
+// SnapshotList reports partial readable results and cumulative safe I/O counts.
+type SnapshotList struct {
+	Records        []Record `json:"records"`
+	ReadErrorCount uint64   `json:"readErrorCount,omitempty"`
 }
 
 // Runtime is the daemon-to-main port. Browser runtime does not implement this protocol.
@@ -360,6 +367,10 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 	}
 	if err := s.store.prune(s.now()); err != nil {
 		_ = s.store.remove("snapshots", record.ID)
+		audit.Outcome = "storage_failed"
+		if err := s.store.audit(audit); err != nil {
+			return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		}
 		return Record{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	return record, nil
@@ -374,7 +385,20 @@ func (s *Service) Read(ctx context.Context, token, id string) (Record, error) {
 		return Record{}, err
 	}
 	var out Record
-	if s.store.read("snapshots", id, &out) != nil || !validSnapshotRecord(id, out) || out.GrantID != g.credential.ID || !s.now().Before(out.CreatedAt.Add(24*time.Hour)) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Record{}, failure("APP_SNAPSHOT_NOT_FOUND", 404)
+	}
+	if err := s.store.read("snapshots", id, &out); err != nil {
+		if errors.Is(err, errInvalidFile) || errors.Is(err, os.ErrNotExist) {
+			return Record{}, failure("APP_SNAPSHOT_NOT_FOUND", 404)
+		}
+		s.store.recordReadError()
+		if err := s.store.retentionSummary(s.now()); err != nil {
+			return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		}
+		return Record{}, failure("APP_DIAGNOSTICS_READ_UNAVAILABLE", 503)
+	}
+	if !validSnapshotRecord(id, out) || out.GrantID != g.credential.ID || !s.now().Before(out.CreatedAt.Add(24*time.Hour)) {
 		return Record{}, failure("APP_SNAPSHOT_NOT_FOUND", 404)
 	}
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "read"}); err != nil {
@@ -401,10 +425,12 @@ func (s *Service) revoke(g *grantState) error {
 	if err := s.store.remove("grants", g.credential.ID); err != nil {
 		return failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
-	if err := s.store.removeGrant(g.credential.ID, s.now()); err != nil {
-		return failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+	cleanupErr := s.store.removeGrant(g.credential.ID, s.now())
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "revoked"}
+	if cleanupErr != nil || s.store.pendingRevocations[g.credential.ID] {
+		audit.ReasonCode = "APP_DIAGNOSTICS_CLEANUP_PENDING"
 	}
-	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "revoked"}); err != nil {
+	if err := s.store.audit(audit); err != nil {
 		return failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	return nil
@@ -459,19 +485,19 @@ func (s *Service) Close() error {
 }
 
 // List exposes only this grant's unexpired records and audits the read.
-func (s *Service) List(ctx context.Context, token string) ([]Record, error) {
+func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, err := s.authorize(ctx, token)
 	if err != nil {
-		return nil, err
+		return SnapshotList{}, err
 	}
 	if err := s.store.prune(s.now()); err != nil {
-		return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+		return SnapshotList{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	docs, err := documents[Record](s.store, "snapshots", validSnapshotRecord)
-	if err != nil {
-		return nil, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+	if err != nil && !errors.Is(err, errReadUnavailable) {
+		return SnapshotList{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	out := []Record{}
 	for _, doc := range docs {
@@ -481,9 +507,9 @@ func (s *Service) List(ctx context.Context, token string) ([]Record, error) {
 		}
 	}
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}); err != nil {
-		return nil, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		return SnapshotList{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
-	return out, nil
+	return SnapshotList{Records: out, ReadErrorCount: s.store.readErrors}, nil
 }
 
 // Audits excludes other grants, including those issued to the same session.
@@ -501,8 +527,13 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	docs, err := documents[Audit](s.store, "audit", nil)
-	if err != nil {
+	if err != nil && !errors.Is(err, errReadUnavailable) {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+	}
+	if errors.Is(err, errReadUnavailable) {
+		if err := s.store.retentionSummary(s.now()); err != nil {
+			return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		}
 	}
 	out := []Audit{}
 	for _, doc := range docs {

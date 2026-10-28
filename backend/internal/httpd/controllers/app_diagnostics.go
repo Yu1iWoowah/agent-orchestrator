@@ -22,7 +22,7 @@ type AppDiagnosticsService interface {
 	Capture(context.Context, string, diag.CaptureRequest) (diag.Record, error)
 	Read(context.Context, string, string) (diag.Record, error)
 	RevokeID(context.Context, string, string) error
-	List(context.Context, string) ([]diag.Record, error)
+	List(context.Context, string) (diag.SnapshotList, error)
 	Audits(context.Context, string) (diag.AuditLog, error)
 }
 

@@ -248,7 +248,7 @@ func (s *diskStore) removeGrant(id string, now time.Time) (result error) {
 	if readErr == nil {
 		delete(s.pendingRevocations, id)
 	}
-	return readErr
+	return nil
 }
 func (s *diskStore) audit(row Audit) error {
 	if err := s.write("audit", row.RequestID, row); err != nil {
@@ -422,7 +422,7 @@ func (s *diskStore) reset(now time.Time) error {
 		}
 	}
 	rows, err := documents[Audit](s, "audit", nil)
-	if err != nil {
+	if err != nil && !errors.Is(err, errReadUnavailable) {
 		return err
 	}
 	for _, doc := range rows {
@@ -463,8 +463,8 @@ func (s *diskStore) prune(now time.Time) (result error) {
 		clear(s.pendingRevocations)
 	}
 	audits, err := documents[Audit](s, "audit", nil)
-	if err != nil {
-		return errors.Join(readErr, err)
+	if err != nil && !errors.Is(err, errReadUnavailable) {
+		return err
 	}
 	sort.Slice(audits, func(i, j int) bool { return audits[i].value.At.Before(audits[j].value.At) })
 	s.auditTimes = make(map[string]time.Time, len(audits))
@@ -486,7 +486,9 @@ func (s *diskStore) prune(now time.Time) (result error) {
 		delete(s.auditTimes, row.id)
 		s.dropped++
 	}
-	return readErr
+	// Unreadable documents remain on disk for the next sweep. Read failures are
+	// observable through the summary, while healthy records still get retention.
+	return nil
 }
 func (s *diskStore) retentionSummary(now time.Time) error {
 	if s.dropped == 0 && s.skipped == 0 && s.readErrors == 0 && s.invalidSnapshotDeleted == 0 {

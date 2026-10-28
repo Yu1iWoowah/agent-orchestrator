@@ -43,8 +43,23 @@ func TestSnapshotIOErrorsPreserveFilesAndRetryCleanup(t *testing.T) {
 				} else {
 					err = s.Revoke(context.Background(), g.Token)
 				}
-				if err == nil {
-					t.Error("temporary read error was not observable")
+				if err != nil {
+					t.Errorf("temporary read error disabled cleanup: %v", err)
+				}
+				if operation == "revoke" {
+					rows, err := documents[Audit](s.store, "audit", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, row := range rows {
+						if row.value.GrantID == g.ID && row.value.Outcome == "revoked" {
+							found = row.value.ReasonCode == "APP_DIAGNOSTICS_CLEANUP_PENDING"
+						}
+					}
+					if !found {
+						t.Error("effective revocation missing pending-cleanup audit")
+					}
 				}
 				after, readErr := os.ReadFile(target)
 				if readErr != nil || string(after) != string(before) {

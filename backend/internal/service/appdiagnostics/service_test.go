@@ -261,11 +261,11 @@ func TestListsAndAuditAreGrantScoped(t *testing.T) {
 	}
 	second := grant(t, s)
 	list, err := s.List(context.Background(), second.Token)
-	if err != nil || len(list) != 0 {
+	if err != nil || len(list.Records) != 0 {
 		t.Fatalf("cross-grant list: %v %v", list, err)
 	}
 	own, err := s.List(context.Background(), first.Token)
-	if err != nil || len(own) != 1 || own[0].ID != row.ID {
+	if err != nil || len(own.Records) != 1 || own.Records[0].ID != row.ID {
 		t.Fatal("own record unavailable")
 	}
 	audit, err := s.Audits(context.Background(), second.Token)
@@ -346,8 +346,8 @@ func TestRetentionPrunesOldestSnapshotAndExpiresAudit(t *testing.T) {
 		*now = now.Add(2 * time.Second)
 	}
 	list, err := s.List(context.Background(), g.Token)
-	if err != nil || len(list) != 20 {
-		t.Fatalf("retention: %d %v", len(list), err)
+	if err != nil || len(list.Records) != 20 {
+		t.Fatalf("retention: %d %v", len(list.Records), err)
 	}
 	if _, err := s.Read(context.Background(), g.Token, first); err == nil {
 		t.Fatal("oldest snapshot retained over cap")
