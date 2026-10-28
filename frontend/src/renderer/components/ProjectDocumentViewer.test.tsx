@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseProjectDocumentLink } from "../lib/session-links";
 import { useUiStore } from "../stores/ui-store";
@@ -12,10 +12,10 @@ vi.mock("../lib/api-client", () => ({
 	getApiBaseUrl: () => "http://127.0.0.1:9999",
 }));
 vi.mock("../lib/use-session-link-navigation", () => ({ useSessionLinkNavigation: () => mocks.navigate }));
-function show() {
+function show(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
 	useUiStore.setState({ projectDocumentTarget: { kind: "shared", projectId: "project", path: "handoff/doc.md" } });
 	return render(
-		<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+		<QueryClientProvider client={client}>
 			<ProjectDocumentViewer />
 		</QueryClientProvider>,
 	);
@@ -110,6 +110,44 @@ describe("shared document viewer", () => {
 			);
 		} finally {
 			HTMLElement.prototype.scrollIntoView = oldScroll;
+		}
+	});
+	it("scrolls after reopening a cached document with an unchanged background response", async () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const file = { path: "handoff/doc.md", content: "# Cached section", hash: "same-hash", size: 16, binary: false };
+		const scroll = vi.fn();
+		const oldScroll = HTMLElement.prototype.scrollIntoView;
+		HTMLElement.prototype.scrollIntoView = scroll;
+		// A fresh response object with unchanged contents retains the cached file
+		// reference through TanStack structural sharing.
+		mocks.get.mockImplementation(async () => ({ data: { file: { ...file } } }));
+		try {
+			show(client);
+			await screen.findByRole("heading", { name: "Cached section" });
+			const key = ["project-document", "project", "handoff/doc.md"];
+			const cached = client.getQueryData(key);
+			fireEvent.click(screen.getByRole("button", { name: "Close document" }));
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+			scroll.mockClear();
+			act(() =>
+				useUiStore
+					.getState()
+					.setProjectDocumentTarget({
+						kind: "shared",
+						projectId: "project",
+						path: "handoff/doc.md",
+						fragment: "cached-section",
+					}),
+			);
+			await screen.findByRole("heading", { name: "Cached section" });
+			await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
+			await waitFor(() => expect(client.isFetching({ queryKey: key })).toBe(0));
+			expect(client.getQueryData(key)).toBe(cached);
+			await waitFor(() => expect(scroll).toHaveBeenCalled());
+			expect(scroll.mock.instances[0]).toBe(screen.getByRole("heading", { name: "Cached section" }));
+		} finally {
+			HTMLElement.prototype.scrollIntoView = oldScroll;
+			client.clear();
 		}
 	});
 });
