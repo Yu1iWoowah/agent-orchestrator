@@ -39,6 +39,21 @@ describe("useSessionLinkNavigation", () => {
 		});
 	});
 
+ it("opens project files without selecting a source session", () => {
+ useUiStore.setState({ projectDocumentTarget: null });
+ const { result } = renderHook(() => useSessionLinkNavigation());
+ act(() => expect(result.current("ao://projects/project/shared/handoff/doc.md")).toBe(true));
+ expect(useUiStore.getState().projectDocumentTarget).toEqual({ kind: "shared", projectId: "project", path: "handoff/doc.md" });
+ expect(mocks.navigate).not.toHaveBeenCalled();
+ });
+ it("rejects inaccessible project documents without falling back", () => {
+ useUiStore.setState({ projectDocumentTarget: null });
+ const { result } = renderHook(() => useSessionLinkNavigation());
+ act(() => expect(result.current("ao://projects/missing/shared/doc.md")).toBe(false));
+ expect(useUiStore.getState().projectDocumentTarget).toBeNull();
+ expect(mocks.navigate).not.toHaveBeenCalled();
+ });
+
 	it("selects the exact cross-project session by stable ID", () => {
 		const { result } = renderHook(() => useSessionLinkNavigation());
 		act(() => expect(result.current("ao://sessions/other-project/other-session")).toBe(true));

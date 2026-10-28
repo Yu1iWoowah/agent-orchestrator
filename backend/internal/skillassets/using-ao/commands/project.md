@@ -199,3 +199,41 @@ ao project set-config agent-orchestrator --agent-rules-file docs/ao-worker-rules
 ao project set-config agent-orchestrator --tracker-intake \
   --tracker-repo owner/repo --tracker-assignee alice
 ```
+
+---
+
+### ao project documents
+
+讀取共用 orchestrator 文件，不依賴來源 session 是否仍存活。`--project` 依序使用明確 id、AO project/session 環境與目前 repository；唯讀命令不取得寫入權。
+
+```bash
+ao project documents info --project demo --json
+ao project documents read handoff/orchestrator-handoff.md --project demo --json
+ao project documents download architecture/diagram.svg --project demo > diagram.svg
+```
+
+預設共用目錄為 `<AO_DATA_DIR>/projects/<safe-project-key>/orchestrator/shared`。`info` 回傳實際路徑、handoff 相對路徑、lease 與檔案清單。`safe-project-key` 為 daemon 的跨平台安全編碼；請使用 `info` 的結果，不自行拼接實體路徑。
+
+Project config 的 `orchestratorHandoff.sharedDir` 相對於該 project 的 `orchestrator` 根目錄；`documentPath` 預設為 `handoff/orchestrator-handoff.md`。初始化後變更 shared root 需要明確遷移。
+
+Living link 使用 `ao://projects/{project-id}/shared/{encoded-relative-path}`，在本機 app 開啟唯讀文件；來源 session 終止後仍可讀。遠端／Cloud 文件檢視尚未支援。
+
+只有目前 orchestrator 能受管寫入。命令須在它自己的 AO session 執行，使用注入的 `AO_SESSION_ID` 與 `AO_BROWSER_CAPABILITY`；不可把能力交給 worker、列印憑證，或手動取得其他 session 的 lease。Worker 與一般檢視者保持唯讀。
+
+先讀取目前 hash，再以該前置條件提交本機 UTF-8 草稿：
+
+```bash
+ao project documents write handoff/orchestrator-handoff.md \
+  --project demo --file /tmp/handoff-draft.md --expected-hash <current-sha256>
+# 只有建立新檔才使用 --expected-hash missing。
+```
+
+受管文字寫入上限為 2 MiB；`read --json` 回傳 hash，binary 或較大檔案使用串流 `download`。過期 hash、凍結 lease、舊 controller、symlink 與越界路徑都會被拒絕。不要猜 hash 重試覆寫。所有受管 shared 文件修改均走此入口；直接 host shell 修改不在 AO lease 保證內。
+
+一次性導入是明確的 current-orchestrator 操作：
+
+```bash
+ao project documents adopt <source-session-id> --project demo
+```
+
+只複製同 project、合法 legacy artifact 根下的 `handoff/`、`rules/`、`backlog/` 與 `architecture/`。保留來源與備份、核對相對依賴，不覆寫不同內容的目的檔；部分導入在驗證完成前不可用。完成後重試不會重新匯入 legacy 的後續改動。規則只納管來源文件，不自動套用 project config 或既有 worker。未取得任務授權時，不可對真實資料執行導入。

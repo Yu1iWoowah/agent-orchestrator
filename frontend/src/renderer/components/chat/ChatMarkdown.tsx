@@ -43,7 +43,7 @@ import { fenceOf } from "../../lib/markdown-fence";
 import { EMOJI_GRAPHEME, rehypeStreamFade } from "../../lib/rehype-stream-fade";
 import { isInlineMath, remarkMath } from "../../lib/remark-math";
 import { useUiStore } from "../../stores/ui-store";
-import { artifactLinkForPath, findSessionLinks, isAoLink, isSessionLink, remarkSessionLinks } from "../../lib/session-links";
+import { artifactLinkForPath, findSessionLinks, isAoLink, isSessionLink, parseProjectDocumentLink, remarkSessionLinks } from "../../lib/session-links";
 import { useSessionLinkSource } from "../../lib/use-session-link-navigation";
 import {
 	isPotentialWorkspaceFileLink,
@@ -369,7 +369,7 @@ function MarkdownLink({ href, children, className }: { href?: string; children?:
 			inAppLink={href ? () => browserLink : undefined}
 			filePath={filePath && href ? workspaceFileOpenTarget(href, filePath) : filePath}
 			onFileOpen={onFileOpen}
-			hoverPreview={sessionLink
+			hoverPreview={sessionLink && !parseProjectDocumentLink(href!)
 				? () => isSessionLink(href!)
 					? <SessionLinkPreviewCard href={href!} sourceHostId={sessionLinkHostId} sourceKind={sessionLinkSourceKind} />
 					: <ArtifactLinkPreviewCard href={href!} sourceHostId={sessionLinkHostId} sourceKind={sessionLinkSourceKind} />

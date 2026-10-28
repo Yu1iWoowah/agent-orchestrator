@@ -29,6 +29,7 @@ type APIDeps struct {
 	CodexAccounts      controllers.CodexAccountService
 	AgentAccounts      controllers.AgentAccountService
 	Projects           projectsvc.Manager
+	ProjectDocuments   controllers.ProjectDocumentService
 	Sessions           controllers.SessionService
 	ArtifactVersions   controllers.ArtifactVersionService
 	Automations        controllers.AutomationService
@@ -125,6 +126,8 @@ func normalizeAPIDeps(deps APIDeps, log *slog.Logger) APIDeps {
 // API owns one controller per resource and is the single Register call the
 // router invokes to mount the /api/v1 surface.
 type API struct {
+	projectDocuments *controllers.ProjectDocumentsController
+
 	cfg           config.Config
 	deps          APIDeps
 	agents        *controllers.AgentsController
@@ -175,8 +178,9 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		agents: &controllers.AgentsController{
 			Catalog: deps.Agents,
 		},
-		codexAccounts: &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
-		agentAccounts: newAgentAccountsController(deps),
+		codexAccounts:    &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
+		agentAccounts:    newAgentAccountsController(deps),
+		projectDocuments: &controllers.ProjectDocumentsController{Svc: deps.ProjectDocuments},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -308,6 +312,7 @@ func (a *API) Register(root chi.Router) {
 			a.codexAccounts.Register(r)
 			a.agentAccounts.Register(r)
 			a.projects.Register(r)
+			a.projectDocuments.Register(r)
 			a.sessions.Register(r)
 			a.automations.Register(r)
 			a.desktop.Register(r)

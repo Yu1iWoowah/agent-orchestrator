@@ -8,7 +8,7 @@ export type SessionLinkWorkspace = {
 
 const SESSION_LINK_PREFIX = "ao://sessions/";
 const ARTIFACT_SEGMENT = "artifacts";
-const RAW_SESSION_LINK = /ao:\/\/sessions\/\S+/g;
+const RAW_SESSION_LINK = /ao:\/\/(?:sessions|projects)\/\S+/g;
 const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
 const TRAILING_DELIMITERS = [
 	["(", ")"],
@@ -80,7 +80,7 @@ export function artifactLinkForPath(value: string, workspaces: ArtifactPathWorks
 
 /** True for either in-app route: a session or one of its artifacts. */
 export function isAoLink(value: string): boolean {
-	return parseSessionLink(value) !== undefined || parseArtifactLink(value) !== undefined;
+	return parseSessionLink(value) !== undefined || parseArtifactLink(value) !== undefined || parseProjectDocumentLink(value) !== undefined;
 }
 
 function linkSegments(value: string): string[] | undefined {
@@ -219,4 +219,61 @@ function visitMarkdown(node: MarkdownNode, find: (text: string) => TextMatch[]):
 		node.children.splice(index, 1, ...replacement);
 		index += replacement.length - 1;
 	}
+}
+
+
+export type ProjectDocumentTarget = { kind: "shared"; projectId: string; path: string };
+const PROJECT_LINK_PREFIX = "ao://projects/";
+function documentSegment(value: string): string | undefined {
+	const decoded = decodeSegment(value);
+	if (
+		!decoded?.trim() ||
+		decoded === "." ||
+		decoded === ".." ||
+		/[/\\\x00-\x1f\x7f]/.test(decoded) ||
+		/%[0-9a-f]{2}/i.test(decoded)
+	)
+		return undefined;
+	return decoded;
+}
+export function parseProjectDocumentLink(value: string): ProjectDocumentTarget | undefined {
+	if (!value.startsWith(PROJECT_LINK_PREFIX) || value.includes("?") || value.includes("#")) return undefined;
+	const [project, scope, ...parts] = value.slice(PROJECT_LINK_PREFIX.length).split("/");
+	if (scope !== "shared" || !project || parts.length === 0) return undefined;
+	const projectId = documentSegment(project);
+	if (!projectId) return undefined;
+	const decoded: string[] = [];
+	for (const part of parts) {
+		const segment = documentSegment(part);
+		if (!segment || segment.startsWith(".ao-")) return undefined;
+		decoded.push(segment);
+	}
+	return { kind: "shared", projectId, path: decoded.join("/") };
+}
+export function projectDocumentLink(projectId: string, path: string): string {
+	return `${PROJECT_LINK_PREFIX}${encodeURIComponent(projectId)}/shared/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+/** Resolve a Markdown relative resource without leaving the shared root. */
+export function relativeProjectDocumentPath(current: string, href: string): string | undefined {
+	if (
+		!href ||
+		/^[a-z][a-z0-9+.-]*:/i.test(href) ||
+		href.startsWith("/") ||
+		href.includes("\\") ||
+		href.includes("?") ||
+		href.includes("#")
+	)
+		return undefined;
+	const parts = current.split("/").slice(0, -1);
+	for (const part of href.split("/")) {
+		if (part === ".") continue;
+		if (part === "..") {
+			if (!parts.pop()) return undefined;
+			continue;
+		}
+		const decoded = documentSegment(part);
+		if (!decoded || decoded.startsWith(".ao-")) return undefined;
+		parts.push(decoded);
+	}
+	return parts.length ? parts.join("/") : undefined;
 }
