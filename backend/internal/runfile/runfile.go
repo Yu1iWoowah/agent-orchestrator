@@ -42,6 +42,8 @@ type Info struct {
 	// BrowserStreamAddress is the private Electron media socket locator. It is
 	// authenticated with the same per-launch token as the command runtime.
 	BrowserStreamAddress string `json:"browserStreamAddress,omitempty"`
+	// AppDiagnosticsAddress locates the independent authenticated diagnostic channel.
+	AppDiagnosticsAddress string `json:"appDiagnosticsAddress,omitempty"`
 }
 
 // Write atomically writes running.json at path, creating parent directories

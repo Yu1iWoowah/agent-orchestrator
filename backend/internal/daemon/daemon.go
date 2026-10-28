@@ -33,6 +33,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/systemexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/telemetry/policyauthority"
+	appruntime "github.com/aoagents/agent-orchestrator/backend/internal/appdiagnostics"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/autoreview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
@@ -135,8 +136,11 @@ func Run(buildVersion string) error {
 
 	log := newLogger()
 	var browserRuntimeToken string
+	var appRuntimeToken string
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
-		browserRuntimeToken, err = browserruntime.ReadRuntimeToken(os.Stdin)
+		var credentials appruntime.Credentials
+		credentials, err = appruntime.ReadCredentials(os.Stdin)
+		browserRuntimeToken, appRuntimeToken = credentials.BrowserToken, credentials.AppToken
 		if err != nil {
 			return err
 		}
@@ -147,6 +151,7 @@ func Run(buildVersion string) error {
 			return err
 		}
 	}
+	appBroker := appruntime.New(appRuntimeToken)
 	browserAuthority := browsersvc.NewAuthority()
 	browserBroker := browserruntime.New(log, browserRuntimeToken)
 	chrome := newChromeMode(cfg, log)
@@ -739,6 +744,29 @@ func Run(buildVersion string) error {
 	// HostID is assigned below, once the identity file has been read.
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
+	// Storage cleanup is independent of the desktop token. A headless restart
+	// must discard prior credentials/payloads and enforce audit retention too.
+	appDiagnostics, appDiagnosticsAPI, err := newAppDiagnosticsServices(cfg.DataDir, sessionSvc, appBroker, appRuntimeToken != "")
+	if err != nil {
+		log.Warn("app diagnostics: storage unavailable", "err", err)
+	} else {
+		defer func() { _ = appDiagnostics.Close() }()
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := appDiagnostics.Sweep(ctx); err != nil {
+						log.Warn("app diagnostics: cleanup failed", "err", err)
+					}
+				}
+			}
+		}()
+	}
+
 	var browserChrome controllers.BrowserChromeService
 	if chrome != nil {
 		browserService.UseChrome(chrome.broker, chrome.targets, log)
@@ -1045,6 +1073,7 @@ func Run(buildVersion string) error {
 				return sqlite.OpenReadOnly(ctx, dataDir)
 			},
 		}),
+		AppDiagnostics:           appDiagnosticsAPI,
 		Browser:                  browserService,
 		BrowserChrome:            browserChrome,
 		LinkPreview:              linkpreviewsvc.New(nil),
@@ -1063,6 +1092,22 @@ func Run(buildVersion string) error {
 	browserLive.SetLoopbackBaseURL("http://" + srv.Addr().String())
 	previewDone := preview.NewPoller(store, sessionSvc, "http://"+srv.Addr().String(), preview.PollerConfig{Logger: log}).Start(ctx)
 	_ = os.Unsetenv(browserruntime.RuntimeAddressEnv)
+	_ = os.Unsetenv(appruntime.RuntimeAddressEnv)
+	if appDiagnosticsAPI != nil {
+		if ln, addr, listenErr := appruntime.Listen(cfg.DataDir); listenErr != nil {
+			log.Warn("app diagnostics: listener unavailable", "err", listenErr)
+		} else {
+			if err := os.Setenv(appruntime.RuntimeAddressEnv, addr); err != nil {
+				_ = ln.Close()
+				return err
+			}
+			go func() {
+				if err := appBroker.Serve(ctx, ln); err != nil {
+					log.Warn("app diagnostics: runtime stopped", "err", err)
+				}
+			}()
+		}
+	}
 	if ln, addr, err := browserruntime.Listen(cfg.RunFilePath); err != nil {
 		log.Warn("browser runtime: listener unavailable; agent browser control disabled", "err", err)
 	} else {

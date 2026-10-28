@@ -193,6 +193,7 @@ import {
 	connectBrowserRuntime,
 	type BrowserRuntimeLinkHandle,
 } from "./main/browser-runtime-link";
+import { connectAppDiagnostics, privateRuntimeHandoff } from "./main/app-diagnostics-link";
 import { resolveBrowserRuntimeToken } from "./main/browser-runtime-token";
 import { checkRender, measureRender } from "./main/render-check";
 import {
@@ -432,6 +433,8 @@ const quitConfirm = createQuitConfirmController({
 	},
 	quit: () => app.quit(),
 });
+let appDiagnosticsLink: (() => void) | null = null;
+let appDiagnosticsLinkIdentity: string | undefined;
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
 // One adopted-daemon replacement per launch; see handleBrowserRuntimeRejection.
@@ -707,6 +710,7 @@ function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state !== "ready" || daemonStatus.state !== "ready" || nextStatus.port !== daemonStatus.port || nextStatus.pid !== daemonStatus.pid) daemonAttachmentGeneration++;
 	if (nextStatus.state !== "ready") disposeBrowserRuntimeLink();
 	if (nextStatus.state !== "ready") {
+		disposeAppDiagnosticsLink();
 		if (sideStateTimer) clearInterval(sideStateTimer);
 		sideStateTimer = undefined;
 		disposeBrowserStreamLink();
@@ -715,6 +719,7 @@ function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state === "ready") void telemetryIdentity.flush();
 	else telemetryIdentity.invalidate();
 	getShellWebContents()?.send("daemon:status", daemonStatus);
+	if (nextStatus.state === "ready") establishAppDiagnosticsLink();
 	if (nextStatus.state === "ready" && browserViewHost) {
 		establishBrowserRuntimeLink();
 		establishBrowserStreamLink();
@@ -1116,6 +1121,7 @@ async function createWindowInternal(): Promise<void> {
 		},
 	});
 	if (daemonStatus.state === "ready") {
+		establishAppDiagnosticsLink();
 		establishBrowserRuntimeLink();
 		establishBrowserStreamLink();
 	}
@@ -1176,6 +1182,7 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		disposeAppDiagnosticsLink();
 		chatDraftRisks = [];
 		chatDraftDialog = undefined;
 		chatDraftQuitConfirmed = false;
@@ -1475,6 +1482,8 @@ if (process.platform !== "win32") {
 // (including supervisor restarts) reports the same run. An explicit
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
+const appDiagnosticsToken = randomBytes(32).toString("base64url");
+
 // The browser runtime token identifies this app to the daemon's runtime broker.
 // It is derived from an owner-only key in the data dir so it survives an app
 // restart: a daemon kept alive by AO_KEEP_DAEMON (or adopted under a pinned
@@ -1684,6 +1693,32 @@ function reconnectBrowserRuntimeLink(): void {
 	if (!browserRuntimeLink) publishBrowserRuntimeState(BROWSER_RUNTIME_DISCONNECTED);
 }
 
+function disposeAppDiagnosticsLink(): void {
+	appDiagnosticsLink?.();
+	appDiagnosticsLink = null;
+	appDiagnosticsLinkIdentity = undefined;
+}
+
+function establishAppDiagnosticsLink(): void {
+	const rfp = runFilePath();
+	if (!rfp) return;
+	let info: ReturnType<typeof parseRunFile>;
+	try {
+		info = parseRunFile(readFileSync(rfp, "utf8"));
+	} catch {
+		return;
+	}
+	if (!info?.appDiagnosticsAddress) return;
+	const address = info.appDiagnosticsAddress;
+	const identity = `${info.pid}:${info.startedAtMs}:${address}`;
+	if (identity === appDiagnosticsLinkIdentity) return;
+	disposeAppDiagnosticsLink();
+	// This handle owns reconnect/backoff for the daemon identity until disposed.
+	// A rejected capability stops retries inside the handle until identity changes.
+	appDiagnosticsLink = connectAppDiagnostics({ path: address }, appDiagnosticsToken, appRunId);
+	appDiagnosticsLinkIdentity = identity;
+}
+
 function establishBrowserRuntimeLink(): void {
 	if (!browserViewHost) return;
 	const rfp = runFilePath();
@@ -1697,6 +1732,7 @@ function establishBrowserRuntimeLink(): void {
 	} catch {
 		// Daemon readiness will retry this after running.json becomes readable.
 	}
+
 	const address = runInfo?.browserRuntimeAddress;
 	if (!address) {
 		console.warn("AO: browser runtime link skipped; daemon did not publish an address");
@@ -2323,7 +2359,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	// worker processes when it spawns them.
 	if (child.stdin) {
 		child.stdin.on("error", () => undefined);
-		child.stdin.end(`${browserRuntimeToken}\n`);
+		child.stdin.end(privateRuntimeHandoff(browserRuntimeToken, appDiagnosticsToken));
 	} else {
 		console.warn("AO: browser runtime token handoff pipe was unavailable");
 	}
@@ -3729,6 +3765,7 @@ app.on("before-quit", (event) => {
 		return;
 	}
 	browserQuitRequested = true;
+	disposeAppDiagnosticsLink();
 	disposeBrowserRuntimeLink();
 	disposeBrowserStreamLink();
 	trayLifecycle.dispose();
