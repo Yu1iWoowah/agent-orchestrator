@@ -363,7 +363,11 @@ func TestAccountPreflightEnvLeavesOtherLaunchesOnTheBoundAccount(t *testing.T) {
 	}
 	var concurrent map[string]string
 	accounts.onLaunchWith = func() {
-		concurrent = manager.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil)
+		var envErr error
+		concurrent, envErr = manager.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil)
+		if envErr != nil {
+			t.Fatal(envErr)
+		}
 	}
 
 	env, err := manager.runtimeEnvOnAccount(rec, nil, "acct-b")

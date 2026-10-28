@@ -40,10 +40,6 @@ var codexPrivate = map[string]bool{
 // fresh home; they guard shared state, so a local copy gives way to the link.
 var codexReplaceable = map[string]bool{"mcp-oauth-locks": true, ".sqlite-maintenance.lock": true}
 
-// codexCredentialEnv are variables that make Codex use something other than
-// the home's own login.
-var codexCredentialEnv = []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}
-
 // Codex runs the `codex` CLI under an account home (CODEX_HOME). Identity,
 // limits and resets come from Codex's own app-server account methods.
 type Codex struct {
@@ -66,7 +62,7 @@ func (c *Codex) LaunchEnv(home string) map[string]string {
 	if managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
 		env[agentlaunch.ManagedCodexAccountEnv] = "1"
 	}
-	neutralize(env, codexCredentialEnv...)
+	agentlaunch.ClearCodexCredentialEnv(env)
 	return env
 }
 

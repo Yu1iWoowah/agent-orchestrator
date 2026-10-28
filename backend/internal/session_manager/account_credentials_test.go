@@ -53,7 +53,14 @@ func (*managedCodexPolicyAccounts) SessionLaunchEnv(context.Context, domain.Sess
 }
 
 func TestSpawnPassesResolvedAccountPolicyToCommand(t *testing.T) {
-	manager, _, _, _ := newManager()
+	manager, store, runtime, _ := newManager()
+	project := store.projects["mer"]
+	project.Config.Env = map[string]string{}
+	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+		t.Setenv(key, "fake-ambient-credential")
+		project.Config.Env[key] = "fake-project-credential"
+	}
+	store.projects["mer"] = project
 	agent := &recordingAgent{}
 	manager.agents = singleAgent{agent: agent}
 	var log []string
@@ -63,6 +70,11 @@ func TestSpawnPassesResolvedAccountPolicyToCommand(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+		if agent.lastLaunch.Env[key] != "" || runtime.lastCfg.Env[key] != "" {
+			t.Errorf("managed TUI launch received %s", key)
+		}
 	}
 	if agent.lastLaunch.Env[agentlaunch.ManagedCodexAccountEnv] != "1" {
 		t.Fatal("spawn command lost resolved managed file-store policy")

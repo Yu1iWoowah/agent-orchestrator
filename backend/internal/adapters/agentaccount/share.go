@@ -128,13 +128,11 @@ func writeIfChanged(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// neutralize returns key="" for each key set in the daemon's environment, so a
-// key or token the computer has for its own login cannot override the account.
+// neutralize returns key="" even when the daemon has no value: a project's
+// key or token must not override the managed account either.
 func neutralize(env map[string]string, keys ...string) {
 	for _, key := range keys {
-		if _, set := os.LookupEnv(key); set {
-			env[key] = ""
-		}
+		env[key] = ""
 	}
 }
 

@@ -274,7 +274,7 @@ func (v codexVersion) String() string {
 
 func installedCodexVersion(ctx context.Context, bin string) (string, error) {
 	cmd := aoprocess.CommandContext(ctx, bin, "--version")
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = codexProbeProcessEnv(ctx, bin)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
@@ -801,7 +801,18 @@ func envSlice(env map[string]string) []string {
 	for key, value := range env {
 		overlay[key] = value
 	}
+	if overlay[agentlaunch.ManagedCodexAccountEnv] == "1" {
+		agentlaunch.ClearCodexCredentialEnv(overlay)
+	}
 	return processenv.Merge(overlay)
+}
+
+// Version/help/schema probes are account-independent and need no credential.
+// They also run before a new managed account has a home or auth.json.
+func codexProbeProcessEnv(ctx context.Context, bin string) []string {
+	env := map[string]string{}
+	agentlaunch.ClearCodexCredentialEnv(env)
+	return codexProcessEnv(ctx, bin, env)
 }
 
 func accountAppServerArgs(env []string) []string {

@@ -128,6 +128,80 @@ func TestUnknownFilesNeverBecomeShared(t *testing.T) {
 	}
 }
 
+func TestContainedSettingsKeepProviderModes(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed profiles are Linux-only")
+	}
+	for _, provider := range []string{"claude", "codex"} {
+		for _, mode := range []fs.FileMode{0o644, 0o664} {
+			t.Run(provider+"/"+mode.String(), func(t *testing.T) {
+				home := filepath.Join(t.TempDir(), "accounts", provider, "a")
+				prepare := (&Codex{}).Prepare
+				if provider == "claude" {
+					prepare = (&Claude{}).Prepare
+				}
+				if err := prepare(home); err != nil {
+					t.Fatal(err)
+				}
+				names := []string{"models_cache.json", "settings.json", "settings.local.json", "config.toml", ".claude.json"}
+				for _, name := range names {
+					path := filepath.Join(home, name)
+					write(t, path, "fake-provider-settings")
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := prepare(home); err != nil {
+					t.Fatalf("provider settings rejected: %v", err)
+				}
+				for _, name := range names {
+					info, err := os.Stat(filepath.Join(home, name))
+					if err != nil || info.Mode().Perm() != mode {
+						t.Fatalf("provider settings mode changed: %s: %v", name, err)
+					}
+					if data, err := os.ReadFile(filepath.Join(home, name)); err != nil || string(data) != "fake-provider-settings" {
+						t.Fatalf("provider settings contents changed: %s: %v", name, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestContainedCredentialAndIPCRequirePrivateModes(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed profiles are Linux-only")
+	}
+	for _, name := range []string{"auth.json", ".credentials.json", "ipc", "app-server-control", "app-server-daemon", "app-server-new-endpoint"} {
+		t.Run(name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "accounts", "codex", "a")
+			c := &Codex{}
+			if err := c.Prepare(home); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(home, name)
+			mode := fs.FileMode(0o644)
+			if name == "ipc" || name == "app-server-daemon" {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				mode = 0o755
+			} else {
+				write(t, path, "fake-private-data")
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Prepare(home); !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) {
+				t.Fatalf("public credential/IPC accepted: %v", err)
+			}
+			if info, err := os.Stat(path); err != nil || info.Mode().Perm() != mode {
+				t.Fatalf("unsafe credential/IPC was chmodded: %v", err)
+			}
+		})
+	}
+}
+
 func TestContainedHistoryAndPrivatePathsRejectReplacement(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("new managed profiles are Linux-only")

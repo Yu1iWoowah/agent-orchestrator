@@ -148,3 +148,104 @@ func TestMissingFileEvidenceInvalidatesManagedAccountCache(t *testing.T) {
 		t.Fatal("launch accepted missing file evidence")
 	}
 }
+
+func TestSignedOutContainedCodexDefaultUsesSignedInFallback(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "accounts")
+	signedOut, signedIn := filepath.Join(root, "codex", "out"), filepath.Join(root, "codex", "in")
+	for _, home := range []string{signedOut, signedIn} {
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(signedIn, "auth.json"), []byte("fake-credential"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := &evidenceCodex{fakeClaude: &fakeClaude{signedInAs: map[string]string{signedIn: "fallback@example.invalid"}}}
+	store := &memStore{
+		accounts: []domain.AgentAccount{
+			{ID: "out", Provider: domain.AgentAccountProviderCodex, Home: signedOut, ProfileKind: domain.AgentAccountProfileContained},
+			{ID: "in", Provider: domain.AgentAccountProviderCodex, Home: signedIn, ProfileKind: domain.AgentAccountProfileContained},
+		},
+		defaults: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderCodex: "out"},
+		bindings: map[domain.SessionID]string{},
+	}
+	svc := New(store, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, nil)
+	identity, handled := svc.DefaultSignIn(ctx, domain.HarnessCodex)
+	if !handled || !identity.SignedIn || identity.Email != "fallback@example.invalid" {
+		t.Fatalf("readiness did not select signed-in fallback: %+v, handled=%v", identity, handled)
+	}
+	if err := svc.ValidateAccount(ctx, domain.HarnessCodex, "out"); !errors.Is(err, ports.ErrAgentAccountSignedOut) {
+		t.Fatalf("signed-out account misclassified: %v", err)
+	}
+	if err := svc.BindSession(ctx, "new", domain.HarnessCodex, ""); err != nil || store.bindings["new"] != "in" {
+		t.Fatalf("binding disagrees with readiness: %q, %v", store.bindings["new"], err)
+	}
+}
+
+type runtimeFixtureCodex struct {
+	*evidenceCodex
+	adapter agentaccount.Codex
+}
+
+func (p *runtimeFixtureCodex) Prepare(home string) error { return p.adapter.Prepare(home) }
+func (p *runtimeFixtureCodex) LaunchEnv(home string) map[string]string {
+	return p.adapter.LaunchEnv(home)
+}
+
+func TestCodexRuntimeFixtureRemainsUsable(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "accounts")
+	home := filepath.Join(root, "codex", "saved")
+	provider := &runtimeFixtureCodex{evidenceCodex: &evidenceCodex{fakeClaude: &fakeClaude{signedInAs: map[string]string{home: "fake@example.invalid"}}}}
+	if err := provider.Prepare(home); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"auth.json", "models_cache.json"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte("fake-provider-data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(home, "models_cache.json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Metadata-shaped fixture only: no actual provider binary or socket is read.
+	for name, target := range map[string]string{
+		"tmp/arg0-linux/codex-arg0-live/apply_patch":         "../../../../fake-codex-binary",
+		"tmp/arg0-linux/codex-arg0-live/applypatch":          "../../../../fake-codex-binary",
+		"tmp/arg0-linux/codex-arg0-live/codex-linux-sandbox": "../../../../fake-codex-binary",
+		"tmp/arg0-linux/codex-arg0-stale/apply_patch":        "../../../../removed-fake-binary",
+		"app-server-control/app-server-control.sock":         filepath.Join(t.TempDir(), "fake-daemon.sock"),
+		"packages/standalone/current":                        "releases/fake-version",
+		"packages/standalone/releases/fake-version/codex":    "../../../../fake-codex-binary",
+	} {
+		path := filepath.Join(home, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &memStore{accounts: []domain.AgentAccount{{ID: "saved", Provider: domain.AgentAccountProviderCodex, Home: home, ProfileKind: domain.AgentAccountProfileContained}}, bindings: map[domain.SessionID]string{}}
+	svc := New(store, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, nil)
+	if err := provider.Prepare(home); err != nil {
+		t.Fatalf("runtime fixture refused: %v", err)
+	}
+	views, err := svc.List(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, view := range views {
+		if view.Account.ID == "saved" && (!view.SignedIn || view.IdentityErr != "") {
+			t.Fatalf("runtime fixture listed as unusable: %+v", view)
+		}
+	}
+	if err := svc.BindSession(ctx, "s1", domain.HarnessCodex, "saved"); err != nil {
+		t.Fatal(err)
+	}
+	env, err := svc.SessionLaunchEnv(ctx, "s1")
+	if err != nil || env["CODEX_HOME"] != home || env["AO_CODEX_MANAGED_ACCOUNT"] != "1" {
+		t.Fatalf("runtime fixture cannot launch on its managed account: %v, %v", env, err)
+	}
+}

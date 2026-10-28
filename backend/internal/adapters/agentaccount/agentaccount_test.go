@@ -270,12 +270,18 @@ func TestLaunchEnvOverridesCredentialEnv(t *testing.T) {
 	if value, set := claude["ANTHROPIC_API_KEY"]; !set || value != "" {
 		t.Fatalf("ANTHROPIC_API_KEY not cleared: %v", claude)
 	}
-	if _, set := claude["CLAUDE_CODE_OAUTH_TOKEN"]; set {
-		t.Fatalf("unset variable added: %v", claude)
+	// Clear even an absent daemon key: a project overlay may supply it later.
+	if value, set := claude["CLAUDE_CODE_OAUTH_TOKEN"]; !set || value != "" {
+		t.Fatal("project OAuth token could override the managed Claude account")
 	}
 	codex := (&Codex{}).LaunchEnv("/acct")
 	if codex["CODEX_HOME"] != "/acct" || codex["OPENAI_API_KEY"] != "" {
 		t.Fatalf("codex env = %v", codex)
+	}
+	for _, key := range []string{"CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+		if value, set := codex[key]; !set || value != "" {
+			t.Errorf("project %s could override the managed Codex account", key)
+		}
 	}
 	if (&Claude{}).LaunchEnv("") != nil || (&Codex{}).LaunchEnv("") != nil {
 		t.Fatal("the device account must launch with the environment untouched")

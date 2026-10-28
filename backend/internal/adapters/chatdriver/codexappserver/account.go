@@ -91,7 +91,11 @@ func (f *AccountFactory) Open(ctx context.Context, account ports.CodexAccountCon
 	if account.Managed {
 		args = []string{"-c", `cli_auth_credentials_store="file"`, "app-server"}
 	}
-	proc, err := f.spawn(ctx, bin, account.Home, envSlice(map[string]string{"CODEX_HOME": account.Home}), args)
+	env := map[string]string{"CODEX_HOME": account.Home}
+	if account.Managed {
+		env[agentlaunch.ManagedCodexAccountEnv] = "1"
+	}
+	proc, err := f.spawn(ctx, bin, account.Home, envSlice(env), args)
 	if err != nil {
 		return nil, fmt.Errorf("launch Codex account client: %w", err)
 	}
@@ -169,6 +173,7 @@ func (f *AccountFactory) detectCapabilities(ctx context.Context, bin string) dom
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	cmd := aoprocess.CommandContext(probeCtx, bin, "app-server", "generate-json-schema", "--experimental", "--out", dir)
+	cmd.Env = codexProbeProcessEnv(probeCtx, bin)
 	if err := cmd.Run(); err != nil {
 		return unknownCodexCapabilities("Codex capability detection did not complete.")
 	}
@@ -179,7 +184,7 @@ func (f *AccountFactory) detectCapabilities(ctx context.Context, bin string) dom
 
 func probeCodexCLISurface(ctx context.Context, bin string, args []string, supportedReason string) domain.CodexCapabilityObservation {
 	cmd := aoprocess.CommandContext(ctx, bin, args...)
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = codexProbeProcessEnv(ctx, bin)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {

@@ -3762,6 +3762,19 @@ func TestSpawnOrchestratorUnknownProjectReturns404(t *testing.T) {
 	}
 }
 
+func TestSessionCredentialStoreErrorEnvelope(t *testing.T) {
+	for _, mapError := range []func(error) error{toAPIError, toSpawnAPIError} {
+		mapped := mapError(fmt.Errorf("/private/fake-credential: %w", ports.ErrAgentAccountCredentialStoreUnsupported))
+		var e *apierr.Error
+		if !errors.As(mapped, &e) || e.Kind != apierr.KindNotImplemented || e.Code != "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED" {
+			t.Fatalf("session account failure mapped incorrectly: %v", mapped)
+		}
+		if e.Details["reasonCode"] != "account_credential_store_unsupported" || e.Details["retryable"] != false || strings.Contains(e.Message, "/private/") {
+			t.Fatalf("unsafe or incomplete envelope: %+v", e)
+		}
+	}
+}
+
 // TestToAPIErrorMapsWorkspaceBranchSentinels covers Bug 3: the workspace
 // adapter's typed branch errors map to typed envelope errors instead of
 // collapsing to a 500.

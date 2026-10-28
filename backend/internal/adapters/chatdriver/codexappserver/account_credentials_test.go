@@ -54,17 +54,30 @@ func TestPersistentManagedAccountStartsWithFileStore(t *testing.T) {
 		d.connectHost = func(ctx context.Context, cfg persistenthost.Config) (*persistenthost.Transport, error) {
 			called = true
 			argv := cfg.Argv
+			providerEnv := cfg.Env
 			if cfg.Prepare != nil {
 				p, err := cfg.Prepare(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
 				argv = p.Argv
+				providerEnv = p.Env
+			}
+			for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+				for _, entry := range providerEnv {
+					if strings.HasPrefix(entry, key+"=") && entry != key+"=" {
+						t.Errorf("persistent managed Chat received %s", key)
+					}
+				}
 			}
 			if !strings.Contains(strings.Join(argv, " "), `-c cli_auth_credentials_store="file" app-server`) {
 				t.Errorf("managed Chat follows keyring config: %q", argv)
 			}
 			return nil, errors.New("fake host: provider must not run")
+		}
+		for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+			t.Setenv(key, "fake-ambient-credential")
+			env[key] = "fake-project-credential"
 		}
 		_, _, _ = d.connectSession(context.Background(), "session-1", "/fake/data", "/fake/workspace", env, prepare, "", false)
 		if !called {

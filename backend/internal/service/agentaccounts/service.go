@@ -210,7 +210,8 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 	}
 	r.identity = identity
 	if err != nil {
-		r.identityErr = err.Error()
+		r.identityErr = safeAccountProviderError(err).Error()
+		s.log.Debug("account identity check failed", "provider", account.Provider, "reasonCode", r.identityErr)
 		// A failed check (a timeout under load) says nothing about the login:
 		// keep what the last good one found, so it does not read as signed out.
 		s.mu.Lock()
@@ -227,10 +228,11 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 		// The right-account check: the folder must still hold the login it was added with.
 		r.identity.SignedIn = false
 		r.mismatch = true
-		r.identityErr = fmt.Sprintf("the folder is now signed in as %s, not %s", identity.Email, account.Email)
+		r.identityErr = "account_identity_mismatch"
 	default:
 		if limits, limitsErr := provider.Limits(ctx, account.Home); limitsErr != nil {
-			r.limitsErr = limitsErr.Error()
+			r.limitsErr = safeAccountProviderError(limitsErr).Error()
+			s.log.Debug("account limits check failed", "provider", account.Provider, "reasonCode", r.limitsErr)
 		} else {
 			r.limits = &limits
 		}
@@ -321,9 +323,6 @@ func (s *Service) DefaultSignIn(ctx context.Context, harness domain.AgentHarness
 	if err != nil {
 		return identity, false
 	}
-	if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
-		return identity, true
-	}
 	s.mu.Lock()
 	r := s.readings[account.ID]
 	s.mu.Unlock()
@@ -332,6 +331,9 @@ func (s *Service) DefaultSignIn(ctx context.Context, harness domain.AgentHarness
 		s.mu.Lock()
 		r = s.readings[account.ID]
 		s.mu.Unlock()
+	}
+	if r != nil && r.identityErr == ports.ErrAgentAccountCredentialStoreUnsupported.Error() {
+		return identity, true
 	}
 	if r == nil || (r.identityErr != "" && !r.mismatch) {
 		return identity, false // not known: leave it to the CLI's own readiness
@@ -347,6 +349,11 @@ func (s *Service) DefaultSignIn(ctx context.Context, harness domain.AgentHarness
 			if r = s.cachedReading(next.ID); r == nil {
 				return identity, false
 			}
+		}
+	}
+	if r.identity.LoggedIn {
+		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+			return identity, true
 		}
 	}
 	identity = r.identity
@@ -531,7 +538,7 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 	argv, err := provider.LoginArgv(ctx)
 	if err != nil {
 		discard()
-		return LoginStart{}, err
+		return LoginStart{}, safeAccountProviderError(err)
 	}
 	terminal, err := terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{Argv: argv, Env: provider.LaunchEnv(home), WorkingDir: home, Title: title})
 	if err != nil {
@@ -577,7 +584,7 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 	}
 	identity, err := provider.Identity(ctx, op.home)
 	if err != nil {
-		return "", nil, fmt.Errorf("check sign-in: %w", err)
+		return "", nil, safeAccountProviderError(err)
 	}
 	if !identity.SignedIn {
 		return LoginWaiting, nil, nil
@@ -713,7 +720,7 @@ func (s *Service) endLogin(ctx context.Context, op *login, discard bool) {
 		logoutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer cancel()
 		if err := s.providers[op.provider].Logout(logoutCtx, op.home); err != nil {
-			s.log.Debug("sign out refused account folder", "provider", op.provider, "error", err)
+			s.log.Debug("sign out refused account folder", "provider", op.provider, "reasonCode", safeAccountProviderError(err).Error())
 		}
 		if op.account == nil {
 			s.removeFolder(op.home)
@@ -771,7 +778,7 @@ func (s *Service) Remove(ctx context.Context, accountID string) error {
 		}
 	}
 	if err := s.providers[account.Provider].Logout(ctx, account.Home); err != nil {
-		s.log.Warn("sign out removed account", "account", accountID, "error", err)
+		s.log.Warn("sign out removed account", "account", accountID, "reasonCode", safeAccountProviderError(err).Error())
 	}
 	if err := s.store.DeleteAgentAccount(ctx, accountID); err != nil {
 		return err
@@ -879,9 +886,6 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 	if account.Provider != p {
 		return domain.AgentAccount{}, ports.ErrAgentAccountProviderMismatch
 	}
-	if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
-		return domain.AgentAccount{}, err
-	}
 	if err := s.checkAccountProfile(account.Home); err != nil {
 		return domain.AgentAccount{}, err
 	}
@@ -896,8 +900,14 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 		r = s.readings[account.ID]
 		s.mu.Unlock()
 	}
+	if r != nil && r.identityErr == ports.ErrAgentAccountCredentialStoreUnsupported.Error() {
+		return domain.AgentAccount{}, ports.ErrAgentAccountCredentialStoreUnsupported
+	}
 	if r == nil || !r.identity.SignedIn {
 		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
+	}
+	if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+		return domain.AgentAccount{}, err
 	}
 	if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
 		return domain.AgentAccount{}, err
@@ -1114,6 +1124,11 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if account.Device() {
 			continue
 		}
+		// Even a rejected environment stays pinned to its managed account.
+		// Callers must return the validation error before launching anything.
+		for key, value := range provider.LaunchEnv(account.Home) {
+			env[key] = value
+		}
 		// Revalidate before producing the launch environment, even when the
 		// account identity is still cached.
 		if err := s.prepare(provider, account.Home, account.ProfileKind); err != nil {
@@ -1123,9 +1138,6 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
 			errs = append(errs, err)
 			continue
-		}
-		for key, value := range provider.LaunchEnv(account.Home) {
-			env[key] = value
 		}
 	}
 	return env, errors.Join(errs...)

@@ -33,11 +33,16 @@ func prepareContained(home, provider string, dirs []string) error {
 	for _, name := range append(append([]string(nil), dirs...), "history.jsonl") {
 		file := name == "history.jsonl"
 		if file {
-			fd, err := unix.Openat(historyFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-			if err != nil {
+			// Never open an existing FIFO/device before checking its type.
+			// O_EXCL creates only a new regular file; existing entries are
+			// checked below without opening or changing them.
+			fd, err := unix.Openat(historyFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+			if err != nil && !errors.Is(err, unix.EEXIST) {
 				return containedStorageError(err)
 			}
-			_ = unix.Close(fd)
+			if err == nil {
+				_ = unix.Close(fd)
+			}
 		} else if err := unix.Mkdirat(historyFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 			return containedStorageError(err)
 		}
@@ -64,28 +69,14 @@ func prepareContained(home, provider string, dirs []string) error {
 			}
 		}
 	}
-	// A private path must never resolve to another account, history or device.
-	for _, name := range []string{"auth.json", ".credentials.json", "config.toml", "settings.json", "settings.local.json", ".claude.json", "models_cache.json", "ipc", "app-server-control", "app-server-daemon"} {
-		var stat unix.Stat_t
-		if err := unix.Fstatat(homeFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-			if errors.Is(err, unix.ENOENT) {
-				continue
-			}
-			return containedStorageError(err)
-		}
-		kind := stat.Mode & unix.S_IFMT
-		if stat.Uid != uint32(unix.Geteuid()) || stat.Mode&0o077 != 0 || kind == unix.S_IFLNK || (kind == unix.S_IFREG && stat.Nlink != 1) { //nolint:gosec // Linux UID conversion.
-			return ports.ErrAgentAccountStorageUnsafe
-		}
-	}
 	allowed := map[string]bool{"history.jsonl": true}
 	for _, dir := range dirs {
 		allowed[dir] = true
 	}
-	return inspectPrivateTree(homeFD, allowed, 0)
+	return inspectPrivateTree(homeFD, allowed, provider, 0)
 }
 
-func inspectPrivateTree(fd int, allowed map[string]bool, depth int) error {
+func inspectPrivateTree(fd int, allowed map[string]bool, provider string, depth int) error {
 	if depth > 64 {
 		return ports.ErrAgentAccountStorageUnsafe
 	}
@@ -111,12 +102,25 @@ func inspectPrivateTree(fd int, allowed map[string]bool, depth int) error {
 		if stat.Uid != uint32(unix.Geteuid()) || kind == unix.S_IFLNK || (kind == unix.S_IFREG && stat.Nlink != 1) { //nolint:gosec // Linux UID conversion.
 			return ports.ErrAgentAccountStorageUnsafe
 		}
+		// Provider caches/settings, including config.toml, retain their umask
+		// modes inside the 0700 home. They stay account-local through the owner
+		// and no-link checks above; only credentials and IPC need private modes.
+		privateMode := depth == 0 && (entry.Name() == "auth.json" || entry.Name() == ".credentials.json" || entry.Name() == "ipc" || strings.HasPrefix(entry.Name(), "app-server-"))
+		if privateMode && stat.Mode&0o077 != 0 {
+			return ports.ErrAgentAccountStorageUnsafe
+		}
+		// Codex owns runtime links to its binary, installed packages and daemon
+		// sockets here. Validate the directory itself, but never follow or scan
+		// its contents. Credential and history paths remain checked separately.
+		if depth == 0 && provider == "codex" && (entry.Name() == "tmp" || entry.Name() == "packages" || strings.HasPrefix(entry.Name(), "app-server-")) {
+			continue
+		}
 		if kind == unix.S_IFDIR {
 			next, err := unix.Openat(fd, entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if err != nil {
 				return containedStorageError(err)
 			}
-			err = inspectPrivateTree(next, nil, depth+1)
+			err = inspectPrivateTree(next, nil, provider, depth+1)
 			_ = unix.Close(next)
 			if err != nil {
 				return err

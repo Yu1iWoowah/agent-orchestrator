@@ -6270,18 +6270,13 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 // command, which fails every callback and silently kills activity tracking).
 // When the pin cannot be applied the inherited PATH is kept and a warning is
 // logged so the degradation isn't silent.
-func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
-	env, err := m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id))
-	if err != nil {
-		m.logger.Warn("session agent account env incomplete", "session", id, "error", err)
-	}
-	return env
+func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, error) {
+	return m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id))
 }
 
-// runtimeEnvChecked is runtimeEnv that also reports why the session's account
-// environment could not be resolved, for callers that must not go on under
-// another login (an account move's preflight). A nonempty accountID replaces
-// the session's binding.
+// runtimeEnvChecked refuses an incomplete account environment, so a caller
+// cannot start under the device login. A nonempty accountID replaces the
+// session's binding for an account move's preflight.
 func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
@@ -6310,14 +6305,17 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvAgentBrowserToken] = m.agentBrowserToken
 	}
 	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
+	if accountErr != nil {
+		return nil, accountErr
+	}
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
 			"session", id, "error", err)
-		return env, accountErr
+		return env, nil
 	}
 	setProtectedEnv(env, "PATH", path, caseInsensitive)
-	return env, accountErr
+	return env, nil
 }
 
 // applyAgentAccountEnv runs each provider's CLI under the session's account.
@@ -6341,6 +6339,9 @@ func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, en
 	}
 	for key, value := range accountEnv {
 		setProtectedEnv(env, key, value, caseInsensitive)
+	}
+	if env[agentlaunch.ManagedCodexAccountEnv] == "1" {
+		agentlaunch.ClearCodexCredentialEnv(env)
 	}
 	return err
 }
@@ -6393,7 +6394,10 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 }
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
-	env := m.runtimeEnv(id, project, issue, projectEnv)
+	env, err := m.runtimeEnv(id, project, issue, projectEnv)
+	if err != nil {
+		return nil, "", err
+	}
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -6792,7 +6796,11 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 	}
 	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil)
 	if project, err := m.loadProject(ctx, rec.ProjectID); err == nil {
-		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		env, err = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		if err != nil {
+			m.logger.Warn("workspace cleanup: account environment unavailable", "sessionID", rec.ID, "error", err)
+			return
+		}
 	} else {
 		m.logger.Warn("workspace cleanup: project env unavailable; agent cleanup using AO env only",
 			"sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)
