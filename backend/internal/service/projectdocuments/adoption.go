@@ -2,6 +2,8 @@ package projectdocuments
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,7 +27,7 @@ func (s *Service) Adopt(ctx context.Context, id domain.ProjectID, in AdoptInput)
 	if err != nil {
 		return domain.ProjectDocumentAdoption{}, err
 	}
-	if err := s.validate(ctx, id, in.Actor, in.Lease, state, false); err != nil {
+	if _, err := s.validate(ctx, id, in.Actor, in.Lease, state, false); err != nil {
 		return domain.ProjectDocumentAdoption{}, err
 	}
 	if prior := state.Adoption; prior != nil && prior.Complete {
@@ -105,7 +107,9 @@ func (s *Service) Adopt(ctx context.Context, id domain.ProjectID, in AdoptInput)
 		if !errors.Is(e, fs.ErrNotExist) {
 			return domain.ProjectDocumentAdoption{}, e
 		}
-		if err := atomicWrite(ctx, dst, entry.Path, MissingHash, data[entry.Path], func() error { return s.revalidateWriter(ctx, id, in.Actor, in.Lease) }); err != nil {
+		if err := atomicWrite(ctx, dst, entry.Path, MissingHash, data[entry.Path], func(rename func() error) error {
+			return s.publish(ctx, id, in.Actor, in.Lease, func(context.Context) error { return rename() })
+		}); err != nil {
 			return domain.ProjectDocumentAdoption{}, err
 		}
 	}
@@ -156,15 +160,14 @@ func (s *Service) Adopt(ctx context.Context, id domain.ProjectID, in AdoptInput)
 	}
 	defer func() { _ = base.Close() }()
 	manifestPath := path.Join("projects", projectKey(id), "orchestrator", "adoptions", string(source.ID), "manifest.json")
-	if err := s.revalidateWriter(ctx, id, in.Actor, in.Lease); err != nil {
-		return domain.ProjectDocumentAdoption{}, err
-	}
-	if err := publishManifest(ctx, base, manifestPath, manifest); err != nil {
-		return domain.ProjectDocumentAdoption{}, err
-	}
-	state.Adoption.Complete = true
-	state.Adoption.ManifestHash = hash(manifest)
-	if err := s.save(ctx, id, &state); err != nil {
+	if err := s.publish(ctx, id, in.Actor, in.Lease, func(publicationCtx context.Context) error {
+		if err := publishManifest(publicationCtx, base, manifestPath, manifest); err != nil {
+			return err
+		}
+		state.Adoption.Complete = true
+		state.Adoption.ManifestHash = hash(manifest)
+		return s.save(publicationCtx, id, &state)
+	}); err != nil {
 		return domain.ProjectDocumentAdoption{}, err
 	}
 	return *state.Adoption, nil
@@ -250,9 +253,17 @@ func publishManifest(ctx context.Context, root *os.Root, p string, b []byte) err
 	defer func() { _ = parent.Close() }()
 	root = parent
 	p = path.Base(p)
-	existing, err := readFile(root, p)
+	existing, err := openFile(root, p)
 	if err == nil {
-		if hash(existing) == hash(b) {
+		defer func() { _ = existing.Close() }()
+		// Receipts can exceed the text preview limit. Compare their full digest,
+		// reading one extra byte to reject a longer file without an unbounded read.
+		digest := sha256.New()
+		size, err := io.Copy(digest, io.LimitReader(existing, int64(len(b))+1))
+		if err != nil {
+			return err
+		}
+		if size == int64(len(b)) && hex.EncodeToString(digest.Sum(nil)) == hash(b) {
 			return nil
 		}
 		return conflict("PROJECT_DOCUMENT_MANIFEST_CONFLICT", "Adoption manifest already contains different evidence")

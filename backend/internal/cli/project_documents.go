@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
@@ -120,6 +121,9 @@ func newProjectDocumentsCommand(ctx *commandContext) *cobra.Command {
 					}
 					if len(content) > 2<<20 {
 						return usageError{errors.New("document exceeds the 2 MiB write limit")}
+					}
+					if !utf8.Valid(content) {
+						return usageError{errors.New("document draft must contain valid UTF-8")}
 					}
 				}
 			}

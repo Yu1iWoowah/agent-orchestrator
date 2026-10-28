@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parseProjectDocumentLink } from "../lib/session-links";
 import { useUiStore } from "../stores/ui-store";
 import { ProjectDocumentViewer } from "./ProjectDocumentViewer";
 
@@ -63,5 +64,52 @@ describe("shared document viewer", () => {
 			"/api/v1/projects/{id}/documents/file",
 			expect.objectContaining({ params: { path: { id: "project" }, query: { path: "handoff/doc.md" } } }),
 		);
+	});
+	it.each([
+		{ href: "#audit-handoff", path: "handoff/doc.md", fragment: "audit-handoff", heading: "Audit handoff" },
+		{ href: "../rules/main.md#audit-rules", path: "rules/main.md", fragment: "audit-rules", heading: "Audit rules" },
+	])("navigates and scrolls to $href", async ({ href, path, fragment, heading }) => {
+		const scroll = vi.fn();
+		const oldScroll = HTMLElement.prototype.scrollIntoView;
+		HTMLElement.prototype.scrollIntoView = scroll;
+		try {
+			mocks.get.mockImplementation(async (_route: string, options: { params: { query: { path: string } } }) => ({
+				data: {
+					file: {
+						path: options.params.query.path,
+						content:
+							options.params.query.path === "handoff/doc.md"
+								? `# Audit handoff\n\n[Section](${href})`
+								: "# Audit rules",
+						hash: "hash",
+						size: 100,
+						binary: false,
+					},
+				},
+			}));
+			mocks.navigate.mockImplementation((href: string) => {
+				const target = parseProjectDocumentLink(href);
+				if (target) useUiStore.getState().setProjectDocumentTarget(target);
+			});
+			show();
+			fireEvent.click(await screen.findByRole("link", { name: "Section" }));
+			expect(await screen.findByRole("heading", { name: heading })).toHaveAttribute(
+				"id",
+				`project-document-${fragment}`,
+			);
+			await waitFor(() => expect(scroll).toHaveBeenCalled());
+			expect(useUiStore.getState().projectDocumentTarget).toEqual({
+				kind: "shared",
+				projectId: "project",
+				path,
+				fragment,
+			});
+			expect(mocks.get).toHaveBeenLastCalledWith(
+				"/api/v1/projects/{id}/documents/file",
+				expect.objectContaining({ params: { path: { id: "project" }, query: { path } } }),
+			);
+		} finally {
+			HTMLElement.prototype.scrollIntoView = oldScroll;
+		}
 	});
 });

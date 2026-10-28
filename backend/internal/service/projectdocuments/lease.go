@@ -31,19 +31,19 @@ func (s *Service) authorize(ctx context.Context, id domain.ProjectID, a Actor) (
 	}
 	return rec, nil
 }
-func (s *Service) validate(ctx context.Context, id domain.ProjectID, a Actor, g Grant, state domain.ProjectDocumentState, allowFrozen bool) error {
+func (s *Service) validate(ctx context.Context, id domain.ProjectID, a Actor, g Grant, state domain.ProjectDocumentState, allowFrozen bool) (domain.SessionRecord, error) {
 	rec, err := s.authorize(ctx, id, a)
 	if err != nil {
-		return err
+		return rec, err
 	}
 	lease := state.Lease
 	if lease == nil || lease.SessionID != rec.ID || lease.Owner != rec.ControllerOwner() || lease.Epoch != g.Epoch || subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(g.Token)))) != 1 || g.Token == "" {
-		return apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "The writer lease is stale or invalid")
+		return rec, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "The writer lease is stale or invalid")
 	}
 	if lease.Frozen && !allowFrozen {
-		return conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen for handoff")
+		return rec, conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen for handoff")
 	}
-	return nil
+	return rec, nil
 }
 
 func grantFor(id domain.ProjectID, a Actor, epoch int64) Grant {
@@ -98,7 +98,7 @@ func (s *Service) Freeze(ctx context.Context, id domain.ProjectID, a Actor, g Gr
 	if err != nil {
 		return err
 	}
-	if err := s.validate(ctx, id, a, g, state, true); err != nil {
+	if _, err := s.validate(ctx, id, a, g, state, true); err != nil {
 		return err
 	}
 	if state.Lease.Frozen {
@@ -140,11 +140,23 @@ func (s *Service) Transfer(ctx context.Context, id domain.ProjectID, previous Gr
 	return grant, nil
 }
 
-// revalidateWriter runs under the project coordinator immediately before publishing.
-func (s *Service) revalidateWriter(ctx context.Context, id domain.ProjectID, actor Actor, grant Grant) error {
+// publish holds a durable writer reservation from final authorization through
+// filesystem publication. Controller/capability rotation cannot pass this boundary.
+func (s *Service) publish(ctx context.Context, id domain.ProjectID, actor Actor, grant Grant, fn func(context.Context) error) error {
 	current, _, _, err := s.state(ctx, id)
 	if err != nil {
 		return err
 	}
-	return s.validate(ctx, id, actor, grant, current, false)
+	rec, err := s.validate(ctx, id, actor, grant, current, false)
+	if err != nil {
+		return err
+	}
+	published, err := s.store.WithProjectDocumentPublication(ctx, id, rec, current.Revision, fn)
+	if err != nil {
+		return err
+	}
+	if !published {
+		return apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "The writer changed before publication")
+	}
+	return nil
 }

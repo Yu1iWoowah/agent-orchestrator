@@ -88,7 +88,7 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 	if err != nil {
 		return File{}, err
 	}
-	if err := s.validate(ctx, id, in.Actor, in.Lease, state, false); err != nil {
+	if _, err := s.validate(ctx, id, in.Actor, in.Lease, state, false); err != nil {
 		return File{}, err
 	}
 	if state.Adoption != nil && !state.Adoption.Complete {
@@ -99,12 +99,14 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 		return File{}, err
 	}
 	defer func() { _ = r.Close() }()
-	if err := atomicWrite(ctx, r, in.Path, in.ExpectedHash, []byte(in.Content), func() error { return s.revalidateWriter(ctx, id, in.Actor, in.Lease) }); err != nil {
+	if err := atomicWrite(ctx, r, in.Path, in.ExpectedHash, []byte(in.Content), func(rename func() error) error {
+		return s.publish(ctx, id, in.Actor, in.Lease, func(context.Context) error { return rename() })
+	}); err != nil {
 		return File{}, err
 	}
 	return fileView(in.Path, []byte(in.Content)), nil
 }
-func atomicWrite(ctx context.Context, r *os.Root, p, expected string, b []byte, beforePublish func() error) error {
+func atomicWrite(ctx context.Context, r *os.Root, p, expected string, b []byte, publish func(func() error) error) error {
 	if expected == "" {
 		return apierr.Invalid("PROJECT_DOCUMENT_HASH_REQUIRED", "expectedHash is required; use missing for creation", nil)
 	}
@@ -140,10 +142,7 @@ func atomicWrite(ctx context.Context, r *os.Root, p, expected string, b []byte, 
 	if err := checkExpected(r, p, expected); err != nil {
 		return err
 	}
-	if err := beforePublish(); err != nil {
-		return err
-	}
-	return r.Rename(tmp, p)
+	return publish(func() error { return r.Rename(tmp, p) })
 }
 
 // Open returns a confined regular file for read-only streaming and downloads.

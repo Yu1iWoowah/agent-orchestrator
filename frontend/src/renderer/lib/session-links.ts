@@ -222,7 +222,7 @@ function visitMarkdown(node: MarkdownNode, find: (text: string) => TextMatch[]):
 }
 
 
-export type ProjectDocumentTarget = { kind: "shared"; projectId: string; path: string };
+export type ProjectDocumentTarget = { kind: "shared"; projectId: string; path: string; fragment?: string };
 const PROJECT_LINK_PREFIX = "ao://projects/";
 function documentSegment(value: string): string | undefined {
 	const decoded = decodeSegment(value);
@@ -237,8 +237,9 @@ function documentSegment(value: string): string | undefined {
 	return decoded;
 }
 export function parseProjectDocumentLink(value: string): ProjectDocumentTarget | undefined {
-	if (!value.startsWith(PROJECT_LINK_PREFIX) || value.includes("?") || value.includes("#")) return undefined;
-	const [project, scope, ...parts] = value.slice(PROJECT_LINK_PREFIX.length).split("/");
+	const section = splitDocumentFragment(value);
+	if (!section || !section.path.startsWith(PROJECT_LINK_PREFIX) || section.path.includes("?")) return undefined;
+	const [project, scope, ...parts] = section.path.slice(PROJECT_LINK_PREFIX.length).split("/");
 	if (scope !== "shared" || !project || parts.length === 0) return undefined;
 	const projectId = documentSegment(project);
 	if (!projectId) return undefined;
@@ -248,10 +249,42 @@ export function parseProjectDocumentLink(value: string): ProjectDocumentTarget |
 		if (!segment || segment.startsWith(".ao-")) return undefined;
 		decoded.push(segment);
 	}
-	return { kind: "shared", projectId, path: decoded.join("/") };
+	return {
+		kind: "shared",
+		projectId,
+		path: decoded.join("/"),
+		...(section.fragment === undefined ? {} : { fragment: section.fragment }),
+	};
 }
-export function projectDocumentLink(projectId: string, path: string): string {
-	return `${PROJECT_LINK_PREFIX}${encodeURIComponent(projectId)}/shared/${path.split("/").map(encodeURIComponent).join("/")}`;
+export function projectDocumentLink(projectId: string, path: string, fragment?: string): string {
+	return `${PROJECT_LINK_PREFIX}${encodeURIComponent(projectId)}/shared/${path.split("/").map(encodeURIComponent).join("/")}${fragment === undefined ? "" : `#${encodeURIComponent(fragment)}`}`;
+}
+
+function splitDocumentFragment(href: string): { path: string; fragment?: string } | undefined {
+	const index = href.indexOf("#");
+	if (index < 0) return { path: href };
+	let fragment: string;
+	try {
+		fragment = decodeURIComponent(href.slice(index + 1));
+	} catch {
+		return undefined;
+	}
+	if (/[\x00-\x1f\x7f]/.test(fragment)) return undefined;
+	return { path: href.slice(0, index), fragment };
+}
+
+/** Resolve a Markdown document and section independently of filesystem paths. */
+export function relativeProjectDocumentLink(
+	current: string,
+	href: string,
+): { path: string; fragment?: string } | undefined {
+	const section = splitDocumentFragment(href);
+	if (!section) return undefined;
+	const path =
+		section.path === "" && section.fragment !== undefined
+			? current
+			: relativeProjectDocumentPath(current, section.path);
+	return path ? { ...section, path } : undefined;
 }
 /** Resolve a Markdown relative resource without leaving the shared root. */
 export function relativeProjectDocumentPath(current: string, href: string): string | undefined {

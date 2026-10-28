@@ -1,9 +1,10 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQuery } from "@tanstack/react-query";
 import { Download, RefreshCw, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown, { defaultUrlTransform } from "react-markdown";
+import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
 import { apiClient, apiErrorMessage, getApiBaseUrl } from "../lib/api-client";
 import { mediaCrossOrigin } from "../lib/file-media";
@@ -11,6 +12,7 @@ import {
 	isAoLink,
 	projectDocumentLink,
 	relativeProjectDocumentPath,
+	relativeProjectDocumentLink,
 	type ProjectDocumentTarget,
 } from "../lib/session-links";
 import { useSessionLinkNavigation } from "../lib/use-session-link-navigation";
@@ -84,6 +86,18 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 		}
 	};
 	const file = query.data;
+	const content = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		if (!file || raw || target.fragment === undefined) return;
+		if (target.fragment === "") {
+			content.current?.scrollTo({ top: 0 });
+			return;
+		}
+		const heading = Array.from(content.current?.querySelectorAll("[id]") ?? []).find(
+			(element) => element.id === `project-document-${target.fragment}`,
+		);
+		heading?.scrollIntoView({ block: "start" });
+	}, [file, raw, target]);
 	const markdown = /\.md(?:own|arkdown)?$/i.test(target.path);
 	return (
 		<Dialog.Portal>
@@ -131,7 +145,7 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 						</Button>
 					</Dialog.Close>
 				</div>
-				<div className="min-h-0 flex-1 overflow-auto p-6">
+				<div ref={content} className="min-h-0 flex-1 overflow-auto p-6">
 					{query.isPending && (
 						<p role="status">{t("projectDocuments.loading", { defaultValue: "Loading document…" })}</p>
 					)}
@@ -158,12 +172,15 @@ function ProjectDocumentContent({ target }: { target: ProjectDocumentTarget }) {
 							<div className="markdown-body bg-transparent">
 								<Markdown
 									remarkPlugins={[remarkGfm]}
+									rehypePlugins={[[rehypeSlug, { prefix: "project-document-" }]]}
 									urlTransform={(url) => (isAoLink(url) ? url : defaultUrlTransform(url))}
 									components={{
 										a: ({ href, children }) => {
 											if (!href) return <>{children}</>;
-											const relative = relativeProjectDocumentPath(target.path, href);
-											const link = relative ? projectDocumentLink(target.projectId, relative) : href;
+											const relative = relativeProjectDocumentLink(target.path, href);
+											const link = relative
+												? projectDocumentLink(target.projectId, relative.path, relative.fragment)
+												: href;
 											return isAoLink(link) ? (
 												<a
 													href={link}
