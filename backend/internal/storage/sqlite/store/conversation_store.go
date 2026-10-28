@@ -4758,7 +4758,8 @@ func (s *Store) RetryPrompt(ctx context.Context, conversationID, turnID string) 
 			return domain.RetryPrompt{}, fmt.Errorf("decode provider input content %s: %w", turnID, err)
 		}
 		for _, item := range items {
-			if initialWasRendered && ((item.Type == "excerpt" && item.Excerpt != nil) || (item.Type == "text" && item.Internal)) {
+			if initialWasRendered && ((item.Type == "excerpt" && item.Excerpt != nil) ||
+				(item.Type == "file_reference" && item.FileReference != nil) || (item.Type == "text" && item.Internal)) {
 				continue
 			}
 			content = append(content, item)
