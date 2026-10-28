@@ -188,6 +188,8 @@ export interface ConversationMessage {
 	kind: "message";
 	id: string;
 	turnId?: string;
+	/** Batch presentation target; turnId remains the original receipt identity. */
+	consumedByTurnId?: string;
 	/** Conversation-scoped, immutable. The only ordering key. */
 	sequence: number;
 	/** Bumped on each streaming rewrite so a gap is detectable. */

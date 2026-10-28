@@ -1483,7 +1483,7 @@ func (s *Store) ConversationMessages(ctx context.Context, conversationID string)
 	}
 	messages := make([]domain.ConversationMessage, 0, len(rows))
 	for _, row := range rows {
-		messages = append(messages, messageToDomain(row))
+		messages = append(messages, snapshotMessageToDomain(row))
 	}
 	return messages, nil
 }
@@ -3763,7 +3763,7 @@ func (r *conversationPageRows[T]) at(index int, before, visibleAfter int64) (*T,
 // conversationPageWalk merges messages and activities newest-first. taken holds
 // the page so far; the walk always resumes at the first row it does not hold.
 type conversationPageWalk struct {
-	messages     *conversationPageRows[gen.ConversationMessage]
+	messages     *conversationPageRows[gen.SelectConversationMessagesPageRow]
 	activities   *conversationPageRows[gen.ConversationActivity]
 	before       int64
 	visibleAfter int64
@@ -3783,10 +3783,10 @@ func (w *conversationPageWalk) peek() (*conversationPageRow, error) {
 		return nil, err
 	}
 	switch {
-	case message != nil && (activity == nil || message.Sequence > activity.Sequence):
+	case message != nil && (activity == nil || message.ConversationMessage.Sequence > activity.Sequence):
 		return &conversationPageRow{
-			sequence: message.Sequence, turnID: message.TurnID, message: true,
-			size: len(message.Text) + len(message.DeliveryContentJson),
+			sequence: message.ConversationMessage.Sequence, turnID: message.ConversationMessage.TurnID, message: true,
+			size: len(message.ConversationMessage.Text) + len(message.ConversationMessage.DeliveryContentJson),
 		}, nil
 	case activity != nil:
 		return &conversationPageRow{
@@ -3843,14 +3843,14 @@ func (s *Store) conversationPage(
 	ctx context.Context,
 	conversationID string,
 	beforeSequence, visibleAfterSequence, limit int64,
-) (messages []gen.ConversationMessage, activities []gen.ConversationActivity, oldest int64, hasMore bool, err error) {
+) (messages []gen.SelectConversationMessagesPageRow, activities []gen.ConversationActivity, oldest int64, hasMore bool, err error) {
 	walk := &conversationPageWalk{
 		before:       beforeSequence,
 		visibleAfter: visibleAfterSequence,
-		messages: &conversationPageRows[gen.ConversationMessage]{
+		messages: &conversationPageRows[gen.SelectConversationMessagesPageRow]{
 			chunk:    limit + 1,
-			sequence: func(row gen.ConversationMessage) int64 { return row.Sequence },
-			read: func(before, n int64) ([]gen.ConversationMessage, error) {
+			sequence: func(row gen.SelectConversationMessagesPageRow) int64 { return row.ConversationMessage.Sequence },
+			read: func(before, n int64) ([]gen.SelectConversationMessagesPageRow, error) {
 				rows, err := s.qr.SelectConversationMessagesPage(ctx, gen.SelectConversationMessagesPageParams{
 					ConversationID: conversationID, BeforeSequence: before, PageLimit: n,
 				})
@@ -4067,8 +4067,8 @@ func (s *Store) LoadConversationSnapshotPage(
 	// SQL returns newest-first so LIMIT is useful; the API contract remains
 	// oldest-first inside each page.
 	for i := len(messageRows) - 1; i >= 0; i-- {
-		if messageRows[i].Sequence >= oldest && messageRows[i].Sequence > visibleAfterSequence {
-			snapshot.Messages = append(snapshot.Messages, messageToDomain(messageRows[i]))
+		if messageRows[i].ConversationMessage.Sequence >= oldest && messageRows[i].ConversationMessage.Sequence > visibleAfterSequence {
+			snapshot.Messages = append(snapshot.Messages, snapshotMessageToDomain(gen.SelectConversationMessagesRow(messageRows[i])))
 		}
 	}
 	for i := len(activityRows) - 1; i >= 0; i-- {
@@ -4212,7 +4212,7 @@ func (s *Store) LoadConversationSnapshot(
 		snapshot.Turns = append(snapshot.Turns, turn)
 	}
 	for _, row := range messageRows {
-		snapshot.Messages = append(snapshot.Messages, messageToDomain(row))
+		snapshot.Messages = append(snapshot.Messages, snapshotMessageToDomain(row))
 	}
 	for _, row := range activityRows {
 		snapshot.Activities = append(snapshot.Activities, activityToDomain(row))
@@ -4594,6 +4594,12 @@ func turnToDomain(row gen.ConversationTurn) domain.ConversationTurn {
 		}
 	}
 	return turn
+}
+
+func snapshotMessageToDomain(row gen.SelectConversationMessagesRow) domain.ConversationMessage {
+	message := messageToDomain(row.ConversationMessage)
+	message.ConsumedByTurnID = row.ConsumedByTurnID.String
+	return message
 }
 
 func messageToDomain(row gen.ConversationMessage) domain.ConversationMessage {

@@ -51,6 +51,8 @@ export type ConversationMessage = {
 	kind: "message";
 	id: string;
 	turnId?: string;
+	/** Batch presentation target; turnId remains the original receipt identity. */
+	consumedByTurnId?: string;
 	sequence: number;
 	revision: number;
 	role: "user" | "assistant";

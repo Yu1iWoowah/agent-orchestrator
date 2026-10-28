@@ -83,20 +83,21 @@ export function groupConversationByTurn(
 	const byTurn = new Map<string, ConversationGroup>();
 	const groups: ConversationGroup[] = [];
 	for (const item of items) {
-		if (!item.turnId) {
+		const turnId = item.kind === "message" ? item.consumedByTurnId ?? item.turnId : item.turnId;
+		if (!turnId) {
 			const previous = groups.at(-1);
 			if (previous && !previous.turnId) previous.items.push(item);
 			else groups.push({ key: `loose-${item.sequence}`, anchor: item.sequence, items: [item] });
 			continue;
 		}
-		const existing = byTurn.get(item.turnId);
+		const existing = byTurn.get(turnId);
 		if (existing) existing.items.push(item);
 		else {
 			// The first loaded item can move backward when an older page arrives. The
 			// durable turn identity cannot, so use it as the React/FlatList key and
 			// preserve expanded rows and scroll measurements across pagination.
-			const group = { key: `turn-${item.turnId}`, turnId: item.turnId, anchor: item.sequence, items: [item], turn: turns.get(item.turnId) } satisfies ConversationGroup;
-			byTurn.set(item.turnId, group);
+			const group = { key: `turn-${turnId}`, turnId, anchor: item.sequence, items: [item], turn: turns.get(turnId) } satisfies ConversationGroup;
+			byTurn.set(turnId, group);
 			groups.push(group);
 		}
 	}

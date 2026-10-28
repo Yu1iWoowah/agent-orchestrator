@@ -1368,7 +1368,12 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
 )
-SELECT conversation_messages.* FROM conversation_messages
+SELECT sqlc.embed(conversation_messages), batch_source.promoted_to_turn_id AS consumed_by_turn_id
+FROM conversation_messages
+LEFT JOIN conversation_turns AS batch_source
+  ON batch_source.id = conversation_messages.turn_id
+ AND batch_source.conversation_id = conversation_messages.conversation_id
+ AND batch_source.batched_input = 1
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
@@ -1399,7 +1404,12 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
 )
-SELECT conversation_messages.* FROM conversation_messages
+SELECT sqlc.embed(conversation_messages), batch_source.promoted_to_turn_id AS consumed_by_turn_id
+FROM conversation_messages
+LEFT JOIN conversation_turns AS batch_source
+  ON batch_source.id = conversation_messages.turn_id
+ AND batch_source.conversation_id = conversation_messages.conversation_id
+ AND batch_source.batched_input = 1
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
   AND conversation_messages.sequence < sqlc.arg(before_sequence)

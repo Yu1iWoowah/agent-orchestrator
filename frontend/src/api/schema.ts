@@ -5565,6 +5565,7 @@ export interface components {
         };
         ConversationMessageResponse: {
             clientMessageId?: string;
+            consumedByTurnId?: string;
             content?: components["schemas"]["ConversationContentSummaryResponse"][];
             continuation?: boolean;
             createdAt: string;

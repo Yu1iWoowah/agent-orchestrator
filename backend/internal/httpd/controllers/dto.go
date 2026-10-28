@@ -3187,9 +3187,12 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
-	Kind              string                               `json:"kind" enum:"message"`
-	ID                string                               `json:"id"`
-	TurnID            string                               `json:"turnId,omitempty"`
+	Kind   string `json:"kind" enum:"message"`
+	ID     string `json:"id"`
+	TurnID string `json:"turnId,omitempty"`
+	// ConsumedByTurnID groups a batch follower with the turn that consumed it.
+	// TurnID continues to identify the original message's turn.
+	ConsumedByTurnID  string                               `json:"consumedByTurnId,omitempty"`
 	Sequence          int64                                `json:"sequence"`
 	Revision          int64                                `json:"revision"`
 	Role              string                               `json:"role" enum:"user,assistant"`

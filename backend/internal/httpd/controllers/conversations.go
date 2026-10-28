@@ -1399,6 +1399,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 			Kind:              "message",
 			ID:                msg.ID,
 			TurnID:            msg.TurnID,
+			ConsumedByTurnID:  msg.ConsumedByTurnID,
 			Sequence:          msg.Sequence,
 			Revision:          msg.Revision,
 			Role:              string(msg.Role),

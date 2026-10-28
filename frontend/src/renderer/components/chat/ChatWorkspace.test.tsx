@@ -1,3 +1,5 @@
+import { toSnapshot } from "../../hooks/useConversation";
+import batchFixture from "../../../../../test/fixtures/batch-conversation.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { captureFileReference } from "../../../shared/chat-file-reference";
 import { FileAnnotationPreview } from "./FileAnnotationPreview";
@@ -539,6 +541,26 @@ describe("Chat message timestamps", () => {
 });
 
 describe("ChatWorkspace timeline", () => {
+	it("places SQLite batch followers before the shared answer", () => {
+		const fixture: Pick<Parameters<typeof toSnapshot>[0], "turns" | "messages"> = JSON.parse(JSON.stringify(batchFixture));
+		const snapshot = toSnapshot({
+			...fixture, conversationId: "conv-1", sessionId: "hist-1", harness: "codex", mode: "chat",
+			controller: "ready", activities: [], settings: {}, latestSequence: 3, oldestSequence: 1,
+			hasMoreBefore: false, branchedFromEarlierMessage: false, continueTurnId: "", nativeForkAvailableAfterSequence: 0,
+		});
+		const view = render(<ChatWorkspace snapshot={snapshot} />);
+		const log = screen.getByRole("log");
+		const leader = within(log).getByText("Batch leader");
+		const follower = within(log).getByText("Batch follower");
+		const answer = within(log).getByText("Shared batch answer");
+		expect(leader.compareDocumentPosition(follower) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(follower.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		// A bounded page can load the follower and reply before the leader's prompt.
+		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, items: snapshot.items.slice(1), hasMoreBefore: true }} />);
+		expect(screen.getByText("Batch follower").compareDocumentPosition(screen.getByText("Shared batch answer")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(fixture.messages?.[1].turnId).toBe("follower");
+	});
+
 	it("brings the reader to their prompt when they send after scrolling away", () => {
 		const snapshot = chatFixtureLongHistory(8);
 		const view = render(<ChatWorkspace snapshot={snapshot} />);

@@ -1965,6 +1965,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		kind: "message",
 		id: wire.id,
 		turnId: wire.turnId,
+		consumedByTurnId: wire.consumedByTurnId,
 		sequence: wire.sequence,
 		revision: wire.revision,
 		role: wire.role as MessageRole,

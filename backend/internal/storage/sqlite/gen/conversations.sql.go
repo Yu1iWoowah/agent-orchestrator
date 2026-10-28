@@ -3175,7 +3175,12 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
 )
-SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation FROM conversation_messages
+SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation, batch_source.promoted_to_turn_id AS consumed_by_turn_id
+FROM conversation_messages
+LEFT JOIN conversation_turns AS batch_source
+  ON batch_source.id = conversation_messages.turn_id
+ AND batch_source.conversation_id = conversation_messages.conversation_id
+ AND batch_source.batched_input = 1
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = ?1
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
@@ -3191,6 +3196,11 @@ WHERE conversation_messages.conversation_id = ?1
 ORDER BY conversation_messages.sequence
 `
 
+type SelectConversationMessagesRow struct {
+	ConversationMessage ConversationMessage
+	ConsumedByTurnID    sql.NullString
+}
+
 // Prose the agent still remembers. Rows belonging to a rolled-back turn are left
 // out: rollback discarded them provider-side, and showing a person a message the
 // agent has no memory of is the one way this feature can lie.
@@ -3203,36 +3213,37 @@ ORDER BY conversation_messages.sequence
 // the discarded range would be a guess dressed up as a fact.
 // NOTE: keep these comments ASCII. sqlc locates its star-expansion edits by byte
 // offset, so a multi-byte character here silently corrupts later queries.
-func (q *Queries) SelectConversationMessages(ctx context.Context, conversationID string) ([]ConversationMessage, error) {
+func (q *Queries) SelectConversationMessages(ctx context.Context, conversationID string) ([]SelectConversationMessagesRow, error) {
 	rows, err := q.db.QueryContext(ctx, selectConversationMessages, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ConversationMessage{}
+	items := []SelectConversationMessagesRow{}
 	for rows.Next() {
-		var i ConversationMessage
+		var i SelectConversationMessagesRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.ConversationID,
-			&i.TurnID,
-			&i.Sequence,
-			&i.Revision,
-			&i.Role,
-			&i.Origin,
-			&i.Text,
-			&i.Streaming,
-			&i.ProviderItemID,
-			&i.ClientMessageID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeliveryContentJson,
-			&i.BranchID,
-			&i.ClientPayloadHash,
-			&i.SenderSessionID,
-			&i.SenderProjectID,
-			&i.SenderDisplayName,
-			&i.Continuation,
+			&i.ConversationMessage.ID,
+			&i.ConversationMessage.ConversationID,
+			&i.ConversationMessage.TurnID,
+			&i.ConversationMessage.Sequence,
+			&i.ConversationMessage.Revision,
+			&i.ConversationMessage.Role,
+			&i.ConversationMessage.Origin,
+			&i.ConversationMessage.Text,
+			&i.ConversationMessage.Streaming,
+			&i.ConversationMessage.ProviderItemID,
+			&i.ConversationMessage.ClientMessageID,
+			&i.ConversationMessage.CreatedAt,
+			&i.ConversationMessage.UpdatedAt,
+			&i.ConversationMessage.DeliveryContentJson,
+			&i.ConversationMessage.BranchID,
+			&i.ConversationMessage.ClientPayloadHash,
+			&i.ConversationMessage.SenderSessionID,
+			&i.ConversationMessage.SenderProjectID,
+			&i.ConversationMessage.SenderDisplayName,
+			&i.ConversationMessage.Continuation,
+			&i.ConsumedByTurnID,
 		); err != nil {
 			return nil, err
 		}
@@ -3263,7 +3274,12 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
 )
-SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation FROM conversation_messages
+SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation, batch_source.promoted_to_turn_id AS consumed_by_turn_id
+FROM conversation_messages
+LEFT JOIN conversation_turns AS batch_source
+  ON batch_source.id = conversation_messages.turn_id
+ AND batch_source.conversation_id = conversation_messages.conversation_id
+ AND batch_source.batched_input = 1
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = ?1
   AND conversation_messages.sequence < ?2
@@ -3287,36 +3303,42 @@ type SelectConversationMessagesPageParams struct {
 	PageLimit      int64
 }
 
-func (q *Queries) SelectConversationMessagesPage(ctx context.Context, arg SelectConversationMessagesPageParams) ([]ConversationMessage, error) {
+type SelectConversationMessagesPageRow struct {
+	ConversationMessage ConversationMessage
+	ConsumedByTurnID    sql.NullString
+}
+
+func (q *Queries) SelectConversationMessagesPage(ctx context.Context, arg SelectConversationMessagesPageParams) ([]SelectConversationMessagesPageRow, error) {
 	rows, err := q.db.QueryContext(ctx, selectConversationMessagesPage, arg.ConversationID, arg.BeforeSequence, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ConversationMessage{}
+	items := []SelectConversationMessagesPageRow{}
 	for rows.Next() {
-		var i ConversationMessage
+		var i SelectConversationMessagesPageRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.ConversationID,
-			&i.TurnID,
-			&i.Sequence,
-			&i.Revision,
-			&i.Role,
-			&i.Origin,
-			&i.Text,
-			&i.Streaming,
-			&i.ProviderItemID,
-			&i.ClientMessageID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeliveryContentJson,
-			&i.BranchID,
-			&i.ClientPayloadHash,
-			&i.SenderSessionID,
-			&i.SenderProjectID,
-			&i.SenderDisplayName,
-			&i.Continuation,
+			&i.ConversationMessage.ID,
+			&i.ConversationMessage.ConversationID,
+			&i.ConversationMessage.TurnID,
+			&i.ConversationMessage.Sequence,
+			&i.ConversationMessage.Revision,
+			&i.ConversationMessage.Role,
+			&i.ConversationMessage.Origin,
+			&i.ConversationMessage.Text,
+			&i.ConversationMessage.Streaming,
+			&i.ConversationMessage.ProviderItemID,
+			&i.ConversationMessage.ClientMessageID,
+			&i.ConversationMessage.CreatedAt,
+			&i.ConversationMessage.UpdatedAt,
+			&i.ConversationMessage.DeliveryContentJson,
+			&i.ConversationMessage.BranchID,
+			&i.ConversationMessage.ClientPayloadHash,
+			&i.ConversationMessage.SenderSessionID,
+			&i.ConversationMessage.SenderProjectID,
+			&i.ConversationMessage.SenderDisplayName,
+			&i.ConversationMessage.Continuation,
+			&i.ConsumedByTurnID,
 		); err != nil {
 			return nil, err
 		}

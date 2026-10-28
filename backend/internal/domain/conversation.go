@@ -671,7 +671,10 @@ type ConversationMessage struct {
 	ID             string    `json:"id"`
 	ConversationID string    `json:"conversationId"`
 	TurnID         string    `json:"turnId,omitempty"`
-	Sequence       int64     `json:"sequence"`
+	// ConsumedByTurnID is the provider-dispatched AO turn that consumed a batched
+	// follower. TurnID remains the original receipt identity for history and edits.
+	ConsumedByTurnID string `json:"consumedByTurnId,omitempty"`
+	Sequence         int64  `json:"sequence"`
 	// Revision increases each time streaming rewrites this message's text, so a
 	// client can detect a gap and resync instead of rendering stale text.
 	Revision int64         `json:"revision"`
