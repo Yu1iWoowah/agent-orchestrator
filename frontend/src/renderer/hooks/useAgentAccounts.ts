@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { appI18n } from "../i18n";
+import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import type { AgentReadinessSnapshot } from "./useAgentReadinessQuery";
 import { sessionInterfaceTransitionQueryKey } from "./useSessionInterfaceTransition";
 
@@ -28,8 +29,25 @@ export function followsSavedAccount(agent: AgentReadinessSnapshot | undefined): 
 	return Boolean(agent?.authentication.diagnostics?.some((step) => step.code === "saved_default_account"));
 }
 
+export function agentAccountErrorMessage(error: unknown): string {
+	const code = typeof error === "string" ? error : apiErrorCode(error);
+	switch (code) {
+		case "AGENT_ACCOUNT_STORAGE_UNSAFE":
+		case "account_storage_unsafe":
+			return appI18n.t("settings.agentAccounts.storageUnsafe");
+		case "AGENT_ACCOUNT_STORAGE_UNAVAILABLE":
+		case "account_storage_unavailable":
+			return appI18n.t("settings.agentAccounts.storageUnavailable");
+		case "AGENT_ACCOUNT_STORAGE_UNSUPPORTED":
+		case "account_storage_unsupported":
+			return appI18n.t("settings.agentAccounts.storageUnsupported");
+		default:
+			return apiErrorMessage(error);
+	}
+}
+
 function unwrap<T>({ data, error }: { data?: T; error?: unknown }): T {
-	if (error) throw new Error(apiErrorMessage(error));
+	if (error) throw new Error(agentAccountErrorMessage(error));
 	return data as T;
 }
 
@@ -98,7 +116,7 @@ export function useAgentAccountActions() {
 		},
 		cancelLogin: async (operationId: string) => {
 			const { error } = await apiClient.POST("/api/v1/agents/accounts/login/{operationId}/cancel", { params: { path: { operationId } } });
-			if (error) throw new Error(apiErrorMessage(error));
+			if (error) throw new Error(agentAccountErrorMessage(error));
 		},
 		makeDefault: async (accountId: string) =>
 			setAccounts(unwrap(await apiClient.POST("/api/v1/agents/accounts/{accountId}/default", { params: { path: { accountId } } })).accounts),

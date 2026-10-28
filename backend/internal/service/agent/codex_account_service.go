@@ -502,7 +502,19 @@ func (s *Service) WaitCodexAccountStoreReady(ctx context.Context) error {
 	if s.codexAccounts == nil {
 		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
 	}
-	err := s.codexAccounts.waitAccountStore(ctx)
+	return codexAccountStoreError(s.codexAccounts.waitAccountStore(ctx))
+}
+
+// RetryCodexAccountStore revalidates AO-owned storage only, after an explicit
+// caller action. It never opens a provider or reads the device credential.
+func (s *Service) RetryCodexAccountStore(ctx context.Context) error {
+	if s.codexAccounts == nil {
+		return apierr.Unavailable("CODEX_ACCOUNT_MANAGEMENT_UNAVAILABLE", "Codex account management is unavailable")
+	}
+	return codexAccountStoreError(s.codexAccounts.waitAccountStoreWithRetry(ctx, true))
+}
+
+func codexAccountStoreError(err error) error {
 	if err == nil {
 		return nil
 	}

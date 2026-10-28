@@ -3142,6 +3142,34 @@ type ConversationUsageLimitResponse struct {
 	ResumeError string  `json:"resumeError,omitempty"`
 }
 
+// SessionPlanResponse is the latest visible plan, independent of chat pagination.
+type SessionPlanResponse struct {
+	State          string                           `json:"state" enum:"absent,cleared,present"`
+	ConversationID string                           `json:"conversationId,omitempty"`
+	ActiveBranchID string                           `json:"activeBranchId,omitempty"`
+	Version        *ConversationPlanVersionResponse `json:"version,omitempty"`
+}
+
+// ConversationPlanVersionResponse identifies one visible structured Plan snapshot.
+type ConversationPlanVersionResponse struct {
+	BranchID         string                   `json:"branchId"`
+	TurnID           string                   `json:"turnId,omitempty"`
+	SourceActivityID string                   `json:"sourceActivityId,omitempty"`
+	Sequence         int64                    `json:"sequence"`
+	Revision         int64                    `json:"revision"`
+	UpdatedAt        string                   `json:"updatedAt" format:"date-time"`
+	Plan             ConversationPlanResponse `json:"plan"`
+}
+
+// ConversationPlanHistoryResponse pages saved Plan sources on the active lineage.
+type ConversationPlanHistoryResponse struct {
+	ConversationID     string                            `json:"conversationId,omitempty"`
+	ActiveBranchID     string                            `json:"activeBranchId,omitempty"`
+	Versions           []ConversationPlanVersionResponse `json:"versions"`
+	HasMoreBefore      bool                              `json:"hasMoreBefore"`
+	NextBeforeSequence int64                             `json:"nextBeforeSequence,omitempty"`
+}
+
 // ConversationPlanResponse is the agent's plan for one turn.
 type ConversationPlanResponse struct {
 	// Explanation is the agent's note about the plan as a whole, when it gives one.

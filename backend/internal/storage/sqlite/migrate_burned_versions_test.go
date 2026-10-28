@@ -228,6 +228,7 @@ var shippedMigrations = map[int64]string{
 	20261024194546592: "20261024194546592_conversation_messages_search.sql",
 	20261027182945073: "20261027182945073_project_documents.sql",
 	20261028114415395: "20261028114415395_agent_reply_language.sql",
+	20261028143735416: "20261028143735416_conversation_plan_heads.sql",
 	20261028170441550: "20261028170441550_session_agent_settings.sql",
 }
 

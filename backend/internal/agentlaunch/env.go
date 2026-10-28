@@ -16,6 +16,10 @@ import (
 
 const aoBinaryName = "ao"
 
+// ManagedCodexAccountEnv marks a Linux file-only account launch. Session
+// Manager sets it from the account provider, never from project configuration.
+const ManagedCodexAccountEnv = "AO_CODEX_MANAGED_ACCOUNT"
+
 // MergeEnv overlays child-specific values on project values. The AO_ namespace
 // belongs to AO, including when a child has no value for a particular key.
 // A new process receives its own map so a launch cannot mutate saved config.

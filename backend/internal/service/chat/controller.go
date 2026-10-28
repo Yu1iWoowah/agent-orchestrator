@@ -4044,6 +4044,9 @@ func planDetail(plan domain.ConversationPlan) []byte {
 		steps = append(steps, map[string]any{"text": step.Text, "status": string(step.Status)})
 	}
 	detail := map[string]any{"event": "plan", "steps": steps}
+	if plan.SpansTurns {
+		detail["spansTurns"] = true
+	}
 	if plan.Explanation != "" {
 		detail["explanation"] = plan.Explanation
 	}

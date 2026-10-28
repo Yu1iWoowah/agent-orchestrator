@@ -288,6 +288,9 @@ var schemaNames = map[string]string{
 	"ControllersConversationRateLimitsPayload":             "ConversationRateLimitsPayload",
 	"ControllersConversationPlanResponse":                  "ConversationPlanResponse",
 	"ControllersConversationPlanStepResponse":              "ConversationPlanStepResponse",
+	"ControllersSessionPlanResponse":                       "SessionPlanResponse",
+	"ControllersConversationPlanVersionResponse":           "ConversationPlanVersionResponse",
+	"ControllersConversationPlanHistoryResponse":           "ConversationPlanHistoryResponse",
 	"ControllersConversationModelReroutePayload":           "ConversationModelReroutePayload",
 	"ControllersConversationAccountPayload":                "ConversationAccountPayload",
 	"ControllersConversationThreadStatePayload":            "ConversationThreadStatePayload",
@@ -1023,6 +1026,11 @@ type conversationSnapshotQuery struct {
 	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"500" description:"Maximum messages to return; tool activity between them comes along without counting. Defaults to 200."`
 }
 
+type conversationPlanHistoryQuery struct {
+	BeforeSequence *int64 `query:"beforeSequence,omitempty" minimum:"1" description:"Read plan snapshots older than this durable sequence."`
+	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"100" description:"Maximum saved plans to return. Defaults to 20."`
+}
+
 func usageOperations() []operation {
 	return []operation{
 		{
@@ -1153,6 +1161,31 @@ func shellTerminalOperations() []operation {
 			reqBody:    controllers.SetChatViewRequest{},
 			resps: []respUnit{
 				{http.StatusNoContent, nil},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/plan", id: "getSessionPlan", tag: "conversations",
+			summary:    "Read the latest visible session plan independently of transcript pagination",
+			pathParams: []any{controllers.SessionIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SessionPlanResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/plan/history", id: "getSessionPlanHistory", tag: "conversations",
+			summary:    "Read bounded saved plans on the active conversation lineage",
+			pathParams: []any{controllers.SessionIDParam{}, conversationPlanHistoryQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ConversationPlanHistoryResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
@@ -1956,6 +1989,11 @@ func agentOperations() []operation {
 			resps:   []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/storage/retry", id: "retryCodexAccountStore", tag: "agents",
+			summary: "Explicitly revalidate AO-owned Codex account storage without opening the provider",
+			resps:   []respUnit{{http.StatusNoContent, nil}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
 			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/ensure", id: "ensureCodexAccounts", tag: "agents",
 			summary: "Discover Codex accounts and ensure authentication, capacity, and optional usage",
 			reqBody: controllers.EnsureCodexAccountsRequest{},
@@ -2027,12 +2065,12 @@ func agentOperations() []operation {
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login", id: "startAgentAccountLogin", tag: "agents",
 			summary: "Add an account by running the provider's own sign-in in a terminal",
 			reqBody: controllers.StartAgentAccountLoginRequest{},
-			resps:   []respUnit{{http.StatusAccepted, controllers.StartAgentAccountLoginResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps:   []respUnit{{http.StatusAccepted, controllers.StartAgentAccountLoginResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login/{operationId}/verify", id: "verifyAgentAccountLogin", tag: "agents",
 			summary: "Check a sign-in and save the account when it finished", pathParams: []any{controllers.AgentAccountLoginIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.VerifyAgentAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps: []respUnit{{http.StatusOK, controllers.VerifyAgentAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login/{operationId}/cancel", id: "cancelAgentAccountLogin", tag: "agents",
@@ -2053,7 +2091,7 @@ func agentOperations() []operation {
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/{accountId}/login", id: "signInAgentAccountAgain", tag: "agents",
 			summary: "Sign a saved account in again, in its own folder", pathParams: []any{controllers.AgentAccountIDParam{}},
-			resps: []respUnit{{http.StatusAccepted, controllers.StartAgentAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps: []respUnit{{http.StatusAccepted, controllers.StartAgentAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/{accountId}/default", id: "setDefaultAgentAccount", tag: "agents",
@@ -2064,12 +2102,12 @@ func agentOperations() []operation {
 			method: http.MethodPost, path: "/api/v1/agents/accounts/{accountId}/reset-credit", id: "consumeAgentAccountResetCredit", tag: "agents",
 			summary: "Spend one Codex usage-limit reset of an account", pathParams: []any{controllers.AgentAccountIDParam{}},
 			reqBody: controllers.ConsumeAgentAccountResetCreditRequest{},
-			resps:   []respUnit{{http.StatusOK, controllers.ConsumeAgentAccountResetCreditResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps:   []respUnit{{http.StatusOK, controllers.ConsumeAgentAccountResetCreditResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodDelete, path: "/api/v1/agents/accounts/{accountId}", id: "removeAgentAccount", tag: "agents",
 			summary: "Sign an account out and remove it", pathParams: []any{controllers.AgentAccountIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.AgentAccountsResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps: []respUnit{{http.StatusOK, controllers.AgentAccountsResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/refresh", id: "refreshAgents", tag: "agents",

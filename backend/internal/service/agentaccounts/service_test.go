@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -105,8 +106,11 @@ func (fakeTerminals) OpenCommandTerminal(context.Context, shellterm.OpenCommandT
 func (fakeTerminals) CloseShellTerminal(context.Context, string) error { return nil }
 
 func TestAccountsRefuseTheWrongLogin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -166,8 +170,11 @@ func TestAccountsRefuseTheWrongLogin(t *testing.T) {
 // cannot link to the computer's history is never signed in, bound or moved to:
 // a session there would keep history of its own, and moves could not resume it.
 func TestAccountsRefuseAFolderThatCannotLink(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -207,8 +214,11 @@ func TestAccountsRefuseAFolderThatCannotLink(t *testing.T) {
 // A signed-out account signs in again in its own folder, so its sessions keep
 // it; only the login it was saved with is kept there.
 func TestSignInAgainKeepsTheAccountAndItsLogin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -268,8 +278,11 @@ func TestSignInAgainKeepsTheAccountAndItsLogin(t *testing.T) {
 // Removing an account stops its agents first; one that cannot be stopped keeps
 // the account, signed in.
 func TestRemoveStopsTheAccountsAgentsFirst(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -310,8 +323,11 @@ func TestRemoveStopsTheAccountsAgentsFirst(t *testing.T) {
 // A sign-in cancelled while it is being checked is not saved: the cancel has
 // already signed the folder out and removed it.
 func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -340,8 +356,11 @@ func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
 // starts in that window runs on the default, and a pick is refused. The
 // sessions still on it stay visible, so its agents can be found and stopped.
 func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -391,8 +410,11 @@ func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 // login, starts on another account that is signed in, and is refused only when
 // there is none.
 func TestNewTaskOnAKnownBadDefaultStartsOnAnotherAccount(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -455,8 +477,11 @@ func TestNewTaskOnAKnownBadDefaultStartsOnAnotherAccount(t *testing.T) {
 // A signed-out reading of the default that is older than the cache window is
 // read again first: the user may have signed it in outside AO since.
 func TestAnOldSignedOutDefaultIsReadAgainBeforeMovingOn(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -485,8 +510,11 @@ func TestAnOldSignedOutDefaultIsReadAgainBeforeMovingOn(t *testing.T) {
 // When a session's agent is refused for its credentials, its account is read
 // again at once: it shows as signed out, and new tasks stop starting on it.
 func TestRecheckSessionAccountSeesALoginThatDied(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -522,8 +550,11 @@ func TestRecheckSessionAccountSeesALoginThatDied(t *testing.T) {
 }
 
 func TestRunsOnComputerLoginFollowsTheDefaultAndThePick(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -571,8 +602,11 @@ func TestAnAPIKeyCLILoginStillLaunchesAsTheDefault(t *testing.T) {
 // signed in. It has no say while they start on the computer's own login, and
 // the default changing tells readiness to look again.
 func TestDefaultSignInAnswersOnlyForASavedDefault(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -617,8 +651,11 @@ func TestDefaultSignInAnswersOnlyForASavedDefault(t *testing.T) {
 // With the default signed out and another saved account signed in, readiness
 // describes that account, which new sessions start on.
 func TestDefaultSignInFollowsTheAccountNewSessionsStartOn(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -675,8 +712,11 @@ func TestRemoveDeletesTheFolderThroughASymlinkedRoot(t *testing.T) {
 // A check that fails (a timeout under load) says nothing about the login: the
 // account keeps reading as signed in, with the failure shown as its problem.
 func TestAFailedCheckDoesNotReadAsSignedOut(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}, failing: map[string]bool{}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -699,8 +739,11 @@ func TestAFailedCheckDoesNotReadAsSignedOut(t *testing.T) {
 }
 
 func TestLimitsWithNoWindowsAreReadAgainSoon(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
