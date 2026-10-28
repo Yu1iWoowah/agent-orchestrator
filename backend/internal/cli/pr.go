@@ -58,10 +58,11 @@ func newPRMergeCommand(ctx *commandContext) *cobra.Command {
 				return err
 			}
 			prURL = strings.TrimSpace(prURL)
-			_, owner, repo, urlNumber, err := cliParsePRURL(prURL)
+			host, owner, repo, urlNumber, err := cliParsePRURL(prURL)
 			if err != nil || owner == "" || repo == "" || strconv.Itoa(urlNumber) != prNumber {
 				return usageError{errors.New("--pr-url must be a full HTTPS PR/MR URL matching the PR number")}
 			}
+			prURL = cliPRURLFromParts(strings.ToLower(host), owner, repo, urlNumber)
 			expectedHead = strings.TrimSpace(expectedHead)
 			if !mergeHeadSHAPattern.MatchString(expectedHead) {
 				return usageError{errors.New("--expected-head must be the full reviewed commit SHA (40 or 64 hexadecimal characters)")}

@@ -73,7 +73,7 @@ addresses change on restart.
 | `ao session rename <id> <name>`     | `PATCH /api/v1/sessions/{id}`                  |
 | `ao session cleanup`                | `POST /api/v1/sessions/cleanup`                |
 | `ao session claim-pr [<id>] <pr-ref>` | `POST /api/v1/sessions/{id}/pr/claim`        |
-| `ao pr merge <n> --pr-url <url> --expected-head <sha>` | `POST /api/v1/prs/{id}/merge` |
+| `ao pr merge <pr-number> --pr-url <url> --expected-head <sha>` | `POST /api/v1/prs/{id}/merge` |
 | `ao orchestrator ls`                | `GET /api/v1/orchestrators`                    |
 | `ao send`                           | `POST /api/v1/sessions/{id}/send`              |
 | `ao report ...`                     | `POST /api/v1/reports`                         |
@@ -217,7 +217,8 @@ ao pr merge 42 --pr-url https://github.com/owner/repo/pull/42 \
 
 URL 必須是與 PR 編號相符的完整 HTTPS PR/MR URL；GitLab 可使用巢狀群組的
 `/-/merge_requests/<number>` URL。SHA 必須是 40 或 64 位十六進位字元，不能使用縮寫。
-缺少或不合法的參數回傳 exit 2，且不送出合併請求。
+CLI 會將 URL 的 host 轉為小寫，並移除尾斜線、query、fragment 與 repository 的 `.git` 尾綴，
+再將 canonical URL 傳給 daemon。缺少或不合法的參數回傳 exit 2，且不送出合併請求。
 
 請指定你認可的已審查 SHA。daemon 會核對已追蹤的 head 與 provider 的最新 head，
 並將相同的 SHA 作為合併條件交給 provider。若 head 已改變，回傳

@@ -12,16 +12,23 @@ const testMergeHead = "0123456789abcdef0123456789abcdef01234567"
 
 func TestPRMergePostsToDaemon(t *testing.T) {
 	for _, tt := range []struct {
-		name     string
-		number   string
-		prURL    string
-		head     string
-		response string
-		want     string
+		name         string
+		number       string
+		prURL        string
+		canonicalURL string
+		head         string
+		response     string
+		want         string
 	}{
-		{"squash", "#42", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42,"method":"squash"}`, "merged PR #42 using squash\n"},
-		{"no method", "42", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
-		{"sha256 and gitlab", "42", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", strings.Repeat("aB", 32), `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"squash", "#42", testMergePRURL, testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42,"method":"squash"}`, "merged PR #42 using squash\n"},
+		{"no method", "42", testMergePRURL, testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"sha256 and gitlab", "42", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", strings.Repeat("aB", 32), `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"trailing slash", "42", "https://github.com/owner/repo/pull/42/", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"query", "42", "https://github.com/owner/repo/pull/42?notification_referrer_id=x", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"fragment", "42", "https://github.com/owner/repo/pull/42#discussion_r1", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"git suffix", "42", "https://github.com/owner/repo.git/pull/42", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"uppercase host", "42", "https://GitHub.COM/owner/repo/pull/42", testMergePRURL, testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
+		{"gitlab decorated URL", "42", "https://GitLab.Example.COM/group/subgroup/repo.git/-/merge_requests/42/?notification_referrer_id=x#note_1", "https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42", testMergeHead, `{"ok":true,"prNumber":42}`, "merged PR #42\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
@@ -39,8 +46,8 @@ func TestPRMergePostsToDaemon(t *testing.T) {
 			if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
 				t.Fatalf("decode body: %v", err)
 			}
-			if len(body) != 2 || body["prUrl"] != tt.prURL || body["expectedHeadSha"] != tt.head {
-				t.Fatalf("body = %s, want prUrl=%q expectedHeadSha=%q", capture.body, tt.prURL, tt.head)
+			if len(body) != 2 || body["prUrl"] != tt.canonicalURL || body["expectedHeadSha"] != tt.head {
+				t.Fatalf("body = %s, want prUrl=%q expectedHeadSha=%q", capture.body, tt.canonicalURL, tt.head)
 			}
 			if out != tt.want {
 				t.Fatalf("stdout = %q, want %q", out, tt.want)
