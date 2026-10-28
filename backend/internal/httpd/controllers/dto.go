@@ -4032,3 +4032,23 @@ type ResolveDocumentResponse struct {
 type DocumentCatalogResponse struct {
 	Catalog documentread.Catalog `json:"catalog"`
 }
+
+// AppDiagnosticsRevokeResponse reports cancellation of a diagnostic grant.
+type AppDiagnosticsRevokeResponse struct {
+	Revoked bool `json:"revoked"`
+}
+
+// AppDiagnosticsCapabilityHeader is separate from Browser and mobile credentials.
+type AppDiagnosticsCapabilityHeader struct {
+	Capability string `header:"X-AO-App-Diagnostics-Capability"`
+}
+
+// AppSnapshotIDParam identifies a grant-owned diagnostic record.
+type AppSnapshotIDParam struct {
+	SnapshotID string `path:"snapshotId"`
+}
+
+// AppGrantIDParam identifies the caller's diagnostic grant.
+type AppGrantIDParam struct {
+	GrantID string `path:"grantId"`
+}
