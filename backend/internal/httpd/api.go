@@ -31,6 +31,7 @@ type APIDeps struct {
 	AgentAccounts      controllers.AgentAccountService
 	Projects           projectsvc.Manager
 	ProjectDocuments   controllers.ProjectDocumentService
+	DocumentRead       controllers.DocumentReadService
 	Sessions           controllers.SessionService
 	ArtifactVersions   controllers.ArtifactVersionService
 	Automations        controllers.AutomationService
@@ -129,6 +130,7 @@ func normalizeAPIDeps(deps APIDeps, log *slog.Logger) APIDeps {
 type API struct {
 	agentSettings    *controllers.AgentSettingsController
 	projectDocuments *controllers.ProjectDocumentsController
+	documentRead     *controllers.DocumentReadController
 
 	cfg           config.Config
 	deps          APIDeps
@@ -184,6 +186,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		codexAccounts:    &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
 		agentAccounts:    newAgentAccountsController(deps),
 		projectDocuments: &controllers.ProjectDocumentsController{Svc: deps.ProjectDocuments},
+		documentRead:     &controllers.DocumentReadController{Svc: deps.DocumentRead},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -317,6 +320,7 @@ func (a *API) Register(root chi.Router) {
 			a.agentAccounts.Register(r)
 			a.projects.Register(r)
 			a.projectDocuments.Register(r)
+			a.documentRead.Register(r)
 			a.sessions.Register(r)
 			a.automations.Register(r)
 			a.desktop.Register(r)

@@ -63,6 +63,7 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	cuesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/cue"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/documentread"
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/hookprocess"
@@ -992,11 +993,13 @@ func Run(buildVersion string) error {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
+	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
 		AgentSettings:      agentsettings.New(store, time.Now),
-		ProjectDocuments:   projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority}),
+		ProjectDocuments:   sharedDocuments,
+		DocumentRead:       documentread.New(documentread.Deps{Store: store, Shared: sharedDocuments, DataDir: cfg.DataDir}),
 		ArtifactVersions:   lcStack.ArtifactVersions,
 		HostID:             hostIdentity.HostID,
 		Endpoints:          bs,

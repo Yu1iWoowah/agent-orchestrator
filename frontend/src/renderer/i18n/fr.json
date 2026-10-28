@@ -1,4 +1,6 @@
 {
+	"documents.connection.localOnly": "La recherche de chemins de documents est disponible uniquement sur cet ordinateur.",
+	"documents.read.error": "Impossible de charger les documents.",
 	"settings.replyLanguage.label": "Langue de réponse des agents",
 	"settings.replyLanguage.off": "Désactivé",
 	"settings.replyLanguage.description": "Indépendante de la langue de l’interface. S’applique aux nouveaux agents et aux agents repris ou redémarrés. Les agents en cours conservent leurs instructions actuelles.",

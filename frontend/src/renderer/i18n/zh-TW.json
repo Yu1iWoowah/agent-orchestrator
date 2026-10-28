@@ -1,4 +1,6 @@
 {
+	"documents.connection.localOnly": "文件路徑查詢只能在這台電腦使用。",
+	"documents.read.error": "無法載入文件。",
 	"settings.replyLanguage.label": "agent 回覆語言",
 	"settings.replyLanguage.off": "關閉",
 	"settings.replyLanguage.description": "與介面語言分開設定。會套用至新啟動、恢復執行或重新啟動的 agent；執行中的 agent 仍使用原有指示。",

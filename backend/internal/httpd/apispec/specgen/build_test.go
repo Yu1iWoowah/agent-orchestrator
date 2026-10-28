@@ -412,3 +412,59 @@ func TestBuild_Deterministic(t *testing.T) {
 func normalizeYAML(in []byte) []byte {
 	return bytes.ReplaceAll(in, []byte("\r\n"), []byte("\n"))
 }
+
+func TestBuild_DocumentResolverBodyAndTargetsAreDiscriminated(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Paths map[string]map[string]struct {
+			RequestBody struct {
+				Required bool `yaml:"required"`
+				Content  map[string]struct {
+					Schema openAPISchemaNode `yaml:"schema"`
+				} `yaml:"content"`
+			} `yaml:"requestBody"`
+		} `yaml:"paths"`
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err = yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	body := doc.Paths["/api/v1/local-documents/resolve"]["post"].RequestBody
+	if !body.Required || body.Content["application/json"].Schema.Ref == "" {
+		t.Fatal("resolver lacks a required JSON source-union body")
+	}
+	request := doc.Components.Schemas["ResolveDocumentRequest"]
+	target := doc.Components.Schemas["DocumentTarget"]
+	if len(request.OneOf) != 3 || len(target.OneOf) != 2 {
+		t.Fatal("request/response source variants are missing")
+	}
+	for _, schema := range append(request.OneOf, target.OneOf...) {
+		kinds := schema.Properties["kind"].Enum
+		if len(kinds) != 1 {
+			t.Fatal("source variant lost its discriminant")
+		}
+		fields := []string{"projectId", "path"}
+		switch kinds[0] {
+		case "artifact":
+			fields = append(fields, "sessionId")
+		case "shared":
+			if _, ok := schema.Properties["sessionId"]; ok {
+				t.Fatal("shared target carries a session ID")
+			}
+		case "local-path":
+			fields = []string{"value"}
+		default:
+			t.Fatal("unexpected source kind", kinds)
+		}
+		for _, field := range fields {
+			if !slices.Contains(schema.Required, field) {
+				t.Errorf("%s lacks required %s", kinds[0], field)
+			}
+		}
+	}
+}

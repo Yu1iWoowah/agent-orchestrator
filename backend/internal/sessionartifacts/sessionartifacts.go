@@ -81,7 +81,7 @@ func List(ctx context.Context, dir string) ([]domain.SessionArtifactFile, error)
 			}
 			return nil
 		}
-		if path != root && ignored(d.Name()) {
+		if path != root && Ignored(d.Name()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -137,9 +137,9 @@ var ignoredNames = map[string]bool{
 	"__pycache__":     true,
 }
 
-// ignored reports whether List skips an entry named name: ignoredNames and
+// Ignored reports whether artifact discovery skips an entry named name: ignoredNames and
 // macOS "._" resource-fork files.
-func ignored(name string) bool {
+func Ignored(name string) bool {
 	return strings.HasPrefix(name, "._") || ignoredNames[strings.ToLower(name)]
 }
 

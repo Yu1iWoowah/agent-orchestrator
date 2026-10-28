@@ -1,4 +1,6 @@
 {
+	"documents.connection.localOnly": "Document path lookup is only available on this computer.",
+	"documents.read.error": "Unable to load documents.",
 	"settings.replyLanguage.label": "Agent reply language",
 	"settings.replyLanguage.off": "Off",
 	"settings.replyLanguage.description": "Independent of the interface language. Applies to new agents and agents you resume or restart. Running agents keep their current instructions.",

@@ -1,4 +1,6 @@
 {
+	"documents.connection.localOnly": "ドキュメントのパス検索はこのコンピューターでのみ利用できます。",
+	"documents.read.error": "ドキュメントを読み込めません。",
 	"settings.replyLanguage.label": "エージェントの返信言語",
 	"settings.replyLanguage.off": "オフ",
 	"settings.replyLanguage.description": "表示言語とは別の設定です。新規起動、再開、再起動したエージェントに適用されます。実行中のエージェントの指示は変わりません。",

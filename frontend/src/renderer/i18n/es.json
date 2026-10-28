@@ -1,4 +1,6 @@
 {
+	"documents.connection.localOnly": "La consulta de rutas de documentos solo está disponible en este equipo.",
+	"documents.read.error": "No se pudieron cargar los documentos.",
 	"settings.replyLanguage.label": "Idioma de respuesta del agente",
 	"settings.replyLanguage.off": "Desactivado",
 	"settings.replyLanguage.description": "Independiente del idioma de la interfaz. Se aplica a los agentes nuevos, reanudados o reiniciados. Los agentes en ejecución conservan sus instrucciones actuales.",
