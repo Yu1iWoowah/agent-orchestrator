@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginModalHandoff } from "./modal-handoff";
 
 const standIn = () => document.querySelector("[data-slot='modal-handoff-backdrop']");
-const flushObservers = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flushObservers = () => Promise.resolve();
 
 function addOverlay(state?: "open" | "closed"): HTMLElement {
 	const overlay = document.createElement("div");
@@ -12,10 +12,22 @@ function addOverlay(state?: "open" | "closed"): HTMLElement {
 	return overlay;
 }
 
-afterEach(() => {
-	vi.useRealTimers();
-	document.body.innerHTML = "";
-	delete document.documentElement.dataset.modalHandoff;
+beforeEach(() => {
+	vi.useFakeTimers();
+});
+
+afterEach(async () => {
+	try {
+		// Complete both the handoff and its delayed fade reset before removing
+		// the DOM, so finish() also disconnects every handoff observer.
+		await vi.runAllTimersAsync();
+		expect(standIn()).toBeNull();
+		expect(document.documentElement.dataset.modalHandoff).toBeUndefined();
+	} finally {
+		vi.useRealTimers();
+		document.body.innerHTML = "";
+		delete document.documentElement.dataset.modalHandoff;
+	}
 });
 
 describe("beginModalHandoff", () => {
@@ -33,7 +45,7 @@ describe("beginModalHandoff", () => {
 		await flushObservers();
 		expect(standIn()).toBeNull();
 		expect(next.hasAttribute("data-modal-handoff")).toBe(true);
-		await new Promise((resolve) => setTimeout(resolve, 60));
+		await vi.advanceTimersByTimeAsync(50);
 		expect(document.documentElement.dataset.modalHandoff).toBeUndefined();
 	});
 
@@ -56,7 +68,6 @@ describe("beginModalHandoff", () => {
 	});
 
 	it("lets go after a short timeout when no modal opens", () => {
-		vi.useFakeTimers();
 		beginModalHandoff();
 		vi.advanceTimersByTime(249);
 		expect(standIn()).not.toBeNull();
