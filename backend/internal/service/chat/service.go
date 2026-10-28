@@ -2633,6 +2633,21 @@ func settingsFromConfigOptions(
 			}
 		}
 		switch {
+		case option.ID == "fast":
+			mode := domain.AgentFastMode(option.Current.Select)
+			if option.Type == ports.ChatConfigOptionBoolean {
+				if option.Current.Boolean == nil {
+					continue
+				}
+				mode = domain.AgentFastOff
+				if *option.Current.Boolean {
+					mode = domain.AgentFastOn
+				}
+			}
+			if mode == domain.AgentFastOn || mode == domain.AgentFastOff {
+				next.AgentFastMode = mode
+				next.FastMode = mode == domain.AgentFastOn
+			}
 		case option.ID == "model" || option.Category == "model":
 			if option.Current.Select != "" {
 				next.Model = option.Current.Select

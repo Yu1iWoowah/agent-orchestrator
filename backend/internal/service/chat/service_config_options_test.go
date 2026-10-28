@@ -10,6 +10,30 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestSettingsFromConfigOptionsTracksExplicitFastChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		previous, want domain.AgentFastMode
+		options        []ports.ChatConfigOption
+	}{
+		{"boolean off", domain.AgentFastOn, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(false)}}}},
+		{"boolean on", domain.AgentFastOff, domain.AgentFastOn, []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(true)}}}},
+		{"select off", domain.AgentFastOn, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Current: ports.ChatConfigOptionValue{Select: "off"}}}},
+		{"select on", domain.AgentFastOff, domain.AgentFastOn, []ports.ChatConfigOption{{ID: "fast", Current: ports.ChatConfigOptionValue{Select: "on"}}}},
+		{"absent preserves Codex fast", domain.AgentFastOn, domain.AgentFastOn, nil},
+		{"missing boolean preserves off", domain.AgentFastOff, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean}}},
+		{"unknown choice cannot enable fast", domain.AgentFastOff, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Current: ports.ChatConfigOptionValue{Select: "unknown"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := domain.ConversationSettings{FastMode: tc.previous == domain.AgentFastOn, AgentFastMode: tc.previous}
+			got, changed := settingsFromConfigOptions(before, tc.options)
+			if got.AgentFastMode != tc.want || got.FastMode != (tc.want == domain.AgentFastOn) || changed != (tc.previous != tc.want) {
+				t.Fatalf("settings=%+v changed=%v want=%s", got, changed, tc.want)
+			}
+		})
+	}
+}
+
 func TestSettingsFromConfigOptionsKeepsClaudeModelAndEffortAcrossRestart(t *testing.T) {
 	settings, changed := settingsFromConfigOptions(domain.ConversationSettings{
 		ApprovalMode: domain.PermissionModeBypassPermissions,

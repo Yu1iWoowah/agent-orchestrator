@@ -3,6 +3,7 @@ package chat_test
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +12,99 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
+
+type claudeFastConfigConversation struct {
+	*fakeConversation
+	configMu sync.Mutex
+	fast     bool
+}
+
+func (c *claudeFastConfigConversation) ListConfigOptions(context.Context) ([]ports.ChatConfigOption, error) {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	return []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(c.fast)}}}, nil
+}
+
+func (c *claudeFastConfigConversation) SetConfigOption(ctx context.Context, id string, value ports.ChatConfigOptionValue) ([]ports.ChatConfigOption, error) {
+	c.configMu.Lock()
+	c.fast = *value.Boolean
+	c.configMu.Unlock()
+	return c.ListConfigOptions(ctx)
+}
+
+func TestClaudeConfigFastChoiceOverridesSpawnOnNextTurnAndRestart(t *testing.T) {
+	for _, spawn := range []domain.AgentFastMode{domain.AgentFastOn, domain.AgentFastOff} {
+		t.Run(string(spawn), func(t *testing.T) {
+			ctx := context.Background()
+			st := openStore(t)
+			rec, err := st.CreateSession(ctx, domain.SessionRecord{ProjectID: testProject, Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var resumed ports.ChatResumeConfig
+			makeService := func(conv *claudeFastConfigConversation) *chatsvc.Service {
+				conv.providerConversationID = "claude-thread"
+				return chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: conv, resumeCfg: &resumed}}, Log: slog.New(slog.DiscardHandler), NewID: uuid.NewString})
+			}
+			conv := &claudeFastConfigConversation{fakeConversation: newFakeConversation(), fast: spawn == domain.AgentFastOn}
+			svc := makeService(conv)
+			t.Cleanup(func() { _ = svc.Stop(ctx, rec.ID) })
+			cfg := chatsvc.StartConfig{SessionID: rec.ID, ProjectID: testProject, Harness: domain.HarnessClaudeCode, WorkspacePath: t.TempDir(), FastMode: spawn}
+			if _, err := svc.Start(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			enabled := spawn != domain.AgentFastOn
+			want := domain.AgentFastOff
+			if enabled {
+				want = domain.AgentFastOn
+			}
+			if _, err := svc.SetConfigOption(ctx, rec.ID, "fast", ports.ChatConfigOptionValue{Boolean: &enabled}); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := st.ConversationForSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Settings.AgentFastMode != want || stored.Settings.FastMode != enabled {
+				t.Errorf("config-option preference not persisted: %+v want=%s", stored.Settings, want)
+			}
+			sent := make(chan struct{}, 1)
+			conv.mu.Lock()
+			conv.onSend = func(string) { sent <- struct{}{} }
+			conv.mu.Unlock()
+			if _, err := svc.Send(ctx, rec.ID, ports.ChatUserMessage{Text: "next turn"}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-sent:
+			case <-time.After(5 * time.Second):
+				t.Fatal("next turn never reached provider")
+			}
+			messages := conv.sentMessages()
+			if len(messages) != 1 || messages[0].Settings.FastMode != want || messages[0].Settings.Fast != enabled {
+				t.Errorf("next turn reapplied spawn fast: %+v want=%s", messages, want)
+			}
+			conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"}, ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1", TurnState: domain.TurnStateCompleted})
+			awaitStoreSnapshot(t, st, stored.ID, func(s store.ConversationSnapshot) bool {
+				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateCompleted
+			})
+			if err := svc.Stop(ctx, rec.ID); err != nil {
+				t.Fatal(err)
+			}
+			replacement := makeService(&claudeFastConfigConversation{fakeConversation: newFakeConversation(), fast: enabled})
+			cfg.ProviderConversationID = "claude-thread"
+			if _, err := replacement.Start(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = replacement.Stop(ctx, rec.ID) })
+			if resumed.FastMode != want {
+				t.Errorf("restore reapplied spawn=%s: resumed=%s want=%s", spawn, resumed.FastMode, want)
+			}
+		})
+	}
+}
 
 func TestConversationStoreBooleanFastChoiceReplacesPaidPreference(t *testing.T) {
 	ctx := context.Background()
