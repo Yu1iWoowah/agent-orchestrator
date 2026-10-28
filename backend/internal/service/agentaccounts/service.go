@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -191,14 +192,18 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	r := &reading{at: s.now()}
-	identity, err := provider.Identity(ctx, account.Home)
+	var identity domain.AgentAccountIdentityCheck
+	err := s.checkAccountProfile(account.Home)
+	if err == nil {
+		identity, err = provider.Identity(ctx, account.Home)
+	}
 	r.identity = identity
 	if err != nil {
 		r.identityErr = err.Error()
 		// A failed check (a timeout under load) says nothing about the login:
 		// keep what the last good one found, so it does not read as signed out.
 		s.mu.Lock()
-		if prev := s.readings[account.ID]; prev != nil && prev.identityErr == "" {
+		if prev := s.readings[account.ID]; prev != nil && prev.identityErr == "" && !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) && !errors.Is(err, ports.ErrAgentAccountStorageUnavailable) {
 			r.identity, r.limits = prev.identity, prev.limits
 		}
 		s.mu.Unlock()
@@ -499,8 +504,8 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 			_ = os.RemoveAll(home)
 		}
 	}
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return LoginStart{}, fmt.Errorf("create account folder: %w", err)
+	if err := ensureAccountProfile(s.root, home); err != nil {
+		return LoginStart{}, err
 	}
 	// Linking first means the sign-in never creates a private copy of a shared folder.
 	if err := s.prepare(provider, home); err != nil {
@@ -546,6 +551,9 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 		return "", nil, ports.ErrAgentAccountLoginUnknown
 	}
 	provider := s.providers[op.provider]
+	if err := s.checkAccountProfile(op.home); err != nil {
+		return "", nil, err
+	}
 	identity, err := provider.Identity(ctx, op.home)
 	if err != nil {
 		return "", nil, fmt.Errorf("check sign-in: %w", err)
@@ -672,6 +680,10 @@ func (s *Service) endLogin(ctx context.Context, op *login, discard bool) {
 		_ = terminals.CloseShellTerminal(context.WithoutCancel(ctx), op.terminal)
 	}
 	if discard {
+		if err := s.checkAccountProfile(op.home); err != nil {
+			s.log.Warn("account cleanup refused", "reasonCode", err.Error())
+			return
+		}
 		// A refused duplicate is signed in; signing out first keeps its token
 		// from outliving the folder in the Keychain.
 		logoutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
@@ -714,6 +726,9 @@ func (s *Service) Remove(ctx context.Context, accountID string) error {
 	if account.Device() {
 		return ports.ErrAgentAccountDeviceFixed
 	}
+	if err := s.checkAccountProfile(account.Home); err != nil {
+		return err
+	}
 	// From here no launch resolves to the account; then its agents stop, so
 	// none runs on a login AO deletes. An agent that cannot be stopped keeps the
 	// account, usable again.
@@ -754,6 +769,9 @@ func (s *Service) ConsumeResetCredit(ctx context.Context, accountID, idempotency
 	crediter, ok := s.providers[account.Provider].(resetCrediter)
 	if !ok {
 		return "", ports.ErrAgentAccountProviderMismatch
+	}
+	if err := s.checkAccountProfile(account.Home); err != nil {
+		return "", err
 	}
 	outcome, err := crediter.ConsumeResetCredit(ctx, account.Home, idempotencyKey)
 	if err == nil {
@@ -834,6 +852,9 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 	if account.Provider != p {
 		return domain.AgentAccount{}, ports.ErrAgentAccountProviderMismatch
 	}
+	if err := s.checkAccountProfile(account.Home); err != nil {
+		return domain.AgentAccount{}, err
+	}
 	s.mu.Lock()
 	r := s.readings[account.ID]
 	s.mu.Unlock()
@@ -854,19 +875,29 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 	return account, nil
 }
 
-// prepare sets up an account folder for a launch. A folder that cannot link
-// to the computer's history is refused: a session there would keep history of
-// its own, and a move could not resume it. Other trouble is only logged.
+// Existing non-Linux profiles keep their legacy runtime behavior. New profiles
+// are refused by ensureAccountProfile until native file-only storage is verified.
+func (s *Service) checkAccountProfile(home string) error {
+	if home == "" || runtime.GOOS != "linux" {
+		return nil
+	}
+	return ensureAccountProfile(s.root, home)
+}
+
+// prepare refuses unsafe storage and unshared history before a launch.
 func (s *Service) prepare(provider ports.AgentAccountProviderCLI, home string) error {
 	if home == "" {
 		return nil
+	}
+	if err := s.checkAccountProfile(home); err != nil {
+		return err
 	}
 	err := provider.Prepare(home)
 	if errors.Is(err, ports.ErrAgentAccountUnshared) {
 		return err
 	}
 	if err != nil {
-		s.log.Warn("prepare account folder", "home", home, "error", err)
+		s.log.Warn("prepare account folder", "provider", provider.Provider(), "reasonCode", "account_prepare_failed")
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -311,5 +312,36 @@ func TestClaudeIdentityCountsSubscriptionLogins(t *testing.T) {
 		if err != nil || got.SignedIn != tc.signedIn || got.LoggedIn != tc.loggedIn || got.Email != tc.email {
 			t.Fatalf("%s: identity = %+v, %v", tc.name, got, err)
 		}
+	}
+}
+
+func TestCodexManagedLoginUsesFileCredentials(t *testing.T) {
+	c := &Codex{Binary: func(context.Context) (string, error) { return "/fake/codex", nil }}
+	argv, err := c.LoginArgv(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(argv, " ") != `/fake/codex -c cli_auth_credentials_store="file" login --device-auth` {
+		t.Fatalf("managed login can use OS credential storage: %q", argv)
+	}
+}
+
+type fileAccountFactory struct{ contexts []ports.CodexAccountContext }
+
+func (f *fileAccountFactory) Open(_ context.Context, c ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+	f.contexts = append(f.contexts, c)
+	return nil, errors.New("fake account client")
+}
+func (*fileAccountFactory) Capabilities(context.Context) domain.CodexAccountCapabilities {
+	return domain.CodexAccountCapabilities{}
+}
+
+func TestCodexManagedProbesUseFileStoreWithoutChangingDevicePolicy(t *testing.T) {
+	factory := &fileAccountFactory{}
+	c := &Codex{Accounts: factory, DeviceHome: "/fake-device"}
+	_, _ = c.Identity(context.Background(), "/fake-managed")
+	_, _ = c.Identity(context.Background(), "")
+	if len(factory.contexts) != 2 || factory.contexts[0].Home != "/fake-managed" || !factory.contexts[0].Managed || factory.contexts[1].Home != "/fake-device" || factory.contexts[1].Managed {
+		t.Fatalf("wrong credential context: %+v", factory.contexts)
 	}
 }

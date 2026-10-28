@@ -148,6 +148,7 @@ type codexAccountManager struct {
 	reconcileFailures       int
 	reconcileScheduled      bool
 	accountStoreReady       bool
+	accountStoreInitialized bool
 	capacity                *codexCapacityCoordinator
 	onAuthenticationChanged func()
 	subscribers             map[chan CodexAccounts]struct{}

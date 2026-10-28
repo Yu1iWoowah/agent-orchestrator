@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { appI18n } from "../../i18n";
 import { TooltipProvider } from "../ui/tooltip";
 import { AgentAccountsPanel, type CliLoginControls } from "./AgentAccountsSection";
 
@@ -12,7 +13,8 @@ const { getMock, postMock, terminalState } = vi.hoisted(() => ({
 
 vi.mock("../../lib/api-client", () => ({
 	apiClient: { DELETE: vi.fn(), GET: getMock, POST: postMock },
-	apiErrorMessage: (error: unknown) => error instanceof Error ? error.message : "request failed",
+	apiErrorCode: (error: unknown) => typeof error === "object" && error !== null && "code" in error ? error.code : undefined,
+ apiErrorMessage: (error: unknown) => error instanceof Error ? error.message : "request failed",
 }));
 
 vi.mock("../TerminalPane", () => ({
@@ -121,4 +123,23 @@ it("offers only a sign-in on a signed-out CLI login, held while a login terminal
 	const row = await findCliLoginRow();
 	expect(within(row).getByRole("button", { name: "Sign in again" })).toBeDisabled();
 	expect(within(row).queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+});
+
+afterEach(async () => { await act(async () => { await appI18n.changeLanguage("en"); }); });
+
+it.each([
+ ["en", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry."],
+ ["zh-TW", "AGENT_ACCOUNT_STORAGE_UNSAFE", "帳號儲存空間不安全。請修正權限後重試。"],
+ ["en", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is temporarily unavailable. Retry later."],
+ ["zh-TW", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "帳號儲存空間暫時無法使用。請稍後重試。"],
+ ["en", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "Private account profiles are currently supported on Linux only."],
+ ["zh-TW", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "Private account profile 目前僅支援 Linux。"],
+])("shows the %s storage diagnostic for %s", async (locale, code, message) => {
+ await act(async () => { await appI18n.changeLanguage(locale); });
+ postMock.mockResolvedValue({error:{code,message:"raw provider error"}});
+ const user=userEvent.setup();
+ renderPanel();
+ await user.click(await screen.findByRole("button",{name:appI18n.t("settings.agentAccounts.signInAgain")}));
+ expect(await screen.findByRole("alert")).toHaveTextContent(message);
+ expect(screen.getByRole("alert")).not.toHaveTextContent("raw provider error");
 });

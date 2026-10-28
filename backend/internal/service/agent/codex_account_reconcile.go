@@ -21,17 +21,21 @@ const codexDeviceReconciliationAutomaticAttempts = 3
 // Account-store initialization covers AO-owned local state only. Device-global
 // discovery is deliberately a separate, repeatable operation below.
 func (m *codexAccountManager) waitAccountStore(ctx context.Context) error {
+	return m.waitAccountStoreWithRetry(ctx, false)
+}
+
+func (m *codexAccountManager) waitAccountStoreWithRetry(ctx context.Context, explicitRetry bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	m.mu.Lock()
-	if m.accountStoreReady {
+	if m.accountStoreReady && !explicitRetry {
 		m.mu.Unlock()
 		return nil
 	}
 	call := m.accountStoreCall
 	if call == nil {
-		if m.accountStoreErr != nil {
+		if m.accountStoreErr != nil && !explicitRetry {
 			var failure *codexAccountLocalFailure
 			if !errors.As(m.accountStoreErr, &failure) || !failure.retryable || m.now().Before(m.accountStoreNextRetry) {
 				err := m.accountStoreErr
@@ -43,9 +47,10 @@ func (m *codexAccountManager) waitAccountStore(ctx context.Context) error {
 			m.mu.Unlock()
 			return err
 		}
+		m.accountStoreReady = false
 		call = &accountReconcileCall{done: make(chan struct{})}
 		m.accountStoreCall = call
-		go m.runAccountStoreInitialization(call)
+		go m.runAccountStoreInitialization(call, m.accountStoreInitialized)
 	}
 	m.mu.Unlock()
 	select {
@@ -56,11 +61,19 @@ func (m *codexAccountManager) waitAccountStore(ctx context.Context) error {
 	}
 }
 
-func (m *codexAccountManager) runAccountStoreInitialization(call *accountReconcileCall) {
-	err := m.initializeAccountStore()
+func (m *codexAccountManager) runAccountStoreInitialization(call *accountReconcileCall, initialized bool) {
+	var err error
+	if initialized {
+		err = m.validateAccountStore()
+	} else {
+		err = m.initializeAccountStore()
+	}
 	m.mu.Lock()
 	m.accountStoreErr = err
 	m.accountStoreReady = err == nil
+	if err == nil {
+		m.accountStoreInitialized = true
+	}
 	if err != nil {
 		m.accountStoreFailures++
 		// A bounded cooldown prevents repeated local callers from hammering a
@@ -120,6 +133,17 @@ func (m *codexAccountManager) initializeAccountStore() error {
 	}
 	if err := m.catalog.refresh(); err != nil {
 		return accountStoreStorageFailure(err)
+	}
+	return nil
+}
+
+// Once bootstrap has completed, pending homes may belong to active logins.
+// Revalidation must not repeat startup cleanup, even after another safety fault.
+func (m *codexAccountManager) validateAccountStore() error {
+	for _, path := range []string{m.pendingRoot, m.switchStagingRoot, m.catalog.root} {
+		if err := validateCodexDirectory(path, true); err != nil {
+			return accountStoreStorageFailure(err)
+		}
 	}
 	return nil
 }

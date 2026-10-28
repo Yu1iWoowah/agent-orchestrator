@@ -22,6 +22,7 @@ import (
 
 // CodexAccountService is the HTTP controller's account-management boundary.
 type CodexAccountService interface {
+	RetryCodexAccountStore(context.Context) error
 	CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error)
 	EnsureCodexAccounts(context.Context, []string, agentsvc.CodexAccountEnsureOptions) (agentsvc.CodexAccounts, error)
 	ConsumeCodexAccountResetCredit(context.Context, string, string) (agentsvc.CodexAccounts, error)
@@ -43,6 +44,7 @@ type CodexAccountsController struct{ Svc CodexAccountService }
 func (c *CodexAccountsController) Register(r chi.Router) {
 	r.Get("/agents/codex/accounts", c.list)
 	r.Post("/agents/codex/accounts/ensure", c.ensure)
+	r.Post("/agents/codex/accounts/storage/retry", c.retryStorage)
 	r.Post("/agents/codex/accounts/{accountId}/reset-credit/consume", c.consumeResetCredit)
 	r.Post("/agents/codex/accounts/{accountId}/login-terminal", c.openReauthenticationTerminal)
 	r.Post("/agents/codex/accounts/{accountId}/logout", c.logoutAccount)
@@ -382,4 +384,16 @@ func (c *CodexAccountsController) waitForCodexAccountStream(ctx context.Context,
 			flusher.Flush()
 		}
 	}
+}
+
+func (c *CodexAccountsController) retryStorage(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/codex/accounts/storage/retry")
+		return
+	}
+	if err := c.Svc.RetryCodexAccountStore(r.Context()); err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

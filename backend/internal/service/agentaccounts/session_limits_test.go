@@ -3,6 +3,7 @@ package agentaccounts
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -28,22 +29,24 @@ func (p *sessionLimitsProvider) Limits(ctx context.Context, home string) (domain
 
 func sessionLimitsFixture(t *testing.T) (*Service, *memStore, *sessionLimitsProvider) {
 	t.Helper()
+	root := filepath.Join(t.TempDir(), "accounts")
+	a, b := filepath.Join(root, "claude", "a"), filepath.Join(root, "claude", "b")
 	store := &memStore{
 		accounts: []domain.AgentAccount{
-			{ID: "a", Provider: domain.AgentAccountProviderClaude, Home: "/account-a", Email: "a@example.com"},
-			{ID: "b", Provider: domain.AgentAccountProviderClaude, Home: "/account-b", Email: "b@example.com"},
+			{ID: "a", Provider: domain.AgentAccountProviderClaude, Home: a, Email: "a@example.com"},
+			{ID: "b", Provider: domain.AgentAccountProviderClaude, Home: b, Email: "b@example.com"},
 		},
 		defaults: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderClaude: "a"},
 		bindings: map[domain.SessionID]string{"session": "b"},
 	}
 	provider := &sessionLimitsProvider{fakeClaude: &fakeClaude{
-		signedInAs: map[string]string{"/account-a": "a@example.com", "/account-b": "b@example.com"},
+		signedInAs: map[string]string{a: "a@example.com", b: "b@example.com"},
 		failing:    map[string]bool{},
 	}}
 	provider.read = func(context.Context, string) (domain.AgentAccountLimits, error) {
 		return domain.AgentAccountLimits{FetchedAt: time.Unix(1, 0)}, nil
 	}
-	return New(store, []ports.AgentAccountProviderCLI{provider}, t.TempDir(), nil, nil), store, provider
+	return New(store, []ports.AgentAccountProviderCLI{provider}, root, nil, nil), store, provider
 }
 
 func TestSessionLimitsRefreshesOnlyPinnedAccount(t *testing.T) {
@@ -63,7 +66,7 @@ func TestSessionLimitsRefreshesOnlyPinnedAccount(t *testing.T) {
 		// A changed default must not redirect an existing binding or its reads.
 		store.defaults[domain.AgentAccountProviderClaude] = "device-claude"
 	}
-	if !reflect.DeepEqual(provider.homes, []string{"/account-b", "/account-b"}) {
+	if !reflect.DeepEqual(provider.homes, []string{filepath.Join(svc.root, "claude", "b"), filepath.Join(svc.root, "claude", "b")}) {
 		t.Fatalf("queried homes = %v", provider.homes)
 	}
 }
@@ -79,7 +82,7 @@ func TestSessionLimitsNeverUsesRetainedDisplayLimitsAfterReadFailure(t *testing.
 			defer cancel()
 			switch failure {
 			case "identity":
-				provider.failing["/account-b"] = true
+				provider.failing[filepath.Join(svc.root, "claude", "b")] = true
 			case "limits":
 				provider.read = func(context.Context, string) (domain.AgentAccountLimits, error) {
 					return domain.AgentAccountLimits{}, errors.New("temporary provider failure")
@@ -119,13 +122,13 @@ func TestSessionLimitsRefusesChangedBindingWithoutDefaultFallback(t *testing.T) 
 			case "removed during read":
 				provider.onIdentity = func(string) { store.accounts = store.accounts[:1] }
 			case "identity":
-				provider.signedInAs["/account-b"] = "another@example.com"
+				provider.signedInAs[filepath.Join(svc.root, "claude", "b")] = "another@example.com"
 			}
 			_, limits, err := svc.SessionLimits(context.Background(), "session", domain.HarnessClaudeCode, true)
 			if !errors.Is(err, ports.ErrAgentAccountChanged) || !limits.FetchedAt.IsZero() {
 				t.Fatalf("changed account limits = %+v, %v", limits, err)
 			}
-			if len(provider.homes) > 1 || (len(provider.homes) == 1 && provider.homes[0] != "/account-b") {
+			if len(provider.homes) > 1 || (len(provider.homes) == 1 && provider.homes[0] != filepath.Join(svc.root, "claude", "b")) {
 				t.Fatalf("read another account: %v", provider.homes)
 			}
 		})

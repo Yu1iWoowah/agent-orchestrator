@@ -72,14 +72,15 @@ func (c *Codex) LoginArgv(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{bin, "login", "--device-auth"}, nil
+	return []string{bin, "-c", `cli_auth_credentials_store="file"`, "login", "--device-auth"}, nil
 }
 
 func (c *Codex) open(ctx context.Context, home string) (ports.CodexAccountClient, error) {
-	if home == "" {
+	managed := home != ""
+	if !managed {
 		home = c.DeviceHome
 	}
-	return c.Accounts.Open(ctx, ports.CodexAccountContext{Home: home})
+	return c.Accounts.Open(ctx, ports.CodexAccountContext{Home: home, Managed: managed})
 }
 
 // Logout asks Codex to sign home out, revocation included.

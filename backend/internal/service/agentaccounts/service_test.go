@@ -106,7 +106,7 @@ func (fakeTerminals) CloseShellTerminal(context.Context, string) error { return 
 
 func TestAccountsRefuseTheWrongLogin(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -167,7 +167,7 @@ func TestAccountsRefuseTheWrongLogin(t *testing.T) {
 // a session there would keep history of its own, and moves could not resume it.
 func TestAccountsRefuseAFolderThatCannotLink(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -208,7 +208,7 @@ func TestAccountsRefuseAFolderThatCannotLink(t *testing.T) {
 // it; only the login it was saved with is kept there.
 func TestSignInAgainKeepsTheAccountAndItsLogin(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -269,7 +269,7 @@ func TestSignInAgainKeepsTheAccountAndItsLogin(t *testing.T) {
 // the account, signed in.
 func TestRemoveStopsTheAccountsAgentsFirst(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -311,7 +311,7 @@ func TestRemoveStopsTheAccountsAgentsFirst(t *testing.T) {
 // already signed the folder out and removed it.
 func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -341,7 +341,7 @@ func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
 // sessions still on it stay visible, so its agents can be found and stopped.
 func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -392,7 +392,7 @@ func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 // there is none.
 func TestNewTaskOnAKnownBadDefaultStartsOnAnotherAccount(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -456,7 +456,7 @@ func TestNewTaskOnAKnownBadDefaultStartsOnAnotherAccount(t *testing.T) {
 // read again first: the user may have signed it in outside AO since.
 func TestAnOldSignedOutDefaultIsReadAgainBeforeMovingOn(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -486,7 +486,7 @@ func TestAnOldSignedOutDefaultIsReadAgainBeforeMovingOn(t *testing.T) {
 // again at once: it shows as signed out, and new tasks stop starting on it.
 func TestRecheckSessionAccountSeesALoginThatDied(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -523,7 +523,7 @@ func TestRecheckSessionAccountSeesALoginThatDied(t *testing.T) {
 
 func TestRunsOnComputerLoginFollowsTheDefaultAndThePick(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -572,7 +572,7 @@ func TestAnAPIKeyCLILoginStillLaunchesAsTheDefault(t *testing.T) {
 // the default changing tells readiness to look again.
 func TestDefaultSignInAnswersOnlyForASavedDefault(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -618,7 +618,7 @@ func TestDefaultSignInAnswersOnlyForASavedDefault(t *testing.T) {
 // describes that account, which new sessions start on.
 func TestDefaultSignInFollowsTheAccountNewSessionsStartOn(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -676,7 +676,7 @@ func TestRemoveDeletesTheFolderThroughASymlinkedRoot(t *testing.T) {
 // account keeps reading as signed in, with the failure shown as its problem.
 func TestAFailedCheckDoesNotReadAsSignedOut(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}, failing: map[string]bool{}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
@@ -700,7 +700,7 @@ func TestAFailedCheckDoesNotReadAsSignedOut(t *testing.T) {
 
 func TestLimitsWithNoWindowsAreReadAgainSoon(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "accounts")
 	claude := &fakeClaude{signedInAs: map[string]string{"": "a@example.com"}}
 	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
