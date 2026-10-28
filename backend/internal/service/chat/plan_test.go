@@ -2,10 +2,13 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -76,5 +79,50 @@ func TestUnattributedPlanKeepsItsCrossTurnScope(t *testing.T) {
 	plan, err := h.svc.Plan(context.Background(), testSession)
 	if err != nil || plan.Version == nil || plan.Version.TurnID != "" || !plan.Version.Plan.SpansTurns {
 		t.Fatalf("unattributed plan lost scope = %+v, %v", plan, err)
+	}
+}
+
+// The conversation reads before and after the Plan request both see A, but the
+// Plan transaction can run during the intervening B in an A -> B -> A switch.
+type planSnapshotRaceStore struct {
+	*sqlite.Store
+	empty bool
+	reads int
+}
+
+func (s *planSnapshotRaceStore) ConversationPlans(context.Context, string, int64, int64) ([]domain.ConversationPlanVersion, string, error) {
+	s.reads++
+	if s.empty {
+		return nil, "intervening-branch", nil
+	}
+	return []domain.ConversationPlanVersion{{BranchID: "intervening-branch", Plan: domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: "Other branch Plan", Status: domain.PlanStepPending}}}}}, "intervening-branch", nil
+}
+
+func TestSessionPlanRejectsInterveningBranchSnapshot(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		name := "present"
+		if empty {
+			name = "absent"
+		}
+		t.Run(name, func(t *testing.T) {
+			var wrapped *planSnapshotRaceStore
+			h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
+				wrapped = &planSnapshotRaceStore{Store: st, empty: empty}
+				return wrapped
+			})
+			if result, err := h.svc.Plan(context.Background(), testSession); !errors.Is(err, chatsvc.ErrControllerHandoff) || result.Version != nil {
+				t.Fatalf("Plan accepted an intervening branch: %+v, %v", result, err)
+			}
+			if wrapped.reads != 2 {
+				t.Fatalf("Plan reads = %d, want bounded retry", wrapped.reads)
+			}
+			wrapped.reads = 0
+			if result, err := h.svc.PlanHistory(context.Background(), testSession, 0, 20); !errors.Is(err, chatsvc.ErrControllerHandoff) || len(result.Versions) != 0 {
+				t.Fatalf("history accepted an intervening branch: %+v, %v", result, err)
+			}
+			if wrapped.reads != 2 {
+				t.Fatalf("history reads = %d, want bounded retry", wrapped.reads)
+			}
+		})
 	}
 }

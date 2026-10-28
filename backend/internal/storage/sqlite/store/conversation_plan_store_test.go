@@ -63,7 +63,7 @@ func TestConversationPlansReadBeyondTheTranscriptPage(t *testing.T) {
 			t.Fatal("fixture did not put the plan outside the loaded transcript page")
 		}
 	}
-	plans, err := s.ConversationPlans(ctx, conversation, 0, 1)
+	plans, _, err := s.ConversationPlans(ctx, conversation, 0, 1)
 	if err != nil || len(plans) != 1 {
 		t.Fatalf("plans = %+v, %v", plans, err)
 	}
@@ -81,11 +81,11 @@ func TestConversationPlansKeepAnExplicitClearAndPageHistory(t *testing.T) {
 	}}, histClock.Add(time.Second))
 	appendPlanTurn(t, s, conversation, session, "second", histClock.Add(2*time.Second))
 	writePlan(t, s, conversation, "second", domain.ConversationPlan{Steps: []domain.ConversationPlanStep{}}, histClock.Add(3*time.Second))
-	latest, err := s.ConversationPlans(ctx, conversation, 0, 1)
+	latest, _, err := s.ConversationPlans(ctx, conversation, 0, 1)
 	if err != nil || len(latest) != 1 || len(latest[0].Plan.Steps) != 0 || latest[0].TurnID != "second" {
 		t.Fatalf("cleared latest = %+v, %v", latest, err)
 	}
-	older, err := s.ConversationPlans(ctx, conversation, latest[0].Sequence, 1)
+	older, _, err := s.ConversationPlans(ctx, conversation, latest[0].Sequence, 1)
 	if err != nil || len(older) != 1 || older[0].Plan.Steps[0].Text != "older" {
 		t.Fatalf("history before clear = %+v, %v", older, err)
 	}
@@ -97,12 +97,12 @@ func TestConversationPlansRepeatedPayloadKeepsRevision(t *testing.T) {
 	appendPlanTurn(t, s, conversation, session, "first", histClock)
 	plan := domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: "one", Status: domain.PlanStepPending}}}
 	writePlan(t, s, conversation, "first", plan, histClock.Add(time.Second))
-	first, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	first, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("initial plan = %+v, %v", first, err)
 	}
 	writePlan(t, s, conversation, "first", plan, histClock.Add(2*time.Second))
-	replayed, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	replayed, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(replayed) != 1 || replayed[0].Revision != first[0].Revision {
 		t.Fatalf("same plan changed revision: before=%+v after=%+v err=%v", first, replayed, err)
 	}
@@ -117,14 +117,14 @@ func TestConversationPlansReadLegacyTurnAndUnattributedActivity(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	legacy, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(legacy) != 1 || legacy[0].TurnID != "legacy" || legacy[0].SourceActivityID != "" {
 		t.Fatalf("legacy plan = %+v, %v", legacy, err)
 	}
 	writePlan(t, s, conversation, "unrecorded", domain.ConversationPlan{Steps: []domain.ConversationPlanStep{
 		{Text: "recovered without a turn", Status: domain.PlanStepInProgress},
 	}}, histClock.Add(time.Second))
-	latest, err := s.ConversationPlans(ctx, conversation, 0, 1)
+	latest, _, err := s.ConversationPlans(ctx, conversation, 0, 1)
 	if err != nil || len(latest) != 1 || latest[0].TurnID != "" || latest[0].SourceActivityID != "activity-unrecorded" {
 		t.Fatalf("unattributed plan = %+v, %v", latest, err)
 	}
@@ -143,7 +143,7 @@ func TestConversationPlansFollowBranchCutoffSwitchAndRollback(t *testing.T) {
 	}
 	appendPlanTurn(t, s, conversation, session, "first", histClock)
 	writePlan(t, s, conversation, "first", domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: "ancestor", Status: domain.PlanStepCompleted}}}, histClock)
-	first, err := s.ConversationPlans(ctx, conversation, 0, 1)
+	first, _, err := s.ConversationPlans(ctx, conversation, 0, 1)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("ancestor = %+v, %v", first, err)
 	}
@@ -157,8 +157,8 @@ func TestConversationPlansFollowBranchCutoffSwitchAndRollback(t *testing.T) {
 	if err := s.ActivateConversationBranch(ctx, session, conversation, child.ID, child.ProviderConversationID, "gen-child", histClock); err != nil {
 		t.Fatal(err)
 	}
-	inherited, err := s.ConversationPlans(ctx, conversation, 0, 10)
-	if err != nil || len(inherited) != 1 || inherited[0].Plan.Steps[0].Text != "ancestor" {
+	inherited, snapshotBranch, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	if err != nil || snapshotBranch != child.ID || len(inherited) != 1 || inherited[0].Plan.Steps[0].Text != "ancestor" {
 		t.Fatalf("fork leaked a later parent plan: %+v, %v", inherited, err)
 	}
 	if _, err := s.AppendUserMessage(ctx, conversation, session, "gen-child", domain.ConversationMessage{
@@ -173,14 +173,14 @@ func TestConversationPlansFollowBranchCutoffSwitchAndRollback(t *testing.T) {
 	if err := s.ActivateConversationBranch(ctx, session, conversation, root.ActiveBranchID, rootBranch.ProviderConversationID, "gen-root-again", histClock); err != nil {
 		t.Fatal(err)
 	}
-	back, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	back, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(back) != 2 || back[0].Plan.Steps[0].Text != "root future" {
 		t.Fatalf("switch leaked child: %+v, %v", back, err)
 	}
 	if _, err := s.RollbackTurns(ctx, conversation, "second", histClock.Add(4*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	rolledBack, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	rolledBack, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(rolledBack) != 1 || rolledBack[0].Plan.Steps[0].Text != "ancestor" {
 		t.Fatalf("rollback returned discarded plan: %+v, %v", rolledBack, err)
 	}
@@ -213,7 +213,7 @@ func TestConversationPlansUseAtomicGenerationFencedProjection(t *testing.T) {
 	if err == nil {
 		t.Fatal("injected failure was accepted")
 	}
-	failed, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	failed, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("partial plan survived rollback: %+v, %v", failed, err)
 	}
@@ -229,7 +229,7 @@ func TestConversationPlansUseAtomicGenerationFencedProjection(t *testing.T) {
 	}); err != nil || applied {
 		t.Fatalf("replay applied = %v, %v", applied, err)
 	}
-	accepted, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	accepted, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(accepted) != 1 || accepted[0].Plan.Steps[0].Text != "accepted" {
 		t.Fatalf("accepted plan = %+v, %v", accepted, err)
 	}
@@ -243,7 +243,7 @@ func TestConversationPlansOrderByAcceptedUpdateRatherThanFirstActivity(t *testin
 	appendPlanTurn(t, s, conversation, session, "second", histClock.Add(2*time.Second))
 	writePlan(t, s, conversation, "second", domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: "second plan", Status: domain.PlanStepPending}}}, histClock.Add(3*time.Second))
 	writePlan(t, s, conversation, "first", domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: "latest accepted replan", Status: domain.PlanStepPending}}}, histClock.Add(4*time.Second))
-	plans, err := s.ConversationPlans(ctx, conversation, 0, 1)
+	plans, _, err := s.ConversationPlans(ctx, conversation, 0, 1)
 	if err != nil || len(plans) != 1 || plans[0].Plan.Steps[0].Text != "latest accepted replan" {
 		t.Fatalf("latest = %+v, %v", plans, err)
 	}
@@ -259,7 +259,7 @@ func TestConversationPlansCompletionDoesNotPromoteAnOlderSource(t *testing.T) {
 	if err := s.SettleTurn(ctx, conversation, "provider-first", domain.TurnStateCompleted, "", histClock.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	plans, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	plans, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(plans) != 2 || plans[0].TurnID != "second" || plans[0].Plan.Steps[0].Status != domain.PlanStepPending || plans[1].Plan.Steps[0].Status != domain.PlanStepCompleted {
 		t.Fatalf("completed older source = %+v, %v", plans, err)
 	}
@@ -274,7 +274,7 @@ func TestConversationPlansPreserveARevisionBeforeTheForkCutoff(t *testing.T) {
 	}
 	appendPlanTurn(t, s, conversation, session, "first", histClock)
 	writePlan(t, s, conversation, "first", domain.ConversationPlan{SpansTurns: true, Steps: []domain.ConversationPlanStep{{Text: "before fork", Status: domain.PlanStepPending}}}, histClock)
-	before, err := s.ConversationPlans(ctx, conversation, 0, 1)
+	before, _, err := s.ConversationPlans(ctx, conversation, 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestConversationPlansPreserveARevisionBeforeTheForkCutoff(t *testing.T) {
 	if err := s.ActivateConversationBranch(ctx, session, conversation, child.ID, child.ProviderConversationID, "revision-generation", histClock); err != nil {
 		t.Fatal(err)
 	}
-	plans, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	plans, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(plans) != 1 || plans[0].Plan.Steps[0].Text != "before fork" {
 		t.Fatalf("fork revision = %+v, %v", plans, err)
 	}
@@ -313,7 +313,7 @@ func TestConversationPlansPreserveLegacyTurnBeforeItsFirstActivity(t *testing.T)
 	if err := s.ActivateConversationBranch(ctx, session, conversation, child.ID, child.ProviderConversationID, "legacy-revision-generation", histClock); err != nil {
 		t.Fatal(err)
 	}
-	plans, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	plans, _, err := s.ConversationPlans(ctx, conversation, 0, 10)
 	if err != nil || len(plans) != 1 || plans[0].Plan.Steps[0].Text != "legacy before update" {
 		t.Fatalf("legacy fork revision = %+v, %v", plans, err)
 	}

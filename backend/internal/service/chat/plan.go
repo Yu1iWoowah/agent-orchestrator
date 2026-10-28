@@ -10,7 +10,7 @@ import (
 )
 
 type conversationPlanReader interface {
-	ConversationPlans(context.Context, string, int64, int64) ([]domain.ConversationPlanVersion, error)
+	ConversationPlans(context.Context, string, int64, int64) ([]domain.ConversationPlanVersion, string, error)
 }
 
 // PlanSnapshot is independent of the transcript's loaded window. Version nil
@@ -80,7 +80,7 @@ func (s *Service) readPlans(ctx context.Context, id domain.SessionID, beforeSequ
 		if err != nil {
 			return domain.ConversationRecord{}, nil, err
 		}
-		plans, err := reader.ConversationPlans(ctx, conversation.ID, beforeSequence, limit)
+		plans, readBranchID, err := reader.ConversationPlans(ctx, conversation.ID, beforeSequence, limit)
 		if err != nil {
 			return domain.ConversationRecord{}, nil, err
 		}
@@ -88,7 +88,7 @@ func (s *Service) readPlans(ctx context.Context, id domain.SessionID, beforeSequ
 		if err != nil {
 			return domain.ConversationRecord{}, nil, err
 		}
-		if current.ID == conversation.ID && current.ActiveBranchID == conversation.ActiveBranchID && current.SessionID == conversation.SessionID {
+		if current.ID == conversation.ID && current.ActiveBranchID == conversation.ActiveBranchID && current.ActiveBranchID == readBranchID && current.SessionID == conversation.SessionID {
 			return conversation, plans, nil
 		}
 	}

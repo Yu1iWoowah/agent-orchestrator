@@ -15,8 +15,9 @@ import (
 )
 
 // ConversationPlans reads bounded structured projections on one consistent
-// active lineage. Empty steps are a clear, not a reason to return an older plan.
-func (s *Store) ConversationPlans(ctx context.Context, conversationID string, beforeSequence, limit int64) ([]domain.ConversationPlanVersion, error) {
+// active lineage and returns that snapshot's branch identity. Empty steps are
+// a clear, not a reason to return an older plan.
+func (s *Store) ConversationPlans(ctx context.Context, conversationID string, beforeSequence, limit int64) ([]domain.ConversationPlanVersion, string, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -27,39 +28,39 @@ func (s *Store) ConversationPlans(ctx context.Context, conversationID string, be
 		beforeSequence = math.MaxInt64
 	}
 	if err := s.backfillConversationPlans(ctx, conversationID); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, fmt.Errorf("begin plan read: %w", err)
+		return nil, "", fmt.Errorf("begin plan read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := gen.New(tx)
 	conversation, err := q.SelectConversationByID(ctx, conversationID)
 	if err != nil {
-		return nil, fmt.Errorf("read plan conversation: %w", err)
+		return nil, "", fmt.Errorf("read plan conversation: %w", err)
 	}
 	floor, err := s.conversationVisibleAfterSequenceQueries(ctx, q, conversation)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	activities, err := q.SelectConversationPlanActivities(ctx, gen.SelectConversationPlanActivitiesParams{
 		ConversationID: conversationID, BeforeSequence: beforeSequence,
 		VisibleAfterSequence: floor, PageLimit: limit,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read plan activities: %w", err)
+		return nil, "", fmt.Errorf("read plan activities: %w", err)
 	}
 	legacy, err := q.SelectLegacyConversationPlans(ctx, gen.SelectLegacyConversationPlansParams{
 		ConversationID: conversationID, BeforeSequence: beforeSequence,
 		VisibleAfterSequence: floor, PageLimit: limit,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read legacy plans: %w", err)
+		return nil, "", fmt.Errorf("read legacy plans: %w", err)
 	}
 	versions, err := q.SelectConversationPlanVersions(ctx, gen.SelectConversationPlanVersionsParams{ConversationID: conversationID, BeforeSequence: beforeSequence, VisibleAfterSequence: floor, PageLimit: limit})
 	if err != nil {
-		return nil, fmt.Errorf("read projected plans: %w", err)
+		return nil, "", fmt.Errorf("read projected plans: %w", err)
 	}
 	plans := make([]domain.ConversationPlanVersion, 0, len(activities)+len(legacy)+len(versions))
 	appendPlan := func(version domain.ConversationPlanVersion, raw string) error {
@@ -74,7 +75,7 @@ func (s *Store) ConversationPlans(ctx context.Context, conversationID string, be
 			row.SourceActivityID = ""
 		}
 		if err := appendPlan(domain.ConversationPlanVersion{ConversationID: conversationID, BranchID: row.BranchID, TurnID: row.TurnID, SourceActivityID: row.SourceActivityID, Sequence: row.AcceptedSequence, Revision: row.Revision, UpdatedAt: row.UpdatedAt}, row.PlanJson); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	for _, row := range activities {
@@ -83,7 +84,7 @@ func (s *Store) ConversationPlans(ctx context.Context, conversationID string, be
 			SourceActivityID: row.SourceActivityID, Sequence: row.Sequence,
 			Revision: row.Revision, UpdatedAt: row.UpdatedAt,
 		}, row.PlanJson); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	for _, row := range legacy {
@@ -91,7 +92,7 @@ func (s *Store) ConversationPlans(ctx context.Context, conversationID string, be
 			ConversationID: conversationID, BranchID: row.BranchID, TurnID: row.TurnID,
 			Sequence: row.Sequence, Revision: 1, UpdatedAt: row.UpdatedAt,
 		}, row.PlanJson); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].Sequence > plans[j].Sequence })
@@ -99,9 +100,9 @@ func (s *Store) ConversationPlans(ctx context.Context, conversationID string, be
 		plans = plans[:limit]
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit plan read: %w", err)
+		return nil, "", fmt.Errorf("commit plan read: %w", err)
 	}
-	return plans, nil
+	return plans, conversation.ActiveBranchID, nil
 }
 
 // projectPlanActivity is called with the same transaction as the turn/activity
