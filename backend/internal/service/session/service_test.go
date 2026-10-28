@@ -3772,6 +3772,8 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		wantKind apierr.Kind
 		wantCode string
 	}{
+		{"unsafe account storage", fmt.Errorf("/private/fake-secret: %w", ports.ErrAgentAccountStorageUnsafe), apierr.KindConflict, "AGENT_ACCOUNT_STORAGE_UNSAFE"},
+		{"unavailable account storage", fmt.Errorf("/private/fake-secret: %w", ports.ErrAgentAccountStorageUnavailable), apierr.KindUnavailable, "AGENT_ACCOUNT_STORAGE_UNAVAILABLE"},
 		{"checked out elsewhere", fmt.Errorf("spawn mer-1: workspace: %w: \"x\" is checked out at \"/tmp\"", ports.ErrWorkspaceBranchCheckedOutElsewhere), apierr.KindConflict, "BRANCH_CHECKED_OUT_ELSEWHERE"},
 		{"default branch unresolved", fmt.Errorf("spawn mer-1: %w: configure defaultBranch", ports.ErrWorkspaceDefaultBranchUnresolved), apierr.KindInvalid, "DEFAULT_BRANCH_UNRESOLVED"},
 		{"not fetched", fmt.Errorf("spawn mer-1: workspace: %w: \"x\" has no local head", ports.ErrWorkspaceBranchNotFetched), apierr.KindInvalid, "BRANCH_NOT_FETCHED"},

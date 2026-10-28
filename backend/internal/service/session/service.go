@@ -1575,6 +1575,11 @@ func mapSessionError(err error) error {
 		return apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	case errors.Is(err, ErrPRNotOpen):
 		return apierr.Conflict("PR_NOT_OPEN", "PR is not open", nil)
+	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
+		return apierr.Conflict("AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
+	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
+		return apierr.Unavailable("AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is temporarily unavailable. Retry later.")
+
 	case errors.Is(err, ports.ErrAgentAccountUnknown):
 		return apierr.NotFound("AGENT_ACCOUNT_NOT_FOUND", "Unknown agent account")
 	case errors.Is(err, ports.ErrAgentAccountProviderMismatch):

@@ -788,6 +788,8 @@ type WorkspaceHookConfig struct {
 
 // RestoreConfig carries inputs needed to continue an existing native agent session.
 type RestoreConfig struct {
+	// Env is the resolved launch environment, including trusted account policy.
+	Env             map[string]string
 	Config          AgentConfig
 	DataDir         string
 	Kind            domain.SessionKind

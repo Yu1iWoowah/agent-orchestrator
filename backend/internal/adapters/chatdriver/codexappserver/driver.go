@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -566,13 +568,14 @@ func (d *Driver) connectSession(
 			return nil, false, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 		}
 	}
+	providerEnv := envSlice(env)
 	hostConfig := persistenthost.Config{
 		SessionID:     string(sessionID),
 		ReconnectOnly: reconnectOnly,
 		DataDir:       dataDir,
 		Workdir:       workdir,
-		Env:           envSlice(env),
-		Argv:          []string{bin, "app-server"},
+		Env:           providerEnv,
+		Argv:          append([]string{bin}, accountAppServerArgs(providerEnv)...),
 	}
 	if prepareEnv != nil {
 		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
@@ -580,8 +583,9 @@ func (d *Driver) connectSession(
 			if prepareErr != nil {
 				return persistenthost.PreparedProvider{}, prepareErr
 			}
+			providerEnv := envSlice(preparedEnv)
 			return persistenthost.PreparedProvider{
-				Env: envSlice(preparedEnv), Argv: []string{bin, "app-server"},
+				Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...),
 			}, nil
 		}
 	}
@@ -721,7 +725,7 @@ func launchApprovalSettings(mode ports.PermissionMode, readOnly bool) (policy, s
 
 // spawnAppServer is the real launcher.
 func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*process, error) {
-	args := []string{"app-server"}
+	args := accountAppServerArgs(env)
 	cmd := aoprocess.Command(bin, args...)
 	cmd.Dir = workdir
 	if len(env) > 0 {
@@ -786,7 +790,19 @@ func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*pr
 // and every toolchain cache is missing. Found while writing the Claude driver,
 // where the same shape failed outright with "Not logged in".
 func envSlice(env map[string]string) []string {
-	return processenv.Merge(env)
+	overlay := make(map[string]string, len(env)+1)
+	overlay[agentlaunch.ManagedCodexAccountEnv] = ""
+	for key, value := range env {
+		overlay[key] = value
+	}
+	return processenv.Merge(overlay)
+}
+
+func accountAppServerArgs(env []string) []string {
+	if runtime.GOOS == "linux" && slices.Contains(env, agentlaunch.ManagedCodexAccountEnv+"=1") {
+		return []string{"-c", `cli_auth_credentials_store="file"`, "app-server"}
+	}
+	return []string{"app-server"}
 }
 
 // codexProcessEnv applies the same executable-aware PATH augmentation as the
