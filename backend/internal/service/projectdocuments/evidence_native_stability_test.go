@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,9 @@ func nativeEvidenceInput(t *testing.T, reply string) (fixture, docs.EvidenceInpu
 }
 
 func TestHandoffEvidenceNativeChangeBetweenPreflightAndReservation(t *testing.T) {
+	if nativePublicationUnsupported(t) {
+		return
+	}
 	for _, name := range []string{"append pending hook", "same-size tail rewrite preserving mtime", "replace inode preserving bytes and mtime"} {
 		t.Run(name, func(t *testing.T) {
 			f, in, nativePath, snapshot := nativeEvidenceInput(t, "settled audit reply")
@@ -142,6 +146,9 @@ func TestHandoffEvidenceNativeChangeBetweenPreflightAndReservation(t *testing.T)
 }
 
 func TestHandoffEvidenceStableLargeNativeFile(t *testing.T) {
+	if nativePublicationUnsupported(t) {
+		return
+	}
 	f, in, _, _ := nativeEvidenceInput(t, strings.Repeat("long verified reply ", 10000))
 	ctx := context.Background()
 	if _, err := f.service.PublishEvidence(ctx, "demo", in); err != nil {
@@ -153,4 +160,173 @@ func TestHandoffEvidenceStableLargeNativeFile(t *testing.T) {
 	if _, err := f.service.ReadEvidence(ctx, "demo", in.OperationID, in.AttemptID, "transcript.md"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestHandoffEvidenceNativeFingerprintMutationMatrix(t *testing.T) {
+	if nativePublicationUnsupported(t) {
+		return
+	}
+	cases := []string{"append", "truncate", "replace-inode", "prefix-new-mtime", "tail-preserve-mtime", "small-prefix-preserve-mtime", "large-prefix-preserve-mtime"}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			reply := strings.Repeat("long verified reply ", 10000) + "TAILMARK_A"
+			if name == "small-prefix-preserve-mtime" {
+				reply = "settled reply TAILMARK_A"
+			}
+			f, in, path, snapshot := nativeEvidenceInput(t, reply)
+			ctx := context.Background()
+			mutations := 0
+			hooked := &nativeMutationStore{Store: f.db, mutate: func() error {
+				mutations++
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					return err
+				}
+				original := string(data)
+				switch name {
+				case "append":
+					data = append(data, []byte("{}\n")...)
+				case "truncate":
+					data = data[:len(data)-1]
+				case "replace-inode":
+					replacement := path + ".replacement"
+					if err = os.WriteFile(replacement, data, 0600); err != nil {
+						return err
+					}
+					if err = os.Chtimes(replacement, info.ModTime(), info.ModTime()); err != nil {
+						return err
+					}
+					return os.Rename(replacement, path)
+				case "tail-preserve-mtime":
+					data = []byte(strings.Replace(original, "TAILMARK_A", "TAILMARK_B", 1))
+				default:
+					data = []byte(strings.Replace(original, "audit request", "other request", 1))
+				}
+				if strings.Contains(name, "prefix") || name == "tail-preserve-mtime" {
+					if len(data) != len(original) || string(data) == original {
+						t.Fatal("invalid equal-size rewrite fixture")
+					}
+				}
+				if name == "large-prefix-preserve-mtime" {
+					if len(data) <= 64<<10 || string(data[len(data)-(64<<10):]) != original[len(original)-(64<<10):] {
+						t.Fatal("mutation was not outside the tail window")
+					}
+				}
+				if err = os.WriteFile(path, data, 0600); err != nil {
+					return err
+				}
+				if strings.Contains(name, "preserve-mtime") {
+					return os.Chtimes(path, info.ModTime(), info.ModTime())
+				}
+				if name == "prefix-new-mtime" {
+					return os.Chtimes(path, info.ModTime(), info.ModTime().Add(time.Second))
+				}
+				return nil
+			}}
+			svc := docs.New(docs.Deps{Store: hooked, DataDir: f.root, Capabilities: capability{}})
+			_, publicationErr := svc.PublishEvidence(ctx, "demo", in)
+			if !hooked.changed || mutations != 1 {
+				t.Fatalf("unexpected mutation/retry count %d", mutations)
+			}
+			after, err := f.db.LoadTranscriptSourceSnapshot(ctx, f.owner.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Fingerprint != snapshot.Fingerprint {
+				t.Fatal("fixture changed AO fingerprint")
+			}
+			file, readErr := f.service.ReadEvidence(ctx, "demo", in.OperationID, in.AttemptID, "transcript.md")
+			if publicationErr == nil {
+				t.Fatalf("changed native file published: case=%s coverage=%s readable=%t originalPromptInEvidence=%t fullRevalidate=%v", name, in.Export.Manifest.Coverage, readErr == nil, strings.Contains(file.Content, "audit request"), in.Export.Revalidate(ctx))
+			}
+			var failure *ports.NativeTranscriptError
+			if !errors.As(publicationErr, &failure) || failure.Code != "TRANSCRIPT_SOURCE_CHANGED" {
+				t.Fatalf("wrong rejection: %v", publicationErr)
+			}
+			if readErr == nil {
+				t.Fatal("rejected evidence readable")
+			}
+			attempt := filepath.Join(f.root, "projects/demo/orchestrator/handoffs", in.OperationID, in.AttemptID)
+			if _, err = os.Stat(attempt); !os.IsNotExist(err) {
+				t.Fatalf("failed attempt occupied final path: %v", err)
+			}
+			t.Logf("%s rejected; mutation/reservation calls=%d; code=%s", name, mutations, failure.Code)
+		})
+	}
+}
+
+type countingNativeReader struct {
+	reader        ports.NativeTranscriptReader
+	reads, checks int
+}
+
+func (r *countingNativeReader) ReadNativeTranscript(ctx context.Context, req ports.NativeTranscriptRequest) (ports.NativeTranscriptSegment, error) {
+	r.reads++
+	segment, err := r.reader.ReadNativeTranscript(ctx, req)
+	check := segment.CheckStability
+	if check != nil {
+		segment.CheckStability = func(ctx context.Context) error { r.checks++; return check(ctx) }
+	}
+	return segment, err
+}
+func TestHandoffEvidenceFreshWitnessWithoutImplicitRetries(t *testing.T) {
+	if nativePublicationUnsupported(t) {
+		return
+	}
+	f, in, path, snapshot := nativeEvidenceInput(t, strings.Repeat("stable reply ", 10000))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &countingNativeReader{reader: claudecode.New()}
+	id := in.Export.Manifest.Segments[0].NativeID
+	in.Export, err = transcriptexport.Build(context.Background(), snapshot, []transcriptexport.EpochCutoff{{NativeID: id, Bytes: info.Size(), LeafID: "a", Schema: ports.ClaudeTranscriptSchemaV1}}, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt domain.HandoffEvidenceReceipt
+	for i := 0; i < 2; i++ {
+		got, err := f.service.PublishEvidence(context.Background(), "demo", in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			receipt = got
+		} else if got != receipt {
+			t.Fatal("stable retry receipt changed")
+		}
+	}
+	if reader.reads != 3 || reader.checks != 2 {
+		t.Fatalf("unexpected read/check/retry counts: reads=%d publicationChecks=%d", reader.reads, reader.checks)
+	}
+	t.Logf("one Build plus two publications: strictReads=%d publicationWitnessChecks=%d", reader.reads, reader.checks)
+}
+
+// On unsupported platforms these tests assert publication refusal explicitly;
+// they do not claim that the native mutation matrix is supported there.
+func nativePublicationUnsupported(t *testing.T) bool {
+	t.Helper()
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		return false
+	}
+	f, in, _, _ := nativeEvidenceInput(t, "unsupported platform fixture")
+	ctx := context.Background()
+	_, err := f.service.PublishEvidence(ctx, "demo", in)
+	var failure *ports.NativeTranscriptError
+	if !errors.As(err, &failure) || failure.Code != "TRANSCRIPT_STABILITY_UNSUPPORTED" {
+		t.Fatalf("unsupported platform did not refuse publication: %v", err)
+	}
+	if _, err = f.service.ReadEvidence(ctx, "demo", in.OperationID, in.AttemptID, "transcript.md"); err == nil {
+		t.Fatal("unsupported evidence became readable")
+	}
+	attempt := filepath.Join(f.root, "projects/demo/orchestrator/handoffs", in.OperationID, in.AttemptID)
+	if _, err = os.Stat(attempt); !os.IsNotExist(err) {
+		t.Fatalf("unsupported attempt occupied final path: %v", err)
+	}
+	t.Log("no verified native change time on this platform; publication refused, mutation support not claimed")
+	return true
 }

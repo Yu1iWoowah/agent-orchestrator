@@ -23,7 +23,7 @@ import (
 
 var _ ports.NativeTranscriptReader = (*Plugin)(nil)
 
-const transcriptReaderVersion = "claude-jsonl-reader/3"
+const transcriptReaderVersion = "claude-jsonl-reader/4"
 
 func transcriptFailure(code, reason string) error {
 	return &ports.NativeTranscriptError{Code: code, Reason: reason}
@@ -301,9 +301,14 @@ func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeT
 	if err := ctx.Err(); err != nil {
 		return ports.NativeTranscriptSegment{}, err
 	}
-	segment.CheckStability = nativeStabilityCheck(rootPath, relative, rootInfo, opened, sha256.Sum256(tail.data))
-	if err := segment.CheckStability(ctx); err != nil {
-		return ports.NativeTranscriptSegment{}, err
+	stabilityCheck, available := nativeStabilityCheck(rootPath, relative, rootInfo, opened, sha256.Sum256(tail.data))
+	segment.CheckStability = stabilityCheck
+	// Unsupported platforms may strictly read JSONL, but their witness rejects
+	// publication with TRANSCRIPT_STABILITY_UNSUPPORTED instead of weakening it.
+	if available {
+		if err := stabilityCheck(ctx); err != nil {
+			return ports.NativeTranscriptSegment{}, err
+		}
 	}
 	return segment, nil
 }

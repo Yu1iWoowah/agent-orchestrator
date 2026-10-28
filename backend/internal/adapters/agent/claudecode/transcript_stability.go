@@ -10,6 +10,12 @@ import (
 
 const transcriptTailWindow = 64 << 10
 
+type nativeFileStamp struct {
+	device           uint64
+	ctimeSeconds     int64
+	ctimeNanoseconds int64
+}
+
 // transcriptTail keeps bounded bytes from the stream actually parsed.
 type transcriptTail struct{ data []byte }
 
@@ -27,10 +33,14 @@ func (t *transcriptTail) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func nativeStabilityCheck(rootPath, relative string, rootInfo, expected os.FileInfo, tail [32]byte) func(context.Context) error {
-	return func(ctx context.Context) error {
+func nativeStabilityCheck(rootPath, relative string, rootInfo, expected os.FileInfo, tail [32]byte) (func(context.Context) error, bool) {
+	stamp, available := nativeFileChangeStamp(expected)
+	check := func(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if !available {
+			return transcriptFailure("TRANSCRIPT_STABILITY_UNSUPPORTED", "publication requires verified native device and change time")
 		}
 		changed := func() error {
 			return transcriptFailure("TRANSCRIPT_SOURCE_CHANGED", "native file fingerprint changed after preflight")
@@ -45,7 +55,8 @@ func nativeStabilityCheck(rootPath, relative string, rootInfo, expected os.FileI
 			return changed()
 		}
 		matches := func(info os.FileInfo) bool {
-			return info != nil && info.Mode().IsRegular() && os.SameFile(expected, info) && info.Size() == expected.Size() && info.ModTime().Equal(expected.ModTime())
+			current, ok := nativeFileChangeStamp(info)
+			return ok && current == stamp && info.Mode().IsRegular() && os.SameFile(expected, info) && info.Size() == expected.Size() && info.ModTime().Equal(expected.ModTime())
 		}
 		named, err := root.Lstat(relative)
 		if err != nil || !matches(named) {
@@ -80,4 +91,5 @@ func nativeStabilityCheck(rootPath, relative string, rootInfo, expected os.FileI
 		}
 		return ctx.Err()
 	}
+	return check, available
 }
