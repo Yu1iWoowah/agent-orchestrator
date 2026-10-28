@@ -1,6 +1,7 @@
 import {
 	useInfiniteQuery,
 	useMutation,
+	useQueries,
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
@@ -35,6 +36,118 @@ export const sessionAttentionQueryKey = (sessionId: string, hostId?: string) =>
 export class AttentionUnavailable extends Error {}
 class AttentionSourceUnavailable extends Error {}
 
+async function fetchAttentionSource(
+	sessionId: string,
+	hostId: string | undefined,
+	activityId: string,
+	signal: AbortSignal,
+) {
+	const { data, error } = await clientForSessionHost(hostId).GET(
+		"/api/v1/sessions/{sessionId}/attention/{activityId}",
+		{ params: { path: { sessionId, activityId } }, signal },
+	);
+	if (error?.code === "ATTENTION_CHANGED")
+		throw new AttentionSourceUnavailable();
+	if (error || !data)
+		throw new Error(
+			apiErrorMessage(error, "The request is no longer available."),
+		);
+	return checkedAttentionResponse(data);
+}
+
+/** Keep drafted sources observed after selection moves to another request. */
+function useAttentionDraftCleanup(
+	sessionId: string,
+	hostId: string | undefined,
+	branchId: string | undefined,
+	enabled: boolean,
+) {
+	const drafts = useProviderInputDraftStore((state) => state.drafts);
+	const sources = useMemo(() => {
+		const scoped = new Map<
+			string,
+			{ conversationId: string; activityId: string; revision: number }
+		>();
+		if (!enabled || branchId === undefined) return [];
+		for (const key of Object.keys(drafts)) {
+			let parts: unknown;
+			try {
+				parts = JSON.parse(key);
+			} catch {
+				continue;
+			}
+			if (
+				!Array.isArray(parts) ||
+				parts.length !== 6 ||
+				parts[0] !== (hostId ?? null) ||
+				parts[1] !== sessionId ||
+				parts[3] !== branchId ||
+				typeof parts[2] !== "string" ||
+				typeof parts[4] !== "string" ||
+				typeof parts[5] !== "number" ||
+				!Number.isFinite(parts[5])
+			)
+				continue;
+			const source = {
+				conversationId: parts[2],
+				activityId: parts[4],
+				revision: parts[5],
+			};
+			const id = JSON.stringify([source.conversationId, source.activityId]);
+			const previous = scoped.get(id);
+			if (!previous || previous.revision < source.revision)
+				scoped.set(id, source);
+		}
+		return [...scoped.values()];
+	}, [drafts, enabled, hostId, sessionId, branchId]);
+	const queries = useQueries({
+		queries: sources.map((source) => ({
+			queryKey: [
+				...sessionAttentionQueryKey(sessionId, hostId),
+				"draft-source",
+				branchId,
+				source.conversationId,
+				source.activityId,
+			],
+			queryFn: ({ signal }: { signal: AbortSignal }) =>
+				fetchAttentionSource(sessionId, hostId, source.activityId, signal),
+			retry: false,
+		})),
+	});
+	useEffect(() => {
+		for (const [index, source] of sources.entries()) {
+			const query = queries[index];
+			const data = query?.data;
+			if (
+				!query?.isSuccess ||
+				!data ||
+				data.conversationId !== source.conversationId ||
+				data.activeBranchId !== branchId
+			)
+				continue;
+			if (
+				data.items.some(
+					(item) =>
+						item.branchId === branchId &&
+						item.activity.id === source.activityId &&
+						!item.actionable &&
+						item.activity.revision >= source.revision &&
+						["resolved", "completed", "cancelled"].includes(
+							item.activity.status,
+						),
+				)
+			) {
+				useProviderInputDraftStore.getState().clearSource({
+					hostId,
+					sessionId,
+					branchId,
+					activityId: source.activityId,
+				});
+			}
+		}
+	}, [queries, sources, hostId, sessionId, branchId]);
+}
+
 export function useSessionAttention(
 	sessionId: string,
 	hostId: string | undefined,
@@ -42,7 +155,13 @@ export function useSessionAttention(
 	state: "open" | "history",
 	enabled = true,
 ) {
-	const query = useInfiniteQuery({
+	useAttentionDraftCleanup(
+		sessionId,
+		hostId,
+		branchId,
+		enabled && state === "open",
+	);
+	return useInfiniteQuery({
 		queryKey: [...sessionAttentionQueryKey(sessionId, hostId), branchId, state],
 		enabled,
 		initialPageParam: undefined as number | undefined,
@@ -71,25 +190,6 @@ export function useSessionAttention(
 			page.hasMoreBefore ? page.nextBeforeSequence : undefined,
 		retry: false,
 	});
-	useEffect(() => {
-		for (const page of query.data?.pages ?? []) {
-			for (const item of page.items) {
-				if (
-					["resolved", "completed", "cancelled"].includes(item.activity.status)
-				) {
-					useProviderInputDraftStore
-						.getState()
-						.clearSource({
-							hostId,
-							sessionId,
-							branchId: item.branchId,
-							activityId: item.activity.id,
-						});
-				}
-			}
-		}
-	}, [query.data, hostId, sessionId]);
-	return query;
 }
 
 /** A fresh lookup selects the one original composer form, never a duplicate. */
@@ -117,22 +217,8 @@ export function useAttentionSelection(
 			active ? selected.nonce : undefined,
 		],
 		enabled: active,
-		queryFn: async ({ signal }) => {
-			const { data, error } = await clientForSessionHost(hostId).GET(
-				"/api/v1/sessions/{sessionId}/attention/{activityId}",
-				{
-					params: { path: { sessionId, activityId: selected?.id ?? "" } },
-					signal,
-				},
-			);
-			if (error?.code === "ATTENTION_CHANGED")
-				throw new AttentionSourceUnavailable();
-			if (error || !data)
-				throw new Error(
-					apiErrorMessage(error, "The request is no longer available."),
-				);
-			return checkedAttentionResponse(data);
-		},
+		queryFn: ({ signal }) =>
+			fetchAttentionSource(sessionId, hostId, selected?.id ?? "", signal),
 		retry: false,
 	});
 	const markRead = useMutation({

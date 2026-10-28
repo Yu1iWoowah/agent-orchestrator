@@ -59,6 +59,204 @@ afterEach(() => {
 	client.clear();
 	vi.useRealTimers();
 });
+describe("unselected provider input drafts", () => {
+	function prepare(hostId?: string) {
+		let closedA = false;
+		let omitA = false;
+		let lookup:
+			| "current"
+			| "offline"
+			| "other-branch"
+			| "other-conversation"
+			| "older-revision" = "current";
+		const key = (
+			id: string,
+			host = hostId,
+			session = "session",
+			branch = "root",
+		) => JSON.stringify([host ?? null, session, "conv", branch, id, 2]);
+		const retained = [
+			key("A", "another-host"),
+			key("A", hostId, "another-session"),
+			key("A", hostId, "session", "another-branch"),
+		];
+		for (const draftKey of [key("A"), key("B"), ...retained]) {
+			useProviderInputDraftStore.getState().save(draftKey, {
+				values: { target: draftKey === key("A") ? "A-draft" : "B-draft" },
+				activeQuestion: 0,
+				collapsed: false,
+			});
+		}
+		const item = (id: string) => ({
+			...source,
+			actionable: !(closedA && id === "A"),
+			activity: {
+				...source.activity,
+				id,
+				requestId: id,
+				activityKind: "user_input",
+				status: closedA && id === "A" ? "resolved" : "pending",
+				revision: 2,
+			},
+		});
+		get.mockImplementation(
+			(
+				_host,
+				path: string,
+				request: {
+					params: { path: { activityId?: string }; query?: { state: string } };
+				},
+			) => {
+				const isSource = path.endsWith("{activityId}");
+				if (isSource && lookup === "offline")
+					return Promise.reject(new Error("offline"));
+				const items = isSource
+					? [item(request.params.path.activityId ?? "")]
+					: [item("A"), item("B")].filter((entry) =>
+							request.params.query?.state === "history"
+								? !entry.actionable
+								: entry.actionable && (!omitA || entry.activity.id !== "A"),
+						);
+				return Promise.resolve({
+					data: {
+						...page,
+						hasMoreBefore: omitA && !closedA,
+						conversationId:
+							isSource && lookup === "other-conversation"
+								? "another-conversation"
+								: "conv",
+						activeBranchId:
+							isSource && lookup === "other-branch" ? "another-branch" : "root",
+						items:
+							lookup === "older-revision" && isSource
+								? items.map((entry) => ({
+										...entry,
+										activity: { ...entry.activity, revision: 1 },
+									}))
+								: items,
+						counts: {
+							open: closedA ? 1 : 2,
+							unread: 0,
+							history: closedA ? 1 : 0,
+						},
+					},
+					response: { status: 200 },
+				});
+			},
+		);
+		const hook = renderHook(
+			() => ({
+				list: useSessionAttention("session", hostId, "root", "open"),
+				selection: useAttentionSelection("session", hostId, "root", true),
+			}),
+			{ wrapper },
+		);
+		const refresh = async () => {
+			await act(async () => {
+				await client.invalidateQueries({
+					queryKey: sessionAttentionQueryKey("session", hostId),
+				});
+			});
+		};
+		return {
+			...hook,
+			key,
+			retained,
+			refresh,
+			hideA: () => {
+				omitA = true;
+			},
+			closeA: () => {
+				closedA = true;
+			},
+			setLookup: (value: typeof lookup) => {
+				lookup = value;
+			},
+		};
+	}
+
+	it.each([undefined, "remote"])(
+		"evicts externally resolved unselected A without history and retains pending B (host %s)",
+		async (hostId) => {
+			const hook = prepare(hostId);
+			await waitFor(() =>
+				expect(hook.result.current.list.isSuccess).toBe(true),
+			);
+			act(() => hook.result.current.selection.locate("A"));
+			await waitFor(() =>
+				expect(hook.result.current.selection.activity?.id).toBe("A"),
+			);
+			act(() => hook.result.current.selection.locate("B"));
+			await waitFor(() =>
+				expect(hook.result.current.selection.activity?.id).toBe("B"),
+			);
+			hook.closeA();
+			await hook.refresh();
+			await waitFor(() =>
+				expect(hook.result.current.list.data?.pages[0].counts.open).toBe(1),
+			);
+			await waitFor(() =>
+				expect(
+					useProviderInputDraftStore.getState().drafts[hook.key("A")],
+				).toBeUndefined(),
+			);
+			expect(hook.result.current.selection.selectedId).toBe("B");
+			expect(
+				useProviderInputDraftStore.getState().drafts[hook.key("B")]?.values
+					.target,
+			).toBe("B-draft");
+			for (const key of hook.retained)
+				expect(useProviderInputDraftStore.getState().drafts[key]).toBeDefined();
+			expect(
+				get.mock.calls.some(
+					([, , request]) => request.params.query?.state === "history",
+				),
+			).toBe(false);
+		},
+	);
+
+	it("keeps drafts when the source is pending, offline, out of scope or older than the draft", async () => {
+		const hook = prepare();
+		await waitFor(() => expect(hook.result.current.list.isSuccess).toBe(true));
+		// A can be absent from an open page because of pagination, not resolution.
+		hook.hideA();
+		await hook.refresh();
+		expect(
+			useProviderInputDraftStore.getState().drafts[hook.key("A")]?.values
+				.target,
+		).toBe("A-draft");
+		hook.closeA();
+		for (const state of [
+			"offline",
+			"other-branch",
+			"other-conversation",
+			"older-revision",
+		] as const) {
+			hook.setLookup(state);
+			await hook.refresh();
+			expect(
+				useProviderInputDraftStore.getState().drafts[hook.key("A")]?.values
+					.target,
+			).toBe("A-draft");
+			expect(
+				useProviderInputDraftStore.getState().drafts[hook.key("B")]?.values
+					.target,
+			).toBe("B-draft");
+		}
+		hook.setLookup("current");
+		await hook.refresh();
+		await waitFor(() =>
+			expect(
+				useProviderInputDraftStore.getState().drafts[hook.key("A")],
+			).toBeUndefined(),
+		);
+		expect(
+			useProviderInputDraftStore.getState().drafts[hook.key("B")]?.values
+				.target,
+		).toBe("B-draft");
+	});
+});
+
 describe("attention source identity", () => {
 	it("releases a source resolved by another client and removes only its scoped drafts", async () => {
 		let resolved = false;
