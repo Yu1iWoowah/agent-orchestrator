@@ -2341,6 +2341,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/agent-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read durable agent preferences and saved capability evidence without waking the provider */
+        get: operations["getSessionAgentSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/artifact-files": {
         parameters: {
             query?: never;
@@ -4742,6 +4759,12 @@ export interface components {
             provider?: string;
             supportsFast?: boolean;
         };
+        AgentModelSettingsCapabilities: {
+            efforts: string[];
+            /** @enum {string} */
+            fast: "unknown" | "supported" | "unsupported";
+            model: string;
+        };
         AgentModelsResponse: {
             agentId: string;
             allowCustom: boolean;
@@ -4789,6 +4812,12 @@ export interface components {
             /** Format: date-time */
             lastUsedAt?: null | string;
             usageCount: number;
+        };
+        AgentSettings: {
+            effort: string;
+            /** @enum {string} */
+            fastMode: "default" | "on" | "off";
+            model: string;
         };
         AgentUpdateAdvisory: {
             agentId: string;
@@ -6992,6 +7021,26 @@ export interface components {
         SessionAgentAccountsResponse: {
             claude?: string;
             codex?: string;
+        };
+        SessionAgentSettingsCapabilities: {
+            accountId?: string;
+            controllerGeneration: string;
+            /** Format: int64 */
+            generation: number;
+            models: components["schemas"]["AgentModelSettingsCapabilities"][];
+            /** Format: date-time */
+            observedAt?: null | string;
+            reason?: string;
+            source?: string;
+            /** @enum {string} */
+            state: "unknown" | "supported" | "unsupported";
+        };
+        SessionAgentSettingsResponse: {
+            capabilities: components["schemas"]["SessionAgentSettingsCapabilities"];
+            /** Format: int64 */
+            revision: number;
+            sessionId: string;
+            settings: components["schemas"]["AgentSettings"];
         };
         SessionArchiveSummary: {
             byProject: {
@@ -16544,6 +16593,56 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getSessionAgentSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAgentSettingsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
         };
     };

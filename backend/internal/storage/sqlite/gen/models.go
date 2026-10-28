@@ -274,6 +274,7 @@ type Conversation struct {
 	ActiveBranchID             string
 	OpencodeMode               string
 	AutoCompactWindow          string
+	AgentFastMode              string
 }
 
 type ConversationActivity struct {
@@ -769,6 +770,8 @@ type Session struct {
 	LaunchOptions                    string
 	BranchNaming                     bool
 	TemporaryBranch                  string
+	AgentFastMode                    string
+	AgentSettingsRevision            int64
 }
 
 type SessionAgentAccount struct {
@@ -776,6 +779,22 @@ type SessionAgentAccount struct {
 	Provider  string
 	AccountID string
 	BoundAt   time.Time
+}
+
+type SessionAgentSettingsAudit struct {
+	OperationID string
+	Phase       string
+	RecordedAt  time.Time
+}
+
+type SessionAgentSettingsOperation struct {
+	ID             string
+	SessionID      string
+	IdempotencyKey string
+	RequestJson    string
+	Phase          string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type SessionArtifactVersion struct {
