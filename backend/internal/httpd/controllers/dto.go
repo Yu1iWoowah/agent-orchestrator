@@ -3149,6 +3149,7 @@ type SessionPlanResponse struct {
 	Version        *ConversationPlanVersionResponse `json:"version,omitempty"`
 }
 
+// ConversationPlanVersionResponse identifies one visible structured Plan snapshot.
 type ConversationPlanVersionResponse struct {
 	BranchID         string                   `json:"branchId"`
 	TurnID           string                   `json:"turnId,omitempty"`
@@ -3159,6 +3160,7 @@ type ConversationPlanVersionResponse struct {
 	Plan             ConversationPlanResponse `json:"plan"`
 }
 
+// ConversationPlanHistoryResponse pages saved Plan sources on the active lineage.
 type ConversationPlanHistoryResponse struct {
 	ConversationID     string                            `json:"conversationId,omitempty"`
 	ActiveBranchID     string                            `json:"activeBranchId,omitempty"`

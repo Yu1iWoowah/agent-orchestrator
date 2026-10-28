@@ -5,32 +5,51 @@ import { clientForSessionHost } from "../lib/host-clients";
 
 export type SessionPlan = components["schemas"]["SessionPlanResponse"];
 export type SessionPlanVersion = components["schemas"]["ConversationPlanVersionResponse"];
-export const sessionPlanQueryKey = (sessionId: string, hostId?: string) => hostId ? ["remote-session-plan", hostId, sessionId] as const : ["session-plan", sessionId] as const;
+export const sessionPlanQueryKey = (sessionId: string, hostId?: string) =>
+	hostId
+		? (["remote-session-plan", hostId, sessionId] as const)
+		: (["session-plan", sessionId] as const);
 export class PlanUnavailable extends Error {}
 export function useSessionPlan(sessionId: string, hostId?: string) {
 	return useQuery({
 		queryKey: sessionPlanQueryKey(sessionId, hostId),
 		queryFn: async ({ signal }) => {
-			const { data, error, response } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/plan", { params: { path: { sessionId } }, signal });
-			if (response.status === 501 || (response.status === 404 && error?.code !== "SESSION_NOT_FOUND")) throw new PlanUnavailable("Plan is not supported by this host.");
+			const { data, error, response } = await clientForSessionHost(hostId).GET(
+				"/api/v1/sessions/{sessionId}/plan",
+				{ params: { path: { sessionId } }, signal },
+			);
+			if (
+				response.status === 501 ||
+				(response.status === 404 && error?.code !== "SESSION_NOT_FOUND")
+			)
+				throw new PlanUnavailable("Plan is not supported by this host.");
 			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load Plan."));
 			return data;
 		},
 		retry: false,
 	});
 }
-export function useSessionPlanHistory(sessionId: string, hostId: string | undefined, branchId: string | undefined, enabled: boolean) {
+export function useSessionPlanHistory(
+	sessionId: string,
+	hostId: string | undefined,
+	branchId: string | undefined,
+	enabled: boolean,
+) {
 	return useInfiniteQuery({
 		queryKey: [...sessionPlanQueryKey(sessionId, hostId), "history", branchId],
 		enabled,
 		initialPageParam: undefined as number | undefined,
 		queryFn: async ({ pageParam, signal }) => {
-			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/plan/history", { params: { path: { sessionId }, query: { before: pageParam, limit: 20 } }, signal });
+			const { data, error } = await clientForSessionHost(hostId).GET(
+				"/api/v1/sessions/{sessionId}/plan/history",
+				{ params: { path: { sessionId }, query: { before: pageParam, limit: 20 } }, signal },
+			);
 			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load Plan history."));
-			if (branchId && data.activeBranchId !== branchId) throw new Error("The active branch changed. Refresh Plan history.");
+			if (branchId && data.activeBranchId !== branchId)
+				throw new Error("The active branch changed. Refresh Plan history.");
 			return data;
 		},
-		getNextPageParam: (page) => page.hasMoreBefore ? page.nextBeforeSequence : undefined,
+		getNextPageParam: (page) => (page.hasMoreBefore ? page.nextBeforeSequence : undefined),
 		retry: false,
 	});
 }

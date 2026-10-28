@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { createConversationFrameStore, conversationFrameSessionKey, conversationFrameStorageKey } from "./conversation-frame-store";
+import {
+	createConversationFrameStore,
+	conversationFrameSessionKey,
+	conversationFrameStorageKey,
+} from "./conversation-frame-store";
 
 describe("conversation frame preferences", () => {
 	beforeEach(() => localStorage.clear());
@@ -12,7 +16,12 @@ describe("conversation frame preferences", () => {
 		first.getState().setFrameSize(key, "plan", { width: 520, height: 600 });
 		first.getState().swapFrameSlots(key);
 		const reloaded = createConversationFrameStore(localStorage).getState().sessions[key];
-		expect(reloaded.plan).toMatchObject({ userOpen: true, preferredWidth: 520, preferredHeight: 600, slot: "top" });
+		expect(reloaded.plan).toMatchObject({
+			userOpen: true,
+			preferredWidth: 520,
+			preferredHeight: 600,
+			slot: "top",
+		});
 		expect(reloaded.attention).toMatchObject({ userOpen: false, slot: "bottom" });
 	});
 
@@ -28,12 +37,23 @@ describe("conversation frame preferences", () => {
 	});
 
 	it("ignores invalid saved state rather than mounting overlapping or unbounded frames", () => {
-		localStorage.setItem(conversationFrameStorageKey, JSON.stringify({ sessions: { invalid: { plan: { preferredWidth: "bad", slot: "top" } } } }));
+		localStorage.setItem(
+			conversationFrameStorageKey,
+			JSON.stringify({ sessions: { invalid: { plan: { preferredWidth: "bad", slot: "top" } } } }),
+		);
 		const store = createConversationFrameStore(localStorage);
 		expect(store.getState().sessions.invalid).toBeUndefined();
 		const key = conversationFrameSessionKey("fresh");
 		store.getState().setFrameOpen(key, "attention", true);
-		expect(store.getState().sessions[key].plan).toMatchObject({ userOpen: false, preferredWidth: 360, preferredHeight: 480 });
-		expect(store.getState().sessions[key].attention).toMatchObject({ userOpen: true, preferredWidth: 320, preferredHeight: 360 });
+		expect(store.getState().sessions[key].plan).toMatchObject({
+			userOpen: false,
+			preferredWidth: 360,
+			preferredHeight: 480,
+		});
+		expect(store.getState().sessions[key].attention).toMatchObject({
+			userOpen: true,
+			preferredWidth: 320,
+			preferredHeight: 360,
+		});
 	});
 });

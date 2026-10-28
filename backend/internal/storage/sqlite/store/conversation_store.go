@@ -2334,17 +2334,31 @@ func (s *Store) SetTurnPlan(
 		return false, fmt.Errorf("encode plan for %s: %w", providerTurnID, err)
 	}
 
-	q, unlock := s.conversationWriter(ctx)
+	_, unlock := s.conversationWriter(ctx)
 	defer unlock()
-	rows, err := q.UpdateConversationTurnPlan(ctx, gen.UpdateConversationTurnPlanParams{
-		PlanJson:       string(encoded),
-		ConversationID: conversationID,
-		ProviderTurnID: providerTurnID,
+	var found bool
+	err = s.inTx(ctx, "update turn plan", func(txq *gen.Queries) error {
+		turn, err := txq.SelectConversationTurnByProviderID(ctx, gen.SelectConversationTurnByProviderIDParams{ConversationID: conversationID, ProviderTurnID: providerTurnID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// Preserve legacy turn-only state before its first activity overwrites it.
+		if err := txq.InsertLegacyTurnPlanVersion(ctx, turn.ID); err != nil {
+			return err
+		}
+		rows, err := txq.UpdateConversationTurnPlan(ctx, gen.UpdateConversationTurnPlanParams{
+			PlanJson: string(encoded), ConversationID: conversationID, ProviderTurnID: providerTurnID,
+		})
+		found = rows > 0
+		return err
 	})
 	if err != nil {
 		return false, fmt.Errorf("set turn plan for %s: %w", providerTurnID, err)
 	}
-	return rows > 0, nil
+	return found, nil
 }
 
 // MaxStreamedTextChars caps the provider prose stored for one activity.
@@ -4139,10 +4153,6 @@ func (s *Store) conversationVisibleAfterSequenceQueries(ctx context.Context, q *
 		}
 	}
 	return sequence, nil
-}
-
-func (s *Store) projectConversationResetPending(ctx context.Context, conv gen.Conversation) (bool, error) {
-	return s.projectConversationResetPendingQueries(ctx, s.qr, conv)
 }
 
 func (s *Store) projectConversationResetPendingQueries(ctx context.Context, q *gen.Queries, conv gen.Conversation) (bool, error) {

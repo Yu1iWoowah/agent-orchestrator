@@ -113,6 +113,7 @@ INSERT OR IGNORE INTO conversation_plan_versions(conversation_id,branch_id,sourc
 SELECT t.conversation_id,t.branch_id,'legacy-turn-'||t.id,t.id,MIN(m.sequence),1,t.plan_json,t.requested_at
 FROM conversation_turns t JOIN conversation_messages m ON m.turn_id=t.id AND m.conversation_id=t.conversation_id
 WHERE t.id=?1 AND t.plan_json!=''
+AND NOT EXISTS (SELECT 1 FROM conversation_activities a WHERE a.conversation_id=t.conversation_id AND a.turn_id=t.id AND a.kind='plan')
 GROUP BY t.id
 `
 
@@ -243,7 +244,7 @@ WITH RECURSIVE active_path(branch_id,max_sequence) AS (
  SELECT b.parent_branch_id,CASE WHEN p.max_sequence IS NULL THEN b.fork_after_sequence WHEN b.fork_after_sequence<p.max_sequence THEN b.fork_after_sequence ELSE p.max_sequence END
  FROM active_path p JOIN conversation_branches b ON b.id=p.branch_id WHERE b.parent_branch_id IS NOT NULL
 ), visible AS (
- SELECT v.conversation_id, v.branch_id, v.source_activity_id, v.turn_id, v.accepted_sequence, v.revision, v.plan_json, v.updated_at, ROW_NUMBER() OVER (PARTITION BY v.source_activity_id ORDER BY v.accepted_sequence DESC) AS source_rank
+ SELECT v.conversation_id, v.branch_id, v.source_activity_id, v.turn_id, v.accepted_sequence, v.revision, v.plan_json, v.updated_at, ROW_NUMBER() OVER (PARTITION BY CASE WHEN v.turn_id != '' THEN 'turn:' || v.turn_id ELSE 'activity:' || v.source_activity_id END ORDER BY v.accepted_sequence DESC) AS source_rank
  FROM conversation_plan_versions v JOIN active_path p ON p.branch_id=v.branch_id
  LEFT JOIN conversation_turns t ON t.id=v.turn_id AND t.conversation_id=v.conversation_id
  WHERE v.conversation_id=?3 AND (p.max_sequence IS NULL OR v.accepted_sequence<=p.max_sequence)

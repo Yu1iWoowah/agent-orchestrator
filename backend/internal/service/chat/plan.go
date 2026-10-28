@@ -21,6 +21,7 @@ type PlanSnapshot struct {
 	Version        *domain.ConversationPlanVersion
 }
 
+// PlanHistory is a bounded page of visible saved Plan snapshots.
 type PlanHistory struct {
 	ConversationID     string
 	ActiveBranchID     string
@@ -29,6 +30,7 @@ type PlanHistory struct {
 	NextBeforeSequence int64
 }
 
+// Plan returns the latest visible Plan independently of transcript pagination.
 func (s *Service) Plan(ctx context.Context, id domain.SessionID) (PlanSnapshot, error) {
 	conversation, plans, err := s.readPlans(ctx, id, 0, 1)
 	if err != nil {
@@ -41,6 +43,7 @@ func (s *Service) Plan(ctx context.Context, id domain.SessionID) (PlanSnapshot, 
 	return result, nil
 }
 
+// PlanHistory reads saved sources before an exclusive acceptance sequence.
 func (s *Service) PlanHistory(ctx context.Context, id domain.SessionID, beforeSequence, limit int64) (PlanHistory, error) {
 	if limit <= 0 {
 		limit = 20

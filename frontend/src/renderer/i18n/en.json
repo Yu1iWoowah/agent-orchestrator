@@ -3660,5 +3660,6 @@
 	"plan.offline": "Could not load Plan. The host may be offline.",
 	"plan.unsupported": "Plan is not supported by this host.",
 	"plan.unknownTurn": "Unknown turn",
-	"plan.turn": "Turn {{id}}"
+	"plan.turn": "Turn {{id}}",
+	"frames.needSpace": "Make the window larger to view this panel."
 }

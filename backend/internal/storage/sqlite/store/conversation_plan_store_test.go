@@ -291,3 +291,30 @@ func TestConversationPlansPreserveARevisionBeforeTheForkCutoff(t *testing.T) {
 		t.Fatalf("fork revision = %+v, %v", plans, err)
 	}
 }
+
+func TestConversationPlansPreserveLegacyTurnBeforeItsFirstActivity(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	root, err := s.ConversationForSession(ctx, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendPlanTurn(t, s, conversation, session, "legacy-first", histClock)
+	_, err = s.SetTurnPlan(ctx, conversation, "provider-legacy-first", domain.ConversationPlan{SpansTurns: true, Steps: []domain.ConversationPlanStep{{Text: "legacy before update", Status: domain.PlanStepPending}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Do not read the Plan API first: the first update must preserve old data too.
+	writePlan(t, s, conversation, "legacy-first", domain.ConversationPlan{SpansTurns: true, Steps: []domain.ConversationPlanStep{{Text: "new activity plan", Status: domain.PlanStepPending}}}, histClock.Add(time.Second))
+	child := domain.ConversationBranch{ID: "legacy-revision-child", ConversationID: conversation, SessionID: session, ProviderConversationID: "legacy-revision-thread", ParentBranchID: root.ActiveBranchID, ForkAfterSequence: 1}
+	if err := s.CreateConversationBranch(ctx, child, histClock); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ActivateConversationBranch(ctx, session, conversation, child.ID, child.ProviderConversationID, "legacy-revision-generation", histClock); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := s.ConversationPlans(ctx, conversation, 0, 10)
+	if err != nil || len(plans) != 1 || plans[0].Plan.Steps[0].Text != "legacy before update" {
+		t.Fatalf("legacy fork revision = %+v, %v", plans, err)
+	}
+}
