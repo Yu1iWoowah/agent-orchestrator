@@ -25,9 +25,19 @@ describe("conversation frame geometry", () => {
 		});
 		expect(layout.compact).toBe(false);
 		expect(layout.frames.attention?.open).toBe(true);
-		expect(layout.frames.attention?.rect).toEqual({ left: 496, top: 16, width: 320, height: 360 });
+		expect(layout.frames.attention?.rect).toEqual({
+			left: 496,
+			top: 16,
+			width: 320,
+			height: 360,
+		});
 		expect(layout.frames.plan?.open).toBe(false);
-		expect(layout.frames.plan?.rect).toEqual({ left: 688, top: 388, width: 128, height: 32 });
+		expect(layout.frames.plan?.rect).toEqual({
+			left: 688,
+			top: 388,
+			width: 128,
+			height: 32,
+		});
 	});
 
 	it("keeps both frames open over a narrow conversation even without gutters", () => {
@@ -53,8 +63,18 @@ describe("conversation frame geometry", () => {
 	});
 
 	it.each([
-		{ kinds: ["attention", "plan"] as const, planOpen: false, width: 260, height: 204 },
-		{ kinds: ["attention", "plan"] as const, planOpen: true, width: 280, height: 372 },
+		{
+			kinds: ["attention", "plan"] as const,
+			planOpen: false,
+			width: 260,
+			height: 204,
+		},
+		{
+			kinds: ["attention", "plan"] as const,
+			planOpen: true,
+			width: 280,
+			height: 372,
+		},
 	])(
 		"uses only the minimum rectangle of the intended open combination ($width x $height)",
 		({ kinds, planOpen, width, height }) => {
@@ -86,7 +106,12 @@ describe("conversation frame geometry", () => {
 			availableFrames: ["plan"],
 		});
 		expect(layout.frames.attention).toBeUndefined();
-		expect(layout.frames.plan?.rect).toEqual({ left: 192, top: 0, width: 128, height: 32 });
+		expect(layout.frames.plan?.rect).toEqual({
+			left: 192,
+			top: 0,
+			width: 128,
+			height: 32,
+		});
 	});
 	it("handles a Plan-only open combination at 244px and falls back to header below 76px", () => {
 		const preferences = defaultConversationFramePreferences();
@@ -121,5 +146,15 @@ describe("conversation frame geometry", () => {
 				avoid: [{ left: 200, top: 108, width: 100, height: 32 }],
 			}),
 		).toEqual(conversationFrameSafeRect(boxes));
+	});
+	it("clips an oversized Chat surface to the real visual viewport at high zoom", () => {
+		expect(
+			conversationFrameSafeRect({
+				surface: { left: 240, top: 32, width: 960, height: 600 },
+				viewport: { left: 240, top: 80, width: 960, height: 400 },
+				composer: { left: 240, top: 360, width: 960, height: 120 },
+				visible: { left: 0, top: 0, width: 640, height: 442 },
+			}),
+		).toEqual({ left: 16, top: 64, width: 368, height: 248 });
 	});
 });

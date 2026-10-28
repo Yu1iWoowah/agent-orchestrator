@@ -59,18 +59,30 @@ export function conversationFrameSafeRect({
 	surface,
 	viewport,
 	composer,
+	visible = viewport,
 	avoid = [],
 }: {
 	surface: FrameRect;
 	viewport: FrameRect;
 	composer: FrameRect;
+	visible?: FrameRect;
 	avoid?: readonly FrameRect[];
 }): FrameRect {
-	const left = Math.max(surface.left, viewport.left) + 16;
-	let top = Math.max(surface.top, viewport.top) + 16;
-	const right = Math.min(surface.left + surface.width, viewport.left + viewport.width) - 16;
+	const left = Math.max(surface.left, viewport.left, visible.left) + 16;
+	let top = Math.max(surface.top, viewport.top, visible.top) + 16;
+	const right =
+		Math.min(
+			surface.left + surface.width,
+			viewport.left + viewport.width,
+			visible.left + visible.width,
+		) - 16;
 	const bottom =
-		Math.min(surface.top + surface.height, viewport.top + viewport.height, composer.top) - 16;
+		Math.min(
+			surface.top + surface.height,
+			viewport.top + viewport.height,
+			visible.top + visible.height,
+			composer.top,
+		) - 16;
 	// Collapsed entries must not permanently cover an inline document's controls.
 	for (const toolbar of [...avoid].sort((a, b) => a.top - b.top)) {
 		if (
@@ -142,7 +154,10 @@ export function deriveConversationFrameLayout({
 					remaining - reserve,
 				)
 			: 32;
-		frames[kind] = { open, rect: { left: r.left + r.width - width, top, width, height } };
+		frames[kind] = {
+			open,
+			rect: { left: r.left + r.width - width, top, width, height },
+		};
 		top += height + frameGap;
 		remaining -= height;
 	}

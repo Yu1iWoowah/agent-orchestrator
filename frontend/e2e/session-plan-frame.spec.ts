@@ -173,3 +173,31 @@ test("independent frame slots resize, preserve drafts and clear an expanding com
 	await sheet.getByRole("button", { name: "Collapse Awaiting you", exact: true }).click();
 	await expect(attention).toBeVisible();
 });
+
+test("frames and compact Sheets stay inside a viewport narrower than the Chat surface @T0", async ({
+	page,
+}) => {
+	await page.setViewportSize({ width: 640, height: 900 });
+	await page.goto("/e2e/conversation-frames/harness.html?session=overflow-frame-e2e");
+	await page.locator("[data-conversation-frames]").evaluate((layer) => {
+		if (layer.parentElement) layer.parentElement.style.minWidth = "1200px";
+	});
+	const attention = page.getByRole("region", { name: "Awaiting you", exact: true });
+	await expect(attention).toBeInViewport({ ratio: 1 });
+	await page.setViewportSize({ width: 640, height: 350 });
+	const entry = page.getByRole("button", { name: "Awaiting you", exact: true, expanded: false });
+	await expect(entry).toBeInViewport({ ratio: 1 });
+	await entry.click();
+	const sheet = page.getByRole("dialog", { name: "Awaiting you", exact: true });
+	await expect(sheet).toBeInViewport({ ratio: 1 });
+	await expect
+		.poll(async () => {
+			const box = await sheet.boundingBox();
+			return box ? box.x + box.width : Infinity;
+		})
+		.toBeLessThanOrEqual(624);
+	const box = await sheet.boundingBox();
+	const dock = await page.locator(".cursor-chat-composer-dock").boundingBox();
+	if (!box || !dock) throw Error("Missing compact bounds");
+	expect(box.y + box.height).toBeLessThanOrEqual(dock.y - 15);
+});

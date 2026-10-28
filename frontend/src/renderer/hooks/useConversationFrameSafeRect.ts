@@ -5,7 +5,10 @@ export function useConversationFrameSafeRect(
 	surfaceRef: RefObject<HTMLElement | null>,
 	composerRef: RefObject<HTMLElement | null>,
 ) {
-	const [bounds, setBounds] = useState<{ surface: HTMLElement; rect: FrameRect }>();
+	const [bounds, setBounds] = useState<{
+		surface: HTMLElement;
+		rect: FrameRect;
+	}>();
 	useEffect(() => {
 		const surface = surfaceRef.current;
 		const composer = composerRef.current;
@@ -25,6 +28,12 @@ export function useConversationFrameSafeRect(
 					height: box.bottom - headerBottom,
 				},
 				composer: composer.getBoundingClientRect(),
+				visible: {
+					left: window.visualViewport?.offsetLeft ?? 0,
+					top: window.visualViewport?.offsetTop ?? 0,
+					width: window.visualViewport?.width ?? window.innerWidth,
+					height: window.visualViewport?.height ?? window.innerHeight,
+				},
 				avoid: Array.from(
 					surface.querySelectorAll<HTMLElement>("[data-conversation-frame-avoid]"),
 				).map((toolbar) => toolbar.getBoundingClientRect()),
@@ -56,9 +65,14 @@ export function useConversationFrameSafeRect(
 			mutations.observe(viewport, { childList: true, subtree: true });
 			viewport.addEventListener("scroll", schedule, { passive: true });
 		}
-		mutations.observe(composer, { childList: true, subtree: true, attributes: true });
+		mutations.observe(composer, {
+			childList: true,
+			subtree: true,
+			attributes: true,
+		});
 		window.addEventListener("resize", schedule);
 		window.visualViewport?.addEventListener("resize", schedule);
+		window.visualViewport?.addEventListener("scroll", schedule);
 		measure();
 		return () => {
 			observer.disconnect();
@@ -66,6 +80,7 @@ export function useConversationFrameSafeRect(
 			viewport?.removeEventListener("scroll", schedule);
 			window.removeEventListener("resize", schedule);
 			window.visualViewport?.removeEventListener("resize", schedule);
+			window.visualViewport?.removeEventListener("scroll", schedule);
 			if (frame !== undefined) cancelAnimationFrame(frame);
 		};
 	}, [surfaceRef, composerRef]);

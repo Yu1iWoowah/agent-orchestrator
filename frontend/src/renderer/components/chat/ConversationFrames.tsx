@@ -297,7 +297,7 @@ function FrameChrome({
 	});
 	const style: CSSProperties = {
 		top: rect.top,
-		right: 16,
+		right: `calc(100% - ${safeRect.left + safeRect.width}px)`,
 		width: "var(--frame-width)",
 		height: "var(--frame-height)",
 		maxWidth: safeRect.width,
