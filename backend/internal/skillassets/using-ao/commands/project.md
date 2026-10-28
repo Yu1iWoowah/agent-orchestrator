@@ -128,7 +128,7 @@ ao project rm agent-orchestrator -y
 
 Replace a project's saved configuration. AO reads these settings when it spawns a session. Use flags for common fields or `--config-json` for the full object. `--clear` removes all configuration.
 
-**Warning:** This command replaces the whole config, even when you use focused flags. The CLI silently ignores unknown keys in `--config-json`, so a typo can leave the replacement empty. Its config mirror also omits `effort`; `ao project get --json` cannot show it, and a CLI configuration replacement drops existing effort values. Use Project Settings in the desktop app or the daemon API when you need to preserve or change effort. See the [full-config warning](https://docs.orchestrator.inc/configuration/projects/#update-from-the-cli) before updating project settings from the CLI.
+**Warning:** This command replaces the whole config, even when you use focused flags. The CLI silently ignores unknown keys in `--config-json`, so a typo can leave the replacement empty. To preserve existing settings, read `ao project get <id> --json`, modify its `project.config` object, and pass that complete object to `--config-json`. Include every field you want to keep, including effort and lifecycle commands. See the [full-config warning](https://docs.orchestrator.inc/configuration/projects/#update-from-the-cli) before updating project settings from the CLI.
 
 **Syntax:**
 ```
@@ -162,9 +162,11 @@ ao project set-config <id> [flags]
 
 Use `--config-json` for fields without a dedicated flag, including
 `trackerIntake.provider`, `autoReview`, `containerReap.disabled`,
-`agentConfig.mode`, `worker.agentConfig.mode`, and
-`orchestrator.agentConfig.mode`. The full-config replacement warning above
-still applies.
+`agentConfig.mode`, `worker.agentConfig.mode`,
+`orchestrator.agentConfig.mode`, `agentConfig.effort`,
+`worker.agentConfig.effort`, `orchestrator.agentConfig.effort`,
+`reviewers[].agentConfig.effort`, and `preRemove`. The full-config replacement
+warning above still applies.
 
 **Examples:**
 
