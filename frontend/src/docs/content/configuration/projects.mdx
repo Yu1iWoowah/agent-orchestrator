@@ -48,7 +48,7 @@ ao project rm <project-id>
 | `symlinks` | Repository-relative paths linked into each session workspace. |
 | `postCreate` | Shell commands Orchestrator runs after creating a workspace. A step whose first line is `# ao-timeout: <N>m` runs for at most N minutes (1 to 120). |
 | `preRemove` | Shell commands Orchestrator runs before permanently removing a managed Git worktree. A step may set its own time limit the same way. |
-| `agentConfig` | Default model, permission, and effort settings. Set effort through Project Settings or the daemon API; CLI replacement drops it. |
+| `agentConfig` | Default model, permission, and effort settings. Use Project Settings, the daemon API, or a complete `--config-json` object to change them. |
 | `worker` | Worker harness and agent-config overrides. |
 | `orchestrator` | Orchestrator harness and agent-config overrides. |
 | `agentRules` | Standing instructions for workers. |
@@ -160,7 +160,7 @@ ao project get <project-id> --json
 
 The `--config-json` flag takes a JSON string, not a filename. The CLI silently ignores unknown keys, so a typo can replace the configuration with an empty object. The daemon API rejects unknown fields.
 
-The CLI's project-config mirror also has an `effort` limitation: `ao project get --json` cannot show the configured effort, and `set-config` drops existing effort values. Use Project Settings in the desktop app or the daemon API to view or change effort. For other full-config CLI updates, include every field you want to keep and inspect the result afterward.
+`ao project get --json` shows configured effort values and `preRemove` commands. To preserve them, modify the returned `project.config` object and pass the complete object to `--config-json`. Include every field you want to keep and inspect the result afterward. Focused flags or a `--config-json` object that omits effort still replace the entire configuration and clear existing effort values.
 
 For example, this command replaces the entire configuration with one worker choice; it does not keep setup, rules, reviewers, or effort:
 

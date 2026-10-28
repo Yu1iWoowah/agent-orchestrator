@@ -38,7 +38,7 @@ ao project ls
 ao project get <project-id>
 ```
 
-Use Project Settings in the desktop app for interactive changes. The CLI's `set-config` command replaces the entire project config, even when you use focused flags. Before using it, read [the CLI update warning](/configuration/projects#update-from-the-cli). The CLI ignores unknown JSON keys and drops existing effort values; use Project Settings or the daemon API to view or change effort.
+Use Project Settings in the desktop app for interactive changes. `ao project get --json` shows configured effort values and `preRemove` commands. Modify its `project.config` object and pass the complete object to `set-config --config-json` to preserve them. Focused flags or a JSON object that omits effort still replace the entire config and clear existing effort values. The CLI ignores unknown JSON keys. Before updating, read [the CLI update warning](/configuration/projects#update-from-the-cli).
 
 Project configuration has typed fields for the base branch, session prefix, environment variables, symlinks, setup commands, worker and orchestrator agents, agent options, project rules, reviewers, automatic review, trusted repository URLs, issue intake, and container cleanup. The daemon API rejects unknown fields. The CLI's `--config-json` decoder ignores unknown keys, so a typo can clear existing settings when the full config is replaced.
 
