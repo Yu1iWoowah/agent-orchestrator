@@ -171,3 +171,18 @@ func (s *Service) Open(ctx context.Context, id domain.ProjectID, p string) (*os.
 	}
 	return f, err
 }
+
+// ReadRoot locates an adopted shared tree without creating it or acquiring a writer lease.
+// The read catalog performs its own confined traversal, independent of Info's legacy list cap.
+func (s *Service) ReadRoot(ctx context.Context, id domain.ProjectID) (string, error) {
+	unlock := s.lock(id)
+	defer unlock()
+	state, root, _, err := s.state(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if state.Adoption != nil && !state.Adoption.Complete {
+		return "", conflict("PROJECT_DOCUMENT_ADOPTION_PENDING", "Living file adoption is incomplete")
+	}
+	return root, nil
+}

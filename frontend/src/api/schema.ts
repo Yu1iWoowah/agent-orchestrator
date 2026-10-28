@@ -1461,6 +1461,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/local-documents/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a registered document location (desktop loopback only) */
+        post: operations["resolveLocalDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/mobile/browser-control": {
         parameters: {
             query?: never;
@@ -1834,6 +1851,23 @@ export interface paths {
         get?: never;
         /** Replace a project's per-project config */
         put: operations["setProjectConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/document-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Page through registered worker, orchestrator and shared document metadata */
+        get: operations["getProjectDocumentCatalog"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -6230,6 +6264,49 @@ export interface components {
         DevImportProjectsResponse: {
             report: components["schemas"]["DevImportProjectsReport"];
         };
+        DocumentCatalog: {
+            errors: components["schemas"]["DocumentSourceError"][];
+            incomplete: boolean;
+            items: components["schemas"]["DocumentCatalogItem"][];
+            nextCursor?: string;
+            revision: string;
+        };
+        DocumentCatalogItem: {
+            archived: boolean;
+            fingerprint: string;
+            name: string;
+            path: string;
+            /** Format: int64 */
+            size: number;
+            /** @enum {string} */
+            source: "worker" | "orchestrator" | "shared";
+            target: components["schemas"]["DocumentTarget"];
+            /** Format: date-time */
+            updatedAt?: null | string;
+        };
+        DocumentCatalogResponse: {
+            catalog: components["schemas"]["DocumentCatalog"];
+        };
+        DocumentSourceError: {
+            code: string;
+            sessionId?: string;
+            /** @enum {string} */
+            source: "worker" | "orchestrator" | "shared";
+        };
+        DocumentTarget: {
+            fragment?: null | string;
+            /** @enum {string} */
+            kind: "artifact";
+            path: string;
+            projectId: string;
+            sessionId: string;
+        } | {
+            fragment?: null | string;
+            /** @enum {string} */
+            kind: "shared";
+            path: string;
+            projectId: string;
+        };
         DomainActivity: {
             /** Format: date-time */
             lastActivityAt: string;
@@ -7086,6 +7163,30 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        ResolveDocumentRequest: {
+            /** @enum {string} */
+            kind: "artifact" | "shared" | "local-path";
+        } & ({
+            fragment?: null | string;
+            /** @enum {string} */
+            kind: "artifact";
+            path: string;
+            projectId: string;
+            sessionId: string;
+        } | {
+            fragment?: null | string;
+            /** @enum {string} */
+            kind: "shared";
+            path: string;
+            projectId: string;
+        } | {
+            /** @enum {string} */
+            kind: "local-path";
+            value: string;
+        });
+        ResolveDocumentResponse: {
+            document: components["schemas"]["ResolvedDocument"];
+        };
         ResolveFileReferenceResponse: {
             endLine?: number;
             line?: number;
@@ -7096,6 +7197,18 @@ export interface components {
             side?: string;
             /** @enum {string} */
             state: "unchanged" | "changed" | "unavailable" | "moved";
+        };
+        ResolvedDocument: {
+            canonicalUri: string;
+            /** @description Metadata validator, not a content hash. */
+            fingerprint: string;
+            localPath: string;
+            mediaType: string;
+            /** Format: int64 */
+            size: number;
+            target: components["schemas"]["DocumentTarget"];
+            /** Format: date-time */
+            updatedAt?: null | string;
         };
         RestoreArtifactVersionRequest: {
             /** @description Artifact-directory-relative file path, as listed in the session's artifactFiles. */
@@ -13752,6 +13865,84 @@ export interface operations {
             };
         };
     };
+    resolveLocalDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveDocumentResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     setMobileBrowserRemoteAccess: {
         parameters: {
             query?: never;
@@ -15023,6 +15214,79 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getProjectDocumentCatalog: {
+        parameters: {
+            query?: {
+                source?: "all" | "worker" | "orchestrator" | "shared";
+                archive?: "all" | "current" | "archive";
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Project identifier (registry key). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentCatalogResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

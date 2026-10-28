@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/documentread"
 	projectdocs "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/devimport"
@@ -4025,6 +4026,22 @@ type HandoffEvidenceFileParam struct {
 
 // SessionAgentSettingsResponse reads preferences without authorizing mutation.
 type SessionAgentSettingsResponse = agentsettings.Snapshot
+
+// ResolveDocumentRequest is the strictly parsed document-source union.
+type ResolveDocumentRequest = documentread.Input
+
+// DocumentCatalogQuery selects a project catalog page.
+type DocumentCatalogQuery = documentread.CatalogQuery
+
+// ResolveDocumentResponse wraps verified local document metadata.
+type ResolveDocumentResponse struct {
+	Document documentread.Resolved `json:"document"`
+}
+
+// DocumentCatalogResponse wraps a project document page.
+type DocumentCatalogResponse struct {
+	Catalog documentread.Catalog `json:"catalog"`
+}
 
 // AppDiagnosticsRevokeResponse reports cancellation of a diagnostic grant.
 type AppDiagnosticsRevokeResponse struct {
