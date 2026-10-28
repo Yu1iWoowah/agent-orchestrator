@@ -60,7 +60,7 @@ func (q *Queries) SelectTranscriptActivities(ctx context.Context, sessionID doma
 }
 
 const selectTranscriptConversations = `-- name: SelectTranscriptConversations :many
-SELECT id, scope, project_id, session_id, review_id, current_session_id, current_review_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode, auto_compact_window FROM conversations c WHERE c.session_id = ?1
+SELECT id, scope, project_id, session_id, review_id, current_session_id, current_review_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode, auto_compact_window, agent_fast_mode FROM conversations c WHERE c.session_id = ?1
  OR c.current_session_id = ?1
  OR EXISTS (SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND t.handled_by_session_id=?1)
  OR EXISTS (SELECT 1 FROM conversation_branches b WHERE b.conversation_id=c.id AND b.session_id=?1)
@@ -114,6 +114,7 @@ func (q *Queries) SelectTranscriptConversations(ctx context.Context, sessionID *
 			&i.ActiveBranchID,
 			&i.OpencodeMode,
 			&i.AutoCompactWindow,
+			&i.AgentFastMode,
 		); err != nil {
 			return nil, err
 		}

@@ -164,6 +164,7 @@ import { ActivityRun } from "./ActivityRun";
 import { LiveActivityWindow } from "./LiveActivityWindow";
 import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
+import { SessionPlanFrames } from "./SessionPlanFrames";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
 import { ElicitationDock, ElicitationHistory } from "./ElicitationDock";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
@@ -365,6 +366,8 @@ function useQueuedMessages(snapshot: ConversationSnapshot, excludeTurnId?: strin
 }
 
 export interface ChatWorkspaceProps {
+	/** Only daemon-backed primary session surfaces own session Plan reads. */
+	sessionPlanEnabled?: boolean;
 	onAddToSideChat?: (excerpt: ChatDraftExcerptReference) => void | Promise<void>;
 	annotationNavigationRequest?: { id: string; text: string; messageId?: string; revision?: number };
 	snapshot: ConversationSnapshot;
@@ -701,6 +704,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
 }
 
 function ChatWorkspaceContent({
+	sessionPlanEnabled = false,
 	onAddToSideChat,
 	annotationNavigationRequest,
 	snapshot,
@@ -1658,6 +1662,11 @@ function ChatWorkspaceContent({
 			: EMPTY_CHAT_PLACEHOLDERS[Math.floor(Math.random() * EMPTY_CHAT_PLACEHOLDERS.length)],
 	);
 	const composerDockRef = useRef<HTMLDivElement>(null);
+	const transcriptSnapshot = useMemo(() => sessionPlanEnabled ? {
+		...snapshot,
+		items: snapshot.items.filter((item) => item.kind !== "activity" || item.activityKind !== "plan"),
+		turns: snapshot.turns.map((turn) => ({ ...turn, plan: undefined })),
+	} : snapshot, [sessionPlanEnabled, snapshot]);
 	// The composer itself, not the dock: the dock also holds the welcome heading, which
 	// disappears on the first send, and sliding from the dock's top would make the
 	// composer jump up by the heading's height before it moved.
@@ -1744,7 +1753,7 @@ function ChatWorkspaceContent({
 			onKeyDown={handleChatKeyDown}
 			onClick={handleChatSurfaceClick}
 			aria-label="Chat"
-			className="cursor-chat-surface flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden [font-size:var(--chat-font-size)]"
+			className="cursor-chat-surface relative flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden [font-size:var(--chat-font-size)]"
 			data-session-mode={snapshot.mode}
 			data-session-role={sessionRole}
 			style={
@@ -1766,7 +1775,7 @@ function ChatWorkspaceContent({
 				onCloseShellTerminal={onCloseShellTerminal}
 				onRenameShellTerminal={onRenameShellTerminal}
 				onTabsKeyDown={handleChatTabsKeyDown}
-				headerActions={headerActions}
+				headerActions={<>{sessionPlanEnabled && !reviewerActive && !shellActive ? <SessionPlanFrames key={`${activeRemoteHostId ?? ""}:${snapshot.sessionId}`} sessionId={snapshot.sessionId} hostId={activeRemoteHostId} surfaceRef={surfaceRef} composerRef={composerDockRef} /> : null}{headerActions}</>}
 				session={session}
 				onSessionRenamed={onSessionRenamed}
 				sessionTabAction={sessionTabAction}
@@ -1894,7 +1903,7 @@ function ChatWorkspaceContent({
 									workerUpdates={sessionRole === "orchestrator"}
 									annotationNavigationRef={annotationNavigationRef}
 									key={draftScopeKey}
-									snapshot={snapshot}
+									snapshot={transcriptSnapshot}
 									assetBaseUrl={assetBaseUrl}
 									remoteHost={Boolean(activeRemoteHostId)}
 									draftScope={draftScope}

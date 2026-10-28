@@ -191,11 +191,14 @@ func TestCatalogFreshnessUsesMachineLocalDateAndTimezone(t *testing.T) {
 	lineIslands := time.FixedZone("LINT", 14*60*60)
 	utcMinus12 := time.FixedZone("UTC-12", -12*60*60)
 	last := time.Date(2026, 9, 7, 0, 30, 0, 0, lineIslands)
-	if catalogNeedsRevalidation(last, time.Date(2026, 9, 7, 23, 59, 0, 0, lineIslands)) {
+	if domain.AgentModelCatalogNeedsRevalidation(last, time.Date(2026, 9, 7, 23, 59, 0, 0, lineIslands)) {
 		t.Fatal("same local calendar day was stale")
 	}
-	if !catalogNeedsRevalidation(last, time.Date(2026, 9, 8, 0, 1, 0, 0, lineIslands)) {
+	if !domain.AgentModelCatalogNeedsRevalidation(last, time.Date(2026, 9, 8, 0, 1, 0, 0, lineIslands)) {
 		t.Fatal("midnight rollover did not stale catalog")
+	}
+	if !domain.AgentModelCatalogNeedsRevalidation(last.Add(time.Minute), last) {
+		t.Fatal("future success time was trusted")
 	}
 	previousZone, previousOffset := last.Zone()
 	if !catalogClockDiscontinuity(last, last.In(utcMinus12), previousZone, previousOffset) {
@@ -1950,7 +1953,7 @@ func TestModelsReturnsDiscoveredCatalogWhenCacheWriteFails(t *testing.T) {
 }
 
 func TestModelsKeepsFullerCacheWhenRefreshReturnsPartialCatalog(t *testing.T) {
-	lastSuccessfulValidation := time.Now().Add(-modelCatalogTrustWindow - time.Hour)
+	lastSuccessfulValidation := time.Now().AddDate(0, 0, -1)
 	cached := ports.AgentModelCatalog{
 		AgentID:       "opencode",
 		SelectionMode: ports.ModelSelectionCatalog,
@@ -2329,7 +2332,7 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	if err := json.Unmarshal([]byte(record.CatalogJSON), &aged); err != nil {
 		t.Fatal(err)
 	}
-	aged.ValidatedAt = time.Now().Add(-modelCatalogTrustWindow - time.Hour)
+	aged.ValidatedAt = time.Now().AddDate(0, 0, -1)
 	lastSuccess := time.Now().Add(-24 * time.Hour)
 	aged.LastSuccessAt = &lastSuccess
 	data, err := json.Marshal(aged)

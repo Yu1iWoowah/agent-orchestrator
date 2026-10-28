@@ -275,6 +275,12 @@ const agentAccountUnsharedMessage = "AO cannot link this account's folder to thi
 
 func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
+	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is temporarily unavailable. Retry later.", map[string]any{"reasonCode": "account_storage_unavailable", "retryable": true})
+	case errors.Is(err, ports.ErrAgentAccountStorageUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusNotImplemented, "not_implemented", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "Private account profiles are currently supported on Linux only.", map[string]any{"reasonCode": "account_storage_unsupported", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountUnknown):
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "AGENT_ACCOUNT_NOT_FOUND", "Unknown agent account", nil)
 	case errors.Is(err, ports.ErrAgentAccountLoginUnknown):

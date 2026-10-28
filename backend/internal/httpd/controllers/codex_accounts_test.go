@@ -22,6 +22,8 @@ import (
 )
 
 type fakeCodexAccounts struct {
+	retryStorage        bool
+	retryStorageErr     error
 	result              agentsvc.CodexAccounts
 	ensureIDs           []string
 	includeUsage        bool
@@ -523,5 +525,20 @@ func TestCodexAccountEventStreamSendsNamedCachedState(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("event leaked %q: %s", forbidden, body)
 		}
+	}
+}
+
+func (f *fakeCodexAccounts) RetryCodexAccountStore(context.Context) error {
+	f.retryStorage = true
+	return f.retryStorageErr
+}
+
+func TestCodexStorageRetryRoute(t *testing.T) {
+	fake := &fakeCodexAccounts{}
+	srv := newCodexAccountServer(t, fake)
+	defer srv.Close()
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/storage/retry", "")
+	if status != http.StatusNoContent || !fake.retryStorage || len(body) != 0 {
+		t.Fatalf("retry: %d %s called=%v", status, body, fake.retryStorage)
 	}
 }

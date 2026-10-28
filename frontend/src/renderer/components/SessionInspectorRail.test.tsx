@@ -32,6 +32,19 @@ describe("SessionInspectorRail session navigation", () => {
 		},
 	);
 
+	it.each(["blur", "pointercancel", "unmount"] as const)("preserves the Inspector drag width on %s", (end) => {
+		window.localStorage.removeItem("ao.inspector.widthPx");
+		const view = render(rail("interrupted-drag", true));
+		const handle = screen.getByTestId("inspector-resize-handle");
+		fireEvent.pointerDown(handle, { clientX: 500, pointerId: 7 });
+		fireEvent.pointerMove(window, { clientX: 460, pointerId: 7 });
+		if (end === "unmount") view.unmount();
+		else if (end === "blur") fireEvent(window, new Event("blur"));
+		else fireEvent.pointerCancel(window, { pointerId: 7 });
+		expect(window.localStorage.getItem("ao.inspector.widthPx")).toBe("540");
+		expect(document.body).not.toHaveClass("is-resizing-x");
+	});
+
 	it("animates explicit toggles in the current session, then snaps on navigation", () => {
 		const { rerender, container } = render(rail("first", false));
 		rerender(rail("first", true));

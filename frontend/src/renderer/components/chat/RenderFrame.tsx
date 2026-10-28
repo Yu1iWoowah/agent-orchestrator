@@ -332,6 +332,7 @@ export function RenderFrame(props: { render: RenderRef } | { artifact: ArtifactR
 			) : null}
 			<RenderDocument page={page} displayMode="inline" wrapContent={wrapContent} />
 			<div
+				data-conversation-frame-avoid=""
 				className={cn(
 					"absolute end-1 flex gap-1 opacity-0 transition-opacity group-hover/render:opacity-100 focus-within:opacity-100",
 					"artifact" in props ? "top-9" : "top-1",

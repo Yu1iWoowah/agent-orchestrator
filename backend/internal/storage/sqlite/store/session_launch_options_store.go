@@ -24,6 +24,9 @@ func (s *Store) SessionLaunchOptions(ctx context.Context, id domain.SessionID) (
 
 // SetSessionLaunchOptions saves the launch choices for a terminal session.
 func (s *Store) SetSessionLaunchOptions(ctx context.Context, id domain.SessionID, options domain.AgentLaunchOptions) error {
+	if _, err := domain.AgentFastModeFromLaunch(options); err != nil {
+		return err
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.SetSessionLaunchOptions(ctx, gen.SetSessionLaunchOptionsParams{LaunchOptions: encodeLaunchOptions(options), ID: id})
@@ -33,6 +36,9 @@ func (s *Store) SetSessionLaunchOptions(ctx context.Context, id domain.SessionID
 // one transaction: a terminal switch moves both to the other agent, and a stop
 // between two writes would start one agent with the other's choices.
 func (s *Store) UpdateSessionWithLaunchOptions(ctx context.Context, rec domain.SessionRecord, options domain.AgentLaunchOptions) error {
+	if _, err := domain.AgentFastModeFromLaunch(options); err != nil {
+		return err
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "update session with launch options", func(q *gen.Queries) error {

@@ -10,17 +10,20 @@ import (
 
 // Agent account errors the API maps to client responses.
 var (
-	ErrAgentAccountUnknown          = errors.New("agent account not found")
-	ErrAgentAccountProviderMismatch = errors.New("the account belongs to another provider")
-	ErrAgentAccountSignedOut        = errors.New("the account's config folder is not signed in")
-	ErrAgentAccountDuplicate        = errors.New("that login is already an account")
-	ErrAgentAccountLoginUnknown     = errors.New("agent account sign-in not found")
-	ErrAgentAccountDeviceFixed      = errors.New("the computer's own login cannot be removed here")
-	ErrAgentAccountUnchanged        = errors.New("the session already uses this account")
-	ErrAgentAccountChanged          = errors.New("the session's account changed since this turn")
-	ErrAgentAccountUnshared         = errors.New("the account's folder cannot link to this computer's history")
-	ErrAgentAccountInUse            = errors.New("an agent that uses the account could not be stopped")
-	ErrAgentAccountDefaultUnusable  = errors.New("the default account is signed out or now holds another login")
+	ErrAgentAccountStorageUnsafe      = errors.New("account_storage_unsafe")
+	ErrAgentAccountStorageUnavailable = errors.New("account_storage_unavailable")
+	ErrAgentAccountStorageUnsupported = errors.New("account_storage_unsupported")
+	ErrAgentAccountUnknown            = errors.New("agent account not found")
+	ErrAgentAccountProviderMismatch   = errors.New("the account belongs to another provider")
+	ErrAgentAccountSignedOut          = errors.New("the account's config folder is not signed in")
+	ErrAgentAccountDuplicate          = errors.New("that login is already an account")
+	ErrAgentAccountLoginUnknown       = errors.New("agent account sign-in not found")
+	ErrAgentAccountDeviceFixed        = errors.New("the computer's own login cannot be removed here")
+	ErrAgentAccountUnchanged          = errors.New("the session already uses this account")
+	ErrAgentAccountChanged            = errors.New("the session's account changed since this turn")
+	ErrAgentAccountUnshared           = errors.New("the account's folder cannot link to this computer's history")
+	ErrAgentAccountInUse              = errors.New("an agent that uses the account could not be stopped")
+	ErrAgentAccountDefaultUnusable    = errors.New("the default account is signed out or now holds another login")
 )
 
 // AgentAccountProviderCLI reads and prepares one provider's CLI config
