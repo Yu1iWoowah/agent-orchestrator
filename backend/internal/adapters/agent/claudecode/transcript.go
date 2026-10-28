@@ -23,7 +23,7 @@ import (
 
 var _ ports.NativeTranscriptReader = (*Plugin)(nil)
 
-const transcriptReaderVersion = "claude-jsonl-reader/2"
+const transcriptReaderVersion = "claude-jsonl-reader/3"
 
 func transcriptFailure(code, reason string) error {
 	return &ports.NativeTranscriptError{Code: code, Reason: reason}
@@ -130,7 +130,8 @@ func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeT
 	}
 	segment = ports.NativeTranscriptSegment{NativeID: native, SourcePath: filepath.Join(rootPath, filepath.FromSlash(relative)), ByteCutoff: request.ByteCutoff, Schema: request.Schema, ReaderVersion: transcriptReaderVersion, LeafID: request.LeafID}
 	digest := sha256.New()
-	scanner := bufio.NewScanner(io.TeeReader(io.NewSectionReader(file, 0, request.ByteCutoff), digest))
+	tail := &transcriptTail{}
+	scanner := bufio.NewScanner(io.TeeReader(io.NewSectionReader(file, 0, request.ByteCutoff), io.MultiWriter(digest, tail)))
 	scanner.Buffer(make([]byte, 4096), maxRecord)
 	nodes := map[string]ports.NativeTranscriptRecord{}
 	identities := map[string][]byte{}
@@ -298,6 +299,10 @@ func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeT
 		return ports.NativeTranscriptSegment{}, transcriptFailure("TRANSCRIPT_SOURCE_CHANGED", "native bytes changed during export")
 	}
 	if err := ctx.Err(); err != nil {
+		return ports.NativeTranscriptSegment{}, err
+	}
+	segment.CheckStability = nativeStabilityCheck(rootPath, relative, rootInfo, opened, sha256.Sum256(tail.data))
+	if err := segment.CheckStability(ctx); err != nil {
 		return ports.NativeTranscriptSegment{}, err
 	}
 	return segment, nil

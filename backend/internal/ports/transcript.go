@@ -109,6 +109,10 @@ type NativeTranscriptSegment struct {
 	Counts           TranscriptCounts         `json:"counts"`
 	MainRecordIDs    []string                 `json:"mainRecordIds"`
 	Records          []NativeTranscriptRecord `json:"records"`
+
+	// CheckStability is a bounded, non-parsing check of this read's file identity,
+	// stat and tail fingerprint. Publication requires a fresh runtime witness.
+	CheckStability func(context.Context) error `json:"-"`
 }
 
 // NativeTranscriptReader is read-only and never starts a provider controller.

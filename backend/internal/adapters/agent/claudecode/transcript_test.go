@@ -399,3 +399,57 @@ func TestClaudeTranscriptCompactionSummaryIsNotHumanInput(t *testing.T) {
 		t.Fatal("summary substituted for missing original ancestry")
 	}
 }
+
+func TestClaudeTranscriptPendingHookRequiresVerifiedParent(t *testing.T) {
+	for _, parent := range []string{"", "missing-parent"} {
+		t.Run(parent, func(t *testing.T) {
+			hook := mainRow("pending-hook", parent, "system", nil)
+			hook["subtype"], hook["preventedContinuation"] = "stop_hook_summary", true
+			if parent == "" {
+				delete(hook, "parentUuid")
+			}
+			req := transcriptFixture(t, []map[string]any{mainRow("u", "", "user", "question"), mainRow("a", "u", "assistant", "settled reply"), hook})
+			req.LeafID = "a"
+			segment, err := New().ReadNativeTranscript(context.Background(), req)
+			if err == nil {
+				t.Fatalf("pending continuation with unverified parent accepted: tail=%s metadata=%d main=%v", segment.TailState, segment.Counts.MetadataRecords, segment.MainRecordIDs)
+			}
+			t.Logf("unverified pending hook rejected: %v", err)
+		})
+	}
+}
+
+func TestClaudeTranscriptPendingHookMetadataChains(t *testing.T) {
+	for _, tc := range []struct {
+		name, bridgeParent string
+		settled            bool
+	}{
+		{"pending descendant of selected leaf", "a", false},
+		{"detached metadata chain", "missing-parent", false},
+		{"metadata cycle", "pending-hook", false},
+		{"historical hook followed by completed reply", "u", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bridge := mainRow("bridge", tc.bridgeParent, "progress", nil)
+			bridge["data"] = map[string]any{"type": "hook_progress"}
+			hook := mainRow("pending-hook", "bridge", "system", nil)
+			hook["subtype"], hook["preventedContinuation"] = "stop_hook_summary", true
+			rows := []map[string]any{mainRow("u", "", "user", "question"), mainRow("a", "u", "assistant", "settled reply"), bridge, hook}
+			if tc.settled {
+				rows = []map[string]any{rows[0], bridge, hook, mainRow("a", "pending-hook", "assistant", "settled reply")}
+			}
+			req := transcriptFixture(t, rows)
+			segment, err := New().ReadNativeTranscript(context.Background(), req)
+			if tc.settled {
+				if err != nil || segment.TailState != "complete" {
+					t.Fatalf("verified historical hook blocked completion: %v", err)
+				}
+			} else {
+				var failure *ports.NativeTranscriptError
+				if !errors.As(err, &failure) || failure.Code != "TRANSCRIPT_TAIL_UNSETTLED" {
+					t.Fatalf("pending hook accepted: %+v %v", segment, err)
+				}
+			}
+		})
+	}
+}

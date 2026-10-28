@@ -164,7 +164,8 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 	}
 	// Strict native parsing must not hold the store's global writer reservation.
 	// The coordinator owns intake fencing throughout Build and publication.
-	if err := in.Export.Revalidate(ctx); err != nil {
+	native, err := in.Export.RevalidateForPublication(ctx)
+	if err != nil {
 		return zero, err
 	}
 	published, err := s.store.WithProjectDocumentPublication(ctx, id, rec, state.Revision, func(reserved context.Context) error {
@@ -201,6 +202,9 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 		}
 		if hash(b) != in.HandoffHash {
 			return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Frozen handoff changed")
+		}
+		if e := native.Check(reserved); e != nil {
+			return e
 		}
 		info, e := r.Lstat(in.AttemptID)
 		if e == nil {

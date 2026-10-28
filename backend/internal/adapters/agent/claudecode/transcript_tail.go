@@ -59,18 +59,17 @@ func verifyTranscriptTail(segment *ports.NativeTranscriptSegment, nodes map[stri
 			metadataChildren[record.ParentID] = append(metadataChildren[record.ParentID], record)
 		}
 	}
+	anchored := metadataDescendants(metadataChildren, lineage)
+	for _, record := range nodes {
+		if record.State == "continuation-pending" && record.NativeID == segment.NativeID && (record.ParentID == "" || !anchored[record.ParentID]) {
+			return transcriptFailure("TRANSCRIPT_TAIL_UNSETTLED", "pending hook has no verified lineage parent")
+		}
+	}
 	if len(lineage) > 0 {
-		pending := []string{lineage[len(lineage)-1]}
-		seen := map[string]bool{pending[0]: true}
-		for i := 0; i < len(pending); i++ {
-			for _, record := range metadataChildren[pending[i]] {
-				if record.State == "continuation-pending" {
-					state = "pending"
-				}
-				if !seen[record.ID] {
-					seen[record.ID] = true
-					pending = append(pending, record.ID)
-				}
+		afterLeaf := metadataDescendants(metadataChildren, lineage[len(lineage)-1:])
+		for _, record := range nodes {
+			if record.State == "continuation-pending" && afterLeaf[record.ID] {
+				state = "pending"
 			}
 		}
 	}
@@ -87,4 +86,21 @@ func verifyTranscriptTail(segment *ports.NativeTranscriptSegment, nodes map[stri
 	}
 	segment.TailState = state
 	return nil
+}
+
+func metadataDescendants(children map[string][]ports.NativeTranscriptRecord, seeds []string) map[string]bool {
+	seen := make(map[string]bool, len(seeds))
+	pending := append([]string(nil), seeds...)
+	for _, id := range seeds {
+		seen[id] = true
+	}
+	for i := 0; i < len(pending); i++ {
+		for _, record := range children[pending[i]] {
+			if !seen[record.ID] {
+				seen[record.ID] = true
+				pending = append(pending, record.ID)
+			}
+		}
+	}
+	return seen
 }

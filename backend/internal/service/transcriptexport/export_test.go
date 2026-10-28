@@ -11,8 +11,33 @@ import (
 
 type fixtureReader map[string]ports.NativeTranscriptSegment
 
+type unwitnessedReader struct{ fixtureReader }
+
+func (f unwitnessedReader) ReadNativeTranscript(ctx context.Context, r ports.NativeTranscriptRequest) (ports.NativeTranscriptSegment, error) {
+	segment, err := f.fixtureReader.ReadNativeTranscript(ctx, r)
+	segment.CheckStability = nil
+	return segment, err
+}
+
+func TestTranscriptPublicationRequiresRuntimeStabilityWitness(t *testing.T) {
+	s, cuts, reader := sourceFixture()
+	ctx := context.Background()
+	out, err := Build(ctx, s, cuts, unwitnessedReader{reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = out.RevalidateForPublication(ctx); err == nil {
+		t.Fatal("reader without stability witness authorized publication")
+	}
+	if err = (NativeStability{}).Check(ctx); err == nil {
+		t.Fatal("zero stability witness authorized publication")
+	}
+}
+
 func (f fixtureReader) ReadNativeTranscript(_ context.Context, r ports.NativeTranscriptRequest) (ports.NativeTranscriptSegment, error) {
-	return f[r.Source.NativeSessionID], nil
+	segment := f[r.Source.NativeSessionID]
+	segment.CheckStability = func(ctx context.Context) error { return ctx.Err() }
+	return segment, nil
 }
 func sourceFixture() (domain.TranscriptSourceSnapshot, []EpochCutoff, fixtureReader) {
 	s := domain.TranscriptSourceSnapshot{Session: domain.SessionRecord{ID: "source", ProjectID: "project", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode}, Fingerprint: "snapshot", CutoffSequence: 10}

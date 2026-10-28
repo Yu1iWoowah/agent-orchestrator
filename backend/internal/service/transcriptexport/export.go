@@ -62,7 +62,7 @@ type Manifest struct {
 // Output seals verified transcript bytes until frozen evidence publication.
 type Output struct {
 	seal       [32]byte
-	revalidate func(context.Context) error
+	revalidate func(context.Context) (NativeStability, error)
 	Manifest   Manifest
 	Transcript []byte
 }
@@ -170,6 +170,7 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 		// The manifest is an identity/provenance ledger; message payload occurs once
 		// in transcript.md, not again in a potentially much larger JSON receipt.
 		seg.Records = append([]ports.NativeTranscriptRecord(nil), seg.Records...)
+		seg.CheckStability = nil
 		for i := range seg.Records {
 			seg.Records[i].Blocks = nil
 		}
@@ -329,17 +330,22 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	out.Transcript = []byte(body.String())
 	out.seal = out.digest()
 	expected := append([]ports.NativeTranscriptSegment(nil), m.Segments...)
-	out.revalidate = func(check context.Context) error {
+	out.revalidate = func(check context.Context) (NativeStability, error) {
+		var stable NativeStability
 		for _, segment := range expected {
 			again, e := reader.ReadNativeTranscript(check, verifiedRequests[segment.NativeID])
 			if e != nil {
-				return e
+				return NativeStability{}, e
 			}
 			if again.SHA256 != segment.SHA256 || again.NativeID != segment.NativeID || again.LeafID != segment.LeafID || again.ByteCutoff != segment.ByteCutoff || again.SourcePath != segment.SourcePath {
-				return incomplete("TRANSCRIPT_SOURCE_CHANGED", "native boundary changed after verification")
+				return NativeStability{}, incomplete("TRANSCRIPT_SOURCE_CHANGED", "native boundary changed after verification")
 			}
+			if again.CheckStability == nil {
+				return NativeStability{}, incomplete("TRANSCRIPT_STABILITY_UNVERIFIED", "native reader did not supply a stability witness")
+			}
+			stable.checks = append(stable.checks, again.CheckStability)
 		}
-		return nil
+		return stable, nil
 	}
 	return out, nil
 }
@@ -530,8 +536,31 @@ func (o Output) Valid() bool { return o.seal != [32]byte{} && o.seal == o.digest
 // Revalidate re-reads the fixed native boundaries; the caller still owns intake
 // fencing and must compare the AO source snapshot under its publication guard.
 func (o Output) Revalidate(ctx context.Context) error {
+	_, err := o.RevalidateForPublication(ctx)
+	return err
+}
+
+// NativeStability carries bounded checks from fresh reads outside the DB guard.
+type NativeStability struct{ checks []func(context.Context) error }
+
+// Check compares native file fingerprints without parsing under the DB guard.
+func (s NativeStability) Check(ctx context.Context) error {
+	if len(s.checks) == 0 {
+		return incomplete("TRANSCRIPT_STABILITY_UNVERIFIED", "native stability witness is missing")
+	}
+	for _, check := range s.checks {
+		if err := check(ctx); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+// RevalidateForPublication strictly rereads sources before reservation. Check the
+// returned witness immediately before publishing under that guard.
+func (o Output) RevalidateForPublication(ctx context.Context) (NativeStability, error) {
 	if !o.Valid() || o.revalidate == nil {
-		return incomplete("TRANSCRIPT_SOURCE_INVALID", "verified export was modified")
+		return NativeStability{}, incomplete("TRANSCRIPT_SOURCE_INVALID", "verified export was modified")
 	}
 	return o.revalidate(ctx)
 }

@@ -21,7 +21,7 @@ import (
 type evidenceReader struct{}
 
 func (evidenceReader) ReadNativeTranscript(_ context.Context, r ports.NativeTranscriptRequest) (ports.NativeTranscriptSegment, error) {
-	return ports.NativeTranscriptSegment{NativeID: r.Source.NativeSessionID, ByteCutoff: r.ByteCutoff, LeafID: r.LeafID, SHA256: strings.Repeat("a", 64), Schema: r.Schema, ReaderVersion: "fixture/1", MainRecordIDs: []string{"u"}, Records: []ports.NativeTranscriptRecord{{ID: "u", Type: "user", NativeID: r.Source.NativeSessionID, Provenance: domain.NativeThreadMain, Blocks: []ports.NativeTranscriptBlock{{Kind: ports.TranscriptText, Text: "preserved source"}}}}}, nil
+	return ports.NativeTranscriptSegment{CheckStability: func(ctx context.Context) error { return ctx.Err() }, NativeID: r.Source.NativeSessionID, ByteCutoff: r.ByteCutoff, LeafID: r.LeafID, SHA256: strings.Repeat("a", 64), Schema: r.Schema, ReaderVersion: "fixture/1", MainRecordIDs: []string{"u"}, Records: []ports.NativeTranscriptRecord{{ID: "u", Type: "user", NativeID: r.Source.NativeSessionID, Provenance: domain.NativeThreadMain, Blocks: []ports.NativeTranscriptBlock{{Kind: ports.TranscriptText, Text: "preserved source"}}}}}, nil
 }
 func evidenceInput(t *testing.T, f fixture) docs.EvidenceInput {
 	t.Helper()
