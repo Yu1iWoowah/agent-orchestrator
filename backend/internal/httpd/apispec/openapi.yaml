@@ -16308,6 +16308,8 @@ components:
       properties:
         clientMessageId:
           type: string
+        consumedByTurnId:
+          type: string
         content:
           items:
             $ref: '#/components/schemas/ConversationContentSummaryResponse'
@@ -16694,6 +16696,10 @@ components:
       type: object
     ConversationTurnResponse:
       properties:
+        batchInputTurnIds:
+          items:
+            type: string
+          type: array
         completedAt:
           type:
           - "null"

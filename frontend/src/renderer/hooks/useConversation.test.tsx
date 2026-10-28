@@ -1,3 +1,8 @@
+import cachedBatch from "../../../../test/fixtures/batch-conversation-pages.json";
+import * as hostClients from "../lib/host-clients";
+import { apiClient } from "../lib/api-client";
+import type { InfiniteData } from "@tanstack/react-query";
+import type { ConversationSnapshot } from "../types/conversation";
 import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
@@ -21,6 +26,9 @@ vi.mock("../lib/api-client", async (importOriginal) => ({
 
 import {
 	clearConversationProviderCatalogs,
+	conversationQueryKey,
+	mergeConversationPages,
+	refreshRemoteConversation,
 	conversationConfigOptionsQueryKey,
 	useConversation,
 	ProviderSwitchFailed,
@@ -32,6 +40,39 @@ import {
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import { ChatWorkspace } from "../components/chat/ChatWorkspace";
 import { TooltipProvider } from "../components/ui/tooltip";
+
+it("retains off-page batch receipts across remote live refreshes", async () => {
+	type BatchPage = Pick<Parameters<typeof toSnapshot>[0],
+		"turns" | "messages" | "oldestSequence" | "latestSequence" | "hasMoreBefore">;
+	const raw: { before: BatchPage[]; live: BatchPage } = JSON.parse(JSON.stringify(cachedBatch));
+	const wire = (value: BatchPage): Parameters<typeof toSnapshot>[0] => ({
+		...value, conversationId: "conv-1", sessionId: "hist-1", harness: "codex", mode: "chat",
+		controller: "ready", settings: {}, activities: [], branchedFromEarlierMessage: false,
+		continueTurnId: "", nativeForkAvailableAfterSequence: 0,
+	});
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const key = conversationQueryKey("hist-1", "remote-batch");
+	const pages = raw.before.map((value) => toSnapshot(wire(value)));
+	client.setQueryData(key, { pages, pageParams: pages.map((_, index) => index === 0 ? undefined : index) });
+	const transport = vi.spyOn(hostClients, "clientForSessionHost").mockReturnValue(apiClient);
+	try {
+		getMock.mockResolvedValueOnce({ data: wire(raw.live), error: undefined });
+		await refreshRemoteConversation(client, "hist-1", "remote-batch");
+		const refreshed = client.getQueryData<InfiniteData<ConversationSnapshot>>(key);
+		const snapshot = mergeConversationPages(refreshed?.pages ?? []);
+		expect(snapshot?.items.find((item) => item.id === "follower-message")).toMatchObject({ turnId: "follower", consumedByTurnId: "leader" });
+		expect(snapshot?.turns.some((turn) => turn.id === "follower")).toBe(false);
+		getMock.mockResolvedValueOnce({ data: wire({ ...raw.live, turns: [], messages: [], oldestSequence: 506, latestSequence: 506 }), error: undefined });
+		await refreshRemoteConversation(client, "hist-1", "remote-batch");
+		const later = client.getQueryData<InfiniteData<ConversationSnapshot>>(key);
+		expect(mergeConversationPages(later?.pages ?? [])?.items.find((item) => item.id === "follower-message")).toMatchObject({ turnId: "follower", consumedByTurnId: "leader" });
+		expect(pages.at(-1)?.turns.find((turn) => turn.id === "follower")?.state).toBe("queued");
+	} finally {
+		transport.mockRestore();
+		client.clear();
+	}
+});
+
 
 function wrapper({ children }: { children: ReactNode }) {
 	const queryClient = new QueryClient({

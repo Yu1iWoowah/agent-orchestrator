@@ -123,6 +123,8 @@ export interface ConversationTurn {
 	 */
 	rolledBack?: boolean;
 	providerTurnId?: string;
+	/** Original receipt turns consumed in this batch, including off-page inputs. */
+	batchInputTurnIds?: string[];
 	/** Failed source whose durable prompt created this retry attempt. */
 	retryOfTurnId?: string;
 	/** A retry attempt exists, even if that child is outside the active branch. */
@@ -188,6 +190,8 @@ export interface ConversationMessage {
 	kind: "message";
 	id: string;
 	turnId?: string;
+	/** Batch presentation target; turnId remains the original receipt identity. */
+	consumedByTurnId?: string;
 	/** Conversation-scoped, immutable. The only ordering key. */
 	sequence: number;
 	/** Bumped on each streaming rewrite so a gap is detectable. */

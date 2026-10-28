@@ -35,6 +35,8 @@ export type ConversationTurn = {
 	id: string;
 	state: TurnState;
 	providerTurnId?: string;
+	/** Original receipt turns consumed in this batch, including off-page inputs. */
+	batchInputTurnIds?: string[];
 	errorMessage?: string;
 	requestedAt: string;
 	startedAt?: string;
@@ -51,6 +53,8 @@ export type ConversationMessage = {
 	kind: "message";
 	id: string;
 	turnId?: string;
+	/** Batch presentation target; turnId remains the original receipt identity. */
+	consumedByTurnId?: string;
 	sequence: number;
 	revision: number;
 	role: "user" | "assistant";

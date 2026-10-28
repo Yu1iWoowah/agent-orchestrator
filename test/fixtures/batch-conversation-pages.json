@@ -1,0 +1,243 @@
+{
+  "before": [
+    {
+      "turns": [
+        {
+          "id": "active",
+          "conversationId": "conv-1",
+          "handledBySessionId": "hist-1",
+          "providerTurnId": "provider-active",
+          "hasHumanPrompt": true,
+          "state": "running",
+          "requestedAt": "2026-08-02T10:00:00Z",
+          "startedAt": "2026-08-02T10:00:00Z"
+        },
+        {
+          "id": "leader",
+          "conversationId": "conv-1",
+          "handledBySessionId": "hist-1",
+          "hasHumanPrompt": true,
+          "state": "queued",
+          "requestedAt": "2026-08-02T10:00:00Z"
+        },
+        {
+          "id": "follower",
+          "conversationId": "conv-1",
+          "handledBySessionId": "hist-1",
+          "hasHumanPrompt": true,
+          "state": "queued",
+          "requestedAt": "2026-08-02T10:00:00Z"
+        }
+      ],
+      "messages": [],
+      "oldestSequence": 305,
+      "latestSequence": 504,
+      "hasMoreBefore": true
+    },
+    {
+      "turns": [
+        {
+          "id": "active",
+          "conversationId": "conv-1",
+          "handledBySessionId": "hist-1",
+          "providerTurnId": "provider-active",
+          "hasHumanPrompt": true,
+          "state": "running",
+          "requestedAt": "2026-08-02T10:00:00Z",
+          "startedAt": "2026-08-02T10:00:00Z"
+        },
+        {
+          "id": "leader",
+          "conversationId": "conv-1",
+          "handledBySessionId": "hist-1",
+          "hasHumanPrompt": true,
+          "state": "queued",
+          "requestedAt": "2026-08-02T10:00:00Z"
+        },
+        {
+          "id": "follower",
+          "conversationId": "conv-1",
+          "handledBySessionId": "hist-1",
+          "hasHumanPrompt": true,
+          "state": "queued",
+          "requestedAt": "2026-08-02T10:00:00Z"
+        }
+      ],
+      "messages": [
+        {
+          "id": "active-message",
+          "conversationId": "conv-1",
+          "turnId": "active",
+          "sequence": 1,
+          "revision": 0,
+          "role": "user",
+          "origin": "human",
+          "text": "active",
+          "streaming": false,
+          "clientMessageId": "active",
+          "createdAt": "2026-08-02T10:00:00Z",
+          "updatedAt": "2026-08-02T10:00:00Z"
+        },
+        {
+          "id": "leader-message",
+          "conversationId": "conv-1",
+          "turnId": "leader",
+          "sequence": 2,
+          "revision": 0,
+          "role": "user",
+          "origin": "human",
+          "text": "leader",
+          "streaming": false,
+          "clientMessageId": "leader",
+          "createdAt": "2026-08-02T10:00:00Z",
+          "updatedAt": "2026-08-02T10:00:00Z"
+        },
+        {
+          "id": "follower-message",
+          "conversationId": "conv-1",
+          "turnId": "follower",
+          "sequence": 3,
+          "revision": 0,
+          "role": "user",
+          "origin": "human",
+          "text": "follower",
+          "streaming": false,
+          "clientMessageId": "follower",
+          "createdAt": "2026-08-02T10:00:00Z",
+          "updatedAt": "2026-08-02T10:00:00Z"
+        }
+      ],
+      "oldestSequence": 1,
+      "latestSequence": 504,
+      "hasMoreBefore": false
+    }
+  ],
+  "live": {
+    "turns": [
+      {
+        "id": "leader",
+        "conversationId": "conv-1",
+        "handledBySessionId": "hist-1",
+        "providerTurnId": "provider-batch",
+        "batchInputTurnIds": [
+          "follower"
+        ],
+        "hasHumanPrompt": true,
+        "state": "completed",
+        "requestedAt": "2026-08-02T10:00:00Z",
+        "startedAt": "2026-08-02T10:00:00Z",
+        "completedAt": "2026-08-02T10:00:00Z"
+      }
+    ],
+    "messages": [
+      {
+        "id": "answer",
+        "conversationId": "conv-1",
+        "turnId": "leader",
+        "sequence": 505,
+        "revision": 0,
+        "role": "assistant",
+        "origin": "provider",
+        "text": "Shared batch answer",
+        "streaming": false,
+        "providerItemId": "provider-answer",
+        "createdAt": "2026-08-02T10:00:00Z",
+        "updatedAt": "2026-08-02T10:00:00Z"
+      }
+    ],
+    "oldestSequence": 505,
+    "latestSequence": 505,
+    "hasMoreBefore": true
+  },
+  "full": {
+    "turns": [
+      {
+        "id": "active",
+        "conversationId": "conv-1",
+        "handledBySessionId": "hist-1",
+        "providerTurnId": "provider-active",
+        "hasHumanPrompt": true,
+        "state": "completed",
+        "requestedAt": "2026-08-02T10:00:00Z",
+        "startedAt": "2026-08-02T10:00:00Z",
+        "completedAt": "2026-08-02T10:00:00Z"
+      },
+      {
+        "id": "leader",
+        "conversationId": "conv-1",
+        "handledBySessionId": "hist-1",
+        "providerTurnId": "provider-batch",
+        "batchInputTurnIds": [
+          "follower"
+        ],
+        "hasHumanPrompt": true,
+        "state": "completed",
+        "requestedAt": "2026-08-02T10:00:00Z",
+        "startedAt": "2026-08-02T10:00:00Z",
+        "completedAt": "2026-08-02T10:00:00Z"
+      }
+    ],
+    "messages": [
+      {
+        "id": "active-message",
+        "conversationId": "conv-1",
+        "turnId": "active",
+        "sequence": 1,
+        "revision": 0,
+        "role": "user",
+        "origin": "human",
+        "text": "active",
+        "streaming": false,
+        "clientMessageId": "active",
+        "createdAt": "2026-08-02T10:00:00Z",
+        "updatedAt": "2026-08-02T10:00:00Z"
+      },
+      {
+        "id": "leader-message",
+        "conversationId": "conv-1",
+        "turnId": "leader",
+        "sequence": 2,
+        "revision": 0,
+        "role": "user",
+        "origin": "human",
+        "text": "leader",
+        "streaming": false,
+        "clientMessageId": "leader",
+        "createdAt": "2026-08-02T10:00:00Z",
+        "updatedAt": "2026-08-02T10:00:00Z"
+      },
+      {
+        "id": "follower-message",
+        "conversationId": "conv-1",
+        "turnId": "follower",
+        "consumedByTurnId": "leader",
+        "sequence": 3,
+        "revision": 0,
+        "role": "user",
+        "origin": "human",
+        "text": "follower",
+        "streaming": false,
+        "clientMessageId": "follower",
+        "createdAt": "2026-08-02T10:00:00Z",
+        "updatedAt": "2026-08-02T10:00:00Z"
+      },
+      {
+        "id": "answer",
+        "conversationId": "conv-1",
+        "turnId": "leader",
+        "sequence": 505,
+        "revision": 0,
+        "role": "assistant",
+        "origin": "provider",
+        "text": "Shared batch answer",
+        "streaming": false,
+        "providerItemId": "provider-answer",
+        "createdAt": "2026-08-02T10:00:00Z",
+        "updatedAt": "2026-08-02T10:00:00Z"
+      }
+    ],
+    "oldestSequence": 0,
+    "latestSequence": 505,
+    "hasMoreBefore": false
+  }
+}

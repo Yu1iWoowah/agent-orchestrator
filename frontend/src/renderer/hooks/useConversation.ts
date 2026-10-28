@@ -410,7 +410,7 @@ export async function refreshRemoteConversation(queryClient: QueryClient, sessio
 		const live = slidOut.length
 			? mergeConversationPages([latest, { ...priorLive, items: slidOut, turns: priorLive.turns.filter((turn) => slidTurnIds.has(turn.id)) }]) ?? latest
 			: latest;
-		return { ...previous, pages: [live, ...previous.pages.slice(1)] };
+		return { ...previous, pages: [live, ...previous.pages.slice(1).map((page) => reconcileBatchInputs(page, latest.turns))] };
 	});
 }
 
@@ -1846,6 +1846,7 @@ export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 			id: turn.id,
 			state: turn.state as TurnState,
 			providerTurnId: turn.providerTurnId,
+			batchInputTurnIds: turn.batchInputTurnIds,
 			retryOfTurnId: turn.retryOfTurnId,
 			hasRetryAttempt: turn.hasRetryAttempt,
 			hasHumanPrompt: turn.hasHumanPrompt,
@@ -1935,6 +1936,25 @@ function applyQueuedTurnOrderToPages(
 	};
 }
 
+/** Persist durable batch receipts even after the consumer leaves the live page. */
+function reconcileBatchInputs(snapshot: ConversationSnapshot, latestTurns: ConversationSnapshot["turns"]): ConversationSnapshot {
+	const consumers = new Map(latestTurns.filter((turn) => turn.batchInputTurnIds?.length).map((turn) => [turn.id, turn]));
+	if (consumers.size === 0) return snapshot;
+	const consumedBy = new Map<string, string>();
+	for (const turn of consumers.values()) {
+		for (const inputTurnId of turn.batchInputTurnIds ?? []) consumedBy.set(inputTurnId, turn.id);
+	}
+	return {
+		...snapshot,
+		items: snapshot.items.map((item) => {
+			if (item.kind !== "message" || !item.turnId) return item;
+			const consumedByTurnId = consumedBy.get(item.turnId);
+			return consumedByTurnId ? { ...item, consumedByTurnId } : item;
+		}),
+		turns: snapshot.turns.filter((turn) => !consumedBy.has(turn.id)).map((turn) => consumers.get(turn.id) ?? turn),
+	};
+}
+
 /** Merge the newest live page with any older pages loaded on demand. */
 export function mergeConversationPages(pages: ConversationSnapshot[]): ConversationSnapshot | undefined {
 	const live = pages[0];
@@ -1951,13 +1971,13 @@ export function mergeConversationPages(pages: ConversationSnapshot[]): Conversat
 	}
 
 	const oldest = pages[pages.length - 1] ?? live;
-	return {
+	return reconcileBatchInputs({
 		...live,
 		oldestSequence: oldest.oldestSequence,
 		hasMoreBefore: oldest.hasMoreBefore,
 		items: [...items.values()].sort((a, b) => a.sequence - b.sequence),
 		turns: [...turns.values()].sort((a, b) => a.requestedAt.localeCompare(b.requestedAt)),
-	};
+	}, [...turns.values()]);
 }
 
 function toMessage(wire: WireMessage): ConversationMessage {
@@ -1965,6 +1985,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		kind: "message",
 		id: wire.id,
 		turnId: wire.turnId,
+		consumedByTurnId: wire.consumedByTurnId,
 		sequence: wire.sequence,
 		revision: wire.revision,
 		role: wire.role as MessageRole,

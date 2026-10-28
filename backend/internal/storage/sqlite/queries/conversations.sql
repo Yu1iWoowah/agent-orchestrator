@@ -997,6 +997,39 @@ WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
   )
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid;
 
+-- Batch receipts for visible consuming turns, independent of the message page.
+-- This lets clients reconcile older cached inputs without widening page bounds.
+-- name: SelectConversationBatchInputs :many
+WITH RECURSIVE active_path(branch_id, max_sequence) AS (
+    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    FROM conversations
+    WHERE conversations.id = sqlc.arg(conversation_id)
+    UNION ALL
+    SELECT branch.parent_branch_id,
+           CASE
+               WHEN path.max_sequence IS NULL THEN branch.fork_after_sequence
+               WHEN branch.fork_after_sequence < path.max_sequence THEN branch.fork_after_sequence
+               ELSE path.max_sequence
+           END
+    FROM active_path AS path
+    JOIN conversation_branches AS branch ON branch.id = path.branch_id
+    WHERE branch.parent_branch_id IS NOT NULL
+)
+SELECT source.id AS input_turn_id, target.id AS consuming_turn_id
+FROM conversation_turns AS source
+JOIN conversation_turns AS target ON target.id = source.promoted_to_turn_id
+JOIN conversation_messages AS message ON message.turn_id = source.id
+    AND message.conversation_id = source.conversation_id AND message.role = 'user'
+JOIN active_path AS path ON path.branch_id = message.branch_id
+WHERE source.conversation_id = sqlc.arg(conversation_id)
+  AND target.conversation_id = sqlc.arg(conversation_id)
+  AND target.id IN (sqlc.slice('turn_ids'))
+  AND source.batched_input = 1
+  AND source.rolled_back_at IS NULL AND target.rolled_back_at IS NULL
+  AND source.state <> 'cancelled'
+  AND (path.max_sequence IS NULL OR message.sequence <= path.max_sequence)
+ORDER BY message.sequence;
+
 -- Everything from the named turn to the end of the conversation, which is the range
 -- an undo discards. Inclusive of the named turn: the state a person wants back is
 -- the one from before they sent the message they pointed at.
@@ -1368,7 +1401,12 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
 )
-SELECT conversation_messages.* FROM conversation_messages
+SELECT sqlc.embed(conversation_messages), batch_source.promoted_to_turn_id AS consumed_by_turn_id
+FROM conversation_messages
+LEFT JOIN conversation_turns AS batch_source
+  ON batch_source.id = conversation_messages.turn_id
+ AND batch_source.conversation_id = conversation_messages.conversation_id
+ AND batch_source.batched_input = 1
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
@@ -1399,7 +1437,12 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
 )
-SELECT conversation_messages.* FROM conversation_messages
+SELECT sqlc.embed(conversation_messages), batch_source.promoted_to_turn_id AS consumed_by_turn_id
+FROM conversation_messages
+LEFT JOIN conversation_turns AS batch_source
+  ON batch_source.id = conversation_messages.turn_id
+ AND batch_source.conversation_id = conversation_messages.conversation_id
+ AND batch_source.batched_input = 1
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
   AND conversation_messages.sequence < sqlc.arg(before_sequence)

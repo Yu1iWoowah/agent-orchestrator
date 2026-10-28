@@ -1,3 +1,4 @@
+import batchFixture from "../../../../test/fixtures/batch-conversation.json";
 import { describe, expect, it } from "vitest";
 import { activityHierarchy, activityNodesRunning, activityStartsExpanded, canRollbackTurn, conversationMarkers, countActivityNodes, editableHumanTurns, groupConversationByTurn, sameEditableTurns, latestFirstConversationGroups, partitionTurnItems, readableConversationItems, summarizeActivities } from "./timelineModel";
 import * as timelineModel from "./timelineModel";
@@ -21,6 +22,22 @@ function snapshot(): ConversationSnapshot {
 }
 
 describe("mobile Chat timeline model", () => {
+	it("places SQLite batch followers before the shared answer", () => {
+		const fixture: { turns: ConversationSnapshot["turns"]; messages: Extract<ConversationItem, { kind: "message" }>[] } = JSON.parse(JSON.stringify(batchFixture));
+		const value: ConversationSnapshot = { ...snapshot(), turns: fixture.turns, items: fixture.messages.map((message) => ({ ...message, kind: "message" })) };
+		const groups = groupConversationByTurn(value);
+		expect(groups.map((group) => group.items.map((item) => item.id))).toEqual([["leader-message", "follower-message", "answer"]]);
+		const partition = partitionTurnItems(groups[0].items, groups[0].turn);
+		expect(partition?.prompt.map((item) => item.id)).toEqual(["leader-message", "follower-message"]);
+		expect(partition?.final.map((item) => item.id)).toEqual(["answer"]);
+		const page = { ...value, items: value.items.slice(1), hasMoreBefore: true };
+		const pagedGroup = groupConversationByTurn(page)[0];
+		expect(pagedGroup.items.map((item) => item.id)).toEqual(["follower-message", "answer"]);
+		expect(pagedGroup.key).toBe(groups[0].key);
+		expect(pagedGroup.turnId).toBe("leader");
+		expect(page.items[0].turnId).toBe("follower");
+	});
+
 	it("does not offer rollback on a hibernated provider", () => {
 		const value = snapshot();
 		value.controller.state = "hibernated";

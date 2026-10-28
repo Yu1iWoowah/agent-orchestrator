@@ -557,6 +557,10 @@ type ConversationTurn struct {
 	HandledByReviewID string `json:"handledByReviewId,omitempty"`
 	// ProviderTurnID correlates back to the provider's own turn. Opaque.
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	// BatchInputTurnIDs are the original receipt turns consumed by this turn.
+	// They remain available even when those input messages are outside the page.
+	BatchInputTurnIDs []string `json:"batchInputTurnIds,omitempty"`
+
 	// ProviderInputText identifies a combined native prompt during history replay.
 	// The public transcript continues to use the individual message rows.
 	ProviderInputText string `json:"-"`
@@ -671,7 +675,10 @@ type ConversationMessage struct {
 	ID             string    `json:"id"`
 	ConversationID string    `json:"conversationId"`
 	TurnID         string    `json:"turnId,omitempty"`
-	Sequence       int64     `json:"sequence"`
+	// ConsumedByTurnID is the provider-dispatched AO turn that consumed a batched
+	// follower. TurnID remains the original receipt identity for history and edits.
+	ConsumedByTurnID string `json:"consumedByTurnId,omitempty"`
+	Sequence         int64  `json:"sequence"`
 	// Revision increases each time streaming rewrites this message's text, so a
 	// client can detect a gap and resync instead of rendering stale text.
 	Revision int64         `json:"revision"`

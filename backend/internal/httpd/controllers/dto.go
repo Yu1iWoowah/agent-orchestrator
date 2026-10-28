@@ -3098,6 +3098,9 @@ type ConversationTurnResponse struct {
 	ID             string `json:"id"`
 	State          string `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	// BatchInputTurnIDs identifies consumed inputs outside this message page too.
+	BatchInputTurnIDs []string `json:"batchInputTurnIds,omitempty"`
+
 	// RetryOfTurnID is the failed source whose durable prompt created this turn.
 	RetryOfTurnID string `json:"retryOfTurnId,omitempty"`
 	// HasRetryAttempt remains true when the attempt is outside the active branch.
@@ -3187,9 +3190,12 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
-	Kind              string                               `json:"kind" enum:"message"`
-	ID                string                               `json:"id"`
-	TurnID            string                               `json:"turnId,omitempty"`
+	Kind   string `json:"kind" enum:"message"`
+	ID     string `json:"id"`
+	TurnID string `json:"turnId,omitempty"`
+	// ConsumedByTurnID groups a batch follower with the turn that consumed it.
+	// TurnID continues to identify the original message's turn.
+	ConsumedByTurnID  string                               `json:"consumedByTurnId,omitempty"`
 	Sequence          int64                                `json:"sequence"`
 	Revision          int64                                `json:"revision"`
 	Role              string                               `json:"role" enum:"user,assistant"`

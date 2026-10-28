@@ -1,3 +1,5 @@
+import cachedBatch from "../../../../test/fixtures/batch-conversation-pages.json";
+import { groupConversationByTurn, queuedConversationMessages } from "./timelineModel";
 import { describe, expect, it } from "vitest";
 import * as snapshotModule from "./snapshot";
 
@@ -22,6 +24,40 @@ function page(overrides: Partial<ConversationPage> = {}): ConversationPage {
 }
 
 describe("mobile conversation pagination", () => {
+	it("keeps off-page batch followers when a live page replaces queued history", () => {
+		type BatchPage = Pick<ConversationPage, "turns" | "oldestSequence" | "latestSequence" | "hasMoreBefore"> & {
+			messages: Extract<ConversationPage["items"][number], { kind: "message" }>[];
+		};
+		const raw: { before: BatchPage[]; live: BatchPage; full: BatchPage } = JSON.parse(JSON.stringify(cachedBatch));
+		const fromWire = (value: BatchPage): ConversationPage => page({
+			...value, items: value.messages.map((message) => ({ ...message, kind: "message" })),
+		});
+		const before = raw.before.map(fromWire);
+		const live = fromWire(raw.live);
+		const refreshed = mergeConversationPages(withLivePage(before, live));
+		if (!refreshed) throw new Error("missing merged snapshot");
+		const batch = groupConversationByTurn(refreshed).find((group) => group.turnId === "leader");
+		expect(batch?.items.map((item) => item.id)).toEqual(["leader-message", "follower-message", "answer"]);
+		expect(groupConversationByTurn(fromWire(raw.full)).find((group) => group.turnId === "leader")?.items.map((item) => item.id)).toEqual(["leader-message", "follower-message", "answer"]);
+		expect(queuedConversationMessages(refreshed)).toEqual([]);
+		expect(refreshed.items.find((item) => item.id === "follower-message")).toMatchObject({ turnId: "follower", consumedByTurnId: "leader" });
+		expect(refreshed.turns.some((turn) => turn.id === "follower")).toBe(false);
+		expect(before.at(-1)?.turns.find((turn) => turn.id === "follower")?.state).toBe("queued");
+		const nextLive = page({ turns: [], oldestSequence: 506, latestSequence: 506, hasMoreBefore: true });
+		const later = mergeConversationPages(withLivePage(withLivePage(before, live), nextLive));
+		expect(later?.items.find((item) => item.id === "follower-message")).toMatchObject({ turnId: "follower", consumedByTurnId: "leader" });
+		expect(later?.turns.some((turn) => turn.id === "follower")).toBe(false);
+	});
+
+	it("does not infer batch consumption for an unrelated queued turn", () => {
+		const queued = { id: "still-queued", state: "queued", requestedAt: "2026-01-01" } satisfies ConversationPage["turns"][number];
+		const input = { kind: "message", id: "still-queued-message", turnId: queued.id, sequence: 1, revision: 0, role: "user", origin: "human", text: "pending", streaming: false, createdAt: "2026-01-01" } satisfies ConversationPage["items"][number];
+		const merged = mergeConversationPages(withLivePage([page(), page({ turns: [queued], items: [input] })], page()));
+		if (!merged) throw new Error("missing snapshot");
+		expect(queuedConversationMessages(merged).map((queued) => queued.turnId)).toEqual(["still-queued"]);
+		expect(merged.items[0]).toEqual(input);
+	});
+
 	it("keeps chronological order and the oldest page cursor", () => {
 		const merged = mergeConversationPages([
 			page({ oldestSequence: 3, hasMoreBefore: true, items: [{ kind: "message", id: "m3", sequence: 3, revision: 1, role: "assistant", origin: "provider", text: "new", streaming: false, createdAt: "2026-01-01" }] }),

@@ -5565,6 +5565,7 @@ export interface components {
         };
         ConversationMessageResponse: {
             clientMessageId?: string;
+            consumedByTurnId?: string;
             content?: components["schemas"]["ConversationContentSummaryResponse"][];
             continuation?: boolean;
             createdAt: string;
@@ -5712,6 +5713,7 @@ export interface components {
             truncated?: boolean;
         };
         ConversationTurnResponse: {
+            batchInputTurnIds?: string[];
             completedAt?: null | string;
             diff?: components["schemas"]["ConversationTurnDiffResponse"];
             errorMessage?: string;
