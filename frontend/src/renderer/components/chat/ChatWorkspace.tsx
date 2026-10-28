@@ -164,7 +164,7 @@ import { ActivityRun } from "./ActivityRun";
 import { LiveActivityWindow } from "./LiveActivityWindow";
 import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
-import { SessionPlanFrames } from "./SessionPlanFrames";
+import { SessionConversationFrames, type AttentionSourceSelection } from "./SessionConversationFrames";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
 import { ElicitationDock, ElicitationHistory } from "./ElicitationDock";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
@@ -1463,14 +1463,32 @@ function ChatWorkspaceContent({
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
 	const editHumanMessage = onEditMessage;
-	const pendingApproval = useMemo(
-		() => latestPendingInteraction(snapshot.items, "approval", turn),
-		[snapshot.items, turn],
-	);
-	const pendingUserInput = useMemo(
-		() => latestPendingInteraction(snapshot.items, "user_input", turn),
-		[snapshot.items, turn],
-	);
+	const { t } = useTranslation();
+	const [attentionSource, setAttentionSource] = useState<AttentionSourceSelection>();
+	const attentionScope = JSON.stringify([activeRemoteHostId, snapshot.sessionId, snapshot.activeBranchId]);
+	const currentAttention = sessionPlanEnabled && attentionSource?.scope === attentionScope ? attentionSource : undefined;
+	const approvalSourceRef = useRef<HTMLDivElement>(null);
+	const inputSourceRef = useRef<HTMLDivElement>(null);
+	const focusAttentionSource = useCallback((activity: ConversationActivity) => {
+		const node = activity.activityKind === "approval" ? approvalSourceRef.current : inputSourceRef.current;
+		if (!node || node.dataset.attentionSource !== activity.id) return false;
+		const input = node.querySelector<HTMLElement>("input:not(:disabled), textarea:not(:disabled), select:not(:disabled)");
+		const action = node.querySelector<HTMLElement>("button:not(:disabled), a[href]");
+		(input ?? action ?? node).focus();
+		return true;
+	}, []);
+	const pendingApproval = useMemo(() => {
+		if (currentAttention?.selectedId) {
+			return currentAttention.activity?.activityKind === "approval" ? currentAttention.activity : undefined;
+		}
+		return latestPendingInteraction(snapshot.items, "approval", turn);
+	}, [snapshot.items, turn, currentAttention]);
+	const pendingUserInput = useMemo(() => {
+		if (currentAttention?.selectedId) {
+			return currentAttention.activity?.activityKind === "user_input" ? currentAttention.activity : undefined;
+		}
+		return latestPendingInteraction(snapshot.items, "user_input", turn);
+	}, [snapshot.items, turn, currentAttention]);
 	const stableSettings = useStableValue(snapshot.settings);
 	// Claude Code compacts at the window picked for it, well before its model's full context.
 	const compactsAt = snapshot.harness === "claude-code" ? snapshot.settings?.autoCompactWindow : undefined;
@@ -1551,24 +1569,39 @@ function ChatWorkspaceContent({
 		],
 	);
 	const composerApproval = useMemo(
-		() =>
-			stablePendingApproval ? (
-				<ApprovalCard
-					activity={stablePendingApproval}
-					onDecide={onDecide}
-					busy={busy}
-					embedded
-				/>
-			) : undefined,
-		[busy, onDecide, stablePendingApproval],
+		() => stablePendingApproval ? (
+			<div ref={approvalSourceRef} tabIndex={-1} data-attention-source={stablePendingApproval.id}>
+				<ApprovalCard activity={stablePendingApproval} onDecide={onDecide} busy={busy || currentAttention?.loading} embedded />
+			</div>
+		) : undefined,
+		[busy, onDecide, stablePendingApproval, currentAttention?.loading],
 	);
-	const composerElicitation = useMemo(
-		() =>
-			stablePendingUserInput ? (
-				<ElicitationDock key={stablePendingUserInput.id} activity={stablePendingUserInput} onResolve={onResolveInput} />
-			) : undefined,
-		[onResolveInput, stablePendingUserInput],
-	);
+	const inputDraftKey = sessionPlanEnabled && stablePendingUserInput ? JSON.stringify([
+		activeRemoteHostId, snapshot.sessionId, snapshot.conversationId, snapshot.activeBranchId,
+		stablePendingUserInput.id, stablePendingUserInput.revision,
+	]) : undefined;
+	const composerElicitation = useMemo(() => {
+		if (!stablePendingUserInput && !currentAttention?.error && !currentAttention?.readError && !currentAttention?.unavailable) return undefined;
+		return (
+			<div ref={inputSourceRef} tabIndex={-1} data-attention-source={stablePendingUserInput?.id}>
+				{currentAttention?.error ? (
+					<p role="alert" className="p-3 text-xs text-destructive">{t("attention.sourceChanged")}</p>
+				) : currentAttention?.unavailable ? (
+					<p role="status" className="p-3 text-xs text-muted-foreground">{t("attention.unavailable")}</p>
+				) : currentAttention?.readError ? (
+					<p role="alert" className="p-3 text-xs text-muted-foreground">{t("attention.readError")}</p>
+				) : null}
+				{stablePendingUserInput ? (
+					<ElicitationDock
+						key={inputDraftKey ?? stablePendingUserInput.id}
+						draftKey={inputDraftKey}
+						activity={stablePendingUserInput}
+						onResolve={currentAttention?.loading ? undefined : onResolveInput}
+					/>
+				) : null}
+			</div>
+		);
+	}, [onResolveInput, stablePendingUserInput, inputDraftKey, currentAttention?.loading, currentAttention?.error, currentAttention?.readError, currentAttention?.unavailable, t]);
 	const canSteerQueuedMessage =
 		Boolean(onSteer) && can(snapshot, "steer") && turn?.state === "running";
 	const composerQueuedDock = useMemo(
@@ -1655,7 +1688,6 @@ function ChatWorkspaceContent({
 	const openingStarting = Boolean(openingStartedAt) && startupState !== "failed" && !firstTurnSettled(snapshot) &&
 		!(turn?.state === "running" && snapshot.controller.state !== "connecting");
 	const conversationEmpty = !arrivingWithHistory && snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0 && (!hasStartup || sessionRole === "orchestrator");
-	const { t } = useTranslation();
 	const [emptyChatPlaceholder] = useState(
 		() => sessionRole === "orchestrator"
 			? "Ask anything about this project"
@@ -1775,7 +1807,21 @@ function ChatWorkspaceContent({
 				onCloseShellTerminal={onCloseShellTerminal}
 				onRenameShellTerminal={onRenameShellTerminal}
 				onTabsKeyDown={handleChatTabsKeyDown}
-				headerActions={<>{sessionPlanEnabled && !reviewerActive && !shellActive ? <SessionPlanFrames key={`${activeRemoteHostId ?? ""}:${snapshot.sessionId}`} sessionId={snapshot.sessionId} hostId={activeRemoteHostId} surfaceRef={surfaceRef} composerRef={composerDockRef} /> : null}{headerActions}</>}
+				headerActions={<>
+					{sessionPlanEnabled && !reviewerActive && !shellActive ? (
+						<SessionConversationFrames
+							key={`${activeRemoteHostId ?? ""}:${snapshot.sessionId}`}
+							sessionId={snapshot.sessionId}
+							hostId={activeRemoteHostId}
+							activeBranchId={snapshot.activeBranchId}
+							onAttentionSourceChange={setAttentionSource}
+							onAttentionSourceFocus={focusAttentionSource}
+							surfaceRef={surfaceRef}
+							composerRef={composerDockRef}
+						/>
+					) : null}
+					{headerActions}
+				</>}
 				session={session}
 				onSessionRenamed={onSessionRenamed}
 				sessionTabAction={sessionTabAction}

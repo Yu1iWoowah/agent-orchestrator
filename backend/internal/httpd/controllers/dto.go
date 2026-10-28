@@ -3246,6 +3246,38 @@ type ConversationMessageResponse struct {
 	CreatedAt    string `json:"createdAt"`
 }
 
+// AttentionItemResponse keeps provider state and read status separate.
+type AttentionItemResponse struct {
+	BranchID   string                       `json:"branchId"`
+	Activity   ConversationActivityResponse `json:"activity"`
+	Actionable bool                         `json:"actionable"`
+	Read       bool                         `json:"read"`
+}
+
+type AttentionCountsResponse struct {
+	Open    int64 `json:"open"`
+	Unread  int64 `json:"unread"`
+	History int64 `json:"history"`
+}
+
+type SessionAttentionResponse struct {
+	ConversationID     string                  `json:"conversationId"`
+	ActiveBranchID     string                  `json:"activeBranchId"`
+	Items              []AttentionItemResponse `json:"items"`
+	Counts             AttentionCountsResponse `json:"counts"`
+	HasMoreBefore      bool                    `json:"hasMoreBefore"`
+	NextBeforeSequence int64                   `json:"nextBeforeSequence,omitempty"`
+}
+
+type AttentionReadRequest struct {
+	ExpectedBranchID string `json:"expectedBranchId" minLength:"1"`
+	ExpectedRevision int64  `json:"expectedRevision" minimum:"0"`
+}
+
+type AttentionActivityIDParam struct {
+	ActivityID string `path:"activityId"`
+}
+
 // ConversationActivityResponse is one non-message timeline entry.
 type ConversationActivityResponse struct {
 	Kind     string `json:"kind" enum:"activity"`

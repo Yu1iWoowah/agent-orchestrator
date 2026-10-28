@@ -3119,7 +3119,7 @@ func (s *Store) upsertActivity(ctx context.Context, q *gen.Queries, conversation
 				ProviderItemID: activity.ProviderItemID,
 			})
 		if err == nil {
-			if activity.Kind == domain.ActivityKindPlan && row.Status == activity.Status &&
+			if (activity.Kind == domain.ActivityKindPlan || activity.Kind == domain.ActivityKindApproval || activity.Kind == domain.ActivityKindUserInput) && row.Kind == activity.Kind && row.Status == activity.Status &&
 				row.Summary == activity.Summary && row.DetailJson == detail {
 				return nil
 			}

@@ -174,6 +174,14 @@ type AppSetting struct {
 	ReplyLanguage      string
 }
 
+type AttentionRead struct {
+	OperatorScope    string
+	ConversationID   string
+	ActivityID       string
+	LastSeenRevision int64
+	SeenAt           time.Time
+}
+
 type Automation struct {
 	ID          domain.AutomationID
 	ProjectID   domain.ProjectID

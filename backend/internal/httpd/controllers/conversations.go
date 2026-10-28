@@ -103,6 +103,9 @@ type ConversationsController struct {
 func (c *ConversationsController) Register(r chi.Router) {
 	r.Get("/sessions/{sessionId}/plan", c.plan)
 	r.Get("/sessions/{sessionId}/plan/history", c.planHistory)
+	r.Get("/sessions/{sessionId}/attention", c.attention)
+	r.Get("/sessions/{sessionId}/attention/{activityId}", c.attentionSource)
+	r.Post("/sessions/{sessionId}/attention/{activityId}/read", c.attentionRead)
 	r.Get("/conversations/search", c.searchConversations)
 	r.Patch("/sessions/{sessionId}/conversation/side-chats/{sideId}/label", c.renameSideChat)
 	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}/cancel", c.cancelSideQuestion)
@@ -1181,6 +1184,8 @@ func decodeConversationBodyLimit(w http.ResponseWriter, r *http.Request, into an
 // codes, so a client can tell a permanent answer from a retryable one.
 func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, domain.ErrAttentionChanged):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ATTENTION_CHANGED", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrFileReferenceInvalid):
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_FILE_REFERENCE_INVALID", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrAnnotationLimit):

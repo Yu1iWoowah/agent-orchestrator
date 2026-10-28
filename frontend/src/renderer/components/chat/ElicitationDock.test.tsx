@@ -26,6 +26,15 @@ function otherAnswerFor(questionId: string) {
 }
 
 describe("ElicitationDock", () => {
+	it("restores an original request draft after switching sources without sharing it with another host", async () => {
+		const request = activity({ inputMode: "form", schema: { type: "object", properties: { target: { type: "string", title: "Target" } } } });
+		const view = render(<ElicitationDock key="first" activity={request} draftKey="local/session-a/request-1/rev-0" onResolve={vi.fn()} />);
+		await userEvent.type(screen.getByRole("textbox", { name: "Target" }), "staging");
+		view.rerender(<ElicitationDock key="other-host" activity={request} draftKey="remote/session-a/request-1/rev-0" onResolve={vi.fn()} />);
+		expect(screen.getByRole("textbox", { name: "Target" })).toHaveValue("");
+		view.rerender(<ElicitationDock key="back" activity={request} draftKey="local/session-a/request-1/rev-0" onResolve={vi.fn()} />);
+		expect(screen.getByRole("textbox", { name: "Target" })).toHaveValue("staging");
+	});
 	const claudeQuestions = {
 		type: "object" as const,
 		required: ["question_0", "question_1"],
