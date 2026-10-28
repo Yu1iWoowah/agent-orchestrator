@@ -4143,6 +4143,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/spawn-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read supported spawn settings contract */
+        get: operations["getSpawnCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings": {
         parameters: {
             query?: never;
@@ -4679,6 +4696,8 @@ export interface components {
         };
         AgentConfig: {
             effort?: string;
+            /** @enum {string} */
+            fastMode?: "default" | "on" | "off";
             mode?: string;
             model?: string;
             permissions?: string;
@@ -4763,6 +4782,7 @@ export interface components {
             efforts: string[];
             /** @enum {string} */
             fast: "unknown" | "supported" | "unsupported";
+            isDefault: boolean;
             model: string;
         };
         AgentModelsResponse: {
@@ -4817,6 +4837,17 @@ export interface components {
             effort: string;
             /** @enum {string} */
             fastMode: "default" | "on" | "off";
+            model: string;
+        };
+        AgentSettingsPatch: {
+            effort?: null | string;
+            /** @enum {string} */
+            fastMode?: "default" | "on" | "off";
+            model?: null | string;
+        };
+        AgentSettingsSources: {
+            effort: string;
+            fastMode: string;
             model: string;
         };
         AgentUpdateAdvisory: {
@@ -5534,6 +5565,7 @@ export interface components {
             reviewerHarness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "opencode-v2" | "kiro" | "pi" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
             /** @enum {string} */
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "commented" | "approved" | "mergeable" | "merged";
+            spawnAgentSettings?: components["schemas"]["SpawnAgentSettingsResolution"];
             staleBinary?: components["schemas"]["SessionStaleBinary"];
             /** @enum {string} */
             status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "commented" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "terminated" | "no_signal";
@@ -7663,6 +7695,17 @@ export interface components {
             state: string;
             text: string;
         };
+        SpawnAgentSettingsResolution: {
+            accountId?: string;
+            effortCleared: boolean;
+            reason?: string;
+            settings: components["schemas"]["AgentSettings"];
+            sources: components["schemas"]["AgentSettingsSources"];
+            validation: string;
+        };
+        SpawnCapabilitiesResponse: {
+            agentSettingsVersion: number;
+        };
         SpawnOrchestratorRequest: {
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
@@ -7675,6 +7718,7 @@ export interface components {
             orchestrator: components["schemas"]["OrchestratorResponse"];
         };
         SpawnSessionRequest: {
+            agentSettings?: components["schemas"]["AgentSettingsPatch"];
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
@@ -23838,6 +23882,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSpawnCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpawnCapabilitiesResponse"];
                 };
             };
         };

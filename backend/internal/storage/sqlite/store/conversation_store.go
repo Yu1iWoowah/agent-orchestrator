@@ -602,7 +602,8 @@ func (s *Store) CommitProviderSwitch(ctx context.Context, rec domain.SessionReco
 			return fmt.Errorf("update switched session: %w", err)
 		}
 		if err := q.UpdateConversationTurnSettings(ctx, gen.UpdateConversationTurnSettingsParams{
-			Model: nullableString(settings.Model), ReasoningEffort: nullableString(settings.ReasoningEffort),
+			FastMode: string(settings.AgentFastMode),
+			Model:    nullableString(settings.Model), ReasoningEffort: nullableString(settings.ReasoningEffort),
 			ApprovalMode: nullableString(string(settings.ApprovalMode)), OpencodeMode: settings.OpenCodeMode,
 			AutoCompactWindow: settings.AutoCompactWindow, UpdatedAt: rec.UpdatedAt, ID: branch.ConversationID,
 		}); err != nil {
@@ -2008,6 +2009,7 @@ func (s *Store) SetConversationSettings(
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.qw.UpdateConversationTurnSettings(ctx, gen.UpdateConversationTurnSettingsParams{
+		FastMode:        string(settings.AgentFastMode),
 		Model:           nullableString(settings.Model),
 		ReasoningEffort: nullableString(settings.ReasoningEffort),
 		ApprovalMode:    nullableString(string(settings.ApprovalMode)),
@@ -4462,6 +4464,8 @@ func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
 		Settings: domain.ConversationSettings{
 			Model:           row.Model.String,
 			ReasoningEffort: row.ReasoningEffort.String,
+			AgentFastMode:   storedFastPreference(row.AgentFastMode),
+			FastMode:        row.AgentFastMode == "on",
 			ApprovalMode:    domain.PermissionMode(row.ApprovalMode.String),
 			OpenCodeMode:    row.OpencodeMode,
 

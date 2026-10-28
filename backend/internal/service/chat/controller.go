@@ -1822,7 +1822,14 @@ func (c *Controller) SetSettings(ctx context.Context, settings domain.Conversati
 // turnSettings converts the stored choices into what a driver takes per turn.
 func (c *Controller) turnSettings() ports.ChatTurnSettings {
 	current := c.Settings()
+	fastMode := current.AgentFastMode
+	if current.FastMode {
+		fastMode = domain.AgentFastOn
+	} else if fastMode == domain.AgentFastOn {
+		fastMode = domain.AgentFastOff
+	}
 	return ports.ChatTurnSettings{
+		FastMode: fastMode,
 		Model:    current.Model,
 		Effort:   current.ReasoningEffort,
 		Approval: current.ApprovalMode,

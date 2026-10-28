@@ -29,9 +29,10 @@ const (
 
 // ModelCapabilities lists advertised choices, never inferred model features.
 type ModelCapabilities struct {
-	Model   string          `json:"model"`
-	Efforts []string        `json:"efforts"`
-	Fast    CapabilityState `json:"fast" enum:"unknown,supported,unsupported"`
+	Model     string          `json:"model"`
+	IsDefault bool            `json:"isDefault"`
+	Efforts   []string        `json:"efforts"`
+	Fast      CapabilityState `json:"fast" enum:"unknown,supported,unsupported"`
 }
 
 // Capabilities ties saved model evidence to its account and owner context.
@@ -139,7 +140,7 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 			fast = CapabilitySupported
 		}
 		efforts := append([]string{}, model.Efforts...)
-		result.Capabilities.Models = append(result.Capabilities.Models, ModelCapabilities{Model: model.ID, Efforts: efforts, Fast: fast})
+		result.Capabilities.Models = append(result.Capabilities.Models, ModelCapabilities{Model: model.ID, IsDefault: model.IsDefault, Efforts: efforts, Fast: fast})
 	}
 	return result, nil
 }

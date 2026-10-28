@@ -515,9 +515,10 @@ type ConversationSettings struct {
 	// ReasoningEffort is how much thinking to spend, from the model's own list.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// FastMode asks for the provider's faster tier. It is held for the life of
-	// the controller and not stored: a restart returns to the standard tier,
-	// which is the cheaper way to be wrong.
+	// the controller. A durable spawn preference also initializes it on restore.
 	FastMode bool `json:"fastMode,omitempty"`
+	// AgentFastMode is the durable spawn preference; FastMode also supports legacy live controls.
+	AgentFastMode AgentFastMode `json:"-"`
 	// PlanMode asks the provider to plan rather than act, where AO sets that per
 	// turn. Like FastMode it is held for the life of the controller only.
 	PlanMode bool `json:"planMode,omitempty"`

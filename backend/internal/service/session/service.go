@@ -1663,6 +1663,12 @@ func mapSessionError(err error) error {
 		return apierr.Invalid("ARTIFACT_OUTPUT_UNAVAILABLE", "Artifact output needs a daemon data directory to hold the session's artifacts", nil)
 	case errors.Is(err, sessionmanager.ErrHarnessInstallActive):
 		return apierr.Conflict("HARNESS_INSTALL_ACTIVE", "The selected harness is currently being installed", nil)
+	case errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable):
+		return apierr.Invalid("AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, ports.ErrAgentSettingsUnsupported):
+		return apierr.Invalid("AGENT_SETTINGS_UNSUPPORTED", err.Error(), nil)
+	case errors.Is(err, ports.ErrAgentSettingsInvalid):
+		return apierr.Invalid("AGENT_SETTINGS_INVALID", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrUnsupportedModel):
 		return apierr.Invalid("UNSUPPORTED_MODEL", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrTargetAgentUnauthorized):

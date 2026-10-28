@@ -5262,8 +5262,10 @@ func (q *Queries) UpdateConversationTurnPlan(ctx context.Context, arg UpdateConv
 
 const updateConversationTurnSettings = `-- name: UpdateConversationTurnSettings :exec
 UPDATE conversations
-SET model = ?, reasoning_effort = ?, approval_mode = ?, opencode_mode = ?, auto_compact_window = ?, updated_at = ?
-WHERE id = ?
+SET model=?1,reasoning_effort=?2,approval_mode=?3,
+ opencode_mode=?4,auto_compact_window=?5,updated_at=?6,
+ agent_fast_mode=CASE WHEN CAST(?7 AS TEXT)='' THEN agent_fast_mode ELSE CAST(?7 AS TEXT) END
+WHERE id=?8
 `
 
 type UpdateConversationTurnSettingsParams struct {
@@ -5273,6 +5275,7 @@ type UpdateConversationTurnSettingsParams struct {
 	OpencodeMode      string
 	AutoCompactWindow string
 	UpdatedAt         time.Time
+	FastMode          string
 	ID                string
 }
 
@@ -5288,6 +5291,7 @@ func (q *Queries) UpdateConversationTurnSettings(ctx context.Context, arg Update
 		arg.OpencodeMode,
 		arg.AutoCompactWindow,
 		arg.UpdatedAt,
+		arg.FastMode,
 		arg.ID,
 	)
 	return err

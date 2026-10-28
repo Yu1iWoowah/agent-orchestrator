@@ -773,6 +773,12 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	if cfg.ProviderConversationID != "" {
 		cfg.Effort = conversation.Settings.ReasoningEffort
 	}
+	if cfg.ProviderConversationID != "" {
+		cfg.FastMode = conversation.Settings.AgentFastMode
+	}
+	if cfg.FastMode == "" {
+		cfg.FastMode = domain.AgentFastDefault
+	}
 	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
 		cfg.Permissions = conversation.Settings.ApprovalMode
 	}
@@ -782,6 +788,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		conversation.Settings.Model = cfg.Model
 		conversation.Settings.ReasoningEffort = cfg.Effort
+		conversation.Settings.AgentFastMode = cfg.FastMode
+		conversation.Settings.FastMode = cfg.FastMode == domain.AgentFastOn
 		conversation.Settings.ApprovalMode = cfg.Permissions
 		// A switch target's settings are saved by the switch's commit.
 		if cfg.ProviderSwitch == nil {
@@ -829,6 +837,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			PrepareEnv:             prepareEnv,
 			Model:                  cfg.Model,
 			Effort:                 cfg.Effort,
+			FastMode:               cfg.FastMode,
 			Permissions:            cfg.Permissions,
 			ReadOnly:               cfg.ReadOnly,
 			SystemPrompt:           providerSystemPrompt,
@@ -847,6 +856,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			PrepareEnv:            prepareEnv,
 			Model:                 cfg.Model,
 			Effort:                cfg.Effort,
+			FastMode:              cfg.FastMode,
 			Permissions:           cfg.Permissions,
 			ReadOnly:              cfg.ReadOnly,
 			SystemPrompt:          providerSystemPrompt,

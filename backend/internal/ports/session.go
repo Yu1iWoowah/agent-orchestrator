@@ -44,6 +44,9 @@ type SpawnConfig struct {
 	// AgentConfig overrides the resolved project/role agent config for this
 	// single spawn. Empty fields keep the project defaults.
 	AgentConfig AgentConfig
+	// AgentSettings preserves omitted and explicit provider-default selections.
+	AgentSettings      *domain.AgentSettingsPatch `json:"agentSettings,omitempty"`
+	SpawnAgentSettings *domain.SpawnAgentSettingsResolution
 	// EffortOverride preserves the distinction between an omitted task override
 	// and an explicit empty value meaning provider default.
 	EffortOverride bool

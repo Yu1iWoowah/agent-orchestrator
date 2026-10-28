@@ -28,6 +28,8 @@ type AgentConfig struct {
 	// Effort selects a model-advertised reasoning level. Empty defers to the
 	// provider/model default.
 	Effort string `json:"effort,omitempty"`
+	// FastMode is optional: empty inherits, default selects the provider baseline.
+	FastMode AgentFastMode `json:"fastMode,omitempty" enum:"default,on,off"`
 	// Mode selects an agent-owned operating mode when the adapter exposes modes
 	// instead of raw model ids (currently Amp: low|medium|high|ultra).
 	Mode string `json:"mode,omitempty"`
@@ -83,6 +85,9 @@ func (m PermissionMode) Valid() bool {
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than silently dropped at spawn.
 func (c AgentConfig) Validate() error {
+	if c.FastMode != "" && c.FastMode != AgentFastDefault && c.FastMode != AgentFastOn && c.FastMode != AgentFastOff {
+		return fmt.Errorf("invalid fast mode %q", c.FastMode)
+	}
 	switch c.Mode {
 	case "", "low", "medium", "high", "ultra":
 	default:

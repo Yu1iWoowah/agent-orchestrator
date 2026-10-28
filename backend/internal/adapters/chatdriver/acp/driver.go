@@ -286,7 +286,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	if d.cfg.ValidateTurnSettings != nil {
 		if err := d.cfg.ValidateTurnSettings(cfg.Permissions, ports.ChatTurnSettings{
-			Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions,
+			Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, Approval: cfg.Permissions,
 		}); err != nil {
 			return nil, fmt.Errorf("validate ACP session settings: %w", err)
 		}
@@ -326,7 +326,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		return nil, err
 	}
 
-	settings := ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}
+	settings := ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, Approval: cfg.Permissions}
 	if err := d.openNewSession(ctx, conv, init, launchCfg, settings, additional, mcpServers); err != nil {
 		conv.discard()
 		return nil, err
@@ -451,7 +451,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	}
 	if d.cfg.ValidateTurnSettings != nil {
 		if err := d.cfg.ValidateTurnSettings(cfg.Permissions, ports.ChatTurnSettings{
-			Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions,
+			Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, Approval: cfg.Permissions,
 		}); err != nil {
 			return nil, fmt.Errorf("%w: validate ACP session settings: %w", ports.ErrChatResumeFailed, err)
 		}
@@ -491,7 +491,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		}
 		if d.cfg.ValidateTurnSettings != nil {
 			if err := d.cfg.ValidateTurnSettings(ports.PermissionMode(live.InitialPermissions), ports.ChatTurnSettings{
-				Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions,
+				Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, Approval: cfg.Permissions,
 			}); err != nil {
 				conv.discard()
 				return nil, fmt.Errorf("%w: live ACP launch settings: %w", ports.ErrChatRecoveryInconclusive, err)
@@ -607,7 +607,7 @@ func (d *Driver) resumeSession(
 		conv.discard()
 		return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)
 	}
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
+	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, Approval: cfg.Permissions}); err != nil {
 		if !errors.Is(err, ErrACPSetterUnsupported) {
 			conv.discard()
 			return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)
@@ -633,7 +633,7 @@ func (d *Driver) resumeFresh(
 	additional []string,
 	mcpServers []acpsdk.McpServer,
 ) (ports.ChatConversation, error) {
-	settings := ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}
+	settings := ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, Approval: cfg.Permissions}
 	if err := d.openNewSession(ctx, conv, init, launchCfg, settings, additional, mcpServers); err != nil {
 		conv.discard()
 		return nil, fmt.Errorf("%w: start fresh in place of missing ACP session: %w", ports.ErrChatResumeFailed, err)

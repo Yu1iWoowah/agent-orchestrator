@@ -1020,6 +1020,8 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			ControllerGeneration:             row.ControllerGeneration,
 			Model:                            row.Model,
 			Effort:                           row.Effort,
+			FastMode:                         storedFastPreference(row.AgentFastMode),
+			SpawnAgentSettings:               decodeSpawnAgentSettings(row.SpawnAgentSettingsJson),
 			Permissions:                      domain.PermissionMode(row.SessionPermissions),
 		},
 		RequestedOutput:   domain.RequestedOutput(row.RequestedOutput),

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode"
@@ -33,12 +34,86 @@ type AgentSettings struct {
 }
 
 // AgentSettingsPatch uses nil for omitted and a pointer to empty for reset.
-// HTTP decoders must preserve that distinction rather than decoding JSON null
-// directly into these pointers.
+// JSON null resets model/effort; fastMode always names one of the three modes.
 type AgentSettingsPatch struct {
-	Model    *AgentModelSelection
-	Effort   *AgentEffortSelection
-	FastMode *AgentFastMode
+	Model    *AgentModelSelection  `json:"model,omitempty"`
+	Effort   *AgentEffortSelection `json:"effort,omitempty"`
+	FastMode *AgentFastMode        `json:"fastMode,omitempty" enum:"default,on,off" nullable:"false"`
+}
+
+// AgentSettingsSources identifies which preference won for each spawn field.
+type AgentSettingsSources struct {
+	Model    string `json:"model"`
+	Effort   string `json:"effort"`
+	FastMode string `json:"fastMode"`
+}
+
+// SpawnAgentSettingsResolution is the immutable spawn decision. Validation is
+// evidence about selection, never a provider-reported effective value.
+type SpawnAgentSettingsResolution struct {
+	Settings      AgentSettings        `json:"settings"`
+	Sources       AgentSettingsSources `json:"sources"`
+	Validation    string               `json:"validation"`
+	Reason        string               `json:"reason,omitempty"`
+	AccountID     string               `json:"accountId,omitempty"`
+	EffortCleared bool                 `json:"effortCleared"`
+}
+
+// UnmarshalJSON retains field presence, including a provider-default reset.
+func (p *AgentSettingsPatch) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("agent settings must be an object")
+	}
+	var patch AgentSettingsPatch
+	for name, raw := range fields {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("invalid %s selection: %w", name, err)
+		}
+		switch name {
+		case "model":
+			patch.Model = new(AgentModelSelection(value))
+		case "effort":
+			patch.Effort = new(AgentEffortSelection(value))
+		case "fastMode":
+			patch.FastMode = new(AgentFastMode(value))
+		default:
+			return fmt.Errorf("unknown agent setting %q", name)
+		}
+	}
+	if _, err := (AgentSettings{FastMode: AgentFastDefault}).Apply(patch); err != nil {
+		return err
+	}
+	*p = patch
+	return nil
+}
+
+// MarshalJSON writes resets as null, so fingerprints preserve omitted vs reset.
+func (p AgentSettingsPatch) MarshalJSON() ([]byte, error) {
+	if _, err := (AgentSettings{FastMode: AgentFastDefault}).Apply(p); err != nil {
+		return nil, err
+	}
+	fields := make(map[string]any)
+	if p.Model != nil {
+		fields["model"] = nil
+		if *p.Model != "" {
+			fields["model"] = *p.Model
+		}
+	}
+	if p.Effort != nil {
+		fields["effort"] = nil
+		if *p.Effort != "" {
+			fields["effort"] = *p.Effort
+		}
+	}
+	if p.FastMode != nil {
+		fields["fastMode"] = *p.FastMode
+	}
+	return json.Marshal(fields)
 }
 
 // Apply changes only supplied fields. Provider capability validation is separate.

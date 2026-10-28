@@ -356,8 +356,10 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	applyTurnSettings(params, msg.Settings, c.readOnly, c.disableNetwork)
 	// A service tier sticks to the thread once set, so leaving the fast tier
 	// has to be said: an explicit null returns the thread to its default.
-	if msg.Settings.Fast {
+	if msg.Settings.Fast || msg.Settings.FastMode == domain.AgentFastOn {
 		params["serviceTier"] = cmp.Or(c.fastTiers[msg.Settings.Model], c.fastTiers[c.threadModel], codexFastServiceTier)
+	} else if msg.Settings.FastMode == domain.AgentFastOff {
+		params["serviceTier"] = "default"
 	} else if c.fastTier || c.tierUnknown && c.configuredServiceTier(ctx) == "" {
 		params["serviceTier"] = nil
 	}

@@ -12,6 +12,28 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec/specgen"
 )
 
+func TestBuildSpawnSettingsFastCannotBeNull(t *testing.T) {
+	raw, err := specgen.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err = yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	patch := doc.Components.Schemas["AgentSettingsPatch"]
+	if got := patch.Properties["fastMode"].Type; got != "string" {
+		t.Fatalf("fastMode type=%v want non-null string", got)
+	}
+	if patch.Properties["model"].Type == "string" || patch.Properties["effort"].Type == "string" {
+		t.Fatal("model/effort reset must accept null")
+	}
+}
+
 type openAPISchemaNode struct {
 	Ref        string                       `yaml:"$ref"`
 	Type       any                          `yaml:"type"`
