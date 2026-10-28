@@ -11,6 +11,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+const catalogFreshFor = 6 * time.Hour
+
 // Store reads preference and capability evidence without starting a provider.
 type Store interface {
 	SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error)
@@ -74,9 +76,19 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 		return Snapshot{}, err
 	}
 	result := Snapshot{SessionAgentSettings: settings, Capabilities: Capabilities{State: CapabilityUnknown, Reason: "catalog_unavailable", ControllerGeneration: settings.OwnerGeneration, AccountID: settings.AccountID, Models: []ModelCapabilities{}}}
-	if provider, ok := domain.AgentAccountProviderFor(settings.Harness); ok && settings.AccountID != domain.DeviceAgentAccountID(provider) {
-		result.Capabilities.Reason = "account_catalog_unavailable"
+	if !settings.Harness.IsKnown() {
+		result.Capabilities.Reason = "harness_unknown"
 		return result, nil
+	}
+	if provider, ok := domain.AgentAccountProviderFor(settings.Harness); ok {
+		if settings.AccountID == "" {
+			result.Capabilities.Reason = "account_unbound"
+			return result, nil
+		}
+		if settings.AccountID != domain.DeviceAgentAccountID(provider) {
+			result.Capabilities.Reason = "account_catalog_unavailable"
+			return result, nil
+		}
 	}
 	cached, found, err := s.store.GetAgentModelCatalog(ctx, string(settings.Harness), "")
 	if err != nil {
@@ -93,9 +105,6 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 	result.Capabilities.Source = cached.Source
 	result.Capabilities.Generation = cached.Generation
 	observed := cached.LastSuccessAt
-	if observed.IsZero() {
-		observed = cached.FetchedAt
-	}
 	if !observed.IsZero() {
 		result.Capabilities.ObservedAt = &observed
 	}
@@ -103,7 +112,16 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 		result.Capabilities.Reason = "catalog_scope_mismatch"
 		return result, nil
 	}
-	if catalog.Stale || cached.RefreshError != "" || cached.RefreshState == "error" || observed.IsZero() || observed.After(s.now()) || s.now().Sub(observed) > 6*time.Hour {
+	if catalog.Stale || cached.RefreshError != "" || catalog.RefreshError != "" || cached.RefreshState != "idle" || (catalog.RefreshState != "" && catalog.RefreshState != "idle") {
+		result.Capabilities.Reason = "catalog_stale"
+		return result, nil
+	}
+	if observed.IsZero() {
+		result.Capabilities.Reason = "catalog_unverified"
+		return result, nil
+	}
+	now := s.now()
+	if observed.After(now) || now.Sub(observed) > catalogFreshFor {
 		result.Capabilities.Reason = "catalog_stale"
 		return result, nil
 	}

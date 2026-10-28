@@ -103,7 +103,7 @@ SELECT id,model,effort,agent_fast_mode,agent_settings_revision,harness,session_m
  controller_generation,runtime_launch_id,is_terminated,
  CAST(COALESCE((SELECT account_id FROM session_agent_accounts a WHERE a.session_id=s.id
  AND a.provider=CASE s.harness WHEN 'codex' THEN 'codex' WHEN 'claude-code' THEN 'claude' ELSE '' END
- ORDER BY bound_at DESC LIMIT 1), CASE s.harness WHEN 'codex' THEN 'device-codex' WHEN 'claude-code' THEN 'device-claude' ELSE '' END) AS TEXT) AS account_id
+ ORDER BY bound_at DESC LIMIT 1), '') AS TEXT) AS account_id
 FROM sessions s WHERE id=?
 `
 

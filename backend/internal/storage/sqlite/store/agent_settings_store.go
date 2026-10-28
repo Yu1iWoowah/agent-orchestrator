@@ -136,7 +136,7 @@ func (s *Store) BeginAgentSettingsOperation(ctx context.Context, op domain.Agent
 		}
 		err = q.InsertAgentSettingsOperation(ctx, gen.InsertAgentSettingsOperationParams{ID: op.ID, SessionID: string(op.SessionID), IdempotencyKey: op.IdempotencyKey, RequestJson: string(raw), CreatedAt: op.CreatedAt, UpdatedAt: op.CreatedAt})
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			if isSQLiteUnique(err) {
 				return ports.ErrAgentSettingsConflict
 			}
 			return err

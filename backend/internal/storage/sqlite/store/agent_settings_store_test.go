@@ -36,6 +36,9 @@ func settingsFixture(t *testing.T) (*sqlite.Store, *sql.DB, domain.SessionRecord
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.BindSessionAgentAccount(context.Background(), rec.ID, domain.AgentAccountProviderClaude, "device-claude", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	return s, db, rec
 }
 
@@ -240,5 +243,23 @@ func TestAgentSettingsConcurrentIntentionsHaveOneWinner(t *testing.T) {
 	}
 	if wins != 1 || conflicts != 1 {
 		t.Fatalf("wins=%d conflicts=%d", wins, conflicts)
+	}
+}
+
+func TestAgentSettingsUnboundAccountCannotClaimDeviceOwner(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := settingsFixture(t)
+	if _, err := db.Exec("DELETE FROM session_agent_accounts WHERE session_id=?", rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentAccountDefault(ctx, domain.AgentAccountProviderClaude, "managed-claude"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginAgentSettingsOperation(ctx, settingsOperation(rec.ID)); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+		t.Fatalf("unbound session accepted device owner: %v", err)
+	}
+	got, err := s.SessionAgentSettings(ctx, rec.ID)
+	if err != nil || got.AccountID != "" || got.Revision != 0 {
+		t.Fatalf("invented bound account: %+v, %v", got, err)
 	}
 }

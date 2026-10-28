@@ -23,6 +23,9 @@ func TestReadSettingsCapabilitiesDoNotCrossAccountOrTrustStaleCatalog(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.BindSessionAgentAccount(ctx, rec.ID, domain.AgentAccountProviderCodex, "device-codex", now); err != nil {
+		t.Fatal(err)
+	}
 	catalog := ports.AgentModelCatalog{AgentID: "codex", Source: "codex-app-server", SelectionMode: ports.ModelSelectionCatalog, Models: []ports.AgentModelInfo{{ID: "native-model", Efforts: []string{"low", "high"}, SupportsFast: true}, {ID: "small", SupportsFast: false}}}
 	raw, err := json.Marshal(catalog)
 	if err != nil {
@@ -76,6 +79,9 @@ func TestReadSettingsDoesNotPromoteInvalidOrModeCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.BindSessionAgentAccount(ctx, rec.ID, domain.AgentAccountProviderCodex, "device-codex", now); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct{ name, raw, reason string }{
 		{"invalid JSON", "{", "catalog_invalid"},
 		{"wrong harness", `{"agentId":"claude-code","models":[{"id":"opus","supportsFast":true}]}`, "catalog_scope_mismatch"},
@@ -90,5 +96,120 @@ func TestReadSettingsDoesNotPromoteInvalidOrModeCatalog(t *testing.T) {
 				t.Fatalf("got %+v %v", got, err)
 			}
 		})
+	}
+}
+
+func TestReadSettingsRequiresValidSuccessfulCatalog(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name, state, catalogState, refreshError, catalogError, reason string
+		lastSuccess                                                   time.Time
+		stale                                                         bool
+	}{
+		{name: "invalidated", state: "idle", reason: "catalog_unverified"},
+		{name: "queued invalidation", state: "queued", reason: "catalog_stale"},
+		{name: "refreshing invalidation", state: "refreshing", reason: "catalog_stale"},
+		{name: "never successful", state: "idle", reason: "catalog_unverified"},
+		{name: "queued with prior success", state: "queued", lastSuccess: now, reason: "catalog_stale"},
+		{name: "refreshing with prior success", state: "refreshing", lastSuccess: now, reason: "catalog_stale"},
+		{name: "expired success", state: "idle", lastSuccess: now.Add(-6*time.Hour - time.Nanosecond), reason: "catalog_stale"},
+		{name: "future success", state: "idle", lastSuccess: now.Add(time.Second), reason: "catalog_stale"},
+		{name: "stale catalog", state: "idle", lastSuccess: now, stale: true, reason: "catalog_stale"},
+		{name: "refresh failed", state: "error", lastSuccess: now, reason: "catalog_stale"},
+		{name: "refresh error", state: "idle", refreshError: "offline", lastSuccess: now, reason: "catalog_stale"},
+		{name: "catalog queued", state: "idle", catalogState: "queued", lastSuccess: now, reason: "catalog_stale"},
+		{name: "catalog refreshing", state: "idle", catalogState: "refreshing", lastSuccess: now, reason: "catalog_stale"},
+		{name: "catalog error", state: "idle", catalogError: "offline", lastSuccess: now, reason: "catalog_stale"},
+		{name: "unrecognized catalog state", state: "idle", catalogState: "unrecognized", lastSuccess: now, reason: "catalog_stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := sqlitetest.MustOpen(t)
+			if err := s.UpsertProject(ctx, domain.ProjectRecord{ID: "catalog", Path: "/fake", RegisteredAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			rec, err := s.CreateSession(ctx, domain.SessionRecord{ProjectID: "catalog", Kind: domain.KindWorker, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.BindSessionAgentAccount(ctx, rec.ID, domain.AgentAccountProviderCodex, "device-codex", now); err != nil {
+				t.Fatal(err)
+			}
+			catalog := ports.AgentModelCatalog{AgentID: "codex", SelectionMode: ports.ModelSelectionCatalog, Stale: tc.stale, RefreshState: tc.catalogState, RefreshError: tc.catalogError, Models: []ports.AgentModelInfo{{ID: "model", SupportsFast: true}}, LastSuccessAt: &now}
+			raw, err := json.Marshal(catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Explicit metadata avoids the store's legacy successful-record normalization.
+			if err := s.UpsertAgentModelCatalog(ctx, ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), FetchedAt: now, LastSuccessAt: tc.lastSuccess, RefreshState: tc.state, RefreshError: tc.refreshError, Generation: 7}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := New(s, func() time.Time { return now }).Read(ctx, rec.ID)
+			if err != nil || got.Capabilities.State != CapabilityUnknown || got.Capabilities.Reason != tc.reason || len(got.Capabilities.Models) != 0 {
+				t.Fatalf("unverified evidence promoted: %+v, %v", got.Capabilities, err)
+			}
+			if tc.lastSuccess.IsZero() && got.Capabilities.ObservedAt != nil {
+				t.Fatalf("fetch time presented as successful observation: %v", got.Capabilities.ObservedAt)
+			}
+		})
+	}
+}
+
+type unknownHarnessStore struct {
+	settings domain.SessionAgentSettings
+	catalog  ports.CachedAgentModelCatalog
+}
+
+func (s unknownHarnessStore) SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error) {
+	return s.settings, nil
+}
+
+func (s unknownHarnessStore) GetAgentModelCatalog(context.Context, string, string) (ports.CachedAgentModelCatalog, bool, error) {
+	return s.catalog, true, nil
+}
+
+func TestReadSettingsDoesNotTrustUnknownHarnessCatalog(t *testing.T) {
+	now := time.Now().UTC()
+	for _, harness := range []domain.AgentHarness{"unknown-harness", domain.HarnessFake, ""} {
+		t.Run(string(harness), func(t *testing.T) {
+			raw, err := json.Marshal(ports.AgentModelCatalog{AgentID: string(harness), Models: []ports.AgentModelInfo{{ID: "synthetic", SupportsFast: true}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := unknownHarnessStore{
+				settings: domain.SessionAgentSettings{SessionID: "unknown", Harness: harness},
+				catalog:  ports.CachedAgentModelCatalog{AgentID: string(harness), CatalogJSON: string(raw), FetchedAt: now, LastSuccessAt: now, RefreshState: "idle", Generation: 7},
+			}
+			got, err := New(store, func() time.Time { return now }).Read(context.Background(), "unknown")
+			if err != nil || got.Capabilities.State != CapabilityUnknown || got.Capabilities.Reason != "harness_unknown" || len(got.Capabilities.Models) != 0 {
+				t.Fatalf("unknown harness evidence promoted: %+v, %v", got.Capabilities, err)
+			}
+		})
+	}
+}
+
+func TestReadSettingsUnboundAccountDoesNotUseDeviceCatalog(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s := sqlitetest.MustOpen(t)
+	if err := s.UpsertProject(ctx, domain.ProjectRecord{ID: "unbound", Path: "/fake", RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAgentAccount(ctx, domain.AgentAccount{ID: "managed-codex", Provider: domain.AgentAccountProviderCodex, Home: "/fake/managed", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentAccountDefault(ctx, domain.AgentAccountProviderCodex, "managed-codex"); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.CreateSession(ctx, domain.SessionRecord{ProjectID: "unbound", Kind: domain.KindWorker, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertAgentModelCatalog(ctx, ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: `{"agentId":"codex","models":[{"id":"device-model","supportsFast":true}]}`, FetchedAt: now, LastSuccessAt: now, RefreshState: "idle", Generation: 7}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(s, func() time.Time { return now }).Read(ctx, rec.ID)
+	if err != nil || got.Capabilities.State != CapabilityUnknown || got.Capabilities.Reason != "account_unbound" || got.Capabilities.AccountID != "" || len(got.Capabilities.Models) != 0 {
+		t.Fatalf("unbound account promoted device evidence: %+v, %v", got.Capabilities, err)
 	}
 }
