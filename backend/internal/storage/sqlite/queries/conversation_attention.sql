@@ -9,7 +9,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
  SELECT a.id,
         CAST(CASE WHEN a.status='pending' AND a.request_id!='' AND a.branch_id=c.active_branch_id AND s.is_terminated=0
           AND (t.id IS NULL OR t.state IN ('queued','running')) THEN 1 ELSE 0 END AS INTEGER) AS actionable,
-        ROW_NUMBER() OVER (PARTITION BY a.kind,COALESCE(NULLIF(a.request_id,''),a.id) ORDER BY a.sequence DESC) AS source_rank
+        ROW_NUMBER() OVER (PARTITION BY a.kind,CASE WHEN a.request_id!='' THEN 'request:'||a.request_id ELSE 'activity:'||a.id END ORDER BY a.sequence DESC) AS source_rank
  FROM conversation_activities a JOIN active_path p ON p.branch_id=a.branch_id
  JOIN conversations c ON c.id=a.conversation_id JOIN sessions s ON s.id=c.current_session_id
  LEFT JOIN conversation_turns t ON t.id=a.turn_id AND t.conversation_id=a.conversation_id
@@ -38,7 +38,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
  SELECT a.id,
         CAST(CASE WHEN a.status='pending' AND a.request_id!='' AND a.branch_id=c.active_branch_id AND s.is_terminated=0
           AND (t.id IS NULL OR t.state IN ('queued','running')) THEN 1 ELSE 0 END AS INTEGER) AS actionable,
-        ROW_NUMBER() OVER (PARTITION BY a.kind,COALESCE(NULLIF(a.request_id,''),a.id) ORDER BY a.sequence DESC) AS source_rank
+        ROW_NUMBER() OVER (PARTITION BY a.kind,CASE WHEN a.request_id!='' THEN 'request:'||a.request_id ELSE 'activity:'||a.id END ORDER BY a.sequence DESC) AS source_rank
  FROM conversation_activities a JOIN active_path p ON p.branch_id=a.branch_id
  JOIN conversations c ON c.id=a.conversation_id JOIN sessions s ON s.id=c.current_session_id
  LEFT JOIN conversation_turns t ON t.id=a.turn_id AND t.conversation_id=a.conversation_id

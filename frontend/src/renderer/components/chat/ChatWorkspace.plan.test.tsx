@@ -4,8 +4,8 @@ import { renderChat } from "../../test/render-chat";
 import { chatFixtureSettled } from "../../lib/chat-fixture";
 import { ChatWorkspace } from "./ChatWorkspace";
 
-vi.mock("./SessionPlanFrames", () => ({
-	SessionPlanFrames: () => <button>Session Plan entry</button>,
+vi.mock("./SessionConversationFrames", () => ({
+	SessionConversationFrames: () => <button>Session Plan entry</button>,
 }));
 
 describe("primary session Plan ownership", () => {

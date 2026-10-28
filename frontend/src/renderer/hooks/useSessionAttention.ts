@@ -11,6 +11,22 @@ import { clientForSessionHost } from "../lib/host-clients";
 import { toActivity } from "./useConversation";
 
 export type AttentionItem = components["schemas"]["AttentionItemResponse"];
+type AttentionPage = components["schemas"]["SessionAttentionResponse"];
+
+function checkedAttentionResponse(data: AttentionPage): AttentionPage {
+  if (
+    !Array.isArray(data.items) ||
+    !data.counts ||
+    ![data.counts.open, data.counts.unread, data.counts.history].every(
+      Number.isFinite,
+    ) ||
+    typeof data.activeBranchId !== "string" ||
+    typeof data.hasMoreBefore !== "boolean" ||
+    !data.items.every((item) => typeof item?.activity?.id === "string")
+  )
+    throw new Error("Invalid attention response.");
+  return data;
+}
 export const sessionAttentionQueryKey = (sessionId: string, hostId?: string) =>
   hostId
     ? (["remote-session-attention", hostId, sessionId] as const)
@@ -47,7 +63,7 @@ export function useSessionAttention(
         throw new Error(apiErrorMessage(error, "Could not load attention."));
       if (branchId && data.activeBranchId !== branchId)
         throw new Error("The active branch changed.");
-      return data;
+      return checkedAttentionResponse(data);
     },
     getNextPageParam: (page) =>
       page.hasMoreBefore ? page.nextBeforeSequence : undefined,
@@ -93,7 +109,7 @@ export function useAttentionSelection(
         throw new Error(
           apiErrorMessage(error, "The request is no longer available."),
         );
-      return data;
+      return checkedAttentionResponse(data);
     },
     retry: false,
     refetchInterval: hostId && active ? 2000 : false,
@@ -161,7 +177,7 @@ export function useAttentionSelection(
         ? true
         : false,
     unavailable,
-    readError: markRead.isError,
+    readError: active && markRead.isError,
     markViewed: () =>
       current && !current.read && source.data
         ? markRead.mutate({

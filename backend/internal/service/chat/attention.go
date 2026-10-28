@@ -45,13 +45,14 @@ func (s *Service) Attention(ctx context.Context, id domain.SessionID, query doma
 		if err != nil {
 			return domain.ConversationAttentionPage{}, err
 		}
-		if current.ID == conversation.ID && current.ID == page.ConversationID && current.ActiveBranchID == conversation.ActiveBranchID && current.ActiveBranchID == page.ActiveBranchID && current.SessionID == id {
+		if current.ID == conversation.ID && conversation.ID == page.ConversationID && current.ActiveBranchID == conversation.ActiveBranchID && conversation.ActiveBranchID == page.ActiveBranchID && current.SessionID == id {
 			return page, nil
 		}
 	}
 	return domain.ConversationAttentionPage{}, ErrControllerHandoff
 }
 
+// MarkAttentionRead records an explicit seen revision through the source owner.
 func (s *Service) MarkAttentionRead(ctx context.Context, id domain.SessionID, branchID, activityID string, revision int64) error {
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return err

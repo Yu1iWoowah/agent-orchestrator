@@ -105,6 +105,62 @@ func TestAttentionReplayDoesNotMakeReadRequestUnread(t *testing.T) {
 	}
 }
 
+func TestConversationAttentionDoesNotOfferPreviousOwnerRequests(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "hist")
+	record := sampleRecord("hist")
+	record.Mode = domain.SessionModeChat
+	owner, err := s.CreateSession(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := owner.ID
+	conversation, err := s.CreateConversation(ctx, "project-attention", domain.ConversationScopeProject, "hist", session, histClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimChatControllerGeneration(ctx, session, "gen-1"); err != nil {
+		t.Fatal(err)
+	}
+	appendPlanTurn(t, s, conversation.ID, session, "old-owner", histClock)
+	attentionActivity(t, s, conversation.ID, "old-owner", "old-request", domain.ActivityKindApproval, domain.ActivityStatusPending)
+	before, err := s.ConversationAttention(ctx, session, conversation.ID, domain.ConversationAttentionQuery{State: "open"})
+	if err != nil || before.Counts.Open != 1 {
+		t.Fatalf("old owner's initial request missing: %+v, %v", before, err)
+	}
+	next, err := s.CreateSession(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateConversation(ctx, "ignored-rebind-id", domain.ConversationScopeProject, "hist", next.ID, histClock); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ConversationAttention(ctx, next.ID, conversation.ID, domain.ConversationAttentionQuery{State: "history"})
+	if err != nil || page.Counts.Open != 0 || len(page.Items) != 0 {
+		t.Fatalf("previous owner's request offered to new controller: %+v, %v", page, err)
+	}
+}
+
+func TestConversationAttentionSeparatesRequestAndActivityIdentity(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	appendPlanTurn(t, s, conversation, session, "attention", histClock)
+	for _, activity := range []domain.ConversationActivity{
+		{ID: "shared-id", ProviderItemID: "unaddressable"},
+		{ID: "addressable", ProviderItemID: "addressable", RequestID: "shared-id"},
+	} {
+		activity.Kind, activity.Status = domain.ActivityKindApproval, domain.ActivityStatusPending
+		if err := s.UpsertActivity(ctx, conversation, "provider-attention", activity, histClock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := s.ConversationAttention(ctx, session, conversation, domain.ConversationAttentionQuery{State: "history"})
+	if err != nil || page.Counts.Open != 1 || page.Counts.History != 1 || len(page.Items) != 1 || page.Items[0].Activity.ID != "shared-id" {
+		t.Fatalf("request id collided with an unaddressable activity: %+v, %v", page, err)
+	}
+}
+
 func TestConversationAttentionDoesNotExposeOtherBranchesOrSessions(t *testing.T) {
 	s, session, conversation := conversationFixture(t)
 	ctx := context.Background()

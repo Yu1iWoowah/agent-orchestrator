@@ -50,6 +50,7 @@ test("a sent image attachment opens at full size when clicked @T0", async ({ pag
 		await route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "not found" } } });
 	});
 	await page.goto(`/#/projects/fake-proj/sessions/${sessionId}`);
+	await page.getByRole("button", { name: "Collapse Awaiting you", exact: true }).click();
 
 	await page.getByRole("button", { name: "Open image: Image 1" }).click();
 	const dialog = page.getByRole("dialog");
@@ -120,6 +121,7 @@ test("a pasted image sits inline in the prose, in the composer and in history @T
 		await route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "not found" } } });
 	});
 	await page.goto(`/#/projects/fake-proj/sessions/${id}`);
+	await page.getByRole("button", { name: "Collapse Awaiting you", exact: true }).click();
 
 	// History: the path in the prose is a chip that opens the image.
 	const bubble = page.locator(".cursor-chat-human-message");

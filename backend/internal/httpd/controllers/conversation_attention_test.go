@@ -78,7 +78,7 @@ func TestSessionAttentionWireCountsCursorAndFreshSource(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&wire); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != 200 || svc.session != "session" || svc.query.BeforeSequence != 10 || svc.query.Limit != 1 || wire.Counts.Open != 9 || wire.Counts.Unread != 4 || len(wire.Items) != 1 || wire.Items[0].Activity.RequestID != "request" || !wire.Items[0].Actionable || wire.NextBeforeSequence != 7 {
+	if response.StatusCode != http.StatusOK || svc.session != "session" || svc.query.BeforeSequence != 10 || svc.query.Limit != 1 || wire.Counts.Open != 9 || wire.Counts.Unread != 4 || len(wire.Items) != 1 || wire.Items[0].Activity.RequestID != "request" || !wire.Items[0].Actionable || wire.NextBeforeSequence != 7 {
 		t.Fatalf("wire=%+v query=%+v status=%d", wire, svc.query, response.StatusCode)
 	}
 	response, err = http.Get(server.URL + "/api/v1/sessions/session/attention/approval")
@@ -86,7 +86,7 @@ func TestSessionAttentionWireCountsCursorAndFreshSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	if response.StatusCode != 200 || svc.query.ActivityID != "approval" || svc.query.State != "all" {
+	if response.StatusCode != http.StatusOK || svc.query.ActivityID != "approval" || svc.query.State != "all" {
 		t.Fatalf("source lookup=%+v status=%d", svc.query, response.StatusCode)
 	}
 }
@@ -100,7 +100,7 @@ func TestSessionAttentionValidationAndSeenConflict(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = r.Body.Close()
-		if r.StatusCode != 400 {
+		if r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s: status=%d", query, r.StatusCode)
 		}
 	}
@@ -110,7 +110,7 @@ func TestSessionAttentionValidationAndSeenConflict(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = r.Body.Close()
-		if r.StatusCode != 400 {
+		if r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("invalid read %s: status=%d", body, r.StatusCode)
 		}
 	}
@@ -119,7 +119,7 @@ func TestSessionAttentionValidationAndSeenConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = r.Body.Close()
-	if r.StatusCode != 204 || svc.branch != "branch" || svc.activity != "activity" || svc.revision != 0 {
+	if r.StatusCode != http.StatusNoContent || svc.branch != "branch" || svc.activity != "activity" || svc.revision != 0 {
 		t.Fatalf("read zero revision status=%d", r.StatusCode)
 	}
 	svc.err = domain.ErrAttentionChanged
@@ -129,7 +129,7 @@ func TestSessionAttentionValidationAndSeenConflict(t *testing.T) {
 	}
 	defer func() { _ = r.Body.Close() }()
 	bytes, _ := io.ReadAll(r.Body)
-	if r.StatusCode != 409 || !strings.Contains(string(bytes), "ATTENTION_CHANGED") || !strings.Contains(string(bytes), "requestId") {
+	if r.StatusCode != http.StatusConflict || !strings.Contains(string(bytes), "ATTENTION_CHANGED") || !strings.Contains(string(bytes), "requestId") {
 		t.Fatalf("conflict: status=%d body=%s", r.StatusCode, bytes)
 	}
 }

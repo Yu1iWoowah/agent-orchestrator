@@ -56,6 +56,32 @@ afterEach(() => {
   client.clear();
 });
 describe("attention source identity", () => {
+  it("keeps a failed read scoped to its source when switching hosts", async () => {
+    get.mockResolvedValue({ data: page, response: { status: 200 } });
+    let failRead: ((value: unknown) => void) | undefined;
+    post.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          failRead = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(
+      ({ host }: { host?: string }) =>
+        useAttentionSelection("session", host, "root", true),
+      { wrapper, initialProps: {} },
+    );
+    act(() => result.current.locate("source"));
+    await waitFor(() => expect(result.current.activity).toBeDefined());
+    act(() => result.current.markViewed());
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      failRead?.({ error: { message: "local read failed" } });
+    });
+    await waitFor(() => expect(result.current.readError).toBe(true));
+    rerender({ host: "remote" });
+    expect(result.current.activity).toBeUndefined();
+    expect(result.current.readError).toBe(false);
+  });
   it("fetches current source facts before selection and marks only an explicitly viewed revision read", async () => {
     get.mockResolvedValue({ data: page, response: { status: 200 } });
     const { result } = renderHook(
@@ -136,6 +162,18 @@ describe("attention source identity", () => {
   });
 });
 describe("attention pagination", () => {
+  it("rejects a non-attention API response instead of crashing the frame", async () => {
+    get.mockResolvedValue({
+      data: { status: "ok" },
+      response: { status: 200 },
+    });
+    const { result } = renderHook(
+      () => useSessionAttention("session", undefined, undefined, "open"),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.data).toBeUndefined();
+  });
   it("passes beforeSequence to the second page and stops at hasMoreBefore=false", async () => {
     get.mockImplementation((_host, _path, request) =>
       Promise.resolve({

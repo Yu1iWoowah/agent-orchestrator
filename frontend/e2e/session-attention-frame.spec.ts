@@ -1,6 +1,39 @@
 import { expect, test } from "@playwright/test";
 import { installFakeAgent } from "./support/fake-bridge";
 
+test("attention fixture preserves counts through history, collapse and composer growth @T0", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(
+    "/e2e/session-attention/harness.html?session=attention-browser-fixture",
+  );
+  const frame = page.getByRole("region", { name: "Awaiting you", exact: true });
+  await expect(frame.getByText("3", { exact: true })).toBeVisible();
+  await frame.getByRole("tab", { name: "History", exact: true }).click();
+  await expect(frame.getByText("Previously answered fixture")).toBeVisible();
+  await expect(
+    frame.getByRole("button", { name: /^Go to original request:/ }),
+  ).toHaveCount(0);
+  await frame
+    .getByRole("button", { name: "Collapse Awaiting you", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Awaiting you 3", expanded: false })
+    .press("Enter");
+  await expect(frame.getByText("Previously answered fixture")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Composer queue", exact: true })
+    .click();
+  await expect
+    .poll(async () => {
+      const a = await frame.boundingBox(),
+        b = await page.locator(".cursor-chat-composer-dock").boundingBox();
+      return a && b ? b.y - a.y - a.height : -1;
+    })
+    .toBeGreaterThanOrEqual(15);
+});
+
 test("attention locates one original form beyond the transcript, preserves source drafts, and refreshes closed requests @T0", async ({
   page,
 }) => {

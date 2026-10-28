@@ -3254,12 +3254,14 @@ type AttentionItemResponse struct {
 	Read       bool                         `json:"read"`
 }
 
+// AttentionCountsResponse counts all visible sources independently of pagination.
 type AttentionCountsResponse struct {
 	Open    int64 `json:"open"`
 	Unread  int64 `json:"unread"`
 	History int64 `json:"history"`
 }
 
+// SessionAttentionResponse is a branch-scoped attention page.
 type SessionAttentionResponse struct {
 	ConversationID     string                  `json:"conversationId"`
 	ActiveBranchID     string                  `json:"activeBranchId"`
@@ -3269,11 +3271,13 @@ type SessionAttentionResponse struct {
 	NextBeforeSequence int64                   `json:"nextBeforeSequence,omitempty"`
 }
 
+// AttentionReadRequest marks one exact source revision seen without resolving it.
 type AttentionReadRequest struct {
 	ExpectedBranchID string `json:"expectedBranchId" minLength:"1"`
 	ExpectedRevision int64  `json:"expectedRevision" minimum:"0"`
 }
 
+// AttentionActivityIDParam identifies an existing provider activity.
 type AttentionActivityIDParam struct {
 	ActivityID string `path:"activityId"`
 }
