@@ -21,9 +21,6 @@ import (
 
 var (
 	modelCatalogLoadTimeout = 30 * time.Second
-	// Retained for compatibility with focused tests that construct an obviously
-	// old timestamp; production freshness is calendar-day based below.
-	modelCatalogTrustWindow = 6 * time.Hour
 	// How long a cached catalog is trusted before AO asks a cache-first client to
 	// revalidate in the background. Long, because rediscovery runs an agent CLI:
 	// this covers drift a fingerprint cannot see, not routine correctness.
@@ -33,21 +30,9 @@ var (
 	modelCatalogRetryDelays     = [...]time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute}
 )
 
-// catalogNeedsRevalidation uses the machine's calendar date, not an elapsed
-// duration. A catalog remains fresh through the user's local day and becomes
-// due after midnight, including after timezone changes or sleep/wake.
-func catalogNeedsRevalidation(lastSuccess, now time.Time) bool {
-	if lastSuccess.IsZero() {
-		return true
-	}
-	y, m, d := now.Date()
-	ly, lm, ld := lastSuccess.In(now.Location()).Date()
-	return y != ly || m != lm || d != ld
-}
-
 func catalogClockDiscontinuity(previous, now time.Time, previousZone string, previousOffset int) bool {
 	zone, offset := now.Zone()
-	return catalogNeedsRevalidation(previous, now) || now.Sub(previous) > modelCatalogWakeThreshold || zone != previousZone || offset != previousOffset || now.Before(previous)
+	return domain.AgentModelCatalogNeedsRevalidation(previous, now) || now.Sub(previous) > modelCatalogWakeThreshold || zone != previousZone || offset != previousOffset || now.Before(previous)
 }
 
 type modelLoadMode uint8
@@ -269,7 +254,7 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 		if ctx.Err() != nil {
 			return
 		}
-		if force || catalogNeedsRevalidation(record.LastSuccessAt, s.now()) || record.RefreshState != "idle" {
+		if force || domain.AgentModelCatalogNeedsRevalidation(record.LastSuccessAt, s.now()) || record.RefreshState != "idle" {
 			jobs <- record
 		}
 	}
@@ -355,7 +340,7 @@ func (s *Service) modelCatalog(ctx context.Context, agentID, scope string, refre
 			// re-read it and pick up the rediscovered catalog when inputs changed.
 			inputsChecking := agentID == "claude-code" && s.checkCatalogInputsInBackground(agentID, projectID, cached.BinaryVersion)
 			cached.Catalog = applyCustomModelEntryPolicy(cached.Catalog, s.discoverer.Manual(agentID))
-			due := catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
+			due := domain.AgentModelCatalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
 			needsRecovery := cached.RefreshState == "refreshing"
 			retriesExhausted := modelCatalogRetriesExhausted(cached)
 			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || needsRecovery || cached.RefreshState == "error" || cached.RefreshState == "queued")
@@ -771,7 +756,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		// cache-first clients to revalidate in the background once the catalog is
 		// old enough, so staleness resolves itself instead of waiting for someone
 		// to press a refresh button.
-		cached.Catalog.RefreshRecommended = !modelCatalogRetriesExhausted(cached) && catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
+		cached.Catalog.RefreshRecommended = !modelCatalogRetriesExhausted(cached) && domain.AgentModelCatalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
 		return cached.Catalog, nil
 	}
 

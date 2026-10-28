@@ -57,6 +57,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	awakesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/awake"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
@@ -994,6 +995,7 @@ func Run(buildVersion string) error {
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
+		AgentSettings:      agentsettings.New(store, time.Now),
 		ProjectDocuments:   projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority}),
 		ArtifactVersions:   lcStack.ArtifactVersions,
 		HostID:             hostIdentity.HostID,
