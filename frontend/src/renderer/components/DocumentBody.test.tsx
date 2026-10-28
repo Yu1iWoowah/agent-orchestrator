@@ -101,3 +101,29 @@ describe("DocumentBody", () => {
 		cache.clear();
 	});
 });
+
+it("rejects declared oversized text from metadata before fetching any content bytes", async () => {
+	mocks.read.mockClear();
+	const cache = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	render(
+		<QueryClientProvider client={cache}>
+			<DocumentBody
+				readerKey="chat"
+				connection={connection}
+				visit={{
+					...visit,
+					document: {
+						...visit.document,
+						size: 2 * 1024 * 1024 + 1,
+						mediaType: "text/markdown",
+					},
+				}}
+			/>
+		</QueryClientProvider>,
+	);
+	await screen.findByText(/Preview limits: UTF-8 text 2 MiB/);
+	expect(mocks.read).not.toHaveBeenCalled();
+	cache.clear();
+});

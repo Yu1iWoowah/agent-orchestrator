@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 import {
 	classifyDocument,
+	DOCUMENT_TEXT_LIMIT,
 	DOCUMENT_MEDIA_LIMIT,
 	DocumentContentError,
 } from "../lib/document-content";
@@ -69,12 +70,18 @@ export function DocumentBody({
 			document.fingerprint,
 		],
 		queryFn: ({ signal }) => {
-			if (document.size > DOCUMENT_MEDIA_LIMIT)
+			const limit =
+				/^(?:text\/|application\/(?:json|javascript|xml)|image\/svg\+xml)/i.test(
+					document.mediaType,
+				) || /\.(?:md|markdown|html?|svg)$/i.test(document.target.path)
+					? DOCUMENT_TEXT_LIMIT
+					: DOCUMENT_MEDIA_LIMIT;
+			if (document.size > limit)
 				throw new DocumentContentError("DOCUMENT_TOO_LARGE");
 			return readDocumentContent(
 				connection,
 				document.target,
-				DOCUMENT_MEDIA_LIMIT,
+				limit,
 				document.fingerprint,
 				signal,
 			);

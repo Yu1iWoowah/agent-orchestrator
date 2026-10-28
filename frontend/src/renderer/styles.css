@@ -6471,3 +6471,8 @@ html[data-window-translucent="true"][data-browser-hole="true"]:has(.browser-pane
 	0%, 100% { opacity: 0.15; }
 	50% { opacity: 1; }
 }
+
+/* Radix's positioner has its own hit box outside the passive tooltip content. */
+[data-radix-popper-content-wrapper]:has(> [data-document-link-preview]) {
+	pointer-events: none !important;
+}

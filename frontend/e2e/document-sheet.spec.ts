@@ -171,3 +171,21 @@ test("read-only code keeps line numbers, copy contents, and original-byte downlo
 	await frame.getByRole("button", { name: "Download", exact: true }).click();
 	expect((await download).suggestedFilename()).toBe("code.ts");
 });
+
+test("document hover previews do not intercept the next link @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.getByRole("link", { name: "Worker guide", exact: true }).hover();
+	const tooltip = page
+		.getByRole("tooltip")
+		.filter({ hasText: "/managed/guide.md" });
+	await expect(tooltip).toBeVisible();
+	await expect(
+		tooltip.locator("xpath=ancestor::*[@data-radix-popper-content-wrapper]"),
+	).toHaveCSS("pointer-events", "none");
+	await page.getByRole("link", { name: "Missing", exact: true }).click();
+	await expect(
+		page.getByText("Not created yet", { exact: true }),
+	).toBeVisible();
+});
