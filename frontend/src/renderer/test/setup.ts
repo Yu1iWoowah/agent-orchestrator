@@ -1,6 +1,5 @@
 import "@testing-library/jest-dom/vitest";
 import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
-import { cleanup } from "@testing-library/react/pure";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { appI18n } from "../i18n";
@@ -23,6 +22,8 @@ expect.extend(jestDomMatchers);
 // routes setupFiles here, so only install the DOM stubs when a DOM exists.
 // ponytail: single guard; node env has no DOM to stub.
 if (typeof window !== "undefined") {
+	const { cleanup } = await import("@testing-library/react/pure");
+
 	// Radix defers focus restoration until after unmount. Finish that work in
 	// this DOM realm, preserving fake clocks and leaving future timers alone.
 	afterEach(async () => {
