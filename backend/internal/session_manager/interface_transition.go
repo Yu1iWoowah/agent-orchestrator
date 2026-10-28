@@ -550,7 +550,7 @@ func (m *Manager) runInterfaceTransition(
 				fail("HANDOFF_STORAGE_BRIDGE_FAILED", projectErr)
 				return
 			}
-			env, envErr := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+			env, envErr := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Harness)
 			if envErr != nil {
 				fail("HANDOFF_STORAGE_BRIDGE_FAILED", envErr)
 				return
@@ -866,7 +866,7 @@ func (m *Manager) persistedNativeConversationID(
 	if err != nil {
 		return "", err
 	}
-	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Harness)
 	if err != nil {
 		return "", err
 	}
@@ -916,7 +916,7 @@ func (m *Manager) preflightInterfaceTarget(
 		return err
 	}
 	config := restoredAgentConfig(rec, project.Config)
-	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Harness)
 	if err != nil {
 		return err
 	}

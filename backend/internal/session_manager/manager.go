@@ -6270,14 +6270,14 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 // command, which fails every callback and silently kills activity tracking).
 // When the pin cannot be applied the inherited PATH is kept and a warning is
 // logged so the degradation isn't silent.
-func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, error) {
-	return m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id))
+func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness) (map[string]string, error) {
+	return m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id), harness)
 }
 
 // runtimeEnvChecked refuses an incomplete account environment, so a caller
 // cannot start under the device login. A nonempty accountID replaces the
 // session's binding for an account move's preflight.
-func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string) (map[string]string, error) {
+func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, harness domain.AgentHarness) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
 	// Project configuration must never redirect AO-owned hook callbacks to a
@@ -6304,7 +6304,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvAgentBrowserURL] = m.agentBrowserURL
 		env[EnvAgentBrowserToken] = m.agentBrowserToken
 	}
-	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
+	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive, harness)
 	if accountErr != nil {
 		return nil, accountErr
 	}
@@ -6323,7 +6323,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 // agent under a different login than the one the session shows. A nonempty
 // accountID replaces the session's binding. An error means the env may lack an
 // account's variables.
-func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, env map[string]string, caseInsensitive bool) error {
+func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, env map[string]string, caseInsensitive bool, harness domain.AgentHarness) error {
 	setProtectedEnv(env, agentlaunch.ManagedCodexAccountEnv, "", caseInsensitive)
 	if m.agentAccounts == nil {
 		return nil
@@ -6333,9 +6333,9 @@ func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, en
 	var accountEnv map[string]string
 	var err error
 	if accountID != "" {
-		accountEnv, err = m.agentAccounts.SessionLaunchEnvWith(ctx, id, accountID)
+		accountEnv, err = m.agentAccounts.SessionLaunchEnvWith(ctx, id, accountID, harness)
 	} else {
-		accountEnv, err = m.agentAccounts.SessionLaunchEnv(ctx, id)
+		accountEnv, err = m.agentAccounts.SessionLaunchEnv(ctx, id, harness)
 	}
 	for key, value := range accountEnv {
 		setProtectedEnv(env, key, value, caseInsensitive)
@@ -6393,8 +6393,8 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 	env[EnvPermissionMode] = string(ports.NormalizePermissionMode(mode))
 }
 
-func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
-	env, err := m.runtimeEnv(id, project, issue, projectEnv)
+func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness) (map[string]string, string, error) {
+	env, err := m.runtimeEnv(id, project, issue, projectEnv, harness)
 	if err != nil {
 		return nil, "", err
 	}
@@ -6420,7 +6420,7 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	rec domain.SessionRecord,
 	projectEnv map[string]string,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv)
+	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
 	if err != nil {
 		return rec, nil, err
 	}
@@ -6440,7 +6440,7 @@ func (m *Manager) prepareChatControllerEnv(
 	projectEnv map[string]string,
 	expected domain.SessionControllerOwner,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv)
+	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
 	if err != nil {
 		return rec, nil, err
 	}
@@ -6796,7 +6796,7 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 	}
 	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil)
 	if project, err := m.loadProject(ctx, rec.ProjectID); err == nil {
-		env, err = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		env, err = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Harness)
 		if err != nil {
 			m.logger.Warn("workspace cleanup: account environment unavailable", "sessionID", rec.ID, "error", err)
 			return

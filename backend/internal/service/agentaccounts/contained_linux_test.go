@@ -211,6 +211,7 @@ func TestCodexRuntimeFixtureRemainsUsable(t *testing.T) {
 	}
 	// Metadata-shaped fixture only: no actual provider binary or socket is read.
 	for name, target := range map[string]string{
+		"plugins/cache/openai-bundled/fake-plugin/latest":    "26.fake",
 		"tmp/arg0-linux/codex-arg0-live/apply_patch":         "../../../../fake-codex-binary",
 		"tmp/arg0-linux/codex-arg0-live/applypatch":          "../../../../fake-codex-binary",
 		"tmp/arg0-linux/codex-arg0-live/codex-linux-sandbox": "../../../../fake-codex-binary",
@@ -244,7 +245,7 @@ func TestCodexRuntimeFixtureRemainsUsable(t *testing.T) {
 	if err := svc.BindSession(ctx, "s1", domain.HarnessCodex, "saved"); err != nil {
 		t.Fatal(err)
 	}
-	env, err := svc.SessionLaunchEnv(ctx, "s1")
+	env, err := svc.SessionLaunchEnv(ctx, "s1", domain.HarnessCodex)
 	if err != nil || env["CODEX_HOME"] != home || env["AO_CODEX_MANAGED_ACCOUNT"] != "1" {
 		t.Fatalf("runtime fixture cannot launch on its managed account: %v, %v", env, err)
 	}

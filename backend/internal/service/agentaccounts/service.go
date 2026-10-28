@@ -805,10 +805,13 @@ func (s *Service) ConsumeResetCredit(ctx context.Context, accountID, idempotency
 		return "", err
 	}
 	outcome, err := crediter.ConsumeResetCredit(ctx, account.Home, idempotencyKey)
-	if err == nil {
-		s.read(ctx, account)
+	if err != nil {
+		safe := safeAccountProviderError(err)
+		s.log.Debug("account reset-credit failed", "provider", account.Provider, "reasonCode", safe.Error(), "errorType", fmt.Sprintf("%T", err))
+		return "", safe
 	}
-	return outcome, err
+	s.read(ctx, account)
+	return outcome, nil
 }
 
 // BindSession pins a session to accountID for its harness's provider, or to the
@@ -832,7 +835,7 @@ func (s *Service) BindSession(ctx context.Context, id domain.SessionID, harness 
 		if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
 			return err
 		}
-		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+		if err := s.checkLaunchCredentialStore(ctx, account); err != nil {
 			return err
 		}
 		return s.store.BindSessionAgentAccount(ctx, id, p, account.ID, s.now())
@@ -906,8 +909,11 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 	if r == nil || !r.identity.SignedIn {
 		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
-	if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
+	if err := s.checkLaunchCredentialStore(ctx, account); err != nil {
 		return domain.AgentAccount{}, err
+	}
+	if current := s.cachedReading(account.ID); current != nil && !current.identity.SignedIn {
+		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
 	if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
 		return domain.AgentAccount{}, err
@@ -1072,14 +1078,14 @@ func (s *Service) SessionAccounts(ctx context.Context, id domain.SessionID) (map
 // SessionLaunchEnv is the environment that runs each provider's CLI under the
 // session's account. A session with no account for a provider yet is bound to
 // that provider's default here, so a later default change does not move it.
-func (s *Service) SessionLaunchEnv(ctx context.Context, id domain.SessionID) (map[string]string, error) {
-	return s.launchEnv(ctx, id, domain.AgentAccount{})
+func (s *Service) SessionLaunchEnv(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (map[string]string, error) {
+	return s.launchEnv(ctx, id, domain.AgentAccount{}, harness)
 }
 
 // SessionLaunchEnvWith is SessionLaunchEnv with accountID in place of the
 // session's account for its provider, for starting an agent on an account the
 // session moves to. The session's binding is not changed.
-func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID, accountID string) (map[string]string, error) {
+func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID, accountID string, harness domain.AgentHarness) (map[string]string, error) {
 	account, err := s.find(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -1087,12 +1093,27 @@ func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID,
 	if s.beingRemoved(account.ID) {
 		return nil, ports.ErrAgentAccountUnknown
 	}
-	return s.launchEnv(ctx, id, account)
+	p, ok := domain.AgentAccountProviderFor(harness)
+	if !ok || p != account.Provider {
+		return nil, ports.ErrAgentAccountProviderMismatch
+	}
+	return s.launchEnv(ctx, id, account, harness)
 }
 
-func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount) (map[string]string, error) {
+func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness) (map[string]string, error) {
 	env := map[string]string{}
 	var errs []error
+	active, _ := domain.AgentAccountProviderFor(harness)
+	validationError := func(p domain.AgentAccountProvider, err error) {
+		if err == nil {
+			return
+		}
+		if p == active {
+			errs = append(errs, err)
+		} else {
+			s.log.Warn("non-launch account unavailable", "provider", p, "reasonCode", safeAccountProviderError(err).Error())
+		}
+	}
 	for _, p := range domain.AgentAccountProviders {
 		provider := s.providers[p]
 		if provider == nil {
@@ -1112,6 +1133,8 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 				}
 			}
 			if err != nil {
+				// Resolution failures leave no known home to pin. Unlike the
+				// provider-scoped validation below, they cannot be ignored safely.
 				errs = append(errs, err)
 				continue
 			}
@@ -1132,15 +1155,37 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		// Revalidate before producing the launch environment, even when the
 		// account identity is still cached.
 		if err := s.prepare(provider, account.Home, account.ProfileKind); err != nil {
-			errs = append(errs, err)
+			validationError(p, err)
 			continue
 		}
-		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
-			errs = append(errs, err)
-			continue
+		if p == active {
+			validationError(p, s.checkLaunchCredentialStore(ctx, account))
+		} else {
+			validationError(p, s.checkCredentialStore(account.Provider, account.Home))
 		}
 	}
 	return env, errors.Join(errs...)
+}
+
+// An absent file can also mean a normal logout. Refresh the native reading
+// before calling that an unsupported store; never probe an existing unsafe
+// credential entry. This reads only metadata, not credential bytes.
+func (s *Service) checkLaunchCredentialStore(ctx context.Context, account domain.AgentAccount) error {
+	err := s.checkCredentialStore(account.Provider, account.Home)
+	if !errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported) {
+		return err
+	}
+	if _, statErr := os.Lstat(filepath.Join(account.Home, "auth.json")); !errors.Is(statErr, os.ErrNotExist) {
+		return err
+	}
+	r := s.read(ctx, account)
+	if r.knownUnusable() {
+		return ports.ErrAgentAccountSignedOut
+	}
+	if r != nil && r.identityErr == "" {
+		return s.checkCredentialStore(account.Provider, account.Home)
+	}
+	return err
 }
 
 // AccountUsage is one account's model usage in AO over a period.

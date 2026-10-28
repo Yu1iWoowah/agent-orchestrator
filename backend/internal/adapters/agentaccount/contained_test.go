@@ -206,7 +206,7 @@ func TestContainedHistoryAndPrivatePathsRejectReplacement(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("new managed profiles are Linux-only")
 	}
-	for _, kind := range []string{"history-root-link", "history-target-link", "history-file-hardlink", "profile-link", "credential-link", "config-hardlink", "unknown-link"} {
+	for _, kind := range []string{"history-root-link", "history-target-link", "history-file-hardlink", "profile-link", "credential-link", "config-hardlink", "unknown-link", "plugin-root-link", "plugin-cache-root-link", "plugin-config-link"} {
 		t.Run(kind, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "accounts")
 			home := filepath.Join(root, "codex", "a")
@@ -244,6 +244,16 @@ func TestContainedHistoryAndPrivatePathsRejectReplacement(t *testing.T) {
 				err = os.Link(filepath.Join(outside, "marker"), filepath.Join(home, "config.toml"))
 			case "unknown-link":
 				err = os.Symlink(outside, filepath.Join(home, "unknown"))
+			case "plugin-root-link":
+				err = os.Symlink(outside, filepath.Join(home, "plugins"))
+			case "plugin-cache-root-link", "plugin-config-link":
+				if err = os.Mkdir(filepath.Join(home, "plugins"), 0o700); err == nil {
+					name := "cache"
+					if kind == "plugin-config-link" {
+						name = "settings.json"
+					}
+					err = os.Symlink(outside, filepath.Join(home, "plugins", name))
+				}
 			}
 			if err != nil {
 				t.Fatal(err)

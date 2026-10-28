@@ -73,10 +73,10 @@ func prepareContained(home, provider string, dirs []string) error {
 	for _, dir := range dirs {
 		allowed[dir] = true
 	}
-	return inspectPrivateTree(homeFD, allowed, provider, 0)
+	return inspectPrivateTree(homeFD, allowed, provider, "", 0)
 }
 
-func inspectPrivateTree(fd int, allowed map[string]bool, provider string, depth int) error {
+func inspectPrivateTree(fd int, allowed map[string]bool, provider, relative string, depth int) error {
 	if depth > 64 {
 		return ports.ErrAgentAccountStorageUnsafe
 	}
@@ -109,10 +109,12 @@ func inspectPrivateTree(fd int, allowed map[string]bool, provider string, depth 
 		if privateMode && stat.Mode&0o077 != 0 {
 			return ports.ErrAgentAccountStorageUnsafe
 		}
-		// Codex owns runtime links to its binary, installed packages and daemon
-		// sockets here. Validate the directory itself, but never follow or scan
-		// its contents. Credential and history paths remain checked separately.
-		if depth == 0 && provider == "codex" && (entry.Name() == "tmp" || entry.Name() == "packages" || strings.HasPrefix(entry.Name(), "app-server-")) {
+		// Only exempt provider-created, rebuildable runtime/cache trees that
+		// contain neither credentials nor history. New runtime entries must meet
+		// that rule; unknown names never become shared or exempt automatically.
+		// Check each root itself above, but do not follow its internal links.
+		path := filepath.Join(relative, entry.Name())
+		if provider == "codex" && (path == "tmp" || path == "packages" || path == "plugins/cache" || (depth == 0 && strings.HasPrefix(entry.Name(), "app-server-"))) {
 			continue
 		}
 		if kind == unix.S_IFDIR {
@@ -120,7 +122,7 @@ func inspectPrivateTree(fd int, allowed map[string]bool, provider string, depth 
 			if err != nil {
 				return containedStorageError(err)
 			}
-			err = inspectPrivateTree(next, nil, provider, depth+1)
+			err = inspectPrivateTree(next, nil, provider, path, depth+1)
 			_ = unix.Close(next)
 			if err != nil {
 				return err

@@ -37,7 +37,7 @@ func TestAccountPolicyCannotComeFromProjectOrInheritedEnvironment(t *testing.T) 
 		if caseInsensitive {
 			env["ao_codex_managed_account"] = "1"
 		}
-		if err := manager.applyAgentAccountEnv("session-1", "", env, caseInsensitive); err != nil {
+		if err := manager.applyAgentAccountEnv("session-1", "", env, caseInsensitive, domain.HarnessCodex); err != nil {
 			t.Fatal(err)
 		}
 		if env[agentlaunch.ManagedCodexAccountEnv] != "" || (caseInsensitive && env["ao_codex_managed_account"] != "") {
@@ -48,7 +48,7 @@ func TestAccountPolicyCannotComeFromProjectOrInheritedEnvironment(t *testing.T) 
 
 type managedCodexPolicyAccounts struct{ *transitionAccounts }
 
-func (*managedCodexPolicyAccounts) SessionLaunchEnv(context.Context, domain.SessionID) (map[string]string, error) {
+func (*managedCodexPolicyAccounts) SessionLaunchEnv(context.Context, domain.SessionID, domain.AgentHarness) (map[string]string, error) {
 	return map[string]string{agentlaunch.ManagedCodexAccountEnv: "1", "CODEX_HOME": "/fake/account"}, nil
 }
 

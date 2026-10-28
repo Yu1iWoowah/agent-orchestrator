@@ -29,9 +29,18 @@ export function followsSavedAccount(agent: AgentReadinessSnapshot | undefined): 
 	return Boolean(agent?.authentication.diagnostics?.some((step) => step.code === "saved_default_account"));
 }
 
-export function agentAccountErrorMessage(error: unknown): string {
+export function agentAccountErrorMessage(error: unknown, accountEmail?: string): string {
 	const code = typeof error === "string" ? error : apiErrorCode(error);
 	switch (code) {
+		case "account_identity_mismatch":
+			return accountEmail
+				? appI18n.t("settings.agentAccounts.loginMismatch", { email: accountEmail })
+				: appI18n.t("settings.agentAccounts.identityMismatch");
+		case "account_provider_unavailable":
+			return appI18n.t("settings.agentAccounts.providerUnavailable");
+		case "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED":
+		case "account_credential_store_unsupported":
+			return appI18n.t("settings.agentAccounts.credentialStoreUnsupported");
 		case "AGENT_ACCOUNT_STORAGE_UNSAFE":
 		case "account_storage_unsafe":
 			return appI18n.t("settings.agentAccounts.storageUnsafe");

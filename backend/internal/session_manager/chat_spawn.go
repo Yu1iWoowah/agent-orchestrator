@@ -135,7 +135,7 @@ func (m *Manager) runRecordBackgroundTask(ctx context.Context, rec domain.Sessio
 	config := ports.AgentConfig{
 		Model: rec.Metadata.Model, Effort: rec.Metadata.Effort, Permissions: backgroundTaskPermissions(rec.Harness),
 	}
-	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil)
+	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil, rec.Harness)
 	if err != nil {
 		return "", err
 	}
@@ -229,7 +229,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	}
 	// Chat Service retains this unprivileged base environment. The bearer is
 	// minted inside its per-session launch gate and is never cached for reuse.
-	env, err := m.runtimeEnv(id, in.record.ProjectID, in.record.IssueID, in.project.Config.Env)
+	env, err := m.runtimeEnv(id, in.record.ProjectID, in.record.IssueID, in.project.Config.Env, in.cfg.Harness)
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false, in.promptQueued)
 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnPrepare, err)
@@ -508,7 +508,7 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, relaunchFailed("workspace roots", fmt.Errorf("%s %s: workspace roots: %w", operation, rec.ID, err))
 	}
-	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Harness)
 	if err != nil {
 		return RestoreResult{}, relaunchFailed("account environment", err)
 	}

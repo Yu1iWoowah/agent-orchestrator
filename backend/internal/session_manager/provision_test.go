@@ -85,7 +85,7 @@ func TestRuntimeEnvInjectsBrowserCapability(t *testing.T) {
 		executable:          func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env, verifier, err := manager.launchRuntimeEnv("mer-1", "mer", "", nil)
+	env, verifier, err := manager.launchRuntimeEnv("mer-1", "mer", "", nil, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
-	})
+	}, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) 
 		"ao_browser_runtime_token":       "runtime-secret",
 		"ao_browser_runtime_token_stdin": "1",
 		"buildMode":                      "production",
-	})
+	}, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestRuntimeEnvPinsHooksToDaemonRunFile(t *testing.T) {
 	}
 	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		"AO_RUN_FILE": "/project/cannot-redirect-hooks.json",
-	})
+	}, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -995,7 +995,7 @@ func TestRuntimeEnvInjectsAgentBrowserConfigOnRemoteHosts(t *testing.T) {
 	}
 	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvAgentBrowserURL: "http://hacked:1",
-	})
+	}, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1013,7 @@ func TestRuntimeEnvOmitsAgentBrowserConfigOnDesktopHosts(t *testing.T) {
 	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvAgentBrowserURL:   "http://project-supplied:8080",
 		EnvAgentBrowserToken: "project-secret",
-	})
+	}, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}

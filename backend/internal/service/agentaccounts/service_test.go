@@ -142,14 +142,14 @@ func TestAccountsRefuseTheWrongLogin(t *testing.T) {
 	if err := svc.BindSession(ctx, "s1", domain.HarnessClaudeCode, ""); err != nil || store.bindings["s1"] != "device-claude" {
 		t.Fatalf("default binding = %q err=%v", store.bindings["s1"], err)
 	}
-	env, _ := svc.SessionLaunchEnv(ctx, "s2")
+	env, _ := svc.SessionLaunchEnv(ctx, "s2", domain.HarnessClaudeCode)
 	if len(env) != 0 || store.bindings["s2"] != "device-claude" {
 		t.Fatalf("unbound session env = %v binding=%q", env, store.bindings["s2"])
 	}
 	if err := svc.BindSession(ctx, "s2", domain.HarnessClaudeCode, start.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	if env, _ := svc.SessionLaunchEnv(ctx, "s2"); env["CLAUDE_CONFIG_DIR"] != b {
+	if env, _ := svc.SessionLaunchEnv(ctx, "s2", domain.HarnessClaudeCode); env["CLAUDE_CONFIG_DIR"] != b {
 		t.Fatalf("moved session env = %v", env)
 	}
 
@@ -382,7 +382,7 @@ func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 		if got, _ := svc.SessionAccountID(ctx, "running", domain.HarnessClaudeCode); got != accountID {
 			t.Errorf("session on the account reads as %q while it is removed", got)
 		}
-		env, _ := svc.SessionLaunchEnv(ctx, "launching")
+		env, _ := svc.SessionLaunchEnv(ctx, "launching", domain.HarnessClaudeCode)
 		if env["CLAUDE_CONFIG_DIR"] != "" || store.bindings["launching"] != "device-claude" {
 			t.Errorf("a launch during removal got %v bound to %q, want this computer", env, store.bindings["launching"])
 		}

@@ -41,13 +41,13 @@ func (a *transitionAccounts) env(accountID string) map[string]string {
 	return map[string]string{}
 }
 
-func (a *transitionAccounts) SessionLaunchEnv(_ context.Context, id domain.SessionID) (map[string]string, error) {
+func (a *transitionAccounts) SessionLaunchEnv(_ context.Context, id domain.SessionID, _ domain.AgentHarness) (map[string]string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.env(a.bound[id]), nil
 }
 
-func (a *transitionAccounts) SessionLaunchEnvWith(_ context.Context, _ domain.SessionID, accountID string) (map[string]string, error) {
+func (a *transitionAccounts) SessionLaunchEnvWith(_ context.Context, _ domain.SessionID, accountID string, _ domain.AgentHarness) (map[string]string, error) {
 	a.mu.Lock()
 	hook := a.onLaunchWith
 	a.launchOverrides = append(a.launchOverrides, accountID)
@@ -364,7 +364,7 @@ func TestAccountPreflightEnvLeavesOtherLaunchesOnTheBoundAccount(t *testing.T) {
 	var concurrent map[string]string
 	accounts.onLaunchWith = func() {
 		var envErr error
-		concurrent, envErr = manager.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil)
+		concurrent, envErr = manager.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil, rec.Harness)
 		if envErr != nil {
 			t.Fatal(envErr)
 		}
