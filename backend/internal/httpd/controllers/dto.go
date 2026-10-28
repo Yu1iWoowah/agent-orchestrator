@@ -3968,3 +3968,18 @@ type ProjectDocumentAdoptResponse struct {
 type ProjectDocumentPathQuery struct {
 	Path string `query:"path" required:"true"`
 }
+
+// HandoffEvidenceOperationParam identifies an immutable operation directory.
+type HandoffEvidenceOperationParam struct {
+	OperationID string `path:"operationId" required:"true"`
+}
+
+// HandoffEvidenceAttemptParam identifies one create-only export attempt.
+type HandoffEvidenceAttemptParam struct {
+	AttemptID string `path:"attemptId" required:"true"`
+}
+
+// HandoffEvidenceFileParam is one of the three fixed bundle files.
+type HandoffEvidenceFileParam struct {
+	Path string `path:"path" required:"true"`
+}

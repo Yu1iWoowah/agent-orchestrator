@@ -65,3 +65,24 @@ describe("project document links", () => {
 		}
 	});
 });
+
+it("keeps immutable evidence identity separate from shared documents", () => {
+	const href =
+		"ao://projects/p/handoffs/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/transcript.md#section";
+	expect(parseProjectDocumentLink(href)).toEqual({
+		kind: "evidence",
+		projectId: "p",
+		operationId: "11111111-1111-4111-8111-111111111111",
+		attemptId: "22222222-2222-4222-8222-222222222222",
+		path: "transcript.md",
+		fragment: "section",
+	});
+	expect(isAoLink(href)).toBe(true);
+	for (const invalid of [
+		href.replace("transcript.md#section", "../secret"),
+		href.replace("transcript.md#section", "%252e%252e"),
+		href.replace("transcript.md#section", "other.md"),
+		href.replace("11111111-1111-4111-8111-111111111111", "unknown"),
+	])
+		expect(parseProjectDocumentLink(invalid)).toBeUndefined();
+});

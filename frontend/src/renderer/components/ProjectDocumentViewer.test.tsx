@@ -151,3 +151,60 @@ describe("shared document viewer", () => {
 		}
 	});
 });
+
+it("reads evidence from its operation and attempt without shared-cache fallback", async () => {
+	const operationId = "11111111-1111-4111-8111-111111111111";
+	const first = "22222222-2222-4222-8222-222222222222";
+	const second = "33333333-3333-4333-8333-333333333333";
+	mocks.get.mockImplementation(async (_route: string, options: { params: { path: { attemptId?: string } } }) => ({
+		data: {
+			file: {
+				path: "transcript.md",
+				content: `# ${options.params.path.attemptId === first ? "First export" : "Second export"}\n\n[Handoff](handoff.md#handoff)`,
+				hash: "verified",
+				size: 80,
+				binary: false,
+			},
+		},
+	}));
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	useUiStore.setState({
+		projectDocumentTarget: {
+			kind: "evidence",
+			projectId: "project",
+			operationId,
+			attemptId: first,
+			path: "transcript.md",
+		},
+	});
+	render(
+		<QueryClientProvider client={client}>
+			<ProjectDocumentViewer />
+		</QueryClientProvider>,
+	);
+	expect(await screen.findByRole("heading", { name: "First export" })).toBeInTheDocument();
+	expect(screen.getByText(/Immutable handoff evidence/)).toBeInTheDocument();
+	fireEvent.click(screen.getByRole("link", { name: "Handoff" }));
+	expect(mocks.navigate).toHaveBeenCalledWith(
+		`ao://projects/project/handoffs/${operationId}/${first}/handoff.md#handoff`,
+	);
+	act(() =>
+		useUiStore.setState({
+			projectDocumentTarget: {
+				kind: "evidence",
+				projectId: "project",
+				operationId,
+				attemptId: second,
+				path: "transcript.md",
+			},
+		}),
+	);
+	expect(await screen.findByRole("heading", { name: "Second export" })).toBeInTheDocument();
+	expect(screen.queryByRole("heading", { name: "First export" })).not.toBeInTheDocument();
+	expect(mocks.get).toHaveBeenLastCalledWith(
+		"/api/v1/projects/{id}/handoffs/{operationId}/{attemptId}/file",
+		expect.objectContaining({
+			params: { path: { id: "project", operationId, attemptId: second }, query: { path: "transcript.md" } },
+		}),
+	);
+});
