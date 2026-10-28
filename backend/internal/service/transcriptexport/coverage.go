@@ -15,7 +15,7 @@ type CoverageLink struct {
 	NativePromptID string `json:"nativePromptId"`
 	Method         string `json:"method"`
 }
-type nativePrompt struct{ ID, User, Assistant string }
+type nativePrompt struct{ ID, RecordID, User, Assistant string }
 
 func promptInventory(seg ports.NativeTranscriptSegment) []nativePrompt {
 	records := map[string]ports.NativeTranscriptRecord{}
@@ -29,7 +29,7 @@ func promptInventory(seg ports.NativeTranscriptSegment) []nativePrompt {
 		r := records[id]
 		text := recordText(r)
 		if r.Type == "user" && !r.Meta && !r.Companion && r.State != "interrupted" && text != "" && r.PromptID != "" {
-			out = append(out, nativePrompt{ID: r.PromptID, User: text})
+			out = append(out, nativePrompt{ID: r.PromptID, RecordID: r.ID, User: text})
 		} else if r.Type == "assistant" && len(out) > 0 && text != "" {
 			out[len(out)-1].Assistant = text
 		}
@@ -76,6 +76,9 @@ func correlateTurn(turn domain.ConversationTurn, messages []domain.ConversationM
 	}
 	found := ""
 	for _, p := range prompts {
+		if identities[turn.ProviderTurnID] && p.ID != turn.ProviderTurnID && p.RecordID != turn.ProviderTurnID {
+			continue
+		}
 		if !domain.NativeCheckpointTextMatches(user, p.User) || assistant != "" && !domain.NativeCheckpointTextMatches(assistant, p.Assistant) {
 			continue
 		}

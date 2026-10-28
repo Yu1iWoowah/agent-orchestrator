@@ -11,6 +11,10 @@ func verifyTranscriptTail(segment *ports.NativeTranscriptSegment, nodes map[stri
 	results := map[string]bool{}
 	for _, id := range lineage {
 		r := nodes[id]
+		if r.State == "continuation-pending" {
+			state = "pending"
+			continue
+		}
 		if r.State == "compaction-summary" || r.Excluded != "" && r.Excluded != "ancestor" {
 			continue
 		}
@@ -43,6 +47,30 @@ func verifyTranscriptTail(segment *ports.NativeTranscriptSegment, nodes map[stri
 					return transcriptFailure("TRANSCRIPT_ANCESTRY_INCOMPLETE", "tool result has no unique preceding call")
 				}
 				results[b.CallID] = true
+			}
+		}
+	}
+	// Hooks may be appended after the caller's selected reply without entering
+	// its parent chain. A pending continuation descending from that leaf is newer
+	// evidence; older hooks before a later settled reply do not reopen it.
+	metadataChildren := map[string][]ports.NativeTranscriptRecord{}
+	for _, record := range nodes {
+		if record.Excluded == "metadata" {
+			metadataChildren[record.ParentID] = append(metadataChildren[record.ParentID], record)
+		}
+	}
+	if len(lineage) > 0 {
+		pending := []string{lineage[len(lineage)-1]}
+		seen := map[string]bool{pending[0]: true}
+		for i := 0; i < len(pending); i++ {
+			for _, record := range metadataChildren[pending[i]] {
+				if record.State == "continuation-pending" {
+					state = "pending"
+				}
+				if !seen[record.ID] {
+					seen[record.ID] = true
+					pending = append(pending, record.ID)
+				}
 			}
 		}
 	}

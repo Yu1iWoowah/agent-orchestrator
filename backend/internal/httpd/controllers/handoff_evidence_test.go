@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +19,19 @@ type evidenceAPI struct {
 	controllers.ProjectDocumentService
 	path  string
 	calls int
+}
+
+func TestHandoffEvidenceUnavailableReportsActualRoute(t *testing.T) {
+	router := chi.NewRouter()
+	(&controllers.ProjectDocumentsController{}).Register(router)
+	base := "/projects/p/handoffs/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222"
+	for _, suffix := range []string{"/file", "/files/transcript.md"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, base+suffix, nil))
+		if w.Code != http.StatusNotImplemented || strings.Contains(w.Body.String(), "/documents/handoffs") || !strings.Contains(w.Body.String(), "/projects/{id}/handoffs/{operationId}/{attemptId}/") {
+			t.Fatalf("wrong unavailable evidence route: %d %s", w.Code, w.Body.String())
+		}
+	}
 }
 
 func (s *evidenceAPI) ReadEvidence(context.Context, domain.ProjectID, string, string, string) (docs.File, error) {

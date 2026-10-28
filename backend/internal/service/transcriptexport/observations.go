@@ -34,7 +34,7 @@ func verifyObservations(source domain.TranscriptSourceSnapshot, segments []ports
 	prompts := promptInventory(*segment)
 	records := map[string]ports.NativeTranscriptRecord{}
 	for _, record := range segment.Records {
-		if record.Excluded == "" && record.Provenance == domain.NativeThreadMain {
+		if (record.Excluded == "" || record.Excluded == "metadata") && record.Provenance == domain.NativeThreadMain && record.NativeID == segment.NativeID {
 			records[record.ID] = record
 		}
 	}
@@ -68,14 +68,14 @@ func verifyObservations(source domain.TranscriptSourceSnapshot, segments []ports
 				if !ok {
 					continue
 				}
-				submitted := recordText(parent)
-				if parent.Type != "attachment" || parent.AttachmentType != "queued_command" {
-					submitted = ""
-				}
+				submitted := ""
 				seen := map[string]bool{}
 				node := parent
 				for node.ID != "" && !seen[node.ID] {
 					seen[node.ID] = true
+					if submitted == "" && node.Type == "attachment" && node.AttachmentType == "queued_command" {
+						submitted = recordText(node)
+					}
 					if node.Type == "user" && !node.Meta && !node.Companion && recordText(node) != "" {
 						for _, prompt := range prompts {
 							if prompt.ID == node.PromptID {

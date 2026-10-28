@@ -13,7 +13,7 @@ import (
 )
 
 func (c *ProjectDocumentsController) evidenceRead(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/handoffs") {
+	if !c.available(w, r, "/api/v1/projects/{id}/handoffs/{operationId}/{attemptId}/file") {
 		return
 	}
 	file, err := c.Svc.ReadEvidence(r.Context(), domain.ProjectID(chi.URLParam(r, "id")), chi.URLParam(r, "operationId"), chi.URLParam(r, "attemptId"), r.URL.Query().Get("path"))
@@ -24,7 +24,7 @@ func (c *ProjectDocumentsController) evidenceRead(w http.ResponseWriter, r *http
 	envelope.WriteJSON(w, http.StatusOK, ProjectDocumentFileResponse{File: file})
 }
 func (c *ProjectDocumentsController) evidenceDownload(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/handoffs") {
+	if !c.available(w, r, "/api/v1/projects/{id}/handoffs/{operationId}/{attemptId}/files/{path}") {
 		return
 	}
 	p := chi.URLParam(r, "path")

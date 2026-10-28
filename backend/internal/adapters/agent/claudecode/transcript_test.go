@@ -28,7 +28,7 @@ func transcriptFixture(t *testing.T, rows []map[string]any) ports.NativeTranscri
 		if _, ok := row["sessionId"]; !ok {
 			row["sessionId"] = exportNativeID
 		}
-		if _, ok := row["version"]; !ok {
+		if _, ok := row["version"]; !ok && row["type"] != "queue-operation" {
 			row["version"] = "2.1.0"
 		}
 		raw, err := json.Marshal(row)
@@ -42,6 +42,104 @@ func transcriptFixture(t *testing.T, rows []map[string]any) ports.NativeTranscri
 		t.Fatal(err)
 	}
 	return ports.NativeTranscriptRequest{Source: ports.NativeSessionRef{NativeSessionID: exportNativeID, ConfigDir: root}, Schema: ports.ClaudeTranscriptSchemaV1, ByteCutoff: int64(b.Len()), LeafID: "a"}
+}
+
+func TestClaudeTranscriptAOHookAndQueueMetadata(t *testing.T) {
+	start := mainRow("start", "", "progress", nil)
+	start["data"] = map[string]any{"type": "hook_progress", "hookEvent": "SessionStart"}
+	submit := mainRow("submit", "u", "progress", nil)
+	submit["data"] = map[string]any{"type": "hook_progress", "hookEvent": "UserPromptSubmit"}
+	post := mainRow("post", "result", "progress", nil)
+	post["data"] = map[string]any{"type": "hook_progress", "hookEvent": "PostToolUse"}
+	queued := mainRow("q", "post", "attachment", nil)
+	queued["attachment"] = map[string]any{"type": "queued_command", "prompt": "queued human text"}
+	local := mainRow("local", "q", "system", nil)
+	local["subtype"] = "local_command"
+	stop := mainRow("stop", "a", "system", nil)
+	stop["subtype"] = "stop_hook_summary"
+	rows := []map[string]any{start, mainRow("u", "start", "user", "original human"), submit,
+		mainRow("call", "submit", "assistant", []any{map[string]any{"type": "tool_use", "id": "read", "name": "Read", "input": map[string]any{"file_path": "fixture.txt"}}}),
+		mainRow("result", "call", "user", []any{map[string]any{"type": "tool_result", "tool_use_id": "read", "content": "result"}}), post,
+		{"type": "queue-operation", "operation": "enqueue", "content": "queue metadata payload"}, queued,
+		{"type": "queue-operation", "operation": "dequeue"}, local, mainRow("a", "local", "assistant", "final answer"), stop}
+	request := transcriptFixture(t, rows)
+	request.LeafID = "stop"
+	segment, err := New().ReadNativeTranscript(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if segment.Counts.MetadataRecords != 7 || segment.Counts.MainRecords != 5 || len(segment.Records) != 12 || segment.TailState != "complete" {
+		t.Fatalf("hook/queue ledger or tail incorrect: %+v", segment.Counts)
+	}
+	for _, r := range segment.Records {
+		if r.Type == "progress" || r.Type == "system" || r.Type == "queue-operation" {
+			if r.Excluded != "metadata" || r.RecordHash == "" || r.Provenance != domain.NativeThreadMain || len(r.Blocks) != 0 {
+				t.Fatalf("metadata not safely retained: %+v", r)
+			}
+		}
+	}
+}
+
+func TestClaudeTranscriptKnownMetadataEnvelopesAndUnknownForms(t *testing.T) {
+	for _, tc := range []struct{ name, kind, subtype, operation string }{
+		{"stop", "system", "stop_hook_summary", ""}, {"local", "system", "local_command", ""},
+		{"hook", "progress", "hook_progress", ""}, {"enqueue", "queue-operation", "", "enqueue"}, {"dequeue", "queue-operation", "", "dequeue"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := mainRow("meta", "u", tc.kind, nil)
+			meta["subtype"], meta["operation"] = tc.subtype, tc.operation
+			if tc.kind == "progress" {
+				meta["data"] = map[string]any{"type": tc.subtype}
+			}
+			if tc.kind == "queue-operation" {
+				delete(meta, "isSidechain")
+			}
+			r := transcriptFixture(t, []map[string]any{mainRow("u", "", "user", "original"), meta, mainRow("a", "meta", "assistant", "answer")})
+			if s, err := New().ReadNativeTranscript(context.Background(), r); err != nil || s.Counts.MetadataRecords != 1 || s.TailState != "complete" {
+				t.Fatalf("known metadata rejected: %+v %v", s.Counts, err)
+			}
+		})
+	}
+	for _, meta := range []map[string]any{
+		{"type": "system", "subtype": "future_system", "isSidechain": false},
+		{"type": "progress", "data": map[string]any{"type": "future_progress"}, "isSidechain": false},
+		{"type": "queue-operation", "operation": "future_queue"},
+		{"type": "queue-operation", "operation": "enqueue", "sessionId": "foreign"},
+		{"type": "system", "subtype": "stop_hook_summary", "sessionId": "", "isSidechain": false},
+		{"type": "progress", "data": map[string]any{"type": "hook_progress"}, "sessionId": "", "isSidechain": false},
+		{"type": "file-history-snapshot", "sessionId": "", "isSidechain": true},
+	} {
+		r := transcriptFixture(t, []map[string]any{mainRow("u", "", "user", "original"), meta, mainRow("a", "u", "assistant", "answer")})
+		if _, err := New().ReadNativeTranscript(context.Background(), r); err == nil {
+			t.Fatal("unknown metadata accepted", meta)
+		}
+	}
+}
+
+func TestClaudeTranscriptPreventedStopContinuationIsUnsettled(t *testing.T) {
+	stop := mainRow("stop", "a", "system", nil)
+	stop["subtype"], stop["preventedContinuation"] = "stop_hook_summary", true
+	r := transcriptFixture(t, []map[string]any{mainRow("u", "", "user", "original"), mainRow("a", "u", "assistant", "answer"), stop})
+	r.LeafID = "stop"
+	_, err := New().ReadNativeTranscript(context.Background(), r)
+	var failure *ports.NativeTranscriptError
+	if !errors.As(err, &failure) || failure.Code != "TRANSCRIPT_TAIL_UNSETTLED" {
+		t.Fatalf("prevented continuation not unsettled: %v", err)
+	}
+	r.LeafID = "a"
+	if _, err = New().ReadNativeTranscript(context.Background(), r); !errors.As(err, &failure) || failure.Code != "TRANSCRIPT_TAIL_UNSETTLED" {
+		t.Fatalf("pending hook after selected reply ignored: %v", err)
+	}
+	r = transcriptFixture(t, []map[string]any{mainRow("u", "", "user", "original"), mainRow("a", "u", "assistant", "first answer"), stop, mainRow("later", "a", "assistant", "settled continuation")})
+	r.LeafID = "later"
+	if segment, err := New().ReadNativeTranscript(context.Background(), r); err != nil || segment.TailState != "complete" {
+		t.Fatalf("historical pending hook blocked later completion: %v", err)
+	}
+	delete(stop, "uuid")
+	r = transcriptFixture(t, []map[string]any{mainRow("u", "", "user", "original"), mainRow("a", "u", "assistant", "answer"), stop})
+	if _, err = New().ReadNativeTranscript(context.Background(), r); err == nil {
+		t.Fatal("pending continuation with no lineage identity was ignored")
+	}
 }
 func mainRow(id, parent, kind string, content any) map[string]any {
 	return map[string]any{"uuid": id, "parentUuid": parent, "type": kind, "isSidechain": false, "promptId": "prompt", "message": map[string]any{"content": content, "stop_reason": "end_turn"}}

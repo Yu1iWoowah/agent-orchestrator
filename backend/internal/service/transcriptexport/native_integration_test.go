@@ -180,3 +180,63 @@ func TestTranscriptNativeBatchAndSteerRetainSenderAndAttachmentReferences(t *tes
 		}
 	}
 }
+
+func TestTranscriptMainChildContentAndHighWater(t *testing.T) {
+	root := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "projects/workspace")
+	if e := os.MkdirAll(dir, 0700); e != nil {
+		t.Fatal(e)
+	}
+	rows := []map[string]any{
+		{"uuid": "u", "parentUuid": "", "type": "user", "promptId": "main-prompt", "isSidechain": false, "message": map[string]any{"content": "AUDIT_MAIN_QUESTION"}},
+		{"uuid": "child-u", "parentUuid": "", "type": "user", "promptId": "child-only-prompt", "isSidechain": true, "agentId": "child", "message": map[string]any{"content": "AUDIT_CHILD_SECRET"}},
+		{"uuid": "child-a", "parentUuid": "child-u", "type": "assistant", "promptId": "child-only-prompt", "isSidechain": true, "agentId": "child", "message": map[string]any{"content": "AUDIT_CHILD_REPLY", "stop_reason": "end_turn"}},
+		{"uuid": "a", "parentUuid": "u", "type": "assistant", "promptId": "main-prompt", "isSidechain": false, "message": map[string]any{"content": "AUDIT_MAIN_REPLY", "stop_reason": "end_turn"}},
+	}
+	var body strings.Builder
+	for _, row := range rows {
+		row["sessionId"], row["version"] = id, "2.1.0"
+		raw, e := json.Marshal(row)
+		if e != nil {
+			t.Fatal(e)
+		}
+		body.Write(raw)
+		body.WriteByte('\n')
+	}
+	if e := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body.String()), 0600); e != nil {
+		t.Fatal(e)
+	}
+	s := domain.TranscriptSourceSnapshot{Session: domain.SessionRecord{ID: "source", ProjectID: "project", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode}, Fingerprint: "fixed", NativeSessions: []domain.TranscriptNativeSession{{Harness: domain.HarnessClaudeCode, NativeID: id, ConfigDir: root}}, Branches: []domain.ConversationBranch{{ID: "b", ProviderConversationID: id}}, Turns: []domain.ConversationTurn{{ID: "turn", BranchID: "b", ProviderTurnID: "main-prompt", State: domain.TurnStateCompleted}}, NativeThreads: []domain.ConversationNativeThreadEvidence{{BranchID: "b", ProviderTurnID: "main-prompt", ProviderConversationID: id}}}
+	cuts := []EpochCutoff{{NativeID: id, Bytes: int64(body.Len()), LeafID: "a", Schema: ports.ClaudeTranscriptSchemaV1}}
+	out, e := Build(context.Background(), s, cuts, claudecode.New())
+	if e != nil {
+		t.Fatal(e)
+	}
+	text := string(out.Transcript)
+	if strings.Contains(text, "AUDIT_CHILD") || strings.Count(text, "AUDIT_MAIN_QUESTION") != 1 || strings.Count(text, "AUDIT_MAIN_REPLY") != 1 {
+		t.Fatal("main/child body mixed or lost")
+	}
+	seg := out.Manifest.Segments[0]
+	if seg.Counts.ChildRecords != 2 || len(seg.Records) != 4 {
+		t.Fatal("child ledger lost")
+	}
+	childIDs := map[string]bool{}
+	for _, record := range seg.Records {
+		if record.Provenance == domain.NativeThreadChild {
+			childIDs[record.ID] = true
+			if record.Excluded != "child" || len(record.Blocks) != 0 {
+				t.Fatal("child payload escaped ledger")
+			}
+		}
+	}
+	if !childIDs["child-u"] || !childIDs["child-a"] {
+		t.Fatal("child identity lost")
+	}
+	s.Turns[0].ProviderTurnID = "child-only-prompt"
+	s.NativeThreads[0].ProviderTurnID = "child-only-prompt"
+	if invalid, err := Build(context.Background(), s, cuts, claudecode.New()); err == nil {
+		t.Fatalf("child-only high-water accepted: coverage=%s coveredTurns=%v excludedChildTurns=%d", invalid.Manifest.Coverage, invalid.Manifest.CoveredTurns, invalid.Manifest.ExcludedChildTurns)
+	}
+	t.Log("main text once; child body absent; two child identities retained; child-only high-water rejected")
+}

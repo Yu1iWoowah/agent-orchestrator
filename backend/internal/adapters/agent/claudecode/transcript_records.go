@@ -15,20 +15,22 @@ import (
 )
 
 type exportRecord struct {
-	CompactSummary bool   `json:"isCompactSummary"`
-	Meta           bool   `json:"isMeta"`
-	Companion      bool   `json:"turnCompanion"`
-	UUID           string `json:"uuid"`
-	ParentUUID     string `json:"parentUuid"`
-	SessionID      string `json:"sessionId"`
-	AgentID        string `json:"agentId"`
-	PromptID       string `json:"promptId"`
-	Type           string `json:"type"`
-	Subtype        string `json:"subtype"`
-	Sidechain      *bool  `json:"isSidechain"`
-	Version        string `json:"version"`
-	Timestamp      string `json:"timestamp"`
-	Message        struct {
+	CompactSummary        bool   `json:"isCompactSummary"`
+	PreventedContinuation bool   `json:"preventedContinuation"`
+	Operation             string `json:"operation"`
+	Meta                  bool   `json:"isMeta"`
+	Companion             bool   `json:"turnCompanion"`
+	UUID                  string `json:"uuid"`
+	ParentUUID            string `json:"parentUuid"`
+	SessionID             string `json:"sessionId"`
+	AgentID               string `json:"agentId"`
+	PromptID              string `json:"promptId"`
+	Type                  string `json:"type"`
+	Subtype               string `json:"subtype"`
+	Sidechain             *bool  `json:"isSidechain"`
+	Version               string `json:"version"`
+	Timestamp             string `json:"timestamp"`
+	Message               struct {
 		Content    json.RawMessage `json:"content"`
 		StopReason string          `json:"stop_reason"`
 		Model      string          `json:"model"`
@@ -74,7 +76,8 @@ func decodeTranscriptRecord(raw []byte, native string, line int, request ports.N
 	if in.Type == "summary" || in.Type == "system" && in.Subtype == "compact_boundary" {
 		return out, "", transcriptFailure("TRANSCRIPT_ANCESTRY_INCOMPLETE", "compacted ancestry requires reconciliation")
 	}
-	metadata := in.Type == "file-history-snapshot" || in.Type == "system" && in.Subtype == "turn_duration"
+	metadataKind := transcriptMetadataKind(in)
+	metadata := metadataKind != ""
 	switch in.Type {
 	case "user", "assistant", "attachment", "file-history-snapshot", "system", "progress", "queue-operation":
 	default:
@@ -84,10 +87,15 @@ func decodeTranscriptRecord(raw []byte, native string, line int, request ports.N
 		return out, "", transcriptFailure("TRANSCRIPT_SCHEMA_UNSUPPORTED", "unverified native schema version")
 	}
 	if metadata && in.SessionID == "" {
+		fileMetadata := in.Type == "file-history-snapshot" || in.Type == "system" && in.Subtype == "turn_duration"
+		if !fileMetadata || in.UUID != "" || in.ParentUUID != "" || in.AgentID != "" || in.Data.AgentID != "" || in.Sidechain != nil && *in.Sidechain {
+			return out, "", transcriptFailure("TRANSCRIPT_PROVENANCE_UNKNOWN", "metadata lacks session ownership")
+		}
 		out.NativeID = native
 		out.Provenance = domain.NativeThreadMain
 		out.ProvenanceRule = "owned-file-metadata"
 		out.Excluded = "metadata"
+		out.Meta = true
 		out.ID = ""
 		return out, "", nil
 	}
@@ -125,21 +133,31 @@ func decodeTranscriptRecord(raw []byte, native string, line int, request ports.N
 		return out, in.Version, nil
 	}
 	if in.Sidechain == nil {
-		return out, "", transcriptFailure("TRANSCRIPT_PROVENANCE_UNKNOWN", "native sidechain provenance is absent")
+		if in.Type != "queue-operation" || !metadata {
+			return out, "", transcriptFailure("TRANSCRIPT_PROVENANCE_UNKNOWN", "native sidechain provenance is absent")
+		}
 	}
-	if *in.Sidechain {
+	if in.Sidechain != nil && *in.Sidechain {
 		out.Provenance = domain.NativeThreadChild
 		out.ProvenanceRule = "explicit-sidechain"
 		out.Excluded = "child"
 		return out, in.Version, nil
 	}
-	if in.AgentID != "" {
+	if in.AgentID != "" || metadata && in.Data.AgentID != "" {
 		return out, "", transcriptFailure("TRANSCRIPT_PROVENANCE_UNKNOWN", "root flag conflicts with native child identity")
 	}
 	out.Provenance = domain.NativeThreadMain
 	out.ProvenanceRule = "explicit-root-session"
 	if metadata {
+		out.Meta = true
 		out.Excluded = "metadata"
+		out.ProvenanceRule = "owned-session-metadata/" + metadataKind
+		if in.Type == "system" && in.Subtype == "stop_hook_summary" && in.PreventedContinuation {
+			if out.ID == "" {
+				return out, "", transcriptFailure("TRANSCRIPT_ANCESTRY_INCOMPLETE", "pending continuation has no lineage identity")
+			}
+			out.State = "continuation-pending"
+		}
 		return out, in.Version, nil
 	}
 	if out.ID == "" {
@@ -187,6 +205,27 @@ func decodeTranscriptRecord(raw []byte, native string, line int, request ports.N
 		out.State = "interrupted"
 	}
 	return out, in.Version, err
+}
+
+func transcriptMetadataKind(in exportRecord) string {
+	switch in.Type {
+	case "file-history-snapshot":
+		return in.Type
+	case "system":
+		switch in.Subtype {
+		case "turn_duration", "stop_hook_summary", "local_command":
+			return in.Type + "/" + in.Subtype
+		}
+	case "progress":
+		if in.Data.Type == "hook_progress" {
+			return "progress/hook_progress"
+		}
+	case "queue-operation":
+		if in.Operation == "enqueue" || in.Operation == "dequeue" {
+			return "queue-operation/" + in.Operation
+		}
+	}
+	return ""
 }
 
 func decodeTranscriptBlocks(raw json.RawMessage) ([]ports.NativeTranscriptBlock, error) {

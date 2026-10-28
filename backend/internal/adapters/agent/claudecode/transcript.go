@@ -23,7 +23,7 @@ import (
 
 var _ ports.NativeTranscriptReader = (*Plugin)(nil)
 
-const transcriptReaderVersion = "claude-jsonl-reader/1"
+const transcriptReaderVersion = "claude-jsonl-reader/2"
 
 func transcriptFailure(code, reason string) error {
 	return &ports.NativeTranscriptError{Code: code, Reason: reason}

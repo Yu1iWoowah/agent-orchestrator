@@ -36,6 +36,9 @@ func readEpochs(ctx context.Context, epochs map[string]string, cuts map[string]E
 				}
 				return nil, nil, e
 			}
+			if segment.NativeID != id {
+				return nil, nil, incomplete("TRANSCRIPT_PROVENANCE_UNKNOWN", "reader returned a different native epoch")
+			}
 			// Ancestors is append-only; retaining the immutable prefix avoids a
 			// quadratic copy for many epochs. Readers receive values, never mutate it.
 			requests[id] = request

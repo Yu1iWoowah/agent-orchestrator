@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,8 @@ type Manifest struct {
 	ChildPolicy           string                          `json:"childPolicy"`
 	ExcludedChildTurns    int                             `json:"excludedChildTurns"`
 	AOOnlyMessages        int                             `json:"aoOnlyMessages"`
+	AOOnlyAttachments     int                             `json:"aoOnlyAttachments"`
+	AOSupplements         []AOSupplement                  `json:"aoSupplements"`
 	Steers                []SteerCoverage                 `json:"steers"`
 	CoverageLinks         []CoverageLink                  `json:"coverageLinks"`
 	CoveredTurns          []string                        `json:"coveredTurns"`
@@ -107,17 +110,17 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	}
 	var firstTime, lastTime time.Time
 	var body strings.Builder
-	fmt.Fprintf(&body, "# AO source conversation transcript\n\nProject: %s\nSource session: %s\nHarness: %s\nMode: %s\nScope: %s\nCoverage: %s\nAO cutoff: %d\nSnapshot: %s\n\n", m.ProjectID, m.SourceID, m.Harness, m.Mode, m.Scope, m.Coverage, m.CutoffSequence, m.SnapshotFingerprint)
+	fmt.Fprintf(&body, "# AO source conversation transcript\n\nProject: %s\nSource session: %s\nHarness: %s\nMode: %s\nScope: %s\nCoverage: %s\nAO cutoff: %d\nSnapshot: %s\n\n", inlineMetadata(string(m.ProjectID)), inlineMetadata(string(m.SourceID)), m.Harness, m.Mode, m.Scope, m.Coverage, m.CutoffSequence, inlineMetadata(m.SnapshotFingerprint))
 	childIdentities := map[string]map[string]bool{}
 	nativePrompts := map[string][]nativePrompt{}
 	nativeIdentities := map[string]map[string]bool{}
 	for _, seg := range segments {
 		id := seg.NativeID
 		c := byCut[id]
-		if seg.NativeID != id || seg.ByteCutoff != c.Bytes || seg.LeafID != c.LeafID || seg.SHA256 == "" || len(seg.MainRecordIDs) == 0 && seg.Counts.AncestorRecords == 0 {
+		if seg.ByteCutoff != c.Bytes || seg.LeafID != c.LeafID || seg.SHA256 == "" || len(seg.MainRecordIDs) == 0 && seg.Counts.AncestorRecords == 0 {
 			return out, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "reader did not verify the fixed native boundary")
 		}
-		fmt.Fprintf(&body, "## Native epoch %s\n\nSource SHA-256: %s\nByte cutoff: %d\nLeaf: %s\nCounts: main=%d child=%d metadata=%d duplicate=%d tools=%d results=%d omitted-results=%d attachments=%d\n\n", id, seg.SHA256, seg.ByteCutoff, seg.LeafID, seg.Counts.MainRecords, seg.Counts.ChildRecords, seg.Counts.MetadataRecords, seg.Counts.Duplicates, seg.Counts.ToolCalls, seg.Counts.ToolResults, seg.Counts.OmittedToolResults, seg.Counts.Attachments)
+		fmt.Fprintf(&body, "## Native epoch %s\n\nSource SHA-256: %s\nByte cutoff: %d\nLeaf: %s\nCounts: main=%d child=%d metadata=%d duplicate=%d tools=%d results=%d omitted-results=%d attachments=%d\n\n", inlineMetadata(id), inlineMetadata(seg.SHA256), seg.ByteCutoff, inlineMetadata(seg.LeafID), seg.Counts.MainRecords, seg.Counts.ChildRecords, seg.Counts.MetadataRecords, seg.Counts.Duplicates, seg.Counts.ToolCalls, seg.Counts.ToolResults, seg.Counts.OmittedToolResults, seg.Counts.Attachments)
 		nativePrompts[id] = promptInventory(seg)
 		records := map[string]ports.NativeTranscriptRecord{}
 		nativeIdentities[id] = map[string]bool{}
@@ -148,7 +151,7 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 			if !ok {
 				return out, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "reader ancestry has an absent record")
 			}
-			fmt.Fprintf(&body, "### %s / %s\n\nNative record: %s; parent: %s; prompt: %s; time: %s\n\n", r.Type, id, r.ID, r.ParentID, r.PromptID, displayTime(r.Timestamp))
+			fmt.Fprintf(&body, "### %s / %s\n\nNative record: %s; parent: %s; prompt: %s; time: %s\n\n", inlineMetadata(r.Type), inlineMetadata(id), inlineMetadata(r.ID), inlineMetadata(r.ParentID), inlineMetadata(r.PromptID), inlineMetadata(displayTime(r.Timestamp)))
 			if stamp, e := time.Parse(time.RFC3339Nano, r.Timestamp); e == nil {
 				if firstTime.IsZero() || stamp.Before(firstTime) {
 					firstTime = stamp
@@ -187,7 +190,7 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	childDispatch := map[string]bool{}
 	initialCaptured := map[string]bool{}
 	index := domain.IndexNativeThreadEvidence(s.NativeThreads)
-	queued := map[string]bool{}
+	aoOnly := map[string]domain.TurnState{}
 	for _, turn := range s.Turns {
 		if members[turn.ID] != "" {
 			continue
@@ -204,11 +207,11 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 			}
 		}
 
-		if turn.State == domain.TurnStateQueued && turn.ProviderTurnID == "" {
-			queued[turn.ID] = true
+		if turn.ProviderTurnID == "" && (turn.State == domain.TurnStateQueued || turn.State.Terminal()) {
+			aoOnly[turn.ID] = turn.State
 			continue
 		}
-		if turn.State != domain.TurnStateCompleted && turn.State != domain.TurnStateFailed && turn.State != domain.TurnStateInterrupted {
+		if !turn.State.Terminal() {
 			return out, incomplete("TRANSCRIPT_TAIL_UNSETTLED", "AO source still has an active turn")
 		}
 		root := branches[turn.BranchID].ProviderConversationID
@@ -223,10 +226,7 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 			}
 		}
 		if provenance == domain.NativeThreadMain && childIdentities[root][turn.ProviderTurnID] {
-			if nativeIdentities[root][turn.ProviderTurnID] {
-				return out, incomplete("TRANSCRIPT_PROVENANCE_UNKNOWN", "native main and child identities collide")
-			}
-			provenance = domain.NativeThreadChild
+			return out, incomplete("TRANSCRIPT_PROVENANCE_UNKNOWN", "durable main ownership conflicts with native child identity")
 		}
 		switch provenance {
 		case domain.NativeThreadChild:
@@ -307,10 +307,18 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	}
 
 	for _, message := range s.Messages {
-		if queued[message.TurnID] || message.TurnID == "" && message.Origin == domain.MessageOriginDaemon {
-			m.AOOnlyMessages++
-			fmt.Fprintf(&body, "## AO-only supplement / %s\n\nSequence: %d; delivery: %s; origin: %s; native delivery: unconfirmed\n\n%s", message.ID, message.Sequence, message.ClientMessageID, message.Origin, literal(message.Text))
+		state, only := aoOnly[message.TurnID]
+		if !only && (message.TurnID != "" || message.Origin != domain.MessageOriginDaemon) {
+			continue
 		}
+		entry, text, err := aoSupplement(message, state)
+		if err != nil {
+			return out, err
+		}
+		m.AOOnlyMessages++
+		m.AOOnlyAttachments += len(entry.Attachments)
+		m.AOSupplements = append(m.AOSupplements, entry)
+		body.WriteString(text)
 	}
 	for _, source := range s.Sources {
 		if source.Kind == domain.UsageSourceClaudeSubagent {
@@ -483,16 +491,27 @@ func literal(s string) string {
 	}
 	return fence + "text\n" + s + "\n" + fence + "\n\n"
 }
+
+// Inline code keeps untrusted metadata inert; Quote makes line breaks visible.
+func inlineMetadata(s string) string {
+	quoted := strconv.Quote(s)
+	s = quoted[1 : len(quoted)-1]
+	fence := "`"
+	for strings.Contains(s, fence) {
+		fence += "`"
+	}
+	return fence + " " + s + " " + fence
+}
 func renderBlock(b ports.NativeTranscriptBlock) string {
 	switch b.Kind {
 	case ports.TranscriptText:
 		return literal(b.Text)
 	case ports.TranscriptToolCall:
-		return fmt.Sprintf("Tool %s / %s / %s\n\n%s", b.ToolName, b.CallID, b.Status, literal(b.Text))
+		return fmt.Sprintf("Tool %s / %s / %s\n\n%s", inlineMetadata(b.ToolName), inlineMetadata(b.CallID), inlineMetadata(b.Status), literal(b.Text))
 	case ports.TranscriptToolResult:
-		return fmt.Sprintf("Tool result %s / %s; full output omitted (one result block).\n\n", b.CallID, b.Status)
+		return fmt.Sprintf("Tool result %s / %s; full output omitted (one result block).\n\n", inlineMetadata(b.CallID), inlineMetadata(b.Status))
 	default:
-		return fmt.Sprintf("Attachment/reference: %s\n\n", b.Reference)
+		return fmt.Sprintf("Attachment/reference: %s\n\n", inlineMetadata(b.Reference))
 	}
 }
 

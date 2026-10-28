@@ -48,11 +48,11 @@ func (c *ProjectDocumentsController) available(w http.ResponseWriter, r *http.Re
 	if c.Svc != nil {
 		return true
 	}
-	apispec.NotImplemented(w, r, r.Method, "/api/v1/projects/{id}/documents"+route)
+	apispec.NotImplemented(w, r, r.Method, route)
 	return false
 }
 func (c *ProjectDocumentsController) info(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "") {
+	if !c.available(w, r, "/api/v1/projects/{id}/documents") {
 		return
 	}
 	info, err := c.Svc.Info(r.Context(), domain.ProjectID(chi.URLParam(r, "id")))
@@ -63,7 +63,7 @@ func (c *ProjectDocumentsController) info(w http.ResponseWriter, r *http.Request
 	envelope.WriteJSON(w, http.StatusOK, ProjectDocumentsInfoResponse{Documents: info})
 }
 func (c *ProjectDocumentsController) read(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/file") {
+	if !c.available(w, r, "/api/v1/projects/{id}/documents/file") {
 		return
 	}
 	file, err := c.Svc.Read(r.Context(), domain.ProjectID(chi.URLParam(r, "id")), r.URL.Query().Get("path"))
@@ -74,7 +74,7 @@ func (c *ProjectDocumentsController) read(w http.ResponseWriter, r *http.Request
 	envelope.WriteJSON(w, http.StatusOK, ProjectDocumentFileResponse{File: file})
 }
 func (c *ProjectDocumentsController) file(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/files/*") {
+	if !c.available(w, r, "/api/v1/projects/{id}/documents/files/*") {
 		return
 	}
 	p, err := projectDocumentFilePath(r)
@@ -105,7 +105,7 @@ func (c *ProjectDocumentsController) file(w http.ResponseWriter, r *http.Request
 	http.ServeContent(w, r, path.Base(p), info.ModTime(), f)
 }
 func (c *ProjectDocumentsController) acquire(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/lease") {
+	if !c.available(w, r, "/api/v1/projects/{id}/documents/lease") {
 		return
 	}
 	var in ProjectDocumentLeaseRequest
@@ -121,7 +121,7 @@ func (c *ProjectDocumentsController) acquire(w http.ResponseWriter, r *http.Requ
 	envelope.WriteJSON(w, http.StatusOK, ProjectDocumentLeaseResponse{Lease: lease})
 }
 func (c *ProjectDocumentsController) write(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/file") {
+	if !c.available(w, r, "/api/v1/projects/{id}/documents/file") {
 		return
 	}
 	var in ProjectDocumentWriteRequest
@@ -137,7 +137,7 @@ func (c *ProjectDocumentsController) write(w http.ResponseWriter, r *http.Reques
 	envelope.WriteJSON(w, http.StatusOK, ProjectDocumentFileResponse{File: file})
 }
 func (c *ProjectDocumentsController) adopt(w http.ResponseWriter, r *http.Request) {
-	if !c.available(w, r, "/adopt") {
+	if !c.available(w, r, "/api/v1/projects/{id}/documents/adopt") {
 		return
 	}
 	var in ProjectDocumentAdoptRequest

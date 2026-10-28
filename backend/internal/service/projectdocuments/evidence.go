@@ -162,6 +162,11 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 	if err := syncEvidenceDir(r, stage); err != nil {
 		return zero, err
 	}
+	// Strict native parsing must not hold the store's global writer reservation.
+	// The coordinator owns intake fencing throughout Build and publication.
+	if err := in.Export.Revalidate(ctx); err != nil {
+		return zero, err
+	}
 	published, err := s.store.WithProjectDocumentPublication(ctx, id, rec, state.Revision, func(reserved context.Context) error {
 		_, currentRoot, currentDoc, e := s.state(reserved, id)
 		if e != nil {
@@ -169,9 +174,6 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 		}
 		if currentRoot != shared || currentDoc != doc {
 			return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Configured handoff location changed")
-		}
-		if e := in.Export.Revalidate(reserved); e != nil {
-			return e
 		}
 		snapshot, e := s.store.LoadTranscriptSourceSnapshot(reserved, rec.ID)
 		if e != nil {
