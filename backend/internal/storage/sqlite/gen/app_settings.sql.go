@@ -14,7 +14,7 @@ import (
 
 const getAppSettings = `-- name: GetAppSettings :one
 
-SELECT id, default_session_mode, updated_at, cloud_offering, harness_defaults, version_refresh FROM app_settings WHERE id = 1
+SELECT id, default_session_mode, updated_at, cloud_offering, harness_defaults, version_refresh, reply_language FROM app_settings WHERE id = 1
 `
 
 // Daemon-owned user preferences. One row, seeded by migration 0042, so a read
@@ -29,6 +29,7 @@ func (q *Queries) GetAppSettings(ctx context.Context) (AppSetting, error) {
 		&i.CloudOffering,
 		&i.HarnessDefaults,
 		&i.VersionRefresh,
+		&i.ReplyLanguage,
 	)
 	return i, err
 }
@@ -93,6 +94,20 @@ type SetHarnessDefaultParams struct {
 
 func (q *Queries) SetHarnessDefault(ctx context.Context, arg SetHarnessDefaultParams) error {
 	_, err := q.db.ExecContext(ctx, setHarnessDefault, arg.HarnessPath, arg.Config, arg.UpdatedAt)
+	return err
+}
+
+const setReplyLanguage = `-- name: SetReplyLanguage :exec
+UPDATE app_settings SET reply_language = ?, updated_at = ? WHERE id = 1
+`
+
+type SetReplyLanguageParams struct {
+	ReplyLanguage string
+	UpdatedAt     time.Time
+}
+
+func (q *Queries) SetReplyLanguage(ctx context.Context, arg SetReplyLanguageParams) error {
+	_, err := q.db.ExecContext(ctx, setReplyLanguage, arg.ReplyLanguage, arg.UpdatedAt)
 	return err
 }
 

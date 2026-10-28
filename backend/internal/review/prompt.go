@@ -3,6 +3,8 @@ package review
 import (
 	"fmt"
 	"strings"
+
+	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 )
 
 // reviewTexts returns the user-facing prompt and the system prompt to deliver to
@@ -16,6 +18,9 @@ import (
 // submit — so no environment variables are required.
 func reviewTexts(spec LaunchSpec) (prompt, systemPrompt string) {
 	systemPrompt = reviewSystemPrompt()
+	if section := settingssvc.ReplyLanguagePrompt(spec.ReplyLanguage); section != "" {
+		systemPrompt += "\n\n" + section
+	}
 
 	queueText := reviewQueueText(spec)
 	prompt = fmt.Sprintf(`Review the requested implementation pull request(s) owned by worker session %s.

@@ -12530,6 +12530,43 @@ paths:
       summary: Choose which models one harness's pickers offer
       tags:
       - settings
+  /api/v1/settings/reply-language:
+    patch:
+      operationId: updateReplyLanguage
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReplyLanguageRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Choose the reply language for newly started or resumed agents
+      tags:
+      - settings
   /api/v1/settings/session-interface:
     patch:
       operationId: updateSessionInterface
@@ -20738,6 +20775,21 @@ components:
           type: object
         localEnabled:
           type: boolean
+        replyLanguage:
+          description: Agent reply language, independent of UI locale. Empty disables
+            injection. Applies at spawn, resume and restart.
+          enum:
+          - ""
+          - de
+          - en
+          - es
+          - fr
+          - ja
+          - ko
+          - pt-BR
+          - zh-CN
+          - zh-TW
+          type: string
         trackerIntakeEnabled:
           type: boolean
         versionRefresh:
@@ -20745,6 +20797,7 @@ components:
             release instead of running the old one until they happen to restart.
           type: boolean
       required:
+      - replyLanguage
       - defaultSessionMode
       - chatHarnesses
       - client
@@ -21988,6 +22041,26 @@ components:
       required:
       - displayName
       - config
+      type: object
+    UpdateReplyLanguageRequest:
+      properties:
+        replyLanguage:
+          enum:
+          - ""
+          - de
+          - en
+          - es
+          - fr
+          - ja
+          - ko
+          - pt-BR
+          - zh-CN
+          - zh-TW
+          type:
+          - "null"
+          - string
+      required:
+      - replyLanguage
       type: object
     UpdateSessionInterfaceRequest:
       properties:

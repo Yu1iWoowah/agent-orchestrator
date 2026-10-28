@@ -1,4 +1,7 @@
 {
+	"settings.replyLanguage.label": "Idioma de respuesta del agente",
+	"settings.replyLanguage.off": "Desactivado",
+	"settings.replyLanguage.description": "Independiente del idioma de la interfaz. Se aplica a los agentes nuevos, reanudados o reiniciados. Los agentes en ejecución conservan sus instrucciones actuales.",
 	"sideChat.closingTab": "Cerrando",
 	"sideChat.closing": "Cerrando chat lateral. Desaparecerá cuando se confirme el cierre.",
 	"sideChat.retryClose": "Reintentar cierre",

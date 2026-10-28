@@ -1,4 +1,7 @@
 {
+	"settings.replyLanguage.label": "エージェントの返信言語",
+	"settings.replyLanguage.off": "オフ",
+	"settings.replyLanguage.description": "表示言語とは別の設定です。新規起動、再開、再起動したエージェントに適用されます。実行中のエージェントの指示は変わりません。",
 	"sideChat.closingTab": "終了中",
 	"sideChat.closing": "サイドチャットを閉じています。終了が確認されると消えます。",
 	"sideChat.retryClose": "閉じる操作を再試行",

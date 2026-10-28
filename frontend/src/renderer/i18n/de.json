@@ -1,4 +1,7 @@
 {
+	"settings.replyLanguage.label": "Antwortsprache der Agenten",
+	"settings.replyLanguage.off": "Aus",
+	"settings.replyLanguage.description": "Unabhängig von der Oberflächensprache. Gilt für neue, fortgesetzte oder neu gestartete Agenten. Laufende Agenten behalten ihre bisherigen Anweisungen.",
 	"sideChat.closingTab": "Wird geschlossen",
 	"sideChat.closing": "Seitenchat wird geschlossen. Er verschwindet nach bestätigtem Herunterfahren.",
 	"sideChat.retryClose": "Schließen erneut versuchen",

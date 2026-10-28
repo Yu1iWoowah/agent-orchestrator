@@ -22,6 +22,7 @@ import (
 
 // Store is the durable preference surface.
 type Store interface {
+	SetReplyLanguage(ctx context.Context, language string, now time.Time) error
 	GetAppSettings(ctx context.Context) (Snapshot, error)
 	SetDefaultSessionMode(ctx context.Context, mode domain.SessionMode, now time.Time) error
 	SetCloudOffering(ctx context.Context, enabled bool, now time.Time) error
@@ -31,6 +32,7 @@ type Store interface {
 
 // Snapshot is the current preference set.
 type Snapshot struct {
+	ReplyLanguage      string
 	HarnessDefaults    map[string]domain.HarnessDefault
 	DefaultSessionMode domain.SessionMode
 	// CloudOffering is the user's cloud toggle (Settings, Developer Mode).

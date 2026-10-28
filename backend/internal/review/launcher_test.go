@@ -1278,3 +1278,76 @@ func TestNotifyReviewerChatCarriesItsBatch(t *testing.T) {
 		t.Fatalf("review notification: %+v", chat)
 	}
 }
+
+type replyLanguageSource struct {
+	language string
+	err      error
+}
+
+func (s *replyLanguageSource) ReplyLanguage(context.Context) (string, error) {
+	return s.language, s.err
+}
+
+func TestReviewerReplyLanguageReadAtLaunchAndRestore(t *testing.T) {
+	ctx := context.Background()
+	source := &replyLanguageSource{language: "zh-TW"}
+	launcher := NewLauncher(nil, nil, t.TempDir(), WithReplyLanguage(source)).(*agentLauncher)
+	for _, idle := range []bool{false, true} {
+		for _, language := range []string{"zh-TW", "en", ""} {
+			source.language = language
+			var inv ports.ReviewInvocation
+			var err error
+			if idle {
+				inv, err = launcher.prepareIdleInvocation(ctx, launchSpec())
+			} else {
+				inv, err = launcher.prepareInvocation(ctx, launchSpec(), true)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(inv.SystemPromptFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(raw)
+			if language == "" && strings.Contains(text, "Agent Reply Language") {
+				t.Fatal("disabled language injected")
+			}
+			if language != "" && !strings.Contains(text, "("+language+")") {
+				t.Fatalf("missing %s at idle=%t", language, idle)
+			}
+		}
+	}
+	source.err = errors.New("settings unavailable")
+	if _, err := launcher.prepareInvocation(ctx, launchSpec(), true); err == nil {
+		t.Fatal("launch ignored preference read failure")
+	}
+	if _, err := launcher.prepareIdleInvocation(ctx, launchSpec()); err == nil {
+		t.Fatal("restore ignored preference read failure")
+	}
+}
+
+func TestReviewerReplyLanguageDoesNotHotUpdate(t *testing.T) {
+	ctx := context.Background()
+	source := &replyLanguageSource{language: "zh-TW"}
+	launcher := NewLauncher(nil, nil, t.TempDir(), WithReplyLanguage(source)).(*agentLauncher)
+	inv, err := launcher.prepareInvocation(ctx, launchSpec(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(inv.SystemPromptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.language = "en"
+	source.err = errors.New("settings now unavailable")
+	spec := launchSpec()
+	spec.RunID = "next-pass"
+	if _, err := launcher.prepareInvocation(ctx, spec, false); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(inv.SystemPromptFile)
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("live prompt changed: %v", err)
+	}
+}

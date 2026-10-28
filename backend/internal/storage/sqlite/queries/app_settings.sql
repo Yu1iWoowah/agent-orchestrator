@@ -24,3 +24,6 @@ UPDATE app_settings
 SET harness_defaults = json_remove(harness_defaults, sqlc.arg(harness_path)),
     updated_at = sqlc.arg(updated_at)
 WHERE id = 1;
+
+-- name: SetReplyLanguage :exec
+UPDATE app_settings SET reply_language = ?, updated_at = ? WHERE id = 1;

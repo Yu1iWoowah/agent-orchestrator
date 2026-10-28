@@ -26,6 +26,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
@@ -396,10 +397,11 @@ type conversationSettingsStore interface {
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
-	runtime   runtimeController
-	agents    ports.AgentResolver
-	workspace ports.Workspace
-	store     Store
+	replyLanguage settingssvc.ReplyLanguageSource
+	runtime       runtimeController
+	agents        ports.AgentResolver
+	workspace     ports.Workspace
+	store         Store
 	// agentReadiness is late-bound by SetAgentReadiness.
 	agentReadiness ports.AgentReadinessProvider
 	// messenger is a sessionguard.Guard wrapping the raw messenger, so every
@@ -816,11 +818,12 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
-	Runtime   runtimeController
-	Agents    ports.AgentResolver
-	Workspace ports.Workspace
-	Store     Store
-	Messenger ports.AgentMessenger
+	ReplyLanguage settingssvc.ReplyLanguageSource
+	Runtime       runtimeController
+	Agents        ports.AgentResolver
+	Workspace     ports.Workspace
+	Store         Store
+	Messenger     ports.AgentMessenger
 	// Defaults supplies the daemon-owned default session interface for spawns that
 	// name no mode. Nil means always use the compatibility default.
 	Defaults SessionModeDefaults
@@ -898,6 +901,7 @@ func New(d Deps) *Manager {
 		agents:                         d.Agents,
 		workspace:                      d.Workspace,
 		store:                          d.Store,
+		replyLanguage:                  d.ReplyLanguage,
 		defaults:                       d.Defaults,
 		chat:                           d.Chat,
 		lcm:                            d.Lifecycle,
@@ -5991,6 +5995,13 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 	}
 	if kind == domain.KindWorker && requestedOutput == domain.RequestedOutputArtifact {
 		cfg.AdditionalSections = append(cfg.AdditionalSections, artifactOutputPrompt)
+	}
+	if m.replyLanguage != nil {
+		language, err := m.replyLanguage.ReplyLanguage(ctx)
+		if err != nil {
+			return "", fmt.Errorf("read reply language: %w", err)
+		}
+		cfg.ReplyLanguage = language
 	}
 	return buildSystemPromptText(cfg), nil
 }

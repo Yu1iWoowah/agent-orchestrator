@@ -23,6 +23,7 @@ func (s settingsStore) GetAppSettings(ctx context.Context) (settingssvc.Snapshot
 		return settingssvc.Snapshot{}, err
 	}
 	return settingssvc.Snapshot{
+		ReplyLanguage:      row.ReplyLanguage,
 		DefaultSessionMode: row.DefaultSessionMode,
 		HarnessDefaults:    row.HarnessDefaults,
 		CloudOffering:      row.CloudOffering,
@@ -49,4 +50,8 @@ func (s settingsStore) SetVersionRefresh(ctx context.Context, enabled bool, now 
 
 func (s settingsStore) SetHarnessDefault(ctx context.Context, agent domain.AgentHarness, value domain.HarnessDefault, now time.Time) error {
 	return s.store.SetHarnessDefault(ctx, agent, value, now)
+}
+
+func (s settingsStore) SetReplyLanguage(ctx context.Context, language string, now time.Time) error {
+	return s.store.SetReplyLanguage(ctx, language, now)
 }

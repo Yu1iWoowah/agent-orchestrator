@@ -17,6 +17,7 @@ import { useTerminalShellStore } from "../../stores/terminal-shell-store";
 import { DefaultCloudSandboxSection } from "./DefaultCloudSandboxRow";
 import { SettingsOptionMenu, type SettingsOption } from "./SettingsOptionMenu";
 import { SettingsInputRow, SettingsRow } from "./SettingsRow";
+import { ReplyLanguageRow } from "./ReplyLanguageRow";
 import { SettingsSection } from "./SettingsSection";
 import { ThemePaletteSwatch } from "./ThemePaletteSwatch";
 import { Switch } from "../ui/switch";
@@ -308,6 +309,7 @@ export function GeneralSettingsSection({
 			{/* Sessions */}
 			<SettingsSection title={t("settings.sessions")} grouped>
 				<SessionInterfaceRow />
+				<ReplyLanguageRow />
 				<DefaultEditorRow />
 				<VersionRefreshRow />
 				{isWindowsPlatform() ? <TerminalShellRows /> : null}

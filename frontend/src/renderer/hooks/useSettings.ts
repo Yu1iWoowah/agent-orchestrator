@@ -17,7 +17,10 @@ export type HarnessDefault = Pick<components["schemas"]["HarnessDefault"], "disa
 
 export const settingsQueryKey = ["settings"] as const;
 
+export type ReplyLanguage = NonNullable<components["schemas"]["UpdateReplyLanguageRequest"]["replyLanguage"]>;
+
 export interface Settings {
+	replyLanguage?: ReplyLanguage;
 	harnessDefaults?: Record<string, HarnessDefault>;
 	/** Applies to sessions created from now on; never to an existing one. */
 	defaultSessionMode: SessionMode;
@@ -67,6 +70,7 @@ export function useSettings(hostId?: string, enabled = true) {
 				trackerIntakeEnabled: data?.trackerIntakeEnabled ?? false,
 				// A daemon that predates the setting never moves sessions.
 				versionRefresh: data?.versionRefresh ?? false,
+				replyLanguage: data?.replyLanguage ?? "",
 			};
 		},
 	});
@@ -162,4 +166,18 @@ export function useUpdateVersionRefresh() {
 		saving: mutation.isPending,
 		error: mutation.error ? apiErrorMessage(mutation.error) : undefined,
 	};
+}
+
+/** Persists a preference for future process launches; running agents retain their instructions. */
+export function useUpdateReplyLanguage() {
+	const queryClient = useQueryClient();
+	const mutation = useMutation({
+		mutationFn: async (replyLanguage: ReplyLanguage) => {
+			const { data, error } = await apiClient.PATCH("/api/v1/settings/reply-language", { body: { replyLanguage } });
+			if (error) throw error;
+			return data;
+		},
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: settingsQueryKey }),
+	});
+	return { update: mutation.mutate, saving: mutation.isPending, error: mutation.error ? apiErrorMessage(mutation.error) : undefined };
 }
