@@ -1,3 +1,6 @@
+import { DocumentLink } from "./DocumentLink";
+import { useDocumentReader } from "../lib/document-reading-context";
+import { documentInputFromLink } from "../lib/document-targets";
 import { BrowserIcon } from "./icons";
 import { createContext, useContext, useState, type ComponentProps, type ReactNode } from "react";
 import { Copy, ExternalLink, FileText, } from "lucide-react";
@@ -18,7 +21,8 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 export const AppBrowserLinkContext = createContext<((url: string) => void) | undefined>(undefined);
 
 /** Shared web-link behavior; native fragments and special schemes retain their handlers. */
-export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onFileOpen, hoverPreview, ...props }: ComponentProps<"a"> & {
+export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onFileOpen, hoverPreview, documentDisabled, ...props }: ComponentProps<"a"> & {
+	documentDisabled?: boolean;
 	onBrowserOpen?: (url: string) => void;
 	inAppLink?: (url: string) => boolean;
 	filePath?: string;
@@ -26,6 +30,7 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onF
 	hoverPreview?: (open: boolean) => ReactNode;
 }) {
 	const { t } = useTranslation();
+	const documentReader=useDocumentReader();
 	const sessionBrowserOpen = useContext(AppBrowserLinkContext);
 	const openBrowser = onBrowserOpen ?? sessionBrowserOpen;
 	const webLink = !!href && isWebLink(href);
@@ -33,6 +38,8 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onF
 	const hasHoverPreview = webLink || Boolean(hoverPreview);
 	const [previewOpen, setPreviewOpen] = useState(false);
 	const previewQuery = useLinkPreview(href ?? "", previewOpen && webLink);
+	const documentInput=href&&!documentDisabled&&documentReader?documentInputFromLink(href):null;
+	if(documentInput) return <DocumentLink {...props} href={href} input={documentInput}/>;
 	const anchor = (
 		<a
 			{...props}

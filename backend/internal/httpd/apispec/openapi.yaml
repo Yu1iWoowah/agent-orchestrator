@@ -3936,6 +3936,75 @@ paths:
       summary: Fetch link-preview metadata (Open Graph) for an external URL
       tags:
       - link-preview
+  /api/v1/local-documents/content:
+    post:
+      operationId: readLocalDocumentContent
+      parameters:
+      - in: query
+        name: maxBytes
+        schema:
+          default: 2.097152e+06
+          format: int64
+          maximum: 5.24288e+07
+          minimum: 1
+          type: integer
+      - in: query
+        name: fingerprint
+        schema:
+          maxLength: 256
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveDocumentRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read bounded raw bytes from a revalidated managed document
+      tags:
+      - projects
   /api/v1/local-documents/resolve:
     post:
       operationId: resolveLocalDocument

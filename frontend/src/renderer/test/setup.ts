@@ -166,7 +166,8 @@ if (typeof window !== "undefined") {
 			onNextSessionShortcut: () => () => undefined,
 			onPreviousTabShortcut: () => () => undefined,
 			onNextTabShortcut: () => () => undefined,
-			onShortcut: (listener: Parameters<typeof appShortcutBus.subscribe>[0]) => appShortcutBus.subscribe(listener),
+			onDocumentEscape: () => () => undefined,
+		onShortcut: (listener: Parameters<typeof appShortcutBus.subscribe>[0]) => appShortcutBus.subscribe(listener),
 			onScrollPhase: () => () => undefined,
 		},
 		terminal: {

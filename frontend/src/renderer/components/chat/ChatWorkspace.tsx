@@ -1,3 +1,5 @@
+import { DocumentReadingProvider } from "../../lib/document-reading-context";
+import { DocumentSheet } from "./DocumentSheet";
 import { FileAnnotationContext } from "./FileAnnotationPreview";
 import type { ChatFileReference, OpenFileAnnotation } from "../../../shared/chat-file-reference";
 import { TurnWorkSummary } from "./TurnWorkSummary";
@@ -1747,6 +1749,7 @@ function ChatWorkspaceContent({
 	}, [conversationEmpty]);
 
 	return (
+ <DocumentReadingProvider sessionId={snapshot.sessionId} hostId={activeRemoteHostId} cloud={Boolean(session?.cloud)}>
  <FileAnnotationContext.Provider value={fileReferenceDelivery === "text" ? undefined : { sessionId: snapshot.sessionId, hostId: activeRemoteHostId, onOpen: onOpenFileAnnotation, generation: fileNavigationGeneration }}>
 		<section
 			ref={surfaceRef}
@@ -1775,7 +1778,7 @@ function ChatWorkspaceContent({
 				onCloseShellTerminal={onCloseShellTerminal}
 				onRenameShellTerminal={onRenameShellTerminal}
 				onTabsKeyDown={handleChatTabsKeyDown}
-				headerActions={<>{sessionPlanEnabled && !reviewerActive && !shellActive ? <SessionPlanFrames key={`${activeRemoteHostId ?? ""}:${snapshot.sessionId}`} sessionId={snapshot.sessionId} hostId={activeRemoteHostId} surfaceRef={surfaceRef} composerRef={composerDockRef} /> : null}{headerActions}</>}
+				headerActions={<><DocumentSheet surfaceRef={surfaceRef} composerRef={composerDockRef}/>{sessionPlanEnabled && !reviewerActive && !shellActive ? <SessionPlanFrames key={`${activeRemoteHostId ?? ""}:${snapshot.sessionId}`} sessionId={snapshot.sessionId} hostId={activeRemoteHostId} surfaceRef={surfaceRef} composerRef={composerDockRef} /> : null}{headerActions}</>}
 				session={session}
 				onSessionRenamed={onSessionRenamed}
 				sessionTabAction={sessionTabAction}
@@ -2140,6 +2143,7 @@ function ChatWorkspaceContent({
 			/>
 		</section>
  </FileAnnotationContext.Provider>
+ </DocumentReadingProvider>
 	);
 }
 

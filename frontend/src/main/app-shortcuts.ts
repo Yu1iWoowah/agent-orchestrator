@@ -1,5 +1,6 @@
 import {
 	APP_SHORTCUT_CHANNEL,
+	DOCUMENT_ESCAPE_CHANNEL,
 	APP_SHORTCUTS,
 	CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL,
 	KEYBOARD_SHORTCUTS_HELP_CHANNEL,
@@ -149,5 +150,12 @@ export function attachAppShortcuts(
 		if (input.isAutoRepeat) return;
 		if (focusTarget) target.focus();
 		target.send(channel, ...payload);
+	});
+}
+
+/** Attach only to the shell, never a native Browser page. The renderer owns focus policy. */
+export function attachDocumentEscape(contents:BeforeInputContents,target:ShortcutTargetContents) {
+	contents.on("before-input-event",(_event,input)=>{
+		if(input.type==="keyDown"&&input.key==="Escape"&&!input.control&&!input.meta&&!input.shift&&!input.alt)target.send(DOCUMENT_ESCAPE_CHANNEL);
 	});
 }

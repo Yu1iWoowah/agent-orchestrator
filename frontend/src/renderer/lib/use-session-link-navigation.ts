@@ -1,3 +1,5 @@
+import { documentInputFromLink } from "./document-targets";
+import { useDocumentReadingStore } from "../stores/document-reading-store";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useCloudProjectsQuery, useCloudSessionsQuery, remoteWorkspaceQueryKey, toCloudWorkspace, useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
@@ -65,6 +67,9 @@ export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cl
 	const setProjectDocumentTarget = useUiStore((state) => state.setProjectDocumentTarget);
 	const requestWorkspaceFileOpen = useUiStore((state) => state.requestWorkspaceFileOpen);
 	return useCallback((url: string) => {
+		const input=documentInputFromLink(url);
+		const reader=useDocumentReadingStore.getState().reader;
+		if(input&&reader&&!remoteHostId&&sourceKind!=="cloud") {useDocumentReadingStore.getState().open(reader.key,input);return true;}
 		const document = parseProjectDocumentLink(url);
   if (document) {
    if (remoteHostId || sourceKind === "cloud" || !source.ready || !source.workspaces.some((project) => project.id === document.projectId)) {

@@ -1,3 +1,4 @@
+import { useDocumentReadingStore } from "../stores/document-reading-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -24,6 +25,7 @@ vi.mock("../hooks/useCloudOrg", () => ({ useCloudOrg: () => ({ ready: true, org:
 describe("useSessionLinkNavigation", () => {
 	beforeEach(() => {
 		mocks.navigate.mockReset();
+		useDocumentReadingStore.setState({sessions:{},reader:null});
 		mocks.workspace.mockClear();
 		mocks.cloudProjects.mockClear();
 		mocks.cloudSessions.mockClear();
@@ -37,6 +39,18 @@ describe("useSessionLinkNavigation", () => {
 				{ id: "project", sessions: [{ id: "session", title: "renamed", isTerminated: false }, { id: "terminated", isTerminated: true }] },
 			],
 		});
+	});
+
+	it("routes all managed document sources to the active local reader without workspace navigation",()=>{
+		useDocumentReadingStore.getState().register({key:"current",sessionId:"orchestrator",connection:{kind:"local",identity:"local"}});
+		const {result}=renderHook(()=>useSessionLinkNavigation());
+		for(const url of ["ao://sessions/other-project/other-session/artifacts/a.md","ao://projects/other-project/shared/a.md","/managed/a.md","file:///managed/a.md"]){
+			act(()=>expect(result.current(url)).toBe(true));
+			expect(useDocumentReadingStore.getState().sessions.current.opening).not.toBeNull();
+		}
+		expect(mocks.navigate).not.toHaveBeenCalled();
+		act(()=>expect(result.current("ao://sessions/other-project/other-session")).toBe(true));
+		expect(mocks.navigate).toHaveBeenCalledWith("other-project","other-session");
 	});
 
  it("opens project files without selecting a source session", () => {

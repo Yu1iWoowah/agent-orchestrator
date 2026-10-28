@@ -87,7 +87,7 @@ import {
 } from "./shared/daemon-startup-status";
 import { toggleAppDevTools } from "./main/app-devtools";
 import { acceptLanguages, applyBrowserIdentity } from "./main/browser-identity";
-import { attachAppShortcuts } from "./main/app-shortcuts";
+import { attachAppShortcuts, attachDocumentEscape } from "./main/app-shortcuts";
 import { relayScrollPhases } from "./main/scroll-phase";
 import {
 	KEYBOARD_SHORTCUTS_HELP_CHANNEL,
@@ -1034,6 +1034,7 @@ async function createWindowInternal(): Promise<void> {
 	// contents holds focus — the shell renderer, xterm's helper textarea, or a
 	// browser-preview view (wired per-view in the browser host).
 	const isMac = process.platform === "darwin";
+	attachDocumentEscape(shellWebContents, shellWebContents);
 	attachAppShortcuts(
 		shellWebContents,
 		isMac,

@@ -114,6 +114,15 @@ func updatedAt(info os.FileInfo) *time.Time {
 }
 
 func documentInfo(root *os.Root, p string) (os.FileInfo, error) {
+	file, info, e := openDocument(root, p)
+	if e != nil {
+		return nil, e
+	}
+	_ = file.Close()
+	return info, nil
+}
+
+func openDocument(root *os.Root, p string) (*os.File, os.FileInfo, error) {
 	current := root
 	var opened []*os.Root
 	defer func() {
@@ -125,7 +134,7 @@ func documentInfo(root *os.Root, p string) (os.FileInfo, error) {
 	for _, part := range parts[:len(parts)-1] {
 		next, e := subdir(current, part)
 		if e != nil {
-			return nil, unavailable()
+			return nil, nil, unavailable()
 		}
 		opened = append(opened, next)
 		current = next
@@ -133,20 +142,21 @@ func documentInfo(root *os.Root, p string) (os.FileInfo, error) {
 	name := parts[len(parts)-1]
 	before, e := current.Lstat(name)
 	if e != nil || !before.Mode().IsRegular() {
-		return nil, unavailable()
+		return nil, nil, unavailable()
 	}
 	file, e := openRegular(current, name)
 	if e != nil {
-		return nil, unavailable()
+		return nil, nil, unavailable()
 	}
-	defer func() { _ = file.Close() }()
 	info, e := file.Stat()
 	if e != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) {
-		return nil, unavailable()
+		_ = file.Close()
+		return nil, nil, unavailable()
 	}
 	after, e := current.Lstat(name)
 	if e != nil || after.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, after) {
-		return nil, unavailable()
+		_ = file.Close()
+		return nil, nil, unavailable()
 	}
-	return info, nil
+	return file, info, nil
 }

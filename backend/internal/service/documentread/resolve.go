@@ -79,43 +79,51 @@ func (s *Service) Resolve(ctx context.Context, i Input) (Resolved, error) {
 		return Resolved{}, e
 	}
 	switch t := i.value.(type) {
-	case ArtifactTarget:
-		if e := s.project(ctx, t.ProjectID); e != nil {
+	case LocalPathTarget:
+		return s.resolveLocal(ctx, t.Value)
+	case managedTarget:
+		root, p, e := s.location(ctx, t)
+		if e != nil {
 			return Resolved{}, e
 		}
+		return s.resolve(ctx, root, p, Target{t})
+	default:
+		return Resolved{}, invalid()
+	}
+}
+
+// location revalidates durable registration for every metadata or content read.
+func (s *Service) location(ctx context.Context, target managedTarget) (string, string, error) {
+	switch t := target.(type) {
+	case ArtifactTarget:
+		if e := s.project(ctx, t.ProjectID); e != nil {
+			return "", "", e
+		}
 		if !validID(t.SessionID) || !validPath(t.Path) || !validFragment(t.Fragment) {
-			return Resolved{}, invalid()
+			return "", "", invalid()
 		}
 		rows, e := s.store.ListSessions(ctx, domain.ProjectID(t.ProjectID))
 		if e != nil {
-			return Resolved{}, e
+			return "", "", e
 		}
 		for _, rec := range rows {
 			if string(rec.ID) == t.SessionID && string(rec.ProjectID) == t.ProjectID {
 				root, e := s.artifactRoot(rec)
-				if e != nil {
-					return Resolved{}, e
-				}
-				return s.resolve(ctx, root, t.Path, Target{t})
+				return root, t.Path, e
 			}
 		}
-		return Resolved{}, unavailable()
+		return "", "", unavailable()
 	case SharedTarget:
 		if e := s.project(ctx, t.ProjectID); e != nil {
-			return Resolved{}, e
+			return "", "", e
 		}
 		if !validPath(t.Path) || !validFragment(t.Fragment) {
-			return Resolved{}, invalid()
+			return "", "", invalid()
 		}
 		root, e := s.shared.ReadRoot(ctx, domain.ProjectID(t.ProjectID))
-		if e != nil {
-			return Resolved{}, e
-		}
-		return s.resolve(ctx, root, t.Path, Target{t})
-	case LocalPathTarget:
-		return s.resolveLocal(ctx, t.Value)
+		return root, t.Path, e
 	default:
-		return Resolved{}, invalid()
+		return "", "", invalid()
 	}
 }
 func (s *Service) resolve(ctx context.Context, root, p string, t Target) (Resolved, error) {
