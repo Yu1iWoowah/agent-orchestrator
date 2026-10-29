@@ -1607,7 +1607,7 @@ func (s *Store) MarkTurnDispatching(ctx context.Context, turnID string) error {
 	if err := q.MarkConversationTurnStarted(ctx, gen.MarkConversationTurnStartedParams{
 		ID: turnID,
 	}); err != nil {
-		return fmt.Errorf("mark turn %s dispatching: %w", turnID, err)
+		return fmt.Errorf("mark turn %s dispatching: %w", turnID, replacementQueueError(err))
 	}
 	return nil
 }
@@ -1636,22 +1636,24 @@ func expectBatchRow(action, id string, rows int64, err error) error {
 // BindTurnToProvider records the provider's turn id once a send is accepted and
 // marks the turn running.
 func (s *Store) BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error {
-	q, unlock := s.conversationWriter(ctx)
+	_, unlock := s.conversationWriter(ctx)
 	defer unlock()
-	if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
-		ProviderTurnID: providerTurnID,
-		StartedAt:      sql.NullTime{Time: now, Valid: true},
-		ID:             turnID,
-	}); err != nil {
-		return fmt.Errorf("bind turn %s to provider turn %s: %w", turnID, providerTurnID, err)
-	}
-	if err := q.MarkConversationTurnStarted(ctx, gen.MarkConversationTurnStartedParams{
-		StartedAt: sql.NullTime{Time: now, Valid: true},
-		ID:        turnID,
-	}); err != nil {
-		return fmt.Errorf("mark turn %s started: %w", turnID, err)
-	}
-	return nil
+	return s.inTx(ctx, "bind provider turn", func(q *gen.Queries) error {
+		if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
+			ProviderTurnID: providerTurnID,
+			StartedAt:      sql.NullTime{Time: now, Valid: true},
+			ID:             turnID,
+		}); err != nil {
+			return fmt.Errorf("bind turn %s to provider turn %s: %w", turnID, providerTurnID, replacementQueueError(err))
+		}
+		if err := q.MarkConversationTurnStarted(ctx, gen.MarkConversationTurnStartedParams{
+			StartedAt: sql.NullTime{Time: now, Valid: true},
+			ID:        turnID,
+		}); err != nil {
+			return fmt.Errorf("mark turn %s started: %w", turnID, replacementQueueError(err))
+		}
+		return nil
+	})
 }
 
 // SettleTurn records a turn's terminal state. An interrupted turn is not an
@@ -2539,7 +2541,7 @@ func (s *Store) ClaimQueuedBatch(ctx context.Context, conversationID string, dis
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("claim queued batch: %w", err)
+		return nil, fmt.Errorf("claim queued batch: %w", replacementQueueError(err))
 	}
 	if len(batch) == 0 {
 		return nil, domain.ErrNoQueuedTurn
@@ -2632,7 +2634,7 @@ func (s *Store) ReserveQueuedTurnForPromotion(
 			ID:                 turnID, ConversationID: conversationID,
 		})
 	if err != nil {
-		return domain.QueuedTurn{}, fmt.Errorf("reserve queued turn %s: %w", turnID, err)
+		return domain.QueuedTurn{}, fmt.Errorf("reserve queued turn %s: %w", turnID, replacementQueueError(err))
 	}
 	if rows == 0 {
 		return domain.QueuedTurn{}, fmt.Errorf("%w: %s", ErrQueuedTurnNotAvailable, turnID)

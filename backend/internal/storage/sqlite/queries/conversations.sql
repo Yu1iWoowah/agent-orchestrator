@@ -1158,6 +1158,7 @@ JOIN conversation_messages
 WHERE conversation_turns.conversation_id = ?
   AND conversation_turns.state = 'queued'
   AND conversation_turns.promotion_started_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid
 LIMIT 1;
 
@@ -1177,6 +1178,7 @@ JOIN conversation_messages
 WHERE conversation_turns.conversation_id = ?
   AND conversation_turns.state = 'queued'
   AND conversation_turns.promotion_started_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid;
 
 -- Claim one selected queue item before contacting the provider. execrows is the
