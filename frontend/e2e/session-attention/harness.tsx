@@ -16,6 +16,7 @@ window.fetch = async (input, init) => {
   );
   if (!url.pathname.startsWith("/api/")) return originalFetch(input, init);
   const history = url.searchParams.get("state") === "history";
+  if (url.pathname.endsWith("/questions")) return Response.json({ items: [], open: 0, unread: 0, history: 0, hasMoreBefore: false, nextBeforeSequence: 0 });
   if (url.pathname.endsWith("/attention")) {
     return Response.json({
       conversationId: "fixture",

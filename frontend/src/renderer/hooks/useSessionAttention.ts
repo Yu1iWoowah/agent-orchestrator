@@ -4,6 +4,7 @@ import {
 	useQueries,
 	useQuery,
 	useQueryClient,
+	queryOptions,
 } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { components, paths } from "../../api/schema";
@@ -34,7 +35,7 @@ export const sessionAttentionQueryKey = (sessionId: string, hostId?: string) =>
 		? (["remote-session-attention", hostId, sessionId] as const)
 		: (["session-attention", sessionId] as const);
 export class AttentionUnavailable extends Error {}
-class AttentionSourceUnavailable extends Error {}
+export class AttentionSourceUnavailable extends Error {}
 
 async function fetchAttentionSource(
 	sessionId: string,
@@ -53,6 +54,33 @@ async function fetchAttentionSource(
 			apiErrorMessage(error, "The request is no longer available."),
 		);
 	return checkedAttentionResponse(data);
+}
+
+
+export function attentionSourceQueryOptions({
+	sessionId,
+	hostId,
+	branchId,
+	activityId,
+}: {
+	sessionId: string;
+	hostId?: string;
+	branchId?: string;
+	activityId: string;
+}) {
+	return queryOptions({
+		queryKey: [
+			...sessionAttentionQueryKey(sessionId, hostId),
+			"source",
+			branchId,
+			activityId,
+		],
+		queryFn: ({ signal }) =>
+			fetchAttentionSource(sessionId, hostId, activityId, signal),
+		// Explicit opens fetch with staleTime: 0; CDC refreshes this shared entry.
+		staleTime: Infinity,
+		retry: false,
+	});
 }
 
 /** Keep drafted sources observed after selection moves to another request. */
@@ -101,18 +129,14 @@ function useAttentionDraftCleanup(
 		return [...scoped.values()];
 	}, [drafts, enabled, hostId, sessionId, branchId]);
 	const queries = useQueries({
-		queries: sources.map((source) => ({
-			queryKey: [
-				...sessionAttentionQueryKey(sessionId, hostId),
-				"draft-source",
+		queries: sources.map((source) =>
+			attentionSourceQueryOptions({
+				sessionId,
+				hostId,
 				branchId,
-				source.conversationId,
-				source.activityId,
-			],
-			queryFn: ({ signal }: { signal: AbortSignal }) =>
-				fetchAttentionSource(sessionId, hostId, source.activityId, signal),
-			retry: false,
-		})),
+				activityId: source.activityId,
+			}),
+		),
 	});
 	useEffect(() => {
 		for (const [index, source] of sources.entries()) {
@@ -206,20 +230,17 @@ export function useAttentionSelection(
 		scope: string;
 		id: string;
 		nonce: number;
+		lookup: "loading" | "ready" | "failed";
 	}>();
 	const active = enabled && selected?.scope === scope;
 	const source = useQuery({
-		queryKey: [
-			...sessionAttentionQueryKey(sessionId, hostId),
-			"source",
+		...attentionSourceQueryOptions({
+			sessionId,
+			hostId,
 			branchId,
-			active ? selected.id : undefined,
-			active ? selected.nonce : undefined,
-		],
+			activityId: active ? selected.id : "",
+		}),
 		enabled: active,
-		queryFn: ({ signal }) =>
-			fetchAttentionSource(sessionId, hostId, selected?.id ?? "", signal),
-		retry: false,
 	});
 	const markRead = useMutation({
 		mutationFn: async (input: {
@@ -249,9 +270,11 @@ export function useAttentionSelection(
 		onSuccess: (_data, input) =>
 			client.invalidateQueries({
 				queryKey: sessionAttentionQueryKey(input.sessionId, input.hostId),
-			}),
+			}, { cancelRefetch: false }),
 	});
-	const data = active ? source.data : undefined;
+	const data = active && selected.lookup === "ready" && !source.isError
+		? source.data
+		: undefined;
 	const candidate =
 		data && data.activeBranchId === branchId ? data.items[0] : undefined;
 	const current =
@@ -261,12 +284,12 @@ export function useAttentionSelection(
 			? candidate
 			: undefined;
 	const missing =
-		source.error instanceof AttentionSourceUnavailable ||
+		(active && selected.lookup !== "loading" && source.error instanceof AttentionSourceUnavailable) ||
 		Boolean(
 			data && data.activeBranchId === branchId && data.items.length === 0,
 		);
 	const unavailable =
-		active && (missing || Boolean(candidate && !candidate.actionable));
+		active && selected.lookup !== "loading" && (missing || Boolean(candidate && !candidate.actionable));
 	const clear = useCallback(
 		({ discardDraft = true }: { discardDraft?: boolean } = {}) => {
 			if (!active || !selected) return;
@@ -304,9 +327,20 @@ export function useAttentionSelection(
 	const locate = useCallback(
 		(id: string) => {
 			markRead.reset();
-			setSelected({ scope, id, nonce: ++nonce.current });
+			const requestNonce = ++nonce.current;
+			setSelected({ scope, id, nonce: requestNonce, lookup: "loading" });
+			const finished = (lookup: "ready" | "failed") =>
+				setSelected((value) =>
+					value?.scope === scope && value.nonce === requestNonce
+						? { ...value, lookup }
+						: value,
+				);
+			void client.fetchQuery({
+				...attentionSourceQueryOptions({ sessionId, hostId, branchId, activityId: id }),
+				staleTime: 0,
+			}).then(() => finished("ready"), () => finished("failed"));
 		},
-		[scope, markRead.reset],
+		[scope, markRead.reset, client, sessionId, hostId, branchId],
 	);
 	return {
 		scope,
@@ -315,9 +349,10 @@ export function useAttentionSelection(
 		selectedId: active ? selected.id : undefined,
 		selectionNonce: active ? selected.nonce : undefined,
 		activity,
-		loading: active && source.isPending,
+		loading: active && (selected.lookup === "loading" || source.isPending),
 		error:
-			active && (source.isError || (source.data && !current && !unavailable))
+			active && selected.lookup !== "loading" &&
+			(selected.lookup === "failed" || source.isError || (source.data && !current && !unavailable))
 				? true
 				: false,
 		unavailable,

@@ -1817,6 +1817,7 @@ function ChatWorkspaceContent({
 							key={`${activeRemoteHostId ?? ""}:${snapshot.sessionId}`}
 							sessionId={snapshot.sessionId}
 							hostId={activeRemoteHostId}
+							sourceAgent={snapshot.harness}
 							activeBranchId={snapshot.activeBranchId}
 							onAttentionSourceChange={setAttentionSource}
 							onAttentionSourceFocus={focusAttentionSource}

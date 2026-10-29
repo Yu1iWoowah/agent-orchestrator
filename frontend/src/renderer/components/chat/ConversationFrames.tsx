@@ -36,11 +36,14 @@ export interface ConversationFrameDescriptor {
 	content: ReactNode;
 }
 const defaults = defaultConversationFramePreferences();
-const FrameNavigationContext = createContext<
-	((navigate: () => void) => void) | undefined
->(undefined);
+const FrameNavigationContext = createContext<{
+	navigate: (navigate: () => void) => void;
+	beginDialog: () => () => void;
+} | undefined>(undefined);
 export const useConversationFrameNavigation = () =>
-	useContext(FrameNavigationContext);
+	useContext(FrameNavigationContext)?.navigate;
+export const useConversationFrameDialog = () =>
+	useContext(FrameNavigationContext)?.beginDialog;
 
 /** Inline header controls plus a non-layout overlay owned by the Chat surface. */
 export function ConversationFrames({
@@ -64,6 +67,7 @@ export function ConversationFrames({
 	const navigatingFromSheet = useRef(false);
 	const entryRefs = useRef(new Map<ConversationFrameKind, HTMLButtonElement>());
 	const headerRefs = useRef(new Map<ConversationFrameKind, HTMLButtonElement>());
+	const sheetBodyRefs = useRef(new Map<ConversationFrameKind, HTMLDivElement>());
 	const id = useId();
 	const [preview, setPreview] = useState<
 		Partial<Record<ConversationFrameKind, { preferredWidth?: number; preferredHeight?: number }>>
@@ -101,13 +105,24 @@ export function ConversationFrames({
 	};
 	return (
 		<FrameNavigationContext.Provider
-			value={(navigate) => {
+			value={{ navigate: (navigate) => {
 				if (focusedFrame) {
 					navigatingFromSheet.current = true;
 					setFocusedFrame(undefined);
 				}
 				navigate();
-			}}
+			}, beginDialog: () => {
+				const previous = focusedFrame;
+				const scrollTop = previous ? sheetBodyRefs.current.get(previous)?.scrollTop ?? 0 : 0;
+				if (previous) { navigatingFromSheet.current = true; setFocusedFrame(undefined); }
+				return () => {
+					navigatingFromSheet.current = false;
+					if (previous) {
+						setFocusedFrame(previous);
+						requestAnimationFrame(() => { const body = sheetBodyRefs.current.get(previous); if (body) body.scrollTop = scrollTop; });
+					}
+				};
+			}}}
 		>
 			{frames.map((frame) => (
 				<Tooltip key={frame.kind}>
@@ -120,6 +135,8 @@ export function ConversationFrames({
 							variant="ghost"
 							size="sm"
 							aria-label={t("frames.open", { title: frame.title })}
+							data-conversation-frame-entry={frame.kind}
+							data-conversation-frame-scope={key}
 							aria-disabled={tooSmall || undefined}
 							aria-expanded={Boolean(
 								layout.frames[frame.kind]?.open || focusedFrame === frame.kind,
@@ -190,6 +207,8 @@ export function ConversationFrames({
 								className="pointer-events-auto absolute h-8 justify-between rounded-lg bg-card shadow-sm"
 								style={{ ...placement.rect }}
 								aria-expanded={false}
+								data-conversation-frame-entry={frame.kind}
+								data-conversation-frame-scope={key}
 								aria-controls={`${id}-${frame.kind}`}
 								onClick={() => open(frame.kind)}
 							>
@@ -244,7 +263,7 @@ export function ConversationFrames({
 								<ChevronUp className="size-4" />
 							</Button>
 						</div>
-						<div className="min-h-0 flex-1 overflow-auto p-3">{frame.content}</div>
+						<div ref={(node) => { if (node) sheetBodyRefs.current.set(frame.kind, node); else sheetBodyRefs.current.delete(frame.kind); }} data-conversation-frame-sheet-body="" className="min-h-0 flex-1 overflow-auto p-3">{frame.content}</div>
 					</SheetContent>
 				</Sheet>
 			))}
