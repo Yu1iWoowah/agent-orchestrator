@@ -334,7 +334,7 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		}
 		return Record{}, failure("APP_RENDERER_UNAVAILABLE", 503)
 	}
-	if !validSnapshotV1(snapshot) || snapshot.InstanceID != state.InstanceID || snapshot.WindowID != in.WindowID || snapshot.Generation != generation {
+	if !domain.ValidAppDiagnosticsCaptureSnapshot(snapshot) || snapshot.InstanceID != state.InstanceID || snapshot.WindowID != in.WindowID || snapshot.Generation != generation {
 		audit.Outcome = "invalid_payload"
 		_ = s.store.audit(audit)
 		return Record{}, failure("APP_DIAGNOSTICS_INVALID_PAYLOAD", 502)
@@ -522,8 +522,7 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 	if err != nil {
 		return SnapshotList{}, err
 	}
-	partial, err := s.store.prunePartial(s.now())
-	if err != nil {
+	if err := s.store.prune(s.now()); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	docs, err := documents[Record](s.store, "snapshots", validSnapshotRecord)
@@ -540,7 +539,7 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
-	return SnapshotList{Partial: partial || errors.Is(err, errReadUnavailable), Records: out, ReadErrorCount: s.store.readErrors}, nil
+	return SnapshotList{Partial: errors.Is(err, errReadUnavailable), Records: out, ReadErrorCount: s.store.readErrors}, nil
 }
 
 // Audits excludes other grants, including those issued to the same session.
@@ -551,8 +550,7 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	if err != nil {
 		return AuditLog{}, err
 	}
-	partial, err := s.store.prunePartial(s.now())
-	if err != nil {
+	if err := s.store.prune(s.now()); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}); err != nil {
@@ -580,7 +578,7 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 		first := out[0].At
 		oldest = &first
 	}
-	return AuditLog{Partial: partial || errors.Is(err, errReadUnavailable), Records: out, OldestRetainedAt: oldest, DroppedCount: s.store.dropped, ReadErrorCount: s.store.readErrors, InvalidSnapshotDeletedCount: s.store.invalidSnapshotDeleted, SkippedCount: s.store.skipped}, nil
+	return AuditLog{Partial: errors.Is(err, errReadUnavailable), Records: out, OldestRetainedAt: oldest, DroppedCount: s.store.dropped, ReadErrorCount: s.store.readErrors, InvalidSnapshotDeletedCount: s.store.invalidSnapshotDeleted, SkippedCount: s.store.skipped}, nil
 }
 
 // RevokeID rejects a guessed grant id rather than revoking a different resource.

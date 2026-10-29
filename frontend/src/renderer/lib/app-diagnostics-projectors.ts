@@ -39,6 +39,13 @@ export function projectWorkspaces(value: unknown, scope?: ReadonlySet<string>): 
 		if (!projectId) continue;
 		const sessions = Array.isArray(row.sessions) ? row.sessions : [];
 		const hostId = safeId(row.hostId);
+		const includeIds = !scope || scope.has(projectId);
+		const projectedSessions = includeIds
+			? sessions.slice(0, 200).flatMap((value) => {
+					const session = projectSession(value);
+					return session ? [session] : [];
+				})
+			: [];
 		out.push({
 			scope: !scope || scope.has(projectId) ? "ids" : "counts",
 			projectId,
@@ -47,14 +54,8 @@ export function projectWorkspaces(value: unknown, scope?: ReadonlySet<string>): 
 			shared: Boolean(row.shared),
 			folderMissing: row.folderMissing === true,
 			sessionCount: Math.min(1e7, sessions.length),
-			sessions:
-				!scope || scope.has(projectId)
-					? sessions.slice(0, 200).flatMap((s) => {
-							const item = projectSession(s);
-							return item ? [item] : [];
-						})
-					: [],
-			omittedCount: !scope || scope.has(projectId) ? Math.max(0, sessions.length - 200) : 0,
+			sessions: projectedSessions,
+			omittedCount: includeIds ? Math.min(1e7, sessions.length - projectedSessions.length) : 0,
 		});
 	}
 	return out;
@@ -82,17 +83,26 @@ export function componentObservation(
 	} = {},
 ): CommittedObservation {
 	const row = record(workspace);
+	const projectId = safeId(row.id);
 	const hostId = safeId(row.hostId);
+	const liveIds = sessionIds(options.live ?? []);
+	const workerIds = sessionIds(options.workers ?? []);
+	const orderedIds = sessionIds(options.ordered ?? []);
+	const listedIds = sessionIds(options.listed ?? []);
+	const workspaces = projectWorkspaces(options.workspaces ?? []);
 	return {
 		kind,
 		omittedCount: Math.min(
 			1e7,
 			[options.live, options.workers, options.ordered, options.listed].reduce(
-				(sum, rows) => sum + Math.max(0, (rows?.length ?? 0) - 200),
+				(sum, rows, index) => sum + (rows?.length ?? 0) - [liveIds, workerIds, orderedIds, listedIds][index].length,
 				0,
-			) + Math.max(0, (Array.isArray(options.workspaces) ? options.workspaces.length : 0) - 100),
+			) +
+				(Array.isArray(options.workspaces) ? options.workspaces.length : 0) -
+				workspaces.length +
+				(kind === "project" && !projectId ? 1 : 0),
 		),
-		projectId: safeId(row.id),
+		projectId,
 		hostId,
 		source: hostId ? "remote" : row.kind === "cloud" ? "cloud" : "local",
 		expanded: options.expanded === true,
@@ -100,10 +110,10 @@ export function componentObservation(
 		showAll: options.showAll === true,
 		sessionCount: Math.min(1e7, options.sessionCount ?? (Array.isArray(row.sessions) ? row.sessions.length : 0)),
 		hiddenCount: Math.min(1e7, Math.max(0, options.hiddenCount ?? 0)),
-		liveIds: sessionIds(options.live ?? []),
-		workerIds: sessionIds(options.workers ?? []),
-		orderedIds: sessionIds(options.ordered ?? []),
-		listedIds: sessionIds(options.listed ?? []),
-		workspaces: projectWorkspaces(options.workspaces ?? []),
+		liveIds,
+		workerIds,
+		orderedIds,
+		listedIds,
+		workspaces,
 	};
 }

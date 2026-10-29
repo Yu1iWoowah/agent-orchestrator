@@ -23,12 +23,31 @@ const empty = () => ({
 	listedIds: ["worker-1"],
 	workspaces: [],
 });
-function CommittedProject({ stale, absent, hidden }: { stale?: boolean; absent?: boolean; hidden?: boolean }) {
+function CommittedProject({
+	stale,
+	absent,
+	hidden,
+	projectId = "project-1",
+	sessionId = "worker-1",
+}: {
+	stale?: boolean;
+	absent?: boolean;
+	hidden?: boolean;
+	projectId?: string;
+	sessionId?: string;
+}) {
 	const root = useRef<HTMLDivElement>(null);
 	const list = useRef<HTMLDivElement>(null);
 	useDiagnosticCommit(
 		"project",
-		() => ({ ...empty(), listedIds: stale ? [] : ["worker-1"], workerIds: stale ? [] : ["worker-1"] }),
+		() => ({
+			...empty(),
+			projectId,
+			liveIds: [sessionId],
+			orderedIds: [sessionId],
+			listedIds: stale ? [] : [sessionId],
+			workerIds: stale ? [] : [sessionId],
+		}),
 		() => root.current,
 		() => list.current,
 	);
@@ -81,6 +100,29 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 describe("content-free committed app collector", () => {
+	it.each(["next.js", "socket.io"])("collects dotted project %s without dropping cache, commit or row geometry", (projectId) => {
+		const sessionId = `${projectId}-1`;
+		const queryClient = new QueryClient();
+		queryClient.setQueryData(["workspaces"], [{ id: projectId, sessions: [{ id: sessionId, kind: "worker" }] }]);
+		const collector = createAppDiagnosticsCollector({
+			queryClient,
+			readRoute: () => ({ routeId: "board", projectId, sessionId: "", hostId: "", source: "local", revision: 1 }),
+		});
+		render(<CommittedProject projectId={projectId} sessionId={sessionId} />);
+		act(() => collector.enable());
+		try {
+			const result = collector.capture(projectId);
+			expect(result.cache.queries[0].workspaces[0].sessions[0].id).toBe(sessionId);
+			expect(result.components.entries[0].listedIds).toEqual([sessionId]);
+			expect(result.geometry.nodes.find((node) => node.role === "session_row")).toMatchObject({
+				projectId,
+				sessionId,
+				availability: "available",
+			});
+		} finally {
+			act(() => collector.disable());
+		}
+	});
 	it.each(["stale-props", "missing-dom", "hidden-dom"])("keeps cache/commit/DOM evidence separate for %s", (kind) => {
 		const { collector } = setup();
 		render(<CommittedProject stale={kind === "stale-props"} absent={kind === "missing-dom"} hidden={kind === "hidden-dom"} />);
@@ -132,6 +174,25 @@ describe("content-free committed app collector", () => {
 });
 
 describe("collector consistency and bounds", () => {
+	it("does not record through retained wrappers while disabled or double-count after re-enable", () => {
+		const original = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const { collector } = setup();
+		collector.enable();
+		const previous = console.error;
+		const outer: typeof console.error = (...args) => previous(...args);
+		console.error = outer;
+		collector.disable();
+		try {
+			console.error(new RangeError("disabled-secret"));
+			collector.enable();
+			console.error(new TypeError("enabled-secret"));
+			const result = collector.capture("project-1");
+			expect(result.errors.records.map((row) => [row.name, row.count])).toEqual([["TypeError", 1]]);
+		} finally {
+			collector.disable();
+			console.error = original;
+		}
+	});
 	it("never evaluates error getters and makes ring overflow observable", () => {
 		const original = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const { collector } = setup();
@@ -154,7 +215,7 @@ describe("collector consistency and bounds", () => {
 			collector.disable();
 		}
 	});
-	it("reports a bounded ancestor chain as partial when ancestors were omitted", () => {
+	it("reports bounded ancestor chains separately from missing nodes", () => {
 		const { collector } = setup();
 		render(
 			<div>
@@ -180,7 +241,8 @@ describe("collector consistency and bounds", () => {
 		act(() => collector.enable());
 		try {
 			const result = collector.capture("project-1");
-			expect(result.geometry.omittedCount).toBeGreaterThan(0);
+			expect(result.geometry.omittedCount).toBe(0);
+			expect(Reflect.get(result.geometry, "ancestorTruncatedCount")).toBeGreaterThan(0);
 			expect(result.geometry.nodes.every((node) => node.ancestors.length <= 8)).toBe(true);
 		} finally {
 			act(() => collector.disable());

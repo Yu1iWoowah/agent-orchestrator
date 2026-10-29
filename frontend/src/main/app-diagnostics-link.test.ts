@@ -5,6 +5,31 @@ import { once } from "node:events";
 import { connectAppDiagnostics, privateRuntimeHandoff } from "./app-diagnostics-link";
 
 describe("app diagnostics private link", () => {
+	it("does not publish a stale disconnected state after disposal", async () => {
+		const server = createServer();
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("missing server");
+		const incoming = once(server, "connection");
+		const state = vi.fn();
+		const dispose = connectAppDiagnostics({ port: address.port, host: "127.0.0.1" }, "token", "app-1", { state });
+		const [socket] = await incoming;
+		try {
+			await once(socket, "data");
+			socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" }) + "\n");
+			await vi.waitFor(() => expect(state).toHaveBeenCalledWith("connected"));
+			state.mockClear();
+			const closed = once(socket, "close");
+			dispose();
+			await closed;
+			expect(state).not.toHaveBeenCalled();
+		} finally {
+			dispose();
+			socket.destroy();
+			server.close();
+		}
+	});
 	it("hands independent credentials to the daemon without exporting them", () => {
 		const [legacy, extra] = privateRuntimeHandoff("browser-token", "app-token").trim().split("\n");
 		expect(legacy).toBe("browser-token");
@@ -33,25 +58,26 @@ describe("app diagnostics private link", () => {
 		await new Promise<void>((resolve) => socket.once("data", () => resolve()));
 		expect(frames).toEqual([{ type: "hello", version: 1, token: "app-token", instanceId: "app-instance" }]);
 		socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch-1" }) + "\n");
-		socket.write(JSON.stringify({ type: "snapshot", requestId: "request-1", request: { windowId: "window-1" } }) + "\n");
+		socket.write(JSON.stringify({ type: "snapshot", schemaVersion: 1, requestId: "request-1", request: { windowId: "window-1" } }) + "\n");
 		await new Promise<void>((resolve) => socket.once("data", () => resolve()));
-		expect(frames[1]).toEqual({ type: "result", requestId: "request-1", code: "APP_DIAGNOSTICS_UNSUPPORTED" });
+		expect(frames[1]).toEqual({ type: "result", schemaVersion: 1, requestId: "request-1", code: "APP_DIAGNOSTICS_UNSUPPORTED" });
 		expect(frames.some((frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "ready")).toBe(false);
 		close();
 		socket.destroy();
 		server.close();
 	});
 
-	it("registers only a consented live window and delivers a validated collector result", async () => {
+	it.each(["project-1", "next.js", "socket.io"])("delivers a validated collector result for %s", async (projectId) => {
 		const server = createServer();
 		server.listen(0, "127.0.0.1");
 		await once(server, "listening");
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("missing server");
 		const incoming = once(server, "connection");
+		const capture = vi.fn(async () => fixture);
 		const close = connectAppDiagnostics({ port: address.port, host: "127.0.0.1" }, "token", "app-1", {
 			windows: () => [{ id: "window-1", generation: 1 }],
-			capture: async () => fixture,
+			capture,
 		});
 		const [socket] = await incoming;
 		const frames: Array<{ type: string; snapshot?: unknown }> = [];
@@ -70,9 +96,10 @@ describe("app diagnostics private link", () => {
 			socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" }) + "\n");
 			await vi.waitFor(() => expect(frames.some((frame) => frame.type === "ready")).toBe(true));
 			socket.write(
-				JSON.stringify({ type: "snapshot", requestId: "request-1", request: { windowId: "window-1", projectId: "project-1" } }) + "\n",
+				JSON.stringify({ type: "snapshot", schemaVersion: 1, requestId: "request-1", request: { windowId: "window-1", projectId } }) + "\n",
 			);
 			await vi.waitFor(() => expect(frames.find((frame) => frame.type === "result")?.snapshot).toEqual(fixture));
+			expect(capture).toHaveBeenCalledWith({ windowId: "window-1", projectId }, expect.any(AbortSignal));
 		} finally {
 			close();
 			socket.destroy();

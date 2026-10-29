@@ -170,6 +170,7 @@ export class AppDiagnosticsMain {
 		if (signal.aborted) throw new Error("APP_SNAPSHOT_TIMEOUT");
 		return new Promise<AppSnapshot>((resolve, reject) => {
 			const incoming: CollectorRequest = {
+				schemaVersion: 1,
 				requestId: randomUUID(),
 				documentId: this.documentId,
 				windowId: `window-${shell.id}`,

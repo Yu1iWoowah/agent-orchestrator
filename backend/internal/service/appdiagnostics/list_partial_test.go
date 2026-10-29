@@ -34,13 +34,17 @@ func TestListsReportPartialForEachCallNotLifetimeErrorCount(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, value := range []any{list, audit} {
+		for _, result := range []struct {
+			value   any
+			partial bool
+		}{{list, partial}, {audit, false}} {
+			value := result.value
 			raw, _ := json.Marshal(value)
 			var response struct {
 				Partial *bool  `json:"partial"`
 				Count   uint64 `json:"readErrorCount"`
 			}
-			if err := json.Unmarshal(raw, &response); err != nil || response.Partial == nil || *response.Partial != partial || response.Count == 0 {
+			if err := json.Unmarshal(raw, &response); err != nil || response.Partial == nil || *response.Partial != result.partial || response.Count == 0 {
 				t.Fatalf("partial must describe this call while count stays cumulative: %s %v", raw, err)
 			}
 		}
@@ -218,5 +222,24 @@ func TestReadErrorCountSurvivesRestartWithoutMarkingHealthyCallsPartial(t *testi
 	audit, err := restarted.Audits(context.Background(), next.Token)
 	if err != nil || audit.Partial || audit.ReadErrorCount < before.ReadErrorCount {
 		t.Fatalf("audit restart count: %+v %v", audit, err)
+	}
+}
+
+func TestListPartialDoesNotIncludeAuditReadFailures(t *testing.T) {
+	s, _, _, _, _ := fixture(t)
+	g := grant(t, s)
+	record, err := s.Capture(context.Background(), g.Token, CaptureRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := failDocumentRead(s.store, record.RequestID, syscall.EIO)
+	defer restore()
+	list, err := s.List(context.Background(), g.Token)
+	if err != nil || list.Partial || len(list.Records) != 1 || list.ReadErrorCount == 0 {
+		t.Fatalf("audit failure changed snapshot completeness: %+v %v", list, err)
+	}
+	audit, err := s.Audits(context.Background(), g.Token)
+	if err != nil || !audit.Partial || audit.ReadErrorCount == 0 {
+		t.Fatalf("audit failure not reported: %+v %v", audit, err)
 	}
 }

@@ -891,8 +891,8 @@ async function createWindowInternal(): Promise<void> {
 	trustedShellWebContents.set(shellWebContents.id, shellWebContents);
 	relayScrollPhases(shellWebContents);
 
-	shellWebContents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
-		if (isMainFrame && !inPlace) appDiagnosticsMain.resetDocument();
+	shellWebContents.on("did-start-navigation", (details) => {
+		if (details.isMainFrame && !details.isSameDocument) appDiagnosticsMain.resetDocument();
 	});
 	shellWebContents.on("render-process-gone", () => appDiagnosticsMain.resetDocument("APP_RENDERER_UNAVAILABLE"));
 	shellWebContents.on("did-finish-load", () => {

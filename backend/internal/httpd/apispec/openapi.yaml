@@ -15889,6 +15889,8 @@ components:
       type: object
     AppDiagnosticsGeometry:
       properties:
+        ancestorTruncatedCount:
+          type: integer
         availability:
           type: string
         nodes:
@@ -15908,6 +15910,7 @@ components:
       - observedAt
       - revision
       - omittedCount
+      - ancestorTruncatedCount
       - nodes
       type: object
     AppDiagnosticsIdentity:

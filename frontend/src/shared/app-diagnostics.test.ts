@@ -1,8 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
 import fixture from "../../../test/fixtures/app-diagnostics-v1.json";
-import { isAppSnapshot, isCollector } from "./app-diagnostics";
+import { diagnosticId, isAppSnapshot, isCollector, isCollectorRequest, isCollectorReply } from "./app-diagnostics";
 
 describe("app diagnostic three-boundary allowlist", () => {
+	it("requires schemaVersion 1 for requests and success/failure replies", () => {
+		const identity = { requestId: "request-1", documentId: "document-1", windowId: "window-1", generation: 1 };
+		for (const [guard, value] of [
+			[isCollectorRequest, { ...identity, projectId: "next.js", deadline: Date.now() + 5000 }],
+			[isCollectorReply, { ...identity, collector: fixture.collector }],
+			[isCollectorReply, { ...identity, code: "APP_RENDERER_UNAVAILABLE" }],
+		] as const) {
+			expect(guard(value)).toBe(false);
+			expect(guard({ ...value, schemaVersion: 2 })).toBe(false);
+			expect(guard({ ...value, schemaVersion: 1 })).toBe(true);
+		}
+	});
+	it.each(["next.js", "socket.io"])("accepts dotted project/session ids for %s", (project) => {
+		const snapshot = JSON.parse(JSON.stringify(fixture).replaceAll("project-1", project).replaceAll("worker-1", `${project}-1`));
+		expect(isAppSnapshot(snapshot)).toBe(true);
+	});
+	it.each(["/private/path", "next.js/../secret", "next\\js"])("still rejects path separators in %s", (id) =>
+		expect(diagnosticId(id)).toBe(false),
+	);
+	it("reports bounded ancestor chains separately from missing nodes", () => {
+		const snapshot = structuredClone(fixture);
+		snapshot.completeness = "complete";
+		snapshot.collector.geometry.availability = "available";
+		Object.assign(snapshot.collector.geometry, { ancestorTruncatedCount: 1 });
+		expect(isAppSnapshot(snapshot)).toBe(true);
+	});
 	it("accepts the same versioned fixture as the daemon", () => {
 		expect(isCollector(fixture.collector)).toBe(true);
 		expect(isAppSnapshot(fixture)).toBe(true);

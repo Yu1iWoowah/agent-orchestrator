@@ -439,18 +439,12 @@ func (s *diskStore) reset(now time.Time) error {
 	}
 	return s.prune(now)
 }
-func (s *diskStore) prune(now time.Time) error {
-	_, err := s.prunePartial(now)
-	return err
-}
-
-func (s *diskStore) prunePartial(now time.Time) (partial bool, result error) {
+func (s *diskStore) prune(now time.Time) (result error) {
 	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
 	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
 	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
-		return partial, readErr
+		return readErr
 	}
-	partial = errors.Is(readErr, errReadUnavailable)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].value.CreatedAt.Before(rows[j].value.CreatedAt) })
 	var total int64
 	for _, row := range rows {
@@ -462,7 +456,7 @@ func (s *diskStore) prunePartial(now time.Time) (partial bool, result error) {
 			continue
 		}
 		if err := s.remove("snapshots", row.id); err != nil {
-			return partial, err
+			return err
 		}
 		count--
 		total -= row.size
@@ -472,9 +466,8 @@ func (s *diskStore) prunePartial(now time.Time) (partial bool, result error) {
 	}
 	audits, err := documents[Audit](s, "audit", nil)
 	if err != nil && !errors.Is(err, errReadUnavailable) {
-		return partial, err
+		return err
 	}
-	partial = partial || errors.Is(err, errReadUnavailable)
 	sort.Slice(audits, func(i, j int) bool { return audits[i].value.At.Before(audits[j].value.At) })
 	s.auditTimes = make(map[string]time.Time, len(audits))
 	for _, row := range audits {
@@ -490,14 +483,14 @@ func (s *diskStore) prunePartial(now time.Time) (partial bool, result error) {
 			continue
 		}
 		if err := s.remove("audit", row.id); err != nil {
-			return partial, err
+			return err
 		}
 		delete(s.auditTimes, row.id)
 		s.dropped++
 	}
 	// Unreadable documents remain on disk for the next sweep. Read failures are
 	// observable through the summary, while healthy records still get retention.
-	return partial, nil
+	return nil
 }
 func (s *diskStore) retentionSummary(now time.Time) error {
 	if s.dropped == 0 && s.skipped == 0 && s.readErrors == 0 && s.invalidSnapshotDeleted == 0 {

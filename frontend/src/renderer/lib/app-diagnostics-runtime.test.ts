@@ -52,6 +52,7 @@ function fixture() {
 		expiresAt: Date.now() + 900000,
 	};
 	const incoming: CollectorRequest = {
+		schemaVersion: 1,
 		requestId: "request-1",
 		documentId: "document-1",
 		windowId: "window-1",

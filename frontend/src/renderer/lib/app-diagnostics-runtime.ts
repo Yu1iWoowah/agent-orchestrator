@@ -57,6 +57,7 @@ export function startAppDiagnosticsRenderer(options: {
 			const collectorData = collector.capture(request.projectId);
 			void bridge
 				.submit({
+					schemaVersion: 1,
 					requestId: request.requestId,
 					documentId: document.documentId,
 					windowId: document.windowId,
@@ -71,6 +72,7 @@ export function startAppDiagnosticsRenderer(options: {
 					: "APP_RENDERER_UNAVAILABLE";
 			void bridge
 				.submit({
+					schemaVersion: 1,
 					requestId: request.requestId,
 					documentId: document.documentId,
 					windowId: document.windowId,

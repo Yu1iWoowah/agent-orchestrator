@@ -76,18 +76,19 @@ func decode(raw []byte, out any) error {
 }
 
 type frame struct {
-	Type       string                               `json:"type"`
-	Version    int                                  `json:"version,omitempty"`
-	Token      string                               `json:"token,omitempty"`
-	InstanceID string                               `json:"instanceId,omitempty"`
-	Epoch      string                               `json:"epoch,omitempty"`
-	GrantID    string                               `json:"grantId,omitempty"`
-	RequestID  string                               `json:"requestId,omitempty"`
-	SessionID  domain.SessionID                     `json:"sessionId,omitempty"`
-	Windows    []domain.AppDiagnosticsWindow        `json:"windows,omitempty"`
-	Request    *domain.AppDiagnosticsCaptureRequest `json:"request,omitempty"`
-	Snapshot   *domain.AppDiagnosticsSnapshot       `json:"snapshot,omitempty"`
-	Code       string                               `json:"code,omitempty"`
+	SchemaVersion int                                  `json:"schemaVersion,omitempty"`
+	Type          string                               `json:"type"`
+	Version       int                                  `json:"version,omitempty"`
+	Token         string                               `json:"token,omitempty"`
+	InstanceID    string                               `json:"instanceId,omitempty"`
+	Epoch         string                               `json:"epoch,omitempty"`
+	GrantID       string                               `json:"grantId,omitempty"`
+	RequestID     string                               `json:"requestId,omitempty"`
+	SessionID     domain.SessionID                     `json:"sessionId,omitempty"`
+	Windows       []domain.AppDiagnosticsWindow        `json:"windows,omitempty"`
+	Request       *domain.AppDiagnosticsCaptureRequest `json:"request,omitempty"`
+	Snapshot      *domain.AppDiagnosticsSnapshot       `json:"snapshot,omitempty"`
+	Code          string                               `json:"code,omitempty"`
 }
 type response struct {
 	snapshot domain.AppDiagnosticsSnapshot
@@ -263,9 +264,11 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 			if !ok {
 				return
 			}
-			if in.Code != "" {
+			if in.SchemaVersion != 1 {
+				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_INVALID_PAYLOAD", Status: 502}}
+			} else if in.Code != "" {
 				ch <- response{err: captureFailure(in.Code)}
-			} else if in.Snapshot == nil || !domain.ValidAppDiagnosticsSnapshot(*in.Snapshot) {
+			} else if in.Snapshot == nil || !domain.ValidAppDiagnosticsCaptureSnapshot(*in.Snapshot) {
 				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_INVALID_PAYLOAD", Status: 502}}
 			} else {
 				ch <- response{snapshot: *in.Snapshot}
@@ -300,7 +303,7 @@ func (b *Broker) Capture(ctx context.Context, in domain.AppDiagnosticsCaptureReq
 	b.pending[id] = ch
 	b.mu.Unlock()
 	defer func() { b.mu.Lock(); delete(b.pending, id); b.mu.Unlock() }()
-	if err := b.send(conn, frame{Type: "snapshot", RequestID: id, Request: &in}); err != nil {
+	if err := b.send(conn, frame{Type: "snapshot", SchemaVersion: 1, RequestID: id, Request: &in}); err != nil {
 		return domain.AppDiagnosticsSnapshot{}, err
 	}
 	select {

@@ -5254,6 +5254,7 @@ export interface components {
             revision: number;
         };
         AppDiagnosticsGeometry: {
+            ancestorTruncatedCount: number;
             availability: string;
             nodes: components["schemas"]["AppDiagnosticsNode"][];
             /** Format: date-time */

@@ -51,3 +51,27 @@ func TestAppDiagnosticsCollectorAllowlist(t *testing.T) {
 		t.Fatal("unknown nested field accepted")
 	}
 }
+
+func TestAppDiagnosticsDottedIDs(t *testing.T) {
+	raw, err := os.ReadFile("../../../test/fixtures/app-diagnostics-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range []string{"next.js", "socket.io"} {
+		t.Run(project, func(t *testing.T) {
+			data := bytes.ReplaceAll(raw, []byte("project-1"), []byte(project))
+			data = bytes.ReplaceAll(data, []byte("worker-1"), []byte(project+"-1"))
+			var snapshot AppDiagnosticsSnapshot
+			if err := json.Unmarshal(data, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if !ValidAppDiagnosticsSnapshot(snapshot) {
+				t.Fatal("valid dotted project/session rejected")
+			}
+			snapshot.Collector.Route.ProjectID = project + "/../private"
+			if ValidAppDiagnosticsSnapshot(snapshot) {
+				t.Fatal("path separators accepted")
+			}
+		})
+	}
+}

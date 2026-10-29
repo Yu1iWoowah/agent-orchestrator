@@ -2138,7 +2138,6 @@ function ScratchpadSection({
 		toggleShowAll,
 	} = useShowMoreCap(sessions, SIDEBAR_INITIAL_SECTION_LIMIT, selection.activeSessionId, isCollapsed);
 	// Stable while the ids are: a rebuilt array would invalidate every sortable row.
-	// Stable while the ids are: a rebuilt array would invalidate every sortable row.
 	const listedSessionIds = useStableArray(useMemo(() => listedSessions.map((session) => session.id), [listedSessions]));
 	const commitSessionOrder = useCallback(
 		(next: string[] | null) => {

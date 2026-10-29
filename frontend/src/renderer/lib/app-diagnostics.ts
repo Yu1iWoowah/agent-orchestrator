@@ -115,6 +115,7 @@ export function createAppDiagnosticsCollector(options: {
 	let restoreConsole: (() => void) | undefined;
 	const errors: Collector["errors"]["records"] = [];
 	const addError = (source: string, value: unknown) => {
+		if (!enabledAt) return;
 		let name = "Unknown";
 		try {
 			if (value instanceof Error) {
@@ -164,12 +165,14 @@ export function createAppDiagnosticsCollector(options: {
 			cacheRevision++;
 		});
 		const original = console.error;
+		let recording = true;
 		const wrapped: typeof console.error = (...args) => {
-			addError("console_error", args[0]);
+			if (recording && enabledAt) addError("console_error", args[0]);
 			original.apply(console, args);
 		};
 		console.error = wrapped;
 		restoreConsole = () => {
+			recording = false;
 			if (console.error === wrapped) console.error = original;
 		};
 		window.addEventListener("error", onError);
@@ -230,6 +233,7 @@ export function createAppDiagnosticsCollector(options: {
 		});
 		const nodes: GeometryNode[] = [];
 		let omittedNodes = 0;
+		let ancestorTruncatedCount = 0;
 		const addNode = (role: string, node: HTMLElement | null, project: string, source: string, hostId: string, session = "") => {
 			if (nodes.length >= 1000) {
 				omittedNodes++;
@@ -237,7 +241,7 @@ export function createAppDiagnosticsCollector(options: {
 			}
 			let ancestor = node?.parentElement;
 			for (let i = 0; ancestor && i < 8; i++) ancestor = ancestor.parentElement;
-			if (ancestor) omittedNodes++;
+			if (ancestor) ancestorTruncatedCount++;
 			nodes.push(geometryNode(role, node, project, session, source, hostId, nodes.length + 1, roots));
 		};
 		for (const region of committed.regions) {
@@ -301,7 +305,7 @@ export function createAppDiagnosticsCollector(options: {
 				),
 				entries,
 			},
-			geometry: { ...provenance(nodes.length ? "available" : "not_mounted", commitStart, omittedNodes), nodes },
+			geometry: { ...provenance(nodes.length ? "available" : "not_mounted", commitStart, omittedNodes), ancestorTruncatedCount, nodes },
 			errors: {
 				...provenance("available", errorsRevision, dropped),
 				enabledAt,

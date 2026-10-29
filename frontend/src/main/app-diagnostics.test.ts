@@ -33,6 +33,7 @@ function request(send: ReturnType<typeof vi.fn>): CollectorRequest {
 }
 function reply(incoming: CollectorRequest) {
 	return {
+		schemaVersion: 1,
 		requestId: incoming.requestId,
 		documentId: incoming.documentId,
 		windowId: incoming.windowId,
@@ -45,6 +46,18 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 describe("trusted app collector broker", () => {
+	it.each([undefined, 2])("rejects correlated replies with schemaVersion %s", async (schemaVersion) => {
+		const { main, event, send } = harness();
+		main.allowUntil(Date.now() + 900000);
+		main.register(event);
+		const pending = main.capture({}, new AbortController().signal);
+		const rejected = expect(pending).rejects.toThrow("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+		const incoming = request(send);
+		const accepted = main.submit(event, { ...reply(incoming), schemaVersion });
+		await rejected;
+		expect(Reflect.get(incoming, "schemaVersion")).toBe(1);
+		expect(accepted).toBe(false);
+	});
 	it("reports a fixed renderer failure immediately without exporting its content", async () => {
 		const { main, event, send } = harness();
 		main.allowUntil(Date.now() + 900_000);
@@ -53,6 +66,7 @@ describe("trusted app collector broker", () => {
 		const rejected = expect(pending).rejects.toThrow("APP_DIAGNOSTICS_PAYLOAD_TOO_LARGE");
 		const incoming = request(send);
 		const accepted = main.submit(event, {
+			schemaVersion: 1,
 			requestId: incoming.requestId,
 			documentId: incoming.documentId,
 			windowId: incoming.windowId,

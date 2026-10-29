@@ -204,7 +204,9 @@ type AppDiagnosticsNode struct {
 // AppDiagnosticsGeometry contains bounded node and ancestor observations.
 type AppDiagnosticsGeometry struct {
 	AppDiagnosticsProvenance
-	Nodes []AppDiagnosticsNode `json:"nodes"`
+	// AncestorTruncatedCount counts bounded chains, not missing registered nodes.
+	AncestorTruncatedCount int                  `json:"ancestorTruncatedCount"`
+	Nodes                  []AppDiagnosticsNode `json:"nodes"`
 }
 
 // AppDiagnosticsErrorSummary retains a fixed error class and redacted message only.

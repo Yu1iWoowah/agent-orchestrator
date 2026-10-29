@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var diagIDPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{1,128}$`)
+var diagIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 var diagVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+([.-][A-Za-z0-9.-]+)?$`)
 var diagCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -94,7 +94,7 @@ func ValidAppDiagnosticsSnapshot(s AppDiagnosticsSnapshot) bool {
 	if !diagNumber(c.Shell.Width) || !diagNumber(c.Shell.Height) || c.Shell.Width < 0 || c.Shell.Height < 0 || !diagNumber(c.Shell.SidebarWidth) || c.Shell.SidebarWidth < 0 || !diagNumber(c.Shell.DevicePixelRatio) || c.Shell.DevicePixelRatio <= 0 || c.Shell.DevicePixelRatio > 16 {
 		return false
 	}
-	if c.Cache.Queries == nil || len(c.Cache.Queries) > 100 || c.Components.Entries == nil || len(c.Components.Entries) > 102 || c.Geometry.Nodes == nil || len(c.Geometry.Nodes) > 1000 || c.Errors.Records == nil || len(c.Errors.Records) > 100 || c.Errors.EnabledAt.IsZero() || !c.Errors.NotRecordedBeforeEnable {
+	if !diagCount(c.Geometry.AncestorTruncatedCount) || c.Cache.Queries == nil || len(c.Cache.Queries) > 100 || c.Components.Entries == nil || len(c.Components.Entries) > 102 || c.Geometry.Nodes == nil || len(c.Geometry.Nodes) > 1000 || c.Errors.Records == nil || len(c.Errors.Records) > 100 || c.Errors.EnabledAt.IsZero() || !c.Errors.NotRecordedBeforeEnable {
 		return false
 	}
 	for _, q := range c.Cache.Queries {
@@ -129,4 +129,9 @@ func ValidAppDiagnosticsSnapshot(s AppDiagnosticsSnapshot) bool {
 		}
 	}
 	return true
+}
+
+// ValidAppDiagnosticsCaptureSnapshot requires the full live contract; only stored PR1 records may omit it.
+func ValidAppDiagnosticsCaptureSnapshot(s AppDiagnosticsSnapshot) bool {
+	return s.Collector != nil && s.Identity != nil && ValidAppDiagnosticsSnapshot(s)
 }

@@ -25,6 +25,7 @@ export type DiagnosticsStatus = {
 };
 export type DiagnosticDocument = { documentId: string; windowId: string; generation: number; enabled: boolean; expiresAt: number };
 export type CollectorRequest = {
+	schemaVersion: 1;
 	requestId: string;
 	documentId: string;
 	windowId: string;
@@ -39,7 +40,7 @@ export const COLLECTOR_FAILURE_CODES = [
 	"APP_RENDERER_UNAVAILABLE",
 ] as const;
 export type CollectorFailureCode = (typeof COLLECTOR_FAILURE_CODES)[number];
-type ReplyIdentity = { requestId: string; documentId: string; windowId: string; generation: number };
+type ReplyIdentity = { schemaVersion: 1; requestId: string; documentId: string; windowId: string; generation: number };
 export type CollectorReply = ReplyIdentity & ({ collector: Collector } | { code: CollectorFailureCode });
 
 type Rule = (value: unknown) => boolean;
@@ -47,7 +48,7 @@ const number: Rule = (v) => typeof v === "number" && Number.isFinite(v) && Math.
 const count: Rule = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v <= 1e7;
 const revision: Rule = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const boolean: Rule = (v) => typeof v === "boolean";
-export const diagnosticId: Rule = (v) => typeof v === "string" && /^[A-Za-z0-9_:-]{1,128}$/.test(v);
+export const diagnosticId: Rule = (v) => typeof v === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v);
 const maybeId: Rule = (v) => v === "" || diagnosticId(v);
 const timestamp: Rule = (v) =>
 	typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(v) && Number.isFinite(Date.parse(v));
@@ -197,7 +198,7 @@ const collectorShape = object({
 	}),
 	cache: object({ ...provenance, queries: array(query, 100) }),
 	components: object({ ...provenance, entries: array(component, 102) }),
-	geometry: object({ ...provenance, nodes: array(node, 1000) }),
+	geometry: object({ ...provenance, ancestorTruncatedCount: count, nodes: array(node, 1000) }),
 	errors: object({ ...provenance, enabledAt: timestamp, notRecordedBeforeEnable: (v) => v === true, records: array(error, 100) }),
 });
 const version: Rule = (v) => v === "unknown" || (typeof v === "string" && /^\d+\.\d+\.\d+([.-][A-Za-z0-9.-]+)?$/.test(v));
@@ -243,6 +244,7 @@ export function isCollectorRequest(value: unknown): value is CollectorRequest {
 	return bounded(
 		value,
 		object({
+			schemaVersion: (v: unknown) => v === 1,
 			requestId: diagnosticId,
 			documentId: diagnosticId,
 			windowId: diagnosticId,
@@ -254,6 +256,7 @@ export function isCollectorRequest(value: unknown): value is CollectorRequest {
 }
 export function isCollectorReply(value: unknown): value is CollectorReply {
 	const identity = {
+		schemaVersion: (v: unknown) => v === 1,
 		requestId: diagnosticId,
 		documentId: diagnosticId,
 		windowId: diagnosticId,

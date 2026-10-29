@@ -129,7 +129,15 @@ func TestBrokerRoundTripAndReplayClosesConnection(t *testing.T) {
 	if err := d.Decode(&command); err != nil {
 		t.Fatal(err)
 	}
-	reply := map[string]any{"type": "result", "requestId": command["requestId"], "snapshot": diag.Snapshot{SchemaVersion: 1, InstanceID: "app-1", WindowID: "window-1", Generation: 1, CapturedAt: time.Now(), Completeness: "partial"}}
+	raw, err := os.ReadFile("../../../test/fixtures/app-diagnostics-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot diag.Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	reply := map[string]any{"type": "result", "schemaVersion": 1, "requestId": command["requestId"], "snapshot": snapshot}
 	if err := e.Encode(reply); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +238,7 @@ func TestBrokerPreservesOnlyFixedCollectorFailures(t *testing.T) {
 			if err := d.Decode(&command); err != nil {
 				t.Fatal(err)
 			}
-			if err := e.Encode(frame{Type: "result", RequestID: command.RequestID, Code: tt.code}); err != nil {
+			if err := e.Encode(frame{Type: "result", SchemaVersion: 1, RequestID: command.RequestID, Code: tt.code}); err != nil {
 				t.Fatal(err)
 			}
 			err := <-done
@@ -260,5 +268,71 @@ func TestBrokerRejectsUnknownCollectorContent(t *testing.T) {
 			t.Fatalf("unknown content accepted in %s", section)
 		}
 		delete(data, "payload")
+	}
+}
+
+func TestBrokerRequiresVersionedCollectorResults(t *testing.T) {
+	for _, kind := range []string{"valid", "missing-version", "future-version", "metadata", "identity", "provenance"} {
+		t.Run(kind, func(t *testing.T) {
+			b := New("diagnostics-token")
+			c, d, e := connect(t, b, "diagnostics-token")
+			defer c.Close()
+			var hello frame
+			if err := d.Decode(&hello); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Encode(map[string]any{"type": "ready", "windows": []diag.Window{{ID: "window-1", Generation: 1}}}); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(time.Second)
+			for !b.State().Ready && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := b.Capture(context.Background(), diag.CaptureRequest{WindowID: "window-1"})
+				done <- err
+			}()
+			var command map[string]any
+			if err := d.Decode(&command); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile("../../../test/fixtures/app-diagnostics-v1.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var snapshot map[string]any
+			if err := json.Unmarshal(raw, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			reply := map[string]any{"type": "result", "requestId": command["requestId"], "snapshot": snapshot, "schemaVersion": 1}
+			switch kind {
+			case "missing-version":
+				delete(reply, "schemaVersion")
+			case "future-version":
+				reply["schemaVersion"] = 2
+			case "metadata":
+				delete(snapshot, "collector")
+				delete(snapshot, "identity")
+			case "identity":
+				delete(snapshot, "identity")
+			case "provenance":
+				snapshot["collector"].(map[string]any)["route"] = map[string]any{"routeId": "home", "source": "local"}
+			}
+			if err := e.Encode(reply); err != nil {
+				t.Fatal(err)
+			}
+			err = <-done
+			if kind == "valid" {
+				if err != nil {
+					t.Fatalf("version 1 rejected: %v", err)
+				}
+				if command["schemaVersion"] != float64(1) {
+					t.Fatal("request missing schemaVersion 1")
+				}
+			} else if err == nil {
+				t.Fatalf("invalid %s live result accepted", kind)
+			}
+		})
 	}
 }

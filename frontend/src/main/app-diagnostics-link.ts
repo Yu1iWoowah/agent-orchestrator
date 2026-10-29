@@ -119,14 +119,23 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 					diagnosticId(message.requestId)
 				) {
 					const requestId = message.requestId;
-					if (seen.has(requestId) || !Object.keys(message).every((key) => ["type", "requestId", "request"].includes(key))) {
+					if (
+						seen.has(requestId) ||
+						!Object.keys(message).every((key) => ["type", "schemaVersion", "requestId", "request"].includes(key))
+					) {
 						current.destroy();
 						return;
 					}
 					if (seen.size >= 1024) seen.clear();
 					seen.add(requestId);
-					if (!options.capture || !("request" in message) || !captureRequest(message.request)) {
-						send({ type: "result", requestId, code: "APP_DIAGNOSTICS_UNSUPPORTED" });
+					if (
+						!("schemaVersion" in message) ||
+						message.schemaVersion !== 1 ||
+						!options.capture ||
+						!("request" in message) ||
+						!captureRequest(message.request)
+					) {
+						send({ type: "result", schemaVersion: 1, requestId, code: "APP_DIAGNOSTICS_UNSUPPORTED" });
 						continue;
 					}
 					const abort = new AbortController();
@@ -135,13 +144,15 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 						.capture(message.request, abort.signal)
 						.then((snapshot) => {
 							if (disposed || socket !== current || current.destroyed || abort.signal.aborted) return;
-							if (isAppSnapshot(snapshot) && snapshot.instanceId === instanceId) send({ type: "result", requestId, snapshot });
-							else send({ type: "result", requestId, code: "APP_DIAGNOSTICS_INVALID_PAYLOAD" });
+							if (isAppSnapshot(snapshot) && snapshot.instanceId === instanceId)
+								send({ type: "result", schemaVersion: 1, requestId, snapshot });
+							else send({ type: "result", schemaVersion: 1, requestId, code: "APP_DIAGNOSTICS_INVALID_PAYLOAD" });
 						})
 						.catch((error: unknown) => {
 							if (!disposed && !current.destroyed && !abort.signal.aborted)
 								send({
 									type: "result",
+									schemaVersion: 1,
 									requestId,
 									code: error instanceof Error && safeCodes.has(error.message) ? error.message : "APP_RENDERER_UNAVAILABLE",
 								});
@@ -158,7 +169,7 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 			clearInterval(heartbeat);
 			for (const abort of pending.values()) abort.abort();
 			pending.clear();
-			if (!terminal) options.state?.("disconnected");
+			if (!disposed && !terminal) options.state?.("disconnected");
 			if (disposed || terminal) return;
 			retryTimer = setTimeout(open, backoff);
 			backoff = Math.min(backoff * 2, 2_000);
