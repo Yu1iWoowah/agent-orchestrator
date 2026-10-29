@@ -1,3 +1,4 @@
+import { diagnosticRegions, setDiagnosticRecording } from "../lib/app-diagnostics-registry";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -584,6 +585,18 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
+ it("publishes actual committed sidebar/project inputs without titles or paths", () => {
+  renderSidebar({workspaces:[{...workspace,sessions:[session]}],expandedProjectIds:[workspace.id]});
+  try {
+   act(()=>setDiagnosticRecording(true));
+   const values=diagnosticRegions().regions.map((region)=>region.value);
+   expect(values.find((entry)=>entry.kind==="sidebar")?.workspaces[0].projectId).toBe(workspace.id);
+   expect(values.find((entry)=>entry.kind==="project")?.listedIds).toContain(session.id);
+   expect(JSON.stringify(values)).not.toContain("/repo/project-one");
+   expect(JSON.stringify(values)).not.toContain("fix login");
+  } finally { act(()=>setDiagnosticRecording(false)); }
+ });
+
 	it("creates local or remote projects from the header button", async () => {
 		const user = userEvent.setup();
 		renderSidebar({

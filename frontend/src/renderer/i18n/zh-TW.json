@@ -3695,6 +3695,7 @@
 	"attention.unavailable": "已不再等待",
 	"attention.sourceChanged": "此請求已變更或不再等待，請重新整理列表後再開啟。",
 	"attention.readError": "無法儲存已讀狀態，此請求仍待處理。",
+	"appDiagnostics.adoptedUnavailable": "診斷不可用，原因：沿用既有 daemon。重新同意無法修復此連線。",
 	"documents.sheet.open": "開啟 document",
 	"documents.sheet.title": "Document",
 	"documents.sheet.copyLink": "複製連結",

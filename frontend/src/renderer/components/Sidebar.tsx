@@ -1,3 +1,5 @@
+import { useDiagnosticCommit } from "../lib/app-diagnostics-registry";
+import { componentObservation } from "../lib/app-diagnostics-projectors";
 import { useQueryClient } from "@tanstack/react-query";
 import { paidPlanBadge, useCloudBilling } from "../hooks/useCloudBilling";
 import { useTranslation } from "react-i18next";
@@ -646,6 +648,11 @@ export function Sidebar({
 	const selection = useSelection();
 	const { state, setOpen, toggleSidebar } = useSidebar();
 	const isCollapsed = state === "collapsed";
+	useDiagnosticCommit(
+		"sidebar",
+		() => componentObservation("sidebar", undefined, { expanded: !isCollapsed, workspaces: [...workspaces, ...remoteWorkspaces] }),
+		() => document.querySelector<HTMLElement>('[data-slot="sidebar-container"]'),
+	);
 	// List behavior (force-open sections, lifted Show more caps) belongs to the
 	// icon rail only; toggling an offcanvas sidebar must not change any list.
 	const isIconRail = isCollapsed && SIDEBAR_COLLAPSIBLE === "icon";
@@ -1544,6 +1551,23 @@ const ProjectItem = memo(function ProjectItem({
 			content.style.removeProperty("clip-path");
 		};
 	}, [activeProjectMatches, expanded, showAllSessions]);
+	useDiagnosticCommit(
+		`project:${workspace.hostId ? "remote" : workspace.kind === "cloud" ? "cloud" : "local"}:${workspace.hostId ?? ""}:${workspace.id}`,
+		() =>
+			componentObservation("project", workspace, {
+				expanded,
+				shared: Boolean(workspace.shared),
+				showAll: showAllSessions,
+				hiddenCount: hiddenSessionCount,
+				sessionCount: sessions.length,
+				live: workspace.sessions.filter((row) => !row.isTerminated),
+				workers: visibleSessions.filter((row) => !isOrchestratorSession(row)),
+				ordered: sessions,
+				listed: listedSessions,
+			}),
+		() => projectHeaderRef.current?.parentElement ?? null,
+		() => projectSessionsRef.current,
+	);
 	// Stable while the ids are: a rebuilt array would invalidate every sortable row.
 	const listedSessionIds = useStableArray(useMemo(() => listedSessions.map((session) => session.id), [listedSessions]));
 	const commitSessionOrder = useCallback(

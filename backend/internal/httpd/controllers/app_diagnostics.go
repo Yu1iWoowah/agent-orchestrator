@@ -21,7 +21,7 @@ type AppDiagnosticsService interface {
 	Status(context.Context, string) (diag.RuntimeState, error)
 	Capture(context.Context, string, diag.CaptureRequest) (diag.Record, error)
 	Read(context.Context, string, string) (diag.Record, error)
-	RevokeID(context.Context, string, string) error
+	RevokeID(context.Context, string, string) (diag.RevokeResult, error)
 	List(context.Context, string) (diag.SnapshotList, error)
 	Audits(context.Context, string) (diag.AuditLog, error)
 }
@@ -126,11 +126,12 @@ func (c *AppDiagnosticsController) revoke(w http.ResponseWriter, r *http.Request
 		c.fail(w, r, err)
 		return
 	}
-	if err := c.Svc.RevokeID(r.Context(), token, chi.URLParam(r, "grantId")); err != nil {
+	out, err := c.Svc.RevokeID(r.Context(), token, chi.URLParam(r, "grantId"))
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, 200, AppDiagnosticsRevokeResponse{Revoked: true})
+	envelope.WriteJSON(w, 200, AppDiagnosticsRevokeResponse{Revoked: out.Revoked, Cleanup: out.Cleanup})
 }
 
 func (c *AppDiagnosticsController) list(w http.ResponseWriter, r *http.Request) {

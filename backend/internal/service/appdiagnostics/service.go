@@ -78,6 +78,7 @@ type Audit struct {
 
 // AuditLog explicitly marks when retained history has been truncated.
 type AuditLog struct {
+	Partial                     bool       `json:"partial"`
 	ReadErrorCount              uint64     `json:"readErrorCount,omitempty"`
 	InvalidSnapshotDeletedCount uint64     `json:"invalidSnapshotDeletedCount,omitempty"`
 	SkippedCount                uint64     `json:"skippedCount,omitempty"`
@@ -88,8 +89,15 @@ type AuditLog struct {
 
 // SnapshotList reports partial readable results and cumulative safe I/O counts.
 type SnapshotList struct {
+	Partial        bool     `json:"partial"`
 	Records        []Record `json:"records"`
 	ReadErrorCount uint64   `json:"readErrorCount,omitempty"`
+}
+
+// RevokeResult distinguishes an effective revocation from its disk cleanup.
+type RevokeResult struct {
+	Revoked bool   `json:"revoked"`
+	Cleanup string `json:"cleanup"`
 }
 
 // Runtime is the daemon-to-main port. Browser runtime does not implement this protocol.
@@ -202,7 +210,7 @@ func (s *Service) authorize(ctx context.Context, token string) (*grantState, err
 	row, err := s.sessions.Get(ctx, found.credential.SessionID)
 	var lookup *apierr.Error
 	missing := errors.As(err, &lookup) && lookup.Code == "SESSION_NOT_FOUND"
-	if !state.Ready || state.InstanceID != found.credential.InstanceID || state.Epoch != found.epoch {
+	if state.InstanceID != found.credential.InstanceID || state.Epoch != found.epoch {
 		code = "APP_DIAGNOSTICS_CAPABILITY_INVALID"
 	}
 	if err != nil && !missing && code == "" {
@@ -255,6 +263,10 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		}
 		s.mu.Unlock()
 		return Record{}, err
+	}
+	if !s.runtime.State().Ready {
+		s.mu.Unlock()
+		return Record{}, failure("APP_RENDERER_UNAVAILABLE", 503)
 	}
 	if in.ProjectID != "" && in.ProjectID != string(g.credential.ProjectID) {
 		s.mu.Unlock()
@@ -322,7 +334,7 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		}
 		return Record{}, failure("APP_RENDERER_UNAVAILABLE", 503)
 	}
-	if !validSnapshotV1(snapshot) || snapshot.InstanceID != state.InstanceID || snapshot.WindowID != in.WindowID || snapshot.Generation != generation {
+	if !domain.ValidAppDiagnosticsCaptureSnapshot(snapshot) || snapshot.InstanceID != state.InstanceID || snapshot.WindowID != in.WindowID || snapshot.Generation != generation {
 		audit.Outcome = "invalid_payload"
 		_ = s.store.audit(audit)
 		return Record{}, failure("APP_DIAGNOSTICS_INVALID_PAYLOAD", 502)
@@ -347,11 +359,17 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		_ = s.store.audit(audit)
 		return Record{}, failure("APP_DIAGNOSTICS_INVALID_PAYLOAD", 502)
 	}
+	if len(encoded) > 1<<20 {
+		audit.Outcome = "invalid_payload"
+		if err := s.store.audit(audit); err != nil {
+			return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		}
+		return Record{}, failure("APP_DIAGNOSTICS_PAYLOAD_TOO_LARGE", 413)
+	}
 	partial := snapshot.Completeness == "partial"
 	audit.Bytes = len(encoded)
 	audit.Partial = &partial
-	// PR1's metadata-only allowlist is redaction schema v1. A future collector
-	// must explicitly version its own field/redaction contract.
+	// The collector and retained metadata-only snapshots share redaction schema v1.
 	audit.RedactionSchemaVersion = 1
 	record := Record{ID: uuid.NewString(), GrantID: g.credential.ID, RequestID: audit.RequestID, CreatedAt: s.now(), Snapshot: snapshot}
 	if err := s.store.write("snapshots", record.ID, record); err != nil {
@@ -418,22 +436,34 @@ func (s *Service) Revoke(ctx context.Context, token string) error {
 	return s.revoke(g)
 }
 func (s *Service) revoke(g *grantState) error {
+	out, err := s.revokeResult(g)
+	if err == nil && out.Cleanup == "failed" {
+		return failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
+	}
+	return err
+}
+func (s *Service) revokeResult(g *grantState) (RevokeResult, error) {
 	if g.cancel != nil {
 		g.cancel()
 	}
 	delete(s.grants, g.credential.ID)
 	if err := s.store.remove("grants", g.credential.ID); err != nil {
-		return failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+		return RevokeResult{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
+	out := RevokeResult{Revoked: true, Cleanup: "complete"}
 	cleanupErr := s.store.removeGrant(g.credential.ID, s.now())
 	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "revoked"}
-	if cleanupErr != nil || s.store.pendingRevocations[g.credential.ID] {
+	if cleanupErr != nil {
+		out.Cleanup = "failed"
+		audit.ReasonCode = "APP_DIAGNOSTICS_CLEANUP_FAILED"
+	} else if s.store.pendingRevocations[g.credential.ID] {
+		out.Cleanup = "pending"
 		audit.ReasonCode = "APP_DIAGNOSTICS_CLEANUP_PENDING"
 	}
 	if err := s.store.audit(audit); err != nil {
-		return failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+		return out, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
-	return nil
+	return out, nil
 }
 
 // Sweep is called periodically by the daemon and on runtime disconnect.
@@ -448,7 +478,7 @@ func (s *Service) Sweep(ctx context.Context) error {
 		state := s.runtime.State()
 		var lookup *apierr.Error
 		missing := errors.As(err, &lookup) && lookup.Code == "SESSION_NOT_FOUND"
-		invalid := missing || !s.now().Before(g.credential.ExpiresAt) || !state.Ready || state.Epoch != g.epoch || state.InstanceID != g.credential.InstanceID
+		invalid := missing || !s.now().Before(g.credential.ExpiresAt) || state.Epoch != g.epoch || state.InstanceID != g.credential.InstanceID
 		if err == nil {
 			invalid = invalid || row.ID != g.credential.SessionID || row.Kind != domain.KindOrchestrator || row.IsTerminated || row.ProjectID != g.credential.ProjectID || launchID(row) != g.launch
 		}
@@ -509,7 +539,7 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
-	return SnapshotList{Records: out, ReadErrorCount: s.store.readErrors}, nil
+	return SnapshotList{Partial: errors.Is(err, errReadUnavailable), Records: out, ReadErrorCount: s.store.readErrors}, nil
 }
 
 // Audits excludes other grants, including those issued to the same session.
@@ -548,21 +578,21 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 		first := out[0].At
 		oldest = &first
 	}
-	return AuditLog{Records: out, OldestRetainedAt: oldest, DroppedCount: s.store.dropped, ReadErrorCount: s.store.readErrors, InvalidSnapshotDeletedCount: s.store.invalidSnapshotDeleted, SkippedCount: s.store.skipped}, nil
+	return AuditLog{Partial: errors.Is(err, errReadUnavailable), Records: out, OldestRetainedAt: oldest, DroppedCount: s.store.dropped, ReadErrorCount: s.store.readErrors, InvalidSnapshotDeletedCount: s.store.invalidSnapshotDeleted, SkippedCount: s.store.skipped}, nil
 }
 
 // RevokeID rejects a guessed grant id rather than revoking a different resource.
-func (s *Service) RevokeID(ctx context.Context, token, id string) error {
+func (s *Service) RevokeID(ctx context.Context, token, id string) (RevokeResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, err := s.authorize(ctx, token)
 	if err != nil {
-		return err
+		return RevokeResult{}, err
 	}
 	if id != g.credential.ID {
-		return failure("APP_SNAPSHOT_NOT_FOUND", 404)
+		return RevokeResult{}, failure("APP_SNAPSHOT_NOT_FOUND", 404)
 	}
-	return s.revoke(g)
+	return s.revokeResult(g)
 }
 
 // RevokeRuntime is called only by the authenticated main channel after native consent is withdrawn.

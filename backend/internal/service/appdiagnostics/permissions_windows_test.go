@@ -54,33 +54,3 @@ func TestWindowsPrivateStorePublishesAndReplacesOwnerOnlyFile(t *testing.T) {
 		}
 	}
 }
-
-// Keep native CI evidence of legacy handle access and default ownership. This probe
-// does not relax the assertions on the explicitly secured production path.
-func TestWindowsLegacyFileCreationDiagnostic(t *testing.T) {
-	store, err := openStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.root.Close()
-	file, err := store.root.OpenFile(filepath.Join("grants", "legacy.tmp"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	t.Logf("legacy default-owner validation: %v", secureCreatedFile(file))
-	sd, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
-	if err != nil {
-		t.Logf("legacy handle owner query: %v", err)
-		return
-	}
-	owner, _, err := sd.Owner()
-	if err != nil {
-		t.Fatal(err)
-	}
-	user, err := currentUserSID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("legacy default owner matches current user: %t", owner != nil && owner.Equals(user))
-}

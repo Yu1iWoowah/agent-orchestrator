@@ -1,3 +1,4 @@
+import { DIAGNOSTIC_CHANNEL, isCollectorReply, isCollectorRequest, isDiagnosticDocument, isDiagnosticsStatus, isDiagnosticCancellation, type CollectorRequest, type DiagnosticDocument, type DiagnosticsStatus } from "./shared/app-diagnostics";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { DOCUMENT_ESCAPE_CHANNEL, APP_SHORTCUT_CHANNEL, CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, QUIT_CONFIRM_REQUEST_CHANNEL, QUIT_CONFIRM_RESULT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, SET_TERMINAL_FOCUSED_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, type AppShortcutEvent, type KeybindingOverrides, type QuitConfirmRequest } from "./shared/shortcuts";
 import { SCROLL_PHASE_CHANNEL, type ScrollPhase } from "./shared/scroll-phase";
@@ -398,6 +399,55 @@ const api = {
 			ipcRenderer.on("cloudArtifact:frameNavigated", wrapped);
 			return () => {
 				ipcRenderer.off("cloudArtifact:frameNavigated", wrapped);
+			};
+		},
+	},
+	appDiagnostics: {
+		getStatus: async (): Promise<DiagnosticsStatus> => {
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.status);
+			return isDiagnosticsStatus(value) ? value : { state: "unavailable", reason: "unsupported" };
+		},
+		register: async (): Promise<DiagnosticDocument> => {
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.register);
+			if (!isDiagnosticDocument(value)) throw new Error("APP_DIAGNOSTICS_UNSUPPORTED");
+			return value;
+		},
+		submit: async (value: unknown): Promise<boolean> =>
+			isCollectorReply(value) ? (await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.submit, value)) === true : false,
+		onRequest: (listener: (request: CollectorRequest) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+				if (isCollectorRequest(value)) listener(value);
+			};
+			ipcRenderer.on(DIAGNOSTIC_CHANNEL.request, wrapped);
+			return () => {
+				ipcRenderer.off(DIAGNOSTIC_CHANNEL.request, wrapped);
+			};
+		},
+		onConfigure: (listener: (state: DiagnosticDocument) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+				if (isDiagnosticDocument(value)) listener(value);
+			};
+			ipcRenderer.on(DIAGNOSTIC_CHANNEL.configure, wrapped);
+			return () => {
+				ipcRenderer.off(DIAGNOSTIC_CHANNEL.configure, wrapped);
+			};
+		},
+		onStatus: (listener: (state: DiagnosticsStatus) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+				if (isDiagnosticsStatus(value)) listener(value);
+			};
+			ipcRenderer.on(DIAGNOSTIC_CHANNEL.status, wrapped);
+			return () => {
+				ipcRenderer.off(DIAGNOSTIC_CHANNEL.status, wrapped);
+			};
+		},
+		onCancel: (listener: (value: { requestId: string; documentId: string }) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+				if (isDiagnosticCancellation(value)) listener(value);
+			};
+			ipcRenderer.on(DIAGNOSTIC_CHANNEL.cancel, wrapped);
+			return () => {
+				ipcRenderer.off(DIAGNOSTIC_CHANNEL.cancel, wrapped);
 			};
 		},
 	},

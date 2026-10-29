@@ -76,18 +76,19 @@ func decode(raw []byte, out any) error {
 }
 
 type frame struct {
-	Type       string                               `json:"type"`
-	Version    int                                  `json:"version,omitempty"`
-	Token      string                               `json:"token,omitempty"`
-	InstanceID string                               `json:"instanceId,omitempty"`
-	Epoch      string                               `json:"epoch,omitempty"`
-	GrantID    string                               `json:"grantId,omitempty"`
-	RequestID  string                               `json:"requestId,omitempty"`
-	SessionID  domain.SessionID                     `json:"sessionId,omitempty"`
-	Windows    []domain.AppDiagnosticsWindow        `json:"windows,omitempty"`
-	Request    *domain.AppDiagnosticsCaptureRequest `json:"request,omitempty"`
-	Snapshot   *domain.AppDiagnosticsSnapshot       `json:"snapshot,omitempty"`
-	Code       string                               `json:"code,omitempty"`
+	SchemaVersion int                                  `json:"schemaVersion,omitempty"`
+	Type          string                               `json:"type"`
+	Version       int                                  `json:"version,omitempty"`
+	Token         string                               `json:"token,omitempty"`
+	InstanceID    string                               `json:"instanceId,omitempty"`
+	Epoch         string                               `json:"epoch,omitempty"`
+	GrantID       string                               `json:"grantId,omitempty"`
+	RequestID     string                               `json:"requestId,omitempty"`
+	SessionID     domain.SessionID                     `json:"sessionId,omitempty"`
+	Windows       []domain.AppDiagnosticsWindow        `json:"windows,omitempty"`
+	Request       *domain.AppDiagnosticsCaptureRequest `json:"request,omitempty"`
+	Snapshot      *domain.AppDiagnosticsSnapshot       `json:"snapshot,omitempty"`
+	Code          string                               `json:"code,omitempty"`
 }
 type response struct {
 	snapshot domain.AppDiagnosticsSnapshot
@@ -263,8 +264,12 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 			if !ok {
 				return
 			}
-			if in.Snapshot == nil || in.Code != "" {
-				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_UNSUPPORTED", Status: 503}}
+			if in.SchemaVersion != 1 {
+				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_INVALID_PAYLOAD", Status: 502}}
+			} else if in.Code != "" {
+				ch <- response{err: captureFailure(in.Code)}
+			} else if in.Snapshot == nil || !domain.ValidAppDiagnosticsCaptureSnapshot(*in.Snapshot) {
+				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_INVALID_PAYLOAD", Status: 502}}
 			} else {
 				ch <- response{snapshot: *in.Snapshot}
 			}
@@ -298,7 +303,7 @@ func (b *Broker) Capture(ctx context.Context, in domain.AppDiagnosticsCaptureReq
 	b.pending[id] = ch
 	b.mu.Unlock()
 	defer func() { b.mu.Lock(); delete(b.pending, id); b.mu.Unlock() }()
-	if err := b.send(conn, frame{Type: "snapshot", RequestID: id, Request: &in}); err != nil {
+	if err := b.send(conn, frame{Type: "snapshot", SchemaVersion: 1, RequestID: id, Request: &in}); err != nil {
 		return domain.AppDiagnosticsSnapshot{}, err
 	}
 	select {
@@ -308,4 +313,25 @@ func (b *Broker) Capture(ctx context.Context, in domain.AppDiagnosticsCaptureReq
 		_ = b.send(conn, frame{Type: "cancel", RequestID: id})
 		return domain.AppDiagnosticsSnapshot{}, ctx.Err()
 	}
+}
+
+// Only fixed collector failures cross the private runtime boundary.
+func captureFailure(code string) *domain.AppDiagnosticsError {
+	status := 503
+	switch code {
+	case "APP_DIAGNOSTICS_PAYLOAD_TOO_LARGE":
+		status = 413
+	case "APP_DIAGNOSTICS_INVALID_PAYLOAD":
+		status = 502
+	case "APP_WINDOW_GONE", "APP_RENDERER_CHANGED":
+		status = 409
+	case "APP_SNAPSHOT_TIMEOUT":
+		status = 504
+	case "APP_DIAGNOSTICS_BUSY":
+		status = 429
+	case "APP_DIAGNOSTICS_DISABLED", "APP_RENDERER_UNAVAILABLE", "APP_DIAGNOSTICS_UNSUPPORTED":
+	default:
+		code = "APP_RENDERER_UNAVAILABLE"
+	}
+	return &domain.AppDiagnosticsError{Code: code, Status: status}
 }

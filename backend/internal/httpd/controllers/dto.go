@@ -4082,7 +4082,8 @@ type DocumentCatalogResponse struct {
 
 // AppDiagnosticsRevokeResponse reports cancellation of a diagnostic grant.
 type AppDiagnosticsRevokeResponse struct {
-	Revoked bool `json:"revoked"`
+	Cleanup string `json:"cleanup"`
+	Revoked bool   `json:"revoked"`
 }
 
 // AppDiagnosticsCapabilityHeader is separate from Browser and mobile credentials.

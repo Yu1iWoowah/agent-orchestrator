@@ -160,6 +160,23 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"DomainAppDiagnosticsIdentity":                         "AppDiagnosticsIdentity",
+	"DomainAppDiagnosticsProvenance":                       "AppDiagnosticsProvenance",
+	"DomainAppDiagnosticsCollector":                        "AppDiagnosticsCollector",
+	"DomainAppDiagnosticsRoute":                            "AppDiagnosticsRoute",
+	"DomainAppDiagnosticsShell":                            "AppDiagnosticsShell",
+	"DomainAppDiagnosticsSession":                          "AppDiagnosticsSession",
+	"DomainAppDiagnosticsWorkspace":                        "AppDiagnosticsWorkspace",
+	"DomainAppDiagnosticsQuery":                            "AppDiagnosticsQuery",
+	"DomainAppDiagnosticsCache":                            "AppDiagnosticsCache",
+	"DomainAppDiagnosticsComponent":                        "AppDiagnosticsComponent",
+	"DomainAppDiagnosticsComponents":                       "AppDiagnosticsComponents",
+	"DomainAppDiagnosticsBox":                              "AppDiagnosticsBox",
+	"DomainAppDiagnosticsStyle":                            "AppDiagnosticsStyle",
+	"DomainAppDiagnosticsNode":                             "AppDiagnosticsNode",
+	"DomainAppDiagnosticsGeometry":                         "AppDiagnosticsGeometry",
+	"DomainAppDiagnosticsErrorSummary":                     "AppDiagnosticsErrorSummary",
+	"DomainAppDiagnosticsErrors":                           "AppDiagnosticsErrors",
 	"ControllersDocumentContentQuery":                      "DocumentContentQuery",
 	"AgentsettingsSnapshot":                                "SessionAgentSettingsResponse",
 	"AgentsettingsCapabilities":                            "SessionAgentSettingsCapabilities",
