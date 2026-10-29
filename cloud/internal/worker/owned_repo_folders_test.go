@@ -164,7 +164,7 @@ func TestCleanupSkipsTheStepsOfARepositoryFolderThatIsNotAOs(t *testing.T) {
 		}
 		// Exercise ownership decisions through the hook's declared interpreter.
 		// Direct exec of a freshly written fixture can fail with ETXTBSY on Linux;
-		// executable-hook dispatch is covered separately in project_scripts_test.go.
+		// hook permissions and interpreter are checked in project_scripts_test.go.
 		output, err := exec.Command("sh", filepath.Join(dataDir, CleanupHookFile)).CombinedOutput()
 		if err != nil {
 			t.Fatalf("owned %v: hook: %v (%s)", owned, err, output)
