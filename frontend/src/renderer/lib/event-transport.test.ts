@@ -562,6 +562,22 @@ describe("createEventTransport", () => {
 		}
 	});
 
+	it("invalidates saved account queries when durable lifecycle CDC arrives", () => {
+		vi.useFakeTimers();
+		try {
+			const queryClient = fakeQueryClient();
+			createEventTransport(queryClient).connect();
+			cdcSources()[0].emit("session_updated", JSON.stringify({
+				seq: 43, projectId: "proj-1", type: "session_updated",
+				payload: { kind: "agent_accounts", accountId: "fake-account", operationId: "fake-operation" },
+				createdAt: "2026-10-29T00:00:00Z",
+			}));
+			vi.advanceTimersByTime(200);
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agent-accounts"] }, { cancelRefetch: false });
+			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] }, { cancelRefetch: false });
+		} finally { vi.useRealTimers(); }
+	});
+
 	it("refreshes the agent's device-wide catalog views for catalog CDC naming a project", () => {
 		vi.useFakeTimers();
 		try {

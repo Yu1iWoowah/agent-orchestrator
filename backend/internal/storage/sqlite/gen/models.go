@@ -13,18 +13,37 @@ import (
 )
 
 type AgentAccount struct {
-	ID          string
-	Provider    string
-	Home        string
-	Email       string
-	Plan        string
-	CreatedAt   time.Time
-	ProfileKind string
+	ID                   string
+	Provider             string
+	Home                 string
+	Email                string
+	Plan                 string
+	CreatedAt            time.Time
+	ProfileKind          string
+	Label                string
+	LifecycleOperationID string
+	DisabledAt           sql.NullTime
+	RetiredAt            sql.NullTime
 }
 
 type AgentAccountDefault struct {
 	Provider  string
 	AccountID string
+}
+
+type AgentAccountOperation struct {
+	ID              string
+	AccountID       string
+	Provider        string
+	Action          string
+	Phase           string
+	Outcome         string
+	ReasonCode      string
+	TerminalID      string
+	ResultAccountID string
+	WasDisabled     bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type AgentInstallJob struct {

@@ -4100,6 +4100,22 @@ type AppGrantIDParam struct {
 	GrantID string `path:"grantId"`
 }
 
+// AgentAccountOperationResponse is a non-secret lifecycle projection. Provider
+// output, profile paths, credential bytes and terminal transcripts are excluded.
+type AgentAccountOperationResponse struct {
+	OperationID string                      `json:"operationId"`
+	AccountID   string                      `json:"accountId"`
+	Provider    domain.AgentAccountProvider `json:"provider"`
+	Action      string                      `json:"action"`
+	Phase       string                      `json:"phase"`
+	// Outcome is confirmed only when Phase is complete.
+	Outcome         string    `json:"outcome,omitempty"`
+	ReasonCode      string    `json:"reasonCode,omitempty"`
+	ResultAccountID string    `json:"resultAccountId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
 // DocumentContentQuery bounds a managed raw read and optionally pins metadata.
 type DocumentContentQuery struct {
 	MaxBytes    int64  `query:"maxBytes" minimum:"1" maximum:"52428800" default:"2097152"`

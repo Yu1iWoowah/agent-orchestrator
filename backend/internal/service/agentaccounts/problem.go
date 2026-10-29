@@ -17,6 +17,7 @@ func safeAccountProviderError(err error) error {
 		return nil
 	}
 	for _, category := range []error{
+		ports.ErrAgentAccountUnavailableHomeOccupied,
 		ports.ErrAgentAccountCredentialStoreUnsupported,
 		ports.ErrAgentAccountStorageUnsafe,
 		ports.ErrAgentAccountStorageUnavailable,

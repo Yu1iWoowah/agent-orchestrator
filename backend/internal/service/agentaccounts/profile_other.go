@@ -9,3 +9,5 @@ import "github.com/aoagents/agent-orchestrator/backend/internal/ports"
 func ensureAccountProfile(_, _ string) error {
 	return ports.ErrAgentAccountStorageUnsupported
 }
+
+func removeAccountProfile(string, string) error { return ports.ErrAgentAccountStorageUnsupported }

@@ -10,6 +10,9 @@ import (
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountUnavailableHomeOccupied    = errors.New("account_unavailable_home_occupied")
+	ErrAgentAccountCleanupUnconfirmed         = errors.New("account_cleanup_unconfirmed")
+	ErrAgentAccountOperationBusy              = errors.New("account_operation_busy")
 	ErrAgentAccountCredentialStoreUnsupported = errors.New("account_credential_store_unsupported")
 
 	ErrAgentAccountStorageUnsafe      = errors.New("account_storage_unsafe")
@@ -27,6 +30,10 @@ var (
 	ErrAgentAccountInUse              = errors.New("an agent that uses the account could not be stopped")
 	ErrAgentAccountDefaultUnusable    = errors.New("the default account is signed out or now holds another login")
 )
+
+// AgentAccountUnavailableHomeOccupiedMessage identifies the reserved namespace
+// without exposing an absolute account path or suggesting deletion of user data.
+const AgentAccountUnavailableHomeOccupiedMessage = "AO's reserved unavailable account directory is occupied or cannot be safely inspected. Stop related child tools, review and move any data out of .unavailable under AO account storage, then retry. AO only removes empty reserved folders automatically."
 
 // AgentAccountProviderCLI reads and prepares one provider's CLI config
 // folders. home is empty for the computer's own folder. Implementations ask the
@@ -88,4 +95,15 @@ type AgentAccountLaunchEnv interface {
 	// ValidateAccount checks that accountID can run harness now: it is of the
 	// harness's provider and signed in as the login it was added with.
 	ValidateAccount(ctx context.Context, harness domain.AgentHarness, accountID string) error
+}
+
+// AgentAccountJournal persists lifecycle intent before any provider/PTY effect.
+// CommitAgentAccountLogin atomically records a disabled account and accepted
+// operation; completing it enables the account only after PTY death is proven.
+type AgentAccountJournal interface {
+	CreateAgentAccountOperation(context.Context, domain.AgentAccountOperation) error
+	UpdateAgentAccountOperation(context.Context, domain.AgentAccountOperation) error
+	GetAgentAccountOperation(context.Context, string) (domain.AgentAccountOperation, bool, error)
+	ListAgentAccountOperations(context.Context) ([]domain.AgentAccountOperation, error)
+	CommitAgentAccountLogin(context.Context, domain.AgentAccountOperation, domain.AgentAccount) error
 }

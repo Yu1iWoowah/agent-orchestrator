@@ -1575,6 +1575,8 @@ func mapSessionError(err error) error {
 		return apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	case errors.Is(err, ErrPRNotOpen):
 		return apierr.Conflict("PR_NOT_OPEN", "PR is not open", nil)
+	case errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied):
+		return apierr.Conflict("AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED", ports.AgentAccountUnavailableHomeOccupiedMessage, map[string]any{"reasonCode": "account_unavailable_home_occupied", "retryable": true})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
 		return apierr.Conflict("AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):

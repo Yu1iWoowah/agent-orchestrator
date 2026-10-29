@@ -238,6 +238,7 @@ var schemaNames = map[string]string{
 	"ControllersAgentAccountSessionIDParam":                "AgentAccountSessionIDParam",
 	"ControllersAgentAccountListQuery":                     "AgentAccountListQuery",
 	"ControllersAgentAccountUsageQuery":                    "AgentAccountUsageQuery",
+	"ControllersAgentAccountOperationResponse":             "AgentAccountOperationResponse",
 	"ControllersAgentAccountResponse":                      "AgentAccountResponse",
 	"ControllersAgentAccountsResponse":                     "AgentAccountsResponse",
 	"ControllersStartAgentAccountLoginRequest":             "StartAgentAccountLoginRequest",
@@ -2140,6 +2141,16 @@ func agentOperations() []operation {
 			resps: []respUnit{{http.StatusOK, controllers.AgentAccountsResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/agents/accounts/operations/{operationId}", id: "getAgentAccountOperation", tag: "agents",
+			summary: "Read non-secret durable account lifecycle progress", pathParams: []any{controllers.AgentAccountLoginIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.AgentAccountOperationResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/agents/accounts/{accountId}/logout", id: "logoutAgentAccount", tag: "agents",
+			summary: "Sign out a managed account while preserving its metadata and bindings", pathParams: []any{controllers.AgentAccountIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.AgentAccountsResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/agents/accounts/usage", id: "getAgentAccountUsage", tag: "agents",
 			summary: "Sum each account's model usage in AO sessions", pathParams: []any{controllers.AgentAccountUsageQuery{}},
 			resps: []respUnit{{http.StatusOK, controllers.AgentAccountUsageResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
@@ -2158,7 +2169,7 @@ func agentOperations() []operation {
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login/{operationId}/cancel", id: "cancelAgentAccountLogin", tag: "agents",
 			summary: "Stop a sign-in and remove its unsaved folder", pathParams: []any{controllers.AgentAccountLoginIDParam{}},
-			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodGet, path: "/api/v1/agents/accounts/sessions/{sessionId}", id: "getSessionAgentAccounts", tag: "agents",

@@ -68,6 +68,8 @@ type InitialInputReadyState struct {
 // values from the reviewed auth registry; the input is sent only after the
 // harness renders one of its known editor-ready states.
 type OpenCommandTerminalInput struct {
+	// HandleID is a preallocated, daemon-only logical id recorded by its owner before opening.
+	HandleID                string
 	Argv                    []string
 	Env                     map[string]string
 	WorkingDir              string

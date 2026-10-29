@@ -3514,6 +3514,8 @@
 	"settings.defaultSandbox.single": "你的云会话运行的位置。只有一个沙盒可用。",
 	"settings.defaultSandbox.adminOnly": "只有组织管理员可以更改此设置。",
 	"settings.defaultSandbox.saveFailed": "无法保存默认沙盒。请重试。",
+	"settings.agentAccounts.cleanupScheduled": "此账号已停用，清理已排定。使用此账号的 agents 停止后，AO 会自动重试。你也可以先停止 agents 再重试，提前完成清理。",
+	"settings.agentAccounts.unavailableHomeOccupied": "AO 保留的 unavailable 账号目录已被占用，或无法安全检查。请停止相关子工具，检查并移出 AO 账号存储空间中 .unavailable 内的数据后重试。AO 只会自动移除空的保留文件夹。",
 	"settings.agentAccounts.storageUnsafe": "账号存储空间不安全。请检查文件夹权限与符号链接后重试。",
 	"settings.agentAccounts.storageUnavailable": "账号存储空间暂时不可用。请稍后重试。",
 	"settings.agentAccounts.storageUnsupported": "Private account profile 目前仅支持 Linux。",
