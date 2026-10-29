@@ -13,7 +13,7 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 )
 
-func restartJournalController(t *testing.T, h *harness, validator *journalValidator, provider *journalConversation) *chatsvc.Controller {
+func restartJournalController(t *testing.T, h *harness, validator *journalValidator, provider ports.ChatConversation) *chatsvc.Controller {
 	t.Helper()
 	if err := h.svc.Stop(t.Context(), testSession); err != nil {
 		t.Fatal(err)
@@ -27,6 +27,123 @@ func restartJournalController(t *testing.T, h *harness, validator *journalValida
 	}
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	return controller
+}
+
+// Production ACP uses staged setters without a fresh per-turn baseline
+// preparer. Keep that optional interface absent from this service fixture.
+type setterOnlySettingsConversation struct {
+	ports.ChatConversation
+	staged         ports.ChatAgentSettingsController
+	host           ports.ChatProviderHibernator
+	source, target domain.AgentSettings
+	resetSupported bool
+}
+
+func (c setterOnlySettingsConversation) CanHibernate(ctx context.Context) (bool, error) {
+	return c.host.CanHibernate(ctx)
+}
+func (c setterOnlySettingsConversation) Hibernate() error { return c.host.Hibernate() }
+func (c setterOnlySettingsConversation) PrepareAgentSettings(ctx context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
+	if !c.resetSupported || source != c.source || target != c.target {
+		return domain.AgentSettingsProviderPlan{}, ports.ErrAgentSettingsUnsupported
+	}
+	return c.staged.PrepareAgentSettings(ctx, source, target)
+}
+func (c setterOnlySettingsConversation) ApplyAgentSettingsStep(ctx context.Context, plan domain.AgentSettingsProviderPlan, step domain.AgentSettingsCheckpoint, restoring bool) error {
+	return c.staged.ApplyAgentSettingsStep(ctx, plan, step, restoring)
+}
+
+func TestSettingsColdReplaySetterAdapterRetainsResetEvidence(t *testing.T) {
+	for _, resetSupported := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reset_supported_%t", resetSupported), func(t *testing.T) {
+			h, _, validator, commands := journalHarness(t)
+			first := journalIntent(t, h)
+			first.Target = domain.AgentSettings{Model: "explicit", Effort: "high", FastMode: domain.AgentFastOff}
+			if op, err := commands.QueueAgentSettings(t.Context(), first); err != nil || op.Phase != domain.AgentSettingsApplied {
+				t.Fatalf("first selection: %+v %v", op, err)
+			}
+			intent := journalIntent(t, h)
+			intent.ID, intent.IdempotencyKey = "reset-operation", "reset-key"
+			intent.Target = domain.AgentSettings{FastMode: domain.AgentFastDefault}
+			if op, err := commands.QueueAgentSettings(t.Context(), intent); err != nil || op.Phase != domain.AgentSettingsApplied {
+				t.Fatalf("reset selection: %+v %v", op, err)
+			}
+			provider := &journalConversation{fakeConversation: newFakeConversation()}
+			provider.quiet.Store(true)
+			replacement := setterOnlySettingsConversation{ChatConversation: provider, staged: provider, host: provider, source: intent.Source, target: intent.Target, resetSupported: resetSupported}
+			if _, ok := any(replacement).(ports.ChatAgentSettingsRecoveryPreparer); ok {
+				t.Fatal("setter fixture unexpectedly offers a per-turn baseline")
+			}
+			controller := restartJournalController(t, h, validator, replacement)
+			turn, err := controller.Send(t.Context(), ports.ChatUserMessage{Text: "after setter adapter restart"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !resetSupported {
+				if turn.State != domain.TurnStateQueued || len(provider.sentTexts()) != 0 || provider.stepCount() != 0 {
+					t.Fatalf("unproven reset released dispatch: %+v", turn)
+				}
+				return
+			}
+			if turn.State != domain.TurnStateRunning || len(provider.sentTexts()) != 1 || provider.stepCount() != 4 {
+				t.Fatalf("setter cold replay lost reset evidence or dispatch: %+v", turn)
+			}
+			receipt, err := h.st.TurnByID(t.Context(), turn.ID)
+			if err != nil || receipt.AgentSettings == nil || receipt.AgentSettings.Settings == nil || *receipt.AgentSettings.Settings != intent.Target || receipt.AgentSettings.Revision == nil || *receipt.AgentSettings.Revision != 2 {
+				t.Fatalf("setter replay changed preference/revision: %+v %v", receipt, err)
+			}
+			saved, err := h.st.AgentSettingsOperation(t.Context(), testSession, intent.ID)
+			if err != nil || saved.Source != intent.Source || saved.Target != intent.Target || saved.Phase != domain.AgentSettingsApplied {
+				t.Fatalf("setter replay rewrote history: %+v %v", saved, err)
+			}
+		})
+	}
+}
+
+func TestSettingsColdReplayUsesNewProviderBindingPreference(t *testing.T) {
+	h, _, validator, commands := journalHarness(t)
+	op, err := commands.QueueAgentSettings(t.Context(), journalIntent(t, h))
+	if err != nil || op.Phase != domain.AgentSettingsApplied {
+		t.Fatalf("apply %+v %v", op, err)
+	}
+	if err := h.svc.Stop(t.Context(), testSession); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := h.st.GetSession(t.Context(), testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := h.st.ConversationForSession(t.Context(), testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &journalConversation{fakeConversation: newFakeConversation()}
+	provider.providerConversationID = "new-provider-thread"
+	provider.quiet.Store(true)
+	current := domain.AgentSettings{Model: "new-provider-model", Effort: "low", FastMode: domain.AgentFastOff}
+	provider.validSource = &current
+	provider.freshRecovery.Store(true)
+	record.Metadata.Model = string(current.Model)
+	record.Metadata.Effort = string(current.Effort)
+	record.Metadata.ControllerGeneration = "switched"
+	record.Metadata.ProviderConversationID = provider.ProviderConversationID()
+	record.UpdatedAt = h.now()
+	branch := domain.ConversationBranch{ID: "provider-boundary", ConversationID: conversation.ID, SessionID: testSession, ParentBranchID: conversation.ActiveBranchID, ProviderConversationID: provider.ProviderConversationID(), ProviderScopeID: "provider-boundary", ProviderIDsScoped: true, CreatedAt: h.now()}
+	settings := conversation.Settings
+	settings.Model = string(current.Model)
+	settings.ReasoningEffort = string(current.Effort)
+	if err := h.st.CommitProviderSwitch(t.Context(), record, branch, "switched", settings, domain.ConversationActivity{ID: "switch-activity", Kind: "ao_action", Status: "completed", Summary: "fake switch"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := restartJournalController(t, h, validator, provider)
+	turn, err := controller.Send(t.Context(), ports.ChatUserMessage{Text: "after switched provider restart"})
+	if err != nil || turn.State != domain.TurnStateRunning || len(provider.sentTexts()) != 1 {
+		t.Fatalf("old provider journal fenced new binding: %+v %v", turn, err)
+	}
+	latest, err := h.st.AgentSettingsOperation(t.Context(), testSession, op.ID)
+	if err != nil || latest.Target != op.Target || latest.Phase != domain.AgentSettingsApplied {
+		t.Fatal("cold replay rewrote historical operation")
+	}
 }
 
 func TestSettingsJournalRestartReconcilesSameOperationBeforeDispatch(t *testing.T) {

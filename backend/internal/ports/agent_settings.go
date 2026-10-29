@@ -14,6 +14,8 @@ var (
 	ErrAgentSettingsInvalid                 = errors.New("agent settings invalid")
 	ErrAgentSettingsUnsupported             = errors.New("agent settings unsupported")
 	ErrAgentSettingsCapabilitiesUnavailable = errors.New("agent settings capabilities unavailable")
+	ErrAgentSettingsGrantInvalid            = errors.New("agent settings grant invalid")
+	ErrAgentSettingsGrantExpired            = errors.New("agent settings grant expired")
 )
 
 // AgentSettingsPreflight validates a new session after its account is bound and

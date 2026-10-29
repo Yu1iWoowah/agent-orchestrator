@@ -1,11 +1,64 @@
 package sessionmanager
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type grantFailureRuntime struct{ fakeRuntime }
+
+func (*grantFailureRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	return ports.RuntimeHandle{}, errors.New("failed native launch " + cfg.Env[ports.EnvAgentSettingsGrant])
+}
+
+func TestRuntimeSettingsGrantIsRedactedFromLaunchFailure(t *testing.T) {
+	store := newFakeStore()
+	store.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	m := New(Deps{Runtime: &grantFailureRuntime{}, Agents: singleAgent{agent: generationEnvAgent{}}, Workspace: &fakeWorkspace{}, Store: store, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: store}, DataDir: t.TempDir(), LookPath: func(string) (string, error) { return "/bin/true", nil }, NewLaunchID: func() string { return "final-launch" }, Executable: func() (string, error) { return "/opt/ao", nil }})
+	m.SetAgentSettingsGrantEnvironment(&settingsEnvIssuer{})
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if err == nil {
+		t.Fatal("expected fake launch failure")
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if strings.Contains(e.Error(), "scoped-fake") {
+			t.Fatal("native grant escaped through launch error chain")
+		}
+	}
+}
+
+type settingsEnvIssuer struct {
+	generation string
+	harness    domain.AgentHarness
+	mode       domain.SessionMode
+}
+
+func (i *settingsEnvIssuer) AgentSettingsGrantEnv(_ context.Context, _ domain.SessionID, h domain.AgentHarness, m domain.SessionMode, g string) (map[string]string, error) {
+	i.generation = g
+	i.harness = h
+	i.mode = m
+	return map[string]string{ports.EnvAgentSettingsGrant: "scoped-fake"}, nil
+}
+
+func TestRuntimeSettingsGrantUsesFinalLaunchGeneration(t *testing.T) {
+	store := newFakeStore()
+	store.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	runtime := &fakeRuntime{}
+	m := New(Deps{Runtime: runtime, Agents: singleAgent{agent: generationEnvAgent{}}, Workspace: &fakeWorkspace{}, Store: store, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: store}, DataDir: t.TempDir(), LookPath: func(string) (string, error) { return "/bin/true", nil }, NewLaunchID: func() string { return "final-launch" }, Executable: func() (string, error) { return "/opt/ao", nil }})
+	issuer := &settingsEnvIssuer{}
+	m.SetAgentSettingsGrantEnvironment(issuer)
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
+		t.Fatal(err)
+	}
+	if issuer.generation != "final-launch" || issuer.mode != domain.SessionModeTUI || issuer.harness == "" || runtime.lastCfg.Env[ports.EnvAgentSettingsGrant] != "scoped-fake" {
+		t.Fatalf("grant did not use final generation: %+v", issuer)
+	}
+}
 
 type generationEnvAgent struct{ fakeAgent }
 

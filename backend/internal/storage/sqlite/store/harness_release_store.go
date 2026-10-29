@@ -61,6 +61,7 @@ func (s *Store) ClaimLiveChatControllerGeneration(ctx context.Context, id domain
 			return err
 		}
 		rows, err := q.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
+			LiveReconnect:        int64(1),
 			ControllerGeneration: generation,
 			ID:                   id,
 		})

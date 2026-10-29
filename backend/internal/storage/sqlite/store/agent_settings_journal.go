@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -42,14 +43,14 @@ func (s *Store) LatestAppliedAgentSettingsOperation(ctx context.Context, id doma
 
 // setSettingsOutcome is called only inside the caller's write transaction.
 func setSettingsOutcome(ctx context.Context, q *gen.Queries, op domain.AgentSettingsOperation, phase domain.AgentSettingsPhase, category domain.AgentSettingsErrorCategory, at time.Time) (domain.AgentSettingsOperation, error) {
-	changed, err := q.SetAgentSettingsOperationPhase(ctx, gen.SetAgentSettingsOperationPhaseParams{SessionID: string(op.SessionID), ID: op.ID, ExpectedVersion: op.Version, Phase: string(phase), ErrorCategory: string(category), At: at, FinishedAt: sql.NullTime{Time: at, Valid: phase != domain.AgentSettingsRecoveryRequired}})
+	changed, err := q.SetAgentSettingsOperationPhase(ctx, gen.SetAgentSettingsOperationPhaseParams{SessionID: string(op.SessionID), ID: op.ID, ExpectedVersion: op.Version, Phase: string(phase), ErrorCategory: string(category), ErrorCode: op.ErrorCode, At: at, FinishedAt: sql.NullTime{Time: at, Valid: phase != domain.AgentSettingsRecoveryRequired}})
 	if err != nil {
 		return domain.AgentSettingsOperation{}, err
 	}
 	if changed != 1 {
 		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsConflict
 	}
-	if err := q.InsertAgentSettingsAudit(ctx, gen.InsertAgentSettingsAuditParams{OperationID: op.ID, Phase: string(phase), RecordedAt: at, ErrorCategory: string(category), RequestID: op.RequestID}); err != nil {
+	if err := q.InsertAgentSettingsAudit(ctx, gen.InsertAgentSettingsAuditParams{OperationID: op.ID, Phase: string(phase), RecordedAt: at, ErrorCategory: string(category), ErrorCode: op.ErrorCode, RequestID: op.RequestID}); err != nil {
 		return domain.AgentSettingsOperation{}, err
 	}
 	op.Phase, op.ErrorCategory, op.UpdatedAt = phase, category, at
@@ -63,6 +64,15 @@ func setSettingsOutcome(ctx context.Context, q *gen.Queries, op domain.AgentSett
 // FinishAgentSettingsOperation never calls a provider. Cancellation is limited
 // to an unstarted intention; uncertain provider effects retain the active fence.
 func (s *Store) FinishAgentSettingsOperation(ctx context.Context, id domain.SessionID, operationID string, expectedVersion int64, phase domain.AgentSettingsPhase, category domain.AgentSettingsErrorCategory, at time.Time) (domain.AgentSettingsOperation, error) {
+	return s.FinishAgentSettingsOperationWithCode(ctx, id, operationID, expectedVersion, phase, category, "", at)
+}
+
+// FinishAgentSettingsOperationWithCode accepts only a bounded machine code,
+// never provider diagnostics. Empty preserves a recovery's original cause.
+func (s *Store) FinishAgentSettingsOperationWithCode(ctx context.Context, id domain.SessionID, operationID string, expectedVersion int64, phase domain.AgentSettingsPhase, category domain.AgentSettingsErrorCategory, code string, at time.Time) (domain.AgentSettingsOperation, error) {
+	if len(code) > 96 || strings.ContainsFunc(code, func(r rune) bool { return r != '_' && (r < 'A' || r > 'Z') && (r < '0' || r > '9') }) {
+		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsInvalid
+	}
 	if !category.Valid() || at.IsZero() || expectedVersion < 0 {
 		return domain.AgentSettingsOperation{}, fmt.Errorf("invalid settings terminal outcome")
 	}
@@ -81,8 +91,17 @@ func (s *Store) FinishAgentSettingsOperation(ctx context.Context, id domain.Sess
 			return err
 		}
 		if op.Phase == phase && op.ErrorCategory == category && op.Version == expectedVersion+1 {
+			if code != "" && op.ErrorCode != code {
+				return ports.ErrAgentSettingsConflict
+			}
 			result = op
 			return nil
+		}
+		if code != "" && op.ErrorCode != "" && op.ErrorCode != code {
+			return ports.ErrAgentSettingsConflict
+		}
+		if code != "" {
+			op.ErrorCode = code
 		}
 		if op.Version != expectedVersion || (op.Phase != domain.AgentSettingsPending && op.Phase != domain.AgentSettingsRecoveryRequired) {
 			return ports.ErrAgentSettingsConflict

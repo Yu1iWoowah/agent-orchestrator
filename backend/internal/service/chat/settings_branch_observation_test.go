@@ -3,6 +3,8 @@ package chat_test
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +14,20 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
+
+type observedGrantEnvironment struct {
+	ports.AgentSettingsGrantEnvironment
+	mu    sync.Mutex
+	token string
+}
+
+func (e *observedGrantEnvironment) AgentSettingsGrantEnv(ctx context.Context, id domain.SessionID, h domain.AgentHarness, m domain.SessionMode, g string) (map[string]string, error) {
+	env, err := e.AgentSettingsGrantEnvironment.AgentSettingsGrantEnv(ctx, id, h, m, g)
+	e.mu.Lock()
+	e.token = env[ports.EnvAgentSettingsGrant]
+	e.mu.Unlock()
+	return env, err
+}
 
 func newObservedBranchHarness(t *testing.T) (*harness, *editDriverState, *agentsettings.Service) {
 	t.Helper()
@@ -50,6 +66,12 @@ func TestBranchReplacementRetainsQualifiedSettingsOwner(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			ctx := context.Background()
 			h, driver, reader := newObservedBranchHarness(t)
+			signer, err := agentsettings.NewGrantAuthority([]byte(strings.Repeat("g", 32)), h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issuer := &observedGrantEnvironment{AgentSettingsGrantEnvironment: agentsettings.NewGrantEnvironment(h.st, signer, h.now)}
+			h.svc.SetAgentSettingsGrantEnvironment(issuer)
 			first := completeTurn(t, h, "A", "provider-turn-1")
 			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
 			oldGeneration := h.ctrl.Generation()
@@ -107,6 +129,13 @@ func TestBranchReplacementRetainsQualifiedSettingsOwner(t *testing.T) {
 			}
 			if action == "edit" && (got.CurrentTurn == nil || got.CurrentTurn.Revision == nil) {
 				t.Fatalf("private edited dispatch lost revision: %+v", got.CurrentTurn)
+			}
+			issuer.mu.Lock()
+			token := issuer.token
+			issuer.mu.Unlock()
+			id, scope, err := signer.Verify(token)
+			if err != nil || id != testSession || scope.ActorGeneration != owner.ControllerGeneration {
+				t.Fatalf("replacement received a stale settings grant: %+v %v", scope, err)
 			}
 		})
 	}

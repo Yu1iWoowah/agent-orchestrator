@@ -132,10 +132,23 @@ func TestPendingACPApprovalSurvivesDaemonSIGKILL(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"session"`
 	}
-	d.mustCall("GET", "/sessions/"+session, http.StatusOK, nil, &read)
-	if read.Session.Status != "needs_input" {
-		t.Fatalf("status before restart = %q, want needs_input", read.Session.Status)
+	// The approval projection commits before afterProject reports waiting_input
+	// to lifecycle. Seeing the card alone does not mean both durable facts settled.
+	awaitNeedsInput := func(d *daemon, phase string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			d.mustCall("GET", "/sessions/"+session, http.StatusOK, nil, &read)
+			if read.Session.Status == "needs_input" {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("status %s = %q, want needs_input\n%s", phase, read.Session.Status, d.tailLog())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
+	awaitNeedsInput(d, "before restart")
 	hostPID := persistentHostPID(t, dataDir, session)
 	d.kill()
 	if !processAlive(hostPID) {
@@ -149,10 +162,7 @@ func TestPendingACPApprovalSurvivesDaemonSIGKILL(t *testing.T) {
 		after.Turns[0].ID != before.Turns[0].ID || terminal(after.Turns[0].State) {
 		t.Fatalf("pending approval changed across restart:\n%s", describe(after))
 	}
-	restarted.mustCall("GET", "/sessions/"+session, http.StatusOK, nil, &read)
-	if read.Session.Status != "needs_input" {
-		t.Fatalf("status after restart = %q, want needs_input", read.Session.Status)
-	}
+	awaitNeedsInput(restarted, "after restart")
 	restarted.mustCall("POST", "/sessions/"+session+"/conversation/approvals/"+replayed.RequestID+"/resolve",
 		http.StatusNoContent, map[string]any{"decisionId": "allow"}, nil)
 	finished := restarted.awaitConversation(session, 30*time.Second, "approved turn to finish", func(s snapshot) bool {
