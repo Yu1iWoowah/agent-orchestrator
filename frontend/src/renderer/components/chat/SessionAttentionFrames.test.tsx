@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionConversationFrames } from "./SessionConversationFrames";
@@ -8,7 +8,12 @@ import { useConversationFrameStore } from "../../stores/conversation-frame-store
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../../lib/host-clients", () => ({
-  clientForSessionHost: () => ({ GET: get }),
+  clientForSessionHost: () => ({
+    GET: (path: string, request: unknown) => path.includes("/questions")
+      ? Promise.resolve({ data: { items: [], open: 0, unread: 0, history: 0, hasMoreBefore: false, nextBeforeSequence: 0 }, response: { status: 200 } })
+      : get(path, request),
+    POST: () => Promise.resolve({ response: { status: 204 } }),
+  }),
 }));
 let surface: HTMLElement;
 vi.mock("../../hooks/useConversationFrameSafeRect", () => ({
@@ -96,11 +101,13 @@ describe("session attention frame", () => {
   it("locates the original request without drawing another native answer form", async () => {
     show();
     await userEvent.click(
-      await screen.findByRole("button", { name: /Go to original request/ }),
+      await screen.findByRole("button", { name: /Open decision:/ }),
     );
-    expect(locate).toHaveBeenCalledWith("source-one");
+    expect(locate).not.toHaveBeenCalled();
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Go to original request" }));
+    await waitFor(() => expect(locate).toHaveBeenCalledWith("source-one"));
   });
   it("does not reopen a manually collapsed frame when a new request arrives", async () => {
     show();

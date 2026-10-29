@@ -14,6 +14,7 @@ import { TelemetryBoundary } from "./components/TelemetryBoundary";
 import { CloudOnboardingGate } from "./components/CloudOnboardingGate";
 import { CloudNotificationRuntime } from "./components/CloudNotificationRuntime";
 import { TelemetryIdentityRuntime } from "./components/TelemetryIdentityRuntime";
+import { QuestionAnswerRuntime } from "./hooks/useQuestionAnswerRecovery";
 import { applyAnalyticsOptOut, applyRendererTelemetryPolicy, clearRendererTelemetryQueues, initTelemetry, isDeniedEvent } from "./lib/telemetry";
 import { aoBridge } from "./lib/bridge";
 import { startDaemonFailureTelemetry } from "./lib/daemon-telemetry";
@@ -129,6 +130,7 @@ async function renderApp(): Promise<void> {
 				<QueryClientProvider client={queryClient}>
 					<CloudNotificationRuntime />
 					<TelemetryIdentityRuntime />
+					<QuestionAnswerRuntime />
 					<RouterProvider router={router} />
 					<CloudOnboardingGate />
 				</QueryClientProvider>
