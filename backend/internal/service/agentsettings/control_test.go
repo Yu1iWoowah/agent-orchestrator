@@ -21,6 +21,10 @@ func (r durableOnlyRuntime) QueueAgentSettings(ctx context.Context, op domain.Ag
 	return r.st.BeginAgentSettingsOperation(ctx, op)
 }
 
+func (r durableOnlyRuntime) CancelAgentSettings(ctx context.Context, id domain.SessionID, operationID string, version int64) (domain.AgentSettingsOperation, error) {
+	return r.st.FinishAgentSettingsOperation(ctx, id, operationID, version, domain.AgentSettingsCancelled, domain.AgentSettingsErrorCancelled, time.Now())
+}
+
 func controlFixture(t *testing.T) (*Control, *sqlite.Store, domain.SessionRecord) {
 	t.Helper()
 	ctx := t.Context()

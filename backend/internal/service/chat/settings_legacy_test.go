@@ -9,6 +9,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -26,6 +27,67 @@ func (legacyCatalogInputs) CatalogFingerprint(context.Context, string, string) (
 func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 	for _, harness := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode} {
 		t.Run(string(harness), func(t *testing.T) { legacySettingsAndTypedControl(t, harness) })
+	}
+}
+
+func TestSettingsControlCancelReleasesWaitingMessage(t *testing.T) {
+	h, conv, _, _ := journalHarness(t)
+	catalog := ports.AgentModelCatalog{AgentID: "codex", Models: []ports.AgentModelInfo{{ID: "next", IsDefault: true, Efforts: []string{"high"}}}}
+	raw, _ := json.Marshal(catalog)
+	if err := h.st.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), InputFingerprint: "live-inputs", LastSuccessAt: h.now(), FetchedAt: h.now()}); err != nil {
+		t.Fatal(err)
+	}
+	reader := agentsettings.New(h.st, h.now)
+	reader.SetCatalogFingerprintSource(legacyCatalogInputs{})
+	control := agentsettings.NewControl(reader, h.st, agentsettings.NewAuthorizer(h.st, nil, h.now), h.svc, h.now)
+	h.svc.SetAgentSettingsValidator(control)
+	first, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := int64(0)
+	model := domain.AgentModelSelection("next")
+	op, err := control.Change(t.Context(), agentsettings.Caller{}, testSession, agentsettings.Change{ExpectedRevision: &revision, IdempotencyKey: "cancel-waiting", Settings: domain.AgentSettingsPatch{Model: &model}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	conv.quiet.Store(false)
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: first.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		turn, err := h.st.TurnByID(t.Context(), first.ID)
+		return err == nil && turn.State == domain.TurnStateCompleted
+	})
+	if len(conv.sentMessages()) != 1 || conv.stepCount() != 0 {
+		t.Fatal("pending operation did not retain its dispatch fence")
+	}
+	cancelled, err := control.Cancel(t.Context(), agentsettings.Caller{}, testSession, op.ID, op.Version)
+	if err != nil || cancelled.Phase != domain.AgentSettingsCancelled {
+		t.Fatalf("cancel: %+v %v", cancelled, err)
+	}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(conv.sentMessages()) == 2 })
+	if wire := conv.sentMessages()[1].Settings; wire.Model != "" || conv.stepCount() != 0 {
+		t.Fatalf("cancel applied abandoned settings: %+v", wire)
+	}
+}
+
+func TestSettingsCancelWithoutControllerDoesNotStartProvider(t *testing.T) {
+	h, conv, _, _ := journalHarness(t)
+	op, err := h.st.BeginAgentSettingsOperation(t.Context(), journalIntent(t, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No driver or start configuration is installed: cancellation must remain
+	// a journal operation rather than trying to wake a native provider.
+	offline := chatsvc.New(chatsvc.Options{Store: h.st, Now: h.now})
+	cancelled, err := offline.CancelAgentSettings(t.Context(), testSession, op.ID, op.Version)
+	if err != nil || cancelled.Phase != domain.AgentSettingsCancelled {
+		t.Fatalf("offline cancel: %+v %v", cancelled, err)
+	}
+	if _, err := offline.Controller(testSession); err == nil || conv.stepCount() != 0 {
+		t.Fatal("cancellation created a controller or applied provider settings")
 	}
 }
 

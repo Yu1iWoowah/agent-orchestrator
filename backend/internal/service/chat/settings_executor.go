@@ -64,6 +64,19 @@ func (s *Service) QueueAgentSettings(ctx context.Context, op domain.AgentSetting
 	return c.QueueAgentSettings(ctx, op)
 }
 
+// CancelAgentSettings releases an unstarted intent and wakes an existing queue.
+// Cancellation never launches or resumes a provider solely to end the journal.
+func (s *Service) CancelAgentSettings(ctx context.Context, id domain.SessionID, operationID string, version int64) (domain.AgentSettingsOperation, error) {
+	if c, err := s.Controller(id); err == nil {
+		return c.CancelAgentSettings(ctx, operationID, version)
+	}
+	journal, ok := s.store.(agentSettingsJournal)
+	if !ok {
+		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsUnsupported
+	}
+	return journal.FinishAgentSettingsOperation(ctx, id, operationID, version, domain.AgentSettingsCancelled, domain.AgentSettingsErrorCancelled, s.now())
+}
+
 func (c *Controller) rejectPendingAgentSettings(ctx context.Context) error {
 	if c.reviewID != "" {
 		return nil

@@ -33,12 +33,12 @@ type ControlStore interface {
 	SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error)
 	AgentSettingsOperationByKey(context.Context, domain.SessionID, string) (domain.AgentSettingsOperation, bool, error)
 	AgentSettingsOperation(context.Context, domain.SessionID, string) (domain.AgentSettingsOperation, error)
-	FinishAgentSettingsOperation(context.Context, domain.SessionID, string, int64, domain.AgentSettingsPhase, domain.AgentSettingsErrorCategory, time.Time) (domain.AgentSettingsOperation, error)
 }
 
 // SettingsRuntime admits intent to the session dispatch scheduler.
 type SettingsRuntime interface {
 	QueueAgentSettings(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
+	CancelAgentSettings(context.Context, domain.SessionID, string, int64) (domain.AgentSettingsOperation, error)
 }
 
 // Control is the shared authorization/CAS/provider boundary for all mutation
@@ -193,7 +193,10 @@ func (c *Control) Cancel(ctx context.Context, caller Caller, id domain.SessionID
 	if _, _, err := c.target(ctx, caller, id); err != nil {
 		return domain.AgentSettingsOperation{}, err
 	}
-	op, err := c.store.FinishAgentSettingsOperation(ctx, id, operationID, version, domain.AgentSettingsCancelled, domain.AgentSettingsErrorCancelled, c.now())
+	if c.runtime == nil {
+		return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
+	}
+	op, err := c.runtime.CancelAgentSettings(ctx, id, operationID, version)
 	return op, settingsError(err)
 }
 

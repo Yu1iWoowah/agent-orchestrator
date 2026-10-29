@@ -24,37 +24,36 @@ import (
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
-	AgentSettings        controllers.AgentSettingsReader
-	AgentSettingsControl controllers.AgentSettingsControl
-	AppDiagnostics       controllers.AppDiagnosticsService
-	Awake                controllers.AwakeService
-	Agents               controllers.AgentCatalog
-	CodexAccounts        controllers.CodexAccountService
-	AgentAccounts        controllers.AgentAccountService
-	Projects             projectsvc.Manager
-	ProjectDocuments     controllers.ProjectDocumentService
-	DocumentRead         controllers.DocumentReadService
-	Sessions             controllers.SessionService
-	ArtifactVersions     controllers.ArtifactVersionService
-	Automations          controllers.AutomationService
-	DesktopWorkspaces    controllers.DesktopWorkspaceService
-	Activity             controllers.ActivityRecorder
-	NativeSessions       ports.AgentNativeSessionResolver
-	UsageHooks           controllers.UsageHookRecorder
-	UsageSummary         controllers.UsageSummaryService
-	SessionMemory        controllers.SessionMemoryService
-	SessionSteps         controllers.SessionStepsReader
-	PRs                  prsvc.ActionManager
-	Reviews              reviewsvc.Manager
-	Notifications        controllers.NotificationService
-	Reports              controllers.ReportService
-	NotificationStream   controllers.NotificationStream
-	Push                 controllers.PushRegistry
-	Import               controllers.ImportService
-	Directories          controllers.DirectoryBrowserService
-	ShellTerminals       controllers.ShellTerminalService
-	Cues                 controllers.CueService
-	Questions            controllers.QuestionService
+	AgentSettings      controllers.AgentSettingsReader
+	AppDiagnostics     controllers.AppDiagnosticsService
+	Awake              controllers.AwakeService
+	Agents             controllers.AgentCatalog
+	CodexAccounts      controllers.CodexAccountService
+	AgentAccounts      controllers.AgentAccountService
+	Projects           projectsvc.Manager
+	ProjectDocuments   controllers.ProjectDocumentService
+	DocumentRead       controllers.DocumentReadService
+	Sessions           controllers.SessionService
+	ArtifactVersions   controllers.ArtifactVersionService
+	Automations        controllers.AutomationService
+	DesktopWorkspaces  controllers.DesktopWorkspaceService
+	Activity           controllers.ActivityRecorder
+	NativeSessions     ports.AgentNativeSessionResolver
+	UsageHooks         controllers.UsageHookRecorder
+	UsageSummary       controllers.UsageSummaryService
+	SessionMemory      controllers.SessionMemoryService
+	SessionSteps       controllers.SessionStepsReader
+	PRs                prsvc.ActionManager
+	Reviews            reviewsvc.Manager
+	Notifications      controllers.NotificationService
+	Reports            controllers.ReportService
+	NotificationStream controllers.NotificationStream
+	Push               controllers.PushRegistry
+	Import             controllers.ImportService
+	Directories        controllers.DirectoryBrowserService
+	ShellTerminals     controllers.ShellTerminalService
+	Cues               controllers.CueService
+	Questions          controllers.QuestionService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
 	Conversations controllers.ConversationService
@@ -99,6 +98,8 @@ type APIDeps struct {
 	// DeviceRoster and DeviceLive back the desktop-only mobile device roster.
 	DeviceRoster controllers.DeviceRoster
 	DeviceLive   controllers.LiveSet
+
+	AgentSettingsControl controllers.AgentSettingsControl
 }
 
 // normalizeAPIDeps closes the Presence/DeviceLive duplication trap structurally.
