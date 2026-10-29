@@ -36,13 +36,15 @@ it("shows descriptions and one recommendation with no preselected choice", async
 	expect(screen.getByText("Run automated regression checks.")).toBeVisible();
 });
 
-it("keeps an open form usable after its draft is evicted in another window", async () => {
+it("preserves choices and warns if another window removes an open editing draft", async () => {
 	show();
 	await userEvent.click(await screen.findByRole("radio", { name: /Staging/ }));
 	const key = Object.keys(useQuestionDraftStore.getState().entries)[0];
+	localStorage.removeItem(`${questionDraftStorageKey}:${key}`);
 	act(() => useQuestionDraftStore.getState().syncStorage(`${questionDraftStorageKey}:${key}`, null));
 	await waitFor(() => expect(screen.getByRole("radio", { name: /Staging/ })).toBeEnabled());
-	expect(screen.getByRole("radio", { name: /Staging/ })).not.toBeChecked();
+	expect(screen.getByRole("radio", { name: /Staging/ })).toBeChecked();
+	expect(screen.getByText("Your draft is kept in this window, but could not be saved for a restart.")).toBeVisible();
 });
 
 it("does not recreate a removed draft from stale offline source data", async () => {

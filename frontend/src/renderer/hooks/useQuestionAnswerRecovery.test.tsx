@@ -134,7 +134,8 @@ it("synchronizes another window's entry without replacing unrelated drafts", asy
 	await waitFor(() => expect(useQuestionDraftStore.getState().entries[externalKey]?.fields.target.selectedOptionIds).toEqual(["prod"]));
 	expect(useQuestionDraftStore.getState().entries[key].phase.state).toBe("submitting");
 	act(() => window.dispatchEvent(Object.assign(new Event("storage"), { key: `${questionDraftStorageKey}:${externalKey}`, newValue: null, storageArea: localStorage })));
-	expect(useQuestionDraftStore.getState().entries[externalKey]).toBeUndefined();
+	expect(useQuestionDraftStore.getState().entries[externalKey].fields.target.selectedOptionIds).toEqual(["prod"]);
+	expect(useQuestionDraftStore.getState().storageAvailable).toBe(false);
 	expect(useQuestionDraftStore.getState().entries[key]).toBeDefined();
 });
 

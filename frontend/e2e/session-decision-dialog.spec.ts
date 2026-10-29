@@ -58,14 +58,54 @@ for (const mode of ["lost", "delay"]) test(`closing during ${mode} response reco
 	await page.setViewportSize({ width: 1440, height: 1000 });
 	await openQuestion(page, `?answer=${mode}`);
 	await fillGrouped(page);
-	await page.getByRole("dialog").getByRole("button", { name: "Submit all answers" }).click();
+	const phases = await page.getByRole("dialog").getByRole("button", { name: "Submit all answers" }).evaluate((button) => {
+		if (!(button instanceof HTMLButtonElement)) throw new Error("Missing submit button");
+		button.click();
+		return Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))
+			.map((key) => JSON.parse(localStorage.getItem(key) ?? "null").phase.state);
+	});
+	expect(phases).toEqual(["submitting"]);
 	await page.keyboard.press("Escape");
 	await expect(page.getByRole("dialog")).toHaveCount(0);
-	await expect.poll(() => page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("ao.question.drafts.v1") ?? "{}").entries ?? {}).length)).toBe(0);
+	await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:")).length)).toBe(0);
 	await page.getByRole("region", { name: "Awaiting you", exact: true }).getByRole("tab", { name: "History", exact: true }).click();
 	await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).click();
 	await expect(page.getByRole("dialog").getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+});
+
+test("another page reaching draft capacity preserves the active form and refuses new persistence @T0", async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 1000 });
+	const { dialog } = await openQuestion(page);
+	await fillGrouped(page);
+	await dialog.getByRole("textbox", { name: "Other answer: Checks" }).fill("User is still typing in window A");
+	const activeKey = await page.evaluate(() => {
+		window.addEventListener("storage", (event) => {
+			if (event.key === "decision-capacity-complete") document.documentElement.dataset.capacityComplete = event.newValue ?? "";
+		});
+		return Object.keys(localStorage).find((key) => key.startsWith("ao.question.drafts.v2:"));
+	});
+	if (!activeKey) throw new Error("Active draft was not persisted");
+	const other = await page.context().newPage();
+	try {
+		await openQuestion(other);
+		const result = await other.evaluate(async ({ active, storePath, fixturePath }) => {
+			const { useQuestionDraftStore }: typeof import("../src/renderer/stores/question-draft-store") = await import(storePath);
+			const { sessionQuestionFixture }: typeof import("../src/renderer/test/fixtures/session-question") = await import(fixturePath);
+			for (let i = 0; i < 32; i++) {
+				const key = useQuestionDraftStore.getState().ensure(sessionQuestionFixture({ id: `capacity-${i}` }));
+				useQuestionDraftStore.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "" });
+			}
+			const snapshot = { activePresent: localStorage.getItem(active) !== null, available: useQuestionDraftStore.getState().storageAvailable };
+			localStorage.setItem("decision-capacity-complete", "done");
+			return snapshot;
+		}, { active: activeKey, storePath: "/src/renderer/stores/question-draft-store.ts", fixturePath: "/src/renderer/test/fixtures/session-question.ts" });
+		expect(result).toEqual({ activePresent: true, available: false });
+		await expect(page.locator("html")).toHaveAttribute("data-capacity-complete", "done");
+		await expect(dialog.getByRole("radio", { name: /Staging/ })).toBeChecked();
+		await expect(dialog.getByRole("textbox", { name: "Other answer: Checks" })).toHaveValue("User is still typing in window A");
+		await expect(other.getByRole("dialog").getByText("Your draft is kept in this window, but could not be saved for a restart.")).toBeVisible();
+	} finally { await other.close(); }
 });
 
 for (const theme of ["light", "dark"]) test(`zh-TW ${theme} effective 200% dialog fits above composer and traps focus @T0`, async ({ page }) => {

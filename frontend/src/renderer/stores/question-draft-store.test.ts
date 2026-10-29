@@ -35,7 +35,7 @@ describe("versioned question drafts", () => {
 		expect(store.getState().entries[remote]).toBeDefined();
 	});
 
-	it("bounds saved drafts and expires old edits without discarding an uncertain submission", () => {
+	it("bounds new saved drafts without expiring open edits or unconfirmed submissions", () => {
 		vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-29T00:00:00Z"));
 		const store = createQuestionDraftStore(localStorage); const pending = ready(store);
 		store.getState().begin(pending, "answer-1", Date.now());
@@ -46,8 +46,90 @@ describe("versioned question drafts", () => {
 		expect(localStorage.length).toBeLessThanOrEqual(32);
 		vi.advanceTimersByTime(8 * 24 * 60 * 60 * 1000);
 		const loaded = createQuestionDraftStore(localStorage);
-		expect(Object.keys(loaded.getState().entries)).toEqual([pending]);
+		expect(Object.keys(loaded.getState().entries)).toHaveLength(32);
 		expect(loaded.getState().entries[pending].phase.state).toBe("unknown");
+	});
+
+	it("refuses the 33rd saved draft instead of deleting another window's open editing fields", () => {
+		const a = createQuestionDraftStore(localStorage), b = createQuestionDraftStore(localStorage);
+		const active = ready(a);
+		a.getState().setField(active, "checks", { selectedOptionIds: ["test"], otherSelected: true, otherText: "User is still typing in window A" });
+		const saved = localStorage.getItem(`${questionDraftStorageKey}:${active}`);
+		for (let i = 0; i < 32; i++) {
+			const key = b.getState().ensure(sessionQuestionFixture({ id: `other-${i}` }));
+			b.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "new draft" });
+		}
+		expect(localStorage.getItem(`${questionDraftStorageKey}:${active}`)).toBe(saved);
+		a.getState().syncStorage(`${questionDraftStorageKey}:${active}`, localStorage.getItem(`${questionDraftStorageKey}:${active}`));
+		expect(a.getState().entries[active].fields.target.selectedOptionIds).toEqual(["stage"]);
+		expect(a.getState().entries[active].fields.checks.otherText).toBe("User is still typing in window A");
+		expect(b.getState().storageAvailable).toBe(false);
+		expect(localStorage.length).toBe(32);
+	});
+
+	it("can answer an already saved question to free capacity without losing refused edits", () => {
+		const store = createQuestionDraftStore(localStorage); const first = ready(store);
+		for (let i = 0; i < 31; i++) {
+			const key = store.getState().ensure(sessionQuestionFixture({ id: `saved-${i}` }));
+			store.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "" });
+		}
+		const extra = store.getState().ensure(sessionQuestionFixture({ id: "refused" }));
+		store.getState().setField(extra, "target", { selectedOptionIds: ["stage"], otherSelected: false, otherText: "still kept in memory" });
+		expect(store.getState().storageAvailable).toBe(false);
+		expect(store.getState().begin(first, "saved-answer", Date.now())).toBeDefined();
+		expect(store.getState().storageAvailable).toBe(false);
+		store.getState().clearSaved(first, "saved-answer");
+		expect(store.getState().entries[first]).toBeUndefined();
+		expect(localStorage.getItem(`${questionDraftStorageKey}:${first}`)).toBeNull();
+		expect(store.getState().entries[extra].fields.target.otherText).toBe("still kept in memory");
+		expect(store.getState().storageAvailable).toBe(false);
+		store.getState().setField(extra, "target", { selectedOptionIds: ["stage"], otherSelected: false, otherText: "save after space freed" });
+		expect(store.getState().storageAvailable).toBe(true);
+		expect(createQuestionDraftStore(localStorage).getState().entries[extra].fields.target.otherText).toBe("save after space freed");
+	});
+
+	it("keeps old memory and disk on QuotaExceeded, then writes successfully before removing a reference", () => {
+		let fail = false;
+		const operations: string[] = [];
+		const storage: Storage = {
+			get length() { return localStorage.length; }, key: (index) => localStorage.key(index), getItem: (key) => localStorage.getItem(key), clear: () => localStorage.clear(),
+			removeItem: (key) => { operations.push(`remove:${key}`); localStorage.removeItem(key); },
+			setItem: (key, value) => { operations.push(`write:${key}`); if (fail) throw new DOMException("Quota exceeded", "QuotaExceededError"); localStorage.setItem(key, value); },
+		};
+		const store = createQuestionDraftStore(storage); const old = ready(store);
+		store.getState().reconcileSource({ sessionId: "session", questionId: "ask-1" }, sessionQuestionFixture({ version: 2 }));
+		for (let i = 0; i < 31; i++) {
+			const key = store.getState().ensure(sessionQuestionFixture({ id: `occupant-${i}` }));
+			store.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "" });
+		}
+		const before = localStorage.getItem(`${questionDraftStorageKey}:${old}`);
+		const next = store.getState().ensure(sessionQuestionFixture({ id: "new-draft" }));
+		operations.length = 0; fail = true;
+		const field = { selectedOptionIds: ["stage"], otherSelected: false, otherText: "keep this new edit in memory too" };
+		store.getState().setField(next, "target", field);
+		expect(operations).toContain(`write:${questionDraftStorageKey}:${next}`);
+		expect(operations.some((value) => value.startsWith("remove:"))).toBe(false);
+		expect(localStorage.getItem(`${questionDraftStorageKey}:${old}`)).toBe(before);
+		expect(store.getState().entries[old].fields.target.otherText).toBe("kept but not submitted");
+		expect(store.getState().entries[next].fields.target).toEqual(field);
+		expect(store.getState().storageAvailable).toBe(false);
+		operations.length = 0; fail = false;
+		store.getState().setField(next, "target", field);
+		expect(store.getState().storageAvailable).toBe(true);
+		expect(operations.indexOf(`write:${questionDraftStorageKey}:${next}`)).toBeLessThan(operations.indexOf(`remove:${questionDraftStorageKey}:${old}`));
+		expect(localStorage.getItem(`${questionDraftStorageKey}:${old}`)).toBeNull();
+	});
+
+	it("expires old references while retaining an open editing draft after seven days", () => {
+		vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-29T00:00:00Z"));
+		const store = createQuestionDraftStore(localStorage); const old = ready(store);
+		store.getState().reconcileSource({ sessionId: "session", questionId: "ask-1" }, sessionQuestionFixture({ version: 2 }));
+		const current = store.getState().ensure(sessionQuestionFixture({ id: "still-open" }));
+		store.getState().setField(current, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "" });
+		vi.advanceTimersByTime(8 * 24 * 60 * 60 * 1000);
+		store.getState().prune();
+		expect(store.getState().entries[old]).toBeUndefined();
+		expect(createQuestionDraftStore(localStorage).getState().entries[current]?.fields.target.selectedOptionIds).toEqual(["prod"]);
 	});
 
 	it("persists only the changed question and does not overwrite another window's question", () => {
