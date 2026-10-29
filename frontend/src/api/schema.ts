@@ -2649,6 +2649,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read pending provider requests with complete counts */
+        get: operations["getSessionAttention"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/attention/{activityId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a fresh visible provider request before navigating to its original form */
+        get: operations["getSessionAttentionSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/attention/{activityId}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark an explicitly viewed request revision read without resolving it */
+        post: operations["markSessionAttentionRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/auto-inject-ci": {
         parameters: {
             query?: never;
@@ -5018,11 +5069,70 @@ export interface components {
             lastUsedAt?: null | string;
             usageCount: number;
         };
+        AgentSettingObservation: {
+            reason?: string;
+            /** @enum {string} */
+            state: "known" | "unknown" | "not_provided";
+            value?: string;
+        };
         AgentSettings: {
             effort: string;
             /** @enum {string} */
             fastMode: "default" | "on" | "off";
             model: string;
+        };
+        AgentSettingsActor: {
+            kind: string;
+            sessionId?: string;
+        };
+        AgentSettingsEffective: {
+            effort: components["schemas"]["AgentSettingObservation"];
+            fastMode: components["schemas"]["AgentSettingObservation"];
+            model: components["schemas"]["AgentSettingObservation"];
+            /** Format: date-time */
+            observedAt?: null | string;
+            owner?: components["schemas"]["AgentSettingsOwner"];
+            source?: string;
+        };
+        AgentSettingsOperation: {
+            accountId?: string;
+            actor: components["schemas"]["AgentSettingsActor"];
+            /** @enum {string} */
+            applyMode: "after-turn" | "restart";
+            /** Format: int64 */
+            baseRevision: number;
+            branchId?: string;
+            /** @enum {string} */
+            checkpoint: "queued" | "applying_model" | "applying_effort" | "applying_fast" | "verifying" | "verified" | "rolling_back" | "restored";
+            controllerGeneration: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            errorCategory?: "conflict" | "cancelled" | "provider" | "storage" | "validation" | "recovery_required";
+            /** Format: date-time */
+            finishedAt?: null | string;
+            id: string;
+            /** @enum {string} */
+            phase: "pending" | "applied" | "cancelled" | "failed" | "recovery_required";
+            providerConversationId?: string;
+            recovery?: components["schemas"]["AgentSettingsRecovery"];
+            requestId?: string;
+            sessionId: string;
+            source: components["schemas"]["AgentSettings"];
+            /** Format: date-time */
+            startedAt?: null | string;
+            target: components["schemas"]["AgentSettings"];
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
+        };
+        AgentSettingsOwner: {
+            accountId: string;
+            branchId: string;
+            controllerGeneration: string;
+            providerConversationId: string;
+            sessionId: string;
         };
         AgentSettingsPatch: {
             effort?: null | string;
@@ -5030,10 +5140,30 @@ export interface components {
             fastMode?: "default" | "on" | "off";
             model?: null | string;
         };
+        AgentSettingsRecovery: {
+            /** Format: date-time */
+            claimedAt: string;
+            owner: components["schemas"]["AgentSettingsOwner"];
+            previousCheckpoint: string;
+            /** Format: int64 */
+            revision: number;
+            settings: components["schemas"]["AgentSettings"];
+        };
         AgentSettingsSources: {
             effort: string;
             fastMode: string;
             model: string;
+        };
+        AgentSettingsTurnSnapshot: {
+            /** Format: date-time */
+            capturedAt?: null | string;
+            providerTurnId?: string;
+            reason?: string;
+            revision?: null | number;
+            settings?: components["schemas"]["AgentSettings"];
+            /** @enum {string} */
+            state: "known" | "unknown";
+            turnId?: string;
         };
         AgentUpdateAdvisory: {
             agentId: string;
@@ -5194,6 +5324,25 @@ export interface components {
         AttachmentInput: {
             data: string;
             mimeType?: string;
+        };
+        AttentionCountsResponse: {
+            /** Format: int64 */
+            history: number;
+            /** Format: int64 */
+            open: number;
+            /** Format: int64 */
+            unread: number;
+        };
+        AttentionItemResponse: {
+            actionable: boolean;
+            activity: components["schemas"]["ConversationActivityResponse"];
+            branchId: string;
+            read: boolean;
+        };
+        AttentionReadRequest: {
+            expectedBranchId: string;
+            /** Format: int64 */
+            expectedRevision: number;
         };
         AutomationEnvelope: {
             automation: components["schemas"]["AutomationResponse"];
@@ -7397,6 +7546,9 @@ export interface components {
         };
         SessionAgentSettingsResponse: {
             capabilities: components["schemas"]["SessionAgentSettingsCapabilities"];
+            currentTurn?: components["schemas"]["AgentSettingsTurnSnapshot"];
+            effective: components["schemas"]["AgentSettingsEffective"];
+            pending?: components["schemas"]["AgentSettingsOperation"];
             /** Format: int64 */
             revision: number;
             sessionId: string;
@@ -7420,6 +7572,15 @@ export interface components {
             size: number;
             /** Format: date-time */
             updatedAt: string;
+        };
+        SessionAttentionResponse: {
+            activeBranchId: string;
+            conversationId: string;
+            counts: components["schemas"]["AttentionCountsResponse"];
+            hasMoreBefore: boolean;
+            items: components["schemas"]["AttentionItemResponse"][];
+            /** Format: int64 */
+            nextBeforeSequence?: number;
         };
         SessionBranchState: {
             commits: number;
@@ -18554,6 +18715,219 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionAttention: {
+        parameters: {
+            query?: {
+                /** @description Open requests (default) or read-only history. */
+                state?: "open" | "history";
+                beforeSequence?: null | number;
+                limit?: null | number;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAttentionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionAttentionSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                activityId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAttentionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    markSessionAttentionRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                activityId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttentionReadRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

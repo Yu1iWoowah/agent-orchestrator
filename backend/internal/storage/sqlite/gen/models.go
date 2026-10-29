@@ -194,6 +194,14 @@ type AppSetting struct {
 	ReplyLanguage      string
 }
 
+type AttentionRead struct {
+	OperatorScope    string
+	ConversationID   string
+	ActivityID       string
+	LastSeenRevision int64
+	SeenAt           time.Time
+}
+
 type Automation struct {
 	ID          domain.AutomationID
 	ProjectID   domain.ProjectID
@@ -803,19 +811,31 @@ type SessionAgentAccount struct {
 }
 
 type SessionAgentSettingsAudit struct {
-	OperationID string
-	Phase       string
-	RecordedAt  time.Time
+	OperationID   string
+	Phase         string
+	RecordedAt    time.Time
+	ErrorCategory string
+	RequestID     string
 }
 
 type SessionAgentSettingsOperation struct {
-	ID             string
-	SessionID      string
-	IdempotencyKey string
-	RequestJson    string
-	Phase          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                     string
+	SessionID              string
+	IdempotencyKey         string
+	RequestJson            string
+	Phase                  string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ApplyMode              string
+	ErrorCategory          string
+	RequestID              string
+	ProviderConversationID string
+	BranchID               string
+	Checkpoint             string
+	OperationRevision      int64
+	StartedAt              sql.NullTime
+	FinishedAt             sql.NullTime
+	RecoveryJson           string
 }
 
 type SessionArtifactVersion struct {

@@ -384,6 +384,7 @@ test("sent file annotations retain their captured preview after restoring conver
  await expect.poll(()=>sentToChat.length).toBe(1);
  await expect(composer).toHaveText("");
  await page.reload();
+ await page.getByRole("button", { name: "Collapse Awaiting you", exact: true }).click();
  await page.getByRole("button",{name:"1 annotation"}).click();
  await expect(page.locator("pre").filter({hasText:"const value4 = 4;"}).last()).toBeVisible();
  expect(sentToChat[0].text).toBe("explain captured code");

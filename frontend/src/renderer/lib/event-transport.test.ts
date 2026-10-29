@@ -320,6 +320,22 @@ describe("createEventTransport", () => {
 		expect(accountSources()[0].listeners).toContain("codex_account");
 	});
 
+	it("refreshes attention queries on a legacy event without conversation identity", async () => {
+		vi.useFakeTimers();
+		const client = fakeQueryClient();
+		const transport = createEventTransport(client);
+		const disconnect = transport.connect();
+		try {
+			vi.mocked(client.invalidateQueries).mockClear();
+			cdcSources()[0].emit("session_updated", "");
+			await vi.advanceTimersByTimeAsync(200);
+			expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-attention"] }, { cancelRefetch: false });
+		} finally {
+			disconnect();
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not reconnect when a daemon status keeps the same base URL", () => {
 		createEventTransport(fakeQueryClient()).connect();
 		const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
