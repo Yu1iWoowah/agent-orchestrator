@@ -3,10 +3,13 @@ package orchestratorreplacement_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	replacement "github.com/aoagents/agent-orchestrator/backend/internal/service/orchestratorreplacement"
 )
 
@@ -14,6 +17,44 @@ type operatorService interface {
 	Diagnose(context.Context, string) (domain.ReplacementDiagnostic, error)
 	RepairSnapshot(context.Context, string) (domain.ReplacementRepairSnapshot, error)
 	Repair(context.Context, domain.ReplacementRepairRequest) (domain.OrchestratorReplacement, error)
+}
+
+type repairCountingStore struct {
+	*testStore
+	repairs int
+}
+
+func (s *repairCountingStore) RepairOrchestratorReplacement(ctx context.Context, in domain.ReplacementRepairRequest, at time.Time) (domain.OrchestratorReplacement, bool, error) {
+	s.repairs++
+	return s.testStore.RepairOrchestratorReplacement(ctx, in, at)
+}
+
+func TestReplacementOperatorRejectsHealthyRepairBeforeMutation(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	op, err := f.svc.Accept(ctx, f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &repairCountingStore{testStore: f.store}
+	svc := replacement.New(replacement.Deps{Store: st, Runtime: f.runtime, Documents: f.docs})
+	diag, err := svc.Diagnose(ctx, op.ID)
+	if err != nil || diag.Corrupt {
+		t.Fatal(diag, err)
+	}
+	snapshot, err := svc.RepairSnapshot(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Repair(ctx, domain.ReplacementRepairRequest{OperationID: op.ID, ExpectedRevision: diag.Revision, ExpectedDigest: diag.RawDigest, Snapshot: snapshot})
+	var api *apierr.Error
+	if !errors.As(err, &api) || api.Code != "ORCHESTRATOR_REPLACEMENT_REPAIR_CONFLICT" || st.repairs != 0 {
+		t.Fatalf("healthy repair reached mutation: calls=%d err=%v", st.repairs, err)
+	}
+	current, err := svc.Get(ctx, op.ID)
+	if err != nil || current.Phase != op.Phase || current.Revision != op.Revision {
+		t.Fatal("healthy repair changed operation", current.Phase, current.Revision, err)
+	}
 }
 
 func TestReplacementOperatorRepairIsDataOnlyAndUsesTrustedProjectGate(t *testing.T) {
@@ -58,9 +99,13 @@ func TestReplacementOperatorRepairIsDataOnlyAndUsesTrustedProjectGate(t *testing
 		t.Fatal("read-only diagnostic acquired write gate")
 	}
 	preflights, observations, documents := f.runtime.preflights, f.runtime.observations, f.docs.calls
-	repaired, err := api.Repair(ctx, domain.ReplacementRepairRequest{OperationID: op.ID, ExpectedRevision: diag.Revision, ExpectedDigest: diag.RawDigest, Snapshot: snapshot})
+	in := domain.ReplacementRepairRequest{OperationID: op.ID, ExpectedRevision: diag.Revision, ExpectedDigest: diag.RawDigest, Snapshot: snapshot}
+	repaired, err := api.Repair(ctx, in)
 	if err != nil || repaired.Phase != domain.ReplacementRecoveryRequired || len(gates) != 1 || gates[0] != domain.ProjectID(f.project.ID) {
 		t.Fatal(repaired, gates, err)
+	}
+	if replayed, err := api.Repair(ctx, in); err != nil || replayed.Revision != repaired.Revision || len(replayed.Repairs) != 1 {
+		t.Fatal("healthy committed receipt cannot recover a lost reply", replayed.Revision, err)
 	}
 	if _, err := svc.Advance(ctx, op.ID); err != nil {
 		t.Fatal(err)

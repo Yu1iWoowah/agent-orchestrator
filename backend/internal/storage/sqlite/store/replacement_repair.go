@@ -105,12 +105,11 @@ func (s *Store) RepairOrchestratorReplacement(ctx context.Context, in domain.Rep
 		}
 		// Lost response: return the same committed repair without minting another.
 		if now, readErr := s.decodeCheckpointedReplacement(tx, q, current); readErr == nil {
-			for _, r := range now.Repairs {
-				if r.BeforeRevision == in.ExpectedRevision && r.BeforeDigest == in.ExpectedDigest && r.SnapshotRevision == in.Snapshot.Revision && r.SnapshotDigest == in.Snapshot.Digest {
-					result = now
-					return nil
-				}
+			if now.HasRepairReceipt(in) {
+				result = now
+				return nil
 			}
+			return domain.ErrReplacementRepairConflict
 		}
 		if latest.Revision != requested.Revision || latest.Digest != requested.Digest {
 			return domain.ErrReplacementRepairUnverified

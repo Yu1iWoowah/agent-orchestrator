@@ -47,6 +47,19 @@ type ReplacementRepairRequest struct {
 	Snapshot         ReplacementRepairSnapshot
 }
 
+// HasRepairReceipt identifies a committed replay, not authority for a new repair.
+func (op OrchestratorReplacement) HasRepairReceipt(in ReplacementRepairRequest) bool {
+	if in.OperationID != op.ID || in.Snapshot.OperationID != op.ID {
+		return false
+	}
+	for _, r := range op.Repairs {
+		if r.BeforeRevision == in.ExpectedRevision && r.BeforeDigest == in.ExpectedDigest && r.SnapshotRevision == in.Snapshot.Revision && r.SnapshotDigest == in.Snapshot.Digest {
+			return true
+		}
+	}
+	return false
+}
+
 // ReplacementRepairReceipt proves a data-only restore, never a provider action.
 type ReplacementRepairReceipt struct {
 	BeforeRevision   int64     `json:"beforeRevision"`

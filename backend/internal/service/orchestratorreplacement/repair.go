@@ -65,8 +65,20 @@ func (s *Service) Repair(ctx context.Context, in domain.ReplacementRepairRequest
 		return result, err
 	}
 	run := func(locked context.Context) error {
+		diagnostic, err := s.Diagnose(locked, in.OperationID)
+		if err != nil {
+			return err
+		}
+		if !diagnostic.Corrupt {
+			current, err := s.Get(locked, in.OperationID)
+			if err != nil {
+				return err
+			}
+			if !current.HasRepairReceipt(in) {
+				return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CONFLICT", "Operation is healthy; no repair is needed", nil)
+			}
+		}
 		var applied bool
-		var err error
 		result, applied, err = st.RepairOrchestratorReplacement(locked, in, s.deps.Now().UTC())
 		switch {
 		case errors.Is(err, domain.ErrReplacementRepairConflict):

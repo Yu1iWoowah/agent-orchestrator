@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -95,7 +96,9 @@ func decodeReplacement(row gen.OrchestratorReplacement) (domain.OrchestratorRepl
 	if !replacementJSONUnique([]byte(row.StateJson)) {
 		return op, domain.ErrReplacementStateInvalid
 	}
-	if err := json.Unmarshal([]byte(row.StateJson), &op); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(row.StateJson))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&op); err != nil {
 		return op, err
 	}
 	if err := validateReplacement(op); err != nil {
