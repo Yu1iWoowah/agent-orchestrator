@@ -176,16 +176,17 @@ type AppSetting struct {
 }
 
 type AttentionAnswer struct {
-	QuestionID      string
-	ClientAnswerID  string
-	QuestionVersion int64
-	AnswersJson     string
-	Fingerprint     string
-	Message         string
-	SavedAt         time.Time
-	DeliveryState   string
-	DeliveredAt     sql.NullTime
-	LastError       string
+	QuestionID       string
+	ClientAnswerID   string
+	QuestionVersion  int64
+	AnswersJson      string
+	Fingerprint      string
+	Message          string
+	SavedAt          time.Time
+	DeliveryState    string
+	DeliveredAt      sql.NullTime
+	LastError        string
+	DeliveryAttempts int64
 }
 
 type AttentionQuestion struct {

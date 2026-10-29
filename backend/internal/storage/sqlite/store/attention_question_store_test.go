@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -305,5 +306,139 @@ func TestAttentionQuestionAgentReplacementExpiresOriginalSource(t *testing.T) {
 	got, err := s.GetAttentionQuestion(ctx, session, q.ID)
 	if err != nil || got.State != "expired" || got.CloseReason != "origin_agent_replaced" {
 		t.Fatalf("replacement source = %+v %v", got, err)
+	}
+}
+
+func TestAttentionQuestionStaleRemovedOptionConflictsBeforeValidation(t *testing.T) {
+	s, session, _ := conversationFixture(t)
+	ctx := context.Background()
+	q, _, err := s.CreateAttentionQuestion(ctx, askCreate(session), histClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revised := []byte(strings.Replace(askPayload, `"id":"staging"`, `"id":"preview"`, 1))
+	if _, err = s.ReviseAttentionQuestion(ctx, session, q.ID, 1, revised, histClock); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AnswerAttentionQuestion(ctx, session, askAnswer(q.ID), histClock); !errors.Is(err, domain.ErrAttentionQuestionConflict) {
+		t.Fatalf("stale removed option must conflict, got %v", err)
+	}
+	got, err := s.GetAttentionQuestion(ctx, session, q.ID)
+	if err != nil || got.State != "open" || got.Answer != nil {
+		t.Fatalf("stale write changed state: %+v %v", got, err)
+	}
+}
+
+func TestAttentionAnswerBusyBatchDoesNotStarveLaterAnswers(t *testing.T) {
+	s, session, _ := conversationFixture(t)
+	ctx := context.Background()
+	for i := 0; i < 21; i++ {
+		create := askCreate(session)
+		create.ID = fmt.Sprintf("question-%02d", i)
+		create.ClientKey = create.ID
+		q, _, err := s.CreateAttentionQuestion(ctx, create, histClock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.AnswerAttentionQuestion(ctx, session, askAnswer(q.ID), histClock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		first, err := s.PendingAttentionAnswers(ctx, 20)
+		if err != nil || len(first) != 20 {
+			t.Fatalf("batch: %+v %v", first, err)
+		}
+		for _, answer := range first {
+			if err = s.RecordAttentionAnswerDelivery(ctx, answer.QuestionID, "queued", "busy", histClock); err != nil {
+				t.Fatal(err)
+			}
+		}
+		next, err := s.PendingAttentionAnswers(ctx, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, answer := range next {
+			if answer.QuestionID == "question-20" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("busy batch starves later saved answer")
+		}
+	}
+}
+
+func TestAttentionAnswerNativeAcceptanceSurvivesLostOutboxAcknowledgment(t *testing.T) {
+	directory := t.TempDir()
+	s, err := sqlite.Open(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	seedProject(t, s, "hist")
+	rec := sampleRecord("hist")
+	rec.Mode = domain.SessionModeTUI
+	owner, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Metadata.RuntimeLaunchID = "launch-1"
+	if err = s.UpdateSession(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"question-a", "question-b"} {
+		create := askCreate(owner.ID)
+		create.ID = id
+		create.ClientKey = id
+		if _, _, err = s.CreateAttentionQuestion(ctx, create, histClock); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.AnswerAttentionQuestion(ctx, owner.ID, askAnswer(id), histClock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner.Metadata.ConversationCheckpointState = domain.ConversationCheckpointCoordination
+	owner.Metadata.ConversationCheckpointGeneration = "wrong-generation"
+	owner.Metadata.ConversationCheckpointTurnID = "question-answer-question-a"
+	owner.UpdatedAt = histClock.Add(time.Second)
+	if err = s.UpdateSession(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.GetAttentionQuestion(ctx, owner.ID, "question-a")
+	if err != nil || before.Answer.DeliveryState != "queued" {
+		t.Fatalf("foreign generation ack: %+v %v", before, err)
+	}
+	owner.Metadata.ConversationCheckpointGeneration = "launch-1"
+	if err = s.UpdateSession(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetAttentionQuestion(ctx, owner.ID, "question-a")
+	if err != nil || got.Answer.DeliveryState != "delivered" {
+		t.Fatalf("native acceptance must atomically acknowledge saved answer: %+v %v", got, err)
+	}
+	saved, found, err := s.GetSession(ctx, owner.ID)
+	if err != nil || !found || !strings.Contains(saved.Metadata.LatestUserPrompt, "question-a") || saved.Metadata.ConversationCheckpointTurnID != "question-answer-question-a" {
+		t.Fatalf("human provenance/checkpoint lost: %+v %v", saved, err)
+	}
+	saved.Metadata.ConversationCheckpointTurnID = "later-prompt"
+	saved.Metadata.LatestUserPrompt = "later ordinary message"
+	later := histClock.Add(time.Minute)
+	saved.Metadata.LatestUserPromptAt = later
+	if err = s.UpdateSession(ctx, saved); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = sqlite.Open(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.PendingAttentionAnswers(ctx, 20)
+	if err != nil || len(pending) != 1 || pending[0].QuestionID != "question-b" {
+		t.Fatalf("restart would redeliver accepted answer: %+v %v", pending, err)
 	}
 }

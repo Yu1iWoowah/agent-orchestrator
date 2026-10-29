@@ -198,6 +198,8 @@ func TestAttentionPreviewSafety(t *testing.T) {
 		valid           bool
 	}{
 		{"text", "<script>literal text</script>", true},
+		{"markdown", "Contact user@example.com", true},
+		{"markdown", "[unused]: javascript:alert(1)", false},
 		{"markdown", "### Scope\n- Small\n\n[Reference](https://example.com)", true},
 		{"markdown", "\x60\x60\x60html\n<script>alert(1)</script>\n\x60\x60\x60", true},
 		{"markdown", "> Quote\n\n| A | B |\n|---|---|\n| x | y |", true},

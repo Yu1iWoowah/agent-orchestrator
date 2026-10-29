@@ -14,6 +14,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
 )
 
@@ -244,7 +245,13 @@ func validateAttentionPreview(preview *AttentionPreview) error {
 		return attentionInvalid("format", "must be text or markdown")
 	}
 	source := []byte(preview.Content)
-	document := goldmark.New(goldmark.WithExtensions(extension.Table)).Parser().Parse(text.NewReader(source))
+	context := parser.NewContext()
+	document := goldmark.New(goldmark.WithExtensions(extension.Table)).Parser().Parse(text.NewReader(source), parser.WithContext(context))
+	for _, reference := range context.References() {
+		if err := validateAttentionPreviewURL(reference.Destination()); err != nil {
+			return err
+		}
+	}
 	return ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -261,19 +268,26 @@ func validateAttentionPreview(preview *AttentionPreview) error {
 			destination = link.URL(source)
 		}
 		if destination != nil {
-			decoded := strings.Map(func(r rune) rune {
-				if r <= 32 || r == 127 {
-					return -1
-				}
-				return r
-			}, html.UnescapeString(string(destination)))
-			value, err := url.Parse(decoded)
-			if err != nil || (value.Scheme != "" && !strings.EqualFold(value.Scheme, "https") && !strings.EqualFold(value.Scheme, "http")) {
-				return ast.WalkStop, attentionInvalid("content", "unsafe URL scheme")
+			if err := validateAttentionPreviewURL(destination); err != nil {
+				return ast.WalkStop, err
 			}
 		}
 		return ast.WalkContinue, nil
 	})
+}
+
+func validateAttentionPreviewURL(destination []byte) error {
+	decoded := strings.Map(func(r rune) rune {
+		if r <= 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, html.UnescapeString(string(destination)))
+	value, err := url.Parse(decoded)
+	if err != nil || (value.Scheme != "" && !strings.EqualFold(value.Scheme, "https") && !strings.EqualFold(value.Scheme, "http")) {
+		return attentionInvalid("content", "unsafe URL scheme")
+	}
+	return nil
 }
 
 func ParseAttentionAnswer(raw []byte) (AttentionAnswerSubmission, error) {

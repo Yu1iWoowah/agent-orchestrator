@@ -282,12 +282,26 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 		if err != nil {
 			return err
 		}
+		prior, priorErr := q.GetAttentionAnswer(ctx, row.ID)
+		if priorErr != nil && !errors.Is(priorErr, sql.ErrNoRows) {
+			return priorErr
+		}
+		if priorErr == nil {
+			if prior.ClientAnswerID != submission.ClientAnswerID || prior.QuestionVersion != submission.ExpectedVersion {
+				return domain.ErrAttentionQuestionConflict
+			}
+		} else if err = openQuestion(row, submission.ExpectedVersion, at); err != nil {
+			return err
+		}
 		var payload domain.AttentionQuestionPayload
 		if err = json.Unmarshal([]byte(row.PayloadJson), &payload); err != nil {
 			return err
 		}
 		answers, err := domain.CanonicalAttentionAnswers(payload, submission.Answers)
 		if err != nil {
+			if priorErr == nil {
+				return domain.ErrAttentionQuestionConflict
+			}
 			return err
 		}
 		submission.Answers = answers
@@ -295,18 +309,11 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 		if err != nil {
 			return err
 		}
-		prior, err := q.GetAttentionAnswer(ctx, row.ID)
-		if err == nil {
-			if prior.ClientAnswerID != submission.ClientAnswerID || prior.Fingerprint != fingerprint {
+		if priorErr == nil {
+			if prior.Fingerprint != fingerprint {
 				return domain.ErrAttentionQuestionConflict
 			}
 			receipt, err = questionReceipt(prior)
-			return err
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err = openQuestion(row, submission.ExpectedVersion, at); err != nil {
 			return err
 		}
 		question, err := questionRecord(ctx, q, row)

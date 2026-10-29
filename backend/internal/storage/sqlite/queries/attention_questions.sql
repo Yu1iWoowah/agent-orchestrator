@@ -50,12 +50,11 @@ SELECT * FROM attention_answers WHERE question_id=?;
 
 -- name: PendingAttentionAnswers :many
 SELECT sqlc.embed(attention_answers),q.origin_session_id,q.origin_harness FROM attention_answers JOIN attention_questions q ON q.id=attention_answers.question_id
-WHERE attention_answers.delivery_state='queued' ORDER BY saved_at,question_id LIMIT ?;
+WHERE attention_answers.delivery_state='queued' ORDER BY delivery_attempts,saved_at,question_id LIMIT ?;
 
 -- name: RecordAttentionAnswerDelivery :execrows
-UPDATE attention_answers SET delivery_state=sqlc.arg(delivery_state),delivered_at=sqlc.narg(delivered_at),last_error=sqlc.arg(last_error)
-WHERE question_id=sqlc.arg(question_id) AND delivery_state='queued'
-AND (delivery_state!=sqlc.arg(delivery_state) OR last_error!=sqlc.arg(last_error));
+UPDATE attention_answers SET delivery_state=sqlc.arg(delivery_state),delivered_at=sqlc.narg(delivered_at),last_error=sqlc.arg(last_error),delivery_attempts=delivery_attempts+1
+WHERE question_id=sqlc.arg(question_id) AND delivery_state='queued';
 
 -- Human answer provenance is recorded only after semantic acceptance, without
 -- destroying the exact delivery checkpoint used to deduplicate TUI retries.
