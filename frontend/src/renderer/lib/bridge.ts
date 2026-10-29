@@ -98,6 +98,13 @@ export const aoBridge: AoBridge =
 			},
 			onFrameNavigated: () => () => undefined,
 		},
+		appDiagnostics: {
+			getStatus: async () => ({state:"unavailable",reason:"unsupported"}),
+			register: async () => ({documentId:"preview",windowId:"preview",generation:1,enabled:false,expiresAt:0}),
+			submit: async () => false,
+			onRequest: () => () => undefined, onConfigure: () => () => undefined,
+			onStatus: () => () => undefined, onCancel: () => () => undefined,
+		},
 		daemon: {
 			getStatus: async () => ({
 				state: "stopped",

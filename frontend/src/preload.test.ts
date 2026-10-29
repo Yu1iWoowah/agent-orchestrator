@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, APP_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL } from "./shared/shortcuts";
 import { SET_CHAT_DRAFT_RISK_CHANNEL } from "./shared/chat-draft-risk";
 import type { AoBridge } from "./preload";
+import diagnosticFixture from "../../test/fixtures/app-diagnostics-v1.json";
+import { DIAGNOSTIC_CHANNEL } from "./shared/app-diagnostics";
 
 const electronMocks = vi.hoisted(() => {
 	const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -43,6 +45,60 @@ function exposedBridge(): AoBridge {
 	if (!call) throw new Error("preload bridge was not exposed");
 	return call[1] as AoBridge;
 }
+
+describe("preload app diagnostic boundary", () => {
+	it("forwards only v1 requests and both v1 success/failure replies", async () => {
+		const api = exposedBridge().appDiagnostics;
+		const identity = { requestId: "request-1", documentId: "document-1", windowId: "window-1", generation: 1 };
+		const request = { ...identity, projectId: "next.js", deadline: Date.now() + 5000 };
+		const listener = vi.fn();
+		const stop = api.onRequest(listener);
+		const wrapped = electronMocks.listeners.get(DIAGNOSTIC_CHANNEL.request);
+		wrapped?.({}, request);
+		wrapped?.({}, { ...request, schemaVersion: 2 });
+		expect(listener).not.toHaveBeenCalled();
+		wrapped?.({}, { ...request, schemaVersion: 1 });
+		expect(listener).toHaveBeenCalledWith({ ...request, schemaVersion: 1 });
+		stop();
+		for (const content of [{ collector: diagnosticFixture.collector }, { code: "APP_RENDERER_UNAVAILABLE" }]) {
+			const reply = { ...identity, ...content };
+			electronMocks.invoke.mockClear();
+			await expect(api.submit(reply)).resolves.toBe(false);
+			await expect(api.submit({ ...reply, schemaVersion: 2 })).resolves.toBe(false);
+			expect(electronMocks.invoke).not.toHaveBeenCalled();
+			electronMocks.invoke.mockResolvedValueOnce(true);
+			await expect(api.submit({ ...reply, schemaVersion: 1 })).resolves.toBe(true);
+			expect(electronMocks.invoke).toHaveBeenCalledWith(DIAGNOSTIC_CHANNEL.submit, { ...reply, schemaVersion: 1 });
+		}
+	});
+	it("has no enable/grant/token API and rejects unsafe replies before IPC", async () => {
+		const api = exposedBridge().appDiagnostics;
+		expect(Object.keys(api)).not.toContain("enable");
+		expect(Object.keys(api)).not.toContain("grant");
+		const reply = {
+			schemaVersion: 1,
+			requestId: "request-1",
+			documentId: "document-1",
+			windowId: "window-1",
+			generation: 1,
+			collector: diagnosticFixture.collector,
+		};
+		await expect(api.submit({ ...reply, payload: "canary-secret" })).resolves.toBe(false);
+		expect(electronMocks.invoke).not.toHaveBeenCalled();
+		electronMocks.invoke.mockResolvedValueOnce(true);
+		await expect(api.submit(reply)).resolves.toBe(true);
+		expect(electronMocks.invoke).toHaveBeenCalledWith(DIAGNOSTIC_CHANNEL.submit, reply);
+	});
+	it("filters malformed requests and removes the listener on cleanup", () => {
+		const listener = vi.fn();
+		const stop = exposedBridge().appDiagnostics.onRequest(listener);
+		const wrapped = electronMocks.listeners.get(DIAGNOSTIC_CHANNEL.request);
+		wrapped?.({}, { token: "canary-secret" });
+		expect(listener).not.toHaveBeenCalled();
+		stop();
+		expect(electronMocks.off).toHaveBeenCalledWith(DIAGNOSTIC_CHANNEL.request, wrapped);
+	});
+});
 
 beforeEach(() => {
 	electronMocks.listeners.clear();

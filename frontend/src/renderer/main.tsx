@@ -1,3 +1,7 @@
+import { useUiStore, inspectorIsOpen } from "./stores/ui-store";
+import { sessionUiKey } from "./lib/hosts";
+import { startAppDiagnosticsRenderer } from "./lib/app-diagnostics-runtime";
+import { safeId } from "./lib/app-diagnostics-projectors";
 import "./lib/apply-initial-theme";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -28,6 +32,43 @@ import { useAnalyticsOptOutStore } from "./stores/analytics-opt-out-store";
 
 void preloadMarkdownFonts();
 const router = createAppRouter(queryClient);
+let diagnosticRouteRevision = 1;
+const stopAppDiagnostics = startAppDiagnosticsRenderer({
+	bridge: aoBridge.appDiagnostics,
+	queryClient,
+	observeRoute: () =>
+		router.subscribe("onResolved", () => {
+			diagnosticRouteRevision++;
+		}),
+	readInspectorOpen: (route) =>
+		Boolean(route.sessionId) &&
+		inspectorIsOpen(useUiStore.getState().inspectorSessions, sessionUiKey(route.sessionId, route.hostId || undefined)),
+	readRoute: () => {
+		const matches = router.state.matches;
+		const last = matches.at(-1);
+		const params = last?.params;
+		const routeId = last?.routeId ?? "";
+		const projectId = params && "projectId" in params ? safeId(params.projectId) : "";
+		const sessionId = params && "sessionId" in params ? safeId(params.sessionId) : "";
+		const hostId = params && "hostId" in params ? safeId(params.hostId) : "";
+		let canonicalRoute = "unsupported_surface";
+		if (routeId.includes("$sessionId")) canonicalRoute = "session";
+		else if (routeId.includes("settings")) canonicalRoute = "settings";
+		else if (routeId.includes("terminal")) canonicalRoute = "terminal";
+		else if (routeId.includes("$projectId")) canonicalRoute = "board";
+		else if (routeId === "/_shell/") canonicalRoute = "home";
+		return {
+			routeId: canonicalRoute,
+			projectId,
+			sessionId,
+			hostId,
+			source: hostId ? "remote" : routeId.includes("cloud") ? "cloud" : "local",
+			revision: diagnosticRouteRevision,
+		};
+	},
+});
+window.addEventListener("pagehide", stopAppDiagnostics, { once: true });
+if (import.meta.hot) import.meta.hot.dispose(stopAppDiagnostics);
 
 // Main owns consent and only acknowledges opt-out after every live AO shell
 // confirms that its in-memory renderer queues were actually purged.
