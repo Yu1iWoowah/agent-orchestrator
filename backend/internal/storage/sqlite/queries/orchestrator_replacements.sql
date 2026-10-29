@@ -116,7 +116,7 @@ SELECT * FROM conversation_queued_edit_deliveries WHERE conversation_id = ?;
 -- Check the current project controller and the exact canonical transferred
 -- payload in one read snapshot. This never grants a mutable filesystem read.
 -- name: SelectReplacementExcerptTransfer :one
-SELECT m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
+SELECT r.id AS operation_id, m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
  m.sender_session_id, m.sender_project_id, m.sender_display_name, receipt.payload_hash
 FROM orchestrator_replacement_intake_transfers receipt
 JOIN orchestrator_replacements r ON r.id = receipt.operation_id
@@ -169,3 +169,31 @@ SET project_id = sqlc.arg(project_id), source_session_id = sqlc.arg(source_sessi
  intake_revision = sqlc.arg(intake_revision), state_json = sqlc.arg(state_json),
  created_at = sqlc.arg(created_at), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);
+
+
+-- name: RecordReplacementHumanIntake :exec
+INSERT INTO replacement_human_intake_receipts(message_id, interaction_at)
+SELECT m.id, sqlc.arg(interaction_at) FROM conversation_messages m
+WHERE m.id = sqlc.arg(message_id) AND m.role = 'user'
+ AND EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ON CONFLICT(message_id) DO NOTHING;
+
+-- Author/time receipts preserve AuthoredByUser automation. Legacy human-origin
+-- rows retain their canonical acceptance time; never infer human intent for
+-- legacy automation without a receipt.
+-- name: SelectReplacementHumanProjection :one
+WITH human_inputs AS (
+ SELECT m.id, m.turn_id, m.text, r.interaction_at
+ FROM conversation_messages m JOIN replacement_human_intake_receipts r ON r.message_id = m.id
+ WHERE m.role = 'user'
+ UNION ALL
+ SELECT m.id, m.turn_id, m.text, m.created_at AS interaction_at
+ FROM conversation_messages m WHERE m.role = 'user' AND m.origin = 'human'
+ AND NOT EXISTS (SELECT 1 FROM replacement_human_intake_receipts r WHERE r.message_id = m.id)
+)
+SELECT h.id, h.turn_id, h.text, h.interaction_at
+FROM human_inputs h JOIN conversation_turns t ON t.id = h.turn_id
+WHERE t.handled_by_session_id = sqlc.arg(session_id) AND t.state = 'queued'
+ AND t.rolled_back_at IS NULL AND t.promoted_to_turn_id IS NULL
+ AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = t.id)
+ORDER BY h.interaction_at DESC, t.requested_at DESC, t.rowid DESC, h.id DESC LIMIT 1;

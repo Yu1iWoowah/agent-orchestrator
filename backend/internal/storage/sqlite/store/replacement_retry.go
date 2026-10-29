@@ -177,6 +177,11 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		if !saved {
 			return domain.ErrReplacementStateInvalid
 		}
+		if cancel && currentSource {
+			if err := restoreReplacementHumanProjection(tx, q, source.ID); err != nil {
+				return err
+			}
+		}
 		op.Revision++
 		result, applied = op, true
 		return nil

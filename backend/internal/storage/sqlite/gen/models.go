@@ -697,6 +697,11 @@ type ProjectDocumentState struct {
 	StateJson string
 }
 
+type ReplacementHumanIntakeReceipt struct {
+	MessageID     string
+	InteractionAt time.Time
+}
+
 type Report struct {
 	ID                 string
 	SessionID          string

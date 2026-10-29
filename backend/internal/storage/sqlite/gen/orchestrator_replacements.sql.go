@@ -345,6 +345,24 @@ func (q *Queries) MoveReplacementQueuedTurn(ctx context.Context, arg MoveReplace
 	return result.RowsAffected()
 }
 
+const recordReplacementHumanIntake = `-- name: RecordReplacementHumanIntake :exec
+INSERT INTO replacement_human_intake_receipts(message_id, interaction_at)
+SELECT m.id, ?1 FROM conversation_messages m
+WHERE m.id = ?2 AND m.role = 'user'
+ AND EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ON CONFLICT(message_id) DO NOTHING
+`
+
+type RecordReplacementHumanIntakeParams struct {
+	InteractionAt time.Time
+	MessageID     string
+}
+
+func (q *Queries) RecordReplacementHumanIntake(ctx context.Context, arg RecordReplacementHumanIntakeParams) error {
+	_, err := q.db.ExecContext(ctx, recordReplacementHumanIntake, arg.InteractionAt, arg.MessageID)
+	return err
+}
+
 const recordReplacementIntakeTransfer = `-- name: RecordReplacementIntakeTransfer :exec
 INSERT INTO orchestrator_replacement_intake_transfers(
  operation_id, message_id, turn_id, source_conversation_id, source_sequence,
@@ -472,7 +490,7 @@ func (q *Queries) RetireReplacementSession(ctx context.Context, arg RetireReplac
 }
 
 const selectReplacementExcerptTransfer = `-- name: SelectReplacementExcerptTransfer :one
-SELECT m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
+SELECT r.id AS operation_id, m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
  m.sender_session_id, m.sender_project_id, m.sender_display_name, receipt.payload_hash
 FROM orchestrator_replacement_intake_transfers receipt
 JOIN orchestrator_replacements r ON r.id = receipt.operation_id
@@ -506,6 +524,7 @@ type SelectReplacementExcerptTransferParams struct {
 }
 
 type SelectReplacementExcerptTransferRow struct {
+	OperationID         string
 	TurnID              sql.NullString
 	Text                string
 	ClientMessageID     string
@@ -530,6 +549,7 @@ func (q *Queries) SelectReplacementExcerptTransfer(ctx context.Context, arg Sele
 	)
 	var i SelectReplacementExcerptTransferRow
 	err := row.Scan(
+		&i.OperationID,
 		&i.TurnID,
 		&i.Text,
 		&i.ClientMessageID,
@@ -539,6 +559,46 @@ func (q *Queries) SelectReplacementExcerptTransfer(ctx context.Context, arg Sele
 		&i.SenderProjectID,
 		&i.SenderDisplayName,
 		&i.PayloadHash,
+	)
+	return i, err
+}
+
+const selectReplacementHumanProjection = `-- name: SelectReplacementHumanProjection :one
+WITH human_inputs AS (
+ SELECT m.id, m.turn_id, m.text, r.interaction_at
+ FROM conversation_messages m JOIN replacement_human_intake_receipts r ON r.message_id = m.id
+ WHERE m.role = 'user'
+ UNION ALL
+ SELECT m.id, m.turn_id, m.text, m.created_at AS interaction_at
+ FROM conversation_messages m WHERE m.role = 'user' AND m.origin = 'human'
+ AND NOT EXISTS (SELECT 1 FROM replacement_human_intake_receipts r WHERE r.message_id = m.id)
+)
+SELECT h.id, h.turn_id, h.text, h.interaction_at
+FROM human_inputs h JOIN conversation_turns t ON t.id = h.turn_id
+WHERE t.handled_by_session_id = ?1 AND t.state = 'queued'
+ AND t.rolled_back_at IS NULL AND t.promoted_to_turn_id IS NULL
+ AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = t.id)
+ORDER BY h.interaction_at DESC, t.requested_at DESC, t.rowid DESC, h.id DESC LIMIT 1
+`
+
+type SelectReplacementHumanProjectionRow struct {
+	ID            string
+	TurnID        sql.NullString
+	Text          string
+	InteractionAt time.Time
+}
+
+// Author/time receipts preserve AuthoredByUser automation. Legacy human-origin
+// rows retain their canonical acceptance time; never infer human intent for
+// legacy automation without a receipt.
+func (q *Queries) SelectReplacementHumanProjection(ctx context.Context, sessionID domain.SessionID) (SelectReplacementHumanProjectionRow, error) {
+	row := q.db.QueryRowContext(ctx, selectReplacementHumanProjection, sessionID)
+	var i SelectReplacementHumanProjectionRow
+	err := row.Scan(
+		&i.ID,
+		&i.TurnID,
+		&i.Text,
+		&i.InteractionAt,
 	)
 	return i, err
 }

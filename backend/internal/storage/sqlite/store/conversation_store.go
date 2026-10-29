@@ -1431,6 +1431,9 @@ func (s *Store) appendUserMessage(
 			}
 		}
 		if msg.Origin == domain.MessageOriginHuman || msg.AuthoredByUser {
+			if err := q.RecordReplacementHumanIntake(ctx, gen.RecordReplacementHumanIntakeParams{MessageID: msg.ID, InteractionAt: interactionAt}); err != nil {
+				return err
+			}
 			if _, err := q.RecordSessionHumanMessage(ctx, gen.RecordSessionHumanMessageParams{
 				TurnID:             turnID,
 				ID:                 session,

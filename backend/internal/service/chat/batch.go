@@ -71,7 +71,7 @@ func (c *Controller) queuedBatchInput(ctx context.Context, batch []domain.Queued
 				}
 			}
 			msg.Content = filtered
-			if err := hydrateExcerptReferences(ctx, c, &msg); err != nil {
+			if err := hydrateQueuedExcerptReferences(ctx, c, &msg, queued); err != nil {
 				return ports.ChatUserMessage{}, batchInputError{queued.TurnID, err}
 			}
 		}
