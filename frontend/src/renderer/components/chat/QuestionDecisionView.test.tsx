@@ -48,7 +48,7 @@ it("submits through the UI when inaccessible remote drafts fill local persistenc
 	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
 	await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
 	await screen.findByText("Saved · Pending delivery");
-	expect(localStorage.length).toBe(32);
+	expect(Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter((key) => key?.startsWith(`${questionDraftStorageKey}:`))).toHaveLength(32);
 });
 
 it("preserves choices and warns if another window removes an open editing draft", async () => {

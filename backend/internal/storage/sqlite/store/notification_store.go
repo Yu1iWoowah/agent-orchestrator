@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	moderncsqlite "modernc.org/sqlite"
@@ -21,6 +22,9 @@ import (
 func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
 	if err := rec.Validate(); err != nil {
 		return domain.NotificationRecord{}, false, err
+	}
+	if strings.HasPrefix(rec.SourceKey, "attention:") {
+		return s.createAttentionNotification(ctx, rec)
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

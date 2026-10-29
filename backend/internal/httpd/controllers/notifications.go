@@ -211,6 +211,8 @@ func writeNotificationSSE(w http.ResponseWriter, flusher http.Flusher, event dom
 		}{ClearID: event.ClearID, ClearEpoch: event.ClearEpoch, ClearSequence: event.ClearSequence}
 	case domain.NotificationResolved:
 		name = "notification_resolved"
+	case domain.NotificationReadEvent:
+		name = "notification_read"
 	case domain.NotificationDeleted:
 		name = "notification_deleted"
 	}

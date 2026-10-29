@@ -10,7 +10,7 @@ export type QuestionDraftPhase =
 	| { state: "submitting"; answer: Submission; startedAt: number }
 	| { state: "unknown"; answer: Submission; nextRetryAt: number; message?: string }
 	| { state: "conflict"; message: string };
-export interface QuestionDraft { scope: QuestionScope; question: SessionQuestion; fields: QuestionFields; phase: QuestionDraftPhase; updatedAt: number }
+export interface QuestionDraft { scope: QuestionScope; question: SessionQuestion; fields: QuestionFields; phase: QuestionDraftPhase; updatedAt: number; confirmedAt?: number }
 type SourceScope = Omit<QuestionScope, "version">;
 interface QuestionDraftState {
 	entries: Record<string, QuestionDraft>;
@@ -25,12 +25,15 @@ interface QuestionDraftState {
 	clearSaved: (key: string, clientAnswerId: string) => void;
 	reconcileSource: (scope: SourceScope, question: SessionQuestion | null) => void;
 	prune: () => void;
+	retainVisible: (key: string) => () => void;
 	syncStorage: (key: string | null, value: string | null) => void;
 }
 
 export const questionDraftStorageKey = "ao.question.drafts.v2";
 const maxDrafts = 32;
 const maxStorageChars = 512 * 1024;
+const unconfirmedRetention = 30 * 24 * 60 * 60 * 1000;
+const leasePrefix = "ao.question.editors.v1:";
 const retention = 7 * 24 * 60 * 60 * 1000;
 const storageKey = (key: string) => `${questionDraftStorageKey}:${key}`;
 const hasFields = (entry: QuestionDraft) => Object.values(entry.fields).some((field) => field.selectedOptionIds.length || field.otherSelected || field.otherText);
@@ -73,7 +76,8 @@ function parseDraft(key: string, value: unknown): QuestionDraft | undefined {
 			case "unknown": phase = { state: "unknown", answer: parseQuestionSubmission(value.phase.answer, question), nextRetryAt: 0 }; break;
 			default: return;
 		}
-		const entry = { scope, question, fields, phase, updatedAt };
+		const confirmedAt = typeof value.confirmedAt === "number" && Number.isFinite(value.confirmedAt) ? Math.min(value.confirmedAt, Date.now()) : undefined;
+		const entry = { scope, question, fields, phase, updatedAt, confirmedAt };
 		return hasFields(entry) || isPending(entry) ? entry : undefined;
 	} catch { /* Invalid saved input never becomes an automatic answer. */ }
 	return undefined;
@@ -115,6 +119,28 @@ function pendingAnswer(entry: QuestionDraft | undefined, clientAnswerId: string)
 
 export function createQuestionDraftStore(storage: Storage) {
 	return create<QuestionDraftState>((set, get) => {
+		const visible = new Map<string, number>();
+		const leaseKey = `${leasePrefix}${crypto.randomUUID()}`;
+		const renewLease = () => {
+			try {
+				if (visible.size) storage.setItem(leaseKey, JSON.stringify({ keys: [...visible.keys()], until: Date.now() + 120_000 }));
+				else storage.removeItem(leaseKey);
+			} catch { /* Recent edits and this window's visible set still protect its input. */ }
+		};
+		const visibleKeys = () => {
+			const keys = new Set(visible.keys());
+			const expired: string[] = [];
+			for (let index = 0; index < storage.length; index++) {
+				const key = storage.key(index);
+				if (!key?.startsWith(leasePrefix)) continue;
+				const value: unknown = JSON.parse(storage.getItem(key) ?? "null");
+				if (isRecord(value) && typeof value.until === "number" && value.until > Date.now() && Array.isArray(value.keys)) {
+					for (const key of value.keys) if (typeof key === "string") keys.add(key);
+				} else if (isRecord(value) && typeof value.until === "number" && value.until <= Date.now()) expired.push(key);
+			}
+			for (const key of expired) storage.removeItem(key);
+			return keys;
+		};
 		const unsaved = new Set<string>();
 		const snapshots = new WeakMap<SessionQuestion, string>();
 		const metadata = new Map<string, { raw: string; reference: boolean; at: number }>();
@@ -240,6 +266,10 @@ export function createQuestionDraftStore(storage: Storage) {
 					.sort(([, a], [, b]) => b.scope.version - a.scope.version)[0]?.[0];
 				let next = entries;
 				for (const [key, entry] of matching) {
+					if (question?.state === "open" && entry.scope.version === question.version && Date.now() - (entry.confirmedAt ?? 0) >= 24 * 60 * 60 * 1000) {
+						if (next === entries) next = { ...entries };
+						next[key] = { ...entry, confirmedAt: Date.now() };
+					}
 					if (isPending(entry) || question && (entry.scope.version > question.version || question.state === "open" && entry.scope.version === question.version)) continue;
 					if (key === reference && entry.phase.state === "conflict") continue;
 					if (next === entries) next = { ...entries };
@@ -249,7 +279,29 @@ export function createQuestionDraftStore(storage: Storage) {
 				}
 				return next;
 			}),
-			prune: () => update((entries) => ({ ...entries })),
+			prune: () => update((entries) => {
+				let editing: Set<string>;
+				try { editing = visibleKeys(); } catch { return entries; }
+				const expired = Object.keys(entries).filter((key) => {
+					const entry = entries[key];
+					return entry.phase.state === "conflict" && Date.now() - entry.updatedAt >= retention ||
+						entry.phase.state === "editing" && !editing.has(key) && Date.now() - Math.max(entry.updatedAt, entry.confirmedAt ?? 0) >= unconfirmedRetention;
+				});
+				if (!expired.length) return entries;
+				const next = { ...entries };
+				for (const key of expired) delete next[key];
+				return next;
+			}),
+			retainVisible: (key) => {
+				visible.set(key, (visible.get(key) ?? 0) + 1); renewLease();
+				const timer = window.setInterval(renewLease, 30_000);
+				return () => {
+					window.clearInterval(timer);
+					const count = (visible.get(key) ?? 1) - 1;
+					if (count) visible.set(key, count); else visible.delete(key);
+					renewLease();
+				};
+			},
 			syncStorage: (key, value) => {
 				if (key !== null && !key.startsWith(`${questionDraftStorageKey}:`)) return;
 				set((state) => {

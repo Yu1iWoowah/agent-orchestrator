@@ -1233,3 +1233,19 @@ it("refreshes again when a root catch-up joins an older targeted conversation fe
 		vi.useRealTimers();
 	}
 });
+
+it("targets project attention source events without rescanning projects for streamed text", async () => {
+ vi.useFakeTimers();const client=fakeQueryClient();const disconnect=createEventTransport(client).connect();
+ try {
+  await vi.advanceTimersByTimeAsync(200);
+  vi.mocked(client.invalidateQueries).mockClear();
+  cdcSources()[0].emit("session_updated",JSON.stringify({projectId:"project-a",sessionId:"worker",type:"session_updated",payload:{conversationId:"conversation",attentionChanged:false}}));
+  await vi.advanceTimersByTimeAsync(200);
+  expect(client.invalidateQueries).not.toHaveBeenCalledWith({queryKey:["project-attention"]},{cancelRefetch:false});
+  expect(client.invalidateQueries).not.toHaveBeenCalledWith({queryKey:["project-attention","project-a"]},{cancelRefetch:false});
+  cdcSources()[0].emit("session_updated",JSON.stringify({projectId:"project-a",sessionId:"worker",type:"session_updated",payload:{questionId:"ask-1"}}));
+  await vi.advanceTimersByTimeAsync(200);
+  expect(client.invalidateQueries).toHaveBeenCalledWith({queryKey:["project-attention","project-a"]},{cancelRefetch:false});
+  expect(client.invalidateQueries).not.toHaveBeenCalledWith({queryKey:["project-attention","project-b"]},{cancelRefetch:false});
+ }finally{disconnect();vi.useRealTimers();}
+});

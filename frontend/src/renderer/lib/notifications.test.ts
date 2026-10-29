@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import type { NotificationDTO, NotificationsCache, NotificationsPage } from "./notifications";
@@ -551,6 +551,39 @@ describe("notification cache helpers", () => {
 });
 
 describe("createNotificationsTransport", () => {
+	it("refreshes read state in two connected caches without reconnecting or showing a toast", async () => {
+		const clients = [queryClient(), queryClient()];
+		const cleanups: Array<() => void> = [];
+		let read = false;
+		try {
+			for (const qc of clients) {
+				for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey]) {
+					const snapshot = (): NotificationsCache => ({
+						pageParams: [""], pages: [{
+							notifications: read && queryKey === unreadNotificationsQueryKey ? [] : [notification({ status: read ? "read" : "unread" })],
+							unreadCount: read ? 0 : 1, unresolvedCount: 1,
+						}],
+					});
+					const observer = new QueryObserver(qc, { queryKey, initialData: snapshot(), queryFn: async () => snapshot(), staleTime: Infinity });
+					cleanups.push(observer.subscribe(() => {}));
+				}
+				cleanups.push(createNotificationsTransport(qc).connect());
+			}
+			read = true;
+			for (const source of EventSourceStub.instances) source.dispatch("notification_read", notification({ status: "read" }));
+			await vi.waitFor(() => {
+				for (const qc of clients) {
+					expect(getCachedUnreadCount(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toBe(0);
+					expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey))[0]?.status).toBe("read");
+					expect(qc.getQueryData<NotificationsCache>(recentNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(1);
+				}
+			});
+			expect(showNotificationMock).not.toHaveBeenCalled();
+		} finally {
+			cleanups.forEach((cleanup) => cleanup());
+			clients.forEach((qc) => qc.clear());
+		}
+	});
 	it("opens the notification stream and invalidates unread notifications on open", () => {
 		const qc = queryClient();
 		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");

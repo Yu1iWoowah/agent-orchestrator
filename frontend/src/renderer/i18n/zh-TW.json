@@ -1,4 +1,13 @@
 {
+	"decision.sourceReport": "來源 report：{{id}}",
+	"projectAttention.count": "待你回覆：{{count}}",
+	"projectAttention.open": "開啟專案待回覆事項",
+	"projectAttention.title": "專案待回覆事項",
+	"projectAttention.description": "你的決策與 orchestrator 協調報告分開顯示。provider 請求請前往原 session。",
+	"projectAttention.coordination": "orchestrator 報告",
+	"projectAttention.totals": "{{open}} 項 · {{unread}} 項未讀",
+	"projectAttention.offline": "無法確認專案數量。請檢查 host 連線後重試。",
+	"projectAttention.reportStatus": "回答狀態未知 · 報告交付：{{delivery}}",
 	"documents.catalog.localOnly": "文件清單只能在這台電腦使用。",
 	"documents.connection.localOnly": "文件路徑查詢只能在這台電腦使用。",
 	"documents.read.error": "無法載入文件。",

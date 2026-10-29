@@ -339,6 +339,15 @@ func TestNotificationsAPI_StreamCreatedNotifications(t *testing.T) {
 	if eventLine, dataLine := readSSE(); eventLine != "event: notification_created" || !strings.Contains(dataLine, `"id":"ntf_1"`) {
 		t.Fatalf("eventLine=%q dataLine=%q", eventLine, dataLine)
 	}
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	read := rec
+	read.Status = domain.NotificationRead
+	stream.ch <- domain.NotificationEvent{Kind: domain.NotificationReadEvent, Record: read}
+	if eventLine, dataLine := readSSE(); eventLine != "event: notification_read" || !strings.Contains(dataLine, `"status":"read"`) {
+		t.Fatalf("eventLine=%q dataLine=%q", eventLine, dataLine)
+	}
 
 	// A resolved event lets an open panel drop the row without a refetch.
 	if _, err := reader.ReadString('\n'); err != nil { // blank separator line
