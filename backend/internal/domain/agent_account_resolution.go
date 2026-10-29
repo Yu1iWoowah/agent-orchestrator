@@ -37,6 +37,12 @@ type ResolvedAgentAccount struct {
 	Source    AgentAccountResolutionSource `json:"source" enum:"explicit,role,project,global,device,legacy"`
 }
 
+// Managed reports whether native preflight must use a saved private profile.
+// The implicit device choice keeps the provider's legacy launch/auth policy.
+func (a ResolvedAgentAccount) Managed() bool {
+	return a.AccountID != "" && a.AccountID != DeviceAgentAccountID(a.Provider)
+}
+
 // RoleAccountReference returns only the configured role's local reference.
 // Omitted references inherit; invalid references are rejected by the resolver.
 func (c ProjectConfig) RoleAccountReference(role AgentAccountRole, harness AgentHarness) string {

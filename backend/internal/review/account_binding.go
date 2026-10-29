@@ -43,10 +43,17 @@ func (e *Engine) validateReviewerModels(ctx context.Context, harness domain.Revi
 	if e.models == nil || config.Model == "" && config.Effort == "" {
 		return nil
 	}
-	catalog, err := e.models.ModelCatalog(ctx, string(harness), "", true)
+	catalog, err := e.models.ModelCatalog(ctx, string(harness), "", false)
+	if err != nil || catalog.Stale || len(catalog.Models) == 0 || catalog.RefreshState != "" && catalog.RefreshState != "idle" || validateReviewerCatalog(catalog, config) != nil {
+		catalog, err = e.models.ModelCatalog(ctx, string(harness), "", true)
+	}
 	if err != nil {
 		return err
 	}
+	return validateReviewerCatalog(catalog, config)
+}
+
+func validateReviewerCatalog(catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
 	for _, model := range catalog.Models {
 		if model.ID == config.Model || config.Model == "" && model.IsDefault {
 			if config.Effort != "" && !slices.Contains(model.Efforts, config.Effort) {

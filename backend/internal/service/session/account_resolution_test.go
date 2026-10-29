@@ -2,11 +2,41 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestResolvedDeviceSpawnKeepsLegacyReadinessGate(t *testing.T) {
+	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessCodex} {
+		for _, state := range []domain.AgentAuthenticationState{domain.AgentAuthenticationUnauthorized, domain.AgentAuthenticationUnknown} {
+			st := newFakeStore()
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+			commander := &fakeCommander{}
+			readiness := &fakeAgentReadiness{snapshot: domain.AgentReadinessSnapshot{ID: string(harness), Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled}, Authentication: domain.AgentAuthenticationObservation{State: state, Freshness: domain.AgentReadinessFresh}}}
+			svc := NewWithDeps(Deps{Store: st, Manager: commander, AgentReadiness: readiness})
+			svc.SetAccountResolver(accountResolutionFunc(func(_ context.Context, _ ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+				p, _ := domain.AgentAccountProviderFor(harness)
+				return domain.ResolvedAgentAccount{AccountID: domain.DeviceAgentAccountID(p), Provider: p, Source: domain.AgentAccountSourceDevice}, nil
+			}))
+			_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: harness})
+			if readiness.calls != 1 {
+				t.Fatalf("device skipped legacy readiness: %s %s", harness, state)
+			}
+			if harness == domain.HarnessCodex && state == domain.AgentAuthenticationUnauthorized {
+				var apiError *apierr.Error
+				if !errors.As(err, &apiError) || apiError.Code != "CODEX_ACCOUNT_AUTH_UNVERIFIED" || commander.spawned {
+					t.Fatalf("device Codex gate changed: %v", err)
+				}
+			} else if err != nil || !commander.spawned {
+				t.Fatalf("legacy device spawn blocked: %s %s %v", harness, state, err)
+			}
+		}
+	}
+}
 
 type accountBoundSessionStore struct {
 	*fakeStore

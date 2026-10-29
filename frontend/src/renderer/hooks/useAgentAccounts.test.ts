@@ -6,6 +6,14 @@ import { agentAccountErrorMessage } from "./useAgentAccounts";
 
 afterEach(async () => { await appI18n.changeLanguage("en"); });
 
+it.each(APP_LOCALES)("identifies the blocking reviewer in %s", async (locale) => {
+	await appI18n.changeLanguage(locale);
+	expect(appCatalogs[locale]["settings.agentAccounts.cleanupScheduledReviewer"]).toBeTruthy();
+	const message = agentAccountErrorMessage({code:"AGENT_ACCOUNT_IN_USE",details:{reviewId:"review-123"}});
+	expect(message).toBe(appI18n.t("settings.agentAccounts.cleanupScheduledReviewer",{reviewId:"review-123"}));
+	expect(message).toContain("review-123");
+});
+
 it.each(APP_LOCALES)("localizes account diagnostics in %s without machine-code fallbacks", async (locale) => {
 	await appI18n.changeLanguage(locale);
 	for (const [code, key] of [

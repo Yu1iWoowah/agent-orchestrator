@@ -8,10 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +31,83 @@ import (
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
+
+type deviceIdentityProvider struct {
+	ports.AgentAccountProviderCLI
+	calls atomic.Int32
+	fail  bool
+}
+
+func (p *deviceIdentityProvider) Identity(context.Context, string) (domain.AgentAccountIdentityCheck, error) {
+	p.calls.Add(1)
+	if p.fail {
+		return domain.AgentAccountIdentityCheck{}, fmt.Errorf("fake identity timeout")
+	}
+	return domain.AgentAccountIdentityCheck{}, nil
+}
+
+func TestDeviceClaudeSpawnDoesNotUseManagedIdentity(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(fmt.Sprint("identity-failure=", failure), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			st := sqlitetest.MustOpen(t)
+			data := t.TempDir()
+			bins := t.TempDir()
+			for name, script := range map[string]string{"claude": "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '2.1.0 (Claude Code)'; elif [ -n \"$ANTHROPIC_API_KEY\" ] || [ \"$CLAUDE_CODE_USE_BEDROCK\" = 1 ]; then echo '{\"loggedIn\":true,\"authMethod\":\"api_key\"}'; else echo '{\"loggedIn\":false}'; fi\n", "tmux": "#!/bin/sh\necho 'tmux 3.5'\n"} {
+				if err := os.WriteFile(filepath.Join(bins, name), []byte(script), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bins+string(os.PathListSeparator)+os.Getenv("PATH"))
+			provider := &deviceIdentityProvider{AgentAccountProviderCLI: &agentaccount.Claude{DeviceHome: t.TempDir(), DeviceConfig: filepath.Join(t.TempDir(), ".claude.json")}, fail: failure}
+			accounts := agentaccounts.New(st, []ports.AgentAccountProviderCLI{provider}, filepath.Join(data, "accounts"), nil, nil)
+			// Settings can already have observed a signed-out or inconclusive
+			// device login. That observation must not replace legacy launch policy.
+			if _, err := accounts.List(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			provider.calls.Store(0)
+			catalog := agentsvc.NewWithDeps(agentsvc.Deps{Cache: st, Discoverer: &bindingModels{}, Context: ctx, ModelDiscoveryDir: filepath.Join(data, "discovery")})
+			catalog.SetAccountExecution(accounts, st)
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			agents, err := buildAgentResolver("claude-code", log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime := &bindingRuntime{}
+			svc, _, lc, err := startSession(ctx, config.Config{DataDir: data, StateDir: data, Agent: "claude-code"}, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, accounts, log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lc.(*sessionmanager.Manager).SetAgentAccounts(accounts)
+			svc.SetAccountResolver(accounts)
+			fakeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"fake-model"}]}`))
+			}))
+			t.Cleanup(fakeAPI.Close)
+			cfg := domain.ProjectConfig{Worker: domain.RoleOverride{Harness: domain.HarnessClaudeCode}, Env: map[string]string{"ANTHROPIC_API_KEY": "fake-project-key", "ANTHROPIC_BASE_URL": fakeAPI.URL}}
+			if failure {
+				cfg.Env = map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1"}
+			}
+			if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "device", Kind: domain.ProjectKindScratch, Path: t.TempDir(), Config: cfg, RegisteredAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := svc.Spawn(ctx, ports.SpawnConfig{ProjectID: "device", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, RequestedMode: domain.SessionModeTUI, Prompt: "fake task"}); err != nil {
+				t.Fatal(err)
+			}
+			if provider.calls.Load() != 0 || len(runtime.snapshot()) != 1 {
+				t.Fatalf("device spawn invoked Identity or failed to launch: probes=%d runtimes=%d", provider.calls.Load(), len(runtime.snapshot()))
+			}
+			for key, want := range cfg.Env {
+				if runtime.snapshot()[0].Env[key] != want {
+					t.Fatalf("device project credential setting %s was discarded", key)
+				}
+			}
+		})
+	}
+}
 
 type bindingRuntime struct {
 	selectableRuntime

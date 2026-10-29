@@ -606,12 +606,12 @@ func Run(buildVersion string) error {
 			// Reviewer bindings are independent of worker sessions. Keep the
 			// profile until its reviewer is explicitly stopped/archived; PR 4
 			// adds the complete usage-owner and handoff workflow.
-			used, err := store.HasOpenReviewerAccountUse(ctx, id)
+			use, err := store.GetOpenReviewerAccountUse(ctx, id)
 			if err != nil {
 				return ports.ErrAgentAccountStorageUnavailable
 			}
-			if used {
-				return ports.ErrAgentAccountInUse
+			if use != nil {
+				return use
 			}
 			return stopper.ExitAgentsOnAccount(ctx, id)
 		})

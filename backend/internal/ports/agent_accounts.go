@@ -8,6 +8,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// AgentAccountReviewerInUseError identifies a local execution that must stop
+// before cleanup. It carries only opaque references, never provider output.
+type AgentAccountReviewerInUseError struct {
+	ReviewID  string
+	SessionID domain.SessionID
+	Harness   domain.ReviewerHarness
+}
+
+func (*AgentAccountReviewerInUseError) Error() string { return ErrAgentAccountInUse.Error() }
+func (*AgentAccountReviewerInUseError) Unwrap() error { return ErrAgentAccountInUse }
+
 // Agent account errors the API maps to client responses.
 var (
 	ErrAgentAccountLocalOnly                  = errors.New("account_local_only")
@@ -97,6 +108,9 @@ type AgentAccountLaunchEnv interface {
 	// SessionAccountID is the account the session uses for harness's provider,
 	// or "" when the harness has no accounts.
 	SessionAccountID(ctx context.Context, sessionID domain.SessionID, harness domain.AgentHarness) (string, error)
+	// SessionAccountBinding reads only the durable execution choice; it never
+	// resolves current defaults when the binding is missing.
+	SessionAccountBinding(context.Context, domain.SessionID, domain.AgentHarness) (domain.ResolvedAgentAccount, error)
 	// ValidateAccount checks that accountID can run harness now: it is of the
 	// harness's provider and signed in as the login it was added with.
 	ValidateAccount(ctx context.Context, harness domain.AgentHarness, accountID string) error

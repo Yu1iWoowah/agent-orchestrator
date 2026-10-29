@@ -190,9 +190,15 @@ func (s *Store) AgentAccountUsageSince(ctx context.Context, since time.Time) ([]
 	return out, nil
 }
 
-// HasOpenReviewerAccountUse includes pending launches whose binding exists but
+// GetOpenReviewerAccountUse includes pending launches whose binding exists but
 // whose terminal handle is not committed yet. Never delete their native home.
-func (s *Store) HasOpenReviewerAccountUse(ctx context.Context, id string) (bool, error) {
-	value, err := s.qr.HasOpenReviewerAccountUse(ctx, id)
-	return value, err
+func (s *Store) GetOpenReviewerAccountUse(ctx context.Context, id string) (*ports.AgentAccountReviewerInUseError, error) {
+	row, err := s.qr.GetOpenReviewerAccountUse(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ports.AgentAccountReviewerInUseError{ReviewID: row.ReviewID, SessionID: row.SessionID, Harness: row.Harness}, nil
 }

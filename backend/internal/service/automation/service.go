@@ -215,6 +215,7 @@ func (s *Service) Update(ctx context.Context, id domain.AutomationID, input Upda
 	if err != nil {
 		return domain.Automation{}, err
 	}
+	previous := rec
 	if input.AgentAccountID != nil {
 		rec.AgentAccountID = *input.AgentAccountID
 	}
@@ -290,8 +291,10 @@ func (s *Service) Update(ctx context.Context, id domain.AutomationID, input Upda
 		}
 	}
 	rec.UpdatedAt = now
-	if err := s.validateAccount(ctx, rec); err != nil {
-		return domain.Automation{}, err
+	if rec.AgentAccountID != previous.AgentAccountID || rec.Harness != previous.Harness || rec.Kind != previous.Kind || !previous.Enabled && rec.Enabled {
+		if err := s.validateAccount(ctx, rec); err != nil {
+			return domain.Automation{}, err
+		}
 	}
 	ok, err := s.store.UpdateAutomation(ctx, rec)
 	if err != nil {

@@ -59,16 +59,16 @@ func TestPendingReviewerBindingProtectsProfileUntilArchived(t *testing.T) {
 	review := domain.Review{ID: "pending-review", SessionID: worker.ID, ProjectID: worker.ProjectID, Harness: domain.ReviewerCodex, ReviewerActivityState: domain.ActivityActive, CreatedAt: now, UpdatedAt: now}
 	mustNoError(t, s.UpsertReview(ctx, review))
 	mustNoError(t, s.BindReviewerAgentAccount(ctx, review.ID, domain.ResolvedAgentAccount{AccountID: "C", Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceRole}, now))
-	used, err := s.HasOpenReviewerAccountUse(ctx, "C")
+	use, err := s.GetOpenReviewerAccountUse(ctx, "C")
 	mustNoError(t, err)
-	if !used {
+	if use == nil || use.ReviewID != review.ID || use.SessionID != worker.ID || use.Harness != review.Harness {
 		t.Fatal("pending reviewer without terminal was not protected")
 	}
 	review.IsArchived = true
 	mustNoError(t, s.UpsertReview(ctx, review))
-	used, err = s.HasOpenReviewerAccountUse(ctx, "C")
+	use, err = s.GetOpenReviewerAccountUse(ctx, "C")
 	mustNoError(t, err)
-	if used {
+	if use != nil {
 		t.Fatal("archived reviewer permanently blocks profile cleanup")
 	}
 }

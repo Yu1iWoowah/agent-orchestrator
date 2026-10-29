@@ -89,3 +89,34 @@ func TestRemoteRequestsCannotSelectLocalPrivateAccounts(t *testing.T) {
 		t.Fatalf("unconfigured legacy device compatibility: %+v %v", got, err)
 	}
 }
+
+func TestResolvedDeviceBindingDoesNotProbeIdentity(t *testing.T) {
+	cli := &fakeClaude{onIdentity: func(string) { t.Error("device binding probed native identity") }}
+	st := &memStore{bindings: map[domain.SessionID]string{}}
+	svc := New(st, []ports.AgentAccountProviderCLI{cli}, filepath.Join(t.TempDir(), "accounts"), nil, nil)
+	selected, err := svc.ResolveAccount(context.Background(), ports.AgentAccountResolutionRequest{Harness: domain.HarnessClaudeCode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.BindResolvedSession(context.Background(), "device-worker", domain.HarnessClaudeCode, selected); err != nil {
+		t.Fatal(err)
+	}
+	if st.bindings["device-worker"] != "device-claude" {
+		t.Fatal("device binding not persisted")
+	}
+}
+
+func TestSessionAccountBindingNeverResolvesNewDefaults(t *testing.T) {
+	st := &memStore{bindings: map[domain.SessionID]string{"worker": "original-A"}, defaults: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderClaude: "new-default-D"}}
+	svc := New(st, []ports.AgentAccountProviderCLI{&fakeClaude{}}, filepath.Join(t.TempDir(), "accounts"), nil, nil)
+	got, err := svc.SessionAccountBinding(context.Background(), "worker", domain.HarnessClaudeCode)
+	if err != nil || got.AccountID != "original-A" {
+		t.Fatalf("binding adopted new default: %+v %v", got, err)
+	}
+	if _, err := svc.SessionAccountBinding(context.Background(), "missing", domain.HarnessClaudeCode); !errors.Is(err, ports.ErrAgentAccountUnknown) {
+		t.Fatalf("missing binding fell back: %v", err)
+	}
+	if st.bindings["missing"] != "" {
+		t.Fatal("reading a missing binding saved today's default")
+	}
+}

@@ -10,10 +10,14 @@ import (
 
 type recordingAccountResolver struct {
 	requests []ports.AgentAccountResolutionRequest
+	err      error
 }
 
 func (r *recordingAccountResolver) ResolveAccount(ctx context.Context, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
 	r.requests = append(r.requests, in)
+	if r.err != nil {
+		return domain.ResolvedAgentAccount{}, r.err
+	}
 	if ports.IsRemoteAccountRequest(ctx) {
 		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountLocalOnly
 	}
@@ -22,6 +26,47 @@ func (r *recordingAccountResolver) ResolveAccount(ctx context.Context, in ports.
 		id = in.ProjectConfig.RoleAccountReference(in.Role, in.Harness)
 	}
 	return domain.ResolvedAgentAccount{AccountID: id, Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceRole}, nil
+}
+
+func TestUnavailableInheritedAccountDoesNotBlockUnrelatedAutomationUpdates(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		st := newFakeStore()
+		resolver := &recordingAccountResolver{}
+		svc := New(Deps{Store: st})
+		svc.SetAccountResolver(resolver)
+		rec, err := svc.Create(context.Background(), CreateInput{ProjectID: "scheduled", DisplayName: "Original", Prompt: "Fake", Kind: domain.KindWorker, RRule: "FREQ=DAILY", Timezone: "UTC"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolver.err = ports.ErrAgentAccountSignedOut
+		ctx := context.Background()
+		if remote {
+			ctx = ports.WithRemoteAccountRequest(ctx)
+		}
+		name, enabled := "Renamed", false
+		for _, update := range []UpdateInput{{DisplayName: &name}, {Enabled: &enabled}, {AgentAccountID: &rec.AgentAccountID, Kind: &rec.Kind, Harness: &rec.Harness}} {
+			if _, err := svc.Update(ctx, rec.ID, update); err != nil {
+				t.Fatalf("unrelated update blocked (remote=%t): %v", remote, err)
+			}
+		}
+		if len(resolver.requests) != 1 {
+			t.Fatalf("unrelated updates resolved account %d times", len(resolver.requests)-1)
+		}
+		enabled = true
+		if _, err := svc.Update(ctx, rec.ID, UpdateInput{Enabled: &enabled}); err == nil {
+			t.Fatal("re-enable skipped account validation")
+		}
+		newID := "different"
+		if _, err := svc.Update(ctx, rec.ID, UpdateInput{AgentAccountID: &newID}); err == nil {
+			t.Fatal("changed account skipped validation")
+		}
+		harness, kind := domain.HarnessClaudeCode, domain.KindOrchestrator
+		for _, update := range []UpdateInput{{Harness: &harness}, {Kind: &kind}} {
+			if _, err := svc.Update(ctx, rec.ID, update); err == nil {
+				t.Fatal("changed execution selection skipped account validation")
+			}
+		}
+	}
 }
 func TestAutomationAccountOverrideUpdateAndInheritance(t *testing.T) {
 	store := newFakeStore()

@@ -20,6 +20,7 @@ import (
 // category. The provider's original error and cause are never retained.
 type OperationError struct {
 	OperationID string
+	Reviewer    *ports.AgentAccountReviewerInUseError
 	category    error
 }
 
@@ -353,7 +354,9 @@ func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOpe
 				if e := s.saveOperation(ctx, o); e != nil {
 					return e
 				}
-				return &OperationError{OperationID: o.ID, category: ports.ErrAgentAccountInUse}
+				var reviewer *ports.AgentAccountReviewerInUseError
+				errors.As(e, &reviewer)
+				return &OperationError{OperationID: o.ID, Reviewer: reviewer, category: ports.ErrAgentAccountInUse}
 			}
 		}
 	}

@@ -251,11 +251,8 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 	if !ok {
 		return fmt.Errorf("no reviewer adapter for harness %q", harness)
 	}
-	if profile, ok := reviewer.(ports.ReviewerChatProfile); ok && (len(mode) == 0 || mode[0] != domain.ReviewerInterfaceTUI) && l.reviewChatSupported(profile) {
-		return l.chat.PreflightReviewChat(ctx, profile.ReviewChatHarness())
-	}
 	var accountEnv map[string]string
-	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok && selected.Managed() {
 		if l.accounts == nil {
 			return ports.ErrAgentAccountStorageUnavailable
 		}
@@ -264,6 +261,9 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 		if err != nil {
 			return err
 		}
+	}
+	if profile, ok := reviewer.(ports.ReviewerChatProfile); ok && (len(mode) == 0 || mode[0] != domain.ReviewerInterfaceTUI) && l.reviewChatSupported(profile) {
+		return l.chat.PreflightReviewChat(ctx, profile.ReviewChatHarness())
 	}
 	cmd, err := reviewer.ReviewCommand(ctx, ports.ReviewInvocation{WorkspacePath: workspacePath, Env: accountEnv})
 	if err != nil {
@@ -323,7 +323,7 @@ func (l *agentLauncher) InterfaceMode(harness domain.ReviewerHarness) domain.Rev
 }
 
 func (l *agentLauncher) agentAuthStatus(ctx context.Context, harness domain.ReviewerHarness) (ports.AgentAuthStatus, bool, error) {
-	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok && selected.Managed() {
 		if l.accounts == nil {
 			return "", true, ports.ErrAgentAccountStorageUnavailable
 		}

@@ -59,6 +59,9 @@ func (s *Service) ResolveReviewerAccount(ctx context.Context, id string, in port
 	if err := accountAvailability(account); err != nil {
 		return domain.ResolvedAgentAccount{}, err
 	}
+	if r := s.cachedReading(account.ID); !account.Device() && r != nil && r.knownUnusable() && s.now().Sub(r.at) <= freshFor {
+		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountSignedOut
+	}
 	return selected, nil
 }
 
@@ -72,10 +75,16 @@ func (s *Service) ReviewerLaunchEnv(ctx context.Context, id string, harness doma
 	if !ok || id == "" {
 		return nil, ports.ErrAgentAccountStorageUnavailable
 	}
-	if _, found, err := store.GetReviewerAgentAccount(ctx, id, p); err != nil {
+	binding, found, err := store.GetReviewerAgentAccount(ctx, id, p)
+	if err != nil {
 		return nil, err
 	} else if !found {
 		return nil, ports.ErrAgentAccountUnknown
+	}
+	if binding.Managed() {
+		if _, err := s.pick(ctx, harness, binding.AccountID); err != nil {
+			return nil, err
+		}
 	}
 	return s.launchEnv(ctx, domain.SessionID(id), domain.AgentAccount{}, harness, id)
 }

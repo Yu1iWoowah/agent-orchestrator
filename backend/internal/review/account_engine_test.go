@@ -2,11 +2,39 @@ package review
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type savedReviewerModels struct {
+	refreshes []bool
+	catalog   ports.AgentModelCatalog
+}
+
+func (m *savedReviewerModels) ModelCatalog(_ context.Context, _, _ string, refresh bool) (ports.AgentModelCatalog, error) {
+	m.refreshes = append(m.refreshes, refresh)
+	if refresh {
+		return ports.AgentModelCatalog{}, errors.New("native discovery unavailable")
+	}
+	return m.catalog, nil
+}
+
+func TestReviewerUsesSavedCatalogBeforeNativeDiscovery(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		models := &savedReviewerModels{catalog: ports.AgentModelCatalog{Stale: stale, Models: []ports.AgentModelInfo{{ID: "saved-model", Efforts: []string{"high"}}}}}
+		engine := &Engine{models: models}
+		err := engine.validateReviewerModels(context.Background(), domain.ReviewerCodex, domain.AgentConfig{Model: "saved-model", Effort: "high"})
+		if !stale && (err != nil || len(models.refreshes) != 1 || models.refreshes[0]) {
+			t.Fatalf("saved catalog triggered discovery: %v %v", models.refreshes, err)
+		}
+		if stale && (err == nil || len(models.refreshes) != 2 || models.refreshes[0] || !models.refreshes[1]) {
+			t.Fatalf("stale catalog was not refreshed: %v %v", models.refreshes, err)
+		}
+	}
+}
 
 type recordingReviewBinding struct {
 	ports.ReviewerAccountBindings

@@ -126,8 +126,8 @@ VALUES (?,?,?,?,?) ON CONFLICT(review_id,provider) DO NOTHING;
 -- name: GetReviewerAgentAccount :one
 SELECT account_id,provider,resolution_source FROM reviewer_agent_accounts WHERE review_id=? AND provider=?;
 
--- name: HasOpenReviewerAccountUse :one
-SELECT EXISTS (
- SELECT 1 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
- WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
-);
+-- name: GetOpenReviewerAccountUse :one
+SELECT r.id AS review_id,r.session_id,r.harness
+FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
+WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
+ORDER BY r.created_at,r.id,a.provider LIMIT 1;

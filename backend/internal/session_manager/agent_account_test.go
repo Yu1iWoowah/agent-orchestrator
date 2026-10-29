@@ -83,6 +83,18 @@ func (a *transitionAccounts) SessionAccountID(_ context.Context, id domain.Sessi
 	return a.bound[id], nil
 }
 
+func (a *transitionAccounts) SessionAccountBinding(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (domain.ResolvedAgentAccount, error) {
+	accountID, err := a.SessionAccountID(ctx, id, harness)
+	if err != nil {
+		return domain.ResolvedAgentAccount{}, err
+	}
+	if accountID == "" {
+		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountUnknown
+	}
+	provider, _ := domain.AgentAccountProviderFor(harness)
+	return domain.ResolvedAgentAccount{AccountID: accountID, Provider: provider, Source: domain.AgentAccountSourceLegacy}, nil
+}
+
 func (a *transitionAccounts) ValidateAccount(context.Context, domain.AgentHarness, string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

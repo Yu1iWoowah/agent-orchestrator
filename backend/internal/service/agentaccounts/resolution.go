@@ -57,7 +57,7 @@ func (s *Service) ResolveAccount(ctx context.Context, in ports.AgentAccountResol
 	if err := accountAvailability(account); err != nil {
 		return domain.ResolvedAgentAccount{}, err
 	}
-	if r := s.cachedReading(account.ID); r != nil && r.knownUnusable() && s.now().Sub(r.at) <= freshFor {
+	if r := s.cachedReading(account.ID); !account.Device() && r != nil && r.knownUnusable() && s.now().Sub(r.at) <= freshFor {
 		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
 	return domain.ResolvedAgentAccount{AccountID: account.ID, Provider: provider, Source: source}, nil
@@ -85,6 +85,23 @@ func (s *Service) AccountIdentity(ctx context.Context, harness domain.AgentHarne
 	return r.identity, nil
 }
 
+// SessionAccountBinding restores a persisted selection without resolving any
+// current default. Missing facts remain an error rather than becoming device.
+func (s *Service) SessionAccountBinding(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (domain.ResolvedAgentAccount, error) {
+	provider, supported := domain.AgentAccountProviderFor(harness)
+	if !supported {
+		return domain.ResolvedAgentAccount{}, nil
+	}
+	binding, found, err := s.store.GetSessionAgentAccountBinding(ctx, id, provider)
+	if err != nil {
+		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountStorageUnavailable
+	}
+	if !found || binding.AccountID == "" {
+		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountUnknown
+	}
+	return binding, nil
+}
+
 // BindResolvedSession records the selected metadata before any native check.
 // A failed preflight is handled by the manager's existing seed rollback.
 func (s *Service) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
@@ -110,6 +127,9 @@ func (s *Service) BindResolvedSession(ctx context.Context, id domain.SessionID, 
 	}
 	if err := s.store.BindSessionAgentAccountWithSource(ctx, id, selected, s.now()); err != nil {
 		return err
+	}
+	if account.Device() {
+		return nil
 	}
 	_, err = s.pick(ctx, harness, selected.AccountID)
 	return err

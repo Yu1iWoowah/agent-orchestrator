@@ -172,6 +172,10 @@ func (c *ProjectsController) get(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
+	if got.Project != nil {
+		project := projectForAccountRequest(r, *got.Project)
+		got.Project = &project
+	}
 	resp, err := newGetProjectResponse(got)
 	if err != nil {
 		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "INTERNAL_ERROR", "Internal server error", nil)

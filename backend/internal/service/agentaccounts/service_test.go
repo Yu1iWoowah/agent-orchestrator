@@ -448,7 +448,8 @@ func TestNewTaskOnAKnownBadDefaultRefusesFallback(t *testing.T) {
 			}
 		})
 	}
-	// The computer's own login as the default follows the same rule.
+	// Device selections retain legacy CLI policy; a signed-out observation
+	// cannot account for project-local API keys or alternate providers.
 	if err := svc.SetDefault(ctx, "device-claude"); err != nil {
 		t.Fatal(err)
 	}
@@ -457,15 +458,15 @@ func TestNewTaskOnAKnownBadDefaultRefusesFallback(t *testing.T) {
 	if _, err := svc.List(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.BindSession(ctx, "device-out", domain.HarnessClaudeCode, ""); !errors.Is(err, ports.ErrAgentAccountSignedOut) || store.bindings["device-out"] != "" {
+	if err := svc.BindSession(ctx, "device-out", domain.HarnessClaudeCode, ""); err != nil || store.bindings["device-out"] != "device-claude" {
 		t.Fatalf("bind on a signed-out CLI login default: %q %v", store.bindings["device-out"], err)
 	}
-	// With no account signed in, the task is refused rather than started signed out.
+	// Even with no saved account signed in, this remains a device choice.
 	delete(claude.signedInAs, b)
 	if _, err := svc.List(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.BindSession(ctx, "none", domain.HarnessClaudeCode, ""); !errors.Is(err, ports.ErrAgentAccountSignedOut) {
+	if err := svc.BindSession(ctx, "none", domain.HarnessClaudeCode, ""); err != nil || store.bindings["none"] != "device-claude" {
 		t.Fatalf("bind with every account signed out: %v", err)
 	}
 }

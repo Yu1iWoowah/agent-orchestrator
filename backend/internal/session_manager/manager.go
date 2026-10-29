@@ -1071,9 +1071,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 
-	// Resolve the effective agent config (project base + role override + spawn
-	// override) and validate the model before any durable state is created. A
-	// model the harness cannot honor should not leave a seed row behind.
+	// Resolve declarative settings now. Native catalog validation follows the
+	// durable account binding so discovery cannot run against another identity.
 	explicitModel := cfg.AgentConfig.Model != "" || cfg.AgentSettings != nil && cfg.AgentSettings.Model != nil
 	agentConfig, settingsResolution, clearInheritedEffort, err := resolveSpawnSettings(cfg, project.Config)
 	if err != nil {
@@ -1153,9 +1152,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		rec.Harness = cfg.Harness
 	} else {
 		seed := seedRecord(cfg, project.Config, m.clock())
-		if mode == domain.SessionModeChat {
-			seed.Metadata.Model = cfg.AgentConfig.Model
-			seed.Metadata.Effort = cfg.AgentConfig.Effort
+		if mode == domain.SessionModeChat && !strictSettings {
+			// No unvalidated tuning should appear through CDC while native
+			// catalog checks are pending. Publish both fields after validation.
+			seed.Metadata.Model = ""
+			seed.Metadata.Effort = ""
 		}
 		if cfg.ClientRequestID != "" {
 			var fresh bool
@@ -1206,7 +1207,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			m.rollbackSpawnSeedRow(ctx, id)
 		}
 	}
-	if m.agentAccounts != nil && m.agentReadiness != nil {
+	if m.agentAccounts != nil && m.agentReadiness != nil && cfg.ResolvedAccount.Managed() {
 		if _, err := m.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch); err != nil {
 			rollbackAccountPreflight()
 			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn account readiness: %w", err)

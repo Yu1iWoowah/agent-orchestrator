@@ -304,6 +304,26 @@ func (q *Queries) GetAgentAccountOperation(ctx context.Context, id string) (Agen
 	return i, err
 }
 
+const getOpenReviewerAccountUse = `-- name: GetOpenReviewerAccountUse :one
+SELECT r.id AS review_id,r.session_id,r.harness
+FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
+WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
+ORDER BY r.created_at,r.id,a.provider LIMIT 1
+`
+
+type GetOpenReviewerAccountUseRow struct {
+	ReviewID  string
+	SessionID domain.SessionID
+	Harness   domain.ReviewerHarness
+}
+
+func (q *Queries) GetOpenReviewerAccountUse(ctx context.Context, accountID string) (GetOpenReviewerAccountUseRow, error) {
+	row := q.db.QueryRowContext(ctx, getOpenReviewerAccountUse, accountID)
+	var i GetOpenReviewerAccountUseRow
+	err := row.Scan(&i.ReviewID, &i.SessionID, &i.Harness)
+	return i, err
+}
+
 const getReviewerAgentAccount = `-- name: GetReviewerAgentAccount :one
 SELECT account_id,provider,resolution_source FROM reviewer_agent_accounts WHERE review_id=? AND provider=?
 `
@@ -372,20 +392,6 @@ func (q *Queries) GetSessionAgentAccountBinding(ctx context.Context, arg GetSess
 		&i.BoundAt,
 	)
 	return i, err
-}
-
-const hasOpenReviewerAccountUse = `-- name: HasOpenReviewerAccountUse :one
-SELECT EXISTS (
- SELECT 1 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
- WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
-)
-`
-
-func (q *Queries) HasOpenReviewerAccountUse(ctx context.Context, accountID string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hasOpenReviewerAccountUse, accountID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const listAgentAccountOperations = `-- name: ListAgentAccountOperations :many

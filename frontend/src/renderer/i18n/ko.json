@@ -3551,6 +3551,7 @@
 	"settings.defaultSandbox.adminOnly": "조직 관리자만 변경할 수 있습니다.",
 	"settings.defaultSandbox.saveFailed": "기본 샌드박스를 저장하지 못했습니다. 다시 시도하세요.",
 	"settings.agentAccounts.cleanupScheduled": "이 계정은 비활성화되었으며 정리가 예약되었습니다. 사용 중인 에이전트가 중지되면 AO가 다시 시도합니다. 에이전트를 먼저 중지한 뒤 다시 시도할 수도 있습니다.",
+	"settings.agentAccounts.cleanupScheduledReviewer": "정리가 예약되었습니다. 검토자 {{reviewId}}가 이 계정을 사용 중입니다. 해당 검토자를 중지하거나 보관한 후 다시 시도하세요.",
 	"settings.agentAccounts.unavailableHomeOccupied": "AO가 예약한 unavailable 계정 디렉터리가 사용 중이거나 안전하게 확인할 수 없습니다. 관련 하위 도구를 중지하고 AO 계정 저장소의 .unavailable 안에 있는 데이터를 확인한 뒤 다른 곳으로 옮기고 다시 시도하세요. AO는 비어 있는 예약 폴더만 자동으로 제거합니다.",
 	"settings.agentAccounts.storageUnsafe": "계정 저장소가 안전하지 않습니다. 폴더 권한과 심볼릭 링크를 확인한 후 다시 시도하세요.",
 	"settings.agentAccounts.storageUnavailable": "계정 저장소를 일시적으로 사용할 수 없습니다. 나중에 다시 시도하세요.",

@@ -420,7 +420,7 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		selected := *cfg.ResolvedAccount
 		cfg.AgentAccountID = selected.AccountID
 		ctx = ports.WithAgentAccount(ctx, selected)
-		accountPreflight = selected.AccountID != ""
+		accountPreflight = selected.Managed()
 	}
 	if !accountPreflight && s.agentReadiness != nil && cfg.Harness != "" {
 		readiness, err := s.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch)

@@ -18,6 +18,32 @@ import (
 
 type scopedAccountExecution struct{}
 
+type deviceAccountExecution struct {
+	scopedAccountExecution
+	t *testing.T
+}
+
+func (a deviceAccountExecution) ResolveAccount(_ context.Context, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+	p, _ := domain.AgentAccountProviderFor(in.Harness)
+	return domain.ResolvedAgentAccount{AccountID: domain.DeviceAgentAccountID(p), Provider: p, Source: domain.AgentAccountSourceDevice}, nil
+}
+func (a deviceAccountExecution) AccountIdentity(context.Context, domain.AgentHarness, string) (domain.AgentAccountIdentityCheck, error) {
+	a.t.Error("device readiness used managed identity probe")
+	return domain.AgentAccountIdentityCheck{}, ports.ErrAgentAccountStorageUnavailable
+}
+
+func TestDeviceReadinessUsesLegacyAuthentication(t *testing.T) {
+	adapter := &deviceProbeRefuser{}
+	item := harnessAgent("codex", "Codex", nil)
+	item.Agent = adapter
+	svc := newService([]agentregistry.HarnessAgent{item}, nil, successfulModelDiscoverer())
+	svc.SetAccountExecution(deviceAccountExecution{t: t}, nil)
+	ctx := ports.WithAgentAccount(context.Background(), domain.ResolvedAgentAccount{AccountID: "device-codex", Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceDevice})
+	if _, err := svc.EnsureAgentReadiness(ctx, "codex", domain.AgentReadinessPurposeLaunch); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (scopedAccountExecution) ResolveAccount(_ context.Context, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
 	p, _ := domain.AgentAccountProviderFor(in.Harness)
 	return domain.ResolvedAgentAccount{AccountID: in.AccountID, Provider: p, Source: domain.AgentAccountSourceExplicit}, nil

@@ -357,6 +357,11 @@ func accountOperationErrorDetails(err error, reason string) map[string]any {
 	var op *agentaccounts.OperationError
 	if errors.As(err, &op) {
 		details["operationId"] = op.OperationID
+		if op.Reviewer != nil {
+			details["reviewId"] = op.Reviewer.ReviewID
+			details["reviewerSessionId"] = op.Reviewer.SessionID
+			details["reviewerHarness"] = op.Reviewer.Harness
+		}
 	}
 	return details
 }
