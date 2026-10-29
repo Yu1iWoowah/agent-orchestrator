@@ -35,25 +35,55 @@ func replacementRecoveryCheckpointContext(ctx context.Context, q *gen.Queries) c
 
 // Existing fact/phase validators still authorize every change before this
 // classification. Metadata churn must not spend the provider recovery reserve.
-func replacementRecoveryProgress(before, after domain.OrchestratorReplacement) bool {
+func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) bool {
 	if before.Phase.Terminal() || before.SourceStopIntentAt == nil && after.SourceStopIntentAt != nil {
 		return false
 	}
-	if after.Phase == domain.ReplacementCancelled {
-		return true
+	// Pending notices are ordinary work, even if bundled with a phase/fact.
+	if !reflect.DeepEqual(before.Notifications, after.Notifications) {
+		return false
+	}
+	// These methods read the current row and produce a bounded, authorized
+	// receipt. Retry, pending intents and future 3C producers are not grants.
+	switch {
+	case ctx.Value(replacementResetKey{}) == q:
+		return after.Phase == domain.ReplacementCancelled
+	case ctx.Value(replacementUnattemptedStopKey{}) == q:
+		return before.SourceStopIntentAt != nil && after.SourceStopIntentAt == nil
+	case ctx.Value(replacementSourceReleaseKey{}) == q:
+		return before.SourceIntakeReleasedAt == nil && after.SourceIntakeReleasedAt != nil
+	case ctx.Value(replacementIntakeReleaseKey{}) == q:
+		return before.IntakeReleasedAt == nil && after.IntakeReleasedAt != nil && after.IntakeTransfer != nil
+	case ctx.Value(replacementIntakeDrainKey{}) == q:
+		return before.IntakeDrainRequestedAt == nil && after.IntakeDrainRequestedAt != nil
+	case ctx.Value(handoffEvidencePublicationKey{}) == q:
+		return before.Transcript != nil && after.Transcript != nil && before.Transcript.Receipt == nil && after.Transcript.Receipt != nil
 	}
 	// One capacity pause must remain possible before stop. Once waiting,
 	// metadata/phase churn cannot reuse this exception; Retry is ordinary.
-	if !before.CanReleaseSourceIntake() && after.CanReleaseSourceIntake() && after.Error != nil && after.Error.Code == "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
-		return true
-	}
-	if before.SourceStopIntentAt == nil && before.SourceStop == nil && before.SourceRetiredAt == nil {
+	capacityPause := !before.CanReleaseSourceIntake() && after.CanReleaseSourceIntake() && after.Error != nil && after.Error.Code == "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY"
+	if !capacityPause && before.SourceStopIntentAt == nil && before.SourceStop == nil && before.SourceRetiredAt == nil {
 		return false
 	}
 	before.Revision, after.Revision, before.IntakeRevision, after.IntakeRevision = 0, 0, 0, 0
 	before.UpdatedAt, after.UpdatedAt, before.DeadlineAt, after.DeadlineAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 	before.Error, after.Error, before.ResumePhase, after.ResumePhase = nil, nil, "", ""
-	return !reflect.DeepEqual(before, after)
+	allowed := before
+	// validateReplacementTransition/Stage already require positive facts for
+	// every phase edge. All non-whitelisted fields must still match below.
+	allowed.Phase = after.Phase
+	if !capacityPause {
+		if before.SourceStop == nil && after.SourceStop != nil {
+			allowed.SourceStop = after.SourceStop
+		}
+		if before.Transcript != nil && after.Transcript != nil && before.Transcript.CapturedAt == nil && after.Transcript.CapturedAt != nil {
+			captured := *before.Transcript
+			captured.CapturedAt, captured.ExportedAt = after.Transcript.CapturedAt, after.Transcript.ExportedAt
+			captured.NativeCutoffs, captured.SnapshotFingerprint = after.Transcript.NativeCutoffs, after.Transcript.SnapshotFingerprint
+			allowed.Transcript = &captured
+		}
+	}
+	return !reflect.DeepEqual(before, after) && reflect.DeepEqual(allowed, after)
 }
 
 // Gob preserves raw string bytes: JSON would replace invalid UTF-8 and could
