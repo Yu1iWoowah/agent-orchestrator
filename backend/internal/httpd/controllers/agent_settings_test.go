@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +21,32 @@ func (settingsReader) Read(_ context.Context, id domain.SessionID) (agentsetting
 	if id == "missing" {
 		return agentsettings.Snapshot{}, ports.ErrAgentSettingsNotFound
 	}
-	return agentsettings.Snapshot{SessionAgentSettings: domain.SessionAgentSettings{SessionID: id, Revision: 3, Settings: domain.AgentSettings{Model: "model-a", FastMode: domain.AgentFastOff}}, Capabilities: agentsettings.Capabilities{State: agentsettings.CapabilityUnknown, Reason: "account_catalog_unavailable", Models: []agentsettings.ModelCapabilities{}}}, nil
+	result := agentsettings.Snapshot{SessionAgentSettings: domain.SessionAgentSettings{SessionID: id, Revision: 3, Settings: domain.AgentSettings{Model: "model-a", FastMode: domain.AgentFastOff}}, Effective: domain.UnknownAgentSettingsEffective("provider_not_reported"), Capabilities: agentsettings.Capabilities{State: agentsettings.CapabilityUnknown, Reason: "account_catalog_unavailable", Models: []agentsettings.ModelCapabilities{}}}
+	if id == "not-offered" {
+		result.Settings.FastMode = domain.AgentFastOn
+		result.Effective.FastMode = domain.AgentSettingObservation{State: domain.AgentSettingNotProvided, Reason: "provider_not_offered"}
+	}
+	return result, nil
+}
+
+func TestAgentSettingsReadKeepsRequestedAndEffectiveSeparate(t *testing.T) {
+	router := chi.NewRouter()
+	(&AgentSettingsController{Svc: settingsReader{}}).Register(router)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/not-offered/agent-settings", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("read: %d %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Settings  domain.AgentSettings          `json:"settings"`
+		Effective domain.AgentSettingsEffective `json:"effective"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Settings.FastMode != domain.AgentFastOn || got.Effective.FastMode.State != domain.AgentSettingNotProvided || got.Effective.FastMode.Value != "" {
+		t.Fatalf("requested was reported as effective: %s", w.Body.String())
+	}
 }
 func TestAgentSettingsAPIIsReadOnly(t *testing.T) {
 	router := chi.NewRouter()

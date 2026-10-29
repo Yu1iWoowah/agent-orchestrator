@@ -207,11 +207,13 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 
 // Controller drives one Chat session.
 type Controller struct {
-	sessionID    domain.SessionID
-	reviewID     string
-	conversation domain.ConversationRecord
-	generation   string
-	harness      domain.AgentHarness
+	sessionID                domain.SessionID
+	reviewID                 string
+	conversation             domain.ConversationRecord
+	generation               string
+	harness                  domain.AgentHarness
+	settingsObservationOwner domain.AgentSettingsOwner
+	settingsDispatchSnapshot *domain.AgentSettingsTurnSnapshot
 
 	conv                   ports.ChatConversation
 	store                  Store
@@ -1959,8 +1961,10 @@ func (c *Controller) dispatch(
 		}
 	}
 
+	settingsSnapshot := c.captureSettingsDispatch(ctx, turnID, msg.Settings)
 	c.mu.Lock()
 	c.dispatchingTurnID = turnID
+	c.settingsDispatchSnapshot = settingsSnapshot
 	c.dispatchedApproval, c.hasDispatchedApproval = msg.Settings.Approval, true
 	c.mu.Unlock()
 	ref, err := c.conv.SendTurn(ctx, msg)
@@ -2007,6 +2011,9 @@ func (c *Controller) dispatch(
 
 	c.mu.Lock()
 	c.pendingTurnID = ref.ProviderTurnID
+	if c.settingsDispatchSnapshot != nil && c.settingsDispatchSnapshot.TurnID == turnID {
+		c.settingsDispatchSnapshot.ProviderTurnID = ref.ProviderTurnID
+	}
 	if c.dispatchingTurnID == turnID {
 		c.dispatchingTurnID = ""
 	}

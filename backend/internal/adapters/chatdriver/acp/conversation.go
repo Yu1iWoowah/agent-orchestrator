@@ -96,31 +96,34 @@ type conversation struct {
 	canDeleteFork        bool
 	unadoptedForkID      string
 
-	mu                sync.Mutex
-	sessionID         string
-	reportedSessionID string
-	capabilities      ports.ChatCapabilities
-	prepared          *preparedTurn
-	activeTurn        string
-	settlingTurn      string
-	turnCancel        context.CancelFunc
-	interrupt         *interruptAttempt
-	pending           map[string]*parkedPermission
-	pendingInputs     map[string]*parkedInput
-	accepted          map[string]persistentInteractionCommand
-	messages          map[string]string
-	thoughts          map[string]string
-	nestedMessages    map[string]nestedMessageState
-	tools             map[string]*toolState
-	turnDiffs         *turnDiffAccumulator
-	turnDiffTurnID    string
-	providerFailure   *ports.ChatEvent
-	configOptions     []ports.ChatConfigOption
-	skills            []ports.ChatSkill
-	skillsKnown       bool
-	closed            bool
-	modeFor           func(ports.PermissionMode) string
-	optionsFor        func(ports.ChatTurnSettings) []SessionOption
+	mu                       sync.Mutex
+	sessionID                string
+	reportedSessionID        string
+	capabilities             ports.ChatCapabilities
+	prepared                 *preparedTurn
+	activeTurn               string
+	settlingTurn             string
+	turnCancel               context.CancelFunc
+	interrupt                *interruptAttempt
+	pending                  map[string]*parkedPermission
+	pendingInputs            map[string]*parkedInput
+	accepted                 map[string]persistentInteractionCommand
+	messages                 map[string]string
+	thoughts                 map[string]string
+	nestedMessages           map[string]nestedMessageState
+	tools                    map[string]*toolState
+	turnDiffs                *turnDiffAccumulator
+	turnDiffTurnID           string
+	providerFailure          *ports.ChatEvent
+	configOptions            []ports.ChatConfigOption
+	settingsReceipts         []ports.ChatConfigOption
+	settingsObservedAt       time.Time
+	settingsReceiptSessionID string
+	skills                   []ports.ChatSkill
+	skillsKnown              bool
+	closed                   bool
+	modeFor                  func(ports.PermissionMode) string
+	optionsFor               func(ports.ChatTurnSettings) []SessionOption
 	// requireAdvertised refuses a config option the session did not advertise
 	// instead of sending it. See Config.RequireAdvertisedOptions.
 	requireAdvertised bool
@@ -320,6 +323,9 @@ func (c *conversation) start(
 	// not lost to an empty response snapshot.
 	if len(configOptions) > 0 || models != nil || modes != nil {
 		c.configOptions = normalizeSessionOptions(configOptions, models, modes)
+		c.settingsReceipts = cloneConfigOptions(c.configOptions)
+		c.settingsObservedAt = time.Now().UTC()
+		c.settingsReceiptSessionID = sessionID
 	}
 	if len(c.configOptions) > 0 {
 		c.capabilities[ports.ChatCapabilityConfigOptions] = true
@@ -546,6 +552,7 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 			return fmt.Errorf("%w: ACP session does not advertise a model option", ports.ErrChatConfigOptionInvalid)
 		}
 		if c.configOptionCurrent("model") != model {
+			c.invalidateSettingsReceipt()
 			if err := c.legacyWire.setModel(ctx, sessionID, model); err != nil {
 				if isACPMethodNotFound(err) {
 					return fmt.Errorf("%w: session/set_model %q", ErrACPSetterUnsupported, model)
@@ -602,6 +609,7 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 					}
 				}
 			}
+			c.invalidateSettingsReceipt()
 			if _, err := c.conn.SetSessionMode(ctx, acpsdk.SetSessionModeRequest{
 				SessionId: acpsdk.SessionId(sessionID), ModeId: acpsdk.SessionModeId(mode),
 			}); err != nil {
@@ -672,6 +680,7 @@ func (c *conversation) setSessionOption(ctx context.Context, sessionID string, o
 				ports.ErrChatConfigOptionInvalid, option.ID, option.Value)
 		}
 	}
+	c.invalidateSettingsReceipt()
 	resp, err := c.conn.SetSessionConfigOption(ctx, acpsdk.SetSessionConfigOptionRequest{
 		ValueId: &acpsdk.SetSessionConfigOptionValueId{
 			SessionId: acpsdk.SessionId(sessionID), ConfigId: acpsdk.SessionConfigId(option.ID),

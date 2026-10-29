@@ -19,7 +19,7 @@ func (s *Service) ValidateSpawn(ctx context.Context, id domain.SessionID, settin
 	if settings.Model == "" && settings.Effort == "" && settings.FastMode == domain.AgentFastDefault {
 		return settings, nil
 	}
-	snapshot, err := s.Read(ctx, id)
+	snapshot, err := s.readCapabilities(ctx, id)
 	if err != nil {
 		return settings, err
 	}
