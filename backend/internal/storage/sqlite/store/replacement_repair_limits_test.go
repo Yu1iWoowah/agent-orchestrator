@@ -62,4 +62,18 @@ func TestReplacementCheckpointHistoryHasAnOperationLimit(t *testing.T) {
 	if err := raw.QueryRow(`SELECT count(*) FROM orchestrator_replacement_repair_snapshots WHERE operation_id=?`, op.ID).Scan(&count); err != nil || count != capsuleLimit {
 		t.Fatal("capacity refusal changed immutable history", count, err)
 	}
+	cancelled, applied, err := st.ResetReplacementBeforeStop(ctx, op.ID, op.Revision, true, time.Now(), time.Now().Add(time.Hour))
+	if err != nil || !applied || cancelled.Phase != domain.ReplacementCancelled {
+		t.Fatalf("history budget trapped a proven pre-stop source: applied=%t err=%v", applied, err)
+	}
+	if fenced, err := st.ReplacementWakeFenced(ctx, op.SourceSessionID); err != nil || fenced {
+		t.Fatal("safe cancellation retained the intake fence", fenced, err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM orchestrator_replacement_repair_snapshots WHERE operation_id=?`, op.ID).Scan(&count); err != nil || count != capsuleLimit+1 {
+		t.Fatal("safe cancellation did not consume exactly one reserved capsule", count, err)
+	}
+	cancelled.Error = &domain.ReplacementFailure{Code: "EXTRA", Message: "cannot use another reserved capsule"}
+	if saved, err := st.SaveOrchestratorReplacement(ctx, cancelled); saved || err == nil {
+		t.Fatal("terminal reserve allowed unbounded history", saved, err)
+	}
 }

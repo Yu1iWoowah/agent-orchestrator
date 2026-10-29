@@ -67,7 +67,8 @@ func (s *Store) saveReplacementCheckpoint(ctx context.Context, q *gen.Queries, i
 	if err != nil {
 		return err
 	}
-	if _, err := decodeReplacement(row); err != nil {
+	operation, err := decodeReplacement(row)
+	if err != nil {
 		return err
 	}
 	payload, err := json.Marshal(row)
@@ -81,10 +82,16 @@ func (s *Store) saveReplacementCheckpoint(ctx context.Context, q *gen.Queries, i
 	if err != nil {
 		return err
 	}
-	// Retain immutable capsules, including receipts needed for lost-response
-	// recovery. A bounded history refuses a new write atomically; it never prunes
-	// evidence or weakens the fence to recover capacity.
-	if usage.Snapshots >= maxReplacementRepairSnapshots || usage.PayloadBytes > maxReplacementRepairHistoryBytes-int64(len(payload)) {
+	// Keep one maximum-size capsule reserved for a proven pre-stop Cancel. The
+	// regular budget must not trap a still-running source behind its own fence.
+	countLimit := int64(maxReplacementRepairSnapshots)
+	byteLimit := int64(maxReplacementRepairHistoryBytes - maxReplacementRepairBytes)
+	if operation.Phase == domain.ReplacementCancelled && operation.SourceStopIntentAt == nil && operation.SourceStop == nil && operation.SourceRetiredAt == nil {
+		countLimit++
+		byteLimit = maxReplacementRepairHistoryBytes
+	}
+	// Immutable history is never pruned to recover capacity.
+	if usage.Snapshots >= countLimit || usage.PayloadBytes > byteLimit-int64(len(payload)) {
 		return domain.ErrReplacementRepairCapacity
 	}
 	return q.InsertReplacementRepairSnapshot(ctx, gen.InsertReplacementRepairSnapshotParams{OperationID: id, Revision: row.Revision, Digest: repairPayloadDigest(payload), Payload: payload})
