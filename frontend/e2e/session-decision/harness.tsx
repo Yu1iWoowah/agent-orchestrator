@@ -4,14 +4,16 @@ import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { createFullAppI18n } from "../../src/renderer/i18n/all-messages";
 import { TooltipProvider } from "../../src/renderer/components/ui/tooltip";
-import { sessionQuestionFixture } from "../../src/renderer/test/fixtures/session-question";
+import { largeSessionQuestionFixture, sessionQuestionFixture } from "../../src/renderer/test/fixtures/session-question";
 import type { components } from "../../src/api/schema";
 import "../../src/renderer/styles.css";
 
 // Explicit test fixture: no daemon, provider, local files, or native consent.
 const params = new URLSearchParams(location.search);
 const sessionId = "decision-fixture";
-let question = sessionQuestionFixture({ originSessionId: sessionId });
+const sizeLimit = params.has("size-limit");
+let question = sizeLimit ? largeSessionQuestionFixture({ id: "ask-1", originSessionId: sessionId, clientKey: "large-0", read: true }) : sessionQuestionFixture({ originSessionId: sessionId });
+const background = sizeLimit ? Array.from({ length: 3 }, (_, i) => largeSessionQuestionFixture({ id: `large-${i + 1}`, clientKey: `large-${i + 1}`, sequence: i + 2, originSessionId: sessionId, read: true })) : [];
 let answerMode = params.get("answer") ?? "saved";
 let posts = 0;
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -40,7 +42,9 @@ window.fetch = async (input, init) => {
 		if (answerMode === "delay") await new Promise((resolve) => setTimeout(resolve, 800));
 		return Response.json(receipt);
 	}
-	if (url.pathname.endsWith("/questions/ask-1")) return Response.json(question);
+	const sourceId = url.pathname.split("/questions/")[1];
+	const source = sourceId === question.id ? question : background.find((item) => item.id === sourceId);
+	if (request.method === "GET" && source) return Response.json(source);
 	if (url.pathname.endsWith("/attention")) return Response.json({ conversationId: "fixture", activeBranchId: "root", counts: { open: 0, unread: 0, history: 0 }, items: [], hasMoreBefore: false });
 	if (url.pathname.endsWith("/plan")) return Response.json({ state: "absent", conversationId: "fixture", activeBranchId: "root" });
 	return Response.json({ code: "NOT_FOUND", message: "No fixture API" }, { status: 404 });
@@ -49,6 +53,13 @@ const { SessionConversationFrames } = await import("../../src/renderer/component
 const { QuestionAnswerRuntime } = await import("../../src/renderer/hooks/useQuestionAnswerRecovery");
 const { setApiBaseUrl } = await import("../../src/renderer/lib/api-client");
 setApiBaseUrl(location.origin);
+if (sizeLimit) {
+	const { useQuestionDraftStore } = await import("../../src/renderer/stores/question-draft-store");
+	for (const item of [question, ...background]) {
+		const key = useQuestionDraftStore.getState().ensure(item);
+		for (const prompt of item.payload.questions) useQuestionDraftStore.getState().setField(key, prompt.key, { selectedOptionIds: [], otherSelected: true, otherText: "o".repeat(4000) });
+	}
+}
 const i18n = createFullAppI18n(params.get("locale") === "zh-TW" ? "zh-TW" : "en");
 document.documentElement.classList.toggle("dark", params.get("theme") !== "light");
 window.addEventListener("decision-fixture", (event) => {

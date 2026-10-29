@@ -29,7 +29,6 @@ interface QuestionDraftState {
 }
 
 export const questionDraftStorageKey = "ao.question.drafts.v2";
-const legacyStorageKey = "ao.question.drafts.v1";
 const maxDrafts = 32;
 const maxStorageChars = 512 * 1024;
 const retention = 7 * 24 * 60 * 60 * 1000;
@@ -93,11 +92,6 @@ function readDrafts(storage: Storage): Record<string, QuestionDraft> {
 	const entries: Record<string, QuestionDraft> = {};
 	try {
 		const candidates = diskEntries(storage);
-		let legacy: unknown;
-		try { legacy = JSON.parse(storage.getItem(legacyStorageKey) ?? "null"); } catch { /* A broken legacy envelope must not hide valid v2 entries. */ }
-		if (isRecord(legacy) && legacy.version === 1 && isRecord(legacy.entries)) {
-			for (const [key, value] of Object.entries(legacy.entries)) if (!candidates.has(key)) candidates.set(key, JSON.stringify(value));
-		}
 		let count = 0, size = 0;
 		for (const [key, raw] of [...candidates].reverse()) {
 			try {
@@ -138,12 +132,7 @@ export function createQuestionDraftStore(storage: Storage) {
 				return { entries: restoreRemoved ? { ...previous, ...entries } : entries, storageAvailable: false };
 			};
 			try {
-				const before = diskEntries(storage), base = new Map(before);
-				const legacy: unknown = JSON.parse(storage.getItem(legacyStorageKey) ?? "null");
-				if (isRecord(legacy) && isRecord(legacy.entries)) {
-					for (const [key, value] of Object.entries(legacy.entries)) if (!base.has(key)) base.set(key, JSON.stringify(value));
-				}
-				const after = new Map(base);
+				const before = diskEntries(storage), after = new Map(before);
 				for (const key of Object.keys(previous)) if (!next[key]) after.delete(key);
 				for (const [key, entry] of Object.entries(next)) {
 					if (entry.phase.state === "conflict" && Date.now() - entry.updatedAt >= retention) { delete next[key]; after.delete(key); }
@@ -170,9 +159,9 @@ export function createQuestionDraftStore(storage: Storage) {
 					after.delete(item.key); delete next[item.key]; size -= item.size;
 				}
 				if (after.size > maxDrafts || size > maxStorageChars) {
-					const beforeSize = [...base.values()].reduce((total, raw) => total + raw.length, 0);
-					// An existing oversized legacy store can shrink/migrate, but cannot admit more edits.
-					if (after.size > base.size || protectedKey && size > beforeSize) {
+					const beforeSize = [...before.values()].reduce((total, raw) => total + raw.length, 0);
+					// Existing oversized storage may shrink without admitting more persisted data.
+					if (after.size > before.size || protectedKey && size > beforeSize) {
 						return failed(false);
 					}
 				}
@@ -181,7 +170,6 @@ export function createQuestionDraftStore(storage: Storage) {
 				for (const [key, raw] of writes.filter(([key]) => key !== protectedKey)) storage.setItem(storageKey(key), raw);
 				for (const [key, raw] of writes.filter(([key]) => key === protectedKey)) storage.setItem(storageKey(key), raw);
 				for (const key of before.keys()) if (!after.has(key)) storage.removeItem(storageKey(key));
-				storage.removeItem(legacyStorageKey);
 				for (const key of metadata.keys()) if (!after.has(key)) metadata.delete(key);
 				for (const key of changed) if (after.has(key)) unsaved.delete(key);
 				for (const key of unsaved) if (!next[key] || !hasFields(next[key]) && !isPending(next[key])) unsaved.delete(key);
@@ -201,13 +189,7 @@ export function createQuestionDraftStore(storage: Storage) {
 				const next = transform(entry);
 				return next === entry ? entries : { ...entries, [key]: { ...next, updatedAt: Date.now() } };
 			}, key);
-		const restored = readDrafts(storage);
-		// Shrink a legacy envelope before migrating, leaving it as a fallback if writes fail.
-		try {
-			if (storage.getItem(legacyStorageKey)) storage.setItem(legacyStorageKey, JSON.stringify({ version: 1, entries: restored }));
-		} catch { /* Persist will surface unavailability. */ }
-		const initial = persist(restored, {});
-		if (initial.storageAvailable) { try { storage.removeItem(legacyStorageKey); } catch { initial.storageAvailable = false; } }
+		const initial = persist(readDrafts(storage), {});
 		return {
 			...initial,
 			ensure: (question, hostId) => {
@@ -230,10 +212,8 @@ export function createQuestionDraftStore(storage: Storage) {
 					change(key, (current) => ({ ...current, phase: { state: "editing", errorCode: "answerTooLarge" } })); return;
 				}
 				change(key, (current) => ({ ...current, phase: { state: "submitting", answer, startedAt: at } }));
-				if (unsaved.has(key)) {
-					change(key, (current) => ({ ...current, phase: { state: "editing" } }));
-					set({ storageAvailable: false }); return;
-				}
+				// Storage is best-effort: retain its warning, but let the server save the answer.
+				// This window keeps the immutable ID for retries even when it cannot survive a restart.
 				return structuredClone(answer);
 			},
 			retry: (key, at) => {

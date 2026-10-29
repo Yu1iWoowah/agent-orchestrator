@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sessionQuestionFixture } from "../test/fixtures/session-question";
+import { largeSessionQuestionFixture, sessionQuestionFixture } from "../test/fixtures/session-question";
+import { parseSessionQuestion } from "../lib/session-questions";
 import { createQuestionDraftStore, questionDraftKey, questionDraftStorageKey } from "./question-draft-store";
 
 beforeEach(() => localStorage.clear());
@@ -169,7 +170,7 @@ describe("versioned question drafts", () => {
 		expect(Object.values(createQuestionDraftStore(localStorage).getState().entries).at(0)?.question.payload.title).toBe("Choose a deployment target");
 	});
 
-	it("refuses a new submission at capacity rather than evicting an unconfirmed receipt", () => {
+	it("submits in memory at capacity without evicting unconfirmed receipts", () => {
 		const store = createQuestionDraftStore(localStorage);
 		for (let i = 0; i < 32; i++) {
 			const key = store.getState().ensure(sessionQuestionFixture({ id: `pending-${i}` }));
@@ -178,26 +179,27 @@ describe("versioned question drafts", () => {
 			expect(store.getState().begin(key, `answer-${i}`, Date.now())).toBeDefined();
 		}
 		const next = ready(store);
-		expect(store.getState().begin(next, "overflow", Date.now())).toBeUndefined();
+		expect(store.getState().begin(next, "overflow", Date.now())?.clientAnswerId).toBe("overflow");
 		expect(store.getState().storageAvailable).toBe(false);
-		expect(store.getState().entries[next].phase.state).toBe("editing");
+		expect(store.getState().entries[next].phase.state).toBe("submitting");
 		const restored = Object.values(createQuestionDraftStore(localStorage).getState().entries);
 		expect(restored).toHaveLength(32);
 		expect(restored.every((entry) => entry.phase.state === "unknown")).toBe(true);
 	});
 
-	it("recovers persistence after a failed write and migrates legacy edits once", () => {
-		const key = questionDraftKey({ sessionId: "session", questionId: "ask-1", version: 1 });
-		localStorage.setItem("ao.question.drafts.v1", JSON.stringify({ version: 1, entries: { [key]: { scope: { sessionId: "session", questionId: "ask-1", version: 1 }, question: sessionQuestionFixture(), fields: { target: { selectedOptionIds: ["stage"], otherSelected: false, otherText: "legacy" }, checks: { selectedOptionIds: [], otherSelected: false, otherText: "" } }, phase: { state: "editing" } } } }));
+	it("recovers persistence without reading or modifying unpublished legacy data", () => {
+		const key = ready(createQuestionDraftStore(localStorage));
+		localStorage.setItem("ao.question.drafts.v1", "unpublished data");
 		let unavailable = false;
+		const legacyAccess: string[] = [];
 		const storage: Storage = {
-			get length() { return localStorage.length; }, key: (index) => localStorage.key(index), getItem: (key) => localStorage.getItem(key),
-			removeItem: (key) => localStorage.removeItem(key), clear: () => localStorage.clear(),
-			setItem: (key, value) => { if (unavailable) throw new DOMException("Quota exceeded", "QuotaExceededError"); localStorage.setItem(key, value); },
+			get length() { return localStorage.length; }, key: (index) => localStorage.key(index),
+			getItem: (key) => { if (key === "ao.question.drafts.v1") legacyAccess.push("get"); return localStorage.getItem(key); },
+			removeItem: (key) => { if (key === "ao.question.drafts.v1") legacyAccess.push("remove"); localStorage.removeItem(key); }, clear: () => localStorage.clear(),
+			setItem: (key, value) => { if (key === "ao.question.drafts.v1") legacyAccess.push("set"); if (unavailable) throw new DOMException("Quota exceeded", "QuotaExceededError"); localStorage.setItem(key, value); },
 		};
 		const store = createQuestionDraftStore(storage);
-		expect(store.getState().entries[key].fields.target.otherText).toBe("legacy");
-		expect(localStorage.getItem("ao.question.drafts.v1")).toBeNull();
+		expect(store.getState().entries[key].fields.target.otherText).toBe("kept but not submitted");
 		unavailable = true;
 		store.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "new edit" });
 		expect(store.getState().storageAvailable).toBe(false);
@@ -205,8 +207,51 @@ describe("versioned question drafts", () => {
 		store.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "persist again" });
 		expect(store.getState().storageAvailable).toBe(true);
 		expect(createQuestionDraftStore(storage).getState().entries[key].fields.target.otherText).toBe("persist again");
-		localStorage.setItem("ao.question.drafts.v1", "invalid legacy JSON");
-		expect(createQuestionDraftStore(storage).getState().entries[key]?.fields.target.otherText).toBe("persist again");
+		expect(legacyAccess).toEqual([]);
+		expect(localStorage.getItem("ao.question.drafts.v1")).toBe("unpublished data");
+	});
+
+	it("submits an already saved draft when its larger pending snapshot hits quota", () => {
+		const storage: Storage = {
+			get length() { return localStorage.length; }, key: (index) => localStorage.key(index), getItem: (key) => localStorage.getItem(key),
+			removeItem: (key) => localStorage.removeItem(key), clear: () => localStorage.clear(),
+			setItem: (key, value) => { if (JSON.parse(value).phase.state === "submitting") throw new DOMException("Quota exceeded", "QuotaExceededError"); localStorage.setItem(key, value); },
+		};
+		const store = createQuestionDraftStore(storage); const key = ready(store);
+		const before = localStorage.getItem(`${questionDraftStorageKey}:${key}`);
+		expect(store.getState().begin(key, "quota-answer", Date.now())?.clientAnswerId).toBe("quota-answer");
+		expect(store.getState().entries[key].phase.state).toBe("submitting");
+		expect(store.getState().storageAvailable).toBe(false);
+		expect(localStorage.getItem(`${questionDraftStorageKey}:${key}`)).toBe(before);
+	});
+
+	it("submits a valid frozen answer when four saved large drafts occupy 516040 characters", () => {
+		const store = createQuestionDraftStore(localStorage); let first = "";
+		for (let i = 0; i < 4; i++) {
+			const question = largeSessionQuestionFixture({ id: `large-${i}`, clientKey: `large-${i}`, sequence: i + 1 });
+			parseSessionQuestion(question, "session");
+			expect(new TextEncoder().encode(JSON.stringify(question.payload)).length).toBe(112313);
+			const key = store.getState().ensure(question); if (i === 0) first = key;
+			for (let q = 0; q < 4; q++) store.getState().setField(key, `q${q}`, { selectedOptionIds: [], otherSelected: true, otherText: "o".repeat(4000) });
+		}
+		const stored = () => {
+			const values: Record<string, string> = {};
+			for (let i = 0; i < localStorage.length; i++) {
+				const key = localStorage.key(i);
+				if (key?.startsWith(`${questionDraftStorageKey}:`)) values[key] = localStorage.getItem(key) ?? "";
+			}
+			return values;
+		};
+		const before = stored();
+		expect(Object.keys(before)).toHaveLength(4);
+		expect(Object.values(before).reduce((size, value) => size + (value?.length ?? 0), 0)).toBe(516040);
+		expect(store.getState().storageAvailable).toBe(true);
+		const answer = store.getState().begin(first, "existing-at-size-limit", Date.now());
+		expect(answer).toBeDefined();
+		expect(new TextEncoder().encode(JSON.stringify(answer)).length).toBe(16334);
+		expect(store.getState().entries[first].phase.state).toBe("submitting");
+		expect(store.getState().storageAvailable).toBe(false);
+		expect(stored()).toEqual(before);
 	});
 
 	it("isolates host, session, question and version, with zero preselection", () => {

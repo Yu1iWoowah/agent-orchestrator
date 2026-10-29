@@ -50,6 +50,31 @@ it("recovers a lost response after the decision view has gone, without reposting
 	expect(post).toHaveBeenCalledTimes(1);
 });
 
+it.each(["saved", "lost"])("submits a new answer with offline-host drafts occupying all slots (%s response)", async (mode) => {
+	const oldKeys: string[] = [];
+	for (let i = 0; i < 32; i++) {
+		const key = useQuestionDraftStore.getState().ensure(sessionQuestionFixture({ id: `offline-${i}` }), "disconnected");
+		useQuestionDraftStore.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "keep this offline draft" });
+		oldKeys.push(key);
+	}
+	const { key, answer } = ready();
+	expect(useQuestionDraftStore.getState().storageAvailable).toBe(false);
+	expect(localStorage.getItem(`${questionDraftStorageKey}:${key}`)).toBeNull();
+	post.mockImplementation(() => mode === "lost" ? Promise.reject(new Error("response lost after save")) : Promise.resolve({ data: receipt(answer), response: { status: 200 } }));
+	await sendQuestionAnswer(client, key);
+	get.mockImplementation((host) => host === "disconnected" ? Promise.reject(new Error("Host disconnected is not connected"))
+		: Promise.resolve({ data: sessionQuestionFixture({ state: "answered", answer: receipt(answer) }), response: { status: 200 } }));
+	renderHook(() => useQuestionAnswerRecovery(), { wrapper });
+	await waitFor(() => expect(get.mock.calls.filter(([host]) => host === "disconnected")).toHaveLength(32));
+	await waitFor(() => expect(useQuestionDraftStore.getState().entries[key]).toBeUndefined());
+	expect(post).toHaveBeenCalledTimes(1);
+	expect(post.mock.calls[0][2].body).toEqual(answer);
+	for (const oldKey of oldKeys) {
+		expect(useQuestionDraftStore.getState().entries[oldKey].fields.target.otherText).toBe("keep this offline draft");
+		expect(localStorage.getItem(`${questionDraftStorageKey}:${oldKey}`)).not.toBeNull();
+	}
+});
+
 it("retries only the frozen submission with its original ID after reading an open question", async () => {
 	const { key, answer } = ready(); post.mockRejectedValueOnce(new Error("offline"));
 	await sendQuestionAnswer(client, key);

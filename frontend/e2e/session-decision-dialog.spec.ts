@@ -108,6 +108,60 @@ test("another page reaching draft capacity preserves the active form and refuses
 	} finally { await other.close(); }
 });
 
+test("offline-host drafts filling persistence do not block a new answer @T0", async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 1000 });
+	await page.goto("/e2e/session-decision/harness.html");
+	await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).waitFor();
+	await page.evaluate(async ({ storePath, fixturePath }) => {
+		const { useQuestionDraftStore }: typeof import("../src/renderer/stores/question-draft-store") = await import(storePath);
+		const { sessionQuestionFixture }: typeof import("../src/renderer/test/fixtures/session-question") = await import(fixturePath);
+		for (let i = 0; i < 32; i++) {
+			const key = useQuestionDraftStore.getState().ensure(sessionQuestionFixture({ id: `offline-${i}` }), "disconnected");
+			useQuestionDraftStore.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "keep offline draft" });
+		}
+	}, { storePath: "/src/renderer/stores/question-draft-store.ts", fixturePath: "/src/renderer/test/fixtures/session-question.ts" });
+	await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).click();
+	await fillGrouped(page);
+	const dialog = page.getByRole("dialog");
+	await expect(dialog.getByText("Your draft is kept in this window, but could not be saved for a restart.")).toBeVisible();
+	await dialog.getByRole("button", { name: "Submit all answers" }).click();
+	await expect(dialog.getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	const values = await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))
+		.map((key) => JSON.parse(localStorage.getItem(key) ?? "null").fields.target.otherText));
+	expect(values).toHaveLength(32);
+	expect(values.every((value) => value === "keep offline draft")).toBe(true);
+});
+
+test("a large already-persisted answer submits when its frozen snapshot exceeds the character budget @T0", async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 1000 });
+	await page.goto("/e2e/session-decision/harness.html?size-limit=1");
+	await page.getByRole("button", { name: "Open decision: Large valid decision", exact: true }).click();
+	const dialog = page.getByRole("dialog");
+	const before = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))
+		.map((key) => [key, localStorage.getItem(key)])));
+	expect(Object.keys(before)).toHaveLength(4);
+	const size = Object.values(before).reduce((sum, value) => sum + (value?.length ?? 0), 0);
+	expect(size).toBeGreaterThan(516000); expect(size).toBeLessThan(512 * 1024);
+	await expect(dialog.getByText("Your draft is kept in this window, but could not be saved for a restart.")).toHaveCount(0);
+	const submission = await dialog.getByRole("button", { name: "Submit all answers" }).evaluate(async (button, storePath) => {
+		const { useQuestionDraftStore }: typeof import("../src/renderer/stores/question-draft-store") = await import(storePath);
+		if (!(button instanceof HTMLButtonElement)) throw new Error("Missing submit button");
+		button.click();
+		return { phase: Object.values(useQuestionDraftStore.getState().entries).find((entry) => entry.scope.questionId === "ask-1")?.phase.state,
+			available: useQuestionDraftStore.getState().storageAvailable,
+			stored: Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:")).map((key) => [key, localStorage.getItem(key)])) };
+	}, "/src/renderer/stores/question-draft-store.ts");
+	expect(submission.phase).toBe("submitting"); expect(submission.available).toBe(false); expect(submission.stored).toEqual(before);
+	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await expect(dialog.getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	for (let i = 0; i < 4; i++) await expect(dialog.getByRole("textbox", { name: "Other answer: Q", exact: true }).nth(i)).toHaveValue("o".repeat(4000));
+	const remaining = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))
+		.map((key) => [key, localStorage.getItem(key)])));
+	expect(Object.keys(remaining)).toHaveLength(3);
+	for (const [key, raw] of Object.entries(remaining)) expect(raw).toBe(before[key]);
+});
+
 for (const theme of ["light", "dark"]) test(`zh-TW ${theme} effective 200% dialog fits above composer and traps focus @T0`, async ({ page }) => {
 	await page.setViewportSize({ width: 720, height: 550 });
 	await page.goto(`/e2e/session-decision/harness.html?theme=${theme}&locale=zh-TW`);

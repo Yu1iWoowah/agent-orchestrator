@@ -47,3 +47,21 @@ export function sessionQuestionFixture(
 		...overrides,
 	};
 }
+
+// Audit 61 I3: a valid 112313-byte payload, not an oversized/invalid test input.
+export function largeSessionQuestionFixture(overrides: Parameters<typeof sessionQuestionFixture>[0] = {}) {
+	const question = sessionQuestionFixture(overrides);
+	question.payload = {
+		schemaVersion: 1,
+		title: "Large valid decision",
+		explanation: "e".repeat(8000),
+		questions: Array.from({ length: 4 }, (_, index) => ({
+			key: `q${index}`, header: "Q", question: "Choose",
+			options: Array.from({ length: 4 }, (_, option) => ({
+				id: `o${option}`, label: `Option ${option}`, description: "Description",
+				preview: { format: "text", content: "p".repeat(6400) },
+			} satisfies (typeof question.payload.questions)[number]["options"][number])),
+		})),
+	};
+	return question;
+}

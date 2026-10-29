@@ -36,6 +36,21 @@ it("shows descriptions and one recommendation with no preselected choice", async
 	expect(screen.getByText("Run automated regression checks.")).toBeVisible();
 });
 
+it("submits through the UI when inaccessible remote drafts fill local persistence", async () => {
+	for (let i = 0; i < 32; i++) {
+		const key = useQuestionDraftStore.getState().ensure(sessionQuestionFixture({ id: `offline-${i}` }), "disconnected");
+		useQuestionDraftStore.getState().setField(key, "target", { selectedOptionIds: ["prod"], otherSelected: false, otherText: "remote draft" });
+	}
+	show(); const user = userEvent.setup();
+	await user.click(await screen.findByRole("radio", { name: /Staging/ }));
+	await user.click(within(screen.getByRole("group", { name: /Which checks/ })).getByRole("checkbox", { name: "Tests" }));
+	expect(screen.getByText("Your draft is kept in this window, but could not be saved for a restart.")).toBeVisible();
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+	await screen.findByText("Saved · Pending delivery");
+	expect(localStorage.length).toBe(32);
+});
+
 it("preserves choices and warns if another window removes an open editing draft", async () => {
 	show();
 	await userEvent.click(await screen.findByRole("radio", { name: /Staging/ }));
