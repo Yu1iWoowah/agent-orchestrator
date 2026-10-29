@@ -32,6 +32,8 @@ export function followsSavedAccount(agent: AgentReadinessSnapshot | undefined): 
 export function agentAccountErrorMessage(error: unknown, accountEmail?: string): string {
 	const code = typeof error === "string" ? error : apiErrorCode(error);
 	switch (code) {
+		case "AGENT_ACCOUNT_IN_USE":
+			return appI18n.t("settings.agentAccounts.cleanupScheduled");
 		case "account_identity_mismatch":
 			return accountEmail
 				? appI18n.t("settings.agentAccounts.loginMismatch", { email: accountEmail })

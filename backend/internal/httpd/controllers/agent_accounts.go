@@ -302,7 +302,7 @@ func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ports.ErrAgentAccountUnshared):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_UNSHARED", agentAccountUnsharedMessage, nil)
 	case errors.Is(err, ports.ErrAgentAccountInUse):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_IN_USE", "AO could not stop an agent that uses this account, so it kept the account. Stop that agent, then remove the account again.", nil)
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_IN_USE", "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. Stop them and retry to finish sooner.", accountOperationErrorDetails(err, "account_operation_busy"))
 	case errors.Is(err, ports.ErrAgentAccountDeviceFixed):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_DEVICE_FIXED", "This computer's own login is managed by its CLI, not AO", nil)
 	default:

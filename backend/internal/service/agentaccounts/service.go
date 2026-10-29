@@ -58,6 +58,7 @@ type Service struct {
 	readings       map[string]*reading
 	warnings       map[string]string
 	activeLogins   map[string]bool
+	retries        map[string]lifecycleRetry
 	opMu           sync.Mutex
 	defaultChanged func(domain.AgentAccountProvider)
 }
@@ -93,7 +94,7 @@ func New(store ports.AgentAccountStore, providers []ports.AgentAccountProviderCL
 	}
 	return &Service{
 		store: store, providers: byProvider, root: filepath.Clean(root), terminals: terminals, log: log,
-		now: func() time.Time { return time.Now().UTC() }, readings: map[string]*reading{}, warnings: map[string]string{}, activeLogins: map[string]bool{},
+		now: func() time.Time { return time.Now().UTC() }, readings: map[string]*reading{}, warnings: map[string]string{}, activeLogins: map[string]bool{}, retries: map[string]lifecycleRetry{},
 	}
 }
 
@@ -312,7 +313,14 @@ func (s *Service) DefaultSignIn(ctx context.Context, harness domain.AgentHarness
 		return identity, false
 	}
 	if accountAvailability(account) != nil {
-		return identity, true
+		next, err := s.newSessionAccount(ctx, p)
+		if err != nil {
+			return identity, true
+		}
+		if next.Device() {
+			return identity, false
+		}
+		account = next
 	}
 	s.mu.Lock()
 	r := s.readings[account.ID]
@@ -403,17 +411,16 @@ func (s *Service) newSessionAccount(ctx context.Context, p domain.AgentAccountPr
 	if err != nil {
 		return domain.AgentAccount{}, err
 	}
-	if err := accountAvailability(account); err != nil {
-		return domain.AgentAccount{}, err
-	}
-	r := s.cachedReading(account.ID)
-	if !r.knownUnusable() {
-		return account, nil
-	}
-	// The user may have signed it in outside AO since an old reading.
-	if s.now().Sub(r.at) > freshFor {
-		if r = s.read(ctx, account); !r.knownUnusable() {
+	if accountAvailability(account) == nil {
+		r := s.cachedReading(account.ID)
+		if !r.knownUnusable() {
 			return account, nil
+		}
+		// The user may have signed it in outside AO since an old reading.
+		if s.now().Sub(r.at) > freshFor {
+			if r = s.read(ctx, account); !r.knownUnusable() {
+				return account, nil
+			}
 		}
 	}
 	accounts, err := s.accounts(ctx)
@@ -451,7 +458,7 @@ func (s *Service) RecheckSessionAccount(ctx context.Context, id domain.SessionID
 		return
 	}
 	account, _, err := s.SessionAccount(ctx, id, p)
-	if err != nil {
+	if err != nil || accountAvailability(account) != nil {
 		s.log.Debug("recheck session account", "session", id, "error", err)
 		return
 	}
@@ -774,7 +781,9 @@ func (s *Service) boundAccount(ctx context.Context, id domain.SessionID, p domai
 }
 
 // SessionAccount is the account a session uses for the provider now: its
-// binding, or the provider's default when it has none or its account is gone.
+// binding, or the provider's default only when it has no binding. Legacy
+// dangling bindings project as retired metadata: their original ID survives,
+// without inventing a home or silently selecting the computer's login.
 func (s *Service) SessionAccount(ctx context.Context, id domain.SessionID, p domain.AgentAccountProvider) (domain.AgentAccount, bool, error) {
 	accountID, bound, err := s.store.GetSessionAgentAccount(ctx, id, p)
 	if err != nil {
@@ -782,6 +791,10 @@ func (s *Service) SessionAccount(ctx context.Context, id domain.SessionID, p dom
 	}
 	if bound {
 		account, err := s.find(ctx, accountID)
+		if errors.Is(err, ports.ErrAgentAccountUnknown) {
+			retired := time.Unix(0, 0).UTC()
+			return domain.AgentAccount{ID: accountID, Provider: p, RetiredAt: &retired}, true, nil
+		}
 		return account, true, err
 	}
 	def, err := s.defaultID(ctx, p)
@@ -885,8 +898,12 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		}
 		// Even a rejected environment stays pinned to its managed account.
 		// Callers must return the validation error before launching anything.
-		for key, value := range provider.LaunchEnv(account.Home) {
-			env[key] = value
+		// Legacy deleted bindings have no known home. Keep them as retired
+		// identities, but never pin an empty home (which would select device).
+		if account.Home != "" {
+			for key, value := range provider.LaunchEnv(account.Home) {
+				env[key] = value
+			}
 		}
 		if err := accountAvailability(account); err != nil {
 			validationError(p, account.ID, err)

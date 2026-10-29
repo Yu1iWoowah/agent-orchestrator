@@ -61,16 +61,15 @@ type AgentAccount struct {
 }
 
 // Device reports the "This computer" account.
-func (a AgentAccount) Device() bool { return strings.TrimSpace(a.Home) == "" }
+func (a AgentAccount) Device() bool { return strings.TrimSpace(a.Home) == "" && a.RetiredAt == nil }
 
 // AgentAccountLimitWindow is one usage meter of an account, such as the
 // five-hour session or the weekly limit.
 type AgentAccountLimitWindow struct {
-	ID                   string `json:"id"`
-	Label                string
-	LifecycleOperationID string     `json:"label"`
-	UsedPercent          float64    `json:"usedPercent" minimum:"0" maximum:"100"`
-	ResetsAt             *time.Time `json:"resetsAt,omitempty"`
+	ID          string     `json:"id"`
+	Label       string     `json:"label"`
+	UsedPercent float64    `json:"usedPercent" minimum:"0" maximum:"100"`
+	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
 }
 
 // AgentAccountLimits is what the provider's CLI reports about an account's

@@ -340,7 +340,7 @@ func TestDeletionRetryDoesNotRepeatCompletedLogout(t *testing.T) {
 	if e := db.CreateAgentAccount(ctx, domain.AgentAccount{ID: "saved", Provider: domain.AgentAccountProviderClaude, Home: home, CreatedAt: time.Now()}); e != nil {
 		t.Fatal(e)
 	}
-	p := &deletionFailureProvider{fakeClaude: &fakeClaude{}}
+	p := &deletionFailureProvider{fakeClaude: &fakeClaude{signedInAs: map[string]string{home: "fake@example.invalid"}}}
 	s := New(db, []ports.AgentAccountProviderCLI{p}, root, nil, nil)
 	if e := s.Remove(ctx, "saved"); !errors.Is(e, ports.ErrAgentAccountCleanupUnconfirmed) {
 		t.Fatalf("delete failure=%v", e)
@@ -352,7 +352,8 @@ func TestDeletionRetryDoesNotRepeatCompletedLogout(t *testing.T) {
 	if e := os.Chmod(locked, 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e := s.Recover(ctx); e != nil {
+	// Background retries back off; explicit user retries need not wait.
+	if e := s.Remove(ctx, "saved"); e != nil {
 		t.Fatal(e)
 	}
 	if p.calls != 1 {
@@ -378,7 +379,7 @@ func (p *raceIdentityProvider) Identity(_ context.Context, home string) (domain.
 	}
 	return domain.AgentAccountIdentityCheck{SignedIn: true, LoggedIn: true, Email: "fake@example.invalid"}, nil
 }
-func TestCancelAndVerifyRaceHasOneDurableWinner(t *testing.T) {
+func TestCancelWaitsForNativeVerifyAndKeepsAcceptedResult(t *testing.T) {
 	for range 5 {
 		ctx := context.Background()
 		db := sqlitetest.MustOpen(t)
@@ -394,24 +395,26 @@ func TestCancelAndVerifyRaceHasOneDurableWinner(t *testing.T) {
 		p.pause.Store(true)
 		done := make(chan error, 1)
 		go func() { _, _, e := s.VerifyLogin(ctx, start.OperationID); done <- e }()
+		<-p.entered
+		cancelled := make(chan error, 1)
+		go func() { cancelled <- s.CancelLogin(ctx, start.OperationID) }()
+		early := false
 		select {
-		case <-p.entered:
-		case <-time.After(time.Second):
-			t.Fatal("native probe did not enter")
-		}
-		if e := s.CancelLogin(ctx, start.OperationID); e != nil {
-			t.Fatal(e)
+		case e := <-cancelled:
+			early = true
+			cancelled <- e
+		case <-time.After(20 * time.Millisecond):
 		}
 		close(p.release)
-		if e := <-done; !errors.Is(e, ports.ErrAgentAccountLoginUnknown) {
-			t.Fatalf("cancelled native answer was committed: %v", e)
+		if e := <-done; e != nil {
+			t.Fatal(e)
+		}
+		if e := <-cancelled; e != nil {
+			t.Fatal(e)
 		}
 		rows, _ := db.ListAgentAccounts(ctx)
-		if len(rows) != 0 {
-			t.Fatal("cancelled race saved account")
-		}
-		if len(term.alive) != 0 {
-			t.Fatal("cancelled race retained writer")
+		if early || len(rows) != 1 || len(term.alive) != 0 {
+			t.Fatal("cancel crossed native verify or erased accepted result")
 		}
 	}
 }
@@ -510,7 +513,7 @@ func TestStartupRecoveryDoesNotBlockDaemonOnNativeLogout(t *testing.T) {
 	if e := db.CreateAgentAccountOperation(ctx, domain.AgentAccountOperation{ID: "logout", AccountID: "saved", Provider: domain.AgentAccountProviderClaude, Action: "logout", Phase: "logging-out", Outcome: "signed-out", CreatedAt: now, UpdatedAt: now}); e != nil {
 		t.Fatal(e)
 	}
-	p := &slowRecoveryProvider{fakeClaude: &fakeClaude{}, entered: make(chan struct{}), done: make(chan struct{})}
+	p := &slowRecoveryProvider{fakeClaude: &fakeClaude{signedInAs: map[string]string{home: "fake@example.invalid"}}, entered: make(chan struct{}), done: make(chan struct{})}
 	s := New(db, []ports.AgentAccountProviderCLI{p}, root, nil, nil)
 	returned := make(chan struct{})
 	go func() { s.StartRecovery(ctx); close(returned) }()

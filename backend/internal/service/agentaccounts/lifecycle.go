@@ -48,6 +48,14 @@ func (s *Service) operation(ctx context.Context, id string) (domain.AgentAccount
 	return o, nil
 }
 func (s *Service) saveOperation(ctx context.Context, o *domain.AgentAccountOperation) error {
+	prior, e := s.operation(ctx, o.ID)
+	if e != nil {
+		return e
+	}
+	if prior.Phase == o.Phase && prior.Outcome == o.Outcome && prior.ReasonCode == o.ReasonCode && prior.ResultAccountID == o.ResultAccountID {
+		o.UpdatedAt = prior.UpdatedAt
+		return nil // Do not emit CDC for an unchanged retry result.
+	}
 	o.UpdatedAt = s.now()
 	j, e := s.journal()
 	if e != nil {
@@ -148,9 +156,18 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 	return LoginStart{OperationID: id, Provider: p, Terminal: terminal}, nil
 }
 
-// VerifyLogin probes without holding the operation lock. Cancel can win while
-// the native probe is in flight; the durable phase is rechecked before commit.
+// VerifyLogin serializes native profile preparation/probes with cancellation.
+// A cancelled operation must never be recreated by an in-flight native Prepare.
 func (s *Service) VerifyLogin(ctx context.Context, id string) (LoginStatus, *AccountView, error) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	return s.verifyLogin(ctx, id)
+}
+
+// verifyLogin is shared with recovery; callers hold opMu throughout native I/O.
+func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *AccountView, error) {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
 	o, e := s.operation(ctx, id)
 	if e != nil {
 		return "", nil, e
@@ -159,8 +176,6 @@ func (s *Service) VerifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 		return "", nil, ports.ErrAgentAccountLoginUnknown
 	}
 	if o.Phase != "pending" {
-		s.opMu.Lock()
-		defer s.opMu.Unlock()
 		return s.loginResult(ctx, &o)
 	}
 	account, e := s.operationAccount(ctx, o)
@@ -181,15 +196,6 @@ func (s *Service) VerifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	if e := s.checkCredentialStore(o.Provider, account.Home); e != nil {
 		return "", nil, e
 	}
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	o, e = s.operation(ctx, id)
-	if e != nil {
-		return "", nil, e
-	}
-	if o.Phase != "pending" {
-		return s.loginResult(ctx, &o)
-	}
 	// Refresh the catalog inside the same boundary as acceptance. Two
 	// operations must not both commit the same identity from a stale list.
 	views, e := s.List(ctx, false)
@@ -199,7 +205,7 @@ func (s *Service) VerifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	o.Outcome = "complete"
 	o.ResultAccountID = o.AccountID
 	for _, v := range views {
-		if v.Account.ID != o.AccountID && v.Account.Provider == o.Provider && v.SignedIn && strings.EqualFold(v.Account.Email, identity.Email) {
+		if v.Account.ID != o.AccountID && v.Account.Provider == o.Provider && (v.SignedIn || !v.Account.Device()) && v.Account.Email != "" && strings.EqualFold(v.Account.Email, identity.Email) {
 			o.Outcome = "duplicate"
 			o.ResultAccountID = v.Account.ID
 			break
@@ -254,6 +260,12 @@ func (s *Service) loginResult(ctx context.Context, o *domain.AgentAccountOperati
 func (s *Service) CancelLogin(ctx context.Context, id string) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	return s.cancelLogin(ctx, id)
+}
+
+// cancelLogin is also used after recovery confirms an exited child is unsigned.
+// Callers hold opMu.
+func (s *Service) cancelLogin(ctx context.Context, id string) error {
 	o, e := s.operation(ctx, id)
 	if e != nil {
 		return e
@@ -293,7 +305,30 @@ func (s *Service) unconfirmed(ctx context.Context, o *domain.AgentAccountOperati
 	s.log.Warn("account lifecycle unconfirmed", "operationId", o.ID, "accountId", o.AccountID, "reasonCode", o.ReasonCode)
 	return &OperationError{OperationID: o.ID, category: ports.ErrAgentAccountCleanupUnconfirmed}
 }
-func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOperation) error {
+
+type lifecycleRetry struct {
+	failures int
+	next     time.Time
+}
+
+func (s *Service) deferOperationRetry(id string) {
+	retry := s.retries[id]
+	if retry.failures < 5 {
+		retry.failures++
+	}
+	delay := min(time.Minute<<(retry.failures-1), 15*time.Minute)
+	retry.next = s.now().Add(delay)
+	s.retries[id] = retry
+}
+
+func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOperation) (err error) {
+	defer func() {
+		if err != nil {
+			s.deferOperationRetry(o.ID)
+		} else {
+			delete(s.retries, o.ID)
+		}
+	}()
 	if runtime.GOOS != "linux" {
 		return ports.ErrAgentAccountStorageUnsupported
 	}
@@ -318,7 +353,7 @@ func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOpe
 				if e := s.saveOperation(ctx, o); e != nil {
 					return e
 				}
-				return ports.ErrAgentAccountInUse
+				return &OperationError{OperationID: o.ID, category: ports.ErrAgentAccountInUse}
 			}
 		}
 	}
@@ -356,24 +391,25 @@ func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOpe
 		if e = s.checkAccountProfile(account.Home); e != nil {
 			return s.unconfirmed(ctx, o, e)
 		}
-		o.Phase = "logging-out"
-		o.ReasonCode = ""
-		if e := s.saveOperation(ctx, o); e != nil {
-			return e
+		if o.Phase != "logging-out" {
+			o.Phase = "logging-out"
+			o.ReasonCode = ""
+			if e := s.saveOperation(ctx, o); e != nil {
+				return e
+			}
 		}
 		provider := s.providers[o.Provider]
 		if provider == nil {
 			return s.unconfirmed(ctx, o, ports.ErrAgentAccountProviderMismatch)
 		}
-		loggedIn := true
-		if o.Action == "login" {
-			identity, err := provider.Identity(ctx, account.Home)
-			if err != nil {
-				return s.unconfirmed(ctx, o, err)
-			}
-			loggedIn = identity.LoggedIn
+		// Native logout removes Codex auth.json. Re-probe before every retry,
+		// including saved accounts, so absence after confirmed sign-out is
+		// idempotent rather than an unsupported credential store assertion.
+		identity, err := provider.Identity(ctx, account.Home)
+		if err != nil {
+			return s.unconfirmed(ctx, o, err)
 		}
-		if loggedIn {
+		if identity.LoggedIn {
 			if e = provider.Logout(ctx, account.Home); e != nil {
 				return s.unconfirmed(ctx, o, e)
 			}
@@ -464,8 +500,9 @@ func (s *Service) mutateAccount(ctx context.Context, id, action string) error {
 	return s.resumeOperation(ctx, &o)
 }
 
-// Recover runs before serving account requests and periodically thereafter.
-// An interrupted pending login is cancelled; an accepted login is completed.
+// Recover runs in the background at startup and periodically thereafter.
+// A previous-process pending login is cancelled; accepted logins are completed.
+// In-process successful child exit verifies the login instead of cancelling it.
 // Existing saved profiles survive cancellation and all failures stay retryable.
 func (s *Service) Recover(ctx context.Context) error {
 	s.opMu.Lock()
@@ -480,8 +517,33 @@ func (s *Service) Recover(ctx context.Context) error {
 	}
 	var errs []error
 	for _, o := range rows {
-		if o.Phase == "complete" {
+		if s.retries[o.ID].next.After(s.now()) {
 			continue
+		}
+		if o.Phase == "complete" {
+			if o.Action != "login" || o.Outcome != "cancelled" {
+				continue
+			}
+			// Older in-flight Prepare could recreate an already cancelled new
+			// profile. Repair only row-less new-login homes, never saved accounts.
+			if _, err := s.find(ctx, o.AccountID); err == nil {
+				continue
+			} else if !errors.Is(err, ports.ErrAgentAccountUnknown) {
+				errs = append(errs, err)
+				continue
+			}
+			home := filepath.Join(s.root, string(o.Provider), o.AccountID)
+			if _, err := os.Lstat(home); errors.Is(err, os.ErrNotExist) {
+				continue
+			} else if err != nil {
+				errs = append(errs, ports.ErrAgentAccountStorageUnavailable)
+				continue
+			}
+			o.Phase = "closing"
+			if err := s.saveOperation(ctx, &o); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
 		if o.Phase == "pending" && s.activeLogins[o.ID] {
 			s.mu.Lock()
@@ -491,6 +553,19 @@ func (s *Service) Recover(ctx context.Context) error {
 			if err != nil || alive {
 				continue
 			}
+			// Device-auth CLI exits on success. Use the same acceptance and
+			// duplicate/mismatch rules as explicit verify; Settings may be closed.
+			status, _, err := s.verifyLogin(ctx, o.ID)
+			if err != nil {
+				errs = append(errs, err)
+			} else if status == LoginWaiting {
+				// Only a successful native probe may establish that a finished
+				// child left no subscription login. Unknown probes stay retryable.
+				if err := s.cancelLogin(ctx, o.ID); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			continue
 		}
 		if o.Phase == "pending" {
 			o.Phase = "closing"

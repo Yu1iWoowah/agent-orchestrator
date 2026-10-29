@@ -818,8 +818,6 @@ func (s *Service) RenameShellTerminal(ctx context.Context, handleID, title strin
 // could vanish from that scan and leave a still-alive shell invisible to it
 // while the worktree it's rooted in gets removed anyway.
 func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error {
-	s.commandMu.Lock()
-	defer s.commandMu.Unlock()
 	if handleID == "" {
 		return apierr.Invalid("SHELL_TERMINAL_ID_REQUIRED", "A shell terminal id is required", nil)
 	}
@@ -839,6 +837,18 @@ func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error
 		defer release()
 	}
 
+	// Match session open/teardown order. A gate waiter must not hold the
+	// independent trusted-login creation/reconciliation boundary.
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	// Reconciliation may have removed the row while we waited for the gate.
+	rec, found, err = s.store.SelectShellTerminalByHandleID(ctx, handleID)
+	if err != nil {
+		return fmt.Errorf("close shell terminal %s: %w", handleID, err)
+	}
+	if !found {
+		return nil
+	}
 	stillAlive, destroyErr := s.destroyConfirmed(ctx, rec)
 	if stillAlive {
 		s.log.Warn("close shell terminal: runtime still alive after destroy", "handleId", handleID, "error", destroyErr)

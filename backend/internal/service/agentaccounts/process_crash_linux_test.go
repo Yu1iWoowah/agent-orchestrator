@@ -116,6 +116,9 @@ func TestLoginCrashChildProcess(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if e := os.WriteFile(filepath.Join(root, "helper-ready"), nil, 0600); e != nil {
+		t.Fatal(e)
+	}
 	rt := &crashProcessRuntime{root: root, crash: true}
 	term := shellterm.NewService(rt, db, nil, nil, root, "crashed-run", nil)
 	p := &crashProcessProvider{fakeClaude: &fakeClaude{}, script: filepath.Join(root, "fake-login.py")}
@@ -126,7 +129,7 @@ func TestLoginCrashChildProcess(t *testing.T) {
 func TestHardDaemonExitDuringLoginLeavesRecoverablePTY(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "fake-login.py")
-	if e := os.WriteFile(script, []byte("import time\nprint('fake-device-code-for-private-terminal',flush=True)\ntime.sleep(60)\n"), 0600); e != nil {
+	if e := os.WriteFile(script, []byte("import time\nprint('fake-device-code-for-private-terminal',flush=True)\ntime.sleep(600)\n"), 0600); e != nil {
 		t.Fatal(e)
 	}
 	rt := &crashProcessRuntime{root: root}
@@ -135,14 +138,26 @@ func TestHardDaemonExitDuringLoginLeavesRecoverablePTY(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// Fresh schema migrations are setup, not part of reaching the crash
+	// boundary. Complete them before spawning the helper. Under full -race CI
+	// hundreds of packages compete for CPU/I/O; allow two minutes for helper
+	// startup while still requiring the exact os.Exit(77) and live orphan.
+	prepared, e := sqlite.Open(filepath.Join(root, "db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e := prepared.Close(); e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "-test.run=^TestLoginCrashChildProcess$")
 	cmd.Env = append(os.Environ(), "B2_FAKE_CRASH_ROOT="+root)
 	output, e := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(e, &exit) || exit.ExitCode() != 77 {
-		t.Fatalf("helper did not crash at runtime.Create: %v %s", e, output)
+		_, readyErr := os.Stat(filepath.Join(root, "helper-ready"))
+		t.Fatalf("helper did not crash at runtime.Create (ready=%t): %v %s", readyErr == nil, e, output)
 	}
 	if alive, e := rt.IsAlive(ctx, ports.RuntimeHandle{}); e != nil || !alive {
 		t.Fatal("fixture did not leave live orphaned fake login")

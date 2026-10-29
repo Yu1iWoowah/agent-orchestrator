@@ -323,7 +323,7 @@ func TestRemoveStopsTheAccountsAgentsFirst(t *testing.T) {
 
 // A sign-in cancelled while it is being checked is not saved: the cancel has
 // already signed the folder out and removed it.
-func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
+func TestVerifyAfterCompletedCancelCannotRecreateAccount(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("new managed login is Linux-only")
 	}
@@ -336,20 +336,19 @@ func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := filepath.Join(root, "claude", start.OperationID)
-	claude.signedInAs[b] = "b@example.com"
-	claude.onIdentity = func(string) {
-		if err := svc.CancelLogin(ctx, start.OperationID); err != nil {
-			t.Errorf("cancel: %v", err)
-		}
-		claude.signedInAs[b] = "b@example.com" // the CLI's answer was already on its way
+	home := filepath.Join(root, "claude", start.OperationID)
+	if err := svc.CancelLogin(ctx, start.OperationID); err != nil {
+		t.Fatal(err)
 	}
-
+	claude.signedInAs[home] = "b@example.com" // A stale native answer must not revive a cancelled operation.
 	if _, _, err := svc.VerifyLogin(ctx, start.OperationID); !errors.Is(err, ports.ErrAgentAccountLoginUnknown) {
-		t.Fatalf("verify of a cancelled sign-in: %v, want ErrAgentAccountLoginUnknown", err)
+		t.Fatalf("verify of a cancelled sign-in: %v", err)
 	}
 	if len(store.accounts) != 0 {
-		t.Fatalf("cancelled sign-in saved: %+v", store.accounts)
+		t.Fatal("cancelled sign-in saved an account")
+	}
+	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("verify recreated cancelled profile")
 	}
 }
 
@@ -387,7 +386,7 @@ func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 		if !errors.Is(launchErr, ports.ErrAgentAccountSignedOut) || env["CLAUDE_CONFIG_DIR"] != b || store.bindings["launching"] != accountID {
 			t.Errorf("a launch during removal got %v bound to %q, want original binding and refusal", env, store.bindings["launching"])
 		}
-		if err := svc.BindSession(ctx, "new", domain.HarnessClaudeCode, ""); !errors.Is(err, ports.ErrAgentAccountSignedOut) || store.bindings["new"] != "" {
+		if err := svc.BindSession(ctx, "new", domain.HarnessClaudeCode, ""); err != nil || store.bindings["new"] != domain.DeviceAgentAccountID(domain.AgentAccountProviderClaude) {
 			t.Errorf("a new session during removal bound to %q (%v), want this computer", store.bindings["new"], err)
 		}
 		if err := svc.ValidateAccount(ctx, domain.HarnessClaudeCode, accountID); !errors.Is(err, ports.ErrAgentAccountSignedOut) {

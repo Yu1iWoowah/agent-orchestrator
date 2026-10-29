@@ -3513,6 +3513,7 @@
 	"settings.defaultSandbox.single": "Where your cloud sessions run. Only one sandbox is available.",
 	"settings.defaultSandbox.adminOnly": "Only organization admins can change this.",
 	"settings.defaultSandbox.saveFailed": "Couldn't save the default sandbox. Try again.",
+	"settings.agentAccounts.cleanupScheduled": "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. You can stop them and retry to finish sooner.",
 	"settings.agentAccounts.storageUnsafe": "Account storage is unsafe. Check folder permissions and symbolic links, then retry.",
 	"settings.agentAccounts.storageUnavailable": "Account storage is temporarily unavailable. Retry later.",
 	"settings.agentAccounts.storageUnsupported": "Private account profiles are currently supported on Linux only.",

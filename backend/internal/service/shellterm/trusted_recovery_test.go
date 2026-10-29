@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -93,5 +94,46 @@ func TestListCannotForgetTrustedIntentWhileCreateIsInFlight(t *testing.T) {
 	}
 	if len(st.records) != 1 || len(rt.aliveByHandle) != 1 {
 		t.Fatal("live trusted child lost durable ownership")
+	}
+}
+
+func TestSessionCloseWaitingForTeardownDoesNotBlockTrustedLogin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rt := newFakeShellRuntime()
+	st := &fakeShellTerminalStore{}
+	s := newTestService(rt, st, &fakeProjectRootLocator{})
+	s.dataDir = t.TempDir()
+	release, e := s.BeginSessionTeardown(ctx, "held-session")
+	if e != nil {
+		t.Fatal(e)
+	}
+	st.records = append(st.records, ShellTerminalRecord{HandleID: "scoped-shell", SessionID: "held-session"})
+	reached := make(chan struct{})
+	s.onSessionGateWait = func(domain.SessionID) { close(reached) }
+	closed := make(chan error, 1)
+	go func() { closed <- s.CloseShellTerminal(ctx, "scoped-shell") }()
+	<-reached
+	opened := make(chan error, 1)
+	go func() {
+		_, e := s.OpenCommandTerminal(ctx, OpenCommandTerminalInput{Argv: []string{"fake-login"}, Title: "Independent login"})
+		opened <- e
+	}()
+	blocked := false
+	select {
+	case e := <-opened:
+		opened <- e
+	case <-time.After(100 * time.Millisecond):
+		blocked = true
+	}
+	release()
+	if e := <-closed; e != nil {
+		t.Fatal(e)
+	}
+	if e := <-opened; e != nil {
+		t.Fatal(e)
+	}
+	if blocked {
+		t.Fatal("session gate waiter held commandMu and blocked independent login")
 	}
 }
