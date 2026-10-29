@@ -24,11 +24,15 @@ type settingsValidatorInstaller interface {
 }
 
 type journalValidator struct {
-	denied  atomic.Bool
-	version atomic.Int64
+	denied      atomic.Bool
+	version     atomic.Int64
+	currentOnly atomic.Bool
 }
 
-func (v *journalValidator) ValidateAgentSettings(_ context.Context, _ domain.AgentSettingsOperation, _ domain.AgentSettingsOwner, restoring bool) (domain.AgentSettingsQualification, error) {
+func (v *journalValidator) ValidateAgentSettings(_ context.Context, op domain.AgentSettingsOperation, _ domain.AgentSettingsOwner, restoring bool) (domain.AgentSettingsQualification, error) {
+	if restoring && v.currentOnly.Load() && op.Source != op.Target {
+		return domain.AgentSettingsQualification{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
 	if v.denied.Load() && !restoring {
 		return domain.AgentSettingsQualification{}, ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
@@ -49,6 +53,7 @@ type journalConversation struct {
 	legacySetters atomic.Int64
 	prepareCalls  atomic.Int64
 	prepareError  atomic.Bool
+	validSource   *domain.AgentSettings
 	freshRecovery atomic.Bool
 	restoredPlan  domain.AgentSettingsProviderPlan
 }
@@ -57,6 +62,9 @@ func (c *journalConversation) CanHibernate(context.Context) (bool, error) { retu
 func (*journalConversation) Hibernate() error                             { return nil }
 func (c *journalConversation) PrepareAgentSettings(_ context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
 	c.prepareCalls.Add(1)
+	if c.validSource != nil && source != *c.validSource {
+		return domain.AgentSettingsProviderPlan{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
 	if c.prepareError.Load() {
 		return domain.AgentSettingsProviderPlan{}, ports.ErrAgentSettingsCapabilitiesUnavailable
 	}

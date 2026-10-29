@@ -22,7 +22,8 @@ type ChatAgentSettingsValidator interface {
 }
 
 // ChatAgentSettingsRecoveryPreparer can prove fresh wire for the durable
-// preference when an old provider preimage no longer belongs to current inputs.
+// preference on cold replay or when an old preimage no longer belongs to
+// current inputs.
 // It supplies no new recovery owner and must not infer a sticky native value.
 type ChatAgentSettingsRecoveryPreparer interface {
 	PrepareAgentSettingsRecovery(context.Context, domain.AgentSettings) (domain.AgentSettingsProviderPlan, error)

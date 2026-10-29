@@ -109,3 +109,77 @@ func TestCodexRecoveryBaselineDoesNotNeedTheFailedTargetsOldModel(t *testing.T) 
 		t.Fatalf("recovery used stale native input or enabled paid tier: %+v", params)
 	}
 }
+
+func TestCodexCommittedPreferenceUsesFreshBaselineAfterSourceRetires(t *testing.T) {
+	current := domain.AgentSettings{Model: "current", Effort: "low", FastMode: domain.AgentFastOff}
+	for _, tc := range []struct {
+		name         string
+		old, current domain.AgentSettings
+		wantTier     string
+	}{
+		{"model", domain.AgentSettings{Model: "retired", Effort: "high", FastMode: domain.AgentFastOn}, current, "default"},
+		{"effort", domain.AgentSettings{Model: "current", Effort: "high", FastMode: domain.AgentFastOff}, current, "default"},
+		{"fast", domain.AgentSettings{Model: "current", Effort: "low", FastMode: domain.AgentFastOn}, current, "default"},
+		{"defaults", domain.AgentSettings{Model: "retired", Effort: "high", FastMode: domain.AgentFastOn}, domain.AgentSettings{FastMode: domain.AgentFastDefault}, "native-fast"},
+		{"current_fast", domain.AgentSettings{Model: "retired", Effort: "high", FastMode: domain.AgentFastOn}, domain.AgentSettings{Model: "current", Effort: "low", FastMode: domain.AgentFastOn}, "catalog-fast"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, srv := newTestDriver(t)
+			c, err := d.Start(t.Context(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = c.Close() })
+			srv.reply("config/read", `{"config":{"model":"current","model_reasoning_effort":"low","service_tier":"native-fast"}}`)
+			srv.reply("model/list", `{"data":[{"id":"current","isDefault":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]}`)
+			if tc.current.FastMode == domain.AgentFastOn {
+				srv.reply("model/list", `{"data":[{"id":"current","isDefault":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"}],"serviceTiers":[{"id":"catalog-fast","name":"Fast"}]}]}`)
+			}
+			staged := c.(ports.ChatAgentSettingsController)
+			if _, err := staged.PrepareAgentSettings(t.Context(), tc.old, tc.current); err == nil {
+				t.Fatal("ordinary operation accepted an unproven rollback source")
+			}
+			plan, err := c.(ports.ChatAgentSettingsRecoveryPreparer).PrepareAgentSettingsRecovery(t.Context(), tc.current)
+			if err != nil {
+				t.Fatalf("current preference needs retired source: %v", err)
+			}
+			if err := staged.ApplyAgentSettingsStep(t.Context(), plan, domain.AgentSettingsVerifying, false); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.SendTurn(t.Context(), ports.ChatUserMessage{Text: "after cold replay", Settings: ports.ChatTurnSettings{Model: string(tc.current.Model), Effort: string(tc.current.Effort), FastMode: tc.current.FastMode}}); err != nil {
+				t.Fatal(err)
+			}
+			f := srv.awaitFrame(func(f frame) bool { return f.Method == "turn/start" })
+			var params map[string]any
+			if err := json.Unmarshal(f.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			if params["model"] != "current" || params["effort"] != "low" || params["serviceTier"] != tc.wantTier {
+				t.Fatalf("cold replay did not send current preference/fresh baseline: %+v", params)
+			}
+		})
+	}
+}
+
+func TestCodexColdReplayRejectsUnavailableCurrentPreference(t *testing.T) {
+	for _, current := range []domain.AgentSettings{
+		{Model: "unavailable", Effort: "low", FastMode: domain.AgentFastOff},
+		{Model: "current", Effort: "high", FastMode: domain.AgentFastOff},
+		{Model: "current", Effort: "low", FastMode: domain.AgentFastOn},
+	} {
+		t.Run(string(current.Model)+"/"+string(current.Effort)+"/"+string(current.FastMode), func(t *testing.T) {
+			d, srv := newTestDriver(t)
+			c, err := d.Start(t.Context(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = c.Close() })
+			srv.reply("config/read", `{"config":{"model":"current","model_reasoning_effort":"low","service_tier":"default"}}`)
+			srv.reply("model/list", `{"data":[{"id":"current","isDefault":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]}`)
+			_, err = c.(ports.ChatAgentSettingsRecoveryPreparer).PrepareAgentSettingsRecovery(t.Context(), current)
+			if !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) && !errors.Is(err, ports.ErrAgentSettingsUnsupported) {
+				t.Fatalf("unavailable committed preference accepted: %v", err)
+			}
+		})
+	}
+}

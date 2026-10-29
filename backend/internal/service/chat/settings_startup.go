@@ -57,6 +57,7 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	}
 	owner := ownerForSettings(current)
 	replay := op
+	replay.Source = current.Settings
 	replay.Target = current.Settings
 	replay.BaseRevision = current.Revision
 	proof, err := c.qualifySettings(ctx, replay, owner, true)
@@ -67,9 +68,19 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	if !ok {
 		return ports.ErrAgentSettingsUnsupported
 	}
-	// Re-prepare from current provider/account evidence. The old native values
-	// are not a baseline for a new process; Source only distinguishes real resets.
-	plan, err := provider.PrepareAgentSettings(ctx, op.Source, current.Settings)
+	var plan domain.AgentSettingsProviderPlan
+	if baseline, ok := c.conv.(ports.ChatAgentSettingsRecoveryPreparer); ok {
+		// Per-turn wire needs only the committed preference and a fresh baseline.
+		// A completed operation's source may no longer be offered by the provider.
+		plan, err = baseline.PrepareAgentSettingsRecovery(ctx, current.Settings)
+		if err == nil && (plan.Source != current.Settings || plan.Target != current.Settings || plan.ProviderConversationID != owner.ProviderConversationID) {
+			return ports.ErrAgentSettingsConflict
+		}
+	} else {
+		// Stateful setters still need the explicit/default transition markers to
+		// prove resets; the old native values are never a new-process baseline.
+		plan, err = provider.PrepareAgentSettings(ctx, op.Source, current.Settings)
+	}
 	if err != nil {
 		return err
 	}

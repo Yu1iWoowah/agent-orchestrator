@@ -125,6 +125,7 @@ func TestSettingsCommittedColdResumeRepreparesWireOrKeepsFence(t *testing.T) {
 			replacement := &journalConversation{fakeConversation: newFakeConversation()}
 			replacement.quiet.Store(true)
 			replacement.prepareError.Store(unavailable)
+			replacement.freshRecovery.Store(true)
 			controller := restartJournalController(t, h, validator, replacement)
 			if replacement.prepareCalls.Load() != 1 {
 				t.Fatal("cold resume reused sticky thread settings without proving a baseline")
@@ -162,6 +163,7 @@ func TestSettingsColdReplayRechecksInputsAfterFinalProviderStep(t *testing.T) {
 	replacement := &journalConversation{fakeConversation: newFakeConversation()}
 	replacement.quiet.Store(true)
 	var changed atomic.Bool
+	replacement.freshRecovery.Store(true)
 	replacement.onStep = func(step domain.AgentSettingsCheckpoint) error {
 		if step == domain.AgentSettingsVerifying && changed.CompareAndSwap(false, true) {
 			validator.version.Store(1)
@@ -174,5 +176,49 @@ func TestSettingsColdReplayRechecksInputsAfterFinalProviderStep(t *testing.T) {
 	}
 	if replacement.prepareCalls.Load() != 2 {
 		t.Fatal("cold replay dispatched using inputs invalidated during final provider step")
+	}
+}
+
+func TestSettingsCommittedColdResumeDoesNotRequireRetiredSource(t *testing.T) {
+	current := domain.AgentSettings{Model: "current", Effort: "low", FastMode: domain.AgentFastOff}
+	for _, tc := range []struct {
+		name         string
+		old, current domain.AgentSettings
+	}{
+		{"model", domain.AgentSettings{Model: "retired", Effort: "high", FastMode: domain.AgentFastOn}, current},
+		{"effort", domain.AgentSettings{Model: "current", Effort: "high", FastMode: domain.AgentFastOff}, current},
+		{"fast", domain.AgentSettings{Model: "current", Effort: "low", FastMode: domain.AgentFastOn}, current},
+		{"defaults", domain.AgentSettings{Model: "retired", Effort: "high", FastMode: domain.AgentFastOn}, domain.AgentSettings{FastMode: domain.AgentFastDefault}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, validator, commands := journalHarness(t)
+			first := journalIntent(t, h)
+			first.Target = tc.old
+			if op, err := commands.QueueAgentSettings(t.Context(), first); err != nil || op.Phase != domain.AgentSettingsApplied {
+				t.Fatalf("first selection: %+v %v", op, err)
+			}
+			intent := journalIntent(t, h)
+			intent.ID, intent.IdempotencyKey, intent.Target = "committed-current", "current-key", tc.current
+			if op, err := commands.QueueAgentSettings(t.Context(), intent); err != nil || op.Phase != domain.AgentSettingsApplied {
+				t.Fatalf("current selection: %+v %v", op, err)
+			}
+			replacement := &journalConversation{fakeConversation: newFakeConversation(), validSource: &tc.current}
+			replacement.quiet.Store(true)
+			replacement.freshRecovery.Store(true)
+			validator.currentOnly.Store(true)
+			controller := restartJournalController(t, h, validator, replacement)
+			turn, err := controller.Send(t.Context(), ports.ChatUserMessage{Text: "after source retirement"})
+			if err != nil || turn.State != domain.TurnStateRunning || len(replacement.sentTexts()) != 1 {
+				t.Fatalf("valid committed preference remained fenced by retired source: %+v %v", turn, err)
+			}
+			receipt, err := h.st.TurnByID(t.Context(), turn.ID)
+			if err != nil || receipt.AgentSettings == nil || receipt.AgentSettings.Revision == nil || *receipt.AgentSettings.Revision != 2 || receipt.AgentSettings.Settings == nil || *receipt.AgentSettings.Settings != tc.current {
+				t.Fatalf("cold replay lost current settings/revision: %+v %v", receipt, err)
+			}
+			saved, err := h.st.AgentSettingsOperation(t.Context(), testSession, intent.ID)
+			if err != nil || saved.Phase != domain.AgentSettingsApplied || saved.Source != tc.old || saved.Target != tc.current {
+				t.Fatalf("cold replay rewrote completed history: %+v %v", saved, err)
+			}
+		})
 	}
 }
