@@ -896,14 +896,22 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if account.Device() {
 			continue
 		}
-		// Even a rejected environment stays pinned to its managed account.
-		// Callers must return the validation error before launching anything.
-		// Legacy deleted bindings have no known home. Keep them as retired
-		// identities, but never pin an empty home (which would select device).
-		if account.Home != "" {
-			for key, value := range provider.LaunchEnv(account.Home) {
-				env[key] = value
+		// Even a rejected environment stays isolated from the device login.
+		// Legacy deleted bindings have no known home: use a fixed reserved
+		// namespace, never an empty home or a path derived from the missing ID.
+		// Availability is checked before Prepare, so this home is not created.
+		home := account.Home
+		if home == "" {
+			reserved := filepath.Join(s.root, ".unavailable")
+			home = filepath.Join(reserved, string(p))
+			// The sink must stay absent. Never reuse data or follow a link
+			// placed in its reserved namespace, even for an inactive provider.
+			if _, err := os.Lstat(reserved); !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, ports.ErrAgentAccountStorageUnsafe)
 			}
+		}
+		for key, value := range provider.LaunchEnv(home) {
+			env[key] = value
 		}
 		if err := accountAvailability(account); err != nil {
 			validationError(p, account.ID, err)

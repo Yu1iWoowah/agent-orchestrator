@@ -24,7 +24,8 @@ func (*orphanBindingStore) GetSessionAgentAccount(_ context.Context, _ domain.Se
 	return domain.DeviceAgentAccountID(p), true, nil
 }
 func TestLegacyOrphanBindingRemainsTraceableAndProviderScoped(t *testing.T) {
-	s := New(&orphanBindingStore{&memStore{}}, []ports.AgentAccountProviderCLI{&fakeClaude{}, &evidenceCodex{fakeClaude: &fakeClaude{}}}, filepath.Join(t.TempDir(), "accounts"), nil, nil)
+	root := filepath.Join(t.TempDir(), "accounts")
+	s := New(&orphanBindingStore{&memStore{}}, []ports.AgentAccountProviderCLI{&fakeClaude{}, &agentaccount.Codex{}}, root, nil, nil)
 	ctx := context.Background()
 	a, bound, e := s.SessionAccount(ctx, "old", domain.AgentAccountProviderCodex)
 	if e != nil || !bound || a.ID != "deleted-codex" || a.RetiredAt == nil || a.Device() {
@@ -37,8 +38,8 @@ func TestLegacyOrphanBindingRemainsTraceableAndProviderScoped(t *testing.T) {
 		t.Fatalf("session account projection: %v %v", ids, e)
 	}
 	env, e := s.SessionLaunchEnv(ctx, "old", domain.HarnessClaudeCode)
-	if e != nil || env["CODEX_HOME"] != "" || env["AO_CODEX_MANAGED_ACCOUNT"] != "" {
-		t.Fatalf("inactive orphan blocked launch or pinned unknown home: %v %v", env, e)
+	if e != nil || env["CODEX_HOME"] != filepath.Join(root, ".unavailable", "codex") || env["AO_CODEX_MANAGED_ACCOUNT"] != "1" {
+		t.Fatalf("inactive orphan blocked launch or lost unavailable home pin: %v %v", env, e)
 	}
 	if _, e = s.SessionLaunchEnv(ctx, "old", domain.HarnessCodex); !errors.Is(e, ports.ErrAgentAccountUnknown) {
 		t.Fatalf("active orphan launched: %v", e)
