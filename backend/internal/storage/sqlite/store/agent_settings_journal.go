@@ -26,6 +26,20 @@ func (s *Store) PendingAgentSettingsOperation(ctx context.Context, id domain.Ses
 	return op, err == nil, err
 }
 
+// LatestAppliedAgentSettingsOperation returns the last committed intent for
+// cold reconstruction of typed reset wire, never a new mutation or preimage.
+func (s *Store) LatestAppliedAgentSettingsOperation(ctx context.Context, id domain.SessionID) (domain.AgentSettingsOperation, bool, error) {
+	row, err := s.qr.GetLatestAppliedAgentSettingsOperation(ctx, string(id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AgentSettingsOperation{}, false, nil
+	}
+	if err != nil {
+		return domain.AgentSettingsOperation{}, false, err
+	}
+	op, err := decodeSettingsOperation(row)
+	return op, err == nil, err
+}
+
 // setSettingsOutcome is called only inside the caller's write transaction.
 func setSettingsOutcome(ctx context.Context, q *gen.Queries, op domain.AgentSettingsOperation, phase domain.AgentSettingsPhase, category domain.AgentSettingsErrorCategory, at time.Time) (domain.AgentSettingsOperation, error) {
 	changed, err := q.SetAgentSettingsOperationPhase(ctx, gen.SetAgentSettingsOperationPhaseParams{SessionID: string(op.SessionID), ID: op.ID, ExpectedVersion: op.Version, Phase: string(phase), ErrorCategory: string(category), At: at, FinishedAt: sql.NullTime{Time: at, Valid: phase != domain.AgentSettingsRecoveryRequired}})

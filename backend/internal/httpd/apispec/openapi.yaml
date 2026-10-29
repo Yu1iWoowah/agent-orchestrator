@@ -15696,11 +15696,15 @@ components:
       type: object
     AgentSettingsTurnSnapshot:
       properties:
+        attempt:
+          type: integer
         capturedAt:
           format: date-time
           type:
           - "null"
           - string
+        owner:
+          $ref: '#/components/schemas/AgentSettingsOwner'
         providerTurnId:
           type: string
         reason:
@@ -15711,6 +15715,12 @@ components:
           - integer
         settings:
           $ref: '#/components/schemas/AgentSettings'
+        source:
+          enum:
+          - root
+          - side
+          - background
+          type: string
         state:
           enum:
           - known
@@ -19267,6 +19277,8 @@ components:
       type: object
     ConversationTurnResponse:
       properties:
+        agentSettings:
+          $ref: '#/components/schemas/AgentSettingsTurnSnapshot'
         batchInputTurnIds:
           items:
             type: string
@@ -24033,6 +24045,10 @@ components:
         referenceContexts:
           items:
             type: string
+          type: array
+        settingsAttempts:
+          items:
+            $ref: '#/components/schemas/AgentSettingsTurnSnapshot'
           type: array
         turn:
           $ref: '#/components/schemas/SideTurn'

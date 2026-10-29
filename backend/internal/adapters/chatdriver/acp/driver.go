@@ -97,6 +97,10 @@ type Config struct {
 	SessionMode func(ports.PermissionMode) string
 	// SessionOptions maps AO's per-turn choices onto ACP config option ids.
 	SessionOptions func(ports.ChatTurnSettings) []SessionOption
+	// AgentSettingsDefaults opts a binding into strict journalled settings.
+	// Values are binding-defined reset selectors and must also be advertised by
+	// the live provider. A missing selector makes that reset unsupported.
+	AgentSettingsDefaults map[string]string
 	// LaunchSessionOptions returns config options whose value is fixed for the
 	// whole session and known only from the launch, such as a persona the agent
 	// lets AO select by id but not by launch flag. They are set once after
@@ -741,6 +745,7 @@ func (d *Driver) initialize(
 	conv.historyUserChunkIsMessage = d.cfg.HistoryUserChunkIsMessage
 	conv.plansSpanTurns = d.cfg.PlansSpanTurns
 	conv.requireAdvertised = d.cfg.RequireAdvertisedOptions
+	conv.agentSettingsDefaults = d.cfg.AgentSettingsDefaults
 	if proc.reconnected {
 		state := proc.acpState
 		if state == nil || state.SessionID == "" {

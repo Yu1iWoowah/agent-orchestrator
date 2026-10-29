@@ -67,6 +67,7 @@ type AgentSettingsOperation struct {
 	StartedAt              *time.Time                 `json:"startedAt,omitempty"`
 	FinishedAt             *time.Time                 `json:"finishedAt,omitempty"`
 	Recovery               *AgentSettingsRecovery     `json:"recovery,omitempty"`
+	Execution              *AgentSettingsExecution    `json:"-"`
 }
 
 // AgentSettingsRecovery pins a replacement executor and its durable restoration

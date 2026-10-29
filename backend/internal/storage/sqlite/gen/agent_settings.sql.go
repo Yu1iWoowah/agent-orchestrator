@@ -115,7 +115,7 @@ func (q *Queries) CommitSessionAgentSettings(ctx context.Context, arg CommitSess
 }
 
 const getAgentSettingsOperation = `-- name: GetAgentSettingsOperation :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json FROM session_agent_settings_operations WHERE session_id=? AND id=?
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND id=?
 `
 
 type GetAgentSettingsOperationParams struct {
@@ -144,12 +144,13 @@ func (q *Queries) GetAgentSettingsOperation(ctx context.Context, arg GetAgentSet
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.RecoveryJson,
+		&i.ExecutionJson,
 	)
 	return i, err
 }
 
 const getAgentSettingsOperationByKey = `-- name: GetAgentSettingsOperationByKey :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?
 `
 
 type GetAgentSettingsOperationByKeyParams struct {
@@ -178,12 +179,44 @@ func (q *Queries) GetAgentSettingsOperationByKey(ctx context.Context, arg GetAge
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.RecoveryJson,
+		&i.ExecutionJson,
+	)
+	return i, err
+}
+
+const getLatestAppliedAgentSettingsOperation = `-- name: GetLatestAppliedAgentSettingsOperation :one
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND phase='applied'
+ORDER BY CAST(json_extract(request_json,'$.baseRevision') AS INTEGER) DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestAppliedAgentSettingsOperation(ctx context.Context, sessionID string) (SessionAgentSettingsOperation, error) {
+	row := q.db.QueryRowContext(ctx, getLatestAppliedAgentSettingsOperation, sessionID)
+	var i SessionAgentSettingsOperation
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.IdempotencyKey,
+		&i.RequestJson,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ApplyMode,
+		&i.ErrorCategory,
+		&i.RequestID,
+		&i.ProviderConversationID,
+		&i.BranchID,
+		&i.Checkpoint,
+		&i.OperationRevision,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RecoveryJson,
+		&i.ExecutionJson,
 	)
 	return i, err
 }
 
 const getPendingAgentSettingsOperation = `-- name: GetPendingAgentSettingsOperation :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json FROM session_agent_settings_operations WHERE session_id=? AND phase IN ('pending','recovery_required')
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND phase IN ('pending','recovery_required')
 `
 
 func (q *Queries) GetPendingAgentSettingsOperation(ctx context.Context, sessionID string) (SessionAgentSettingsOperation, error) {
@@ -207,6 +240,7 @@ func (q *Queries) GetPendingAgentSettingsOperation(ctx context.Context, sessionI
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.RecoveryJson,
+		&i.ExecutionJson,
 	)
 	return i, err
 }
@@ -314,6 +348,35 @@ func (q *Queries) InsertAgentSettingsOperation(ctx context.Context, arg InsertAg
 		arg.BranchID,
 	)
 	return err
+}
+
+const pinAgentSettingsExecution = `-- name: PinAgentSettingsExecution :execrows
+UPDATE session_agent_settings_operations SET execution_json=?1,
+ operation_revision=operation_revision+1,updated_at=?2
+WHERE session_id=?3 AND id=?4 AND operation_revision=?5
+ AND phase='pending' AND checkpoint='queued' AND started_at IS NULL
+`
+
+type PinAgentSettingsExecutionParams struct {
+	ExecutionJson   string
+	At              time.Time
+	SessionID       string
+	ID              string
+	ExpectedVersion int64
+}
+
+func (q *Queries) PinAgentSettingsExecution(ctx context.Context, arg PinAgentSettingsExecutionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, pinAgentSettingsExecution,
+		arg.ExecutionJson,
+		arg.At,
+		arg.SessionID,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const projectConversationAgentSettings = `-- name: ProjectConversationAgentSettings :exec

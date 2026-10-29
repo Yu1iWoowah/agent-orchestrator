@@ -162,6 +162,9 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		SessionMeta:    claudeSessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
+		// Only a live advertised default selector can prove a reset. Fast has
+		// no reset selector in the pinned bridge; on/off cannot stand for default.
+		AgentSettingsDefaults: map[string]string{"model": "default", "effort": "default"},
 	}, log)}
 }
 

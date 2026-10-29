@@ -5172,12 +5172,16 @@ export interface components {
             model: string;
         };
         AgentSettingsTurnSnapshot: {
+            attempt?: number;
             /** Format: date-time */
             capturedAt?: null | string;
+            owner?: components["schemas"]["AgentSettingsOwner"];
             providerTurnId?: string;
             reason?: string;
             revision?: null | number;
             settings?: components["schemas"]["AgentSettings"];
+            /** @enum {string} */
+            source?: "root" | "side" | "background";
             /** @enum {string} */
             state: "known" | "unknown";
             turnId?: string;
@@ -6500,6 +6504,7 @@ export interface components {
             truncated?: boolean;
         };
         ConversationTurnResponse: {
+            agentSettings?: components["schemas"]["AgentSettingsTurnSnapshot"];
             batchInputTurnIds?: string[];
             completedAt?: null | string;
             diff?: components["schemas"]["ConversationTurnDiffResponse"];
@@ -8359,6 +8364,7 @@ export interface components {
             dispatchAttempt?: number;
             providerTurnId?: string;
             referenceContexts: string[];
+            settingsAttempts?: components["schemas"]["AgentSettingsTurnSnapshot"][];
             turn: components["schemas"]["SideTurn"];
         };
         SideSettingsRequest: {

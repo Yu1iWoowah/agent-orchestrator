@@ -54,6 +54,7 @@ type SessionReader interface {
 // Service owns the live Chat controllers.
 type Service struct {
 	store                  Store
+	settingsValidator      ports.ChatAgentSettingsValidator // guarded by mu
 	reader                 SnapshotReader
 	pageReader             SnapshotPageReader
 	sessions               SessionReader
@@ -1225,6 +1226,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	controller.settingsObservationOwner = controller.observationOwner(settingsAccount)
+	s.configureAgentSettingsController(controller)
+	controller.initializeAgentSettings(ctx)
 	s.mu.Lock()
 	s.ownerControllers[owner] = controller
 	if owner.Kind == domain.ConversationOwnerSession {
@@ -2559,6 +2562,11 @@ func (s *Service) SetConfigOption(
 	}
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
+	controller.sendMu.Lock()
+	defer controller.sendMu.Unlock()
+	if err := controller.rejectPendingAgentSettings(ctx); err != nil {
+		return nil, err
+	}
 	previous := controller.Settings()
 	options, err := configurer.SetConfigOption(ctx, configID, value)
 	if err != nil {
@@ -2588,7 +2596,7 @@ func (s *Service) SetConfigOption(
 		}
 	}
 	if settings != previous {
-		if err := controller.SetSettings(ctx, settings); err != nil {
+		if err := controller.setSettingsLocked(ctx, settings); err != nil {
 			return nil, err
 		}
 		// The config-options route is how provider-owned pickers (e.g. Claude

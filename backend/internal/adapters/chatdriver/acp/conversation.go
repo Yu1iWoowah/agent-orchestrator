@@ -124,6 +124,7 @@ type conversation struct {
 	closed                   bool
 	modeFor                  func(ports.PermissionMode) string
 	optionsFor               func(ports.ChatTurnSettings) []SessionOption
+	agentSettingsDefaults    map[string]string
 	// requireAdvertised refuses a config option the session did not advertise
 	// instead of sending it. See Config.RequireAdvertisedOptions.
 	requireAdvertised bool

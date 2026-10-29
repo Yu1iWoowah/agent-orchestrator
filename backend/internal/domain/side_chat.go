@@ -48,22 +48,23 @@ type SideConversation struct {
 
 // SideTurn records one question and its execution state in a side conversation.
 type SideTurn struct {
-	ID               string          `json:"id"`
-	SideID           string          `json:"sideId"`
-	ClientMessageID  string          `json:"clientMessageId"`
-	Text             string          `json:"text"`
-	Content          []SideContent   `json:"-"`
-	References       []SideReference `json:"references,omitempty"`
-	SelectionText    string          `json:"selectionText,omitempty"`
-	ReferenceContext string          `json:"referenceContext,omitempty"`
-	DispatchAttempt  int             `json:"-"`
-	ProviderTurnID   string          `json:"-"`
-	RetryOfTurnID    string          `json:"retryOfTurnId,omitempty"`
-	State            string          `json:"state"`
-	ErrorMessage     string          `json:"errorMessage,omitempty"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	StartedAt        *time.Time      `json:"startedAt,omitempty"`
-	CompletedAt      *time.Time      `json:"completedAt,omitempty"`
+	SettingsAttempts []AgentSettingsTurnSnapshot `json:"-"`
+	ID               string                      `json:"id"`
+	SideID           string                      `json:"sideId"`
+	ClientMessageID  string                      `json:"clientMessageId"`
+	Text             string                      `json:"text"`
+	Content          []SideContent               `json:"-"`
+	References       []SideReference             `json:"references,omitempty"`
+	SelectionText    string                      `json:"selectionText,omitempty"`
+	ReferenceContext string                      `json:"referenceContext,omitempty"`
+	DispatchAttempt  int                         `json:"-"`
+	ProviderTurnID   string                      `json:"-"`
+	RetryOfTurnID    string                      `json:"retryOfTurnId,omitempty"`
+	State            string                      `json:"state"`
+	ErrorMessage     string                      `json:"errorMessage,omitempty"`
+	CreatedAt        time.Time                   `json:"createdAt"`
+	StartedAt        *time.Time                  `json:"startedAt,omitempty"`
+	CompletedAt      *time.Time                  `json:"completedAt,omitempty"`
 }
 
 // SideReference is verified and frozen when its question is accepted.
