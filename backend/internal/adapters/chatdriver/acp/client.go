@@ -744,7 +744,7 @@ func (c *conversation) processUpdate(params acpsdk.SessionNotification) error {
 	case update.ConfigOptionUpdate != nil:
 		// The update is a complete replacement, not a delta. Model changes can
 		// rebuild effort and fast-mode choices, including removing an option.
-		c.replaceConfigOptions(update.ConfigOptionUpdate.ConfigOptions)
+		c.replaceConfigOptionsForSession(update.ConfigOptionUpdate.ConfigOptions, string(params.SessionId))
 	case update.AvailableCommandsUpdate != nil:
 		// Like config options, ACP command updates replace the entire catalog. The
 		// provider may discover project commands after session setup or remove one

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -69,6 +70,7 @@ func (c *conversation) SetConfigOption(
 		if value.Boolean != nil || !choiceOffered(option.Choices, value.Select) {
 			return nil, fmt.Errorf("%w: ACP session config option %q does not offer value %q", ports.ErrChatConfigOptionInvalid, id, value.Select)
 		}
+		c.invalidateSettingsReceipt()
 		if err := c.legacyWire.setModel(ctx, sessionID, value.Select); err != nil {
 			return nil, fmt.Errorf("set ACP legacy session model %q: %w", value.Select, err)
 		}
@@ -79,6 +81,7 @@ func (c *conversation) SetConfigOption(
 		if value.Boolean != nil || !choiceOffered(option.Choices, value.Select) {
 			return nil, fmt.Errorf("%w: ACP session config option %q does not offer value %q", ports.ErrChatConfigOptionInvalid, id, value.Select)
 		}
+		c.invalidateSettingsReceipt()
 		if _, err := c.conn.SetSessionMode(ctx, acpsdk.SetSessionModeRequest{
 			SessionId: acpsdk.SessionId(sessionID), ModeId: acpsdk.SessionModeId(value.Select),
 		}); err != nil {
@@ -115,6 +118,7 @@ func (c *conversation) SetConfigOption(
 		return nil, fmt.Errorf("%w: ACP session config option %q has unsupported type %q", ports.ErrChatConfigOptionInvalid, id, option.Type)
 	}
 
+	c.invalidateSettingsReceipt()
 	resp, err := c.conn.SetSessionConfigOption(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("set ACP session config option %q: %w", id, err)
@@ -142,10 +146,20 @@ func (c *conversation) SetConfigOption(
 // notification and session setup — so an empty list means the session really
 // has no options and is applied as given.
 func (c *conversation) replaceConfigOptions(options []acpsdk.SessionConfigOption) {
+	c.replaceConfigOptionsForSession(options, "")
+}
+
+func (c *conversation) replaceConfigOptionsForSession(options []acpsdk.SessionConfigOption, sessionID string) {
 	normalized := normalizeConfigOptions(options)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.configOptions = normalized
+	c.settingsReceipts = cloneConfigOptions(normalized)
+	c.settingsObservedAt = time.Now().UTC()
+	if sessionID == "" {
+		sessionID = c.sessionID
+	}
+	c.settingsReceiptSessionID = sessionID
 	if len(normalized) > 0 {
 		c.capabilities[ports.ChatCapabilityConfigOptions] = true
 	}
@@ -158,6 +172,9 @@ func (c *conversation) replaceConfigOptions(options []acpsdk.SessionConfigOption
 func (c *conversation) applyAcceptedConfigOption(id string, value ports.ChatConfigOptionValue) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.settingsObservedAt = time.Time{}
+	c.settingsReceipts = nil
+	c.settingsReceiptSessionID = ""
 	for i := range c.configOptions {
 		if c.configOptions[i].ID != id {
 			continue

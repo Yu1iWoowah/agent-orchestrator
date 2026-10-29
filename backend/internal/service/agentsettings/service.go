@@ -50,7 +50,10 @@ type Capabilities struct {
 // Snapshot combines durable preferences with independently qualified evidence.
 type Snapshot struct {
 	domain.SessionAgentSettings
-	Capabilities       Capabilities `json:"capabilities"`
+	Capabilities       Capabilities                      `json:"capabilities"`
+	Pending            *domain.AgentSettingsOperation    `json:"pending,omitempty"`
+	Effective          domain.AgentSettingsEffective     `json:"effective"`
+	CurrentTurn        *domain.AgentSettingsTurnSnapshot `json:"currentTurn,omitempty"`
 	catalogFingerprint string
 }
 
@@ -64,6 +67,7 @@ type Service struct {
 	store         Store
 	now           func() time.Time
 	catalogInputs CatalogFingerprintSource
+	observations  ports.AgentSettingsObservationSource
 }
 
 // New constructs a reader with an injectable freshness clock.
@@ -87,6 +91,9 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 		return Snapshot{}, err
 	}
 	result := Snapshot{SessionAgentSettings: settings, Capabilities: Capabilities{State: CapabilityUnknown, Reason: "catalog_unavailable", ControllerGeneration: settings.OwnerGeneration, AccountID: settings.AccountID, Models: []ModelCapabilities{}}}
+	if err := s.readObservations(ctx, &result); err != nil {
+		return Snapshot{}, err
+	}
 	if !settings.Harness.IsKnown() {
 		result.Capabilities.Reason = "harness_unknown"
 		return result, nil

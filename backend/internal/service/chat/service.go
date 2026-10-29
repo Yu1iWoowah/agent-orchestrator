@@ -818,6 +818,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	}
 	providerSystemPrompt := withHandoffNote(cfg.SystemPrompt, handoffNote)
 
+	settingsAccount := s.settingsAccountBeforeLaunch(ctx, cfg.SessionID)
 	var conv ports.ChatConversation
 	hostID := providerHostID(cfg)
 	freshIfMissing := cfg.FreshIfProviderConversationMissing
@@ -1223,6 +1224,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ProviderConversationID = controller.ProviderConversationID()
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
+	controller.settingsObservationOwner = domain.AgentSettingsOwner{SessionID: cfg.SessionID, AccountID: settingsAccount, ControllerGeneration: controller.Generation(), ProviderConversationID: controller.ProviderConversationID(), BranchID: controller.conversation.ActiveBranchID}
 	s.mu.Lock()
 	s.ownerControllers[owner] = controller
 	if owner.Kind == domain.ConversationOwnerSession {
