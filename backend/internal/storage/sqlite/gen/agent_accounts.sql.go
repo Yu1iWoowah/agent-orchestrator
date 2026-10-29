@@ -307,7 +307,9 @@ func (q *Queries) GetAgentAccountOperation(ctx context.Context, id string) (Agen
 const getOpenReviewerAccountUse = `-- name: GetOpenReviewerAccountUse :one
 SELECT r.id AS review_id,r.session_id,r.harness
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
-WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
+WHERE a.account_id=? AND r.is_archived=0
+  AND (r.reviewer_activity_state<>'exited'
+       OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running'))
 ORDER BY r.created_at,r.id,a.provider LIMIT 1
 `
 
@@ -444,7 +446,8 @@ WHERE a.account_id=?1
   AND a.bound_at=(SELECT MAX(b.bound_at) FROM session_agent_accounts AS b WHERE b.session_id=a.session_id AND b.provider=a.provider)
 UNION ALL
 SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, r.id, r.pr_url, r.harness, '',
-       CAST(r.is_archived=0 AND r.reviewer_activity_state<>'exited' AS INTEGER)
+       CAST(r.is_archived=0 AND (r.reviewer_activity_state<>'exited'
+         OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running')) AS INTEGER)
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id JOIN sessions AS s ON s.id=r.session_id
 WHERE a.account_id=?1
 UNION ALL
@@ -469,6 +472,8 @@ type ListAgentAccountUsageOwnersRow struct {
 }
 
 // Current bindings are owners; older receipts remain historical attribution.
+// A running pass owns its profile before native activity replaces an old exited
+// observation; the launch lease may return before the caller commits its handle.
 // Transition targets are owners before a binding is committed. No profile path
 // or provider output is part of this local-only projection.
 func (q *Queries) ListAgentAccountUsageOwners(ctx context.Context, accountID string) ([]ListAgentAccountUsageOwnersRow, error) {
