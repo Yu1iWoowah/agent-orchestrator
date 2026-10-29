@@ -272,6 +272,7 @@ export function ResizableConversationFrame({
 	maxHeight,
 	onPreview,
 	scrollContent = true,
+	compact = false,
 }: {
 	id: string;
 	frame: Pick<ConversationFrameDescriptor, "title" | "summary" | "content">;
@@ -284,6 +285,7 @@ export function ResizableConversationFrame({
 	maxHeight: number;
 	onPreview: (axis: "x" | "y", value: number | null) => void;
 	scrollContent?: boolean;
+	compact?: boolean;
 }) {
 	const { t } = useTranslation();
 	const ref = useRef<HTMLElement>(null);
@@ -355,7 +357,7 @@ export function ResizableConversationFrame({
 				}
 			}}
 		>
-			<div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+			<div className={compact ? "flex h-8 shrink-0 items-center gap-2 border-b px-2" : "flex h-10 shrink-0 items-center gap-2 border-b px-3"}>
 				<span className="min-w-0 flex-1 truncate text-sm font-medium">{frame.title}</span>
 				<span className="text-xs tabular-nums text-muted-foreground">{frame.summary}</span>
 				{onSwap ? (
@@ -385,7 +387,7 @@ export function ResizableConversationFrame({
 					<ChevronUp className="size-4" />
 				</Button>
 			</div>
-			<div className={scrollContent ? "min-h-0 flex-1 overflow-auto overscroll-contain p-3" : "flex min-h-0 flex-1 flex-col overflow-hidden p-3"}>{frame.content}</div>
+			<div className={scrollContent ? "min-h-0 flex-1 overflow-auto overscroll-contain p-3" : compact ? "flex min-h-0 flex-1 flex-col overflow-hidden p-1" : "flex min-h-0 flex-1 flex-col overflow-hidden p-3"}>{frame.content}</div>
 			<ResizeHandle
 				side="left"
 				tabIndex={0}

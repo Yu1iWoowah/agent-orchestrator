@@ -26,9 +26,13 @@ export interface DocumentResources {
 /** Each reader owns its budget, in-flight resources and blobs; no app/global URL cache. */
 export function createDocumentResources(
 	base: DocumentTarget,
-	load: (target: DocumentTarget) => Promise<ArrayBuffer>,
+	load: (
+		target: DocumentTarget,
+		options: { maxBytes: number; signal: AbortSignal },
+	) => Promise<ArrayBuffer>,
 	transport: "blob" | "inline-raster" = "blob",
 ): DocumentResources {
+	const abort = new AbortController();
 	const blobs = new Set<string>();
 	const blocked = new Set<string>();
 	let limited = false;
@@ -54,36 +58,44 @@ export function createDocumentResources(
 		}
 		return relativeDocumentTarget(from, ref);
 	};
+	const stop = () => {
+		limited = true;
+		abort.abort();
+		for (const reader of readers) reader.abort();
+		return new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
+	};
+	// One bounded read at a time: parallel image requests cannot each spend the same remaining budget.
+	let pending = Promise.resolve();
 	const read = (target: DocumentTarget) => {
 		const key = documentFileKey(target);
 		const saved = cache.get(key);
 		if (saved) return saved;
-		if (++count > RESOURCE_LIMIT) {
-			limited = true;
-			return Promise.reject(
-				new DocumentContentError("DOCUMENT_RESOURCE_LIMIT"),
-			);
-		}
-		const request = load(target)
-			.then((data) => {
+		const request = pending.then(async () => {
+			if (disposed) throw new DOMException("Aborted", "AbortError");
+			if (limited || ++count > RESOURCE_LIMIT || total >= TOTAL_BYTES)
+				throw stop();
+			const maxBytes = Math.min(RESOURCE_BYTES, TOTAL_BYTES - total);
+			try {
+				const data = await load(target, { maxBytes, signal: abort.signal });
 				if (disposed) throw new DOMException("Aborted", "AbortError");
 				total += data.byteLength;
-				if (data.byteLength > RESOURCE_BYTES || total > TOTAL_BYTES) {
-					limited = true;
-					throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
-				}
+				if (data.byteLength > maxBytes) throw stop();
 				return data;
-			})
-			.catch((error) => {
+			} catch (error) {
 				if (
 					error &&
 					typeof error === "object" &&
 					"code" in error &&
 					error.code === "DOCUMENT_TOO_LARGE"
 				)
-					limited = true;
+					throw stop();
 				throw error;
-			});
+			}
+		});
+		pending = request.then(
+			() => undefined,
+			() => undefined,
+		);
 		cache.set(key, request);
 		return request;
 	};
@@ -129,7 +141,7 @@ export function createDocumentResources(
 			if (url && transport === "inline-raster") {
 				embeddedCharacters += url.length;
 				if (embeddedCharacters > 28 * 1024 * 1024) {
-					limited = true;
+					stop();
 					return null;
 				}
 			}
@@ -169,27 +181,43 @@ export function createDocumentResources(
 				return "";
 			}
 			const imports: css.Atrule[] = [];
-			let invalid = false;
-			css.walk(tree, (node) => {
-				if (node.type === "Raw") invalid = true;
-				if (node.type === "Url" && /^(?:https?:|\/\/)/i.test(node.value))
-					blocked.add(node.value);
-				if (
-					node.type === "Function" &&
-					!/^(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color|color-mix|calc|min|max|clamp|linear-gradient|radial-gradient|repeating-linear-gradient|repeating-radial-gradient|translate[xyz]?|scale[xyz]?|rotate[xyz]?|matrix|cubic-bezier|steps)$/i.test(
-						node.name,
+			const unsafe = (value: css.CssNode) => {
+				let rejected = false;
+				css.walk(value, (node) => {
+					if (
+						node.type === "Raw" ||
+						(node.type === "Function" &&
+							/^(?:url|src|image-set|-webkit-image-set|image|cross-fade|-webkit-cross-fade|element|-moz-element|paint)$/i.test(
+								css.ident.decode(node.name),
+							))
 					)
-				)
-					invalid = true;
+						rejected = true;
+				});
+				return rejected;
+			};
+			const prune: css.EnterOrLeaveFn = function (node, item, list) {
 				if (node.type === "Atrule") {
-					if (node.name.toLowerCase() === "import") imports.push(node);
-					else if (
-						!["media", "supports", "layer"].includes(node.name.toLowerCase())
-					)
-						invalid = true;
+					const name = css.ident.decode(node.name).toLowerCase();
+					if (name === "import") imports.push(node);
+					if (
+						name === "import" ||
+						!["media", "supports", "layer", "container"].includes(name) ||
+						(node.prelude && unsafe(node.prelude))
+					) {
+						list.remove(item);
+						return this.skip;
+					}
+				} else if (
+					(node.type === "Declaration" && unsafe(node.value)) ||
+					(node.type === "Rule" && unsafe(node.prelude)) ||
+					node.type === "Raw"
+				) {
+					list.remove(item);
+					return this.skip;
 				}
-			});
-			if (invalid) return "";
+				return undefined;
+			};
+			css.walk(tree, prune);
 			const imported: string[] = [];
 			for (const rule of imports) {
 				const nodes =
@@ -209,15 +237,6 @@ export function createDocumentResources(
 						/* missing resource is a placeholder */
 					}
 				}
-				rule.name = "media";
-				rule.prelude = {
-					type: "AtrulePrelude",
-					children: new css.List<css.CssNode>().fromArray([
-						{ type: "Identifier", name: "not" },
-						{ type: "Identifier", name: "all" },
-					]),
-				};
-				rule.block = css.parse("{}", { context: "block" }) as css.Block;
 			}
 			// @import URL nodes were removed; do not load them again as raster images.
 			const remaining: css.Url[] = [];
@@ -231,15 +250,19 @@ export function createDocumentResources(
 					node.value = "";
 				}
 			}
-			const result = imported.join("\n") + css.generate(tree);
+			// A style element serializes raw text; never let CSS strings terminate it.
+			const result = (imported.join("\n") + css.generate(tree)).replace(
+				/</g,
+				"\\3c ",
+			);
 			if (result.length > 28 * 1024 * 1024) {
-				limited = true;
-				throw new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
+				throw stop();
 			}
 			return result;
 		},
 		dispose() {
 			disposed = true;
+			abort.abort();
 			for (const reader of readers) reader.abort();
 			readers.clear();
 			for (const url of blobs) URL.revokeObjectURL(url);
@@ -275,6 +298,7 @@ export async function staticDocumentHtml(
 			"video",
 			"audio",
 			"source",
+			"area",
 		],
 		FORBID_ATTR: [
 			"srcset",

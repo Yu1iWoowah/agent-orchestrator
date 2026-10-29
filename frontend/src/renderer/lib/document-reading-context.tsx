@@ -51,6 +51,7 @@ export const useDocumentReader = () => useContext(DocumentReadingContext);
 export function openReadingDocument(
 	reader: DocumentReaderContext,
 	input: DocumentInput,
+	originalLink?: string,
 ) {
-	useDocumentReadingStore.getState().open(reader.key, input);
+	useDocumentReadingStore.getState().open(reader.key, input, { originalLink });
 }

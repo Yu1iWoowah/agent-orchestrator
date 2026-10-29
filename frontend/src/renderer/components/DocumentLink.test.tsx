@@ -7,6 +7,7 @@ import { DocumentReadingContext } from "../lib/document-reading-context";
 import { useDocumentReadingStore } from "../stores/document-reading-store";
 import { TooltipProvider } from "./ui/tooltip";
 import { aoBridge } from "../lib/bridge";
+import { useUiStore } from "../stores/ui-store";
 const mocks = vi.hoisted(() => ({ resolve: vi.fn(), navigate: vi.fn() }));
 vi.mock("../lib/document-read", async (original) => ({
 	...(await original<typeof import("../lib/document-read")>()),
@@ -110,5 +111,23 @@ it("dismisses the passive preview on Escape and before opening the document", as
 	await screen.findByRole("tooltip");
 	fireEvent.click(link);
 	await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+	cache.clear();
+});
+
+it("copies the original unresolved URI without pretending it is a file path", async () => {
+	mocks.resolve.mockRejectedValue(new Error("not created"));
+	const write = vi.spyOn(aoBridge.clipboard, "writeText").mockResolvedValue(undefined);
+	const { cache, unmount } = setup();
+	const link = screen.getByRole("link", { name: "Document" });
+	fireEvent.contextMenu(link);
+	await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
+	await waitFor(() => expect(write).toHaveBeenCalledWith(uri));
+	expect(useUiStore.getState().globalToast?.title).toContain("unresolved");
+	write.mockClear();
+	fireEvent.contextMenu(link);
+	await userEvent.click(screen.getByRole("menuitem", { name: "Copy file path" }));
+	await waitFor(() => expect(useUiStore.getState().globalToast?.title).toBe("Unable to copy. Resolve the document and try again."));
+	expect(write).not.toHaveBeenCalled();
+	unmount();
 	cache.clear();
 });

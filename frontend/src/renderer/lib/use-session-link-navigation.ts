@@ -1,5 +1,5 @@
 import { documentInputFromLink } from "./document-targets";
-import { useDocumentReadingStore } from "../stores/document-reading-store";
+import { openReadingDocument, useDocumentReader } from "./document-reading-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useCloudProjectsQuery, useCloudSessionsQuery, remoteWorkspaceQueryKey, toCloudWorkspace, useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
@@ -60,6 +60,7 @@ export function useSessionLinkSource(sourceHostId?: string, sourceKind?: "cloud"
 }
 
 export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cloud"): (url: string) => boolean {
+	const reader = useDocumentReader();
 	const remoteHostId = sourceHostId && sourceHostId !== LOCAL_HOST ? sourceHostId : undefined;
 	const source = useSessionLinkSource(sourceHostId, sourceKind);
 	const navigateToSession = useNavigateToSession();
@@ -67,19 +68,21 @@ export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cl
 	const setProjectDocumentTarget = useUiStore((state) => state.setProjectDocumentTarget);
 	const requestWorkspaceFileOpen = useUiStore((state) => state.requestWorkspaceFileOpen);
 	return useCallback((url: string) => {
-		const input=documentInputFromLink(url);
-		const reader=useDocumentReadingStore.getState().reader;
-		if(input&&reader&&!remoteHostId&&sourceKind!=="cloud") {useDocumentReadingStore.getState().open(reader.key,input);return true;}
+		const input = documentInputFromLink(url);
+		if (input && reader?.connection.kind === "local" && !remoteHostId && sourceKind !== "cloud") {
+			openReadingDocument(reader, input, url);
+			return true;
+		}
 		const document = parseProjectDocumentLink(url);
-  if (document) {
-   if (remoteHostId || sourceKind === "cloud" || !source.ready || !source.workspaces.some((project) => project.id === document.projectId)) {
-    showGlobalToast("This project document is unavailable on this connection.", undefined, { tone: "error", placement: "top-center", dismissible: true, dedupeKey: "project-document:error" });
-    return false;
-   }
-   setProjectDocumentTarget(document);
-   return true;
-  }
-  const artifact = parseArtifactLink(url);
+		if (document) {
+			if (remoteHostId || sourceKind === "cloud" || !source.ready || !source.workspaces.some((project) => project.id === document.projectId)) {
+				showGlobalToast("This project document is unavailable on this connection.", undefined, { tone: "error", placement: "top-center", dismissible: true, dedupeKey: "project-document:error" });
+				return false;
+			}
+			setProjectDocumentTarget(document);
+			return true;
+		}
+		const artifact = parseArtifactLink(url);
 		const target = parseSessionLink(url) ?? artifact;
 		if (!target) {
 			showGlobalToast("This AO session link is malformed or unsupported.", undefined, {
@@ -123,5 +126,5 @@ export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cl
 		if (remoteHostId) navigateToSession(resolved.projectId, resolved.sessionId, remoteHostId);
 		else navigateToSession(resolved.projectId, resolved.sessionId);
 		return true;
-	}, [setProjectDocumentTarget, navigateToSession, remoteHostId, requestWorkspaceFileOpen, showGlobalToast, source, sourceKind]);
+	}, [reader, setProjectDocumentTarget, navigateToSession, remoteHostId, requestWorkspaceFileOpen, showGlobalToast, source, sourceKind]);
 }

@@ -3788,6 +3788,7 @@
 	"documents.sheet.copyLink": "Copy link",
 	"documents.sheet.copyPath": "Copy file path",
 	"documents.sheet.copied": "Copied to clipboard",
+	"documents.sheet.copiedUnresolved": "Link original copiado (não resolvido)",
 	"documents.sheet.copyError": "Unable to copy. Resolve the document and try again.",
 	"documents.sheet.goSource": "Go to source",
 	"documents.sheet.loading": "Loading document…",

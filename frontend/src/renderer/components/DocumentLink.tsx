@@ -37,8 +37,21 @@ export function DocumentLink({
 	});
 	const copy = async (kind: "path" | "link") => {
 		try {
-			await copyDocument(reader.connection, input, kind);
-			useUiStore.getState().showGlobalToast(t("documents.sheet.copied"));
+			const resolved = await copyDocument(
+				reader.connection,
+				input,
+				kind,
+				props.href,
+			);
+			useUiStore
+				.getState()
+				.showGlobalToast(
+					t(
+						resolved
+							? "documents.sheet.copied"
+							: "documents.sheet.copiedUnresolved",
+					),
+				);
 		} catch {
 			useUiStore
 				.getState()
@@ -61,13 +74,15 @@ export function DocumentLink({
 							onClick={(event) => {
 								event.preventDefault();
 								setHover(false);
-								openReadingDocument(reader, input);
+								openReadingDocument(reader, input, props.href);
 							}}
 						/>
 					</TooltipTrigger>
 				</ContextMenuTrigger>
 				<ContextMenuContent>
-					<ContextMenuItem onSelect={() => openReadingDocument(reader, input)}>
+					<ContextMenuItem
+						onSelect={() => openReadingDocument(reader, input, props.href)}
+					>
 						<FileText />
 						{t("documents.sheet.open")}
 					</ContextMenuItem>

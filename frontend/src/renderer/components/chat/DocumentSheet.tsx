@@ -115,6 +115,12 @@ function DocumentSheetReader({
 		{},
 	);
 
+	const compact =
+		Math.min(
+			preview.height ?? size.height,
+			bounds?.rect.height ?? size.height,
+		) < 300 || (bounds?.rect.width ?? size.width) < 400;
+
 	useEffect(() => {
 		const surface = surfaceRef.current;
 		if (!surface) return;
@@ -181,8 +187,21 @@ function DocumentSheetReader({
 	) => {
 		if (!input) return;
 		try {
-			await copyDocument(reader.connection, input, kind);
-			useUiStore.getState().showGlobalToast(t("documents.sheet.copied"));
+			const resolved = await copyDocument(
+				reader.connection,
+				input,
+				kind,
+				opening ? opening.originalLink : visit?.document.canonicalUri,
+			);
+			useUiStore
+				.getState()
+				.showGlobalToast(
+					t(
+						resolved
+							? "documents.sheet.copied"
+							: "documents.sheet.copiedUnresolved",
+					),
+				);
 		} catch {
 			useUiStore
 				.getState()
@@ -209,8 +228,17 @@ function DocumentSheetReader({
 		</Button>
 	);
 	const content = (
-		<div className="flex h-full min-h-0 flex-col">
-			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b pb-2">
+		<div
+			className="flex h-full min-h-0 flex-col"
+			data-document-compact={compact ? "" : undefined}
+		>
+			<div
+				className={
+					compact
+						? "flex shrink-0 items-center gap-1 overflow-x-auto border-b pb-1 [&>*]:shrink-0"
+						: "flex shrink-0 flex-wrap items-center gap-1 border-b pb-2"
+				}
+			>
 				{control(
 					t("documents.sheet.back"),
 					() => useDocumentReadingStore.getState().back(reader.key),
@@ -347,7 +375,9 @@ function DocumentSheetReader({
 							onClick={() =>
 								useDocumentReadingStore
 									.getState()
-									.open(reader.key, opening.input)
+									.open(reader.key, opening.input, {
+										originalLink: opening.originalLink,
+									})
 							}
 						>
 							{t(
@@ -368,7 +398,11 @@ function DocumentSheetReader({
 			) : visit ? (
 				<>
 					<div
-						className="min-w-0 shrink-0 border-b py-2 font-mono text-xs text-muted-foreground"
+						className={
+							compact
+								? "sr-only"
+								: "min-w-0 shrink-0 border-b py-2 font-mono text-xs text-muted-foreground"
+						}
 						title={visit.document.localPath}
 					>
 						<p className="truncate">{visit.document.localPath}</p>
@@ -409,6 +443,7 @@ function DocumentSheetReader({
 					) : null}
 					<DocumentBody
 						key={documentFileKey(visit.document.target)}
+						compact={compact}
 						visit={visit}
 						readerKey={reader.key}
 						connection={reader.connection}
@@ -471,6 +506,7 @@ function DocumentSheetReader({
 							{t("documents.sheet.title")}
 						</SheetTitle>
 						<ResizableConversationFrame
+							compact={compact}
 							scrollContent={false}
 							id={id}
 							frame={{

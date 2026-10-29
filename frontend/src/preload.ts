@@ -306,8 +306,10 @@ const api = {
 		},
 		onDocumentEscape: (listener: () => void) => {
 			const wrapped = () => listener();
-			ipcRenderer.on(DOCUMENT_ESCAPE_CHANNEL,wrapped);
-			return () => { ipcRenderer.off(DOCUMENT_ESCAPE_CHANNEL,wrapped); };
+			ipcRenderer.on(DOCUMENT_ESCAPE_CHANNEL, wrapped);
+			return () => {
+				ipcRenderer.off(DOCUMENT_ESCAPE_CHANNEL, wrapped);
+			};
 		},
 		onShortcut: (listener: (event: AppShortcutEvent) => void) => {
 			const wrapped = (_event: unknown, shortcut: AppShortcutEvent) => listener(shortcut);

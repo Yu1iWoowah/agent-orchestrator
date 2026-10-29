@@ -391,6 +391,43 @@ test("opening the temporary document keeps its first frame inside the Chat safe 
 	expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(composer!.y - 8);
 });
 
+test("compact documents keep readable body space above the composer @T0", async ({
+	page,
+}) => {
+	await setup(page, true);
+	await page
+		.getByRole("region", { name: "Awaiting you", exact: true })
+		.getByRole("button", {
+			name: "Go to original request: Original provider request",
+			exact: true,
+		})
+		.click();
+	await page
+		.getByTestId("elicitation-dock")
+		.getByRole("textbox", { name: /^Target/ })
+		.fill("Keep pending draft");
+	await page.setViewportSize({ width: 960, height: 603 });
+	await page.getByRole("link", { name: "Worker guide", exact: true }).click();
+	const sheet = page.getByRole("dialog", { name: "Document", exact: true });
+	await expect(
+		sheet.getByRole("heading", { name: "Guide", exact: true }),
+	).toBeVisible();
+	const body = sheet.locator("[data-document-scroll]");
+	const bodyBox = await body.boundingBox();
+	const frameBox = await sheet.getByRole("region").boundingBox();
+	const composerBox = await page
+		.locator(".cursor-chat-composer-dock")
+		.boundingBox();
+	expect(bodyBox!.height).toBeGreaterThanOrEqual(64);
+	expect(bodyBox!.width).toBeGreaterThanOrEqual(240);
+	expect(bodyBox!.y + bodyBox!.height).toBeLessThanOrEqual(
+		frameBox!.y + frameBox!.height,
+	);
+	expect(frameBox!.y + frameBox!.height).toBeLessThanOrEqual(
+		composerBox!.y - 8,
+	);
+});
+
 test("HTML Preview history returns to the top while Markdown retains scroll @T0", async ({
 	page,
 }) => {

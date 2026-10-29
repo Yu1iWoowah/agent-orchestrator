@@ -3700,6 +3700,7 @@
 	"documents.sheet.copyLink": "複製連結",
 	"documents.sheet.copyPath": "複製檔案路徑",
 	"documents.sheet.copied": "已複製到剪貼簿",
+	"documents.sheet.copiedUnresolved": "已複製原始連結（未解析）",
 	"documents.sheet.copyError": "無法複製。請解析 document 後再試一次。",
 	"documents.sheet.goSource": "前往來源",
 	"documents.sheet.loading": "正在載入 document…",

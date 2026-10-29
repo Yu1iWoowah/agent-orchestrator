@@ -6,6 +6,86 @@ const base = {
 	path: "dir/index.html",
 };
 describe("opaque static documents", () => {
+	it.each(["inline", "linked"])(
+		"keeps %s CSS strings inside style after HTML serialization",
+		async (source) => {
+			const payload =
+				'</style><a href="http://127.0.0.1:3001/">injected</a><div id="injected">';
+			const stylesheet = `.x::after{content:${JSON.stringify(payload)}}`;
+			const resources = createDocumentResources(
+				base,
+				async () => new TextEncoder().encode(stylesheet).buffer,
+			);
+			const html =
+				source === "inline"
+					? String.raw`<style>.x::after{content:"\3c/style\3e\3c a href=http://127.0.0.1:3001/\3e injected\3c/a\3e\3c div id=injected\3e"}</style><p>safe</p>`
+					: '<link rel="stylesheet" href="main.css"><p>safe</p>';
+			const result = await staticDocumentHtml(html, resources);
+			const parsed = new DOMParser().parseFromString(result.html, "text/html");
+			expect(parsed.querySelector("a[href],#injected")).toBeNull();
+			expect([...parsed.body.children].map((node) => node.tagName)).toEqual([
+				"P",
+			]);
+			expect(parsed.querySelector("style")?.textContent).toContain("content:");
+			resources.dispose();
+		},
+	);
+
+	it("removes image-map navigation even when the map's local raster can load", async () => {
+		const png = new Uint8Array(24);
+		png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+		new DataView(png.buffer).setUint32(16, 1);
+		new DataView(png.buffer).setUint32(20, 1);
+		const resources = createDocumentResources(
+			base,
+			async () => png.buffer,
+			"inline-raster",
+		);
+		const result = await staticDocumentHtml(
+			'<img usemap="#m" src="same-dir.png"><map name="m"><area shape="rect" coords="0,0,800,600" href="http://127.0.0.1:3001/"></map>',
+			resources,
+		);
+		const parsed = new DOMParser().parseFromString(result.html, "text/html");
+		expect(parsed.querySelector("area[href]")).toBeNull();
+		expect(parsed.querySelector("img")?.getAttribute("src")).toMatch(
+			/^data:image\/png;base64,/,
+		);
+		resources.dispose();
+	});
+
+	it("keeps ordinary CSS and removes only unsafe declarations and unsupported at-rules", async () => {
+		const load = vi.fn().mockRejectedValue(new Error("missing"));
+		const resources = createDocumentResources(base, load);
+		const result = await staticDocumentHtml(
+			String.raw`<style>
+			:root{--accent:#06c;--unsafe:image-set("https://evil.invalid/a.png" 1x)}
+			h1{color:var(--accent);filter:blur(1px);background:i\6d age-set("https://evil.invalid/b.png" 1x)}
+			.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));padding:env(safe-area-inset-top)}
+			@keyframes spin{to{transform:rotate(360deg)}}
+			@font-face{font-family:evil;src:url(https://evil.invalid/font.woff)}
+			p{color:blue;background:url(https://evil.invalid/c.png)}
+		</style><div style="color:var(--accent);background:image-set('https://evil.invalid/d.png' 1x);display:grid">safe</div>`,
+			resources,
+		);
+		const parsed = new DOMParser().parseFromString(result.html, "text/html");
+		const css = parsed.querySelector("style")?.textContent;
+		expect(css).toContain("--accent:#06c");
+		expect(css).toContain("color:var(--accent)");
+		expect(css).toContain("repeat(auto-fill,minmax(200px,1fr))");
+		expect(css).toContain("filter:blur(1px)");
+		expect(css).toContain("env(safe-area-inset-top)");
+		expect(css).toContain("color:blue");
+		expect(css).not.toMatch(/image-set|keyframes|font-face|https:/);
+		expect(parsed.querySelector("div")?.getAttribute("style")).toBe(
+			"color:var(--accent);display:grid",
+		);
+		expect(load).not.toHaveBeenCalled();
+		expect(parsed.querySelector("meta")?.content).toContain(
+			"img-src data: blob:",
+		);
+		resources.dispose();
+	});
+
 	it("removes executable markup and never requests remote, escaped or app API resources", async () => {
 		const load = vi.fn().mockRejectedValue(new Error("missing"));
 		const resources = createDocumentResources(base, load);
@@ -119,4 +199,67 @@ it("transports only verified raster bytes inline for an opaque HTML origin, reje
 	).toBeNull();
 	expect(load).toHaveBeenCalledTimes(1);
 	resources.dispose();
+});
+
+it.each([false, true])(
+	"stops reading after the total budget is exhausted (parallel=%s)",
+	async (parallel) => {
+		let bytes = 0;
+		const limits: number[] = [];
+		const signals: AbortSignal[] = [];
+		const load = vi.fn(
+			async (
+				_target: unknown,
+				options: { maxBytes: number; signal: AbortSignal },
+			) => {
+				limits.push(options?.maxBytes);
+				signals.push(options?.signal);
+				const size = 8 * 1024 * 1024;
+				if (options && size > options.maxBytes)
+					throw Object.assign(new Error("too large"), {
+						code: "DOCUMENT_TOO_LARGE",
+					});
+				bytes += size;
+				return new ArrayBuffer(size);
+			},
+		);
+		const resources = createDocumentResources(base, load);
+		const read = (i: number) => resources.image(`${i}.png`).catch(() => null);
+		if (parallel)
+			await Promise.all(Array.from({ length: 8 }, (_, i) => read(i)));
+		else for (let i = 0; i < 8; i++) await read(i);
+		expect(bytes).toBeLessThanOrEqual(20 * 1024 * 1024);
+		expect(load).toHaveBeenCalledTimes(3);
+		expect(limits).toEqual([10, 10, 4].map((n) => n * 1024 * 1024));
+		expect(signals.every((signal) => signal?.aborted)).toBe(true);
+		expect(resources.limited()).toBe(true);
+		resources.dispose();
+	},
+);
+
+it("cancels the active read and never starts queued reads when disposed", async () => {
+	let signal: AbortSignal | undefined;
+	const load = vi.fn(
+		(_target: unknown, options: { maxBytes: number; signal: AbortSignal }) =>
+			new Promise<ArrayBuffer>((_resolve, reject) => {
+				signal = options?.signal;
+				signal?.addEventListener(
+					"abort",
+					() => reject(new DOMException("Aborted", "AbortError")),
+					{ once: true },
+				);
+			}),
+	);
+	const resources = createDocumentResources(base, load);
+	const requests = Promise.allSettled([
+		resources.image("a.png"),
+		resources.image("b.png"),
+	]);
+	await vi.waitFor(() => expect(load).toHaveBeenCalled());
+	resources.dispose();
+	expect(signal?.aborted).toBe(true);
+	expect((await requests).every((result) => result.status === "rejected")).toBe(
+		true,
+	);
+	expect(load).toHaveBeenCalledTimes(1);
 });

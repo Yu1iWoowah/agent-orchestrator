@@ -51,10 +51,12 @@ export function documentErrorKey(error: unknown) {
 					: "documents.sheet.unavailable";
 }
 export function DocumentBody({
+	compact = false,
 	visit,
 	readerKey,
 	connection,
 }: {
+	compact?: boolean;
 	visit: DocumentVisit;
 	readerKey: string;
 	connection: DocumentConnection;
@@ -91,30 +93,26 @@ export function DocumentBody({
 		gcTime: 120000,
 		retry: false,
 	});
-	const resources = useMemo(() => {
-		const abort = new AbortController();
-		const owned = createDocumentResources(
-			document.target,
-			async (target) => {
-				const meta = await resolveDocument(connection, target, abort.signal);
-				return readDocumentContent(
-					connection,
-					meta.target,
-					10 * 1024 * 1024,
-					meta.fingerprint,
-					abort.signal,
-				);
-			},
-			/\.html?$/i.test(document.target.path) ? "inline-raster" : "blob",
-		);
-		return {
-			...owned,
-			dispose() {
-				abort.abort();
-				owned.dispose();
-			},
-		};
-	}, [connection, document.target, document.fingerprint]);
+	const resources = useMemo(
+		() =>
+			createDocumentResources(
+				document.target,
+				async (target, { maxBytes, signal }) => {
+					const meta = await resolveDocument(connection, target, signal);
+					if (meta.size > maxBytes)
+						throw new DocumentContentError("DOCUMENT_TOO_LARGE");
+					return readDocumentContent(
+						connection,
+						meta.target,
+						maxBytes,
+						meta.fingerprint,
+						signal,
+					);
+				},
+				/\.html?$/i.test(document.target.path) ? "inline-raster" : "blob",
+			),
+		[connection, document.target, document.fingerprint],
+	);
 	useEffect(() => () => resources.dispose(), [resources]);
 	const parsed = useMemo(() => {
 		try {
@@ -181,7 +179,11 @@ export function DocumentBody({
 	return (
 		<div
 			ref={scroll}
-			className="board-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain p-3"
+			className={
+				compact
+					? "board-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain p-1"
+					: "board-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain p-3"
+			}
 			data-document-scroll=""
 			onScroll={(event) =>
 				content.kind !== "pdf" &&

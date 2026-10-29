@@ -34,7 +34,16 @@ function loadPdfjs(): Promise<Pdfjs> {
  * its text can be selected. Pages draw as they near the viewport and release
  * their drawing once they are far from it. A file over MAX_PDF_BYTES is not read.
  */
-export function PdfPreview({ firstPageOnly = false, onError, path, src, safeDocument = false, documentZoom = 1, scrollPosition, onScrollPosition }: { documentZoom?:number;scrollPosition?:number;onScrollPosition?:(top:number)=>void; safeDocument?: boolean; firstPageOnly?: boolean; onError: () => void; path: string; src: string }) {
+export function PdfPreview({ firstPageOnly = false, onError, path, src, safeDocument = false, documentZoom = 1, scrollPosition, onScrollPosition }: {
+	documentZoom?: number;
+	scrollPosition?: number;
+	onScrollPosition?: (top: number) => void;
+	safeDocument?: boolean;
+	firstPageOnly?: boolean;
+	onError: () => void;
+	path: string;
+	src: string;
+}) {
 	const { t } = useTranslation();
 	const [loaded, setLoaded] = useState<{ pdf: PDFDocumentProxy; pdfjs: Pdfjs; sizes: PageSize[] } | null>(null);
 	const [width, setWidth] = useState(0);
@@ -97,11 +106,15 @@ export function PdfPreview({ firstPageOnly = false, onError, path, src, safeDocu
 		};
 	}, []);
 
-	useLayoutEffect(()=>{if(loaded&&scrollRef.current&&scrollPosition!==undefined&&Math.abs(scrollRef.current.scrollTop-scrollPosition)>1)scrollRef.current.scrollTop=scrollPosition;},[loaded,width,scrollPosition]);
+	useLayoutEffect(() => {
+		if (loaded && scrollRef.current && scrollPosition !== undefined && Math.abs(scrollRef.current.scrollTop - scrollPosition) > 1) {
+			scrollRef.current.scrollTop = scrollPosition;
+		}
+	}, [loaded, width, scrollPosition]);
 
 	if (tooLarge !== null) return <PanelMessage>{t("files.explorer.tooLarge", { size: formatBytes(tooLarge) })}</PanelMessage>;
 	return (
-		<div aria-label={path} className="board-scrollbar min-h-0 min-w-0 flex-1 overflow-auto bg-surface p-3" ref={scrollRef} onScroll={event=>onScrollPosition?.(event.currentTarget.scrollTop)} role="document">
+		<div aria-label={path} className="board-scrollbar min-h-0 min-w-0 flex-1 overflow-auto bg-surface p-3" ref={scrollRef} onScroll={(event) => onScrollPosition?.(event.currentTarget.scrollTop)} role="document">
 			{!loaded ? (
 				<PanelMessage>{t("files.loading")}</PanelMessage>
 			) : width > 0 ? (

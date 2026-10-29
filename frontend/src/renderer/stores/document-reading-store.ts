@@ -22,6 +22,7 @@ export type DocumentOpening =
 			status: "loading";
 			id: number;
 			input: DocumentInput;
+			originalLink?: string;
 			preservePosition: boolean;
 	  }
 	| {
@@ -29,6 +30,7 @@ export type DocumentOpening =
 			preservePosition: boolean;
 			id: number;
 			input: DocumentInput;
+			originalLink?: string;
 			code: string;
 			message: string;
 	  };
@@ -52,7 +54,7 @@ interface DocumentReadingState {
 	open: (
 		key: string,
 		input: DocumentInput,
-		options?: { preservePosition?: boolean },
+		options?: { preservePosition?: boolean; originalLink?: string },
 	) => void;
 	complete: (key: string, id: number, document: ResolvedDocument) => void;
 	fail: (key: string, id: number, code: string, message: string) => void;
@@ -161,6 +163,7 @@ export function createDocumentReadingStore() {
 							status: "loading",
 							id: state.serial + 1,
 							input,
+							originalLink: options?.originalLink,
 							preservePosition: !!options?.preservePosition,
 						},
 					},

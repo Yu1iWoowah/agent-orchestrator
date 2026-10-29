@@ -9,11 +9,34 @@ export async function copyDocument(
 	connection: DocumentConnection,
 	input: DocumentInput,
 	kind: "path" | "link",
+	originalLink?: string,
 ) {
-	const document = await resolveDocument(connection, input);
-	await writeDocumentText(
-		kind === "path" ? document.localPath : document.canonicalUri,
-	);
+	let text: string;
+	let resolved = true;
+	try {
+		const document = await resolveDocument(connection, input);
+		text = kind === "path" ? document.localPath : document.canonicalUri;
+	} catch (error) {
+		if (kind !== "link") throw error;
+		resolved = false;
+		const suffix =
+			input.kind !== "local-path" && input.fragment != null
+				? `#${encodeURIComponent(input.fragment)}`
+				: "";
+		const path =
+			input.kind !== "local-path"
+				? input.path.split("/").map(encodeURIComponent).join("/")
+				: "";
+		text =
+			originalLink ??
+			(input.kind === "local-path"
+				? input.value
+				: input.kind === "artifact"
+					? `ao://sessions/${encodeURIComponent(input.projectId)}/${encodeURIComponent(input.sessionId)}/artifacts/${path}${suffix}`
+					: `ao://projects/${encodeURIComponent(input.projectId)}/shared/${path}${suffix}`);
+	}
+	await writeDocumentText(text);
+	return resolved;
 }
 export async function writeDocumentText(text: string) {
 	if (!window.ao && !navigator.clipboard?.writeText)

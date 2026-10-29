@@ -154,8 +154,10 @@ export function attachAppShortcuts(
 }
 
 /** Attach only to the shell, never a native Browser page. The renderer owns focus policy. */
-export function attachDocumentEscape(contents:BeforeInputContents,target:ShortcutTargetContents) {
-	contents.on("before-input-event",(_event,input)=>{
-		if(input.type==="keyDown"&&input.key==="Escape"&&!input.control&&!input.meta&&!input.shift&&!input.alt)target.send(DOCUMENT_ESCAPE_CHANNEL);
+export function attachDocumentEscape(contents: BeforeInputContents, target: ShortcutTargetContents) {
+	contents.on("before-input-event", (_event, input) => {
+		if (input.type === "keyDown" && input.key === "Escape" && !input.control && !input.meta && !input.shift && !input.alt) {
+			target.send(DOCUMENT_ESCAPE_CHANNEL);
+		}
 	});
 }

@@ -1,3 +1,4 @@
+import { DocumentReadingContext } from "./document-reading-context";
 import { useDocumentReadingStore } from "../stores/document-reading-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
@@ -41,16 +42,32 @@ describe("useSessionLinkNavigation", () => {
 		});
 	});
 
-	it("routes all managed document sources to the active local reader without workspace navigation",()=>{
-		useDocumentReadingStore.getState().register({key:"current",sessionId:"orchestrator",connection:{kind:"local",identity:"local"}});
-		const {result}=renderHook(()=>useSessionLinkNavigation());
-		for(const url of ["ao://sessions/other-project/other-session/artifacts/a.md","ao://projects/other-project/shared/a.md","/managed/a.md","file:///managed/a.md"]){
-			act(()=>expect(result.current(url)).toBe(true));
-			expect(useDocumentReadingStore.getState().sessions.current.opening).not.toBeNull();
+	it("routes documents to this screen's reader instead of the last registered Chat", () => {
+		const current = { key: "current", sessionId: "orchestrator", connection: { kind: "local", identity: "local" } } as const;
+		useDocumentReadingStore.getState().register({ ...current, key: "hidden-chat" });
+		const wrapper = ({ children }: { children: ReactNode }) => <DocumentReadingContext.Provider value={current}>{children}</DocumentReadingContext.Provider>;
+		const { result } = renderHook(() => useSessionLinkNavigation(), { wrapper });
+		for (const url of ["ao://sessions/other-project/other-session/artifacts/a.md", "ao://projects/other-project/shared/a.md", "/managed/a.md", "file:///managed/a.md"]) {
+			act(() => expect(result.current(url)).toBe(true));
+			expect(useDocumentReadingStore.getState().sessions.current?.opening).toBeDefined();
+			expect(useDocumentReadingStore.getState().sessions.current?.opening).not.toBeNull();
 		}
+		expect(useDocumentReadingStore.getState().sessions["hidden-chat"]?.opening).toBeUndefined();
 		expect(mocks.navigate).not.toHaveBeenCalled();
-		act(()=>expect(result.current("ao://sessions/other-project/other-session")).toBe(true));
-		expect(mocks.navigate).toHaveBeenCalledWith("other-project","other-session");
+		act(() => expect(result.current("ao://sessions/other-project/other-session")).toBe(true));
+		expect(mocks.navigate).toHaveBeenCalledWith("other-project", "other-session");
+	});
+
+	it("uses the current screen's own viewer outside a reader context", () => {
+		useDocumentReadingStore.getState().register({ key: "hidden-chat", sessionId: "hidden", connection: { kind: "local", identity: "local" } });
+		useUiStore.setState({ workspaceFileOpenRequest: null, projectDocumentTarget: null });
+		const { result } = renderHook(() => useSessionLinkNavigation());
+		act(() => expect(result.current("ao://projects/project/shared/guide.md")).toBe(true));
+		expect(useUiStore.getState().projectDocumentTarget).toEqual({ kind: "shared", projectId: "project", path: "guide.md" });
+		act(() => expect(result.current("ao://sessions/project/session/artifacts/guide.md")).toBe(true));
+		expect(useUiStore.getState().workspaceFileOpenRequest).toEqual(expect.objectContaining({ sessionId: "session", path: "guide.md", source: "artifact" }));
+		expect(mocks.navigate).toHaveBeenCalledWith("project", "session");
+		expect(useDocumentReadingStore.getState().sessions["hidden-chat"]?.opening).toBeUndefined();
 	});
 
  it("opens project files without selecting a source session", () => {

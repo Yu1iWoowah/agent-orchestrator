@@ -13,6 +13,7 @@ import {
 import { beforeEach, expect, it, vi } from "vitest";
 import { DocumentSheet } from "./DocumentSheet";
 import { DocumentReadingContext } from "../../lib/document-reading-context";
+import { aoBridge } from "../../lib/bridge";
 import { useDocumentReadingStore } from "../../stores/document-reading-store";
 import { useConversationFrameStore } from "../../stores/conversation-frame-store";
 import { TooltipProvider } from "../ui/tooltip";
@@ -148,9 +149,48 @@ it("keeps a missing shared root as not created and lets Plan foreground collapse
 	surface.remove();
 });
 
+it.each([undefined, "ao://projects/p/shared/missing%2Emd"])(
+	"copies only the current unresolved link from the missing-source view (%s)",
+	async (originalLink) => {
+		mocks.resolve.mockRejectedValue(
+			new DocumentReadError("DOCUMENT_SOURCE_MISSING", "missing"),
+		);
+		const write = vi
+			.spyOn(aoBridge.clipboard, "writeText")
+			.mockResolvedValue(undefined);
+		const { surface, cache, unmount } = setup();
+		act(() =>
+			useDocumentReadingStore.getState().show(reader.key, meta("previous.md")),
+		);
+		act(() =>
+			useDocumentReadingStore
+				.getState()
+				.open(reader.key, target("missing.md"), { originalLink }),
+		);
+		await waitFor(() =>
+			expect(screen.getByRole("status")).toHaveTextContent("Not created yet"),
+		);
+		fireEvent.click(screen.getByRole("button", { name: /^Copy link$/ }));
+		await waitFor(() =>
+			expect(write).toHaveBeenCalledWith(
+				originalLink ?? "ao://projects/p/shared/missing.md",
+			),
+		);
+		write.mockRestore();
+		unmount();
+		cache.clear();
+		surface.remove();
+	},
+);
+
 it("captures the opener before delayed Sheet autofocus or an unrelated focus change", async () => {
-	let complete!:(value:ReturnType<typeof meta>)=>void;
-	mocks.resolve.mockImplementation(()=>new Promise(resolve=>{complete=resolve}));
+	let complete!: (value: ReturnType<typeof meta>) => void;
+	mocks.resolve.mockImplementation(
+		() =>
+			new Promise((resolve) => {
+				complete = resolve;
+			}),
+	);
 	const { surface, cache, unmount } = setup();
 	const source = document.createElement("button"),
 		other = document.createElement("button");
@@ -159,8 +199,9 @@ it("captures the opener before delayed Sheet autofocus or an unrelated focus cha
 	act(() => {
 		useDocumentReadingStore.getState().open(reader.key, target("b.txt"));
 	});
-	await screen.findByRole("status");other.focus();
-	await act(async()=>complete(meta("b.txt")));
+	await screen.findByRole("status");
+	other.focus();
+	await act(async () => complete(meta("b.txt")));
 	await screen.findByText("Body b.txt");
 	fireEvent.keyDown(screen.getByRole("region", { name: "b.txt" }), {
 		key: "Escape",
