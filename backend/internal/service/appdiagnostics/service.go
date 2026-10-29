@@ -318,6 +318,11 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		s.mu.Unlock()
 		return Record{}, failure("APP_DIAGNOSTICS_BUSY", 429)
 	}
+	// Do not accumulate more captures while a rejected file awaits cleanup.
+	if err := s.store.retryDiscardedSnapshots(""); err != nil {
+		s.mu.Unlock()
+		return Record{}, failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
+	}
 	if !s.lastCapture.IsZero() && s.now().Sub(s.lastCapture) < 2*time.Second {
 		s.mu.Unlock()
 		return Record{}, failure("APP_DIAGNOSTICS_RATE_LIMITED", 429)
@@ -421,11 +426,11 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 	audit.Outcome = "completed"
 	audit.At = s.now()
 	if err := s.store.audit(audit); err != nil {
-		_ = s.store.remove("snapshots", record.ID)
+		_ = s.store.discardSnapshot(record.ID, record.GrantID)
 		return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	if err := s.store.prune(s.now()); err != nil {
-		_ = s.store.remove("snapshots", record.ID)
+		_ = s.store.discardSnapshot(record.ID, record.GrantID)
 		audit.Outcome = "storage_failed"
 		if err := s.store.audit(audit); err != nil {
 			return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
@@ -433,7 +438,9 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		return Record{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	if err := s.authorizeDelivery(callCtx, g); err != nil {
-		_ = s.store.remove("snapshots", record.ID)
+		if cleanupErr := s.store.discardSnapshot(record.ID, record.GrantID); cleanupErr != nil {
+			err = failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
+		}
 		return Record{}, s.failDelivery(audit, err)
 	}
 	return record, nil
@@ -588,11 +595,12 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 			out = append(out, row)
 		}
 	}
-	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}); err != nil {
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}
+	if err := s.store.audit(audit); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	if err := s.authorizeDelivery(ctx, g); err != nil {
-		return SnapshotList{}, err
+		return SnapshotList{}, s.failDelivery(audit, err)
 	}
 	return SnapshotList{Partial: errors.Is(err, errReadUnavailable), Records: out, ReadErrorCount: s.store.readErrors}, nil
 }
@@ -605,20 +613,21 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	if err != nil {
 		return AuditLog{}, err
 	}
-	out, err := s.auditsForGrant(g)
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}
+	out, err := s.auditsForGrant(g, audit)
 	if err != nil {
 		return AuditLog{}, err
 	}
 	if err := s.authorizeDelivery(ctx, g); err != nil {
-		return AuditLog{}, err
+		return AuditLog{}, s.failDelivery(audit, err)
 	}
 	return out, nil
 }
-func (s *Service) auditsForGrant(g *grantState) (AuditLog, error) {
+func (s *Service) auditsForGrant(g *grantState, audit Audit) (AuditLog, error) {
 	if err := s.store.prune(s.now()); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
-	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}); err != nil {
+	if err := s.store.audit(audit); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	docs, err := documents[Audit](s.store, "audit", nil)
@@ -690,7 +699,8 @@ func (s *Service) AuditRuntime(ctx context.Context, epoch, id string) (json.RawM
 	if _, err := s.authorizeGrant(ctx, g); err != nil {
 		return nil, err
 	}
-	log, err := s.auditsForGrant(g)
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}
+	log, err := s.auditsForGrant(g, audit)
 	if err != nil {
 		return nil, err
 	}
@@ -726,7 +736,7 @@ func (s *Service) AuditRuntime(ctx context.Context, epoch, id string) (json.RawM
 		return nil, err
 	}
 	if err := s.authorizeDelivery(ctx, g); err != nil {
-		return nil, err
+		return nil, s.failDelivery(audit, err)
 	}
 	return data, nil
 }

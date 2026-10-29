@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -97,12 +98,12 @@ func TestDeliveryRechecksExpiryAfterIO(t *testing.T) {
 				if err != nil || len(files) != 0 {
 					t.Fatalf("expired snapshots retained: %d %v", len(files), err)
 				}
-				if strings.HasPrefix(api.name, "capture-") {
+				{
 					docs, err := documents[Audit](s.store, "audit", nil)
 					if err != nil {
 						t.Fatal(err)
 					}
-					completed, failed := 0, 0
+					completed, failed, undelivered := 0, 0, 0
 					for _, doc := range docs {
 						if doc.value.GrantID == g.ID {
 							if doc.value.Outcome == "completed" {
@@ -110,11 +111,17 @@ func TestDeliveryRechecksExpiryAfterIO(t *testing.T) {
 							}
 							if doc.value.Outcome == "failed" {
 								failed++
+								if doc.value.ReasonCode != "APP_DIAGNOSTICS_GRANT_EXPIRED" {
+									t.Errorf("failed delivery reason missing: %s", doc.value.ReasonCode)
+								}
+							}
+							if doc.value.Outcome == "list" || doc.value.Outcome == "audit_read" || doc.value.Outcome == "read" {
+								undelivered++
 							}
 						}
 					}
-					if completed != 1 || failed != 1 {
-						t.Fatalf("expired capture audit claims success: completed=%d failed=%d", completed, failed)
+					if completed != 1 || failed != 1 || undelivered != 0 {
+						t.Fatalf("expired delivery audit claims success: completed=%d failed=%d undelivered=%d", completed, failed, undelivered)
 					}
 				}
 			})
@@ -267,5 +274,194 @@ func TestReadCrossingExpiryWhileRevocationWaitsForIO(t *testing.T) {
 	}
 	if _, err := s.Status(context.Background(), g.Token); err == nil {
 		t.Fatal("grant remained usable")
+	}
+}
+
+func TestAuditDeliveryCancellationRecordsFailure(t *testing.T) {
+	for _, method := range []string{"list", "audit", "runtime-audit"} {
+		t.Run(method, func(t *testing.T) {
+			s, _, _, _, _ := fixture(t)
+			g := grant(t, s)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			write := s.store.writeContent
+			var requestID string
+			s.store.writeContent = func(f *os.File, data []byte) (int, error) {
+				n, err := write(f, data)
+				var audit Audit
+				if json.Unmarshal(data, &audit) == nil && (audit.Outcome == "list" || audit.Outcome == "audit_read") {
+					requestID = audit.RequestID
+					cancel()
+				}
+				return n, err
+			}
+			var err error
+			var result any
+			switch method {
+			case "list":
+				result, err = s.List(ctx, g.Token)
+			case "audit":
+				result, err = s.Audits(ctx, g.Token)
+			case "runtime-audit":
+				result, err = s.AuditRuntime(ctx, "epoch-1", g.ID)
+			}
+			var typed *Error
+			if !errors.As(err, &typed) || typed.Code != "APP_SNAPSHOT_TIMEOUT" || !reflect.ValueOf(result).IsZero() {
+				t.Fatalf("cancelled response delivered: %v", err)
+			}
+			if requestID == "" {
+				t.Fatal("audit I/O boundary not exercised")
+			}
+			var audit Audit
+			if err := s.store.read("audit", requestID, &audit); err != nil || audit.Outcome != "failed" || audit.ReasonCode != "APP_SNAPSHOT_TIMEOUT" {
+				t.Fatalf("undelivered response audit must be failed: %+v %v", audit, err)
+			}
+			if _, err := s.Status(context.Background(), g.Token); err != nil {
+				t.Fatalf("cancellation revoked grant: %v", err)
+			}
+		})
+	}
+}
+
+func TestFailedCaptureCleanupBlocksDeliveryAndRetries(t *testing.T) {
+	s, _, rt, now, dir := fixture(t)
+	g := grant(t, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	write := s.store.writeContent
+	var requestID string
+	s.store.writeContent = func(f *os.File, data []byte) (int, error) {
+		n, err := write(f, data)
+		var audit Audit
+		if json.Unmarshal(data, &audit) == nil && audit.Outcome == "completed" {
+			requestID = audit.RequestID
+			cancel()
+		}
+		return n, err
+	}
+	remove := s.store.removeFile
+	s.store.removeFile = func(name string) error {
+		if filepath.Dir(name) == "snapshots" {
+			return syscall.EACCES
+		}
+		return remove(name)
+	}
+	record, err := s.Capture(ctx, g.Token, CaptureRequest{})
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Code != "APP_DIAGNOSTICS_CLEANUP_FAILED" || !reflect.ValueOf(record).IsZero() {
+		t.Errorf("failed capture cleanup not observable: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "diagnostics", "snapshots"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("failed unlink fixture not retained: %v %v", entries, err)
+	}
+	id := strings.TrimSuffix(entries[0].Name(), ".json")
+	read, err := s.Read(context.Background(), g.Token, id)
+	if err == nil || !reflect.ValueOf(read).IsZero() {
+		t.Errorf("failed capture readable with same grant: %v", err)
+	}
+	list, err := s.List(context.Background(), g.Token)
+	if len(list.Records) != 0 {
+		t.Errorf("failed capture listed with same grant: %v", err)
+	}
+	var audit Audit
+	if err := s.store.read("audit", requestID, &audit); err != nil || audit.Outcome != "failed" || audit.ReasonCode != "APP_DIAGNOSTICS_CLEANUP_FAILED" {
+		t.Errorf("cleanup failure not audited: %+v %v", audit, err)
+	}
+	if _, err := s.Status(context.Background(), g.Token); err != nil {
+		t.Fatalf("cleanup failure revoked grant: %v", err)
+	}
+	*now = now.Add(3 * time.Second)
+	called := false
+	rt.capture = func(context.Context, CaptureRequest) (Snapshot, error) {
+		called = true
+		return Snapshot{}, nil
+	}
+	_, err = s.Capture(context.Background(), g.Token, CaptureRequest{})
+	if called || !errors.As(err, &typed) || typed.Code != "APP_DIAGNOSTICS_CLEANUP_FAILED" {
+		t.Errorf("new capture allowed to accumulate failed files: called=%t %v", called, err)
+	}
+	s.store.removeFile = remove
+	if err := s.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "diagnostics", "snapshots", id+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed snapshot deletion not retried: %v", err)
+	}
+	list, err = s.List(context.Background(), g.Token)
+	if err != nil || len(list.Records) != 0 {
+		t.Fatalf("list did not recover after cleanup: %+v %v", list, err)
+	}
+	if _, err := s.Status(context.Background(), g.Token); err != nil {
+		t.Fatalf("cleanup retry revoked grant: %v", err)
+	}
+}
+
+func TestDiscardedSnapshotsRemainFencedAcrossRevokeAndRestart(t *testing.T) {
+	for _, recovery := range []string{"revoke", "restart"} {
+		t.Run(recovery, func(t *testing.T) {
+			s, rows, rt, now, dir := fixture(t)
+			g := grant(t, s)
+			record, err := s.Capture(context.Background(), g.Token, CaptureRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			remove := s.store.removeFile
+			s.store.removeFile = func(name string) error {
+				if filepath.Dir(name) == "snapshots" {
+					return syscall.EACCES
+				}
+				return remove(name)
+			}
+			if err := s.store.discardSnapshot(record.ID, g.ID); !errors.Is(err, syscall.EACCES) {
+				t.Fatalf("unlink failure not exercised: %v", err)
+			}
+			if recovery == "revoke" {
+				other := grant(t, s)
+				out, err := s.RevokeID(context.Background(), other.Token, other.ID)
+				if err != nil || out.Cleanup != "complete" {
+					t.Fatalf("other grant cleanup affected: %+v %v", out, err)
+				}
+				out, err = s.RevokeID(context.Background(), g.Token, g.ID)
+				if err != nil || !out.Revoked || out.Cleanup != "failed" {
+					t.Fatalf("discarded snapshot omitted from revoke result: %+v %v", out, err)
+				}
+				stale := Audit{RequestID: record.RequestID, GrantID: g.ID, At: now.Add(-8 * 24 * time.Hour), Outcome: "failed"}
+				if err := s.store.audit(stale); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.Sweep(context.Background()); err == nil {
+					t.Fatal("pending cleanup must remain observable")
+				}
+				if _, err := os.Stat(filepath.Join(dir, "diagnostics", "audit", stale.RequestID+".json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("blocked snapshot skipped healthy audit retention: %v", err)
+				}
+				s.store.removeFile = remove
+				if err := s.Sweep(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var typed *Error
+				if err := s.Close(); !errors.As(err, &typed) || typed.Code != "APP_DIAGNOSTICS_CLEANUP_FAILED" {
+					t.Fatalf("shutdown cleanup failure not reported: %v", err)
+				}
+				next, err := New(dir, rows, rt, func() time.Time { return *now })
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = next.Close() })
+				if _, err := next.Read(context.Background(), g.Token, record.ID); err == nil {
+					t.Fatal("restart revived rejected capture")
+				}
+				fresh := grant(t, next)
+				out, err := next.List(context.Background(), fresh.Token)
+				if err != nil || len(out.Records) != 0 {
+					t.Fatalf("restarted service published discarded snapshot: %+v %v", out, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, "diagnostics", "snapshots", record.ID+".json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("discarded snapshot not cleaned after %s: %v", recovery, err)
+			}
+		})
 	}
 }
