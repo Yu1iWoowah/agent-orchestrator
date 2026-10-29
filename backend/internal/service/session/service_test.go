@@ -3809,6 +3809,9 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"native conversation missing", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationMissing), apierr.KindConflict, "NATIVE_SESSION_MISSING"},
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
 		{"unsupported effort", fmt.Errorf("spawn: %w", ports.ErrUnsupportedEffort), apierr.KindInvalid, "UNSUPPORTED_EFFORT"},
+		{"agent settings invalid", fmt.Errorf("spawn: %w", ports.ErrAgentSettingsInvalid), apierr.KindInvalid, "AGENT_SETTINGS_INVALID"},
+		{"agent settings unsupported", fmt.Errorf("spawn: %w", ports.ErrAgentSettingsUnsupported), apierr.KindInvalid, "AGENT_SETTINGS_UNSUPPORTED"},
+		{"agent settings capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrAgentSettingsCapabilitiesUnavailable), apierr.KindInvalid, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE"},
 		{"model capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrModelCapabilitiesUnavailable), apierr.KindInvalid, "MODEL_CAPABILITIES_UNAVAILABLE"},
 	}
 	for _, tc := range cases {

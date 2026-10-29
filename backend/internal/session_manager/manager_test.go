@@ -304,6 +304,16 @@ func (f *fakeStore) SetSessionProvisionSteps(_ context.Context, id domain.Sessio
 	return nil
 }
 
+func (f *fakeStore) SetTaskPreparationHarness(_ context.Context, id domain.SessionID, harness domain.AgentHarness) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || !rec.IsTaskPreparation || rec.IsTerminated || rec.Harness != "" {
+		return false, nil
+	}
+	rec.Harness = harness
+	f.sessions[id] = rec
+	return true, nil
+}
+
 func (f *fakeStore) PromoteTaskPreparation(_ context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error) {
 	if f.promoteTaskErr != nil {
 		err := f.promoteTaskErr

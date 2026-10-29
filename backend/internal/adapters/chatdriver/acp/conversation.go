@@ -652,7 +652,13 @@ func (c *conversation) setSessionOption(ctx context.Context, sessionID string, o
 	}
 	c.mu.Lock()
 	requireAdvertised := c.requireAdvertised
+	advertised := !option.IfAdvertised || slices.ContainsFunc(c.configOptions, func(candidate ports.ChatConfigOption) bool {
+		return candidate.ID == option.ID
+	})
 	c.mu.Unlock()
+	if !advertised {
+		return nil
+	}
 	if requireAdvertised {
 		// An agent that acknowledges an option it never offered may simply drop
 		// it, which would leave the user believing a choice took effect.

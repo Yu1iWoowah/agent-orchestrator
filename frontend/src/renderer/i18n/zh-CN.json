@@ -1,4 +1,7 @@
 {
+	"documents.catalog.localOnly": "文档列表只能在这台电脑上使用。",
+	"documents.connection.localOnly": "文档路径查询只能在这台电脑上使用。",
+	"documents.read.error": "无法加载文档。",
 	"settings.replyLanguage.label": "智能体回复语言",
 	"settings.replyLanguage.off": "关闭",
 	"settings.replyLanguage.description": "独立于界面语言。适用于新启动、恢复或重启的智能体。正在运行的智能体保留当前指令。",

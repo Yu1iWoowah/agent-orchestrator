@@ -214,6 +214,9 @@ func claudeLaunchSettingsArgs(options domain.AgentLaunchOptions, policy agentrun
 	if settings == nil {
 		settings = map[string]any{}
 	}
+	if options.FastMode || options.FastModeOff {
+		settings["fastMode"] = options.FastMode
+	}
 	if options.Ultracode {
 		settings["ultracode"] = true
 	}

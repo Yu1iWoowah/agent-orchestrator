@@ -780,6 +780,7 @@ type Session struct {
 	TemporaryBranch                  string
 	AgentFastMode                    string
 	AgentSettingsRevision            int64
+	SpawnAgentSettingsJson           string
 }
 
 type SessionAgentAccount struct {

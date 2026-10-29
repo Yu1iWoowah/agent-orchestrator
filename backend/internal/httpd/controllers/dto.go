@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/documentread"
 	projectdocs "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/devimport"
@@ -461,6 +462,7 @@ type WorkspaceTreeEntry struct {
 // prs is a list. The embedded domain.Session.Metadata and domain.Session.PRs
 // fields are json:"-"; these curated fields are what serialize.
 type SessionView struct {
+	SpawnAgentSettings *domain.SpawnAgentSettingsResolution `json:"spawnAgentSettings,omitempty"`
 	domain.Session
 	Branch string `json:"branch,omitempty"`
 	// TerminalGeneration is an opaque renderer fence. A restarted controller
@@ -533,7 +535,10 @@ type SessionArchiveSummary struct {
 
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
-	ClientRequestID string `json:"clientRequestId,omitempty" maxLength:"128"`
+	AgentSettings       *domain.AgentSettingsPatch `json:"agentSettings,omitempty"`
+	legacyModelPresent  bool
+	legacyEffortPresent bool
+	ClientRequestID     string `json:"clientRequestId,omitempty" maxLength:"128"`
 	// ProjectID is omitted for a standalone worker session.
 	ProjectID domain.ProjectID `json:"projectId,omitempty"`
 	IssueID   domain.IssueID   `json:"issueId,omitempty"`
@@ -600,6 +605,12 @@ type SpawnSessionResponse struct {
 	Session           SessionView `json:"session"`
 	PromptBytes       int         `json:"promptBytes"`
 	SystemPromptBytes int         `json:"systemPromptBytes"`
+}
+
+// SpawnCapabilitiesResponse allows a new CLI to refuse unsupported typed wire
+// semantics before posting to an older daemon that silently ignores fields.
+type SpawnCapabilitiesResponse struct {
+	AgentSettingsVersion int `json:"agentSettingsVersion"`
 }
 
 // StageSessionAttachmentsRequest attaches files to a session that is already
@@ -4051,6 +4062,22 @@ type HandoffEvidenceFileParam struct {
 
 // SessionAgentSettingsResponse reads preferences without authorizing mutation.
 type SessionAgentSettingsResponse = agentsettings.Snapshot
+
+// ResolveDocumentRequest is the strictly parsed document-source union.
+type ResolveDocumentRequest = documentread.Input
+
+// DocumentCatalogQuery selects a project catalog page.
+type DocumentCatalogQuery = documentread.CatalogQuery
+
+// ResolveDocumentResponse wraps verified local document metadata.
+type ResolveDocumentResponse struct {
+	Document documentread.Resolved `json:"document"`
+}
+
+// DocumentCatalogResponse wraps a project document page.
+type DocumentCatalogResponse struct {
+	Catalog documentread.Catalog `json:"catalog"`
+}
 
 // AppDiagnosticsRevokeResponse reports cancellation of a diagnostic grant.
 type AppDiagnosticsRevokeResponse struct {

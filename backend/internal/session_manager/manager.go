@@ -383,6 +383,7 @@ type Store interface {
 	SetSessionBranchNaming(ctx context.Context, id domain.SessionID, naming bool) error
 	ClearSessionBranchNaming(ctx context.Context) error
 	SetTaskPreparationBase(ctx context.Context, id domain.SessionID, baseSHA, baseRef string) (bool, error)
+	SetTaskPreparationHarness(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (bool, error)
 	PromoteTaskPreparation(ctx context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error)
 	DeleteTaskPreparation(ctx context.Context, id domain.SessionID) (bool, error)
 }
@@ -428,6 +429,7 @@ type Manager struct {
 	agentBrowserURL             string
 	agentBrowserToken           string
 	agentAccounts               ports.AgentAccountLaunchEnv
+	agentSettings               ports.AgentSettingsPreflight
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -1061,9 +1063,20 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// Resolve the effective agent config (project base + role override + spawn
 	// override) and validate the model before any durable state is created. A
 	// model the harness cannot honor should not leave a seed row behind.
-	explicitModel := cfg.AgentConfig.Model != ""
-	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, project.Config), cfg.AgentConfig)
+	explicitModel := cfg.AgentConfig.Model != "" || cfg.AgentSettings != nil && cfg.AgentSettings.Model != nil
+	agentConfig, settingsResolution, clearInheritedEffort, err := resolveSpawnSettings(cfg, project.Config)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, err
+	}
+	strictSettings := cfg.AgentSettings != nil || effectiveAgentConfig(cfg.Harness, cfg.Kind, project.Config).FastMode != "" || cfg.AgentConfig.FastMode != ""
+	if strictSettings {
+		cfg.AgentConfig = agentConfig
+		cfg.AgentConfigResolved = true
+	}
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
+		if strictSettings {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("%w: %w", ports.ErrAgentSettingsInvalid, err)
+		}
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
 	// Resolve the controller mode here, before anything durable is created, for
@@ -1094,7 +1107,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 				"harness", cfg.Harness, "error", err)
 			mode = domain.SessionModeTUI
 		}
-		if mode == domain.SessionModeChat {
+		if mode == domain.SessionModeChat && !strictSettings {
 			resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
 			if err != nil {
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
@@ -1103,7 +1116,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cfg.AgentConfigResolved = true
 		}
 	}
-	if mode == domain.SessionModeTUI && (cfg.Harness == domain.HarnessClaudeCode || cfg.Harness == domain.HarnessCodex || strings.TrimSpace(cfg.AgentConfig.Effort) != "") {
+	if !strictSettings && mode == domain.SessionModeTUI && (cfg.Harness == domain.HarnessClaudeCode || cfg.Harness == domain.HarnessCodex || strings.TrimSpace(cfg.AgentConfig.Effort) != "") {
 		resolved, err := m.resolveTUIAgentConfig(ctx, cfg, project.Config, agentConfig)
 		if err != nil {
 			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
@@ -1113,12 +1126,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		agentConfig = resolved
 	}
 	cfg.RequestedMode = mode
-
-	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
-	// their selectable values in AgentConfig.Mode. Normalize a copy for the
-	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
-	// high`, while metadata keeps the original resolved Model for the API view.
-	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
 
 	// A chat session runs no agent inside a terminal runtime, so the terminal
 	// prerequisites are not its concern.
@@ -1137,6 +1144,17 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	var rec domain.SessionRecord
 	if prep != nil {
 		rec = prep.record
+		updated, err := m.store.SetTaskPreparationHarness(ctx, rec.ID, cfg.Harness)
+		if err != nil || !updated {
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			m.discardClaimedTaskPreparation(cleanupCtx, prep)
+			cancel()
+			if err == nil {
+				err = errors.New("task preparation is no longer available")
+			}
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(rec.ID, ErrSpawnCreate, err)
+		}
+		rec.Harness = cfg.Harness
 	} else {
 		seed := seedRecord(cfg, project.Config, m.clock())
 		if mode == domain.SessionModeChat {
@@ -1183,6 +1201,39 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnAgentAccount, err)
 		}
 	}
+	if !strictSettings {
+		if cfg.AgentConfigResolved {
+			agentConfig = cfg.AgentConfig
+		} else {
+			cfg.AgentConfig = agentConfig
+		}
+		settingsResolution.EffortCleared = clearInheritedEffort && settingsResolution.Settings.Effort != domain.AgentEffortSelection(agentConfig.Effort)
+		if settingsResolution.EffortCleared {
+			settingsResolution.Sources.Effort = "provider"
+		}
+		settingsResolution.Settings.Model = domain.AgentModelSelection(agentConfig.Model)
+		settingsResolution.Settings.Effort = domain.AgentEffortSelection(agentConfig.Effort)
+	}
+	if err := m.validateSpawnSettings(ctx, id, &cfg, &settingsResolution, strictSettings, clearInheritedEffort); err != nil {
+		if prep != nil {
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			m.discardClaimedTaskPreparation(cleanupCtx, prep)
+			cancel()
+		} else {
+			m.rollbackSpawnSeedRow(ctx, id)
+		}
+		return domain.SessionRecord{}, 0, 0, err
+	}
+	agentConfig = cfg.AgentConfig
+	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
+	// their selectable values in AgentConfig.Mode. Normalize a copy for the
+	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
+	// high`, while metadata keeps the original resolved Model for the API view.
+	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
+	rec.Metadata.Model = agentConfig.Model
+	rec.Metadata.Effort = agentConfig.Effort
+	rec.Metadata.FastMode = agentConfig.FastMode
+	rec.Metadata.SpawnAgentSettings = &settingsResolution
 	// The system prompt embeds the artifact directory path, so the directory
 	// must exist and be known before buildSpawnTexts runs. For a prep-derived
 	// session the value is threaded through the later promoteTaskPreparation
@@ -1544,8 +1595,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		// The user-visible resolved selection is Model for regular harnesses and
 		// Mode for adapters whose catalog is a mode list (e.g. Amp). If an explicit
 		// Model override exists it wins; otherwise fall back to the resolved Mode.
-		Model:  resolvedModelForMetadata(cfg.Harness, agentConfig, adapterConfig),
-		Effort: agentConfig.Effort,
+		Model:              resolvedModelForMetadata(cfg.Harness, agentConfig, adapterConfig),
+		Effort:             agentConfig.Effort,
+		FastMode:           agentConfig.FastMode,
+		SpawnAgentSettings: rec.Metadata.SpawnAgentSettings,
 	}
 	if prompt != "" {
 		metadata.LatestUserPromptAt = m.clock()
@@ -2322,6 +2375,9 @@ func roleConfigName(kind domain.SessionKind) string {
 // harness-neutral and is always inherited.
 func effectiveAgentConfig(harness domain.AgentHarness, kind domain.SessionKind, cfg domain.ProjectConfig) ports.AgentConfig {
 	merged := cfg.AgentConfig
+	if !harness.SupportsFastMode() {
+		merged.FastMode = ""
+	}
 	role := roleOverride(kind, cfg)
 	override := role.AgentConfig
 	harnessMatches := role.Harness == "" || role.Harness == harness
@@ -2330,6 +2386,9 @@ func effectiveAgentConfig(harness domain.AgentHarness, kind domain.SessionKind, 
 	}
 	if harnessMatches && override.Effort != "" {
 		merged.Effort = override.Effort
+	}
+	if harnessMatches && override.FastMode != "" {
+		merged.FastMode = override.FastMode
 	}
 	if harnessMatches && override.Mode != "" {
 		merged.Mode = override.Mode
@@ -2372,7 +2431,12 @@ func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) por
 	// Model and effort are durable session choices for every harness. Empty
 	// values mean provider defaults, not today's project or role defaults.
 	merged.Model = rec.Metadata.Model
+	// Mode-list adapters persist their native choice in the same Model field.
+	if modelcatalog.Base(string(rec.Harness)).SelectionMode == ports.ModelSelectionModeList {
+		merged.Mode = rec.Metadata.Model
+	}
 	merged.Effort = rec.Metadata.Effort
+	merged.FastMode = rec.Metadata.FastMode
 	if rec.Metadata.Permissions != "" {
 		merged.Permissions = rec.Metadata.Permissions
 	}
@@ -2380,6 +2444,9 @@ func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) por
 }
 
 func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
+	if override.FastMode != "" {
+		base.FastMode = override.FastMode
+	}
 	if override.Model != "" {
 		base.Model = override.Model
 	}
@@ -5720,7 +5787,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.
 		Mode:              domain.NormalizeSessionMode(cfg.RequestedMode),
-		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, projectConfig), cfg.AgentConfig).Permissions},
+		Metadata:          domain.SessionMetadata{Permissions: applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, projectConfig), cfg.AgentConfig).Permissions, Model: cfg.AgentConfig.Model, Effort: cfg.AgentConfig.Effort, FastMode: cfg.AgentConfig.FastMode, SpawnAgentSettings: cfg.SpawnAgentSettings},
 		RequestedOutput:   cfg.RequestedOutput,
 		OutputType:        domain.SessionOutputNone,
 		AutoReviewEnabled: projectConfig.AutoReview,

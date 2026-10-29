@@ -58,6 +58,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	// authenticated LAN callers. Check before CORS can answer a preflight.
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(mobileControlOriginMiddleware(cfg.AllowedOrigins))
+	r.Use(documentReadOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
 	r.Use(previewOriginMiddleware(api.sessions))
 

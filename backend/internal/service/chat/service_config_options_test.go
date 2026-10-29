@@ -10,13 +10,37 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestSettingsFromConfigOptionsTracksExplicitFastChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		previous, want domain.AgentFastMode
+		options        []ports.ChatConfigOption
+	}{
+		{"boolean off", domain.AgentFastOn, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(false)}}}},
+		{"boolean on", domain.AgentFastOff, domain.AgentFastOn, []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(true)}}}},
+		{"select off", domain.AgentFastOn, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Current: ports.ChatConfigOptionValue{Select: "off"}}}},
+		{"select on", domain.AgentFastOff, domain.AgentFastOn, []ports.ChatConfigOption{{ID: "fast", Current: ports.ChatConfigOptionValue{Select: "on"}}}},
+		{"absent preserves Codex fast", domain.AgentFastOn, domain.AgentFastOn, nil},
+		{"missing boolean preserves off", domain.AgentFastOff, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean}}},
+		{"unknown choice cannot enable fast", domain.AgentFastOff, domain.AgentFastOff, []ports.ChatConfigOption{{ID: "fast", Current: ports.ChatConfigOptionValue{Select: "unknown"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := domain.ConversationSettings{FastMode: tc.previous == domain.AgentFastOn, AgentFastMode: tc.previous}
+			got, changed := settingsFromConfigOptions(before, tc.options, "fast")
+			if got.AgentFastMode != tc.want || got.FastMode != (tc.want == domain.AgentFastOn) || changed != (tc.previous != tc.want) {
+				t.Fatalf("settings=%+v changed=%v want=%s", got, changed, tc.want)
+			}
+		})
+	}
+}
+
 func TestSettingsFromConfigOptionsKeepsClaudeModelAndEffortAcrossRestart(t *testing.T) {
 	settings, changed := settingsFromConfigOptions(domain.ConversationSettings{
 		ApprovalMode: domain.PermissionModeBypassPermissions,
 	}, []ports.ChatConfigOption{
 		{ID: "model", Category: "model", Current: ports.ChatConfigOptionValue{Select: "sonnet"}},
 		{ID: "effort", Category: "thought_level", Current: ports.ChatConfigOptionValue{Select: "high"}},
-	})
+	}, "model")
 	if !changed {
 		t.Fatal("settings should change")
 	}
@@ -35,7 +59,7 @@ func TestPermissionConfigOptions(t *testing.T) {
 		if got[0].Choices[0].PermissionMode != tc.want {
 			t.Fatalf("%s mapping = %q", tc.value, got[0].Choices[0].PermissionMode)
 		}
-		settings, _ := settingsFromConfigOptions(domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto}, got)
+		settings, _ := settingsFromConfigOptions(domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto}, got, "mode")
 		want := tc.want
 		if want == "" {
 			want = domain.PermissionModeAuto
@@ -88,7 +112,7 @@ func TestPermissionConfigOptionsMapsCommandCodeModes(t *testing.T) {
 		}
 	}
 	settings, _ := settingsFromConfigOptions(
-		domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions}, got)
+		domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions}, got, "mode")
 	if settings.ApprovalMode != domain.PermissionModeDefault {
 		t.Fatalf("selecting native default kept approval = %q, want %q",
 			settings.ApprovalMode, domain.PermissionModeDefault)
@@ -126,7 +150,7 @@ func TestPermissionConfigOptionsLabelsOpenCodeTiers(t *testing.T) {
 						tc.value, got[0].Choices[0].PermissionMode, got[0].Choices[0].Name, tc.mode, tc.label)
 				}
 				settings, _ := settingsFromConfigOptions(
-					domain.ConversationSettings{ApprovalMode: domain.PermissionModeDefault}, got)
+					domain.ConversationSettings{ApprovalMode: domain.PermissionModeDefault}, got, "mode")
 				want := tc.mode
 				if want == "" {
 					want = domain.PermissionModeDefault
@@ -379,7 +403,7 @@ func TestPermissionConfigOptionsMapsAgyModesOntoApprovalTiers(t *testing.T) {
 			t.Fatalf("choice %q = (%q, %q), want (%q, %q)", choice.Value, choice.PermissionMode, choice.Name, want[i].mode, want[i].name)
 		}
 	}
-	settings, _ := settingsFromConfigOptions(domain.ConversationSettings{}, got)
+	settings, _ := settingsFromConfigOptions(domain.ConversationSettings{}, got, "")
 	if settings.ApprovalMode != domain.PermissionModeAuto {
 		t.Fatalf("settings approval = %q, want auto for yolo", settings.ApprovalMode)
 	}

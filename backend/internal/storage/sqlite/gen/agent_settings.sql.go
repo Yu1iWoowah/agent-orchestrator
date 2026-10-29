@@ -206,6 +206,46 @@ func (q *Queries) ProjectConversationAgentSettings(ctx context.Context, arg Proj
 	return err
 }
 
+const saveSpawnAgentSettings = `-- name: SaveSpawnAgentSettings :execrows
+UPDATE sessions SET model=?1,effort=?2,
+ agent_fast_mode=?3,spawn_agent_settings_json=?4,
+ launch_options=CASE WHEN session_mode='tui' THEN json_set(
+ CASE WHEN json_valid(launch_options) THEN launch_options ELSE '{}' END,
+ '$.fastMode',json(CASE WHEN ?3='on' THEN 'true' ELSE 'false' END),
+ '$.fastModeOff',json(CASE WHEN ?3='off' THEN 'true' ELSE 'false' END)) ELSE launch_options END
+WHERE id=?5 AND spawn_agent_settings_json='' AND is_terminated=0
+ AND runtime_handle_id='' AND provider_conversation_id=''
+ AND COALESCE((SELECT account_id FROM session_agent_accounts a WHERE a.session_id=sessions.id
+ AND a.provider=CASE sessions.harness WHEN 'codex' THEN 'codex' WHEN 'claude-code' THEN 'claude' ELSE '' END
+ ORDER BY bound_at DESC LIMIT 1),'')=?6
+`
+
+type SaveSpawnAgentSettingsParams struct {
+	Model      string
+	Effort     string
+	FastMode   string
+	Resolution string
+	ID         domain.SessionID
+	AccountID  string
+}
+
+// A spawn decision is write-once and belongs to the bound account. Later
+// project changes or a concurrent account switch cannot reinterpret it.
+func (q *Queries) SaveSpawnAgentSettings(ctx context.Context, arg SaveSpawnAgentSettingsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, saveSpawnAgentSettings,
+		arg.Model,
+		arg.Effort,
+		arg.FastMode,
+		arg.Resolution,
+		arg.ID,
+		arg.AccountID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setAgentSettingsOperationPhase = `-- name: SetAgentSettingsOperationPhase :execrows
 UPDATE session_agent_settings_operations SET phase=?,updated_at=? WHERE session_id=? AND id=? AND phase='pending'
 `
