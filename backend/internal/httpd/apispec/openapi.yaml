@@ -690,6 +690,53 @@ paths:
       summary: Sign a saved account in again, in its own folder
       tags:
       - agents
+  /api/v1/agents/accounts/{accountId}/logout:
+    post:
+      operationId: logoutAgentAccount
+      parameters:
+      - description: Agent account identifier; device-claude and device-codex are
+          this computer's own logins.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: Agent account identifier; device-claude and device-codex are
+            this computer's own logins.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAccountsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Sign out a managed account while preserving its metadata and bindings
+      tags:
+      - agents
   /api/v1/agents/accounts/{accountId}/reset-credit:
     post:
       operationId: consumeAgentAccountResetCredit
@@ -812,12 +859,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
         "501":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
       summary: Stop a sign-in and remove its unsaved folder
       tags:
       - agents
@@ -864,6 +923,45 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
       summary: Check a sign-in and save the account when it finished
+      tags:
+      - agents
+  /api/v1/agents/accounts/operations/{operationId}:
+    get:
+      operationId: getAgentAccountOperation
+      parameters:
+      - description: Agent account sign-in operation identifier.
+        in: path
+        name: operationId
+        required: true
+        schema:
+          description: Agent account sign-in operation identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAccountOperationResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Read non-secret durable account lifecycle progress
       tags:
       - agents
   /api/v1/agents/accounts/sessions/{sessionId}:
@@ -14753,6 +14851,39 @@ components:
       - windows
       - fetchedAt
       type: object
+    AgentAccountOperationResponse:
+      properties:
+        accountId:
+          type: string
+        action:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        operationId:
+          type: string
+        outcome:
+          type: string
+        phase:
+          type: string
+        provider:
+          type: string
+        reasonCode:
+          type: string
+        resultAccountId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - operationId
+      - accountId
+      - provider
+      - action
+      - phase
+      - createdAt
+      - updatedAt
+      type: object
     AgentAccountResponse:
       properties:
         createdAt:
@@ -15565,11 +15696,15 @@ components:
       type: object
     AgentSettingsTurnSnapshot:
       properties:
+        attempt:
+          type: integer
         capturedAt:
           format: date-time
           type:
           - "null"
           - string
+        owner:
+          $ref: '#/components/schemas/AgentSettingsOwner'
         providerTurnId:
           type: string
         reason:
@@ -15580,6 +15715,12 @@ components:
           - integer
         settings:
           $ref: '#/components/schemas/AgentSettings'
+        source:
+          enum:
+          - root
+          - side
+          - background
+          type: string
         state:
           enum:
           - known
@@ -19136,6 +19277,8 @@ components:
       type: object
     ConversationTurnResponse:
       properties:
+        agentSettings:
+          $ref: '#/components/schemas/AgentSettingsTurnSnapshot'
         batchInputTurnIds:
           items:
             type: string
@@ -23902,6 +24045,10 @@ components:
         referenceContexts:
           items:
             type: string
+          type: array
+        settingsAttempts:
+          items:
+            $ref: '#/components/schemas/AgentSettingsTurnSnapshot'
           type: array
         turn:
           $ref: '#/components/schemas/SideTurn'

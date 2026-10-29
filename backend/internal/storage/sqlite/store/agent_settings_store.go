@@ -73,6 +73,11 @@ func decodeSettingsOperation(row gen.SessionAgentSettingsOperation) (domain.Agen
 			return domain.AgentSettingsOperation{}, fmt.Errorf("decode settings recovery: %w", err)
 		}
 	}
+	if row.ExecutionJson != "" {
+		if err := json.Unmarshal([]byte(row.ExecutionJson), &op.Execution); err != nil {
+			return domain.AgentSettingsOperation{}, fmt.Errorf("decode settings execution: %w", err)
+		}
+	}
 	return op, nil
 }
 
@@ -86,7 +91,7 @@ func (s *Store) AgentSettingsOperation(ctx context.Context, id domain.SessionID,
 }
 
 func validateSettingsOperation(op domain.AgentSettingsOperation) error {
-	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.Recovery != nil {
+	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.Recovery != nil || op.Execution != nil {
 		return fmt.Errorf("invalid initial agent settings journal")
 	}
 	for _, ref := range []string{op.RequestID, op.ProviderConversationID, op.BranchID} {
@@ -199,6 +204,11 @@ func (s *Store) BeginAgentSettingsOperation(ctx context.Context, op domain.Agent
 }
 
 func settingsOwnerMatches(row gen.GetSessionAgentSettingsRow, op domain.AgentSettingsOperation) bool {
+	if op.Execution != nil {
+		return op.Execution.Revision == op.BaseRevision && op.Execution.Plan.Source == op.Source && op.Execution.Plan.Target == op.Target &&
+			op.Execution.Owner.AccountID == op.AccountID && op.Execution.Owner.ProviderConversationID == op.ProviderConversationID && op.Execution.Owner.BranchID == op.BranchID &&
+			settingsRecoveryMatches(row, domain.AgentSettingsRecovery{Owner: op.Execution.Owner, Revision: op.BaseRevision, Settings: op.Source})
+	}
 	generation := row.RuntimeLaunchID
 	if row.SessionMode == "chat" {
 		generation = row.ControllerGeneration
@@ -247,7 +257,11 @@ func (s *Store) CommitAgentSettingsOperation(ctx context.Context, id domain.Sess
 		if op.Checkpoint != domain.AgentSettingsQueued && op.Checkpoint != domain.AgentSettingsVerified {
 			return ports.ErrAgentSettingsConflict
 		}
-		changed, err := q.CommitSessionAgentSettings(ctx, gen.CommitSessionAgentSettingsParams{Model: string(op.Target.Model), Effort: string(op.Target.Effort), FastMode: string(op.Target.FastMode), ID: id, ExpectedRevision: op.BaseRevision, SourceModel: string(op.Source.Model), SourceEffort: string(op.Source.Effort), SourceFastMode: string(op.Source.FastMode), ExpectedGeneration: op.ControllerGeneration})
+		generation := op.ControllerGeneration
+		if op.Execution != nil {
+			generation = op.Execution.Owner.ControllerGeneration
+		}
+		changed, err := q.CommitSessionAgentSettings(ctx, gen.CommitSessionAgentSettingsParams{Model: string(op.Target.Model), Effort: string(op.Target.Effort), FastMode: string(op.Target.FastMode), ID: id, ExpectedRevision: op.BaseRevision, SourceModel: string(op.Source.Model), SourceEffort: string(op.Source.Effort), SourceFastMode: string(op.Source.FastMode), ExpectedGeneration: generation})
 		if err != nil {
 			return err
 		}

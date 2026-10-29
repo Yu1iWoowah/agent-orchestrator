@@ -19,17 +19,18 @@ import { Button } from "./ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, settingsDialogContentClass } from "./ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-export function ArtifactPreviewModal({ artifact, projectName, onClose }: {
+export function ArtifactPreviewModal({ artifact, projectName, onClose, pinId }: {
 	artifact: ArtifactRow | null;
 	projectName: string;
 	onClose: () => void;
+	pinId?: string;
 }) {
 	const { t } = useTranslation();
 	const navigateToSession = useNavigateToSession();
 	const requestWorkspaceFileOpen = useUiStore((state) => state.requestWorkspaceFileOpen);
 	const restoreFocusOnClose = useRestoreFocusOnClose(Boolean(artifact));
 	const titleRef = useRef<HTMLHeadingElement>(null);
-	const id = artifact ? artifactKey(artifact) : "";
+	const id = pinId ?? (artifact ? artifactKey(artifact) : "");
 	const pinned = useArtifactsViewStore((state) => state.pinnedArtifactIds.includes(id));
 	const togglePinnedArtifact = useArtifactsViewStore((state) => state.togglePinnedArtifact);
 	const openInSession = () => {
@@ -58,6 +59,7 @@ export function ArtifactPreviewModal({ artifact, projectName, onClose }: {
 						<div className="relative z-10 flex shrink-0 items-center gap-1">
 							<ArtifactActionsMenu
 								artifact={artifact}
+								pinId={id}
 								session={{ id: artifact.sessionId, cloud: artifact.cloud }}
 								iconOnly
 								pinInMenu

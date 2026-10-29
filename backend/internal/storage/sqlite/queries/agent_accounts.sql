@@ -4,11 +4,11 @@
 SELECT * FROM agent_accounts ORDER BY provider, created_at, id;
 
 -- name: CreateAgentAccount :exec
-INSERT INTO agent_accounts (id, provider, home, email, plan, created_at, profile_kind)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agent_accounts (id, provider, home, email, plan, created_at, profile_kind,label,disabled_at,retired_at)
+VALUES (?, ?, ?, ?, ?, ?, ?,?,?,?);
 
 -- name: DeleteAgentAccount :exec
-DELETE FROM agent_accounts WHERE id = ?;
+UPDATE agent_accounts SET retired_at = CURRENT_TIMESTAMP, disabled_at = CURRENT_TIMESTAMP WHERE id = ? AND retired_at IS NULL;
 
 -- name: DeleteAgentAccountDefaultFor :exec
 DELETE FROM agent_account_defaults WHERE account_id = ?;
@@ -89,3 +89,28 @@ WHERE e.created_at >= sqlc.arg(since)
   AND b.harness IN ('claude-code', 'codex')
 GROUP BY 1, 2, 3
 ORDER BY 2, 1, 3;
+
+-- name: CreateAgentAccountOperation :exec
+INSERT INTO agent_account_operations(id,account_id,provider,action,phase,outcome,reason_code,terminal_id,result_account_id,was_disabled,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?);
+
+-- name: UpdateAgentAccountOperation :exec
+UPDATE agent_account_operations SET phase=?,outcome=?,reason_code=?,result_account_id=?,updated_at=? WHERE id=?;
+
+-- name: GetAgentAccountOperation :one
+SELECT * FROM agent_account_operations WHERE id=?;
+
+-- name: ListAgentAccountOperations :many
+SELECT * FROM agent_account_operations ORDER BY created_at,id;
+
+-- name: DisableAgentAccount :exec
+UPDATE agent_accounts SET disabled_at=?,lifecycle_operation_id=? WHERE id=?;
+
+-- name: EnableAgentAccount :exec
+UPDATE agent_accounts SET disabled_at=NULL WHERE id=? AND retired_at IS NULL;
+
+-- name: UpsertAgentAccountLogin :exec
+INSERT INTO agent_accounts(id,provider,home,email,plan,created_at,profile_kind,disabled_at,lifecycle_operation_id)
+VALUES(?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET email=excluded.email,plan=excluded.plan,disabled_at=excluded.disabled_at,lifecycle_operation_id=excluded.lifecycle_operation_id
+WHERE agent_accounts.retired_at IS NULL;

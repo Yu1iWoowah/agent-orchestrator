@@ -68,6 +68,10 @@ func newFakeShellRuntime() *fakeShellRuntime {
 	return &fakeShellRuntime{aliveByHandle: map[string]bool{}, sentCh: make(chan sentInput, 1)}
 }
 
+func (f *fakeShellRuntime) CommandHandles(id string) []ports.RuntimeHandle {
+	return []ports.RuntimeHandle{{ID: f.handlePrefix + id}}
+}
+
 func (f *fakeShellRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	if f.onCreate != nil {
 		f.onCreate(cfg)
@@ -742,7 +746,7 @@ func TestOpenCommandTerminalDoesNotStartWhenAuthWorkspaceCannotBeCreated(t *test
 	}
 }
 
-func TestOpenCommandTerminalDestroysRuntimeWhenPersistFails(t *testing.T) {
+func TestOpenCommandTerminalDoesNotSpawnWhenPersistFails(t *testing.T) {
 	rt := newFakeShellRuntime()
 	st := &fakeShellTerminalStore{insertErr: errors.New("disk full")}
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
@@ -751,8 +755,8 @@ func TestOpenCommandTerminalDestroysRuntimeWhenPersistFails(t *testing.T) {
 	if _, err := svc.OpenCommandTerminal(context.Background(), OpenCommandTerminalInput{Argv: []string{"pi"}, Title: "Log in to Pi"}); err == nil {
 		t.Fatal("OpenCommandTerminal succeeded despite a failed insert")
 	}
-	if !reflect.DeepEqual(rt.destroyed, []string{"shellterm-test1"}) {
-		t.Errorf("destroyed = %#v, want rollback of the created runtime", rt.destroyed)
+	if len(rt.created) != 0 || len(rt.destroyed) != 0 {
+		t.Fatal("runtime touched before durable intent")
 	}
 	if len(st.records) != 0 {
 		t.Errorf("records = %#v, want no persisted terminal", st.records)
@@ -766,10 +770,12 @@ func TestOpenCommandTerminalDestroysRuntimeWhenPersistFails(t *testing.T) {
 	}
 }
 
-func TestOpenCommandTerminalKeepsWorkspaceWhenPersistRollbackRuntimeSurvives(t *testing.T) {
+func TestOpenCommandTerminalKeepsWorkspaceWhenPartialCreateSurvives(t *testing.T) {
 	rt := newFakeShellRuntime()
 	rt.destroyErr = errors.New("runtime refused to stop")
-	st := &fakeShellTerminalStore{insertErr: errors.New("disk full")}
+	st := &fakeShellTerminalStore{}
+	rt.createErr = errors.New("partial create")
+	rt.onCreate = func(cfg ports.RuntimeConfig) { rt.aliveByHandle[string(cfg.SessionID)] = true }
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
 	svc.dataDir = t.TempDir()
 
@@ -1046,7 +1052,7 @@ func TestOpenCommandTerminalUsesTrustedProcessConfiguration(t *testing.T) {
 	}
 }
 
-func TestOpenCommandTerminalDestroysRuntimeWhenPersistenceFails(t *testing.T) {
+func TestOpenCommandTerminalDoesNotCreateWhenPersistenceFails(t *testing.T) {
 	rt := newFakeShellRuntime()
 	st := &fakeShellTerminalStore{insertErr: errors.New("database unavailable")}
 	svc := newTestService(rt, st, &fakeProjectRootLocator{})
@@ -1059,8 +1065,8 @@ func TestOpenCommandTerminalDestroysRuntimeWhenPersistenceFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("OpenCommandTerminal error = nil, want persistence failure")
 	}
-	if len(rt.destroyed) != 1 || rt.destroyed[0] != "shellterm-test1" {
-		t.Fatalf("destroyed = %v, want the unpersisted runtime", rt.destroyed)
+	if len(rt.created) != 0 || len(rt.destroyed) != 0 {
+		t.Fatal("runtime touched before durable intent")
 	}
 }
 

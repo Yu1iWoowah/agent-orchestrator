@@ -45,7 +45,7 @@ const limits = {
 const defaultSize = { width: 520, height: 600 };
 export function DocumentSheet(props: {
 	surfaceRef: RefObject<HTMLElement | null>;
-	composerRef: RefObject<HTMLElement | null>;
+	composerRef?: RefObject<HTMLElement | null>;
 }) {
 	const reader = useDocumentReader()!;
 	const restore = useRef<HTMLElement | null>(null);
@@ -88,7 +88,7 @@ function DocumentSheetReader({
 }: {
 	restore: RefObject<HTMLElement | null>;
 	surfaceRef: RefObject<HTMLElement | null>;
-	composerRef: RefObject<HTMLElement | null>;
+	composerRef?: RefObject<HTMLElement | null>;
 }) {
 	const reader = useDocumentReader()!;
 	const { t } = useTranslation();
@@ -100,7 +100,7 @@ function DocumentSheetReader({
 	const opening = session?.opening;
 	const entry = useRef<HTMLButtonElement>(null);
 	const id = useId();
-	const preferenceKey = conversationFrameSessionKey(
+	const preferenceKey = reader.scope === "gallery" ? JSON.stringify(["gallery", reader.connection.kind, reader.connection.identity]) : conversationFrameSessionKey(
 		reader.sessionId,
 		reader.connection.kind === "remote"
 			? reader.connection.identity

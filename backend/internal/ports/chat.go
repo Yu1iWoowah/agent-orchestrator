@@ -489,6 +489,9 @@ type ChatUserMessage struct {
 	// Settings are the per-turn provider choices for this message. Zero means the
 	// conversation's own defaults.
 	Settings ChatTurnSettings
+	// SettingsSnapshot is AO-owned attribution, never sent as provider text or
+	// configuration. Independent providers have no root settings revision.
+	SettingsSnapshot *domain.AgentSettingsTurnSnapshot
 	// Continuation marks the user's one-click "continue" after stopping a turn,
 	// so the timeline can show a marker instead of a message bubble.
 	Continuation bool

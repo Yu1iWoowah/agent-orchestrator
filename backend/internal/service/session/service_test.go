@@ -6133,3 +6133,16 @@ func TestResumeAgentMapsRelaunchFailureToConflict(t *testing.T) {
 		t.Fatalf("sentry captures = %v / %v, want the raw error for both operations", sentryErrs, sentryTags)
 	}
 }
+
+func TestSessionUnavailableHomeOccupiedEnvelope(t *testing.T) {
+	for _, mapError := range []func(error) error{toAPIError, toSpawnAPIError} {
+		mapped := mapError(fmt.Errorf("/private/fake-secret-marker: %w", ports.ErrAgentAccountUnavailableHomeOccupied))
+		var e *apierr.Error
+		if !errors.As(mapped, &e) || e.Kind != apierr.KindConflict || e.Code != "AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED" {
+			t.Fatalf("session error mapped incorrectly: %v", mapped)
+		}
+		if e.Details["reasonCode"] != "account_unavailable_home_occupied" || e.Details["retryable"] != true || e.Message != ports.AgentAccountUnavailableHomeOccupiedMessage {
+			t.Fatalf("unsafe or incomplete diagnostic: %+v", e)
+		}
+	}
+}

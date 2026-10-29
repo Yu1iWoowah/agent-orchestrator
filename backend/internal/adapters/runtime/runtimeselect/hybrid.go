@@ -209,3 +209,36 @@ func (r *hybridRuntime) route(handle ports.RuntimeHandle) (routedBackend, ports.
 	}
 	return r.legacy, handle
 }
+
+// CommandHandles lists possible addresses for idempotent logical-id cleanup.
+// CreateCommand records only the routes actually attempted.
+func (r *hybridRuntime) CommandHandles(id string) []ports.RuntimeHandle {
+	return []ports.RuntimeHandle{{ID: directHandlePrefix + id}, {ID: id}}
+}
+
+// CreateCommand persists the exact chosen route before each trusted spawn.
+// Unlike normal session compatibility fallback, auth cannot risk two writers:
+// unknown/partial direct effects must be recovered before another backend runs.
+func (r *hybridRuntime) CreateCommand(ctx context.Context, cfg ports.RuntimeConfig, reserve func(ports.RuntimeHandle) error) (ports.RuntimeHandle, error) {
+	directID := ports.RuntimeHandle{ID: directHandlePrefix + string(cfg.SessionID)}
+	if e := reserve(directID); e != nil {
+		return ports.RuntimeHandle{}, e
+	}
+	h, e := r.direct.Create(ctx, cfg)
+	if e == nil {
+		h.ID = directHandlePrefix + h.ID
+		return h, nil
+	}
+	var effect ports.RuntimeEffectError
+	if !errors.As(e, &effect) || effect.EffectOutcome() != ports.RuntimeEffectNone && effect.CleanupOutcome() != ports.RuntimeCleanupSucceeded {
+		return ports.RuntimeHandle{}, errors.New("trusted runtime startup unconfirmed")
+	}
+	if e := reserve(ports.RuntimeHandle{ID: string(cfg.SessionID)}); e != nil {
+		return ports.RuntimeHandle{}, e
+	}
+	h, e = r.legacy.Create(ctx, cfg)
+	if e != nil {
+		return ports.RuntimeHandle{}, errors.New("trusted runtime startup failed")
+	}
+	return h, nil
+}

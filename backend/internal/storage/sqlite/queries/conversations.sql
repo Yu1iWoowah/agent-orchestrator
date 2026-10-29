@@ -874,6 +874,10 @@ WHERE conversation_id = ? AND provider_turn_id = ?;
 -- name: SelectConversationTurnByID :one
 SELECT * FROM conversation_turns WHERE id = ? LIMIT 1;
 
+-- name: RecordTurnSettingsSnapshot :execrows
+UPDATE conversation_turns SET agent_settings_snapshot_json=sqlc.arg(snapshot)
+WHERE id=sqlc.arg(id) AND conversation_id=sqlc.arg(conversation_id) AND agent_settings_snapshot_json='';
+
 -- Turns are read in full, rolled-back ones included. They carry rolled_back_at, so
 -- a client can report how much an undo discarded instead of watching the timeline
 -- silently shrink.

@@ -74,11 +74,12 @@ type SideRecoveryRecord struct {
 
 // SideRecoveryTurn pairs a recoverable side turn with its structured content.
 type SideRecoveryTurn struct {
-	DispatchAttempt   int                  `json:"dispatchAttempt,omitempty"`
-	ProviderTurnID    string               `json:"providerTurnId,omitempty"`
-	ReferenceContexts []string             `json:"referenceContexts"`
-	Turn              domain.SideTurn      `json:"turn"`
-	Content           []domain.SideContent `json:"content,omitempty"`
+	SettingsAttempts  []domain.AgentSettingsTurnSnapshot `json:"settingsAttempts,omitempty"`
+	DispatchAttempt   int                                `json:"dispatchAttempt,omitempty"`
+	ProviderTurnID    string                             `json:"providerTurnId,omitempty"`
+	ReferenceContexts []string                           `json:"referenceContexts"`
+	Turn              domain.SideTurn                    `json:"turn"`
+	Content           []domain.SideContent               `json:"content,omitempty"`
 }
 
 func (m *memorySideStore) export(runID string) []SideRecoveryRecord {
@@ -91,7 +92,8 @@ func (m *memorySideStore) export(runID string) []SideRecoveryRecord {
 		}
 		turns := make([]SideRecoveryTurn, 0, len(m.turns[id]))
 		for _, turn := range m.turns[id] {
-			turns = append(turns, SideRecoveryTurn{Turn: turn, DispatchAttempt: turn.DispatchAttempt, ProviderTurnID: turn.ProviderTurnID, Content: turn.Content, ReferenceContexts: sideReferenceContexts(turn.References)})
+			captured := cloneSideSettings(turn)
+			turns = append(turns, SideRecoveryTurn{Turn: captured, SettingsAttempts: captured.SettingsAttempts, DispatchAttempt: turn.DispatchAttempt, ProviderTurnID: turn.ProviderTurnID, Content: turn.Content, ReferenceContexts: sideReferenceContexts(turn.References)})
 		}
 		messageIDs, activityIDs, decisions := map[string]string{}, map[string]string{}, map[string][][]byte{}
 		for _, message := range m.messages[id] {
@@ -208,7 +210,8 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 					item.Turn.References[i].Context = item.ReferenceContexts[i]
 				}
 			}
-			m.turns[side.ID] = append(m.turns[side.ID], item.Turn)
+			item.Turn.SettingsAttempts = item.SettingsAttempts
+			m.turns[side.ID] = append(m.turns[side.ID], cloneSideSettings(item.Turn))
 		}
 		for i := range m.turns[side.ID] {
 			if m.turns[side.ID][i].State == "running" && m.turns[side.ID][i].ProviderTurnID == "" {
@@ -654,7 +657,7 @@ func (m *memorySideStore) SideTurn(_ context.Context, sideID, turnID string) (do
 	defer m.mu.Unlock()
 	for _, turn := range m.turns[sideID] {
 		if turn.ID == turnID {
-			return turn, nil
+			return cloneSideSettings(turn), nil
 		}
 	}
 	return domain.SideTurn{}, ErrSideClosed
@@ -663,6 +666,9 @@ func (m *memorySideStore) SideTurns(_ context.Context, sideID string, before tim
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	turns := append([]domain.SideTurn{}, m.turns[sideID]...)
+	for i := range turns {
+		turns[i] = cloneSideSettings(turns[i])
+	}
 	sort.SliceStable(turns, func(i, j int) bool { return turns[i].CreatedAt.Before(turns[j].CreatedAt) })
 	if !before.IsZero() {
 		filtered := turns[:0]
@@ -874,6 +880,11 @@ func (m *memorySideStore) SetSideTurnProviderID(_ context.Context, sideID, turnI
 		turn := &m.turns[sideID][i]
 		if turn.ID == turnID && turn.State == "running" {
 			turn.ProviderTurnID = providerID
+			for i := range turn.SettingsAttempts {
+				if turn.SettingsAttempts[i].Attempt == turn.DispatchAttempt {
+					turn.SettingsAttempts[i].ProviderTurnID = providerID
+				}
+			}
 			if side.BoundaryTurnID == turnID {
 				side.BoundaryState = "delivered"
 				m.sides[sideID] = side
