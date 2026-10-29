@@ -333,6 +333,10 @@ func TestSteerRouteRefusalsAreTypedAndCoded(t *testing.T) {
 		// sentinel and must not share its wording.
 		wantInMessage string
 	}{
+		{name: "replacement intake held", err: domain.ErrReplacementIntakeFenced, wantStatus: http.StatusConflict, wantCode: "ORCHESTRATOR_REPLACEMENT_INTAKE_FENCED"},
+		{name: "replacement active", err: domain.ErrReplacementInProgress, wantStatus: http.StatusConflict, wantCode: "ORCHESTRATOR_REPLACEMENT_IN_PROGRESS"},
+		{name: "replacement retired", err: domain.ErrReplacementSourceRetired, wantStatus: http.StatusConflict, wantCode: "ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED"},
+		{name: "replacement owner changed", err: domain.ErrReplacementSourceChanged, wantStatus: http.StatusConflict, wantCode: "ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED"},
 		{
 			name: "no turn in flight", err: chatsvc.ErrNoActiveTurn,
 			wantStatus: http.StatusConflict, wantCode: "CHAT_NO_ACTIVE_TURN",
