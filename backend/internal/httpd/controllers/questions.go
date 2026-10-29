@@ -16,6 +16,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 )
 
+// QuestionService is the controller boundary for durable question operations.
 type QuestionService interface {
 	Create(context.Context, domain.AttentionQuestionCreate) (domain.AttentionQuestionRecord, bool, error)
 	Get(context.Context, domain.SessionID, string) (domain.AttentionQuestionRecord, error)
@@ -26,8 +27,10 @@ type QuestionService interface {
 	Read(context.Context, domain.SessionID, string, int64) error
 }
 
+// QuestionsController adapts session question HTTP commands to the service.
 type QuestionsController struct{ Svc QuestionService }
 
+// Register installs the session-scoped question routes.
 func (c *QuestionsController) Register(r chi.Router) {
 	const root = "/sessions/{sessionId}/questions"
 	r.Group(func(r chi.Router) {
@@ -68,13 +71,13 @@ func writeQuestionError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-func readQuestionBody(w http.ResponseWriter, r *http.Request, max int, target any) bool {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(max)))
+func readQuestionBody(w http.ResponseWriter, r *http.Request, limit int, target any) bool {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(limit)))
 	if err != nil {
 		writeQuestionError(w, r, &domain.AttentionValidationError{Field: "request", Message: "Cannot read question command or size limit exceeded"})
 		return false
 	}
-	if err = domain.DecodeAttentionRequest(raw, max, target); err != nil {
+	if err = domain.DecodeAttentionRequest(raw, limit, target); err != nil {
 		writeQuestionError(w, r, err)
 		return false
 	}

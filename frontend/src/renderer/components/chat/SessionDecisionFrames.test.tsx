@@ -109,3 +109,16 @@ it("keeps an in-flight answer scoped to the old session after closing and switch
 	expect(screen.getByRole("radio", { name: /Staging/ })).not.toBeChecked();
 	expect(screen.getByRole("button", { name: "Submit all answers" })).toBeEnabled();
 });
+
+it("closes to the entry instead of reopening the Sheet when the dialog no longer fits", async () => {
+ rect = { left: 16, top: 48, width: 300, height: 200 };
+ const view = render(<Subject />);
+ await userEvent.click(screen.getByRole("button", { name: "Open Awaiting you" }));
+ await userEvent.click(await screen.findByRole("button", { name: /Open decision: Choose a deployment/ }));
+ await screen.findByRole("dialog", { name: "Decision" });
+ rect = { left: 16, top: 48, width: 250, height: 150 };
+ view.rerender(<Subject />);
+ await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+ await waitFor(() => expect(screen.getByRole("button", { name: "Awaiting you 2" })).toHaveFocus());
+ expect(Object.values(useQuestionDraftStore.getState().entries)).toHaveLength(1);
+});

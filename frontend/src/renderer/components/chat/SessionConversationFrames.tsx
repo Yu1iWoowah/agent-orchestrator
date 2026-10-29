@@ -67,10 +67,10 @@ export function SessionConversationFrames({
 		returnTo.current = { scope, trigger, targetKey: decisionTargetKey(target), resume };
 		setDecision({ scope, target });
 	}, [scope]);
-	const restoreFocus = useCallback(() => {
+	const restoreFocus = useCallback((resumeSheet = true) => {
 		const saved = returnTo.current;
 		if (!saved || saved.scope !== currentScope.current) return;
-		saved.resume?.();
+		if (resumeSheet) saved.resume?.();
 		requestAnimationFrame(() => {
 			if (saved.scope !== currentScope.current) return;
 			const visible = (node: HTMLElement) => node.isConnected && !node.closest("[hidden]") && !node.closest('[data-slot="sheet-content"][data-state="closed"]');

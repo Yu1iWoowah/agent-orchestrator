@@ -24,27 +24,28 @@ func attentionInvalid(field, message string) error {
 	return &AttentionValidationError{Field: field, Message: message}
 }
 
-func attentionToken(field, value string, max int) error {
-	if len(value) < 1 || len(value) > max || !attentionTokenPattern.MatchString(value) {
-		return attentionInvalid(field, fmt.Sprintf("must contain 1–%d ASCII letters, digits, underscores or hyphens, starting with a letter or digit", max))
+func attentionToken(field, value string, limit int) error {
+	if len(value) < 1 || len(value) > limit || !attentionTokenPattern.MatchString(value) {
+		return attentionInvalid(field, fmt.Sprintf("must contain 1–%d ASCII letters, digits, underscores or hyphens, starting with a letter or digit", limit))
 	}
 	return nil
 }
 
+// ValidateAttentionClientKey checks the session-scoped idempotency key.
 func ValidateAttentionClientKey(key string) error { return attentionToken("clientKey", key, 64) }
 
-func attentionTextBound(field, value string, max int) error {
-	if strings.TrimSpace(value) == "" || utf8.RuneCountInString(value) > max {
-		return attentionInvalid(field, fmt.Sprintf("must contain 1–%d Unicode code points", max))
+func attentionTextBound(field, value string, limit int) error {
+	if strings.TrimSpace(value) == "" || utf8.RuneCountInString(value) > limit {
+		return attentionInvalid(field, fmt.Sprintf("must contain 1–%d Unicode code points", limit))
 	}
 	return nil
 }
 
 // Preserve missing boolean defaults, but refuse unknown members, duplicates and
 // explicit nulls rather than silently changing the meaning of a decision.
-func decodeAttentionJSON(raw []byte, max int, field string, target any) error {
-	if len(raw) > max {
-		return attentionInvalid(field, fmt.Sprintf("JSON exceeds %d bytes", max))
+func decodeAttentionJSON(raw []byte, limit int, field string, target any) error {
+	if len(raw) > limit {
+		return attentionInvalid(field, fmt.Sprintf("JSON exceeds %d bytes", limit))
 	}
 	if !utf8.Valid(raw) {
 		return attentionInvalid(field, "JSON must be UTF-8")
@@ -67,8 +68,8 @@ func decodeAttentionJSON(raw []byte, max int, field string, target any) error {
 
 // DecodeAttentionRequest preserves strict JSON semantics for the small command
 // envelopes around question payloads; payload validation remains authoritative.
-func DecodeAttentionRequest(raw []byte, max int, target any) error {
-	return decodeAttentionJSON(raw, max, "request", target)
+func DecodeAttentionRequest(raw []byte, limit int, target any) error {
+	return decodeAttentionJSON(raw, limit, "request", target)
 }
 
 func scanAttentionJSON(decoder *json.Decoder, path, member string, depth int) error {
@@ -120,6 +121,7 @@ func scanAttentionJSON(decoder *json.Decoder, path, member string, depth int) er
 	return nil
 }
 
+// ParseAttentionQuestionPayload strictly validates the versioned create or revise payload.
 func ParseAttentionQuestionPayload(raw []byte, kind AttentionQuestionKind) (AttentionQuestionPayload, error) {
 	var payload AttentionQuestionPayload
 	if err := decodeAttentionJSON(raw, MaxAttentionCreateBytes, "payload", &payload); err != nil {
@@ -130,11 +132,11 @@ func ParseAttentionQuestionPayload(raw []byte, kind AttentionQuestionKind) (Atte
 	}
 	for _, value := range []struct {
 		field, text string
-		max         int
+		limit       int
 	}{
 		{"title", payload.Title, 120}, {"explanation", payload.Explanation, 8000},
 	} {
-		if err := attentionTextBound(value.field, value.text, value.max); err != nil {
+		if err := attentionTextBound(value.field, value.text, value.limit); err != nil {
 			return payload, err
 		}
 	}
@@ -153,11 +155,11 @@ func ParseAttentionQuestionPayload(raw []byte, kind AttentionQuestionKind) (Atte
 		keys[question.Key] = true
 		for _, value := range []struct {
 			field, text string
-			max         int
+			limit       int
 		}{
 			{"header", question.Header, 24}, {"question", question.Question, 2000},
 		} {
-			if err := attentionTextBound(path+"."+value.field, value.text, value.max); err != nil {
+			if err := attentionTextBound(path+"."+value.field, value.text, value.limit); err != nil {
 				return payload, err
 			}
 		}
@@ -212,11 +214,11 @@ func ParseAttentionQuestionPayload(raw []byte, kind AttentionQuestionKind) (Atte
 		a := payload.Authorization
 		for _, value := range []struct {
 			field, text string
-			max         int
+			limit       int
 		}{
 			{"action", a.Action, 1000}, {"scope", a.Scope, 2000}, {"limits", a.Limits, 2000},
 		} {
-			if err := attentionTextBound("authorization."+value.field, value.text, value.max); err != nil {
+			if err := attentionTextBound("authorization."+value.field, value.text, value.limit); err != nil {
 				return payload, err
 			}
 		}
@@ -290,6 +292,7 @@ func validateAttentionPreviewURL(destination []byte) error {
 	return nil
 }
 
+// ParseAttentionAnswer checks the answer envelope before source-dependent validation.
 func ParseAttentionAnswer(raw []byte) (AttentionAnswerSubmission, error) {
 	var input AttentionAnswerSubmission
 	if err := decodeAttentionJSON(raw, MaxAttentionAnswerBytes, "answer", &input); err != nil {
@@ -315,12 +318,13 @@ func ParseAttentionAnswer(raw []byte) (AttentionAnswerSubmission, error) {
 	return input, nil
 }
 
+// ValidateAttentionAnswers checks that every prompt has exactly one valid answer record.
 func ValidateAttentionAnswers(payload AttentionQuestionPayload, answers []AttentionQuestionAnswer) error {
 	_, err := CanonicalAttentionAnswers(payload, answers)
 	return err
 }
 
-// Canonical answer order follows question and option IDs, never click order.
+// CanonicalAttentionAnswers orders validated answers by question and option declaration order.
 func CanonicalAttentionAnswers(payload AttentionQuestionPayload, answers []AttentionQuestionAnswer) ([]AttentionQuestionAnswer, error) {
 	if len(answers) != len(payload.Questions) {
 		return nil, attentionInvalid("answers", "must answer every question exactly once")

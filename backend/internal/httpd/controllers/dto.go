@@ -3257,7 +3257,7 @@ type ConversationMessageResponse struct {
 	CreatedAt    string `json:"createdAt"`
 }
 
-// AttentionItemResponse keeps provider state and read status separate.
+// QuestionCreateRequest is the HTTP envelope for a session-owned structured question.
 type QuestionCreateRequest struct {
 	ClientKey    string                          `json:"clientKey" minLength:"1" maxLength:"64"`
 	Audience     string                          `json:"audience" enum:"user"`
@@ -3267,26 +3267,39 @@ type QuestionCreateRequest struct {
 	SupersedesID string                          `json:"supersedesId,omitempty"`
 }
 
+// QuestionReviseRequest replaces question content using version compare-and-swap.
 type QuestionReviseRequest struct {
 	ExpectedVersion int64                           `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
 	Payload         domain.AttentionQuestionPayload `json:"payload"`
 }
 
+// QuestionReadRequest marks only the displayed version as read.
 type QuestionReadRequest struct {
 	ExpectedVersion int64 `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
 }
+
+// QuestionCancelRequest closes an open question without granting consent.
 type QuestionCancelRequest struct {
 	ExpectedVersion int64  `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
 	Actor           string `json:"actor" enum:"user,agent"`
 	Reason          string `json:"reason" minLength:"1" maxLength:"4000"`
 }
+
+// QuestionIDParam identifies a question within the route session.
 type QuestionIDParam struct {
 	QuestionID string `path:"questionId"`
 }
+
+// QuestionResponse is the public durable question snapshot.
 type QuestionResponse domain.AttentionQuestionRecord
+
+// QuestionPageResponse is a bounded question page with complete lifecycle counts.
 type QuestionPageResponse domain.AttentionQuestionPage
+
+// QuestionAnswerResponse is the saved answer and its independent delivery receipt.
 type QuestionAnswerResponse domain.AttentionAnswerReceipt
 
+// AttentionItemResponse keeps provider state and read status separate.
 type AttentionItemResponse struct {
 	BranchID   string                       `json:"branchId"`
 	Activity   ConversationActivityResponse `json:"activity"`

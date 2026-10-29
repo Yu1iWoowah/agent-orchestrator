@@ -73,10 +73,10 @@ func appendQuestionCompatibility(ctx context.Context, q *gen.Queries, question d
 		if getErr != nil {
 			return getErr
 		}
-		if err = q.InsertConversation(ctx, gen.InsertConversationParams{ID: id, Scope: domain.ConversationScopeSession, ProjectID: optionalProjectID(question.ProjectID), SessionID: &question.OriginSessionID, CurrentSessionID: &question.OriginSessionID, ActiveBranchID: root, CreatedAt: at.UTC(), UpdatedAt: at.UTC()}); err != nil {
+		if err := q.InsertConversation(ctx, gen.InsertConversationParams{ID: id, Scope: domain.ConversationScopeSession, ProjectID: optionalProjectID(question.ProjectID), SessionID: &question.OriginSessionID, CurrentSessionID: &question.OriginSessionID, ActiveBranchID: root, CreatedAt: at.UTC(), UpdatedAt: at.UTC()}); err != nil {
 			return err
 		}
-		if err = q.InsertConversationBranch(ctx, gen.InsertConversationBranchParams{ID: root, ConversationID: id, SessionID: nullableString(string(question.OriginSessionID)), ProviderConversationID: owner.ProviderConversationID, ProviderScopeID: root, ProviderIdsScoped: 1, CreatedAt: at.UTC()}); err != nil {
+		if err := q.InsertConversationBranch(ctx, gen.InsertConversationBranchParams{ID: root, ConversationID: id, SessionID: nullableString(string(question.OriginSessionID)), ProviderConversationID: owner.ProviderConversationID, ProviderScopeID: root, ProviderIdsScoped: 1, CreatedAt: at.UTC()}); err != nil {
 			return err
 		}
 		conversation, err = q.SelectConversationBySession(ctx, &question.OriginSessionID)

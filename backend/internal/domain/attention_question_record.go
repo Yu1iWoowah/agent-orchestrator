@@ -5,11 +5,13 @@ import (
 	"time"
 )
 
+// Durable question lookup and compare-and-swap errors.
 var (
 	ErrAttentionQuestionNotFound = errors.New("question not found in this session")
 	ErrAttentionQuestionConflict = errors.New("question or idempotency payload changed")
 )
 
+// AttentionQuestionCreate carries caller input; source ownership is derived from the session.
 type AttentionQuestionCreate struct {
 	ID              string
 	OriginSessionID SessionID
@@ -21,6 +23,7 @@ type AttentionQuestionCreate struct {
 	SupersedesID    string
 }
 
+// AttentionQuestionRecord is the durable source, lifecycle, read state and optional answer.
 type AttentionQuestionRecord struct {
 	ID              string                   `json:"id"`
 	ProjectID       ProjectID                `json:"projectId"`
@@ -44,6 +47,7 @@ type AttentionQuestionRecord struct {
 	Answer          *AttentionAnswerReceipt  `json:"answer,omitempty"`
 }
 
+// AttentionAnswerReceipt distinguishes durable answer storage from semantic delivery.
 type AttentionAnswerReceipt struct {
 	ClientAnswerID  string                    `json:"clientAnswerId"`
 	QuestionVersion int64                     `json:"questionVersion"`
@@ -54,12 +58,14 @@ type AttentionAnswerReceipt struct {
 	LastError       string                    `json:"lastError,omitempty"`
 }
 
+// AttentionQuestionQuery selects a bounded session-scoped lifecycle page.
 type AttentionQuestionQuery struct {
 	State          string
 	BeforeSequence int64
 	Limit          int64
 }
 
+// AttentionQuestionPage includes complete pending counts independent of its page cursor.
 type AttentionQuestionPage struct {
 	Items              []AttentionQuestionRecord `json:"items"`
 	Open               int64                     `json:"open"`
@@ -69,6 +75,7 @@ type AttentionQuestionPage struct {
 	NextBeforeSequence int64                     `json:"nextBeforeSequence"`
 }
 
+// AttentionAnswerDelivery is a saved answer awaiting its original agent acceptance.
 type AttentionAnswerDelivery struct {
 	QuestionID      string
 	OriginSessionID SessionID

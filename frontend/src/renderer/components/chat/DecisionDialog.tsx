@@ -19,7 +19,7 @@ type Lookup = { target: DecisionTarget; scope: string } & (
 );
 
 export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds, onClose, onLocate, onRestoreFocus }: {
-	target?: DecisionTarget; sessionId: string; hostId?: string; sourceAgent?: string; bounds: { surface: HTMLElement; rect: FrameRect }; onClose: () => void; onLocate: (id: string) => void; onRestoreFocus: () => void;
+	target?: DecisionTarget; sessionId: string; hostId?: string; sourceAgent?: string; bounds: { surface: HTMLElement; rect: FrameRect }; onClose: () => void; onLocate: (id: string) => void; onRestoreFocus: (resumeSheet?: boolean) => void;
 }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
@@ -28,6 +28,7 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds,
 	const title = useRef<HTMLHeadingElement>(null);
 	const closeRef = useRef(onClose); closeRef.current = onClose;
 	const navigating = useRef(false);
+	const fittedOut = useRef(false);
 	const scope = JSON.stringify([hostId ?? null, sessionId]);
 	const fits = Number.isFinite(bounds.rect.width) && Number.isFinite(bounds.rect.height) && bounds.rect.width >= 260 && bounds.rect.height >= 160;
 	const load = useCallback((requested: DecisionTarget) => {
@@ -45,7 +46,8 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds,
 	}, [client, sessionId, hostId]);
 	useEffect(() => {
 		if (!target) { ++nonce.current; setLookup(undefined); return; }
-		if (!fits) { ++nonce.current; setLookup(undefined); useUiStore.getState().showGlobalToast(t("decision.needSpace")); closeRef.current(); return; }
+		if (!fits) { fittedOut.current = true; ++nonce.current; setLookup(undefined); useUiStore.getState().showGlobalToast(t("decision.needSpace")); closeRef.current(); return; }
+		fittedOut.current = false;
 		load(target);
 		return () => { ++nonce.current; };
 	}, [target, fits, load, t]);
@@ -60,7 +62,7 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds,
 			className="gap-0 overflow-hidden p-0"
 			style={{ left: box.left + bounds.rect.left + bounds.rect.width / 2, top: box.top + bounds.rect.top + bounds.rect.height / 2, width: Math.min(560, bounds.rect.width), maxWidth: Math.min(560, bounds.rect.width), maxHeight: bounds.rect.height }}
 			onOpenAutoFocus={(event) => { event.preventDefault(); title.current?.focus({ preventScroll: true }); }}
-			onCloseAutoFocus={(event) => { event.preventDefault(); if (!navigating.current) onRestoreFocus(); navigating.current = false; }}
+			onCloseAutoFocus={(event) => { event.preventDefault(); if (!navigating.current) onRestoreFocus(!fittedOut.current); navigating.current = false; fittedOut.current = false; }}
 			onEscapeKeyDown={(event) => event.stopPropagation()}
 			onClick={(event) => event.stopPropagation()}
 		>

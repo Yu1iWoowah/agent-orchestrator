@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// Store is the persistence boundary for question state and delivery receipts.
 type Store interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	CreateAttentionQuestion(context.Context, domain.AttentionQuestionCreate, time.Time) (domain.AttentionQuestionRecord, bool, error)
@@ -27,15 +28,20 @@ type Store interface {
 	RecordAttentionAnswerDelivery(context.Context, string, string, string, time.Time) error
 }
 
+// Delivery acknowledges a stable message ID at the original agent acceptance boundary.
 type Delivery interface {
 	Submit(context.Context, domain.SessionID, string, string) error
 }
+
+// Deps supplies persistence, semantic delivery and deterministic identity sources.
 type Deps struct {
 	Store    Store
 	Delivery Delivery
 	Now      func() time.Time
 	NewID    func() string
 }
+
+// Service coordinates durable questions, expiry and answer delivery retries.
 type Service struct {
 	store      Store
 	delivery   Delivery
@@ -45,6 +51,7 @@ type Service struct {
 	deliveryMu sync.Mutex
 }
 
+// New creates a question coordinator without starting background work.
 func New(deps Deps) *Service {
 	if deps.Now == nil {
 		deps.Now = time.Now
@@ -55,11 +62,13 @@ func New(deps Deps) *Service {
 	return &Service{store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1)}
 }
 
+// Create creates or finds a question using its source-scoped retry key.
 func (s *Service) Create(ctx context.Context, input domain.AttentionQuestionCreate) (domain.AttentionQuestionRecord, bool, error) {
 	input.ID = s.newID()
 	return s.store.CreateAttentionQuestion(ctx, input, s.now().UTC())
 }
 
+// Answer saves a complete answer group and wakes asynchronous delivery.
 func (s *Service) Answer(ctx context.Context, session domain.SessionID, input domain.AttentionAnswerSubmission) (domain.AttentionAnswerReceipt, error) {
 	receipt, err := s.store.AnswerAttentionQuestion(ctx, session, input, s.now().UTC())
 	if err == nil {
@@ -71,6 +80,7 @@ func (s *Service) Answer(ctx context.Context, session domain.SessionID, input do
 	return receipt, err
 }
 
+// Get expires due questions before reading the current source.
 func (s *Service) Get(ctx context.Context, session domain.SessionID, id string) (domain.AttentionQuestionRecord, error) {
 	if err := s.store.ExpireAttentionQuestions(ctx, session, s.now().UTC()); err != nil {
 		return domain.AttentionQuestionRecord{}, err
@@ -78,6 +88,7 @@ func (s *Service) Get(ctx context.Context, session domain.SessionID, id string) 
 	return s.store.GetAttentionQuestion(ctx, session, id)
 }
 
+// List returns lifecycle counts and a bounded page for an existing session.
 func (s *Service) List(ctx context.Context, session domain.SessionID, query domain.AttentionQuestionQuery) (domain.AttentionQuestionPage, error) {
 	_, found, err := s.store.GetSession(ctx, session)
 	if err != nil {
@@ -89,10 +100,12 @@ func (s *Service) List(ctx context.Context, session domain.SessionID, query doma
 	return s.store.ListAttentionQuestions(ctx, session, query, s.now().UTC())
 }
 
+// Revise replaces an open matching version without carrying prior consent.
 func (s *Service) Revise(ctx context.Context, session domain.SessionID, id string, version int64, payload []byte) (domain.AttentionQuestionRecord, error) {
 	return s.store.ReviseAttentionQuestion(ctx, session, id, version, payload, s.now().UTC())
 }
 
+// Cancel closes an open matching version without creating an answer.
 func (s *Service) Cancel(ctx context.Context, session domain.SessionID, id string, version int64, actor, reason string) (domain.AttentionQuestionRecord, error) {
 	return s.store.CancelAttentionQuestion(ctx, session, id, version, actor, reason, s.now().UTC())
 }
@@ -114,7 +127,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 		return err
 	}
 	for _, session := range due {
-		if err = s.store.ExpireAttentionQuestions(ctx, session, s.now().UTC()); err != nil {
+		if err := s.store.ExpireAttentionQuestions(ctx, session, s.now().UTC()); err != nil {
 			return err
 		}
 	}
@@ -126,7 +139,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 		return err
 	}
 	for _, item := range items {
-		if err = ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		owner, found, err := s.store.GetSession(ctx, item.OriginSessionID)
@@ -134,7 +147,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 			return err
 		}
 		if !found || owner.IsTerminated || string(owner.Harness) != item.OriginHarness {
-			if err = s.store.RecordAttentionAnswerDelivery(ctx, item.QuestionID, "failed", "Origin session or agent is no longer available; the answer remains saved", s.now().UTC()); err != nil {
+			if err := s.store.RecordAttentionAnswerDelivery(ctx, item.QuestionID, "failed", "Origin session or agent is no longer available; the answer remains saved", s.now().UTC()); err != nil {
 				return err
 			}
 			continue
@@ -142,7 +155,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 		attempt, cancel := context.WithTimeout(ctx, 15*time.Second)
 		sendErr := s.delivery.Submit(attempt, item.OriginSessionID, item.Message, item.ClientMessageID)
 		cancel()
-		if err = ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		state, lastError := "delivered", ""
@@ -153,7 +166,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 				lastError = lastError[:2000]
 			}
 		}
-		if err = s.store.RecordAttentionAnswerDelivery(ctx, item.QuestionID, state, lastError, s.now().UTC()); err != nil {
+		if err := s.store.RecordAttentionAnswerDelivery(ctx, item.QuestionID, state, lastError, s.now().UTC()); err != nil {
 			return err
 		}
 	}

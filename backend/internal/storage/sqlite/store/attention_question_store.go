@@ -24,12 +24,13 @@ func questionFingerprint(value any) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// CreateAttentionQuestion atomically stores a validated question and its readable compatibility record.
 func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.AttentionQuestionCreate, at time.Time) (domain.AttentionQuestionRecord, bool, error) {
 	payload, err := domain.ParseAttentionQuestionPayload(command.Payload, command.Kind)
 	if err != nil {
 		return domain.AttentionQuestionRecord{}, false, err
 	}
-	if err = domain.ValidateAttentionClientKey(command.ClientKey); err != nil {
+	if err := domain.ValidateAttentionClientKey(command.ClientKey); err != nil {
 		return domain.AttentionQuestionRecord{}, false, err
 	}
 	if command.ID == "" || command.OriginSessionID == "" || command.Audience != "user" {
@@ -105,7 +106,7 @@ func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.Atte
 		if err != nil {
 			return err
 		}
-		if err = appendQuestionCompatibility(ctx, q, result, "created", questionContext(result), at); err != nil {
+		if err := appendQuestionCompatibility(ctx, q, result, "created", questionContext(result), at); err != nil {
 			return err
 		}
 		created = true
@@ -162,7 +163,7 @@ func questionReceipt(row gen.AttentionAnswer) (domain.AttentionAnswerReceipt, er
 	return result, err
 }
 
-// Reads use one snapshot; only due deadlines require the writer lock.
+// GetAttentionQuestion reads a question and its answer in one read-only snapshot.
 func (s *Store) GetAttentionQuestion(ctx context.Context, session domain.SessionID, id string) (domain.AttentionQuestionRecord, error) {
 	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -181,6 +182,7 @@ func (s *Store) GetAttentionQuestion(ctx context.Context, session domain.Session
 	return record, err
 }
 
+// ExpireAttentionQuestions closes only open questions with due explicit deadlines.
 func (s *Store) ExpireAttentionQuestions(ctx context.Context, session domain.SessionID, at time.Time) error {
 	needed, err := s.qr.AttentionQuestionsNeedExpiration(ctx, gen.AttentionQuestionsNeedExpirationParams{OriginSessionID: string(session), At: sql.NullTime{Time: at.UTC(), Valid: true}})
 	if err != nil || !needed {
@@ -194,6 +196,7 @@ func (s *Store) ExpireAttentionQuestions(ctx context.Context, session domain.Ses
 	return err
 }
 
+// AttentionQuestionExpirationSessions lists sessions requiring a deadline sweep.
 func (s *Store) AttentionQuestionExpirationSessions(ctx context.Context, at time.Time) ([]domain.SessionID, error) {
 	rows, err := s.qr.AttentionQuestionExpirationSessions(ctx, sql.NullTime{Time: at.UTC(), Valid: true})
 	if err != nil {
@@ -206,6 +209,7 @@ func (s *Store) AttentionQuestionExpirationSessions(ctx context.Context, at time
 	return result, nil
 }
 
+// ListAttentionQuestions reads lifecycle counts and a bounded page from one snapshot.
 func (s *Store) ListAttentionQuestions(ctx context.Context, session domain.SessionID, query domain.AttentionQuestionQuery, at time.Time) (domain.AttentionQuestionPage, error) {
 	result := domain.AttentionQuestionPage{Items: []domain.AttentionQuestionRecord{}}
 	if query.State == "" {
@@ -263,6 +267,7 @@ func openQuestion(row gen.AttentionQuestion, version int64, at time.Time) error 
 	return nil
 }
 
+// AnswerAttentionQuestion atomically saves the full group, terminal state and one delivery item.
 func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.SessionID, submission domain.AttentionAnswerSubmission, at time.Time) (domain.AttentionAnswerReceipt, error) {
 	raw, err := json.Marshal(submission)
 	if err != nil {
@@ -290,11 +295,11 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 			if prior.ClientAnswerID != submission.ClientAnswerID || prior.QuestionVersion != submission.ExpectedVersion {
 				return domain.ErrAttentionQuestionConflict
 			}
-		} else if err = openQuestion(row, submission.ExpectedVersion, at); err != nil {
+		} else if err := openQuestion(row, submission.ExpectedVersion, at); err != nil {
 			return err
 		}
 		var payload domain.AttentionQuestionPayload
-		if err = json.Unmarshal([]byte(row.PayloadJson), &payload); err != nil {
+		if err := json.Unmarshal([]byte(row.PayloadJson), &payload); err != nil {
 			return err
 		}
 		answers, err := domain.CanonicalAttentionAnswers(payload, submission.Answers)
@@ -336,7 +341,7 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 		if changed != 1 {
 			return domain.ErrAttentionQuestionConflict
 		}
-		if err = appendQuestionCompatibility(ctx, q, question, "answered", message, at); err != nil {
+		if err := appendQuestionCompatibility(ctx, q, question, "answered", message, at); err != nil {
 			return err
 		}
 		receipt, err = questionReceipt(answer)
@@ -345,6 +350,7 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 	return receipt, err
 }
 
+// ReviseAttentionQuestion changes only an open matching version and resets its seen revision.
 func (s *Store) ReviseAttentionQuestion(ctx context.Context, session domain.SessionID, id string, version int64, raw []byte, at time.Time) (domain.AttentionQuestionRecord, error) {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return domain.AttentionQuestionRecord{}, err
@@ -356,7 +362,7 @@ func (s *Store) ReviseAttentionQuestion(ctx context.Context, session domain.Sess
 		if err != nil {
 			return err
 		}
-		if err = openQuestion(row, version, at); err != nil {
+		if err := openQuestion(row, version, at); err != nil {
 			return err
 		}
 		payload, err := domain.ParseAttentionQuestionPayload(raw, domain.AttentionQuestionKind(row.Kind))
@@ -387,11 +393,12 @@ func (s *Store) ReviseAttentionQuestion(ctx context.Context, session domain.Sess
 	return result, err
 }
 
+// CancelAttentionQuestion closes only an open matching version without creating an answer.
 func (s *Store) CancelAttentionQuestion(ctx context.Context, session domain.SessionID, id string, version int64, actor, reason string, at time.Time) (domain.AttentionQuestionRecord, error) {
 	if actor != "user" && actor != "agent" {
 		return domain.AttentionQuestionRecord{}, &domain.AttentionValidationError{Field: "actor", Message: "must be user or agent"}
 	}
-	if len(reason) == 0 || len(reason) > 4000 {
+	if reason == "" || len(reason) > 4000 {
 		return domain.AttentionQuestionRecord{}, &domain.AttentionValidationError{Field: "reason", Message: "must contain 1–4000 bytes"}
 	}
 	if err := s.writeMu.LockContext(ctx); err != nil {
@@ -404,7 +411,7 @@ func (s *Store) CancelAttentionQuestion(ctx context.Context, session domain.Sess
 		if err != nil {
 			return err
 		}
-		if err = openQuestion(row, version, at); err != nil {
+		if err := openQuestion(row, version, at); err != nil {
 			return err
 		}
 		n, err := q.CloseAttentionQuestion(ctx, gen.CloseAttentionQuestionParams{ID: id, OriginSessionID: string(session), ExpectedVersion: version, State: "cancelled", Actor: actor, Reason: reason, At: sql.NullTime{Time: at.UTC(), Valid: true}})
@@ -427,6 +434,7 @@ func (s *Store) CancelAttentionQuestion(ctx context.Context, session domain.Sess
 	return result, err
 }
 
+// MarkAttentionQuestionRead records a seen version independently of answer state.
 func (s *Store) MarkAttentionQuestionRead(ctx context.Context, session domain.SessionID, id string, version int64, at time.Time) error {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err
@@ -439,6 +447,7 @@ func (s *Store) MarkAttentionQuestionRead(ctx context.Context, session domain.Se
 	return err
 }
 
+// PendingAttentionAnswers returns queued answers ordered fairly across delivery attempts.
 func (s *Store) PendingAttentionAnswers(ctx context.Context, limit int64) ([]domain.AttentionAnswerDelivery, error) {
 	rows, err := s.qr.PendingAttentionAnswers(ctx, limit)
 	if err != nil {
@@ -451,6 +460,7 @@ func (s *Store) PendingAttentionAnswers(ctx context.Context, limit int64) ([]dom
 	return result, nil
 }
 
+// RecordAttentionAnswerDelivery acknowledges agent acceptance and human provenance atomically.
 func (s *Store) RecordAttentionAnswerDelivery(ctx context.Context, id, state, lastError string, at time.Time) error {
 	if state != "queued" && state != "delivered" && state != "failed" {
 		return &domain.AttentionValidationError{Field: "deliveryState", Message: "invalid delivery state"}

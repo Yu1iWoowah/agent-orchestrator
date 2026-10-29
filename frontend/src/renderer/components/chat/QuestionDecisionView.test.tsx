@@ -104,3 +104,17 @@ it("allows offline drafting but disables submission of a stale source", async ()
 	expect(screen.getByRole("button", { name: "Submit all answers" })).toBeDisabled();
 	expect(screen.getByText("The source is offline. Your draft is kept; reload before submitting.")).toBeVisible();
 });
+
+it.each([1, 4])("saves all %i related prompts together without implicit choices", async (count) => {
+ const fixture = sessionQuestionFixture();
+ fixture.payload = { ...fixture.payload, questions: Array.from({length: count}, (_, index) => ({ ...fixture.payload.questions[0], key: `target${index}`, header: `Target ${index}`, question: `Where should target ${index} go?` })) };
+ show({ question: fixture });
+ const user = userEvent.setup();
+ const groups = await screen.findAllByRole("group", { name: /Where should target/ });
+ expect(groups).toHaveLength(count);
+ expect(screen.queryAllByRole("radio", { checked: true })).toHaveLength(0);
+ for (const group of groups) await user.click(within(group).getByRole("radio", { name: /Staging/ }));
+ await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+ await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+ expect(post.mock.calls[0][1].body.answers).toEqual(Array.from({length: count},(_,index)=>({questionKey:`target${index}`,selectedOptionIds:["stage"]})));
+});

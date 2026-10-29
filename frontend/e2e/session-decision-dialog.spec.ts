@@ -84,3 +84,20 @@ for (const theme of ["light", "dark"]) test(`zh-TW ${theme} effective 200% dialo
 	}
 	await expect(page.locator("body")).toHaveJSProperty("scrollWidth", await page.evaluate(() => document.body.clientWidth));
 });
+
+test("compact Sheet yields one focus trap at minimum usable R and keeps an entry below the floor @T0", async ({ page }) => {
+ await page.setViewportSize({ width: 310, height: 380 });
+ await page.goto("/e2e/session-decision/harness.html");
+ await page.getByRole("button", { name: "Awaiting you 1", expanded: false }).click();
+ await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).click();
+ const dialog = page.getByRole("dialog");
+ await expect(dialog).toHaveCount(1);
+ await expect(dialog.getByRole("button", { name: "Submit all answers" })).toBeVisible();
+ const box = await dialog.boundingBox(), composer = await page.locator(".cursor-chat-composer-dock").boundingBox();
+ expect(box!.width).toBeGreaterThanOrEqual(260);
+ expect(box!.x + box!.width).toBeLessThanOrEqual(310);
+ expect(box!.y + box!.height).toBeLessThanOrEqual(composer!.y - 15);
+ await page.setViewportSize({ width: 250, height: 320 });
+ await expect(page.getByRole("dialog")).toHaveCount(0);
+ await expect(page.getByRole("button", { name: /Awaiting you 1/ })).toBeVisible();
+});

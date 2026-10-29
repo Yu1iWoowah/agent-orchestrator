@@ -66,7 +66,7 @@ func askSessionPath(options *askOptions) (string, error) {
 	return "sessions/" + url.PathEscape(id) + "/questions", nil
 }
 
-func askPayloadFile(cmd *cobra.Command, path string, max int) ([]byte, error) {
+func askPayloadFile(cmd *cobra.Command, path string, limit int) ([]byte, error) {
 	if path == "" {
 		return nil, usageError{errors.New("--payload-file is required")}
 	}
@@ -81,12 +81,12 @@ func askPayloadFile(cmd *cobra.Command, path string, max int) ([]byte, error) {
 		defer func() { _ = file.Close() }()
 		source = file
 	}
-	raw, err := io.ReadAll(io.LimitReader(source, int64(max)+1))
+	raw, err := io.ReadAll(io.LimitReader(source, int64(limit)+1))
 	if err != nil {
 		return nil, usageError{fmt.Errorf("read payload: %w", err)}
 	}
-	if len(raw) > max {
-		return nil, usageError{fmt.Errorf("payload exceeds %d bytes", max)}
+	if len(raw) > limit {
+		return nil, usageError{fmt.Errorf("payload exceeds %d bytes", limit)}
 	}
 	return raw, nil
 }
@@ -120,7 +120,7 @@ func newAskCreateCommand(ctx *commandContext, options *askOptions) *cobra.Comman
 			body.ExpiresAt = &at
 		}
 		var response json.RawMessage
-		if err = ctx.postJSON(cmd.Context(), path, body, &response); err != nil {
+		if err := ctx.postJSON(cmd.Context(), path, body, &response); err != nil {
 			return err
 		}
 		return printAskResponse(cmd, options, response, "create")
@@ -151,7 +151,7 @@ func newAskListCommand(ctx *commandContext, options *askOptions) *cobra.Command 
 			query.Set("beforeSequence", strconv.FormatInt(before, 10))
 		}
 		var response json.RawMessage
-		if err = ctx.getJSON(cmd.Context(), path+"?"+query.Encode(), &response); err != nil {
+		if err := ctx.getJSON(cmd.Context(), path+"?"+query.Encode(), &response); err != nil {
 			return err
 		}
 		return printAskResponse(cmd, options, response, "list")
@@ -173,7 +173,7 @@ func newAskQuestionCommand(ctx *commandContext, options *askOptions, action stri
 		path += "/" + url.PathEscape(args[0])
 		var response json.RawMessage
 		if action == "get" {
-			if err = ctx.getJSON(cmd.Context(), path, &response); err != nil {
+			if err := ctx.getJSON(cmd.Context(), path, &response); err != nil {
 				return err
 			}
 			return printAskResponse(cmd, options, response, action)
@@ -227,13 +227,13 @@ func newAskQuestionCommand(ctx *commandContext, options *askOptions, action stri
 			}
 		}
 		if action == "read" {
-			if err = ctx.postJSON(cmd.Context(), path+"/read", body, nil); err != nil {
+			if err := ctx.postJSON(cmd.Context(), path+"/read", body, nil); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Marked question version read.")
 			return err
 		}
-		if err = ctx.postJSON(cmd.Context(), path+"/"+action, body, &response); err != nil {
+		if err := ctx.postJSON(cmd.Context(), path+"/"+action, body, &response); err != nil {
 			return err
 		}
 		return printAskResponse(cmd, options, response, action)
