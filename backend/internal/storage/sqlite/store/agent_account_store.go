@@ -83,33 +83,82 @@ func (s *Store) SetAgentAccountDefault(ctx context.Context, p domain.AgentAccoun
 
 // BindSessionAgentAccount records the account a session uses from at on.
 func (s *Store) BindSessionAgentAccount(ctx context.Context, id domain.SessionID, p domain.AgentAccountProvider, accountID string, at time.Time) error {
+	return s.bindSessionAgentAccount(ctx, id, domain.ResolvedAgentAccount{AccountID: accountID, Provider: p, Source: domain.AgentAccountSourceExplicit}, at, false)
+}
+
+// BindSessionAgentAccountWithSource preserves the initial resolution source and
+// makes repeated execution bindings idempotent. Changed choices are strictly
+// ordered even when the wall clock is frozen or moves backwards.
+func (s *Store) BindSessionAgentAccountWithSource(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time) error {
+	return s.bindSessionAgentAccount(ctx, id, selected, at, true)
+}
+
+// Historical receipts retain their source timestamps; live execution choices
+// must become the latest binding before any native probe or launch can run.
+func (s *Store) bindSessionAgentAccount(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time, live bool) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.inTx(ctx, fmt.Sprintf("bind session %s to %s account", id, p), func(q *gen.Queries) error {
-		binding := gen.GetSessionAgentAccountParams{SessionID: string(id), Provider: string(p)}
-		previous, previousErr := q.GetSessionAgentAccount(ctx, binding)
+	return s.inTx(ctx, "bind session account", func(q *gen.Queries) error {
+		previous, previousErr := q.GetSessionAgentAccountBinding(ctx, gen.GetSessionAgentAccountBindingParams{SessionID: string(id), Provider: string(selected.Provider)})
 		if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
 			return previousErr
 		}
-		if err := q.BindSessionAgentAccount(ctx, gen.BindSessionAgentAccountParams{
-			SessionID: string(id), Provider: string(p), AccountID: accountID, BoundAt: at.UTC(),
-		}); err != nil {
+		if previousErr == nil {
+			if previous.AccountID == selected.AccountID {
+				return nil
+			}
+			if at.Equal(previous.BoundAt) || live && at.Before(previous.BoundAt) {
+				at = previous.BoundAt.Add(time.Nanosecond)
+			}
+		}
+		if err := q.BindSessionAgentAccount(ctx, gen.BindSessionAgentAccountParams{SessionID: string(id), Provider: string(selected.Provider), AccountID: selected.AccountID, BoundAt: at.UTC(), ResolutionSource: string(selected.Source)}); err != nil {
 			return err
 		}
 		if errors.Is(previousErr, sql.ErrNoRows) {
 			return nil
 		}
-		current, err := q.GetSessionAgentAccount(ctx, binding)
+		current, err := q.GetSessionAgentAccount(ctx, gen.GetSessionAgentAccountParams{SessionID: string(id), Provider: string(selected.Provider)})
 		if err != nil {
 			return err
 		}
-		if current == previous {
+		if current == previous.AccountID {
 			return nil
 		}
-		return q.CancelSessionTurnAutoResume(ctx, gen.CancelSessionTurnAutoResumeParams{
-			SessionID: id, Provider: string(p),
-		})
+		return q.CancelSessionTurnAutoResume(ctx, gen.CancelSessionTurnAutoResumeParams{SessionID: id, Provider: string(selected.Provider)})
 	})
+}
+
+// GetSessionAgentAccountBinding returns the exact stored selection, not a new
+// interpretation of the installation's current defaults.
+func (s *Store) GetSessionAgentAccountBinding(ctx context.Context, id domain.SessionID, p domain.AgentAccountProvider) (domain.ResolvedAgentAccount, bool, error) {
+	row, err := s.qr.GetSessionAgentAccountBinding(ctx, gen.GetSessionAgentAccountBindingParams{SessionID: string(id), Provider: string(p)})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ResolvedAgentAccount{}, false, nil
+	}
+	if err != nil {
+		return domain.ResolvedAgentAccount{}, false, err
+	}
+	return domain.ResolvedAgentAccount{AccountID: row.AccountID, Provider: domain.AgentAccountProvider(row.Provider), Source: domain.AgentAccountResolutionSource(row.ResolutionSource)}, true, nil
+}
+
+// BindReviewerAgentAccount is immutable for the lifetime of this execution.
+// Independent review passes and restored processes all use the first binding.
+func (s *Store) BindReviewerAgentAccount(ctx context.Context, id string, selected domain.ResolvedAgentAccount, at time.Time) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.qw.BindReviewerAgentAccount(ctx, gen.BindReviewerAgentAccountParams{ReviewID: id, Provider: string(selected.Provider), AccountID: selected.AccountID, ResolutionSource: string(selected.Source), BoundAt: at.UTC()})
+}
+
+// GetReviewerAgentAccount reads an execution's immutable provider choice.
+func (s *Store) GetReviewerAgentAccount(ctx context.Context, id string, p domain.AgentAccountProvider) (domain.ResolvedAgentAccount, bool, error) {
+	row, err := s.qr.GetReviewerAgentAccount(ctx, gen.GetReviewerAgentAccountParams{ReviewID: id, Provider: string(p)})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ResolvedAgentAccount{}, false, nil
+	}
+	if err != nil {
+		return domain.ResolvedAgentAccount{}, false, err
+	}
+	return domain.ResolvedAgentAccount{AccountID: row.AccountID, Provider: domain.AgentAccountProvider(row.Provider), Source: domain.AgentAccountResolutionSource(row.ResolutionSource)}, true, nil
 }
 
 // GetSessionAgentAccount returns the account the session uses now for the provider.
@@ -139,4 +188,17 @@ func (s *Store) AgentAccountUsageSince(ctx context.Context, since time.Time) ([]
 		})
 	}
 	return out, nil
+}
+
+// GetOpenReviewerAccountUse includes pending launches whose binding exists but
+// whose terminal handle is not committed yet. Never delete their native home.
+func (s *Store) GetOpenReviewerAccountUse(ctx context.Context, id string) (*ports.AgentAccountReviewerInUseError, error) {
+	row, err := s.qr.GetOpenReviewerAccountUse(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ports.AgentAccountReviewerInUseError{ReviewID: row.ReviewID, SessionID: row.SessionID, Harness: row.Harness}, nil
 }

@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 const (
@@ -41,10 +43,11 @@ type Deps struct {
 
 // Service owns automation validation and scheduling behavior.
 type Service struct {
-	store   Store
-	spawner SessionSpawner
-	clock   func() time.Time
-	newID   func() string
+	accounts ports.AgentAccountResolver
+	store    Store
+	spawner  SessionSpawner
+	clock    func() time.Time
+	newID    func() string
 }
 
 // New constructs the daemon-owned automation service.
@@ -60,34 +63,36 @@ func New(deps Deps) *Service {
 
 // CreateInput is the validated user intent for one recurring definition.
 type CreateInput struct {
-	ProjectID   domain.ProjectID
-	DisplayName string
-	Prompt      string
-	Kind        domain.SessionKind
-	Harness     domain.AgentHarness
-	Model       string
-	Mode        string
-	Effort      string
-	RRule       string
-	Cron        string
-	Timezone    string
-	Enabled     *bool
+	AgentAccountID string
+	ProjectID      domain.ProjectID
+	DisplayName    string
+	Prompt         string
+	Kind           domain.SessionKind
+	Harness        domain.AgentHarness
+	Model          string
+	Mode           string
+	Effort         string
+	RRule          string
+	Cron           string
+	Timezone       string
+	Enabled        *bool
 }
 
 // UpdateInput distinguishes omitted fields from explicit false/empty values.
 // Supplying either schedule source replaces the schedule atomically.
 type UpdateInput struct {
-	DisplayName *string
-	Prompt      *string
-	Kind        *domain.SessionKind
-	Harness     *domain.AgentHarness
-	Model       *string
-	Mode        *string
-	Effort      *string
-	RRule       *string
-	Cron        *string
-	Timezone    *string
-	Enabled     *bool
+	AgentAccountID *string
+	DisplayName    *string
+	Prompt         *string
+	Kind           *domain.SessionKind
+	Harness        *domain.AgentHarness
+	Model          *string
+	Mode           *string
+	Effort         *string
+	RRule          *string
+	Cron           *string
+	Timezone       *string
+	Enabled        *bool
 }
 
 // Create validates, canonicalizes, and persists an automation definition.
@@ -128,21 +133,25 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.Automat
 		enabled = *input.Enabled
 	}
 	rec := domain.Automation{
-		ID:          domain.AutomationID("automation-" + s.newID()),
-		ProjectID:   input.ProjectID,
-		DisplayName: displayName,
-		Prompt:      prompt,
-		Kind:        input.Kind,
-		Harness:     input.Harness,
-		Model:       strings.TrimSpace(input.Model),
-		Mode:        strings.TrimSpace(input.Mode),
-		Effort:      strings.TrimSpace(input.Effort),
-		RRuleText:   schedule.RRuleText,
-		Timezone:    schedule.Timezone,
-		Enabled:     enabled,
-		NextRunAt:   schedule.NextRunAt,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		AgentAccountID: input.AgentAccountID,
+		ID:             domain.AutomationID("automation-" + s.newID()),
+		ProjectID:      input.ProjectID,
+		DisplayName:    displayName,
+		Prompt:         prompt,
+		Kind:           input.Kind,
+		Harness:        input.Harness,
+		Model:          strings.TrimSpace(input.Model),
+		Mode:           strings.TrimSpace(input.Mode),
+		Effort:         strings.TrimSpace(input.Effort),
+		RRuleText:      schedule.RRuleText,
+		Timezone:       schedule.Timezone,
+		Enabled:        enabled,
+		NextRunAt:      schedule.NextRunAt,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := s.validateAccount(ctx, rec); err != nil {
+		return domain.Automation{}, err
 	}
 	created, err := s.store.CreateAutomation(ctx, rec)
 	if err != nil {
@@ -205,6 +214,10 @@ func (s *Service) Update(ctx context.Context, id domain.AutomationID, input Upda
 	rec, err := s.Get(ctx, id)
 	if err != nil {
 		return domain.Automation{}, err
+	}
+	previous := rec
+	if input.AgentAccountID != nil {
+		rec.AgentAccountID = *input.AgentAccountID
 	}
 	if input.DisplayName != nil {
 		rec.DisplayName = strings.TrimSpace(*input.DisplayName)
@@ -278,6 +291,11 @@ func (s *Service) Update(ctx context.Context, id domain.AutomationID, input Upda
 		}
 	}
 	rec.UpdatedAt = now
+	if rec.AgentAccountID != previous.AgentAccountID || rec.Harness != previous.Harness || rec.Kind != previous.Kind || !previous.Enabled && rec.Enabled {
+		if err := s.validateAccount(ctx, rec); err != nil {
+			return domain.Automation{}, err
+		}
+	}
 	ok, err := s.store.UpdateAutomation(ctx, rec)
 	if err != nil {
 		return domain.Automation{}, apierr.Internal("AUTOMATION_UPDATE_FAILED", "Failed to update automation")
@@ -317,4 +335,45 @@ func (s *Service) Runs(ctx context.Context, filter domain.AutomationRunFilter) (
 		return domain.AutomationRunPage{}, apierr.Internal("AUTOMATION_RUN_LIST_FAILED", "Failed to list automation runs")
 	}
 	return page, nil
+}
+
+// SetAccountResolver is wired before scheduler/HTTP work can begin.
+func (s *Service) SetAccountResolver(accounts ports.AgentAccountResolver) { s.accounts = accounts }
+
+func (s *Service) validateAccount(ctx context.Context, definition domain.Automation) error {
+	if s.accounts == nil {
+		if definition.AgentAccountID != "" || ports.IsRemoteAccountRequest(ctx) {
+			return apierr.Unavailable("AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account resolution is unavailable.")
+		}
+		return nil
+	}
+	project, found, err := s.store.GetProject(ctx, string(definition.ProjectID))
+	if err != nil {
+		return apierr.Unavailable("AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account settings are unavailable.")
+	}
+	if !found {
+		return apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
+	}
+	harness := definition.Harness
+	if harness == "" {
+		harness = project.Config.Worker.Harness
+		if definition.Kind == domain.KindOrchestrator {
+			harness = project.Config.Orchestrator.Harness
+		}
+	}
+	_, err = s.accounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: harness, Role: domain.AgentAccountRole(definition.Kind), ProjectConfig: project.Config, AccountID: definition.AgentAccountID})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ports.ErrAgentAccountLocalOnly):
+		return apierr.Forbidden("AGENT_ACCOUNT_LOCAL_ONLY", "Local accounts can only be selected from this computer.")
+	case errors.Is(err, ports.ErrAgentAccountProviderMismatch):
+		return apierr.Invalid("AGENT_ACCOUNT_PROVIDER_MISMATCH", "The account is for a different agent.", nil)
+	case errors.Is(err, ports.ErrAgentAccountUnknown):
+		return apierr.NotFound("AGENT_ACCOUNT_NOT_FOUND", "Unknown agent account")
+	case errors.Is(err, ports.ErrAgentAccountSignedOut):
+		return apierr.Conflict("AGENT_ACCOUNT_SIGNED_OUT", "Sign in to this account again.", nil)
+	default:
+		return apierr.Unavailable("AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account settings are unavailable.")
+	}
 }

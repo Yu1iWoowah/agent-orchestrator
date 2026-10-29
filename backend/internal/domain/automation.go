@@ -27,22 +27,23 @@ const (
 // Automation is the durable user-authored recurring definition. RRuleText is
 // canonical; Timezone preserves the wall-clock intent used to advance it.
 type Automation struct {
-	ID          AutomationID `json:"id"`
-	ProjectID   ProjectID    `json:"projectId"`
-	DisplayName string       `json:"displayName"`
-	Prompt      string       `json:"prompt"`
-	Kind        SessionKind  `json:"kind"`
-	Harness     AgentHarness `json:"harness,omitempty"`
-	Model       string       `json:"model,omitempty"`
-	Mode        string       `json:"mode,omitempty"`
-	Effort      string       `json:"effort,omitempty"`
-	RRuleText   string       `json:"rrule"`
-	Timezone    string       `json:"timezone"`
-	Enabled     bool         `json:"enabled"`
-	NextRunAt   time.Time    `json:"nextRunAt"`
-	LastRunAt   *time.Time   `json:"lastRunAt,omitempty"`
-	CreatedAt   time.Time    `json:"createdAt"`
-	UpdatedAt   time.Time    `json:"updatedAt"`
+	AgentAccountID string       `json:"agentAccountId,omitempty"`
+	ID             AutomationID `json:"id"`
+	ProjectID      ProjectID    `json:"projectId"`
+	DisplayName    string       `json:"displayName"`
+	Prompt         string       `json:"prompt"`
+	Kind           SessionKind  `json:"kind"`
+	Harness        AgentHarness `json:"harness,omitempty"`
+	Model          string       `json:"model,omitempty"`
+	Mode           string       `json:"mode,omitempty"`
+	Effort         string       `json:"effort,omitempty"`
+	RRuleText      string       `json:"rrule"`
+	Timezone       string       `json:"timezone"`
+	Enabled        bool         `json:"enabled"`
+	NextRunAt      time.Time    `json:"nextRunAt"`
+	LastRunAt      *time.Time   `json:"lastRunAt,omitempty"`
+	CreatedAt      time.Time    `json:"createdAt"`
+	UpdatedAt      time.Time    `json:"updatedAt"`
 	// LatestRun is populated by list/get service reads for API projection. It is
 	// derived from automation_runs and never persisted on the definition row.
 	LatestRun *AutomationRun `json:"-"`

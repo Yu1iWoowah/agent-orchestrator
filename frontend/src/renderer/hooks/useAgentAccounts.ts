@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
 import { appI18n } from "../i18n";
-import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage } from "../lib/api-client";
 import type { AgentReadinessSnapshot } from "./useAgentReadinessQuery";
 import { sessionInterfaceTransitionQueryKey } from "./useSessionInterfaceTransition";
 
@@ -32,8 +32,13 @@ export function followsSavedAccount(agent: AgentReadinessSnapshot | undefined): 
 export function agentAccountErrorMessage(error: unknown, accountEmail?: string): string {
 	const code = typeof error === "string" ? error : apiErrorCode(error);
 	switch (code) {
-		case "AGENT_ACCOUNT_IN_USE":
+		case "AGENT_ACCOUNT_IN_USE": {
+			const reviewId = apiErrorDetails(error)?.reviewId;
+			if (typeof reviewId === "string" && reviewId !== "") {
+				return appI18n.t("settings.agentAccounts.cleanupScheduledReviewer", { reviewId });
+			}
 			return appI18n.t("settings.agentAccounts.cleanupScheduled");
+		}
 		case "account_identity_mismatch":
 			return accountEmail
 				? appI18n.t("settings.agentAccounts.loginMismatch", { email: accountEmail })
@@ -131,6 +136,7 @@ export function useAgentAccountActions() {
 		cancelLogin: async (operationId: string) => {
 			const { error } = await apiClient.POST("/api/v1/agents/accounts/login/{operationId}/cancel", { params: { path: { operationId } } });
 			if (error) throw new Error(agentAccountErrorMessage(error));
+			return unwrap(await apiClient.GET("/api/v1/agents/accounts/operations/{operationId}", { params: { path: { operationId } } }));
 		},
 		makeDefault: async (accountId: string) =>
 			setAccounts(unwrap(await apiClient.POST("/api/v1/agents/accounts/{accountId}/default", { params: { path: { accountId } } })).accounts),

@@ -338,3 +338,18 @@ func btoi(value bool) int {
 	}
 	return 0
 }
+
+func (f *fakeAgentCatalog) AccountContext(ctx context.Context, h domain.AgentHarness, _ string, _ domain.AgentAccountRole, id string) (context.Context, error) {
+	if id == "" {
+		return ctx, nil
+	}
+	p, _ := domain.AgentAccountProviderFor(h)
+	return ports.WithAgentAccount(ctx, domain.ResolvedAgentAccount{AccountID: id, Provider: p, Source: domain.AgentAccountSourceExplicit}), nil
+}
+func (f *fakeAgentCatalog) EnsureAgentReadiness(ctx context.Context, id string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
+	result, err := f.EnsureReadiness(ctx, []string{id}, purpose)
+	if err != nil || len(result.Agents) == 0 {
+		return domain.AgentReadinessSnapshot{}, err
+	}
+	return result.Agents[0], nil
+}

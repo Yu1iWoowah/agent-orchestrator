@@ -172,3 +172,11 @@ func TestAccountValidationOnlyBlocksItsProvider(t *testing.T) {
 		}
 	}
 }
+
+func (s *providerAccountStore) BindSessionAgentAccountWithSource(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time) error {
+	return s.BindSessionAgentAccount(ctx, id, selected.Provider, selected.AccountID, at)
+}
+func (s *providerAccountStore) GetSessionAgentAccountBinding(ctx context.Context, id domain.SessionID, p domain.AgentAccountProvider) (domain.ResolvedAgentAccount, bool, error) {
+	idValue, found, err := s.GetSessionAgentAccount(ctx, id, p)
+	return domain.ResolvedAgentAccount{AccountID: idValue, Provider: p, Source: domain.AgentAccountSourceLegacy}, found, err
+}

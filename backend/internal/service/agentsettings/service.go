@@ -83,8 +83,7 @@ func (s *Service) SetCatalogFingerprintSource(source CatalogFingerprintSource) {
 	s.catalogInputs = source
 }
 
-// Read only consumes saved facts. A managed-account catalog is deliberately
-// unknown until U3 supplies an account-scoped catalog contract.
+// Read consumes saved facts qualified by the execution account.
 func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, error) {
 	result, err := s.readCapabilities(ctx, id)
 	if err != nil {
@@ -108,21 +107,21 @@ func (s *Service) readCapabilities(ctx context.Context, id domain.SessionID) (Sn
 		result.Capabilities.Reason = "harness_unknown"
 		return result, nil
 	}
-	if provider, ok := domain.AgentAccountProviderFor(settings.Harness); ok {
+	if _, ok := domain.AgentAccountProviderFor(settings.Harness); ok {
 		if settings.AccountID == "" {
 			result.Capabilities.Reason = "account_unbound"
 			return result, nil
 		}
-		if settings.AccountID != domain.DeviceAgentAccountID(provider) {
-			result.Capabilities.Reason = "account_catalog_unavailable"
-			return result, nil
-		}
+
 	}
-	cached, found, err := s.store.GetAgentModelCatalog(ctx, string(settings.Harness), "")
+	cached, found, err := s.store.GetAgentModelCatalog(ctx, string(settings.Harness), ports.AccountModelCatalogScope(settings.AccountID))
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if !found {
+		if ports.AccountModelCatalogScope(settings.AccountID) != "" {
+			result.Capabilities.Reason = "account_catalog_unavailable"
+		}
 		return result, nil
 	}
 	result.catalogFingerprint = cached.InputFingerprint
@@ -140,7 +139,7 @@ func (s *Service) readCapabilities(ctx context.Context, id domain.SessionID) (Sn
 	if !observed.IsZero() {
 		result.Capabilities.ObservedAt = &observed
 	}
-	if cached.AgentID != string(settings.Harness) || catalog.AgentID != string(settings.Harness) || cached.ProjectID != "" {
+	if cached.AgentID != string(settings.Harness) || catalog.AgentID != string(settings.Harness) || cached.ProjectID != ports.AccountModelCatalogScope(settings.AccountID) {
 		result.Capabilities.Reason = "catalog_scope_mismatch"
 		return result, nil
 	}

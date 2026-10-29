@@ -38,6 +38,8 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 	const actions = useAgentAccountActions();
 	const [logins, setLogins] = useState(() => pendingLogins);
 	const [loginNote, setLoginNote] = useState("");
+	const [loginSaved, setLoginSaved] = useState(false);
+	const closedOperation = useRef("");
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState("");
 	const [removing, setRemoving] = useState<AgentAccount | null>(null);
@@ -63,6 +65,8 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 	};
 	// accountId signs that saved account in again, in its own folder.
 	const startLogin = (accountId?: string) => run(`login:${provider}`, async () => {
+		closedOperation.current = "";
+		setLoginSaved(false);
 		if (login) await actions.cancelLogin(login.operationId).catch(() => undefined);
 		setLogin(undefined);
 		setLoginNote("");
@@ -87,8 +91,14 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 		}
 	});
 	const closeLogin = (current: AgentAccountLogin) => {
+		closedOperation.current = current.operationId;
 		setLogin(undefined);
-		void actions.cancelLogin(current.operationId).catch(() => undefined);
+		setLoginSaved(false);
+		void actions.cancelLogin(current.operationId).then((operation) => {
+			if (closedOperation.current === current.operationId && operation.phase === "complete" && operation.outcome === "complete") {
+				setLoginSaved(true);
+			}
+		}).catch(() => undefined);
 	};
 
 	return <>
@@ -100,6 +110,7 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 			</div>}
 		>
 			{error ? <p role="alert" className="px-3 py-2.5 text-xs text-error">{error}</p> : null}
+			{loginSaved && !login ? <p role="status" className="px-3 py-2.5 text-xs text-muted-foreground">{t("settings.agentAccounts.loginAlreadySaved")}</p> : null}
 			{login ? <div className="px-3 py-2.5"><LoginTerminal login={login} note={loginNote} pending={busy === `verify:${provider}`} onCheck={checkLogin} onClose={closeLogin} /></div> : null}
 			{accounts.isLoading ? <p className="px-3 py-2.5 text-xs text-muted-foreground">{t("settings.agentAccounts.loading")}</p> : null}
 			{rows.map((account) => <AccountRow

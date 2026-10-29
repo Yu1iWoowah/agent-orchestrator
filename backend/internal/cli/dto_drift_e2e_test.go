@@ -321,3 +321,17 @@ func (f *fakeProjectManager) SetPermissions(_ context.Context, id domain.Project
 func (f *fakeProjectManager) ForgetPermissions(_ context.Context, id domain.ProjectID) (projectsvc.Project, error) {
 	return projectsvc.Project{ID: id, Config: &domain.ProjectConfig{}}, nil
 }
+
+func (f *fakeAgentCatalog) AccountContext(ctx context.Context, _ domain.AgentHarness, _ string, _ domain.AgentAccountRole, id string) (context.Context, error) {
+	if ports.IsRemoteAccountRequest(ctx) && id != "" {
+		return ctx, ports.ErrAgentAccountLocalOnly
+	}
+	return ctx, nil
+}
+func (f *fakeAgentCatalog) EnsureAgentReadiness(ctx context.Context, id string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
+	result, err := f.EnsureReadiness(ctx, []string{id}, purpose)
+	if err != nil || len(result.Agents) == 0 {
+		return domain.AgentReadinessSnapshot{}, err
+	}
+	return result.Agents[0], nil
+}

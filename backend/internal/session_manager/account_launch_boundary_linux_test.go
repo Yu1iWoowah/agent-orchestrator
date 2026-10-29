@@ -117,3 +117,19 @@ func TestAccountFailureRefusesSpawnAndRestore(t *testing.T) {
 		}
 	}
 }
+
+func (a *expireAccountAfterBind) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
+	if err := a.Service.BindResolvedSession(ctx, id, harness, selected); err != nil {
+		return err
+	}
+	a.expire()
+	return nil
+}
+
+func (s *launchBoundaryStore) BindSessionAgentAccountWithSource(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time) error {
+	return s.BindSessionAgentAccount(ctx, id, selected.Provider, selected.AccountID, at)
+}
+func (s *launchBoundaryStore) GetSessionAgentAccountBinding(ctx context.Context, id domain.SessionID, p domain.AgentAccountProvider) (domain.ResolvedAgentAccount, bool, error) {
+	idValue, found, err := s.GetSessionAgentAccount(ctx, id, p)
+	return domain.ResolvedAgentAccount{AccountID: idValue, Provider: p, Source: domain.AgentAccountSourceLegacy}, found, err
+}

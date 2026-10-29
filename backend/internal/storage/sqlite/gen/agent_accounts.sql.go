@@ -85,17 +85,42 @@ func (q *Queries) AgentAccountUsageSince(ctx context.Context, since sql.NullTime
 	return items, nil
 }
 
+const bindReviewerAgentAccount = `-- name: BindReviewerAgentAccount :exec
+INSERT INTO reviewer_agent_accounts(review_id,provider,account_id,resolution_source,bound_at)
+VALUES (?,?,?,?,?) ON CONFLICT(review_id,provider) DO NOTHING
+`
+
+type BindReviewerAgentAccountParams struct {
+	ReviewID         string
+	Provider         string
+	AccountID        string
+	ResolutionSource string
+	BoundAt          time.Time
+}
+
+func (q *Queries) BindReviewerAgentAccount(ctx context.Context, arg BindReviewerAgentAccountParams) error {
+	_, err := q.db.ExecContext(ctx, bindReviewerAgentAccount,
+		arg.ReviewID,
+		arg.Provider,
+		arg.AccountID,
+		arg.ResolutionSource,
+		arg.BoundAt,
+	)
+	return err
+}
+
 const bindSessionAgentAccount = `-- name: BindSessionAgentAccount :exec
-INSERT INTO session_agent_accounts (session_id, provider, account_id, bound_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (session_id, provider, bound_at) DO UPDATE SET account_id = excluded.account_id
+INSERT INTO session_agent_accounts (session_id, provider, account_id, bound_at, resolution_source)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (session_id, provider, bound_at) DO UPDATE SET account_id = excluded.account_id, resolution_source = excluded.resolution_source
 `
 
 type BindSessionAgentAccountParams struct {
-	SessionID string
-	Provider  string
-	AccountID string
-	BoundAt   time.Time
+	SessionID        string
+	Provider         string
+	AccountID        string
+	BoundAt          time.Time
+	ResolutionSource string
 }
 
 func (q *Queries) BindSessionAgentAccount(ctx context.Context, arg BindSessionAgentAccountParams) error {
@@ -104,6 +129,7 @@ func (q *Queries) BindSessionAgentAccount(ctx context.Context, arg BindSessionAg
 		arg.Provider,
 		arg.AccountID,
 		arg.BoundAt,
+		arg.ResolutionSource,
 	)
 	return err
 }
@@ -278,6 +304,48 @@ func (q *Queries) GetAgentAccountOperation(ctx context.Context, id string) (Agen
 	return i, err
 }
 
+const getOpenReviewerAccountUse = `-- name: GetOpenReviewerAccountUse :one
+SELECT r.id AS review_id,r.session_id,r.harness
+FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
+WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
+ORDER BY r.created_at,r.id,a.provider LIMIT 1
+`
+
+type GetOpenReviewerAccountUseRow struct {
+	ReviewID  string
+	SessionID domain.SessionID
+	Harness   domain.ReviewerHarness
+}
+
+func (q *Queries) GetOpenReviewerAccountUse(ctx context.Context, accountID string) (GetOpenReviewerAccountUseRow, error) {
+	row := q.db.QueryRowContext(ctx, getOpenReviewerAccountUse, accountID)
+	var i GetOpenReviewerAccountUseRow
+	err := row.Scan(&i.ReviewID, &i.SessionID, &i.Harness)
+	return i, err
+}
+
+const getReviewerAgentAccount = `-- name: GetReviewerAgentAccount :one
+SELECT account_id,provider,resolution_source FROM reviewer_agent_accounts WHERE review_id=? AND provider=?
+`
+
+type GetReviewerAgentAccountParams struct {
+	ReviewID string
+	Provider string
+}
+
+type GetReviewerAgentAccountRow struct {
+	AccountID        string
+	Provider         string
+	ResolutionSource string
+}
+
+func (q *Queries) GetReviewerAgentAccount(ctx context.Context, arg GetReviewerAgentAccountParams) (GetReviewerAgentAccountRow, error) {
+	row := q.db.QueryRowContext(ctx, getReviewerAgentAccount, arg.ReviewID, arg.Provider)
+	var i GetReviewerAgentAccountRow
+	err := row.Scan(&i.AccountID, &i.Provider, &i.ResolutionSource)
+	return i, err
+}
+
 const getSessionAgentAccount = `-- name: GetSessionAgentAccount :one
 SELECT account_id FROM session_agent_accounts
 WHERE session_id = ? AND provider = ?
@@ -295,6 +363,35 @@ func (q *Queries) GetSessionAgentAccount(ctx context.Context, arg GetSessionAgen
 	var account_id string
 	err := row.Scan(&account_id)
 	return account_id, err
+}
+
+const getSessionAgentAccountBinding = `-- name: GetSessionAgentAccountBinding :one
+SELECT account_id,provider,resolution_source,bound_at FROM session_agent_accounts
+WHERE session_id=? AND provider=? ORDER BY bound_at DESC LIMIT 1
+`
+
+type GetSessionAgentAccountBindingParams struct {
+	SessionID string
+	Provider  string
+}
+
+type GetSessionAgentAccountBindingRow struct {
+	AccountID        string
+	Provider         string
+	ResolutionSource string
+	BoundAt          time.Time
+}
+
+func (q *Queries) GetSessionAgentAccountBinding(ctx context.Context, arg GetSessionAgentAccountBindingParams) (GetSessionAgentAccountBindingRow, error) {
+	row := q.db.QueryRowContext(ctx, getSessionAgentAccountBinding, arg.SessionID, arg.Provider)
+	var i GetSessionAgentAccountBindingRow
+	err := row.Scan(
+		&i.AccountID,
+		&i.Provider,
+		&i.ResolutionSource,
+		&i.BoundAt,
+	)
+	return i, err
 }
 
 const listAgentAccountOperations = `-- name: ListAgentAccountOperations :many

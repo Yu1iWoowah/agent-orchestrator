@@ -568,3 +568,17 @@ func TestLANListenerServesCodexModelRoutesFromRealRouter(t *testing.T) {
 		}
 	}
 }
+
+func (f *lanFakeAgentCatalog) AccountContext(ctx context.Context, _ domain.AgentHarness, _ string, _ domain.AgentAccountRole, id string) (context.Context, error) {
+	if ports.IsRemoteAccountRequest(ctx) && id != "" {
+		return ctx, ports.ErrAgentAccountLocalOnly
+	}
+	return ctx, nil
+}
+func (f *lanFakeAgentCatalog) EnsureAgentReadiness(ctx context.Context, id string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
+	result, err := f.EnsureReadiness(ctx, []string{id}, purpose)
+	if err != nil || len(result.Agents) == 0 {
+		return domain.AgentReadinessSnapshot{}, err
+	}
+	return result.Agents[0], nil
+}

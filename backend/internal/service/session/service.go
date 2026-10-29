@@ -209,6 +209,7 @@ type Service struct {
 	logger              *slog.Logger
 	backgroundContext   context.Context
 	agentReadiness      ports.AgentReadinessProvider
+	accountResolver     ports.AgentAccountResolver
 	runBackground       func(func())
 	orchestratorLocksMu sync.Mutex
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
@@ -256,8 +257,12 @@ type Service struct {
 	runsOnComputerLogin func(context.Context, domain.AgentHarness, string) bool
 }
 
-// SetComputerLoginCheck late-binds the account check the launch gate needs: the
-// computer's login state matters only to a session that will run on it.
+// SetAccountResolver wires the shared daemon resolver before serving requests.
+func (s *Service) SetAccountResolver(resolver ports.AgentAccountResolver) {
+	s.accountResolver = resolver
+}
+
+// SetComputerLoginCheck selects the legacy device-readiness boundary.
 func (s *Service) SetComputerLoginCheck(check func(ctx context.Context, harness domain.AgentHarness, accountID string) bool) {
 	s.runsOnComputerLogin = check
 }
@@ -368,7 +373,11 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 					nil,
 				)
 			}
-			return newestSession(existing), 0, 0, nil
+			chosen := newestSession(existing)
+			if err := s.checkExistingAccount(ctx, chosen, cfg.AgentAccountID); err != nil {
+				return domain.Session{}, 0, 0, toSpawnAPIError(err)
+			}
+			return chosen, 0, 0, nil
 		}
 	}
 	return s.spawn(ctx, cfg)
@@ -390,7 +399,30 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
 		}
 	}
-	if s.agentReadiness != nil && cfg.Harness != "" {
+	accountPreflight := false
+	if s.accountResolver != nil {
+		if cfg.Harness == "" {
+			cfg.Harness = project.Config.Worker.Harness
+			if cfg.Kind == domain.KindOrchestrator {
+				cfg.Harness = project.Config.Orchestrator.Harness
+			}
+		}
+		if cfg.Harness == "" {
+			return domain.Session{}, 0, 0, toSpawnAPIError(sessionmanager.ErrMissingHarness)
+		}
+		if cfg.ResolvedAccount == nil {
+			selected, err := s.accountResolver.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: cfg.Harness, Role: domain.AgentAccountRole(cfg.Kind), ProjectConfig: project.Config, AccountID: cfg.AgentAccountID})
+			if err != nil {
+				return domain.Session{}, 0, 0, toSpawnAPIError(err)
+			}
+			cfg.ResolvedAccount = &selected
+		}
+		selected := *cfg.ResolvedAccount
+		cfg.AgentAccountID = selected.AccountID
+		ctx = ports.WithAgentAccount(ctx, selected)
+		accountPreflight = selected.Managed()
+	}
+	if !accountPreflight && s.agentReadiness != nil && cfg.Harness != "" {
 		readiness, err := s.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch)
 		if err != nil {
 			return domain.Session{}, 0, 0, err
@@ -665,7 +697,12 @@ func (s *Service) SpawnOrchestrator(
 	clean bool,
 	requestedMode domain.SessionMode,
 	approval domain.PermissionMode,
+	accountID ...string,
 ) (domain.Session, error) {
+	selectedAccount := ""
+	if len(accountID) > 0 {
+		selectedAccount = accountID[0]
+	}
 	project, err := s.requireProject(ctx, projectID)
 	if err != nil {
 		return domain.Session{}, err
@@ -685,6 +722,17 @@ func (s *Service) SpawnOrchestrator(
 	unlock := s.lockOrchestratorProject(projectID)
 	defer unlock()
 
+	var resolved *domain.ResolvedAgentAccount
+	if clean && s.accountResolver != nil {
+		if project.Config.Orchestrator.Harness == "" {
+			return domain.Session{}, toSpawnAPIError(sessionmanager.ErrMissingHarness)
+		}
+		selected, err := s.accountResolver.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: project.Config.Orchestrator.Harness, Role: domain.AgentAccountRoleOrchestrator, ProjectConfig: project.Config, AccountID: selectedAccount})
+		if err != nil {
+			return domain.Session{}, toSpawnAPIError(err)
+		}
+		resolved = &selected
+	}
 	mode := requestedMode
 	if clean {
 		existing, err := s.activeOrchestrators(ctx, projectID)
@@ -718,14 +766,20 @@ func (s *Service) SpawnOrchestrator(
 			return domain.Session{}, err
 		}
 		if len(existing) > 0 {
-			return newestSession(existing), nil
+			chosen := newestSession(existing)
+			if err := s.checkExistingAccount(ctx, chosen, selectedAccount); err != nil {
+				return domain.Session{}, toSpawnAPIError(err)
+			}
+			return chosen, nil
 		}
 	}
 	sess, _, _, err := s.spawn(ctx, ports.SpawnConfig{
-		ProjectID:     projectID,
-		Kind:          domain.KindOrchestrator,
-		Async:         true,
-		RequestedMode: mode,
+		AgentAccountID:  selectedAccount,
+		ResolvedAccount: resolved,
+		ProjectID:       projectID,
+		Kind:            domain.KindOrchestrator,
+		Async:           true,
+		RequestedMode:   mode,
 		AgentConfig: ports.AgentConfig{
 			Permissions: approval,
 		},
@@ -1577,6 +1631,8 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("PR_NOT_OPEN", "PR is not open", nil)
 	case errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied):
 		return apierr.Conflict("AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED", ports.AgentAccountUnavailableHomeOccupiedMessage, map[string]any{"reasonCode": "account_unavailable_home_occupied", "retryable": true})
+	case errors.Is(err, ports.ErrAgentAccountLocalOnly):
+		return apierr.Forbidden("AGENT_ACCOUNT_LOCAL_ONLY", "Local accounts can only be selected from this computer.")
 	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
 		return apierr.Conflict("AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
@@ -1903,4 +1959,36 @@ func (s *Service) harnessSignals(h domain.AgentHarness) bool {
 		return false
 	}
 	return s.signalCapable(h)
+}
+
+// Reusing an existing execution keeps its binding even after defaults change.
+// An explicit different choice requires a new execution, not a silent no-op.
+func (s *Service) checkExistingAccount(ctx context.Context, existing domain.Session, explicit string) error {
+	if explicit == "" && !ports.IsRemoteAccountRequest(ctx) {
+		return nil
+	}
+	provider, ok := domain.AgentAccountProviderFor(existing.Harness)
+	if !ok {
+		if explicit != "" {
+			return ports.ErrAgentAccountProviderMismatch
+		}
+		return nil
+	}
+	store, ok := s.store.(interface {
+		GetSessionAgentAccount(context.Context, domain.SessionID, domain.AgentAccountProvider) (string, bool, error)
+	})
+	if !ok {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	id, found, err := store.GetSessionAgentAccount(ctx, existing.ID, provider)
+	if err != nil {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	if ports.IsRemoteAccountRequest(ctx) && (explicit != "" || found && id != domain.DeviceAgentAccountID(provider)) {
+		return ports.ErrAgentAccountLocalOnly
+	}
+	if explicit != "" && (!found || id != explicit) {
+		return ports.ErrAgentAccountChanged
+	}
+	return nil
 }

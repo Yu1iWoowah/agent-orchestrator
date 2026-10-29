@@ -207,7 +207,7 @@ func TestUnavailableRecoveryRejectsLinkedOrNonprivateRoot(t *testing.T) {
 			} else if err := os.Chmod(actualRoot, 0755); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := recoverUnavailableNamespace(root); !errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied) {
+			if _, err := recoverUnavailableNamespace(root); !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) {
 				t.Fatalf("unsafe root accepted: %v", err)
 			}
 			if _, err := os.Stat(reserved); err != nil {

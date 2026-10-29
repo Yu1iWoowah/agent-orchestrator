@@ -1113,11 +1113,11 @@ describe("ProjectSettingsForm", () => {
 
 		renderSettings("proj-1", undefined, "agents");
 
-		expect(await screen.findAllByText("model refresh unavailable")).toHaveLength(3);
+		await waitFor(() => expect(screen.getAllByText("model refresh unavailable")).toHaveLength(3));
 		expect(screen.getByRole("button", { name: "Worker model" })).toHaveTextContent("Select model");
 	});
 
-	it("shows cached models immediately and deduplicates background revalidation", async () => {
+	it("keeps cached models visible while revalidating each account role independently", async () => {
 		const cachedCatalog = {
 			agentId: "codex",
 			selectionMode: "catalog" as const,
@@ -1159,14 +1159,13 @@ describe("ProjectSettingsForm", () => {
 		renderSettings("proj-1", undefined, "agents");
 
 		expect(await screen.findByRole("button", { name: "Worker model" })).toHaveTextContent("Select model");
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(postMock).toHaveBeenCalledWith("/api/v1/agents/{agent}/models/refresh", {
-			params: {
-				path: { agent: "codex" },
-				query: { projectId: undefined, revalidate: true },
-			},
-		});
-	});
+        await waitFor(() => expect(postMock).toHaveBeenCalledTimes(3));
+        for (const role of ["worker", "orchestrator", "reviewer"]) {
+            expect(postMock).toHaveBeenCalledWith("/api/v1/agents/{agent}/models/refresh", {
+                params: { path: {agent:"codex"}, query: { projectId:"proj-1", role, agentAccountId:undefined, revalidate:true } },
+            });
+        }
+    });
 
 	it("shows the daemon validation message when the atomic settings save fails", async () => {
 		mockProject({
@@ -2147,6 +2146,41 @@ describe("ProjectSettingsForm", () => {
 				requestId: "request-42",
 			}),
 			"proj-1",
+		);
+	});
+	it("preserves opaque account references when saving an unrelated model setting", async () => {
+		mockProject({
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/fake/repo",
+			repo: "",
+			defaultBranch: "main",
+			config: {
+				agentAccounts: { codex: "project-A" },
+				worker: { agent: "codex", agentAccountId: "worker-A" },
+				orchestrator: { agent: "claude-code", agentAccountId: "orchestrator-B" },
+				reviewers: [{ harness: "codex", agentAccountId: "reviewer-C" }],
+			},
+		});
+		renderSettings("proj-1", undefined, "agents");
+		await screen.findByRole("button", { name: "Worker model" });
+		await chooseCustomModel("Worker model", "custom-native");
+		submitSettings();
+		await waitFor(() =>
+			expect(putMock).toHaveBeenCalledWith(
+				"/api/v1/projects/{id}",
+				expect.objectContaining({
+					body: expect.objectContaining({
+						config: expect.objectContaining({
+							agentAccounts: { codex: "project-A" },
+							worker: expect.objectContaining({ agentAccountId: "worker-A" }),
+							orchestrator: expect.objectContaining({ agentAccountId: "orchestrator-B" }),
+							reviewers: [expect.objectContaining({ harness: "codex", agentAccountId: "reviewer-C" })],
+						}),
+					}),
+				}),
+			),
 		);
 	});
 });

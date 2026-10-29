@@ -58,11 +58,12 @@ const (
 
 // ReviewerSurface gives clients one stable identifier for either reviewer UI.
 type ReviewerSurface struct {
-	Mode            ReviewerInterfaceMode `json:"mode"`
-	ReviewID        string                `json:"reviewId"`
-	Harness         ReviewerHarness       `json:"harness"`
-	HandleID        string                `json:"handleId,omitempty"`
-	ControllerError string                `json:"controllerError,omitempty"`
+	AccountBinding  *AgentAccountBindingView `json:"accountBinding,omitempty"`
+	Mode            ReviewerInterfaceMode    `json:"mode"`
+	ReviewID        string                   `json:"reviewId"`
+	Harness         ReviewerHarness          `json:"harness"`
+	HandleID        string                   `json:"handleId,omitempty"`
+	ControllerError string                   `json:"controllerError,omitempty"`
 }
 
 // ReviewRun is one review pass against a worker's PR.

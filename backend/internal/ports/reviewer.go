@@ -107,6 +107,8 @@ type ReviewInvocation struct {
 	ReviewIndex int
 	// Config carries the reviewer's resolved agent configuration override.
 	Config domain.AgentConfig
+	// Env is the pinned reviewer credential context, never the worker account.
+	Env map[string]string
 	// WorkspacePath is the worker's checkout the reviewer reads.
 	WorkspacePath string
 	// DataDir is AO's owned state root. Reviewer prelaunch hooks may use it for
