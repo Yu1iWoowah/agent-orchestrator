@@ -3,7 +3,7 @@ import { conversationFrameSafeRect, type FrameRect } from "../lib/conversation-f
 
 export function useConversationFrameSafeRect(
 	surfaceRef: RefObject<HTMLElement | null>,
-	composerRef: RefObject<HTMLElement | null>,
+	composerRef?: RefObject<HTMLElement | null>,
 ) {
 	const [bounds, setBounds] = useState<{
 		surface: HTMLElement;
@@ -11,8 +11,8 @@ export function useConversationFrameSafeRect(
 	}>();
 	useEffect(() => {
 		const surface = surfaceRef.current;
-		const composer = composerRef.current;
-		if (!surface || !composer) return;
+		const composer = composerRef?.current;
+		if (!surface || (composerRef && !composer)) return;
 		let frame: number | undefined;
 		const measure = () => {
 			const viewport = surface.querySelector<HTMLElement>(".chat-scroll-viewport");
@@ -27,7 +27,7 @@ export function useConversationFrameSafeRect(
 					width: box.width,
 					height: box.bottom - headerBottom,
 				},
-				composer: composer.getBoundingClientRect(),
+				composer: composer?.getBoundingClientRect() ?? { left: box.left, top: box.bottom, width: box.width, height: 0 },
 				visible: {
 					left: window.visualViewport?.offsetLeft ?? 0,
 					top: window.visualViewport?.offsetTop ?? 0,
@@ -57,7 +57,7 @@ export function useConversationFrameSafeRect(
 		};
 		const observer = new ResizeObserver(schedule);
 		observer.observe(surface);
-		observer.observe(composer);
+		if (composer) observer.observe(composer);
 		const viewport = surface.querySelector<HTMLElement>(".chat-scroll-viewport");
 		if (viewport) observer.observe(viewport);
 		const mutations = new MutationObserver(schedule);
@@ -65,7 +65,7 @@ export function useConversationFrameSafeRect(
 			mutations.observe(viewport, { childList: true, subtree: true });
 			viewport.addEventListener("scroll", schedule, { passive: true });
 		}
-		mutations.observe(composer, {
+		if (composer) mutations.observe(composer, {
 			childList: true,
 			subtree: true,
 			attributes: true,

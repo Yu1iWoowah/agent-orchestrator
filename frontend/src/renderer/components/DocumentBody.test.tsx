@@ -33,6 +33,23 @@ beforeEach(() => {
 	mocks.resolve.mockReset();
 });
 describe("DocumentBody", () => {
+	it.each(["missing.png", "https://blocked.invalid/image.png"])("does not label %s as a resource limit because another image failed", async (reference) => {
+		mocks.resolve.mockImplementation(async (_connection, target) => {
+			if (target.path.endsWith("large.png")) return { ...visit.document, target, size: 11 * 1024 * 1024 };
+			throw new Error("missing");
+		});
+		mocks.read.mockResolvedValue(new TextEncoder().encode(`![Large screenshot](large.png)\n\n![Problem image](${reference})`).buffer);
+		const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const tree = <QueryClientProvider client={cache}><DocumentBody readerKey="chat" connection={connection} visit={visit} /></QueryClientProvider>;
+		const view = render(tree);
+		await screen.findByText(/Resource exceeds the 10 MiB per-file limit/);
+		view.rerender(<QueryClientProvider client={cache}><DocumentBody readerKey="chat" connection={connection} visit={{ ...visit, epoch: 2 }} /></QueryClientProvider>);
+		await waitFor(() => expect(screen.getByText(/^Problem image/)).not.toHaveTextContent("Resource limit"));
+		expect(screen.getByText(/Resource exceeds the 10 MiB per-file limit/)).toBeVisible();
+		view.unmount();
+		cache.clear();
+	});
+
 	it("explains one oversized Markdown image and still displays the next small image", async () => {
 		const png = new Uint8Array(24);
 		png.set([137, 80, 78, 71, 13, 10, 26, 10]);

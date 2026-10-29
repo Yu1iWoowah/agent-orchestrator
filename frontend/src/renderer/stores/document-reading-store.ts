@@ -40,11 +40,10 @@ export interface DocumentSession {
 	foreground: boolean;
 	opening: DocumentOpening | null;
 }
-export interface DocumentReaderContext {
+export type DocumentReaderContext = {
 	key: string;
-	sessionId: string;
 	connection: DocumentConnection;
-}
+} & ({ scope?: "session"; sessionId: string } | { scope: "gallery"; sessionId?: never });
 interface DocumentReadingState {
 	sessions: Record<string, DocumentSession>;
 	serial: number;

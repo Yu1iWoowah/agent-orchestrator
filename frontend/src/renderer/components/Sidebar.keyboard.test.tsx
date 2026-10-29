@@ -23,7 +23,8 @@ vi.mock("../hooks/useCloudGate", () => ({ useCloudGate: () => ({ cloudEnabled: t
 vi.mock("../hooks/useSettings", () => ({
 	useSettings: () => ({ settings: { trackerIntakeEnabled: true }, isLoading: false, error: undefined }),
 }));
-vi.mock("../lib/api-client", () => ({
+vi.mock("../lib/api-client", async (original) => ({
+	...await original<typeof import("../lib/api-client")>(),
 	apiClient: { GET: getMock, POST: vi.fn() },
 	hasTrustedApiBaseUrl: () => false,
 	apiErrorMessage: () => "Request failed",

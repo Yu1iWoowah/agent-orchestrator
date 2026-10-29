@@ -15,6 +15,7 @@ import { DocumentSheet } from "./DocumentSheet";
 import { DocumentReadingContext } from "../../lib/document-reading-context";
 import { aoBridge } from "../../lib/bridge";
 import { useDocumentReadingStore } from "../../stores/document-reading-store";
+import type { DocumentReaderContext } from "../../stores/document-reading-store";
 import { useConversationFrameStore } from "../../stores/conversation-frame-store";
 import { TooltipProvider } from "../ui/tooltip";
 const mocks = vi.hoisted(() => ({
@@ -65,7 +66,7 @@ beforeEach(() => {
 	mocks.navigate.mockReset();
 	useDocumentReadingStore.setState({ sessions: {}, reader: null });
 });
-function setup() {
+function setup(context: DocumentReaderContext = reader) {
 	const surface = document.createElement("section");
 	document.body.append(surface);
 	const cache = new QueryClient({
@@ -74,7 +75,7 @@ function setup() {
 	const view = render(
 		<QueryClientProvider client={cache}>
 			<TooltipProvider>
-				<DocumentReadingContext.Provider value={reader}>
+				<DocumentReadingContext.Provider value={context}>
 					<DocumentSheet
 						surfaceRef={{ current: surface }}
 						composerRef={{ current: surface }}
@@ -85,6 +86,18 @@ function setup() {
 	);
 	return { surface, cache, ...view };
 }
+it("uses the gallery scope and sizing without inventing a session", async () => {
+	mocks.resolve.mockResolvedValue(meta("gallery.txt"));
+	const context = { key: "gallery", scope: "gallery", connection: reader.connection } as const;
+	const { surface, cache, unmount } = setup(context);
+	act(() => useDocumentReadingStore.getState().open(context.key, target("gallery.txt")));
+	await screen.findByText("Body gallery.txt");
+	expect(useDocumentReadingStore.getState().reader).not.toHaveProperty("sessionId");
+	fireEvent.keyDown(screen.getByRole("separator", { name: /Resize .* width/ }), { key: "ArrowLeft" });
+	expect(useConversationFrameStore.getState().documentSizes[JSON.stringify(["gallery", "local", "test"])]).toBeDefined();
+	expect(mocks.navigate).not.toHaveBeenCalled();
+	unmount(); cache.clear(); surface.remove();
+});
 it("aborts rapid A→B, ignores a late A and preserves Plan preferences and focus restore", async () => {
 	let completeA!: (value: ReturnType<typeof meta>) => void;
 	let signalA: AbortSignal | undefined;

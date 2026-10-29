@@ -1,23 +1,59 @@
 import { BrowserIcon } from "./icons";
-import { ChevronDown, Clock, Cloud, File, FileText, Folder, LayoutGrid, List, Loader2, Pin, Plus, Search } from "lucide-react";
+import {
+	ChevronDown,
+	Clock,
+	Cloud,
+	File,
+	FileText,
+	Folder,
+	LayoutGrid,
+	List,
+	Loader2,
+	Pin,
+	Plus,
+	Search,
+	RefreshCw,
+} from "lucide-react";
 import { ScrollArea } from "radix-ui";
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { isCatalogIncomplete, isUninitializedSharedSource } from "../lib/artifact-catalog";
+import { useShallow } from "zustand/react/shallow";
+import { DocumentReadError } from "../lib/document-read";
 import { useCloudOffering } from "../hooks/useCloudOffering";
 import { useCreateArtifactSession } from "../hooks/useCreateArtifactSession";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import type { ArtifactRow } from "../lib/artifacts";
 import {
-	artifactCount,
-	artifactKey,
-	filterArtifactGroups,
-	groupArtifactsByProject,
-	type ArtifactRow,
-} from "../lib/artifacts";
+	catalogArtifactGroup,
+	filterGalleryGroups,
+	galleryArtifactKey,
+	galleryLegacyKey,
+	isCatalogArtifact,
+	legacyGalleryGroups,
+	newestGalleryFirst,
+	migratableGalleryRows,
+	type GalleryRow,
+} from "../lib/gallery-artifacts";
+import { useArtifactCatalogs } from "../hooks/useArtifactCatalogs";
+import {
+	DocumentReadingContext,
+	DocumentReadingProvider,
+	openReadingDocument,
+	useDocumentReader,
+} from "../lib/document-reading-context";
+import { DocumentSheet } from "./chat/DocumentSheet";
+import { CatalogArtifactCard } from "./CatalogArtifactCard";
 import { formatTimeCompact } from "../lib/format-time";
 import { useNavigateToSession } from "../lib/navigate-to-session";
 import { hidesShellTopbar } from "../lib/platform";
 import { cn } from "../lib/utils";
-import { useArtifactsViewStore, type ArtifactViewMode } from "../stores/artifacts-view-store";
+import {
+	defaultGalleryPreferences,
+	useArtifactsViewStore,
+	type ArtifactViewMode,
+	type GalleryPreferences,
+} from "../stores/artifacts-view-store";
 import { useUiStore } from "../stores/ui-store";
 import { CLOUD_PROJECT_KIND, STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
 import { ArtifactActionsMenu } from "./ArtifactActionsMenu";
@@ -39,136 +75,260 @@ import { Input } from "./ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const ARTIFACT_GRID_CLASS = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4";
-const MAX_LIVE_PREVIEWS = 4;
 
 /**
  * Every artifact agents have written, grouped by project: on this machine, and
  * in cloud sessions when the control plane keeps artifacts.
  */
 export function ArtifactsView() {
+	return (
+		<DocumentReadingProvider scope="gallery">
+			<ArtifactsGallery />
+		</DocumentReadingProvider>
+	);
+}
+function ArtifactsGallery() {
 	const { t } = useTranslation();
+	const reader = useDocumentReader();
+	const surface = useRef<HTMLDivElement>(null),
+		viewport = useRef<HTMLDivElement>(null);
+	const restored = useRef<string | null>(null);
 	const showPageTitle = hidesShellTopbar();
 	const cloudArtifacts = useCloudOffering().artifacts;
 	const workspaceQuery = useWorkspaceQuery({ includeCloud: cloudArtifacts });
 	const workspaces = workspaceQuery.data;
-	const groups = useMemo(() => groupArtifactsByProject(workspaces ?? []), [workspaces]);
-	const [query, setQuery] = useState("");
-	const [projectId, setProjectId] = useState("");
-	const [preview, setPreview] = useState<{ row: ArtifactRow; projectName: string } | null>(null);
-	const openPreview = (row: ArtifactRow, projectName: string) => setPreview({ row, projectName });
-	const view = useArtifactsViewStore((state) => state.view);
-	const setView = useArtifactsViewStore((state) => state.setView);
-	const pinnedArtifactIds = useArtifactsViewStore((state) => state.pinnedArtifactIds);
+	const catalog = useArtifactCatalogs(workspaces);
+	const { query, projectId, source, archive, visibleCount } = useArtifactsViewStore(
+		useShallow((state) => {
+			const { query, projectId, source, archive, visibleCount } =
+				state.galleryPreferences[catalog.contextKey] ?? defaultGalleryPreferences;
+			return { query, projectId, source, archive, visibleCount };
+		}),
+	);
+	const setPreferences = useArtifactsViewStore((state) => state.setGalleryPreferences);
+	const pendingScroll = useRef<{ key: string; top: number } | null>(null);
+	const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const flushScroll = useCallback(() => {
+		clearTimeout(scrollTimer.current);
+		scrollTimer.current = undefined;
+		const pending = pendingScroll.current;
+		pendingScroll.current = null;
+		if (pending) setPreferences(pending.key, { scrollTop: pending.top });
+	}, [setPreferences]);
+	useEffect(() => {
+		window.addEventListener("pagehide", flushScroll);
+		return () => {
+			window.removeEventListener("pagehide", flushScroll);
+			flushScroll();
+		};
+	}, [catalog.contextKey, flushScroll]);
+	const view = useArtifactsViewStore((state) => state.view),
+		setView = useArtifactsViewStore((state) => state.setView);
+	const pins = useArtifactsViewStore((state) => state.pinnedArtifactIds);
+	const [preview, setPreview] = useState<{
+		row: ArtifactRow & { connection: GalleryRow["connection"] };
+		projectName: string;
+	} | null>(null);
+	const groups = useMemo(
+		() =>
+			[
+				...catalog.projects.map((project) =>
+					catalogArtifactGroup(
+						project,
+						catalog.connection,
+						catalog.data?.find((entry) => entry.projectId === project.id)?.items ?? [],
+					),
+				),
+				...legacyGalleryGroups(workspaces ?? [], catalog.connection),
+			].sort((a, b) =>
+				a.rows[0] && b.rows[0]
+					? newestGalleryFirst(a.rows[0], b.rows[0])
+					: a.rows.length
+						? -1
+						: b.rows.length
+							? 1
+							: a.id.localeCompare(b.id),
+			),
+		[catalog.projects, catalog.connection, catalog.data, workspaces],
+	);
+	const allRows = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
+	const complete = catalog.data !== undefined && catalog.data.every((entry) => !entry.loading);
+	const incomplete = !complete || Boolean(catalog.data?.some(isCatalogIncomplete));
+	const migrationRows = useMemo(() => migratableGalleryRows(allRows, catalog.data), [allRows, catalog.data]);
+	useEffect(() => {
+		useArtifactsViewStore.getState().migratePins(migrationRows);
+	}, [migrationRows]);
+	const legacyPins = useMemo(
+		() => new Map(migrationRows.map((row) => [galleryLegacyKey(row), galleryArtifactKey(row)])),
+		[migrationRows],
+	);
 	const scratchpadName = t("standalone.workspaceName");
 	const visibleGroups = useMemo(
-		() => filterArtifactGroups(groups, query, projectId, scratchpadName),
-		[groups, query, projectId, scratchpadName],
+		() => filterGalleryGroups(groups, { query, projectId, source, archive }, scratchpadName),
+		[groups, query, projectId, source, archive, scratchpadName],
 	);
-	const hasArtifacts = artifactCount(groups) > 0;
-	const showProjectSections = visibleGroups.length > 1;
 	const cards = useMemo(
-		() => visibleGroups
-			.flatMap((group) => group.rows.map((row) => ({
-				row,
-				projectName: group.isScratchpad ? t("standalone.workspaceName") : group.name,
-			})))
-			.sort((left, right) => (Date.parse(right.row.updatedAt) || 0) - (Date.parse(left.row.updatedAt) || 0)),
-		[visibleGroups, t],
+		() =>
+			visibleGroups
+				.flatMap((group) =>
+					group.rows.map((row) => ({ row, projectName: group.isScratchpad ? scratchpadName : group.name })),
+				)
+				.sort((a, b) => newestGalleryFirst(a.row, b.row)),
+		[visibleGroups, scratchpadName],
 	);
 	const pinnedCards = useMemo(() => {
-		const byId = new Map(cards.map((card) => [artifactKey(card.row), card]));
-		return pinnedArtifactIds.flatMap((id) => {
+		const byId = new Map(cards.map((card) => [galleryArtifactKey(card.row), card]));
+		return pins.flatMap((id) => {
 			const card = byId.get(id);
 			return card ? [card] : [];
 		});
-	}, [cards, pinnedArtifactIds]);
-	const livePreviewSections = useMemo(() => {
-		const owners = new Map<string, string>();
-		const sections = [
-			{ id: "pinned", rows: pinnedCards.map(({ row }) => row) },
-			...(showProjectSections ? [{ id: "recent", rows: cards.slice(0, 3).map(({ row }) => row) }] : []),
-			...visibleGroups.map((group) => ({ id: `project:${group.id}`, rows: group.rows })),
-		];
-		for (const section of sections) {
-			for (const row of section.rows) {
-				const page = row.kind === "html" && row.inlineUrl && row.rawUrl;
-				const pdf = !row.cloud && /\.pdf$/i.test(row.path) && row.rawUrl;
-				if (!page && !pdf) continue;
-				const key = artifactKey(row);
-				if (!owners.has(key) && owners.size < MAX_LIVE_PREVIEWS) owners.set(key, section.id);
-			}
-		}
-		return owners;
-	}, [cards, pinnedCards, showProjectSections, visibleGroups]);
-	const createArtifact = useCreateArtifactSession();
-	const clearFilters = () => {
-		setQuery("");
-		setProjectId("");
+	}, [cards, pins]);
+	const shown = new Set(cards.slice(0, visibleCount).map(({ row }) => galleryArtifactKey(row)));
+	const showProjectSections = visibleGroups.length > 1;
+	const openPreview = (row: GalleryRow, projectName: string) => {
+		if (isCatalogArtifact(row)) {
+			if (reader) openReadingDocument(reader, row.target);
+		} else setPreview({ row, projectName });
 	};
-
+	const card = (row: GalleryRow, projectName: string) => {
+		const key = galleryArtifactKey(row),
+			legacy = galleryLegacyKey(row);
+		const alias = legacy && legacyPins.get(legacy) === key ? legacy : undefined;
+		return isCatalogArtifact(row) ? (
+			<CatalogArtifactCard
+				key={key}
+				row={row}
+				projectName={projectName}
+				view={view}
+				legacyPin={alias}
+				onOpen={() => openPreview(row, projectName)}
+			/>
+		) : (
+			<ArtifactCard
+				key={key}
+				row={row}
+				projectName={projectName}
+				view={view}
+				showProjectName={!showProjectSections}
+				legacyPin={alias}
+				onPreview={openPreview}
+			/>
+		);
+	};
+	const changeFilters = (change: Partial<GalleryPreferences>) => {
+		flushScroll();
+		restored.current = catalog.contextKey;
+		setPreferences(catalog.contextKey, { ...change, scrollTop: 0, visibleCount: 200 });
+		if (viewport.current) viewport.current.scrollTop = 0;
+	};
+	const clearFilters = () => changeFilters({ query: "", projectId: "", source: "all", archive: "all" });
+	useLayoutEffect(() => {
+		if (restored.current === catalog.contextKey) return;
+		const top = useArtifactsViewStore.getState().galleryPreferences[catalog.contextKey]?.scrollTop ?? 0;
+		const frame = requestAnimationFrame(() => {
+			const node = viewport.current;
+			if (!node || (top > node.scrollHeight - node.clientHeight && catalog.isFetching)) return;
+			node.scrollTop = top;
+			restored.current = catalog.contextKey;
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [catalog.contextKey, catalog.isFetching, cards.length, visibleCount]);
+	const createArtifact = useCreateArtifactSession();
+	const sourceNames = {
+		all: t("artifacts.allSources"),
+		worker: t("artifacts.source.worker"),
+		orchestrator: t("artifacts.source.orchestrator"),
+		shared: t("artifacts.source.shared"),
+	};
+	const archiveNames = {
+		all: t("artifacts.archive.all"),
+		current: t("artifacts.archive.current"),
+		archive: t("artifacts.archive.archive"),
+	};
+	const hasArtifacts = allRows.length > 0;
+	const sourceProblems =
+		catalog.data?.flatMap((entry) =>
+			[
+				...(entry.error
+					? [
+							{
+								source: "all",
+								code: entry.error instanceof DocumentReadError ? entry.error.code : "DOCUMENT_SOURCE_UNAVAILABLE",
+								sessionId: undefined,
+							},
+						]
+					: entry.errors.filter((error) => !isUninitializedSharedSource(error))),
+			].map((error) => ({ ...error, projectId: entry.projectId })),
+		) ?? [];
 	return (
-		<div className="flex min-h-0 flex-1 flex-col bg-background">
-			{/* The controls sit the same distance from the top, the right edge, and
-			    each other: half the gap between the toolbar and a control. */}
+		<div ref={surface} className="relative flex min-h-0 flex-1 flex-col bg-background">
 			<header className="workspace-topbar-container center-panel-titlebar flex h-toolbar shrink-0 items-center justify-between gap-3 border-b border-border-strong pr-[calc((var(--size-toolbar)-var(--size-topbar-control))/2)]">
 				<h1 className={showPageTitle ? cn(topbarProjectLabelClass, "inline-flex items-center gap-1.5") : "sr-only"}>
 					{showPageTitle ? <File className="size-icon-md" aria-hidden="true" /> : null}
 					{t("artifacts.title")}
 				</h1>
-				<div className="workspace-topbar-actions flex min-w-0 flex-1 items-center justify-end gap-[calc((var(--size-toolbar)-var(--size-topbar-control))/2)]">
-					{hasArtifacts ? (
-						<>
-						{/* Same field as the inspector's Files filter and browser address bar. */}
-						<label className="relative block w-56 min-w-0 shrink">
-							<Search aria-hidden="true" className="pointer-events-none absolute start-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
-							<Input
-								aria-label={t("artifacts.search")}
-								className="inspector-field-input ps-8 [&::-webkit-search-cancel-button]:appearance-none"
-								onChange={(event) => setQuery(event.target.value)}
-								placeholder={t("artifacts.search")}
-								type="search"
-								value={query}
-							/>
-						</label>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<TopbarButton variant="secondary" aria-label={t("artifacts.projectFilter")} className="max-w-44 transition-none!">
-									<Folder aria-hidden="true" className="size-icon-sm shrink-0" />
-									<span className="truncate">{projectId ? (projectId === STANDALONE_WORKSPACE_ID ? scratchpadName : groups.find((group) => group.id === projectId)?.name) : t("artifacts.allProjects")}</span>
-									<ChevronDown aria-hidden="true" className="size-icon-xs shrink-0" />
-								</TopbarButton>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end" className="max-h-80 overflow-y-auto" data-browser-native-overlay="true">
-								<DropdownMenuRadioGroup value={projectId} onValueChange={setProjectId}>
-									<DropdownMenuRadioItem value="">{t("artifacts.allProjects")}</DropdownMenuRadioItem>
-									<DropdownMenuSeparator />
-									{groups.map((group) => <DropdownMenuRadioItem key={group.id} value={group.id}>{group.isScratchpad ? scratchpadName : group.name}</DropdownMenuRadioItem>)}
-								</DropdownMenuRadioGroup>
-							</DropdownMenuContent>
-						</DropdownMenu>
-						<div role="group" aria-label={t("artifacts.view")} className="inline-flex shrink-0 items-center gap-0 rounded-md transition-none hover:bg-interactive-hover">
-							{([
-								{ value: "gallery", label: t("artifacts.galleryView"), icon: LayoutGrid },
-								{ value: "list", label: t("artifacts.listView"), icon: List },
-							] as const).map(({ value, label, icon: Icon }) => (
-								<Tooltip key={value}>
-									<TooltipTrigger asChild>
-										<TopbarButton
-											variant="icon"
-											aria-label={label}
-											aria-pressed={view === value}
-											onClick={() => setView(value)}
-											className={cn("transition-none! duration-0", view === value ? "bg-interactive-active text-foreground hover:bg-interactive-active" : "hover:bg-transparent")}
-										>
-											<Icon aria-hidden="true" className="size-icon-sm" />
-										</TopbarButton>
-									</TooltipTrigger>
-									<TooltipContent side="bottom">{label}</TooltipContent>
-								</Tooltip>
-							))}
-						</div>
-						</>
-					) : null}
+				<div className="workspace-topbar-actions flex min-w-0 flex-1 items-center justify-end gap-2">
+					<label className="relative block w-56 min-w-0 shrink">
+						<Search
+							aria-hidden="true"
+							className="pointer-events-none absolute start-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive"
+						/>
+						<Input
+							aria-label={t("artifacts.search")}
+							className="inspector-field-input ps-8"
+							type="search"
+							value={query}
+							placeholder={t("artifacts.search")}
+							onChange={(event) => changeFilters({ query: event.target.value })}
+						/>
+					</label>
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<TopbarButton variant="secondary" aria-label={t("artifacts.projectFilter")} className="max-w-44">
+								<Folder aria-hidden="true" className="size-icon-sm" />
+								<span className="truncate">
+									{groups.find((group) => group.id === projectId)?.isScratchpad
+										? scratchpadName
+										: (groups.find((group) => group.id === projectId)?.name ?? t("artifacts.allProjects"))}
+								</span>
+								<ChevronDown className="size-icon-xs" />
+							</TopbarButton>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end">
+							<DropdownMenuRadioGroup value={projectId} onValueChange={(value) => changeFilters({ projectId: value })}>
+								<DropdownMenuRadioItem value="">{t("artifacts.allProjects")}</DropdownMenuRadioItem>
+								<DropdownMenuSeparator />
+								{groups.map((group) => (
+									<DropdownMenuRadioItem key={group.id} value={group.id}>
+										{group.isScratchpad ? scratchpadName : group.name}
+									</DropdownMenuRadioItem>
+								))}
+							</DropdownMenuRadioGroup>
+						</DropdownMenuContent>
+					</DropdownMenu>
+					<div role="group" aria-label={t("artifacts.view")} className="inline-flex shrink-0 items-center">
+						{(
+							[
+								{ value: "gallery", label: t("artifacts.galleryView"), Icon: LayoutGrid },
+								{ value: "list", label: t("artifacts.listView"), Icon: List },
+							] as const
+						).map(({ value, label, Icon }) => (
+							<Tooltip key={value}>
+								<TooltipTrigger asChild>
+									<TopbarButton
+										variant="icon"
+										aria-label={label}
+										aria-pressed={view === value}
+										onClick={() => setView(value)}
+										className={cn(view === value && "bg-interactive-active")}
+									>
+										<Icon className="size-icon-sm" />
+									</TopbarButton>
+								</TooltipTrigger>
+								<TooltipContent>{label}</TooltipContent>
+							</Tooltip>
+						))}
+					</div>
 					<CreateArtifactMenu
 						workspaces={workspaces ?? []}
 						create={createArtifact.create}
@@ -179,63 +339,180 @@ export function ArtifactsView() {
 					/>
 				</div>
 			</header>
+			<div data-conversation-frame-avoid="" className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button variant="ghost" size="sm" aria-label={t("artifacts.sourceFilter")}>
+							{sourceNames[source]}
+							<ChevronDown className="size-4" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent>
+						<DropdownMenuRadioGroup
+							value={source}
+							onValueChange={(value) => {
+								if (value === "all" || value === "worker" || value === "orchestrator" || value === "shared")
+									changeFilters({ source: value });
+							}}
+						>
+							{Object.entries(sourceNames).map(([value, label]) => (
+								<DropdownMenuRadioItem key={value} value={value}>
+									{label}
+								</DropdownMenuRadioItem>
+							))}
+						</DropdownMenuRadioGroup>
+					</DropdownMenuContent>
+				</DropdownMenu>
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button variant="ghost" size="sm" aria-label={t("artifacts.archiveFilter")}>
+							{t("artifacts.archiveFilter")}: {archiveNames[archive]}
+							<ChevronDown className="size-4" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent>
+						<DropdownMenuRadioGroup
+							value={archive}
+							onValueChange={(value) => {
+								if (value === "all" || value === "current" || value === "archive") changeFilters({ archive: value });
+							}}
+						>
+							{Object.entries(archiveNames).map(([value, label]) => (
+								<DropdownMenuRadioItem key={value} value={value}>
+									{label}
+								</DropdownMenuRadioItem>
+							))}
+						</DropdownMenuRadioGroup>
+					</DropdownMenuContent>
+				</DropdownMenu>
+				<Button variant="ghost" size="sm" disabled={catalog.isFetching} onClick={() => void catalog.refetch()}>
+					<RefreshCw className="size-4" />
+					{t("artifacts.refresh")}
+				</Button>
+				<span role="status" className="text-xs text-muted-foreground">
+					{incomplete ? t("artifacts.totalUnknown") : t("artifacts.filesLoaded", { count: allRows.length })}
+				</span>
+				{incomplete && allRows.length > 0 ? (
+					<span className="text-xs text-muted-foreground">{t("artifacts.filesLoaded", { count: allRows.length })}</span>
+				) : null}
+				<DocumentSheet surfaceRef={surface} />
+			</div>
 			<ScrollArea.Root asChild type="hover" scrollHideDelay={500}>
 				<main className="relative min-h-0 flex-1 overflow-hidden">
-					<ScrollArea.Viewport className="h-full w-full overscroll-contain focus-visible:outline-none">
-						<div className={cn("pr-4 pb-4 pl-(--space-4_5)", visibleGroups.length === 1 && "pt-4")}>
-							{workspaceQuery.isLoading ? (
-								<p role="status" className="px-3 py-8 text-center text-sm text-muted-foreground">{t("artifacts.loading")}</p>
-							) : workspaceQuery.error ? (
-								<p role="alert" className="px-3 py-8 text-center text-sm text-destructive">{workspaceQuery.error.message}</p>
-							) : !hasArtifacts ? (
+					<ScrollArea.Viewport
+						ref={viewport}
+						className="chat-scroll-viewport h-full w-full overscroll-contain focus-visible:outline-none"
+						onWheelCapture={() => {
+							restored.current = catalog.contextKey;
+						}}
+						onScroll={(event) => {
+							if (restored.current === catalog.contextKey) {
+								pendingScroll.current = { key: catalog.contextKey, top: event.currentTarget.scrollTop };
+								if (scrollTimer.current === undefined) scrollTimer.current = setTimeout(flushScroll, 150);
+							}
+						}}
+					>
+						<div className="px-4 pb-4">
+							{catalog.isFetching || workspaceQuery.isLoading ? (
+								<p role="status" className="py-2 text-sm text-muted-foreground">
+									{t("artifacts.loading")}
+								</p>
+							) : null}
+							{workspaceQuery.error ? (
+								<p role="alert" className="py-2 text-sm text-destructive">
+									{workspaceQuery.error.message}
+								</p>
+							) : null}
+							{source === "shared" &&
+							catalog.data?.some((project) => project.errors.some(isUninitializedSharedSource)) ? (
+								<p role="status" className="py-2 text-sm text-muted-foreground">
+									{t("documents.sheet.notCreated")}
+								</p>
+							) : null}
+							{sourceProblems.length > 0 ? (
+								<div className="py-2 text-sm">
+									<p>{t("artifacts.sourcesIncomplete")}</p>
+									<ul>
+										{sourceProblems.map((error, index) => (
+											<li key={`${error.projectId}:${error.source}:${error.sessionId}:${index}`} role="alert">
+												{catalog.projects.find((project) => project.id === error.projectId)?.name ?? error.projectId} ·{" "}
+												{error.source === "worker" || error.source === "orchestrator" || error.source === "shared"
+													? sourceNames[error.source]
+													: sourceNames.all}{" "}
+												{error.sessionId ?? ""}:{" "}
+												{error.code === "DOCUMENT_CATALOG_CHANGED"
+													? t("artifacts.catalogChanged")
+													: t("documents.sheet.unavailable")}
+											</li>
+										))}
+									</ul>
+								</div>
+							) : null}
+							{source === "shared" && archive === "archive" ? (
+								<p className="py-2 text-sm text-muted-foreground">{t("artifacts.sharedArchiveHint")}</p>
+							) : null}
+							{!hasArtifacts && !incomplete && !workspaceQuery.isLoading ? (
 								<EmptyArtifacts workspaces={workspaces ?? []} />
-							) : visibleGroups.length === 0 ? (
-								<div className="flex flex-col items-center gap-1 py-16 text-center">
-									<p className="text-control font-medium text-foreground">{t("artifacts.noMatches")}</p>
-									<Button variant="ghost" size="sm" className="text-muted-foreground" onClick={clearFilters}>
+							) : cards.length === 0 && !catalog.isFetching ? (
+								<div className="py-8 text-center">
+									<p>{t(incomplete ? "artifacts.noLoadedMatches" : "artifacts.noMatches")}</p>
+									<Button variant="ghost" onClick={clearFilters}>
 										{t("artifacts.clearFilters")}
 									</Button>
 								</div>
 							) : (
-								<div>
-									{pinnedCards.length > 0 ? <ArtifactSection sectionId="pinned" name={t("artifacts.pinned")} icon={Pin} view={view}>
-										{pinnedCards.map(({ row, projectName }) => (
-											<ArtifactCard key={artifactKey(row)} row={row} projectName={projectName} view={view} showProjectName previewLive={livePreviewSections.get(artifactKey(row)) === "pinned"} onPreview={openPreview} />
-										))}
-									</ArtifactSection> : null}
-									{showProjectSections ? <ArtifactSection sectionId="recent" name={t("artifacts.recent")} icon={Clock} view={view}>
-										{cards.slice(0, 3).map(({ row, projectName }) => (
-											<ArtifactCard key={`${row.sessionId}:${row.path}`} row={row} projectName={projectName} view={view} showProjectName previewLive={livePreviewSections.get(artifactKey(row)) === "recent"} onPreview={openPreview} />
-										))}
-									</ArtifactSection> : null}
+								<>
+									{pinnedCards.length > 0 ? (
+										<ArtifactSection sectionId="pinned" name={t("artifacts.pinned")} icon={Pin} view={view}>
+											{pinnedCards.map(({ row, projectName }) => card(row, projectName))}
+										</ArtifactSection>
+									) : null}
+									{showProjectSections ? (
+										<ArtifactSection sectionId="recent" name={t("artifacts.recent")} icon={Clock} view={view}>
+											{cards.slice(0, 3).map(({ row, projectName }) => card(row, projectName))}
+										</ArtifactSection>
+									) : null}
 									{visibleGroups.map((group) => {
-										const projectName = group.isScratchpad ? t("standalone.workspaceName") : group.name;
-										return (
+										const rows = group.rows.filter((row) => shown.has(galleryArtifactKey(row)));
+										return rows.length ? (
 											<ArtifactSection
 												key={group.id}
 												sectionId={`project:${group.id}`}
-												name={projectName}
+												name={group.isScratchpad ? scratchpadName : group.name}
 												icon={group.isScratchpad ? File : group.cloud ? Cloud : Folder}
 												view={view}
 												collapsible={showProjectSections}
-												updatedAt={groups.find((project) => project.id === group.id)?.rows[0]?.updatedAt}
+												updatedAt={group.rows[0]?.updatedAt ?? undefined}
 											>
-												{group.rows.map((row) => (
-													<ArtifactCard key={`${row.sessionId}:${row.path}`} row={row} projectName={projectName} view={view} showProjectName={!showProjectSections} previewLive={livePreviewSections.get(artifactKey(row)) === `project:${group.id}`} onPreview={openPreview} />
-												))}
+												{rows.map((row) => card(row, group.isScratchpad ? scratchpadName : group.name))}
 											</ArtifactSection>
-										);
+										) : null;
 									})}
-								</div>
+									{cards.length > visibleCount ? (
+										<Button
+											variant="ghost"
+											onClick={() => setPreferences(catalog.contextKey, { visibleCount: visibleCount + 200 })}
+										>
+											{t("artifacts.loadMore")}
+										</Button>
+									) : null}
+								</>
 							)}
 						</div>
 					</ScrollArea.Viewport>
 					<ScrollArea.Scrollbar orientation="vertical" className="z-10 flex w-2 touch-none select-none p-0.5">
-						<ScrollArea.Thumb className="relative flex-1 rounded-full bg-[color-mix(in_srgb,var(--color-scrollbar)_42%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-scrollbar)_56%,transparent)]" />
+						<ScrollArea.Thumb className="relative flex-1 rounded-full bg-muted-foreground/40" />
 					</ScrollArea.Scrollbar>
 				</main>
 			</ScrollArea.Root>
-			<ArtifactPreviewModal artifact={preview?.row ?? null} projectName={preview?.projectName ?? ""} onClose={() => setPreview(null)} />
+			<DocumentReadingContext.Provider value={null}>
+				<ArtifactPreviewModal
+					artifact={preview?.row ?? null}
+					projectName={preview?.projectName ?? ""}
+					pinId={preview ? galleryArtifactKey(preview.row) : undefined}
+					onClose={() => setPreview(null)}
+				/>
+			</DocumentReadingContext.Provider>
 		</div>
 	);
 }
@@ -288,9 +565,9 @@ function ArtifactSection({ sectionId, name, icon: Icon, updatedAt, children, vie
 	);
 }
 
-function ArtifactCard({ row, projectName, view, showProjectName = false, previewLive = true, onPreview }: { row: ArtifactRow; projectName: string; view: ArtifactViewMode; showProjectName?: boolean; previewLive?: boolean; onPreview: (row: ArtifactRow, projectName: string) => void }) {
+function ArtifactCard({ row, projectName, view, showProjectName = false, legacyPin, onPreview }: { row: ArtifactRow & { connection: GalleryRow["connection"] }; projectName: string; view: ArtifactViewMode; showProjectName?: boolean; legacyPin?: string; onPreview: (row: GalleryRow, projectName: string) => void }) {
 	const { t } = useTranslation();
-	const id = artifactKey(row);
+	const id = galleryArtifactKey(row);
 	const pinned = useArtifactsViewStore((state) => state.pinnedArtifactIds.includes(id));
 	const togglePinnedArtifact = useArtifactsViewStore((state) => state.togglePinnedArtifact);
 	const requestWorkspaceFileOpen = useUiStore((state) => state.requestWorkspaceFileOpen);
@@ -308,7 +585,7 @@ function ArtifactCard({ row, projectName, view, showProjectName = false, preview
 	if (view === "list") {
 		return (
 			<li>
-				<div className="group/artifact relative flex h-11 items-center gap-2.5 rounded-md bg-card px-3 transition-none hover:bg-accent focus-within:bg-accent">
+				<div className="group/artifact relative flex min-h-11 items-center gap-2.5 rounded-md bg-card px-3 transition-none hover:bg-accent focus-within:bg-accent">
 					<button
 						type="button"
 						className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch text-left outline-none after:absolute after:inset-0 after:z-[1] after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring/60"
@@ -318,7 +595,7 @@ function ArtifactCard({ row, projectName, view, showProjectName = false, preview
 						{row.generating ? (
 							<Loader2 aria-label={t("artifacts.generating")} className="relative z-[1] size-icon-sm shrink-0 animate-spin text-status-working motion-reduce:animate-none" />
 						) : <KindIcon aria-hidden="true" className="relative z-[1] size-icon-sm shrink-0 text-muted-foreground" />}
-						<span className="relative z-[1] min-w-0 shrink truncate text-control font-medium text-foreground">{row.name}</span>
+						<span className="relative z-[1] min-w-0 shrink py-2 text-control font-medium text-foreground"><span className="block truncate">{row.name}</span><span className="block break-all font-mono text-xs font-normal text-muted-foreground">{row.path}</span></span>
 						<span className="relative z-[1] min-w-0 flex-1 truncate text-xs text-muted-foreground">
 							{showProjectName ? `${projectName} · ${row.sessionTitle}` : row.sessionTitle}
 						</span>
@@ -326,11 +603,12 @@ function ArtifactCard({ row, projectName, view, showProjectName = false, preview
 					<div className="relative z-[2] ms-auto flex shrink-0 items-center gap-1">
 						<ArtifactActionsMenu
 							artifact={row}
+						pinId={id}
 							session={{ id: row.sessionId, cloud: row.cloud }}
 							iconOnly
 							onOpenInSession={openInSession}
 							pinned={pinned}
-							onTogglePin={() => togglePinnedArtifact(id)}
+							onTogglePin={() => togglePinnedArtifact(id, legacyPin)}
 							className="bg-[var(--solid-bg-secondary,var(--color-bg-secondary))] hover:bg-[var(--solid-accent,var(--accent))] dark:hover:bg-[var(--solid-accent,var(--accent))] transition-none duration-0 [@media(hover:hover)]:opacity-0 group-hover/artifact:opacity-100 group-focus-within/artifact:opacity-100 data-[state=open]:opacity-100"
 						/>
 					</div>
@@ -345,17 +623,18 @@ function ArtifactCard({ row, projectName, view, showProjectName = false, preview
 	return (
 		<ArtifactGalleryCard
 			row={row}
-			previewLive={previewLive}
+			detail={row.path}
 			context={showProjectName ? `${projectName} · ${row.sessionTitle}` : row.sessionTitle}
 			onPreview={open}
 			actions={
 				<ArtifactActionsMenu
 					artifact={row}
+							pinId={id}
 					session={{ id: row.sessionId, cloud: row.cloud }}
 					iconOnly
 					onOpenInSession={openInSession}
 					pinned={pinned}
-					onTogglePin={() => togglePinnedArtifact(id)}
+					onTogglePin={() => togglePinnedArtifact(id, legacyPin)}
 					className="bg-[var(--solid-bg-secondary,var(--color-bg-secondary))] hover:bg-[var(--solid-accent,var(--accent))] dark:hover:bg-[var(--solid-accent,var(--accent))] transition-none duration-0 [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100"
 				/>
 			}
