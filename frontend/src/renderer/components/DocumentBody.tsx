@@ -130,11 +130,13 @@ export function DocumentBody({
 	const content = parsed.content;
 	const error = parsed.error ?? query.error;
 	useLayoutEffect(() => {
-		if (!query.data || !scroll.current) return;
+		if (!query.data || !scroll.current || content?.kind === "pdf") return;
 		const frame = requestAnimationFrame(() => {
 			const root = scroll.current;
 			if (!root) return;
-			const fragment = visit.document.target.fragment;
+			const fragment = visit.revealFragment
+				? visit.document.target.fragment
+				: undefined;
 			const heading = fragment
 				? Array.from(root.querySelectorAll<HTMLElement>("[id]")).find(
 						(item) => item.id === fragment,
@@ -149,7 +151,13 @@ export function DocumentBody({
 					: visit.position.scrollTop;
 		});
 		return () => cancelAnimationFrame(frame);
-	}, [query.data, visit.epoch, visit.document.target.fragment, visit.mode]);
+	}, [
+		query.data,
+		visit.epoch,
+		visit.document.target.fragment,
+		visit.mode,
+		visit.revealFragment,
+	]);
 	if (error)
 		return (
 			<p role="alert" className="p-3 text-sm">
@@ -171,6 +179,7 @@ export function DocumentBody({
 			className="board-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain p-3"
 			data-document-scroll=""
 			onScroll={(event) =>
+				content.kind !== "pdf" &&
 				useDocumentReadingStore.getState().savePosition(readerKey, {
 					...visit.position,
 					scrollTop: event.currentTarget.scrollTop,
@@ -319,7 +328,7 @@ function DocumentPdf({
 	return error ? (
 		<p role="alert">{t("documents.sheet.parseError")}</p>
 	) : url ? (
-		<div className="flex h-full min-h-80 flex-col">
+		<div className="flex h-full min-h-0 flex-col">
 			<PdfPreview
 				src={url}
 				path={path}

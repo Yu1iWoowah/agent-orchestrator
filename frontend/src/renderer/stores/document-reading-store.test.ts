@@ -73,3 +73,27 @@ describe("temporary document reading", () => {
 		expect(createDocumentReadingStore().getState().sessions).toEqual({});
 	});
 });
+
+it("restores saved positions on Back and Refresh instead of reapplying an old fragment", () => {
+	const store = createDocumentReadingStore();
+	const chapter = document("chapter.md", "part");
+	store.getState().show("chat", chapter);
+	store.getState().savePosition("chat", { scrollTop: 500, zoom: 1.5 });
+	store.getState().show("chat", document("other.md"));
+	store.getState().back("chat");
+	let active = store.getState().sessions.chat;
+	expect(active.history[active.index].revealFragment).toBe(false);
+	store.getState().open("chat", chapter.target, { preservePosition: true });
+	let id = store.getState().sessions.chat.opening!.id;
+	store.getState().complete("chat", id, { ...chapter, fingerprint: "v2" });
+	active = store.getState().sessions.chat;
+	expect(active.history[active.index]).toMatchObject({
+		position: { scrollTop: 500, zoom: 1.5 },
+		revealFragment: false,
+	});
+	store.getState().open("chat", chapter.target);
+	id = store.getState().sessions.chat.opening!.id;
+	store.getState().complete("chat", id, chapter);
+	active = store.getState().sessions.chat;
+	expect(active.history[active.index].revealFragment).toBe(true);
+});

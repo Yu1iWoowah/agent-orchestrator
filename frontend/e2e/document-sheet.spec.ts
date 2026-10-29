@@ -38,7 +38,7 @@ async function setup(page: Page) {
 							revision: 0,
 							role: "assistant",
 							origin: "agent",
-							text: `[Code](${root}code.ts) · [Worker guide](${root}guide.md) · [Unsafe HTML](${root}unsafe.html) · [Shared](ao://projects/next.js/shared/guide.md) · [Missing](ao://projects/new/shared/guide.md)`,
+							text: `[Relative HTML](${root}static.html) · [Code](${root}code.ts) · [Worker guide](${root}guide.md) · [Unsafe HTML](${root}unsafe.html) · [Shared](ao://projects/next.js/shared/guide.md) · [Missing](ao://projects/new/shared/guide.md)`,
 							streaming: false,
 							createdAt: now,
 						},
@@ -80,6 +80,30 @@ async function setup(page: Page) {
 						fingerprint: "v1",
 					},
 				},
+			});
+			return;
+		}
+		if (input.path.endsWith("image.png")) {
+			await route.fulfill({
+				contentType: "application/octet-stream",
+				body: Buffer.from(
+					"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+					"base64",
+				),
+			});
+			return;
+		}
+		if (input.path.endsWith("style.css")) {
+			await route.fulfill({
+				contentType: "application/octet-stream",
+				body: "h1{color:rgb(20,90,120)}",
+			});
+			return;
+		}
+		if (input.path.endsWith("static.html")) {
+			await route.fulfill({
+				contentType: "application/octet-stream",
+				body: '<link rel="stylesheet" href="style.css"><h1>Local resources</h1><img src="image.png" alt="Managed raster"><img src="data:image/svg+xml,<svg onload=top.__documentPwn=99/>" alt="Untrusted data">',
 			});
 			return;
 		}
@@ -188,4 +212,32 @@ test("document hover previews do not intercept the next link @T0", async ({
 	await expect(
 		page.getByRole("status").filter({ hasText: "Not created yet" }),
 	).toBeVisible();
+});
+
+test("opaque static HTML loads only verified local raster and styles without enabling script or same-origin @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.getByRole("link", { name: "Relative HTML", exact: true }).click();
+	const frame = page.frameLocator("iframe[data-document-static]");
+	await expect
+		.poll(() =>
+			frame
+				.getByRole("img", { name: "Managed raster" })
+				.evaluate((el) => el.naturalWidth),
+		)
+		.toBe(1);
+	await expect(
+		frame.getByRole("heading", { name: "Local resources" }),
+	).toHaveCSS("color", "rgb(20, 90, 120)");
+	await expect(
+		frame.getByRole("img", { name: "Untrusted data" }),
+	).not.toHaveAttribute("src");
+	expect(
+		await page.evaluate(() => Reflect.get(window, "__documentPwn")),
+	).toBeUndefined();
+	await expect(page.locator("iframe[data-document-static]")).toHaveAttribute(
+		"sandbox",
+		"",
+	);
 });

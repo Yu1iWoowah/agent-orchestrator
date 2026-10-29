@@ -48,6 +48,27 @@ export function DocumentSheet(props: {
 	composerRef: RefObject<HTMLElement | null>;
 }) {
 	const reader = useDocumentReader()!;
+	const restore = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		restore.current = null;
+		return useDocumentReadingStore.subscribe((next, previous) => {
+			const current = next.sessions[reader.key],
+				before = previous.sessions[reader.key];
+			if (
+				current?.foreground &&
+				(!before?.foreground ||
+					(current.opening?.status === "loading" &&
+						current.opening.id !== before.opening?.id))
+			) {
+				const active = document.activeElement;
+				if (
+					active instanceof HTMLElement &&
+					!active.closest("[data-conversation-nonmodal]")
+				)
+					restore.current = active;
+			}
+		});
+	}, [reader.key]);
 	const session = useDocumentReadingStore(
 		(state) => state.sessions[reader.key],
 	);
@@ -57,13 +78,15 @@ export function DocumentSheet(props: {
 		return () => useDocumentReadingStore.getState().unregister(reader.key);
 	}, [reader]);
 	return session && (session.opening || session.history.length) ? (
-		<DocumentSheetReader {...props} />
+		<DocumentSheetReader key={reader.key} {...props} restore={restore} />
 	) : null;
 }
 function DocumentSheetReader({
 	surfaceRef,
 	composerRef,
+	restore,
 }: {
+	restore: RefObject<HTMLElement | null>;
 	surfaceRef: RefObject<HTMLElement | null>;
 	composerRef: RefObject<HTMLElement | null>;
 }) {
@@ -76,7 +99,6 @@ function DocumentSheetReader({
 	const visit = session?.history[session.index];
 	const opening = session?.opening;
 	const entry = useRef<HTMLButtonElement>(null);
-	const restore = useRef<HTMLElement | null>(null);
 	const id = useId();
 	const preferenceKey = conversationFrameSessionKey(
 		reader.sessionId,
@@ -127,13 +149,7 @@ function DocumentSheetReader({
 		return () => abort.abort();
 	}, [requestId, reader]); // input is immutable for each request id
 	const open = Boolean(session?.foreground && (opening || visit));
-	useEffect(() => {
-		if (open)
-			restore.current =
-				document.activeElement instanceof HTMLElement
-					? document.activeElement
-					: null;
-	}, [open]);
+
 	useEffect(
 		() =>
 			aoBridge.app.onDocumentEscape?.(() => {
@@ -298,7 +314,9 @@ function DocumentSheetReader({
 							() =>
 								useDocumentReadingStore
 									.getState()
-									.open(reader.key, visit.document.target),
+									.open(reader.key, visit.document.target, {
+										preservePosition: true,
+									}),
 							<RefreshCw className="size-4" />,
 						)}
 						{visit.document.target.kind === "artifact" ? (
@@ -374,7 +392,9 @@ function DocumentSheetReader({
 								onClick={() =>
 									useDocumentReadingStore
 										.getState()
-										.open(reader.key, visit.document.target)
+										.open(reader.key, visit.document.target, {
+											preservePosition: true,
+										})
 								}
 							>
 								{t("documents.sheet.refresh")}

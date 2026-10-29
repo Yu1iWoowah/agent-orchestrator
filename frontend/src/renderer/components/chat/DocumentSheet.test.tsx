@@ -136,7 +136,9 @@ it("keeps a missing shared root as not created and lets Plan foreground collapse
 	act(() =>
 		useDocumentReadingStore.getState().open(reader.key, target("missing.md")),
 	);
-	await waitFor(()=>expect(screen.getByRole("status")).toHaveTextContent("Not created yet"));
+	await waitFor(() =>
+		expect(screen.getByRole("status")).toHaveTextContent("Not created yet"),
+	);
 	act(() => surface.dispatchEvent(new CustomEvent("ao:frame-foreground")));
 	expect(useDocumentReadingStore.getState().sessions.current.foreground).toBe(
 		false,
@@ -144,4 +146,29 @@ it("keeps a missing shared root as not created and lets Plan foreground collapse
 	unmount();
 	cache.clear();
 	surface.remove();
+});
+
+it("captures the opener before delayed Sheet autofocus or an unrelated focus change", async () => {
+	let complete!:(value:ReturnType<typeof meta>)=>void;
+	mocks.resolve.mockImplementation(()=>new Promise(resolve=>{complete=resolve}));
+	const { surface, cache, unmount } = setup();
+	const source = document.createElement("button"),
+		other = document.createElement("button");
+	document.body.append(source, other);
+	source.focus();
+	act(() => {
+		useDocumentReadingStore.getState().open(reader.key, target("b.txt"));
+	});
+	await screen.findByRole("status");other.focus();
+	await act(async()=>complete(meta("b.txt")));
+	await screen.findByText("Body b.txt");
+	fireEvent.keyDown(screen.getByRole("region", { name: "b.txt" }), {
+		key: "Escape",
+	});
+	await waitFor(() => expect(source).toHaveFocus());
+	unmount();
+	cache.clear();
+	surface.remove();
+	source.remove();
+	other.remove();
 });

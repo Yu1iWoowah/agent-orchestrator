@@ -15,11 +15,18 @@ export interface DocumentVisit {
 	position: DocumentPosition;
 	mode: "preview" | "source";
 	epoch: number;
+	revealFragment: boolean;
 }
 export type DocumentOpening =
-	| { status: "loading"; id: number; input: DocumentInput }
+	| {
+			status: "loading";
+			id: number;
+			input: DocumentInput;
+			preservePosition: boolean;
+	  }
 	| {
 			status: "error";
+			preservePosition: boolean;
 			id: number;
 			input: DocumentInput;
 			code: string;
@@ -42,7 +49,11 @@ interface DocumentReadingState {
 	reader: DocumentReaderContext | null;
 	register: (reader: DocumentReaderContext) => void;
 	unregister: (key: string) => void;
-	open: (key: string, input: DocumentInput) => void;
+	open: (
+		key: string,
+		input: DocumentInput,
+		options?: { preservePosition?: boolean },
+	) => void;
 	complete: (key: string, id: number, document: ResolvedDocument) => void;
 	fail: (key: string, id: number, code: string, message: string) => void;
 	show: (key: string, document: ResolvedDocument) => void;
@@ -63,6 +74,7 @@ function visit(
 	session: DocumentSession,
 	document: ResolvedDocument,
 	epoch: number,
+	revealFragment = document.target.fragment !== undefined,
 ): DocumentSession {
 	const key = documentFileKey(document.target);
 	const existing = session.history.findIndex(
@@ -75,7 +87,9 @@ function visit(
 			opening: null,
 			index: existing,
 			history: session.history.map((item, index) =>
-				index === existing ? { ...item, document, epoch } : item,
+				index === existing
+					? { ...item, document, epoch, revealFragment }
+					: item,
 			),
 		};
 	const history = [
@@ -85,6 +99,7 @@ function visit(
 			position: { scrollTop: 0, zoom: 1 },
 			mode: "preview" as const,
 			epoch,
+			revealFragment,
 		},
 	].slice(-20);
 	return {
@@ -92,6 +107,25 @@ function visit(
 		index: history.length - 1,
 		foreground: true,
 		opening: null,
+	};
+}
+function stepHistory(
+	session: DocumentSession,
+	direction: -1 | 1,
+): DocumentSession {
+	const index = session.history.length
+		? Math.max(
+				0,
+				Math.min(session.history.length - 1, session.index + direction),
+			)
+		: -1;
+	return {
+		...session,
+		index,
+		opening: null,
+		history: session.history.map((item, n) =>
+			n === index ? { ...item, revealFragment: false } : item,
+		),
 	};
 }
 /** Reading targets and history have no persistence middleware; an app restart starts empty. */
@@ -115,7 +149,7 @@ export function createDocumentReadingStore() {
 						}
 					: state.sessions,
 			})),
-		open: (key, input) =>
+		open: (key, input, options) =>
 			set((state) => ({
 				serial: state.serial + 1,
 				sessions: {
@@ -123,7 +157,12 @@ export function createDocumentReadingStore() {
 					[key]: {
 						...(state.sessions[key] ?? empty()),
 						foreground: true,
-						opening: { status: "loading", id: state.serial + 1, input },
+						opening: {
+							status: "loading",
+							id: state.serial + 1,
+							input,
+							preservePosition: !!options?.preservePosition,
+						},
 					},
 				},
 			})),
@@ -136,7 +175,13 @@ export function createDocumentReadingStore() {
 							serial: state.serial + 1,
 							sessions: {
 								...state.sessions,
-								[key]: visit(state.sessions[key], document, state.serial + 1),
+								[key]: visit(
+									state.sessions[key],
+									document,
+									state.serial + 1,
+									!state.sessions[key].opening.preservePosition &&
+										document.target.fragment !== undefined,
+								),
 							},
 						},
 			),
@@ -199,14 +244,7 @@ export function createDocumentReadingStore() {
 					: {
 							sessions: {
 								...state.sessions,
-								[key]: {
-									...state.sessions[key],
-									index: Math.max(
-										state.sessions[key].history.length ? 0 : -1,
-										state.sessions[key].index - 1,
-									),
-									opening: null,
-								},
+								[key]: stepHistory(state.sessions[key], -1),
 							},
 						},
 			),
@@ -217,14 +255,7 @@ export function createDocumentReadingStore() {
 					: {
 							sessions: {
 								...state.sessions,
-								[key]: {
-									...state.sessions[key],
-									index: Math.min(
-										state.sessions[key].history.length - 1,
-										state.sessions[key].index + 1,
-									),
-									opening: null,
-								},
+								[key]: stepHistory(state.sessions[key], 1),
 							},
 						},
 			),

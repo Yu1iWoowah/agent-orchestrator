@@ -26,6 +26,7 @@ const visit: DocumentVisit = {
 	position: { scrollTop: 0, zoom: 1 },
 	mode: "preview",
 	epoch: 1,
+	revealFragment: false,
 };
 beforeEach(() => {
 	mocks.read.mockReset();
@@ -73,6 +74,7 @@ describe("DocumentBody", () => {
 			tree({
 				...visit,
 				epoch: 2,
+				revealFragment: true,
 				document: {
 					...visit.document,
 					target: { ...visit.document.target, fragment: "second" },
@@ -125,5 +127,40 @@ it("rejects declared oversized text from metadata before fetching any content by
 	);
 	await screen.findByText(/Preview limits: UTF-8 text 2 MiB/);
 	expect(mocks.read).not.toHaveBeenCalled();
+	cache.clear();
+});
+
+it("restores history position without reapplying the document's retained heading fragment", async () => {
+	mocks.read.mockResolvedValue(
+		new TextEncoder().encode("# First\n\n## Second").buffer,
+	);
+	const cache = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	const view = render(
+		<QueryClientProvider client={cache}>
+			<DocumentBody
+				readerKey="chat"
+				connection={connection}
+				visit={{
+					...visit,
+					document: {
+						...visit.document,
+						target: { ...visit.document.target, fragment: "second" },
+					},
+					position: { scrollTop: 350, zoom: 1 },
+					revealFragment: false,
+				}}
+			/>
+		</QueryClientProvider>,
+	);
+	await screen.findByRole("heading", { name: "Second" });
+	await waitFor(() =>
+		expect(
+			view.container.querySelector<HTMLElement>("[data-document-scroll]")!
+				.scrollTop,
+		).toBe(350),
+	);
+	view.unmount();
 	cache.clear();
 });
