@@ -49,6 +49,15 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 		if err == nil || next.ID == op.ID && next.Revision > op.Revision {
 			op = next
 		}
+		if errors.Is(err, domain.ErrReplacementRepairCapacity) {
+			// Do not spend another checkpoint recording a capacity refusal or
+			// return a speculative intent that the transaction rolled back.
+			op, err = s.Get(ctx, id)
+			if err == nil {
+				err = checkpointCapacityError(stepErr)
+			}
+			return err
+		}
 		if errors.Is(err, errNoStopClearPending) {
 			// Quiesce positively reported no stop attempt. Keep the durable
 			// export intent reconcilable if its clearance could not commit.
@@ -135,13 +144,24 @@ func (s *Service) save(ctx context.Context, op domain.OrchestratorReplacement) (
 	op.UpdatedAt = s.deps.Now().UTC()
 	changed, err := s.deps.Store.SaveOrchestratorReplacement(ctx, op)
 	if err != nil {
-		return op, err
+		return op, checkpointCapacityError(err)
 	}
 	if !changed {
 		return op, errRevisionChanged
 	}
 	op.Revision++
 	return op, nil
+}
+
+func checkpointCapacityError(err error) error {
+	if !errors.Is(err, domain.ErrReplacementRepairCapacity) {
+		return err
+	}
+	var api *apierr.Error
+	if errors.As(err, &api) && api.Code == "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
+		return err
+	}
+	return errors.Join(err, apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY", "Replacement checkpoint capacity is exhausted; inspect the operation's committed recovery facts", nil))
 }
 
 func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, phase, resume domain.ReplacementPhase, cause error) (domain.OrchestratorReplacement, error) {

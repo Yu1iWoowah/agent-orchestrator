@@ -34,6 +34,9 @@ func (s *Store) DiagnoseOrchestratorReplacement(ctx context.Context, id string) 
 		out = domain.ReplacementDiagnostic{OperationID: row.ID, ProjectID: domain.ProjectID(row.ProjectID), SourceSessionID: domain.SessionID(row.SourceSessionID), Revision: row.Revision, Active: row.IsActive, RawDigest: digest}
 		_, readErr := s.decodeCheckpointedReplacement(tx, q, row)
 		out.Corrupt = readErr != nil
+		if readErr != nil {
+			out.CorruptionReason = readErr.Error()
+		}
 		snapshot, err := q.GetLatestReplacementRepairSnapshot(tx, id)
 		if err == nil {
 			out.SnapshotRevision, out.SnapshotDigest = snapshot.Revision, snapshot.Digest
@@ -152,7 +155,7 @@ func (s *Store) RepairOrchestratorReplacement(ctx context.Context, in domain.Rep
 		if count != 1 {
 			return domain.ErrReplacementRepairConflict
 		}
-		if err := s.saveReplacementCheckpoint(tx, q, op.ID); err != nil {
+		if err := s.saveReplacementCheckpoint(replacementRecoveryCheckpointContext(tx, q), q, op.ID); err != nil {
 			return err
 		}
 		result, applied = op, true

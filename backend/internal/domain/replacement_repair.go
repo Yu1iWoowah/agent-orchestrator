@@ -26,6 +26,7 @@ type ReplacementDiagnostic struct {
 	Active           bool      `json:"active"`
 	RawDigest        string    `json:"rawDigest"`
 	Corrupt          bool      `json:"corrupt"`
+	CorruptionReason string    `json:"corruptionReason,omitempty"`
 	SnapshotRevision int64     `json:"snapshotRevision,omitempty"`
 	SnapshotDigest   string    `json:"snapshotDigest,omitempty"`
 }

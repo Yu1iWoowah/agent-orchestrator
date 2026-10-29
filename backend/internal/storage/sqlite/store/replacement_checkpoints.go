@@ -21,7 +21,35 @@ const (
 	maxReplacementRepairBytes        = 16 << 20
 	maxReplacementRepairSnapshots    = 1024
 	maxReplacementRepairHistoryBytes = 512 << 20
+	// Keep a complete bounded lifecycle tail available after ordinary history
+	// fills up. Reserve bytes for maximum-size capsules, not average row sizes.
+	reservedReplacementRepairSnapshots = 64
+	reservedReplacementRepairBytes     = reservedReplacementRepairSnapshots * maxReplacementRepairBytes
 )
+
+type replacementRecoveryCheckpointKey struct{}
+
+func replacementRecoveryCheckpointContext(ctx context.Context, q *gen.Queries) context.Context {
+	return context.WithValue(ctx, replacementRecoveryCheckpointKey{}, q)
+}
+
+// Existing fact/phase validators still authorize every change before this
+// classification. Metadata churn must not spend the provider recovery reserve.
+func replacementRecoveryProgress(before, after domain.OrchestratorReplacement) bool {
+	if before.Phase.Terminal() || before.SourceStopIntentAt == nil && after.SourceStopIntentAt != nil {
+		return false
+	}
+	if after.Phase == domain.ReplacementCancelled {
+		return true
+	}
+	if before.SourceStopIntentAt == nil && before.SourceStop == nil && before.SourceRetiredAt == nil {
+		return false
+	}
+	before.Revision, after.Revision, before.IntakeRevision, after.IntakeRevision = 0, 0, 0, 0
+	before.UpdatedAt, after.UpdatedAt, before.DeadlineAt, after.DeadlineAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	before.Error, after.Error, before.ResumePhase, after.ResumePhase = nil, nil, "", ""
+	return !reflect.DeepEqual(before, after)
+}
 
 // Gob preserves raw string bytes: JSON would replace invalid UTF-8 and could
 // give distinct damaged rows the same apparent CAS digest.
@@ -108,13 +136,13 @@ func (s *Store) saveReplacementCheckpoint(ctx context.Context, q *gen.Queries, i
 	if err != nil {
 		return err
 	}
-	// Keep one maximum-size capsule reserved for a proven pre-stop Cancel. The
-	// regular budget must not trap a still-running source behind its own fence.
+	// New stop intents always use the ordinary budget. Once admitted, the
+	// clearance/stop receipt and bounded lifecycle can use the reserved tail.
 	countLimit := int64(maxReplacementRepairSnapshots)
-	byteLimit := int64(maxReplacementRepairHistoryBytes - maxReplacementRepairBytes)
-	if operation.Phase == domain.ReplacementCancelled && operation.SourceStopIntentAt == nil && operation.SourceStop == nil && operation.SourceRetiredAt == nil {
-		countLimit++
-		byteLimit = maxReplacementRepairHistoryBytes
+	byteLimit := int64(maxReplacementRepairHistoryBytes)
+	if ctx.Value(replacementRecoveryCheckpointKey{}) == q {
+		countLimit += reservedReplacementRepairSnapshots
+		byteLimit += reservedReplacementRepairBytes
 	}
 	// Immutable history is never pruned to recover capacity.
 	if usage.Snapshots >= countLimit || usage.PayloadBytes > byteLimit-int64(len(payload)) {

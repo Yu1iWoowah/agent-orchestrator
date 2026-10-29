@@ -405,7 +405,11 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		}
 		changed = count == 1
 		if changed {
-			return s.saveReplacementCheckpoint(tx, q, op.ID)
+			checkpointCtx := tx
+			if replacementRecoveryProgress(before, op) || tx.Value(replacementSourceReleaseKey{}) == q {
+				checkpointCtx = replacementRecoveryCheckpointContext(tx, q)
+			}
+			return s.saveReplacementCheckpoint(checkpointCtx, q, op.ID)
 		}
 		return nil
 	})

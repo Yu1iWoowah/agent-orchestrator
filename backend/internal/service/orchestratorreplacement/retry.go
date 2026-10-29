@@ -90,7 +90,7 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 			return apierr.Conflict("ORCHESTRATOR_HANDOFF_CONTROL_UNSETTLED", "The previous preparation has a provider reservation; verify its receipt before retry", nil)
 		}
 		if actionErr != nil {
-			return actionErr
+			return checkpointCapacityError(actionErr)
 		}
 		if !applied {
 			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED", "Source, lease or operation changed before reset", nil)

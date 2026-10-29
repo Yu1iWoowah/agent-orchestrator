@@ -90,13 +90,15 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 		return s.createSessionWithQueriesLocked(ctx, s.qw, rec)
 	}
 	var result domain.SessionRecord
+	var beforeOp domain.OrchestratorReplacement
 	fresh := false
 	err := s.inTx(ctx, "create orchestrator session", func(q *gen.Queries) error {
 		// The existing INSERT trigger may bind a reserved successor. Verify
 		// its input before that authority and seal its output in the same commit.
 		before, err := q.GetActiveOrchestratorReplacement(ctx, string(rec.ProjectID))
 		if err == nil {
-			if _, err := s.decodeCheckpointedReplacement(ctx, q, before); err != nil {
+			beforeOp, err = s.decodeCheckpointedReplacement(ctx, q, before)
+			if err != nil {
 				return err
 			}
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -112,7 +114,11 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 				return err
 			}
 			if after.Revision != before.Revision {
-				return s.saveReplacementCheckpoint(ctx, q, before.ID)
+				checkpointCtx := ctx
+				if beforeOp.SourceStop != nil && beforeOp.SourceRetiredAt != nil {
+					checkpointCtx = replacementRecoveryCheckpointContext(ctx, q)
+				}
+				return s.saveReplacementCheckpoint(checkpointCtx, q, before.ID)
 			}
 		}
 		return nil
