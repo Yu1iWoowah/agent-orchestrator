@@ -36,7 +36,7 @@ func TestGenericStateSaveCannotMintManagedWriteReceipt(t *testing.T) {
 			if state.LastHandoffWrite == nil {
 				state.LastHandoffWrite = &domain.ProjectDocumentWriteReceipt{Path: op.DocumentPath, Hash: strings.Repeat("a", 64), PreviousHash: docs.MissingHash, SourceSessionID: f.owner.ID, Owner: f.owner.ControllerOwner(), CapabilityVerifier: f.owner.Metadata.BrowserCapabilityVerifier, LeaseEpoch: grant.Epoch, CreatedAt: time.Now()}
 			}
-			state.LastHandoffWrite.ID = "forged-without-a-managed-write"
+			state.LastHandoffWrite.ID = "77777777-7777-4777-8777-777777777777"
 			if saved, err := f.db.SaveProjectDocumentState(ctx, "demo", state); saved || err == nil {
 				t.Fatalf("generic save minted %s: saved=%t err=%v", which, saved, err)
 			}

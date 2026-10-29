@@ -69,7 +69,7 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 		if lease.Frozen {
 			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen")
 		}
-		if lease.SessionID != rec.ID {
+		if lease.SessionID != rec.ID && (lease.TokenHash != "" || lease.ClaimVerifier != "" || lease.ReplacementID != "") {
 			previous, ok, err := s.store.GetSession(ctx, lease.SessionID)
 			if err != nil {
 				return Grant{}, err
@@ -112,7 +112,7 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 		return Grant{}, err
 	}
 	if previous != nil && previous.SessionID != rec.ID {
-		slog.InfoContext(ctx, "Reclaimed project document lease from terminated session",
+		slog.InfoContext(ctx, "Reclaimed project document lease from inactive or revoked writer",
 			"project_id", id, "previous_session_id", previous.SessionID, "previous_epoch", previous.Epoch,
 			"session_id", rec.ID, "epoch", epoch)
 	}

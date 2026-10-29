@@ -138,11 +138,17 @@ func (s *Store) replacementTx(ctx context.Context, fn func(context.Context, *gen
 // CreateOrchestratorReplacement atomically accepts one project replacement.
 // A same-key replay wins before rechecking live facts that may already have moved.
 func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.OrchestratorReplacement) (domain.OrchestratorReplacement, bool, error) {
-	if op.Phase != domain.ReplacementAccepted && op.Phase != domain.ReplacementRejected {
-		return op, false, domain.ErrReplacementStateInvalid
-	}
 	var result domain.OrchestratorReplacement
 	created := false
+	// Initial rows are requests or rejections, never pre-produced lifecycle facts.
+	// In particular, Rejected must not bypass the first receipt/retirement guard.
+	if op.Preparation != nil || op.FrozenAt != nil || op.Transcript != nil || op.SourceStopIntentAt != nil || op.SourceStop != nil || op.SourceRetiredAt != nil ||
+		op.SuccessorSessionID != "" || op.SpawnRequestID != "" || op.SpawnRequestHash != "" || op.SpawnRetryGeneration != 0 || len(op.SpawnAttempts) != 0 ||
+		op.SuccessorController != nil || op.Bootstrap != nil || op.BootstrapClientID != "" || op.ResumeProbeClientID != "" || op.ResumeEvidence != nil ||
+		op.WriterActivation != nil || op.IntakeReleasedAt != nil || op.IntakeDrainRequestedAt != nil || op.SourceIntakeReleasedAt != nil || op.IntakeTransfer != nil ||
+		len(op.Notifications) != 0 || len(op.Attempts) != 0 || op.ResumePhase != "" {
+		return result, false, domain.ErrReplacementStateInvalid
+	}
 	if err := validateReplacement(op); err != nil {
 		return result, false, err
 	}

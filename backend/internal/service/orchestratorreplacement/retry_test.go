@@ -160,11 +160,11 @@ func TestReplacementPreStopRetryCancelArchiveAndFence(t *testing.T) {
 					if err != nil || again.Revision != result.Revision {
 						t.Fatal("retry replay restarted in-flight work", err)
 					}
-					next, err := x.service().Advance(ctx, op.ID)
+					_, err = x.service().Advance(ctx, op.ID)
 					if err != nil {
 						t.Fatal(err)
 					}
-					next, err = x.service().Advance(ctx, op.ID)
+					next, err := x.service().Advance(ctx, op.ID)
 					if err != nil || next.Preparation == nil || next.Preparation.AttemptID == priorPreparation.AttemptID || next.Preparation.Nonce == priorPreparation.Nonce {
 						t.Fatal("retry reused old prompt/attempt", next.Phase, err)
 					}

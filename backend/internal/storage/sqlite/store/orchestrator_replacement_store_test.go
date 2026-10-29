@@ -366,7 +366,7 @@ func TestReplacementStoreFencesGenericOrchestratorAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	current.Phase = domain.ReplacementCompleted
-	current = fixturestore.SeedReplacementTestFacts(t, st, current)
+	fixturestore.SeedReplacementTestFacts(t, st, current)
 	source.IsTerminated = false
 	if err := st.UpdateSession(ctx, source); err == nil {
 		t.Error("completed replacement allowed retired source revival")
