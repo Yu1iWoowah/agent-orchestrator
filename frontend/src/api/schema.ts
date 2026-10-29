@@ -5038,11 +5038,70 @@ export interface components {
             lastUsedAt?: null | string;
             usageCount: number;
         };
+        AgentSettingObservation: {
+            reason?: string;
+            /** @enum {string} */
+            state: "known" | "unknown" | "not_provided";
+            value?: string;
+        };
         AgentSettings: {
             effort: string;
             /** @enum {string} */
             fastMode: "default" | "on" | "off";
             model: string;
+        };
+        AgentSettingsActor: {
+            kind: string;
+            sessionId?: string;
+        };
+        AgentSettingsEffective: {
+            effort: components["schemas"]["AgentSettingObservation"];
+            fastMode: components["schemas"]["AgentSettingObservation"];
+            model: components["schemas"]["AgentSettingObservation"];
+            /** Format: date-time */
+            observedAt?: null | string;
+            owner?: components["schemas"]["AgentSettingsOwner"];
+            source?: string;
+        };
+        AgentSettingsOperation: {
+            accountId?: string;
+            actor: components["schemas"]["AgentSettingsActor"];
+            /** @enum {string} */
+            applyMode: "after-turn" | "restart";
+            /** Format: int64 */
+            baseRevision: number;
+            branchId?: string;
+            /** @enum {string} */
+            checkpoint: "queued" | "applying_model" | "applying_effort" | "applying_fast" | "verifying" | "verified" | "rolling_back" | "restored";
+            controllerGeneration: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            errorCategory?: "conflict" | "cancelled" | "provider" | "storage" | "validation" | "recovery_required";
+            /** Format: date-time */
+            finishedAt?: null | string;
+            id: string;
+            /** @enum {string} */
+            phase: "pending" | "applied" | "cancelled" | "failed" | "recovery_required";
+            providerConversationId?: string;
+            recovery?: components["schemas"]["AgentSettingsRecovery"];
+            requestId?: string;
+            sessionId: string;
+            source: components["schemas"]["AgentSettings"];
+            /** Format: date-time */
+            startedAt?: null | string;
+            target: components["schemas"]["AgentSettings"];
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
+        };
+        AgentSettingsOwner: {
+            accountId: string;
+            branchId: string;
+            controllerGeneration: string;
+            providerConversationId: string;
+            sessionId: string;
         };
         AgentSettingsPatch: {
             effort?: null | string;
@@ -5050,10 +5109,30 @@ export interface components {
             fastMode?: "default" | "on" | "off";
             model?: null | string;
         };
+        AgentSettingsRecovery: {
+            /** Format: date-time */
+            claimedAt: string;
+            owner: components["schemas"]["AgentSettingsOwner"];
+            previousCheckpoint: string;
+            /** Format: int64 */
+            revision: number;
+            settings: components["schemas"]["AgentSettings"];
+        };
         AgentSettingsSources: {
             effort: string;
             fastMode: string;
             model: string;
+        };
+        AgentSettingsTurnSnapshot: {
+            /** Format: date-time */
+            capturedAt?: null | string;
+            providerTurnId?: string;
+            reason?: string;
+            revision?: null | number;
+            settings?: components["schemas"]["AgentSettings"];
+            /** @enum {string} */
+            state: "known" | "unknown";
+            turnId?: string;
         };
         AgentUpdateAdvisory: {
             agentId: string;
@@ -7436,6 +7515,9 @@ export interface components {
         };
         SessionAgentSettingsResponse: {
             capabilities: components["schemas"]["SessionAgentSettingsCapabilities"];
+            currentTurn?: components["schemas"]["AgentSettingsTurnSnapshot"];
+            effective: components["schemas"]["AgentSettingsEffective"];
+            pending?: components["schemas"]["AgentSettingsOperation"];
             /** Format: int64 */
             revision: number;
             sessionId: string;

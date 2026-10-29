@@ -4,12 +4,15 @@ import "time"
 
 // SessionAgentSettings is the durable preference and its settings-only revision.
 type SessionAgentSettings struct {
-	Harness         AgentHarness  `json:"-"`
-	AccountID       string        `json:"-"`
-	OwnerGeneration string        `json:"-"`
-	SessionID       SessionID     `json:"sessionId"`
-	Settings        AgentSettings `json:"settings"`
-	Revision        int64         `json:"revision"`
+	Harness                AgentHarness  `json:"-"`
+	AccountID              string        `json:"-"`
+	OwnerGeneration        string        `json:"-"`
+	ProviderConversationID string        `json:"-"`
+	BranchID               string        `json:"-"`
+	IsTerminated           bool          `json:"-"`
+	SessionID              SessionID     `json:"sessionId"`
+	Settings               AgentSettings `json:"settings"`
+	Revision               int64         `json:"revision"`
 }
 
 // AgentSettingsPhase is a durable operation checkpoint.
@@ -42,16 +45,36 @@ type AgentSettingsActor struct {
 
 // AgentSettingsOperation contains no credentials or provider error text.
 type AgentSettingsOperation struct {
-	ID                   string             `json:"id"`
-	SessionID            SessionID          `json:"sessionId"`
-	IdempotencyKey       string             `json:"-"`
-	BaseRevision         int64              `json:"baseRevision"`
-	Source               AgentSettings      `json:"source"`
-	Target               AgentSettings      `json:"target"`
-	AccountID            string             `json:"accountId,omitempty"`
-	ControllerGeneration string             `json:"controllerGeneration"`
-	Actor                AgentSettingsActor `json:"actor"`
-	Phase                AgentSettingsPhase `json:"phase" enum:"pending,applied,cancelled,failed,recovery_required"`
-	CreatedAt            time.Time          `json:"createdAt"`
-	UpdatedAt            time.Time          `json:"updatedAt"`
+	ID                     string                     `json:"id"`
+	SessionID              SessionID                  `json:"sessionId"`
+	IdempotencyKey         string                     `json:"-"`
+	BaseRevision           int64                      `json:"baseRevision"`
+	Source                 AgentSettings              `json:"source"`
+	Target                 AgentSettings              `json:"target"`
+	AccountID              string                     `json:"accountId,omitempty"`
+	ControllerGeneration   string                     `json:"controllerGeneration"`
+	Actor                  AgentSettingsActor         `json:"actor"`
+	Phase                  AgentSettingsPhase         `json:"phase" enum:"pending,applied,cancelled,failed,recovery_required"`
+	CreatedAt              time.Time                  `json:"createdAt"`
+	UpdatedAt              time.Time                  `json:"updatedAt"`
+	ApplyMode              AgentSettingsApplyMode     `json:"applyMode" enum:"after-turn,restart"`
+	Checkpoint             AgentSettingsCheckpoint    `json:"checkpoint" enum:"queued,applying_model,applying_effort,applying_fast,verifying,verified,rolling_back,restored"`
+	Version                int64                      `json:"version"`
+	ErrorCategory          AgentSettingsErrorCategory `json:"errorCategory,omitempty" enum:"conflict,cancelled,provider,storage,validation,recovery_required"`
+	RequestID              string                     `json:"requestId,omitempty"`
+	ProviderConversationID string                     `json:"providerConversationId,omitempty"`
+	BranchID               string                     `json:"branchId,omitempty"`
+	StartedAt              *time.Time                 `json:"startedAt,omitempty"`
+	FinishedAt             *time.Time                 `json:"finishedAt,omitempty"`
+	Recovery               *AgentSettingsRecovery     `json:"recovery,omitempty"`
+}
+
+// AgentSettingsRecovery pins a replacement executor and its durable restoration
+// target. It does not replace the original operation's source, target or actor.
+type AgentSettingsRecovery struct {
+	Owner              AgentSettingsOwner      `json:"owner"`
+	Revision           int64                   `json:"revision"`
+	Settings           AgentSettings           `json:"settings"`
+	ClaimedAt          time.Time               `json:"claimedAt"`
+	PreviousCheckpoint AgentSettingsCheckpoint `json:"previousCheckpoint"`
 }
