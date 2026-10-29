@@ -193,7 +193,7 @@ func (s *transitionStore) RecordAccountTransitionRuntime(_ context.Context, id s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.transitions[id]
-	if !ok || !rec.AccountMove() || rec.Phase != domain.SessionInterfaceTransitionTargetStarting {
+	if !ok || !rec.AccountMove() || (rec.Phase != domain.SessionInterfaceTransitionTargetStarting && rec.Phase != domain.SessionInterfaceTransitionRecovery && rec.Phase != domain.SessionInterfaceTransitionActivating) {
 		return false, nil
 	}
 	rec.TargetRuntimeState = state
@@ -3405,4 +3405,16 @@ func TestInterfaceTransitionAgyFailsWhenSourceDatabaseMissing(t *testing.T) {
 	if status.ReasonCode != "NATIVE_SESSION_MISSING" {
 		t.Fatalf("status.ReasonCode = %q, want NATIVE_SESSION_MISSING", status.ReasonCode)
 	}
+}
+
+func (s *transitionStore) ListUnsettledAccountTransitions(context.Context) ([]domain.SessionInterfaceTransition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.SessionInterfaceTransition
+	for _, t := range s.transitions {
+		if t.AccountMove() && t.Phase == domain.SessionInterfaceTransitionRecovery && t.TargetRuntimeState != domain.AccountTransitionRuntimeNotStarted && t.TargetRuntimeState != domain.AccountTransitionRuntimeStopped {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }

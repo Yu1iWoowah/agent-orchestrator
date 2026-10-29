@@ -3857,7 +3857,7 @@
 	"decision.scopeEvidence": "依據",
 	"decision.open": "開啟決策對話方塊：{{title}}",
 	"decision.older": "載入較早的問題",
-	"settings.agentAccounts.inUse": "此帳號仍在使用中。請先停止或交接下列 session 與 reviewer，再重試。帳號尚未變更。",
+	"settings.agentAccounts.inUse": "此帳號仍在使用中。請先停止或交接使用此帳號的 session 與 reviewer，再重試。帳號尚未變更。",
 	"settings.agentAccounts.reviewerOwner": "reviewer",
 	"settings.agentAccounts.openPR": "開啟 PR",
 	"settings.agentAccounts.legacyIdentityConflict": "舊版裝置帳號目錄已保存此身分。請在設定中選擇保留哪個登入；AO 尚未變更舊登入。"

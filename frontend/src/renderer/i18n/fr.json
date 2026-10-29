@@ -3946,7 +3946,7 @@
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
 	"decision.questionCount_many": "{{count}} questions",
-	"settings.agentAccounts.inUse": "Ce compte est utilisé. Arrêtez ou transférez les sessions et les réviseurs indiqués, puis réessayez. Le compte n’a pas été modifié.",
+	"settings.agentAccounts.inUse": "Ce compte est utilisé. Arrêtez ou transférez les sessions et les réviseurs qui l’utilisent, puis réessayez. Le compte n’a pas été modifié.",
 	"settings.agentAccounts.reviewerOwner": "Réviseur",
 	"settings.agentAccounts.openPR": "Ouvrir la PR",
 	"settings.agentAccounts.legacyIdentityConflict": "Cette identité est déjà enregistrée dans l’ancien catalogue des comptes de l’appareil. Choisissez la connexion à conserver dans les paramètres. AO n’a pas modifié l’ancienne connexion."

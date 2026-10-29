@@ -412,6 +412,7 @@ func TestAccountTransitionRecoveryKeepsACommittedTarget(t *testing.T) {
 		Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 		Phase: domain.SessionInterfaceTransitionTargetStarting, NativeConversationID: "native-1",
 		SourceAccountID: "device-claude", TargetAccountID: "acct-b", CreatedAt: now, UpdatedAt: now,
+		TargetRuntimeState: domain.AccountTransitionRuntimeStarted, TargetRuntimeLaunchID: "committed-target", TargetRuntimeHandleID: "runtime-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -850,5 +851,132 @@ func TestAccountHandoffRuntimeFailureKeepsProviderPayloadOutOfJournalAndLogs(t *
 		if strings.Contains(sink, "fake-private-credential-canary") || strings.Contains(sink, "/fake/private/profile") {
 			t.Fatal("provider payload reached transition journal/API or log")
 		}
+	}
+}
+
+func TestAccountModelPreflightKeepsDefaultAndCustomLaunchSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  ports.AgentConfig
+		catalog ports.AgentModelCatalog
+		wantErr bool
+	}{
+		{name: "provider defaults"},
+		{name: "direct custom model", config: ports.AgentConfig{Model: "custom-model"}, catalog: ports.AgentModelCatalog{AllowCustom: true}},
+		{name: "custom effort needs evidence", config: ports.AgentConfig{Model: "custom-model", Effort: "high"}, catalog: ports.AgentModelCatalog{AllowCustom: true}, wantErr: true},
+		{name: "custom fast needs evidence", config: ports.AgentConfig{Model: "custom-model", FastMode: domain.AgentFastOn}, catalog: ports.AgentModelCatalog{AllowCustom: true}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			m := &Manager{modelCatalog: tuningCatalog{catalog: tc.catalog, calls: &calls}}
+			err := m.preflightAccountModels(context.Background(), domain.SessionRecord{Harness: domain.HarnessCodex}, tc.config)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("preflight: %v wantErr=%t", err, tc.wantErr)
+			}
+			if tc.name == "provider defaults" && calls != 0 {
+				t.Fatalf("unconfigured model required discovery: %d", calls)
+			}
+		})
+	}
+}
+
+type sessionStoppingTransitionRuntime struct {
+	*transitionRuntime
+	stopSessionCalls int
+	stopSessionErr   error
+}
+
+func (r *sessionStoppingTransitionRuntime) StopSessionRuntimes(ctx context.Context, id domain.SessionID) error {
+	r.stopSessionCalls++
+	if id != "session-1" {
+		return errors.New("wrong session namespace")
+	}
+	if r.stopSessionErr != nil {
+		return r.stopSessionErr
+	}
+	return r.Destroy(ctx, ports.RuntimeHandle{ID: "runtime-1"})
+}
+
+func TestTerminalAccountRecoveryConvergesWithoutDeletingSession(t *testing.T) {
+	for _, tc := range []struct {
+		name                                   string
+		committed, terminated, legacy, unknown bool
+	}{
+		{name: "committed daemon restart", committed: true},
+		{name: "terminated receipt", terminated: true},
+		{name: "legacy recovery", legacy: true},
+		{name: "legacy uncertain stop", legacy: true, unknown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			m, st, rt, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+			rec := st.sessions["session-1"]
+			rec.IsTerminated = tc.terminated
+			st.sessions[rec.ID] = rec
+			if tc.committed {
+				accounts.bound[rec.ID] = "acct-b"
+			}
+			runtime := &sessionStoppingTransitionRuntime{transitionRuntime: rt}
+			if tc.unknown {
+				runtime.stopSessionErr = errors.New("registry unavailable")
+			}
+			m.runtime = runtime
+			move := domain.SessionInterfaceTransition{ID: "terminal-move", SessionID: rec.ID, SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-b", Phase: domain.SessionInterfaceTransitionRecovery, TargetRuntimeState: domain.AccountTransitionRuntimeStarted, TargetRuntimeLaunchID: "target-generation", TargetRuntimeHandleID: "runtime-1"}
+			if tc.legacy {
+				move.TargetRuntimeState = ""
+				move.TargetRuntimeLaunchID = ""
+				move.TargetRuntimeHandleID = ""
+			}
+			st.transitions[move.ID] = move
+			if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := st.GetSessionInterfaceTransition(ctx, move.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.committed {
+				if len(*log) != 0 || got.TargetRuntimeState != move.TargetRuntimeState {
+					t.Fatalf("legal committed target stopped: %+v %v", got, *log)
+				}
+			} else if tc.unknown {
+				if !m.SessionMutationInProgress(rec.ID) || got.TargetRuntimeState == domain.AccountTransitionRuntimeStopped {
+					t.Fatal("unknown stop was declared dead")
+				}
+				runtime.stopSessionErr = nil
+				if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+					t.Fatal(err)
+				}
+				got, _, _ = st.GetSessionInterfaceTransition(ctx, move.ID)
+				if got.TargetRuntimeState != domain.AccountTransitionRuntimeStopped || m.SessionMutationInProgress(rec.ID) {
+					t.Fatal("confirmed retry never released legacy fence")
+				}
+			} else if got.TargetRuntimeState != domain.AccountTransitionRuntimeStopped || m.SessionMutationInProgress(rec.ID) {
+				t.Fatalf("terminal receipt never settled: %+v", got)
+			}
+			if _, found, _ := st.GetSession(ctx, rec.ID); !found {
+				t.Fatal("recovery deleted session history")
+			}
+		})
+	}
+}
+
+func TestOldAccountRecoveryNeverStopsASuccessorExecution(t *testing.T) {
+	ctx := context.Background()
+	m, st, rt, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+	m.runtime = &sessionStoppingTransitionRuntime{transitionRuntime: rt}
+	now := time.Now()
+	st.transitions["old-legacy"] = domain.SessionInterfaceTransition{ID: "old-legacy", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-b", Phase: domain.SessionInterfaceTransitionRecovery, CreatedAt: now}
+	st.transitions["successor"] = domain.SessionInterfaceTransition{ID: "successor", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-c", Phase: domain.SessionInterfaceTransitionCompleted, CreatedAt: now.Add(time.Second)}
+	accounts.bound["session-1"] = "acct-c"
+	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*log) != 0 {
+		t.Fatalf("old receipt stopped the new legitimate agent: %v", *log)
+	}
+	old, _, _ := st.GetSessionInterfaceTransition(ctx, "old-legacy")
+	if old.TargetRuntimeState != domain.AccountTransitionRuntimeStopped {
+		t.Fatal("superseded legacy owner never converged")
 	}
 }

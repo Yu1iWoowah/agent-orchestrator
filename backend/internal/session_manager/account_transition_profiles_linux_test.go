@@ -73,7 +73,6 @@ func TestContainedAccountHandoffProtectsProfilesAndPreservesNativeHistory(t *tes
 				source.Harness = harness
 				st.sessions[source.ID] = source
 				m.SetAgentAccounts(svc)
-				m.agents = singleAgent{agent: containedHistoryAgent{envKey: envKey, historyDir: historyDir}}
 				if err := svc.BindSession(ctx, "session-1", harness, "A"); err != nil {
 					t.Fatal(err)
 				}
@@ -92,11 +91,19 @@ func TestContainedAccountHandoffProtectsProfilesAndPreservesNativeHistory(t *tes
 						}
 					}
 				}
+				nativeAgent := containedHistoryAgent{envKey: envKey, historyDir: historyDir}
 				if mode == domain.SessionModeTUI {
 					runtime.onCreate = check
-				} else { // target env resolution runs before Chat is activated
-					m.modelCatalog = &handoffGuardCatalog{check: check}
+				} else {
+					// Provider-default settings legitimately skip discovery.
+					// Check the lease at the native read, not an optional catalog call.
+					nativeAgent.beforeNativeProbe = func(home string) {
+						if home == filepath.Join(root, string(p), "B") {
+							check()
+						}
+					}
 				}
+				m.agents = singleAgent{agent: nativeAgent}
 				transition, err := m.StartAccountTransition(ctx, "session-1", "B", domain.SessionInterfaceTransitionDrain)
 				if err != nil {
 					t.Fatal(err)
@@ -160,16 +167,13 @@ func (*containedHandoffProvider) Logout(context.Context, string) error {
 type containedHistoryAgent struct {
 	transitionAgent
 	envKey, historyDir string
+	beforeNativeProbe  func(string)
 }
 
 func (a containedHistoryAgent) NativeConversationExists(_ context.Context, _ ports.SessionRef, id string, env map[string]string) (bool, error) {
+	if a.beforeNativeProbe != nil {
+		a.beforeNativeProbe(env[a.envKey])
+	}
 	data, err := os.ReadFile(filepath.Join(env[a.envKey], a.historyDir, id))
 	return string(data) == "same-native-conversation", err
-}
-
-type handoffGuardCatalog struct{ check func() }
-
-func (c *handoffGuardCatalog) Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
-	c.check()
-	return ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "fake-default", IsDefault: true}}}, nil
 }

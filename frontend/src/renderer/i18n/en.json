@@ -3857,7 +3857,7 @@
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
-	"settings.agentAccounts.inUse": "This account is in use. Stop or hand off the listed sessions and reviewers, then retry. The account has not been changed.",
+	"settings.agentAccounts.inUse": "This account is in use. Stop or hand off the sessions and reviewers using it, then retry. The account has not been changed.",
 	"settings.agentAccounts.reviewerOwner": "Reviewer",
 	"settings.agentAccounts.openPR": "Open PR",
 	"settings.agentAccounts.legacyIdentityConflict": "This identity is already saved in the legacy device account catalog. Choose which login to keep in Settings; AO has not changed the old login."

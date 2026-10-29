@@ -3858,7 +3858,7 @@
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
-	"settings.agentAccounts.inUse": "此账号仍在使用中。请先停止或移交下列任务与审查者，再重试。账号尚未更改。",
+	"settings.agentAccounts.inUse": "此账号仍在使用中。请先停止或交接使用此账号的 session 与 reviewer，再重试。账号尚未变更。",
 	"settings.agentAccounts.reviewerOwner": "审查者",
 	"settings.agentAccounts.openPR": "打开 PR",
 	"settings.agentAccounts.legacyIdentityConflict": "旧版设备账号目录已保存此身份。请在设置中选择保留哪个登录；AO 尚未更改旧登录。"

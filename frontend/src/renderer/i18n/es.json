@@ -3946,7 +3946,7 @@
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
 	"decision.questionCount_many": "{{count}} questions",
-	"settings.agentAccounts.inUse": "Esta cuenta está en uso. Detén o transfiere las sesiones y revisores indicados y vuelve a intentarlo. La cuenta no ha cambiado.",
+	"settings.agentAccounts.inUse": "Esta cuenta está en uso. Detén o transfiere las sesiones y revisores que la usan y vuelve a intentarlo. La cuenta no se ha modificado.",
 	"settings.agentAccounts.reviewerOwner": "Revisor",
 	"settings.agentAccounts.openPR": "Abrir PR",
 	"settings.agentAccounts.legacyIdentityConflict": "Esta identidad ya está guardada en el catálogo antiguo de cuentas del dispositivo. Elige qué inicio de sesión conservar en Configuración; AO no ha cambiado el anterior."

@@ -3,6 +3,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -11,6 +12,10 @@ import (
 
 type accountTransitionRuntimeStore interface {
 	RecordAccountTransitionRuntime(context.Context, string, domain.AccountTransitionRuntimeState, string, string, time.Time) (bool, error)
+}
+
+type accountTransitionRecoveryStore interface {
+	ListUnsettledAccountTransitions(context.Context) ([]domain.SessionInterfaceTransition, error)
 }
 
 type accountTransitionRuntimeContextKey struct{}
@@ -79,7 +84,17 @@ func (m *Manager) stopAccountTransitionRuntime(ctx context.Context, transition d
 		return nil
 	}
 	if latest.TargetRuntimeState != domain.AccountTransitionRuntimeStarted || latest.TargetRuntimeHandleID == "" || latest.TargetRuntimeLaunchID == "" {
-		return errors.New("target runtime may have started before its ownership receipt was saved")
+		// A legacy/partial receipt cannot identify one opaque handle. Only the
+		// runtime adapter can conclusively close its whole session namespace.
+		stopper, ok := m.runtime.(ports.SessionRuntimeStopper)
+		if !ok {
+			return errors.New("target runtime ownership is unknown; a runtime namespace shutdown is required before retrying recovery")
+		}
+		if err := stopper.StopSessionRuntimes(ctx, latest.SessionID); err != nil {
+			return err
+		}
+		ctx = context.WithValue(ctx, accountTransitionRuntimeContextKey{}, latest.ID)
+		return m.recordAccountRuntime(ctx, domain.AccountTransitionRuntimeStopped, latest.TargetRuntimeLaunchID, latest.TargetRuntimeHandleID)
 	}
 	// The receipt, not the old session metadata, identifies this target.
 	rec, found, err := m.store.GetSession(ctx, latest.SessionID)
@@ -94,4 +109,56 @@ func (m *Manager) stopAccountTransitionRuntime(ctx context.Context, transition d
 	}
 	ctx = context.WithValue(ctx, accountTransitionRuntimeContextKey{}, latest.ID)
 	return m.recordAccountRuntime(ctx, domain.AccountTransitionRuntimeStopped, latest.TargetRuntimeLaunchID, latest.TargetRuntimeHandleID)
+}
+
+// recoverTerminalAccountTransition closes an old recovery_required receipt
+// without deleting historical attribution. Unknown shutdown keeps only this
+// session fenced, and a later recovery retries the same durable obligation.
+func (m *Manager) recoverTerminalAccountTransition(ctx context.Context, t domain.SessionInterfaceTransition) error {
+	rec, found, err := m.store.GetSession(ctx, t.SessionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	if !rec.IsTerminated && m.agentAccounts != nil {
+		bound, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+		if err != nil {
+			return err
+		}
+		if bound == t.TargetAccountID {
+			m.endAgentOperation(t.SessionID, agentOperationInterfaceRecovery)
+			return nil
+		}
+	}
+	if store, ok := m.store.(interfaceTransitionStore); ok {
+		latest, found, err := store.GetLatestSessionInterfaceTransition(ctx, t.SessionID)
+		if err != nil {
+			return err
+		}
+		if found && latest.ID != t.ID && latest.Phase == domain.SessionInterfaceTransitionCompleted {
+			// A later completed handoff has already stopped the preceding
+			// controller under this session's gate. Retire only the old receipt;
+			// its adapter namespace now belongs to that successful successor.
+			writeCtx := context.WithValue(ctx, accountTransitionRuntimeContextKey{}, t.ID)
+			if err := m.recordAccountRuntime(writeCtx, domain.AccountTransitionRuntimeStopped, t.TargetRuntimeLaunchID, t.TargetRuntimeHandleID); err != nil {
+				return err
+			}
+			m.endAgentOperation(t.SessionID, agentOperationInterfaceRecovery)
+			return nil
+		}
+	}
+	if err := m.stopTransitionTargetConclusive(ctx, t); err != nil {
+		m.logger.Warn("account transition: recovery shutdown unconfirmed; stop the session runtime and retry recovery", "sessionID", t.SessionID, "transition", t.ID, "errorType", fmt.Sprintf("%T", err))
+		return nil
+	}
+	if t.TargetMode == domain.SessionModeChat {
+		writeCtx := context.WithValue(ctx, accountTransitionRuntimeContextKey{}, t.ID)
+		if err := m.recordAccountRuntime(writeCtx, domain.AccountTransitionRuntimeStopped, t.TargetRuntimeLaunchID, t.TargetRuntimeHandleID); err != nil {
+			return err
+		}
+	}
+	m.endAgentOperation(t.SessionID, agentOperationInterfaceRecovery)
+	return nil
 }

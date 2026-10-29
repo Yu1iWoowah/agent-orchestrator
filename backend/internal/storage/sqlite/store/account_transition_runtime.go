@@ -9,7 +9,8 @@ import (
 )
 
 // RecordAccountTransitionRuntime is an exact-generation CAS on the existing
-// handoff journal. It cannot attach ownership to a completed/unrelated saga.
+// handoff journal. Terminal recovery can only retire an existing receipt; it
+// cannot reserve a new generation or attach ownership to an unrelated saga.
 func (s *Store) RecordAccountTransitionRuntime(ctx context.Context, id string, state domain.AccountTransitionRuntimeState, launchID, handleID string, at time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -17,7 +18,16 @@ func (s *Store) RecordAccountTransitionRuntime(ctx context.Context, id string, s
 	if err != nil {
 		return false, err
 	}
-	if row.TargetAccountID == "" || row.Phase != domain.SessionInterfaceTransitionTargetStarting {
+	if row.TargetAccountID == "" {
+		return false, nil
+	}
+	switch row.Phase {
+	case domain.SessionInterfaceTransitionTargetStarting:
+	case domain.SessionInterfaceTransitionActivating, domain.SessionInterfaceTransitionRecovery:
+		if state != domain.AccountTransitionRuntimeStopped {
+			return false, nil
+		}
+	default:
 		return false, nil
 	}
 	previous := domain.AccountTransitionRuntimeState(row.TargetRuntimeState)
@@ -31,11 +41,26 @@ func (s *Store) RecordAccountTransitionRuntime(ctx context.Context, id string, s
 	case domain.AccountTransitionRuntimeStarted:
 		valid = previous == domain.AccountTransitionRuntimeReserved && row.TargetRuntimeLaunchID == launchID && launchID != "" && handleID != ""
 	case domain.AccountTransitionRuntimeStopped:
-		valid = (previous == domain.AccountTransitionRuntimeReserved || previous == domain.AccountTransitionRuntimeStarted) && row.TargetRuntimeLaunchID == launchID && launchID != "" && (row.TargetRuntimeHandleID == "" || row.TargetRuntimeHandleID == handleID)
+		valid = (previous == domain.AccountTransitionRuntimeReserved || previous == domain.AccountTransitionRuntimeStarted || previous == "") && row.TargetRuntimeLaunchID == launchID && (row.TargetRuntimeHandleID == "" || row.TargetRuntimeHandleID == handleID)
 	}
 	if !valid {
 		return false, nil
 	}
 	n, err := s.qw.RecordAccountTransitionRuntime(ctx, gen.RecordAccountTransitionRuntimeParams{ID: id, State: string(state), LaunchID: launchID, HandleID: handleID, ExpectedState: string(previous), ExpectedLaunchID: row.TargetRuntimeLaunchID, UpdatedAt: at})
 	return n > 0, err
+}
+
+// ListUnsettledAccountTransitions finds historical recovery obligations left by
+// older daemons as well as terminal write failures. Committed live targets are
+// legitimate session owners and must never be stopped by this sweep.
+func (s *Store) ListUnsettledAccountTransitions(ctx context.Context) ([]domain.SessionInterfaceTransition, error) {
+	rows, err := s.qr.ListUnsettledAccountTransitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.SessionInterfaceTransition, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, interfaceTransitionToDomain(row))
+	}
+	return out, nil
 }

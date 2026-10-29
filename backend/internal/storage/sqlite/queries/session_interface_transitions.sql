@@ -106,5 +106,17 @@ WHERE id = ? AND delivered_at IS NULL;
 UPDATE session_interface_transitions
 SET target_runtime_launch_id=sqlc.arg(launch_id), target_runtime_handle_id=sqlc.arg(handle_id),
     target_runtime_state=sqlc.arg(state), updated_at=sqlc.arg(updated_at)
-WHERE id=sqlc.arg(id) AND target_account_id<>'' AND phase='target_starting'
+WHERE id=sqlc.arg(id) AND target_account_id<>'' AND (phase='target_starting' OR (phase IN ('activating','recovery_required') AND sqlc.arg(state)='stopped'))
   AND target_runtime_state=sqlc.arg(expected_state) AND target_runtime_launch_id=sqlc.arg(expected_launch_id);
+
+-- name: ListUnsettledAccountTransitions :many
+SELECT t.* FROM session_interface_transitions AS t
+JOIN sessions AS s ON s.id=t.session_id
+WHERE t.phase='recovery_required' AND t.target_account_id<>''
+  AND t.target_runtime_state NOT IN ('not_started','stopped')
+  AND (s.is_terminated=1 OR NOT EXISTS (
+    SELECT 1 FROM session_agent_accounts AS b
+    WHERE b.session_id=t.session_id AND b.account_id=t.target_account_id
+      AND b.bound_at=(SELECT MAX(c.bound_at) FROM session_agent_accounts AS c
+                      WHERE c.session_id=b.session_id AND c.provider=b.provider)))
+ORDER BY t.created_at,t.id;

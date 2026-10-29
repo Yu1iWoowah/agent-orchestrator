@@ -1811,11 +1811,18 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 	var err error
 	if transitionID == "" {
 		active, err = store.ListActiveSessionInterfaceTransitions(ctx)
+		if err == nil {
+			if recoveryStore, ok := m.store.(accountTransitionRecoveryStore); ok {
+				var historical []domain.SessionInterfaceTransition
+				historical, err = recoveryStore.ListUnsettledAccountTransitions(ctx)
+				active = append(active, historical...)
+			}
+		}
 	} else {
 		var transition domain.SessionInterfaceTransition
 		var found bool
 		transition, found, err = store.GetSessionInterfaceTransition(ctx, transitionID)
-		if found && transition.Active() {
+		if found && (transition.Active() || transition.AccountMove() && transition.Phase == domain.SessionInterfaceTransitionRecovery && transition.TargetRuntimeState != domain.AccountTransitionRuntimeStopped && transition.TargetRuntimeState != domain.AccountTransitionRuntimeNotStarted) {
 			active = append(active, transition)
 		}
 	}
@@ -1848,6 +1855,13 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 				return nil, ctx.Err()
 			}
 		}
+		if transition.AccountMove() && transition.Phase == domain.SessionInterfaceTransitionRecovery {
+			if err := m.recoverTerminalAccountTransition(ctx, *transition); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		recoveryCode := "DAEMON_RESTARTED"
 		detail := "The daemon restarted during the interface switch; AO recovered the session from its last committed mode."
 		if transition.AccountMove() {
 			detail = "The daemon restarted during the account switch; the session stays on its committed account."
@@ -1872,9 +1886,9 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 					}
 					committed = bound == transition.TargetAccountID
 				}
-				if committed {
+				if committed && !rec.IsTerminated {
 					detail = "The daemon restarted just after the account switch finished; the agent stays on its new account."
-				} else if found && !rec.IsTerminated {
+				} else if found {
 					if stopErr := m.stopTransitionTargetConclusive(ctx, *transition); stopErr != nil {
 						if err := m.retainUnconfirmedTransitionTarget(*transition, stopErr); err != nil {
 							return nil, err
@@ -1923,13 +1937,17 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 				}
 			}
 		}
+		if transition.ErrorCode == "TARGET_STOP_UNCONFIRMED" {
+			recoveryCode = "TARGET_STOP_CONFIRMED"
+			detail = "AO confirmed the failed target stopped. The session stays on its committed account or interface; resume it to continue."
+		}
 		moved, err := store.AdvanceSessionInterfaceTransition(
 			ctx,
 			transition.ID,
 			transition.Phase,
 			domain.SessionInterfaceTransitionRecovery,
 			transition.NativeConversationID,
-			"DAEMON_RESTARTED",
+			recoveryCode,
 			detail,
 			m.clock(),
 		)
@@ -1955,7 +1973,7 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 			return nil, fmt.Errorf("transition %s changed while recovering", transition.ID)
 		}
 		transition.Phase = domain.SessionInterfaceTransitionRecovery
-		transition.ErrorCode = "DAEMON_RESTARTED"
+		transition.ErrorCode = recoveryCode
 		transition.ErrorDetail = detail
 		transition.UpdatedAt = m.clock()
 		transition.CompletedAt = transition.UpdatedAt

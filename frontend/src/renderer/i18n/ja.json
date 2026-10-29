@@ -3876,7 +3876,7 @@
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
-	"settings.agentAccounts.inUse": "このアカウントは使用中です。次のセッションとレビュアーを停止または引き継いでから再試行してください。アカウントは変更されていません。",
+	"settings.agentAccounts.inUse": "このアカウントは使用中です。使用しているセッションとレビュアーを停止または引き継いでから再試行してください。アカウントは変更されていません。",
 	"settings.agentAccounts.reviewerOwner": "レビュアー",
 	"settings.agentAccounts.openPR": "PR を開く",
 	"settings.agentAccounts.legacyIdentityConflict": "この ID は従来のデバイスアカウント一覧に保存されています。設定で残すログインを選んでください。AO は従来のログインを変更していません。"

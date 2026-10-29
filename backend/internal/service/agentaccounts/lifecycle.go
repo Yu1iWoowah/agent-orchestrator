@@ -239,7 +239,9 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	s.mu.Lock()
 	legacyCheck := s.legacyIdentityCheck
 	s.mu.Unlock()
-	if o.Outcome == "complete" && legacyCheck != nil {
+	// Reauthenticating the same existing profile does not create a second copy.
+	// The identity-mismatch check above still rejects replacing its owner.
+	if o.Outcome == "complete" && o.Action == "login" && legacyCheck != nil {
 		conflict, err := legacyCheck(ctx, o.Provider, identity.Email)
 		if err != nil {
 			return "", nil, ports.ErrAgentAccountStorageUnavailable

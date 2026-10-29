@@ -86,6 +86,16 @@ type Runtime interface {
 	IsAlive(ctx context.Context, handle RuntimeHandle) (bool, error)
 }
 
+// SessionRuntimeStopper conclusively stops every AO runtime in a session's
+// namespace, including a Create whose handle receipt was lost. Callers must
+// hold the exclusive session gate. Adapters resolve their own namespace; an
+// incomplete registry or uncertain shutdown must return an error.
+// This is used to recover legacy/partial account-switch receipts, not to infer
+// a handle from a session ID in service code.
+type SessionRuntimeStopper interface {
+	StopSessionRuntimes(context.Context, domain.SessionID) error
+}
+
 // RuntimeChildInspector distinguishes running terminal children from a runtime
 // retained only to serve scrollback. False with no error confirms all children
 // have exited (or the runtime is absent); inconclusive probes must return errors.

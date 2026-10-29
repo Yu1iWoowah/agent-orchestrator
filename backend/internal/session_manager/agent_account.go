@@ -230,14 +230,27 @@ func (m *Manager) preflightAccountTarget(
 }
 
 func (m *Manager) preflightAccountModels(ctx context.Context, rec domain.SessionRecord, config ports.AgentConfig) error {
+	// With no explicit settings the provider chooses its defaults, just as at spawn.
+	if config.Model == "" && config.Effort == "" && config.FastMode != domain.AgentFastOn {
+		return nil
+	}
+	covers := func(catalog ports.AgentModelCatalog) bool {
+		if savedCatalogCovers(catalog, config.Model, config.Effort) {
+			return true
+		}
+		// Direct-entry models have no advertised capabilities. Accept the name,
+		// but never infer support for an explicit effort or fast requirement.
+		return catalog.AllowCustom && config.Model != "" && config.Effort == "" && config.FastMode != domain.AgentFastOn &&
+			!catalog.Stale && (catalog.RefreshState == "" || catalog.RefreshState == "idle")
+	}
 	if m.modelCatalog == nil {
 		return ports.ErrModelCapabilitiesUnavailable
 	}
 	catalog, err := m.modelCatalog.Models(ctx, string(rec.Harness), string(rec.ProjectID), false)
-	if err != nil || !savedCatalogCovers(catalog, config.Model, config.Effort) {
+	if err != nil || !covers(catalog) {
 		catalog, err = m.modelCatalog.Models(ctx, string(rec.Harness), string(rec.ProjectID), true)
 	}
-	if err != nil || !savedCatalogCovers(catalog, config.Model, config.Effort) {
+	if err != nil || !covers(catalog) {
 		return ports.ErrModelCapabilitiesUnavailable
 	}
 	if config.FastMode == domain.AgentFastOn {

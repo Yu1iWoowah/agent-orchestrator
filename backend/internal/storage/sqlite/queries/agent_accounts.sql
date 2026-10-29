@@ -139,6 +139,9 @@ ORDER BY r.created_at,r.id,a.provider LIMIT 1;
 -- observation; the launch lease may return before the caller commits its handle.
 -- Transition targets are owners before a binding is committed. No profile path
 -- or provider output is part of this local-only projection.
+-- A committed target is owned by its current session binding, never by a
+-- historical source receipt. Uncommitted/terminated targets retain an owner
+-- until recovery positively settles their runtime receipt.
 -- name: ListAgentAccountUsageOwners :many
 SELECT 'session' AS owner_kind, CAST(COALESCE(s.project_id,'') AS TEXT) AS project_id, s.id AS session_id, s.display_name AS session_name,
        CAST('' AS TEXT) AS review_id, CAST('' AS TEXT) AS pr_url, s.harness,
@@ -156,7 +159,15 @@ WHERE a.account_id=sqlc.arg(account_id)
 UNION ALL
 SELECT 'transition', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, '', '', s.harness, t.id, 1
 FROM session_interface_transitions AS t JOIN sessions AS s ON s.id=t.session_id
-WHERE (t.source_account_id=sqlc.arg(account_id) OR t.target_account_id=sqlc.arg(account_id))
-  AND (t.phase NOT IN ('completed','failed','cancelled','recovery_required')
-       OR t.phase='recovery_required' AND t.target_runtime_state NOT IN ('not_started','stopped'))
+WHERE ((t.source_account_id=sqlc.arg(account_id) OR t.target_account_id=sqlc.arg(account_id))
+       AND t.phase NOT IN ('completed','failed','cancelled','recovery_required'))
+   OR (t.target_account_id=sqlc.arg(account_id) AND t.phase='recovery_required'
+       AND t.target_runtime_state NOT IN ('not_started','stopped')
+       AND NOT EXISTS (SELECT 1 FROM session_interface_transitions AS successor
+                       WHERE successor.session_id=t.session_id AND successor.rowid>t.rowid AND successor.phase='completed')
+       AND (s.is_terminated=1 OR NOT EXISTS (
+         SELECT 1 FROM session_agent_accounts AS b
+         WHERE b.session_id=t.session_id AND b.account_id=t.target_account_id
+           AND b.bound_at=(SELECT MAX(c.bound_at) FROM session_agent_accounts AS c
+                           WHERE c.session_id=b.session_id AND c.provider=b.provider))))
 ORDER BY owner_kind, session_id, review_id, transition_id;

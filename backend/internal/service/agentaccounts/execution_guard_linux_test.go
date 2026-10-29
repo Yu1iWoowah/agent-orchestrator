@@ -213,3 +213,47 @@ func TestUnsafeReservedAncestorBlocksEvenNonHarnessLaunch(t *testing.T) {
 		t.Fatal("unsafe namespace was modified", err)
 	}
 }
+
+func TestLegacyCatalogDoesNotBlockExistingManagedAccountRelogin(t *testing.T) {
+	for _, provider := range domain.AgentAccountProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "accounts")
+			cli := &fakeClaude{signedInAs: map[string]string{}}
+			var native ports.AgentAccountProviderCLI = cli
+			if provider == domain.AgentAccountProviderCodex {
+				native = &evidenceCodex{fakeClaude: cli}
+			}
+			st := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
+			svc := New(st, []ports.AgentAccountProviderCLI{native}, root, fakeTerminals{}, nil)
+			login, err := svc.StartLogin(ctx, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(root, string(provider), login.OperationID)
+			cli.signedInAs[home] = "existing@example.test"
+			if provider == domain.AgentAccountProviderCodex {
+				if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte("fake-credential"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err = svc.VerifyLogin(ctx, login.OperationID); err != nil {
+				t.Fatal(err)
+			}
+			// Simulate a saved legacy catalog entry matching a managed row that already
+			// existed before this release. Reauth must reuse that exact home and ID.
+			svc.SetLegacyIdentityCheck(func(context.Context, domain.AgentAccountProvider, string) (bool, error) { return true, nil })
+			again, err := svc.StartSignInAgain(ctx, login.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, view, err := svc.VerifyLogin(ctx, again.OperationID)
+			if err != nil || status != LoginComplete || view == nil || view.Account.ID != login.OperationID {
+				t.Fatalf("existing profile could not sign in again: %s %+v %v", status, view, err)
+			}
+			if len(st.accounts) != 1 || cli.signedInAs[home] != "existing@example.test" {
+				t.Fatal("relogin duplicated or destroyed the existing credential owner")
+			}
+		})
+	}
+}

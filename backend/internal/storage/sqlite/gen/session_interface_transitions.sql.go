@@ -469,6 +469,62 @@ func (q *Queries) ListPendingSessionInterfaceTransitionMessages(ctx context.Cont
 	return items, nil
 }
 
+const listUnsettledAccountTransitions = `-- name: ListUnsettledAccountTransitions :many
+SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state FROM session_interface_transitions AS t
+JOIN sessions AS s ON s.id=t.session_id
+WHERE t.phase='recovery_required' AND t.target_account_id<>''
+  AND t.target_runtime_state NOT IN ('not_started','stopped')
+  AND (s.is_terminated=1 OR NOT EXISTS (
+    SELECT 1 FROM session_agent_accounts AS b
+    WHERE b.session_id=t.session_id AND b.account_id=t.target_account_id
+      AND b.bound_at=(SELECT MAX(c.bound_at) FROM session_agent_accounts AS c
+                      WHERE c.session_id=b.session_id AND c.provider=b.provider)))
+ORDER BY t.created_at,t.id
+`
+
+func (q *Queries) ListUnsettledAccountTransitions(ctx context.Context) ([]SessionInterfaceTransition, error) {
+	rows, err := q.db.QueryContext(ctx, listUnsettledAccountTransitions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionInterfaceTransition{}
+	for rows.Next() {
+		var i SessionInterfaceTransition
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.SourceMode,
+			&i.TargetMode,
+			&i.Policy,
+			&i.Phase,
+			&i.NativeConversationID,
+			&i.ErrorCode,
+			&i.ErrorDetail,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+			&i.NoticeAcknowledgedAt,
+			&i.HistoryPolicy,
+			&i.SourceAccountID,
+			&i.TargetAccountID,
+			&i.TargetRuntimeLaunchID,
+			&i.TargetRuntimeHandleID,
+			&i.TargetRuntimeState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSessionInterfaceTransitionMessageDelivered = `-- name: MarkSessionInterfaceTransitionMessageDelivered :execrows
 UPDATE session_interface_transition_messages
 SET delivered_at = ?
@@ -492,7 +548,7 @@ const recordAccountTransitionRuntime = `-- name: RecordAccountTransitionRuntime 
 UPDATE session_interface_transitions
 SET target_runtime_launch_id=?1, target_runtime_handle_id=?2,
     target_runtime_state=?3, updated_at=?4
-WHERE id=?5 AND target_account_id<>'' AND phase='target_starting'
+WHERE id=?5 AND target_account_id<>'' AND (phase='target_starting' OR (phase IN ('activating','recovery_required') AND ?3='stopped'))
   AND target_runtime_state=?6 AND target_runtime_launch_id=?7
 `
 

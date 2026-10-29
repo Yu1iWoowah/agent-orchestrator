@@ -202,6 +202,26 @@ func TestReviewsTrigger_UnauthenticatedReviewerReturns409(t *testing.T) {
 	}
 }
 
+func TestReviewsTriggerAccountAdmissionConflictsReturn409(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{ports.ErrAgentAccountInUse, "AGENT_ACCOUNT_IN_USE"},
+		{ports.ErrAgentAccountOperationBusy, "AGENT_ACCOUNT_OPERATION_BUSY"},
+		{ports.ErrAgentAccountChanged, "AGENT_ACCOUNT_CHANGED"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			srv := newReviewTestServer(t, &fakeReviewService{triggerErr: fmt.Errorf("private-provider-canary: %w", tc.err)})
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/trigger", "")
+			assertErrorCode(t, body, status, http.StatusConflict, tc.code)
+			if !strings.Contains(string(body), `"retryable":true`) || strings.Contains(string(body), "canary") || strings.Contains(string(body), "cleanup is scheduled") {
+				t.Fatalf("unsafe or unhelpful account error: %s", body)
+			}
+		})
+	}
+}
+
 func TestReviewActivityPersistsReviewerNativeSessionID(t *testing.T) {
 	svc := &fakeReviewService{}
 	srv := newReviewTestServer(t, svc)

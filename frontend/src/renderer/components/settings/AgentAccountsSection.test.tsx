@@ -4,50 +4,113 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { appI18n } from "../../i18n";
 import { TooltipProvider } from "../ui/tooltip";
-import { AgentAccountsPanel, type CliLoginControls } from "./AgentAccountsSection";
+import {
+	AgentAccountsPanel,
+	type CliLoginControls,
+} from "./AgentAccountsSection";
 
-const { getMock, postMock, terminalState, navigateSession } = vi.hoisted(() => ({
-	getMock: vi.fn(), postMock: vi.fn(), navigateSession: vi.fn(),
-	terminalState: { value: undefined as ((state: "attached" | "exited" | "error") => void) | undefined },
+const { getMock, postMock, deleteMock, terminalState, navigateSession } =
+	vi.hoisted(() => ({
+		getMock: vi.fn(),
+		postMock: vi.fn(),
+		deleteMock: vi.fn(),
+		navigateSession: vi.fn(),
+		terminalState: {
+			value: undefined as
+				| ((state: "attached" | "exited" | "error") => void)
+				| undefined,
+		},
+	}));
+
+vi.mock("../../lib/navigate-to-session", () => ({
+	useNavigateToSession: () => navigateSession,
 }));
 
-vi.mock("../../lib/navigate-to-session",()=>({useNavigateToSession:()=>navigateSession}));
-
 vi.mock("../../lib/api-client", () => ({
-	apiClient: { DELETE: vi.fn(), GET: getMock, POST: postMock },
-	apiErrorCode: (error: unknown) => typeof error === "object" && error !== null && "code" in error ? error.code : undefined,
-	apiErrorMessage: (error: unknown) => error instanceof Error ? error.message : "request failed",
+	apiClient: { DELETE: deleteMock, GET: getMock, POST: postMock },
+	apiErrorCode: (error: unknown) =>
+		typeof error === "object" && error !== null && "code" in error
+			? error.code
+			: undefined,
+	apiErrorMessage: (error: unknown) =>
+		error instanceof Error ? error.message : "request failed",
 }));
 
 vi.mock("../TerminalPane", () => ({
-	TerminalPane: ({ onTerminalStateChange }: { onTerminalStateChange?: (state: "attached" | "exited" | "error") => void }) => {
+	TerminalPane: ({
+		onTerminalStateChange,
+	}: {
+		onTerminalStateChange?: (state: "attached" | "exited" | "error") => void;
+	}) => {
 		terminalState.value = onTerminalStateChange;
 		return <div data-testid="inline-terminal-body" />;
 	},
 }));
 
-const device = { id: "device-claude", provider: "claude", device: true, default: true, signedIn: true, email: "a@example.com" };
-const saved = { id: "acct-b", provider: "claude", device: false, default: false, signedIn: false, email: "b@example.com" };
-const login = { operationId: "login-1", provider: "claude", shellTerminal: { handleId: "shellterm-1", title: "Sign in to Claude account", createdAt: "2026-10-18T10:00:00Z" } };
+const device = {
+	id: "device-claude",
+	provider: "claude",
+	device: true,
+	default: true,
+	signedIn: true,
+	email: "a@example.com",
+};
+const saved = {
+	id: "acct-b",
+	provider: "claude",
+	device: false,
+	default: false,
+	signedIn: false,
+	email: "b@example.com",
+};
+const login = {
+	operationId: "login-1",
+	provider: "claude",
+	shellTerminal: {
+		handleId: "shellterm-1",
+		title: "Sign in to Claude account",
+		createdAt: "2026-10-18T10:00:00Z",
+	},
+};
 
 function renderPanel(cliLogin?: CliLoginControls) {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	return render(<QueryClientProvider client={queryClient}><TooltipProvider><AgentAccountsPanel provider="claude" cliLogin={cliLogin} /></TooltipProvider></QueryClientProvider>);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	return render(
+		<QueryClientProvider client={queryClient}>
+			<TooltipProvider>
+				<AgentAccountsPanel provider="claude" cliLogin={cliLogin} />
+			</TooltipProvider>
+		</QueryClientProvider>,
+	);
 }
 
-const findCliLoginRow = () => waitFor(() => {
-	const row = document.querySelector<HTMLElement>('[data-agent-account="device-claude"]');
-	if (!row) throw new Error("no CLI login row");
-	return row;
-});
+const findCliLoginRow = () =>
+	waitFor(() => {
+		const row = document.querySelector<HTMLElement>(
+			'[data-agent-account="device-claude"]',
+		);
+		if (!row) throw new Error("no CLI login row");
+		return row;
+	});
 
 beforeEach(() => {
-	getMock.mockReset().mockImplementation((path: string) => Promise.resolve({
-		data: path.endsWith("usage-owners") ? { owners: [] } : path === "/api/v1/agents/accounts/usage" ? { days: 30, usage: [] } : { accounts: [device, saved] },
-	}));
+	deleteMock.mockReset();
+	getMock.mockReset().mockImplementation((path: string) =>
+		Promise.resolve({
+			data: path.endsWith("usage-owners")
+				? { owners: [] }
+				: path === "/api/v1/agents/accounts/usage"
+					? { days: 30, usage: [] }
+					: { accounts: [device, saved] },
+		}),
+	);
 	postMock.mockReset().mockImplementation((path: string) => {
-		if (path === "/api/v1/agents/accounts/{accountId}/login") return Promise.resolve({ data: login });
-		if (path === "/api/v1/agents/accounts/login/{operationId}/verify") return Promise.resolve({ data: { status: "mismatch", account: saved } });
+		if (path === "/api/v1/agents/accounts/{accountId}/login")
+			return Promise.resolve({ data: login });
+		if (path === "/api/v1/agents/accounts/login/{operationId}/verify")
+			return Promise.resolve({ data: { status: "mismatch", account: saved } });
 		return Promise.resolve({ data: {} });
 	});
 });
@@ -55,29 +118,53 @@ beforeEach(() => {
 it("signs a signed-out saved account in again in its own folder", async () => {
 	const user = userEvent.setup();
 	renderPanel();
-	await user.click(await screen.findByRole("button", { name: "Sign in again" }));
+	await user.click(
+		await screen.findByRole("button", { name: "Sign in again" }),
+	);
 
-	expect(postMock).toHaveBeenCalledWith("/api/v1/agents/accounts/{accountId}/login", { params: { path: { accountId: "acct-b" } } });
-	expect(await screen.findByTestId("agent-account-login-terminal")).toBeInTheDocument();
+	expect(postMock).toHaveBeenCalledWith(
+		"/api/v1/agents/accounts/{accountId}/login",
+		{ params: { path: { accountId: "acct-b" } } },
+	);
+	expect(
+		await screen.findByTestId("agent-account-login-terminal"),
+	).toBeInTheDocument();
 	// Only the signed-out saved account offers it; it cannot be made default while signed out.
-	expect(screen.getAllByRole("button", { name: "Sign in again" })).toHaveLength(1);
-	expect(screen.queryByRole("button", { name: "Make default" })).not.toBeInTheDocument();
+	expect(screen.getAllByRole("button", { name: "Sign in again" })).toHaveLength(
+		1,
+	);
+	expect(
+		screen.queryByRole("button", { name: "Make default" }),
+	).not.toBeInTheDocument();
 
 	await user.click(screen.getByRole("button", { name: "Check sign-in" }));
-	await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("This account is b@example.com. Sign in again with that login."));
+	await waitFor(() =>
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"This account is b@example.com. Sign in again with that login.",
+		),
+	);
 });
 
 it("does not check a closed sign-in, and the remove dialog starts without an old error", async () => {
 	const user = userEvent.setup();
 	renderPanel();
-	await user.click(await screen.findByRole("button", { name: "Sign in again" }));
+	await user.click(
+		await screen.findByRole("button", { name: "Sign in again" }),
+	);
 	const exited = terminalState.value;
-	await user.click(await screen.findByRole("button", { name: "Close sign-in" }));
+	await user.click(
+		await screen.findByRole("button", { name: "Close sign-in" }),
+	);
 	// The closed terminal still reports its exit.
 	exited?.("exited");
-	await user.click(screen.getAllByRole("button", { name: "Remove account" })[0]);
+	await user.click(
+		screen.getAllByRole("button", { name: "Remove account" })[0],
+	);
 
-	expect(postMock).not.toHaveBeenCalledWith("/api/v1/agents/accounts/login/{operationId}/verify", expect.anything());
+	expect(postMock).not.toHaveBeenCalledWith(
+		"/api/v1/agents/accounts/login/{operationId}/verify",
+		expect.anything(),
+	);
 	expect(await screen.findByRole("dialog")).not.toHaveTextContent("sign-in");
 });
 
@@ -85,19 +172,37 @@ it("checks a sign-in once when the CLI exits during a check", async () => {
 	const user = userEvent.setup();
 	let finish: (value: unknown) => void = () => undefined;
 	postMock.mockImplementation((path: string) => {
-		if (path === "/api/v1/agents/accounts/{accountId}/login") return Promise.resolve({ data: login });
-		if (path === "/api/v1/agents/accounts/login/{operationId}/verify") return new Promise((resolve) => { finish = resolve; });
+		if (path === "/api/v1/agents/accounts/{accountId}/login")
+			return Promise.resolve({ data: login });
+		if (path === "/api/v1/agents/accounts/login/{operationId}/verify")
+			return new Promise((resolve) => {
+				finish = resolve;
+			});
 		return Promise.resolve({ data: {} });
 	});
 	renderPanel();
-	await user.click(await screen.findByRole("button", { name: "Sign in again" }));
-	await user.click(await screen.findByRole("button", { name: "Check sign-in" }));
+	await user.click(
+		await screen.findByRole("button", { name: "Sign in again" }),
+	);
+	await user.click(
+		await screen.findByRole("button", { name: "Check sign-in" }),
+	);
 	// The CLI exits while that check is still running.
 	terminalState.value?.("exited");
-	finish({ data: { status: "complete", account: { ...saved, signedIn: true } } });
+	finish({
+		data: { status: "complete", account: { ...saved, signedIn: true } },
+	});
 
-	await waitFor(() => expect(screen.queryByTestId("agent-account-login-terminal")).not.toBeInTheDocument());
-	expect(postMock.mock.calls.filter(([path]) => path === "/api/v1/agents/accounts/login/{operationId}/verify")).toHaveLength(1);
+	await waitFor(() =>
+		expect(
+			screen.queryByTestId("agent-account-login-terminal"),
+		).not.toBeInTheDocument(),
+	);
+	expect(
+		postMock.mock.calls.filter(
+			([path]) => path === "/api/v1/agents/accounts/login/{operationId}/verify",
+		),
+	).toHaveLength(1);
 	expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -105,7 +210,12 @@ it("checks a sign-in once when the CLI exits during a check", async () => {
 // out through the harness's login terminal, and has no folder to remove.
 it("signs the CLI login in again and out from its own row", async () => {
 	const user = userEvent.setup();
-	const cliLogin = { disabled: false, canLogout: true, onSignIn: vi.fn(), onLogout: vi.fn() };
+	const cliLogin = {
+		disabled: false,
+		canLogout: true,
+		onSignIn: vi.fn(),
+		onLogout: vi.fn(),
+	};
 	renderPanel(cliLogin);
 	const row = await findCliLoginRow();
 	await user.click(within(row).getByRole("button", { name: "Sign in again" }));
@@ -113,96 +223,297 @@ it("signs the CLI login in again and out from its own row", async () => {
 
 	expect(cliLogin.onSignIn).toHaveBeenCalledTimes(1);
 	expect(cliLogin.onLogout).toHaveBeenCalledTimes(1);
-	expect(within(row).queryByRole("button", { name: "Remove account" })).not.toBeInTheDocument();
-	expect(postMock).not.toHaveBeenCalledWith("/api/v1/agents/accounts/{accountId}/login", expect.anything());
+	expect(
+		within(row).queryByRole("button", { name: "Remove account" }),
+	).not.toBeInTheDocument();
+	expect(postMock).not.toHaveBeenCalledWith(
+		"/api/v1/agents/accounts/{accountId}/login",
+		expect.anything(),
+	);
 });
 
 it("offers only a sign-in on a signed-out CLI login, held while a login terminal is open", async () => {
-	getMock.mockImplementation((path: string) => Promise.resolve({
-		data: path === "/api/v1/agents/accounts/usage" ? { days: 30, usage: [] } : { accounts: [{ ...device, signedIn: false, default: false }, { ...saved, signedIn: true, default: true }] },
-	}));
-	renderPanel({ disabled: true, canLogout: true, onSignIn: vi.fn(), onLogout: vi.fn() });
+	getMock.mockImplementation((path: string) =>
+		Promise.resolve({
+			data:
+				path === "/api/v1/agents/accounts/usage"
+					? { days: 30, usage: [] }
+					: {
+							accounts: [
+								{ ...device, signedIn: false, default: false },
+								{ ...saved, signedIn: true, default: true },
+							],
+						},
+		}),
+	);
+	renderPanel({
+		disabled: true,
+		canLogout: true,
+		onSignIn: vi.fn(),
+		onLogout: vi.fn(),
+	});
 	const row = await findCliLoginRow();
-	expect(within(row).getByRole("button", { name: "Sign in again" })).toBeDisabled();
-	expect(within(row).queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+	expect(
+		within(row).getByRole("button", { name: "Sign in again" }),
+	).toBeDisabled();
+	expect(
+		within(row).queryByRole("button", { name: "Log out" }),
+	).not.toBeInTheDocument();
 });
 
 afterEach(async () => {
-	await act(async () => { await appI18n.changeLanguage("en"); });
+	await act(async () => {
+		await appI18n.changeLanguage("en");
+	});
 });
 
 it.each([
-	["en", "account_identity_mismatch", "This account is b@example.com. Sign in again with that login."],
-	["zh-TW", "account_identity_mismatch", "此帳號為 b@example.com。請使用該帳號重新登入。"],
-	["en", "account_provider_unavailable", "Couldn't check this account. Try again later."],
+	[
+		"en",
+		"account_identity_mismatch",
+		"This account is b@example.com. Sign in again with that login.",
+	],
+	[
+		"zh-TW",
+		"account_identity_mismatch",
+		"此帳號為 b@example.com。請使用該帳號重新登入。",
+	],
+	[
+		"en",
+		"account_provider_unavailable",
+		"Couldn't check this account. Try again later.",
+	],
 	["zh-TW", "account_provider_unavailable", "無法檢查此帳號。請稍後再試。"],
-	["en", "account_credential_store_unsupported", "AO does not support this account's sign-in storage. Check your Codex settings or organization policy."],
-	["zh-TW", "account_credential_store_unsupported", "AO 不支援此帳號的登入儲存方式。請檢查 Codex 設定或組織政策。"],
-])("shows a readable %s account-card problem for %s", async (locale, code, message) => {
-	await act(async () => { await appI18n.changeLanguage(locale); });
-	getMock.mockImplementation((path: string) => Promise.resolve({
-		data: path === "/api/v1/agents/accounts/usage" ? { days: 30, usage: [] } : { accounts: [device, { ...saved, problem: code }] },
-	}));
-	renderPanel();
-	expect(await screen.findByText(message)).toBeInTheDocument();
-	expect(document.querySelector('[data-agent-account="acct-b"]')).not.toHaveTextContent(code);
-});
+	[
+		"en",
+		"account_credential_store_unsupported",
+		"AO does not support this account's sign-in storage. Check your Codex settings or organization policy.",
+	],
+	[
+		"zh-TW",
+		"account_credential_store_unsupported",
+		"AO 不支援此帳號的登入儲存方式。請檢查 Codex 設定或組織政策。",
+	],
+])(
+	"shows a readable %s account-card problem for %s",
+	async (locale, code, message) => {
+		await act(async () => {
+			await appI18n.changeLanguage(locale);
+		});
+		getMock.mockImplementation((path: string) =>
+			Promise.resolve({
+				data:
+					path === "/api/v1/agents/accounts/usage"
+						? { days: 30, usage: [] }
+						: { accounts: [device, { ...saved, problem: code }] },
+			}),
+		);
+		renderPanel();
+		expect(await screen.findByText(message)).toBeInTheDocument();
+		expect(
+			document.querySelector('[data-agent-account="acct-b"]'),
+		).not.toHaveTextContent(code);
+	},
+);
 
 it.each([
-	["en", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Check folder permissions and symbolic links, then retry."],
-	["zh-TW", "AGENT_ACCOUNT_STORAGE_UNSAFE", "帳號儲存空間不安全。請檢查資料夾權限與符號連結後重試。"],
-	["en", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is temporarily unavailable. Retry later."],
-	["zh-TW", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "帳號儲存空間暫時無法使用。請稍後重試。"],
-	["en", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "Private account profiles are currently supported on Linux only."],
-	["zh-TW", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "私有帳號 profile 目前僅支援 Linux。"],
-	["en", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "AO does not support this account's sign-in storage. Check your Codex settings or organization policy."],
-	["zh-TW", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "AO 不支援此帳號的登入儲存方式。請檢查 Codex 設定或組織政策。"],
+	[
+		"en",
+		"AGENT_ACCOUNT_STORAGE_UNSAFE",
+		"Account storage is unsafe. Check folder permissions and symbolic links, then retry.",
+	],
+	[
+		"zh-TW",
+		"AGENT_ACCOUNT_STORAGE_UNSAFE",
+		"帳號儲存空間不安全。請檢查資料夾權限與符號連結後重試。",
+	],
+	[
+		"en",
+		"AGENT_ACCOUNT_STORAGE_UNAVAILABLE",
+		"Account storage is temporarily unavailable. Retry later.",
+	],
+	[
+		"zh-TW",
+		"AGENT_ACCOUNT_STORAGE_UNAVAILABLE",
+		"帳號儲存空間暫時無法使用。請稍後重試。",
+	],
+	[
+		"en",
+		"AGENT_ACCOUNT_STORAGE_UNSUPPORTED",
+		"Private account profiles are currently supported on Linux only.",
+	],
+	[
+		"zh-TW",
+		"AGENT_ACCOUNT_STORAGE_UNSUPPORTED",
+		"私有帳號 profile 目前僅支援 Linux。",
+	],
+	[
+		"en",
+		"AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED",
+		"AO does not support this account's sign-in storage. Check your Codex settings or organization policy.",
+	],
+	[
+		"zh-TW",
+		"AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED",
+		"AO 不支援此帳號的登入儲存方式。請檢查 Codex 設定或組織政策。",
+	],
 ])("shows the %s storage diagnostic for %s", async (locale, code, message) => {
-	await act(async () => { await appI18n.changeLanguage(locale); });
-	postMock.mockResolvedValue({ error: { code, message: "raw provider error" } });
+	await act(async () => {
+		await appI18n.changeLanguage(locale);
+	});
+	postMock.mockResolvedValue({
+		error: { code, message: "raw provider error" },
+	});
 	const user = userEvent.setup();
 	renderPanel();
-	await user.click(await screen.findByRole("button", { name: appI18n.t("settings.agentAccounts.signInAgain") }));
+	await user.click(
+		await screen.findByRole("button", {
+			name: appI18n.t("settings.agentAccounts.signInAgain"),
+		}),
+	);
 	expect(await screen.findByRole("alert")).toHaveTextContent(message);
 	expect(screen.getByRole("alert")).not.toHaveTextContent("raw provider error");
 });
 
-it.each(["complete", "cancelled"])("explains saved login when close races verify (%s)", async (outcome) => {
- const user = userEvent.setup();
- let finishVerify: (value: unknown) => void = () => undefined;
- let finishCancel: (value: unknown) => void = () => undefined;
- postMock.mockImplementation((path: string) => {
-  if (path.endsWith("/login")) return Promise.resolve({ data: login });
-  if (path.endsWith("/verify")) return new Promise((resolve) => { finishVerify = resolve; });
-  if (path.endsWith("/cancel")) return new Promise((resolve) => { finishCancel = resolve; });
-  return Promise.resolve({data:{}});
- });
- getMock.mockImplementation((path: string) => Promise.resolve({data:
-  path.includes("/operations/") ? {operationId:"login-1",phase:"complete",outcome,accountId:"acct-b"} :
-  path.endsWith("/usage") ? {days:30,usage:[]} : {accounts:[device,saved]}
- }));
- renderPanel();
- await user.click(await screen.findByRole("button",{name:"Sign in again"}));
- await user.click(screen.getByRole("button",{name:"Check sign-in"}));
- await user.click(screen.getByRole("button",{name:"Close sign-in"}));
- await act(async () => {finishVerify({data:{status:"complete",account:saved}});});
- await act(async () => {finishCancel({data:{}});});
- if (outcome === "complete") {
-  expect(await screen.findByRole("status")).toHaveTextContent("Sign-in completed. Your account was saved.");
- } else {
-  expect(screen.queryByText("Sign-in completed. Your account was saved.")).not.toBeInTheDocument();
- }
-});
+it.each(["complete", "cancelled"])(
+	"explains saved login when close races verify (%s)",
+	async (outcome) => {
+		const user = userEvent.setup();
+		let finishVerify: (value: unknown) => void = () => undefined;
+		let finishCancel: (value: unknown) => void = () => undefined;
+		postMock.mockImplementation((path: string) => {
+			if (path.endsWith("/login")) return Promise.resolve({ data: login });
+			if (path.endsWith("/verify"))
+				return new Promise((resolve) => {
+					finishVerify = resolve;
+				});
+			if (path.endsWith("/cancel"))
+				return new Promise((resolve) => {
+					finishCancel = resolve;
+				});
+			return Promise.resolve({ data: {} });
+		});
+		getMock.mockImplementation((path: string) =>
+			Promise.resolve({
+				data: path.includes("/operations/")
+					? {
+							operationId: "login-1",
+							phase: "complete",
+							outcome,
+							accountId: "acct-b",
+						}
+					: path.endsWith("/usage")
+						? { days: 30, usage: [] }
+						: { accounts: [device, saved] },
+			}),
+		);
+		renderPanel();
+		await user.click(
+			await screen.findByRole("button", { name: "Sign in again" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Check sign-in" }));
+		await user.click(screen.getByRole("button", { name: "Close sign-in" }));
+		await act(async () => {
+			finishVerify({ data: { status: "complete", account: saved } });
+		});
+		await act(async () => {
+			finishCancel({ data: {} });
+		});
+		if (outcome === "complete") {
+			expect(await screen.findByRole("status")).toHaveTextContent(
+				"Sign-in completed. Your account was saved.",
+			);
+		} else {
+			expect(
+				screen.queryByText("Sign-in completed. Your account was saved."),
+			).not.toBeInTheDocument();
+		}
+	},
+);
 
 it("shows blocking session and reviewer links before removal without promising fallback", async () => {
- getMock.mockImplementation((path: string) => Promise.resolve({data:path.endsWith("usage-owners")?{owners:[{kind:"reviewer",projectId:"fake-project",sessionId:"fake-session",sessionName:"Fake review worker",reviewId:"opaque-review",prUrl:"https://github.com/fake/repo/pull/4",harness:"claude-code",blocking:true}]}:path.endsWith("usage")?{usage:[]}:{accounts:[device,saved]}}));
- const user=userEvent.setup();renderPanel();
- await user.click(await screen.findByRole("button",{name:"Remove account"}));
- const dialog=await screen.findByRole("dialog");
- expect(await within(dialog).findByRole("link",{name:"Fake review worker"})).toHaveAttribute("href","ao://sessions/fake-project/fake-session");
- expect(within(dialog).getByRole("link",{name:"Open PR"})).toHaveAttribute("href","https://github.com/fake/repo/pull/4");
- expect(dialog).toHaveTextContent("will not use the default login");
- expect(dialog).toHaveTextContent("The account has not been changed");
- await user.click(within(dialog).getByRole("link",{name:"Fake review worker"}));
- expect(navigateSession).toHaveBeenCalledWith("fake-project","fake-session");
+	getMock.mockImplementation((path: string) =>
+		Promise.resolve({
+			data: path.endsWith("usage-owners")
+				? {
+						owners: [
+							{
+								kind: "reviewer",
+								projectId: "fake-project",
+								sessionId: "fake-session",
+								sessionName: "Fake review worker",
+								reviewId: "opaque-review",
+								prUrl: "https://github.com/fake/repo/pull/4",
+								harness: "claude-code",
+								blocking: true,
+							},
+						],
+					}
+				: path.endsWith("usage")
+					? { usage: [] }
+					: { accounts: [device, saved] },
+		}),
+	);
+	const user = userEvent.setup();
+	renderPanel();
+	await user.click(
+		await screen.findByRole("button", { name: "Remove account" }),
+	);
+	const dialog = await screen.findByRole("dialog");
+	expect(
+		await within(dialog).findByRole("link", { name: "Fake review worker" }),
+	).toHaveAttribute("href", "ao://sessions/fake-project/fake-session");
+	expect(within(dialog).getByRole("link", { name: "Open PR" })).toHaveAttribute(
+		"href",
+		"https://github.com/fake/repo/pull/4",
+	);
+	expect(dialog).toHaveTextContent("will not use the default login");
+	expect(dialog).toHaveTextContent("The account has not been changed");
+	await user.click(
+		within(dialog).getByRole("link", { name: "Fake review worker" }),
+	);
+	expect(navigateSession).toHaveBeenCalledWith("fake-project", "fake-session");
+});
+
+it("refreshes the removal owners after an account-in-use rejection", async () => {
+	let reads = 0;
+	getMock.mockImplementation((path: string) =>
+		Promise.resolve({
+			data: path.endsWith("usage-owners")
+				? {
+						owners:
+							++reads === 1
+								? []
+								: [
+										{
+											kind: "session",
+											projectId: "fake-project",
+											sessionId: "new-owner",
+											sessionName: "New owner",
+											harness: "claude-code",
+											blocking: true,
+										},
+									],
+					}
+				: path.endsWith("usage")
+					? { usage: [] }
+					: { accounts: [device, saved] },
+		}),
+	);
+	deleteMock.mockRejectedValueOnce(new Error("Account is in use"));
+	const user = userEvent.setup();
+	renderPanel();
+	await user.click(
+		await screen.findByRole("button", { name: "Remove account" }),
+	);
+	const dialog = await screen.findByRole("dialog");
+	await waitFor(() => expect(reads).toBe(1));
+	await user.click(
+		within(dialog).getByRole("button", { name: "Remove account" }),
+	);
+	expect(
+		await within(dialog).findByRole("link", { name: "New owner" }),
+	).toHaveAttribute("href", "ao://sessions/fake-project/new-owner");
+	expect(reads).toBe(2);
+	expect(dialog).toHaveTextContent("Account is in use");
 });

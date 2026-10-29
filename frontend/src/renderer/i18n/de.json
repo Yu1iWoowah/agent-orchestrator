@@ -3876,7 +3876,7 @@
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
-	"settings.agentAccounts.inUse": "Dieses Konto wird verwendet. Stoppe oder übergib die aufgeführten Sitzungen und Reviewer und versuche es erneut. Das Konto wurde nicht geändert.",
+	"settings.agentAccounts.inUse": "Dieses Konto wird verwendet. Stoppe oder übergib die Sitzungen und Reviewer, die es verwenden, und versuche es erneut. Das Konto wurde nicht geändert.",
 	"settings.agentAccounts.reviewerOwner": "Reviewer",
 	"settings.agentAccounts.openPR": "PR öffnen",
 	"settings.agentAccounts.legacyIdentityConflict": "Diese Identität ist bereits im alten Geräte-Kontokatalog gespeichert. Wähle in den Einstellungen, welche Anmeldung du behalten möchtest. AO hat die alte Anmeldung nicht geändert."
