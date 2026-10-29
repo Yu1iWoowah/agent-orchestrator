@@ -120,6 +120,13 @@ type NativeTranscriptReader interface {
 	ReadNativeTranscript(context.Context, NativeTranscriptRequest) (NativeTranscriptSegment, error)
 }
 
+// NativeTranscriptCapturer derives a complete file boundary and unique readable
+// main leaf through the same strict parser. ByteCutoff and LeafID must be empty;
+// capture does not stop a provider or establish coordinator intake quiescence.
+type NativeTranscriptCapturer interface {
+	CaptureNativeTranscript(context.Context, NativeTranscriptRequest) (NativeTranscriptSegment, error)
+}
+
 // ErrNativeTranscriptIncomplete prevents partial evidence from being published.
 var ErrNativeTranscriptIncomplete = errors.New("native transcript incomplete")
 

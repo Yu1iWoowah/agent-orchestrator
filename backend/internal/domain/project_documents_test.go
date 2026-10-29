@@ -3,7 +3,7 @@ package domain
 import "testing"
 
 func TestHandoffConfigKeepsLivingFilesSeparateFromEvidence(t *testing.T) {
-	for _, root := range []string{"../outside", "/absolute", "handoffs/current", "adoptions", "HANDOFFS", "handoffs.", "adoptions /child", "x/../shared", "rules\\escape"} {
+	for _, root := range []string{"../outside", "/absolute", "handoffs/current", "adoptions", "HANDOFFS", "handoffs.", "adoptions /child", "preparations", "PREPARATIONS/current", "preparations.", "preparations /child", "x/../shared", "rules\\escape"} {
 		if err := (OrchestratorHandoffConfig{SharedDir: root}).Validate(); err == nil {
 			t.Errorf("accepted %q", root)
 		}

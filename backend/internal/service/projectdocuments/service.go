@@ -28,6 +28,8 @@ type Store interface {
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
 	GetProjectDocumentState(context.Context, domain.ProjectID) (domain.ProjectDocumentState, error)
 	SaveProjectDocumentState(context.Context, domain.ProjectID, domain.ProjectDocumentState) (bool, error)
+	SaveProjectDocumentWrite(context.Context, domain.ProjectID, domain.ProjectDocumentState) (bool, error)
+	SaveProjectDocumentEvidence(context.Context, domain.ProjectID, domain.ProjectDocumentState) (bool, error)
 	WithProjectDocumentPublication(context.Context, domain.ProjectID, domain.SessionRecord, int64, func(context.Context) error) (bool, error)
 }
 
@@ -87,11 +89,12 @@ type Info struct {
 
 // File describes a bounded document; binary bytes use the download endpoint.
 type File struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	Hash    string `json:"hash"`
-	Size    int64  `json:"size"`
-	Binary  bool   `json:"binary"`
+	WriteReceiptID string `json:"writeReceiptId,omitempty"`
+	Path           string `json:"path"`
+	Content        string `json:"content"`
+	Hash           string `json:"hash"`
+	Size           int64  `json:"size"`
+	Binary         bool   `json:"binary"`
 }
 
 // WriteInput requires both controller authority and the expected file hash.

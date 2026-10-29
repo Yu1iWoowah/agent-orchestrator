@@ -546,6 +546,9 @@ type ConversationNativeThreadEvidence struct {
 type ConversationTurn struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversationId"`
+	// AgentSettings is the immutable preference carried by this dispatch, not
+	// the provider's actual model or a reconstruction from today's preference.
+	AgentSettings *AgentSettingsTurnSnapshot `json:"agentSettings,omitempty"`
 	// BranchID is durable provider-lineage metadata used to keep opaque turn ids
 	// inside the provider ownership epoch that created them.
 	BranchID string `json:"-"`

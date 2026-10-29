@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -67,6 +66,10 @@ func (s *Service) evidenceDirectory(id domain.ProjectID, op, attempt string) str
 // but requires a frozen lease. A failed receipt save is recoverable from the
 // identical, already-renamed bundle; it never rewrites a successful attempt.
 func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in EvidenceInput) (domain.HandoffEvidenceReceipt, error) {
+	return s.publishEvidence(ctx, id, in, nil)
+}
+
+func (s *Service) publishEvidence(ctx context.Context, id domain.ProjectID, in EvidenceInput, operation *domain.OrchestratorReplacement) (domain.HandoffEvidenceReceipt, error) {
 	var zero domain.HandoffEvidenceReceipt
 	if e := evidenceIDs(in.OperationID, in.AttemptID); e != nil {
 		return zero, e
@@ -83,7 +86,12 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 	if err != nil {
 		return zero, err
 	}
-	rec, err := s.validate(ctx, id, in.Actor, in.Lease, state, true)
+	var rec domain.SessionRecord
+	if operation == nil {
+		rec, err = s.validate(ctx, id, in.Actor, in.Lease, state, true)
+	} else {
+		rec, err = s.replacementEvidenceSource(ctx, *operation, state)
+	}
 	if err != nil {
 		return zero, err
 	}
@@ -93,33 +101,31 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 	if state.Adoption != nil && !state.Adoption.Complete {
 		return zero, conflict("PROJECT_DOCUMENT_ADOPTION_PENDING", "Living file adoption is incomplete")
 	}
-	root, err := s.openRoot(shared)
-	if err != nil {
-		return zero, err
-	}
-	handoff, err := readFile(root, doc)
-	_ = root.Close()
-	if err != nil {
-		return zero, err
+	var handoff []byte
+	if operation != nil {
+		if operation.Transcript == nil {
+			return zero, conflict("HANDOFF_EVIDENCE_UNVERIFIED", "Frozen handoff snapshot is missing")
+		}
+		handoff = append([]byte(nil), operation.Transcript.FrozenHandoff...)
+	} else {
+		root, err := s.openRoot(shared)
+		if err != nil {
+			return zero, err
+		}
+		handoff, err = readFile(root, doc)
+		_ = root.Close()
+		if err != nil {
+			return zero, err
+		}
 	}
 	if hash(handoff) != in.HandoffHash {
 		return zero, conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "The frozen handoff hash changed")
 	}
-	transcript := []byte(fmt.Sprintf("Operation: %s\nAttempt: %s\nExport time: %s\nKnown message time range: %s — %s\n\n", in.OperationID, in.AttemptID, in.CreatedAt.UTC().Format(time.RFC3339Nano), in.Export.Manifest.TimeStart, in.Export.Manifest.TimeEnd))
-	transcript = append(transcript, in.Export.Transcript...)
-	manifest := EvidenceManifest{Manifest: in.Export.Manifest, OperationID: in.OperationID, AttemptID: in.AttemptID, ExportedAt: in.CreatedAt.UTC(), SharedDirectory: shared, HandoffPath: doc, LeaseEpoch: in.Lease.Epoch, Files: []domain.ProjectDocumentEntry{{Path: "handoff.md", Hash: hash(handoff), Size: int64(len(handoff))}, {Path: "transcript.md", Hash: hash(transcript), Size: int64(len(transcript))}}}
-	if state.Adoption != nil {
-		manifest.AdoptionManifestHash = state.Adoption.ManifestHash
-	}
-	mb, err := json.MarshalIndent(manifest, "", "  ")
+	bundle, err := s.buildEvidenceBundle(id, in, state, shared, handoff)
 	if err != nil {
 		return zero, err
 	}
-	mb = append(mb, '\n')
-	if len(transcript) > 512<<20 || len(mb) > 256<<20 {
-		return zero, conflict("HANDOFF_EVIDENCE_TOO_LARGE", "Evidence exceeds publication capacity")
-	}
-	receipt := domain.HandoffEvidenceReceipt{Directory: s.evidenceDirectory(id, in.OperationID, in.AttemptID), ManifestHash: hash(mb), InputHash: hash([]byte(in.HandoffHash + "\x00" + hash(mb) + "\x00" + hash(transcript)))}
+	transcript, mb, receipt := bundle.transcript, bundle.manifest, bundle.receipt
 	key := in.OperationID + "/" + in.AttemptID
 	if prior, ok := state.Evidence[key]; ok && prior != receipt {
 		return zero, conflict("HANDOFF_EVIDENCE_CONFLICT", "This attempt already has different evidence")
@@ -168,7 +174,17 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 	if err != nil {
 		return zero, err
 	}
-	published, err := s.store.WithProjectDocumentPublication(ctx, id, rec, state.Revision, func(reserved context.Context) error {
+	operationStore, hasOperationStore := s.store.(replacementStore)
+	if operation != nil && !hasOperationStore {
+		return zero, conflict("ORCHESTRATOR_REPLACEMENT_UNAVAILABLE", "Replacement publication store is unavailable")
+	}
+	publication := func(fn func(context.Context) error) (bool, error) {
+		if operation == nil {
+			return s.store.WithProjectDocumentPublication(ctx, id, rec, state.Revision, fn)
+		}
+		return operationStore.WithReplacementDocumentPublication(ctx, operation.ID, operation.Revision, rec, state.Revision, fn)
+	}
+	published, err := publication(func(reserved context.Context) error {
 		_, currentRoot, currentDoc, e := s.state(reserved, id)
 		if e != nil {
 			return e
@@ -180,7 +196,7 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 		if e != nil {
 			return e
 		}
-		if snapshot.Fingerprint != manifest.SnapshotFingerprint || snapshot.Session.ControllerOwner() != manifest.Owner {
+		if snapshot.Fingerprint != in.Export.Manifest.SnapshotFingerprint || snapshot.Session.ControllerOwner() != in.Export.Manifest.Owner {
 			return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Source owner or transcript snapshot changed")
 		}
 		current, e := s.store.GetProjectDocumentState(reserved, id)
@@ -190,18 +206,26 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 		if current.Lease == nil || !current.Lease.Frozen || current.Lease.Epoch != in.Lease.Epoch {
 			return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Frozen lease changed")
 		}
-		// Recheck shared bytes inside the reservation, immediately before rename.
-		sr, e := s.openRoot(shared)
-		if e != nil {
-			return e
+		if operation != nil {
+			if _, e := s.replacementEvidenceSource(reserved, *operation, current); e != nil {
+				return e
+			}
 		}
-		b, e := readFile(sr, doc)
-		_ = sr.Close()
-		if e != nil {
-			return e
-		}
-		if hash(b) != in.HandoffHash {
-			return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Frozen handoff changed")
+		// Generic exports use the live frozen lease; replacement exports use the
+		// verified bytes durably captured by their freeze transaction.
+		if operation == nil {
+			sr, e := s.openRoot(shared)
+			if e != nil {
+				return e
+			}
+			b, e := readFile(sr, doc)
+			_ = sr.Close()
+			if e != nil {
+				return e
+			}
+			if hash(b) != in.HandoffHash {
+				return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Frozen handoff changed")
+			}
 		}
 		if e := native.Check(reserved); e != nil {
 			return e
@@ -236,15 +260,28 @@ func (s *Service) PublishEvidence(ctx context.Context, id domain.ProjectID, in E
 			if prior != receipt {
 				return conflict("HANDOFF_EVIDENCE_CONFLICT", "Attempt receipt differs")
 			}
-			return nil
+		} else {
+			current.Evidence[key] = receipt
+			ok, e := s.store.SaveProjectDocumentEvidence(reserved, id, current)
+			if e != nil {
+				return e
+			}
+			if !ok {
+				return conflict("HANDOFF_EVIDENCE_CONFLICT", "Receipt reservation changed")
+			}
 		}
-		current.Evidence[key] = receipt
-		ok, e := s.store.SaveProjectDocumentState(reserved, id, current)
-		if e != nil {
-			return e
-		}
-		if !ok {
-			return conflict("HANDOFF_EVIDENCE_CONFLICT", "Receipt reservation changed")
+		if operation != nil {
+			operation.Phase = domain.ReplacementTranscriptVerified
+			operation.Transcript.Receipt = &receipt
+			operation.Transcript.TranscriptHash = hash(transcript)
+			operation.UpdatedAt = time.Now().UTC()
+			ok, e := operationStore.SaveReplacementEvidence(reserved, *operation)
+			if e != nil {
+				return e
+			}
+			if !ok {
+				return conflict("ORCHESTRATOR_REPLACEMENT_CHANGED", "Evidence operation revision changed")
+			}
 		}
 		return nil
 	})

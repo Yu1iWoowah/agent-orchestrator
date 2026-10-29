@@ -66,6 +66,7 @@ type conversation struct {
 	// A reconnected thread may be on any tier and in either collaboration mode.
 	tierUnknown, planUnknown bool
 	fastTiers                map[string]string
+	settingsPlan             *domain.AgentSettingsProviderPlan // guarded by sendMu
 
 	mu      sync.Mutex
 	pending map[string]*parkedRequest
@@ -348,6 +349,9 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if c.settingsPlan != nil && turnSelection(msg.Settings) != c.settingsPlan.Target {
+		return ports.ChatTurnRef{}, fmt.Errorf("%w: prepared_settings_changed", ports.ErrAgentSettingsConflict)
+	}
 
 	params := map[string]any{
 		"threadId": c.threadID,
@@ -361,7 +365,11 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	applyTurnSettings(params, msg.Settings, c.readOnly, c.disableNetwork)
 	// A service tier sticks to the thread once set, so leaving the fast tier
 	// has to be said: an explicit null returns the thread to its default.
-	if msg.Settings.Fast || msg.Settings.FastMode == domain.AgentFastOn {
+	if c.settingsPlan != nil {
+		wire := c.settingsPlan.After
+		params["model"], params["effort"], params["serviceTier"] = wire.Model, wire.Effort, wire.Fast
+		msg.Settings.Model, msg.Settings.Effort = wire.Model, wire.Effort
+	} else if msg.Settings.Fast || msg.Settings.FastMode == domain.AgentFastOn {
 		params["serviceTier"] = c.fastServiceTier(msg.Settings.Model)
 	} else if msg.Settings.FastMode == domain.AgentFastOff {
 		params["serviceTier"] = "default"

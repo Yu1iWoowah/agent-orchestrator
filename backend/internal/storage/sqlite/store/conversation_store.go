@@ -1442,6 +1442,7 @@ func (s *Store) appendUserMessage(
 		}
 		if msg.Origin == domain.MessageOriginHuman || msg.AuthoredByUser {
 			if _, err := q.RecordSessionHumanMessage(ctx, gen.RecordSessionHumanMessageParams{
+				TurnID:             turnID,
 				ID:                 session,
 				LatestUserPrompt:   msg.Text,
 				LatestUserPromptAt: timeToNullTime(interactionAt),
@@ -4632,6 +4633,14 @@ func turnToDomain(row gen.ConversationTurn) domain.ConversationTurn {
 		State:              row.State,
 		ErrorMessage:       row.ErrorMessage,
 		RequestedAt:        row.RequestedAt,
+	}
+	if row.AgentSettingsSnapshotJson != "" {
+		var snapshot domain.AgentSettingsTurnSnapshot
+		if err := json.Unmarshal([]byte(row.AgentSettingsSnapshotJson), &snapshot); err != nil || snapshot.TurnID != row.ID {
+			snapshot = domain.AgentSettingsTurnSnapshot{State: domain.AgentSettingUnknown, TurnID: row.ID, Reason: "dispatch_snapshot_untrusted"}
+		}
+		snapshot.ProviderTurnID = row.ProviderTurnID
+		turn.AgentSettings = &snapshot
 	}
 	if row.RetryOfTurnID.Valid {
 		turn.RetryOfTurnID = row.RetryOfTurnID.String

@@ -285,3 +285,11 @@ func TestEvidenceCannotBeEditedThroughSharedRoot(t *testing.T) {
 		t.Fatal("immutable evidence changed", e)
 	}
 }
+
+func (s *adoptionFaultStore) SaveProjectDocumentEvidence(ctx context.Context, id domain.ProjectID, state domain.ProjectDocumentState) (bool, error) {
+	s.saves++
+	if s.failSaveAt == s.saves {
+		return false, syscall.ENOSPC
+	}
+	return s.Store.SaveProjectDocumentEvidence(ctx, id, state)
+}

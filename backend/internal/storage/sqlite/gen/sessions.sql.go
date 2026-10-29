@@ -1473,20 +1473,21 @@ func (q *Queries) PromoteTaskPreparation(ctx context.Context, arg PromoteTaskPre
 
 const recordSessionHumanMessage = `-- name: RecordSessionHumanMessage :execrows
 UPDATE sessions SET
-    latest_user_prompt = ?1,
-    latest_user_prompt_at = ?2,
-    latest_assistant_update = '',
-    conversation_checkpoint_state = 'legacy',
-    conversation_checkpoint_generation = '',
-    conversation_checkpoint_native_id = '',
-    conversation_checkpoint_turn_id = '',
-    updated_at = MAX(updated_at, ?2)
-WHERE id = ?3
+    latest_user_prompt = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN latest_user_prompt ELSE ?2 END,
+    latest_user_prompt_at = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN latest_user_prompt_at ELSE ?3 END,
+    latest_assistant_update = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN latest_assistant_update ELSE '' END,
+    conversation_checkpoint_state = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN conversation_checkpoint_state ELSE 'legacy' END,
+    conversation_checkpoint_generation = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN conversation_checkpoint_generation ELSE '' END,
+    conversation_checkpoint_native_id = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN conversation_checkpoint_native_id ELSE '' END,
+    conversation_checkpoint_turn_id = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = ?1) THEN conversation_checkpoint_turn_id ELSE '' END,
+    updated_at = MAX(updated_at, ?3)
+WHERE id = ?4
   AND is_terminated = 0
-  AND (latest_user_prompt_at IS NULL OR latest_user_prompt_at <= ?2)
+  AND (latest_user_prompt_at IS NULL OR latest_user_prompt_at <= ?3)
 `
 
 type RecordSessionHumanMessageParams struct {
+	TurnID             string
 	LatestUserPrompt   string
 	LatestUserPromptAt sql.NullTime
 	ID                 domain.SessionID
@@ -1495,8 +1496,15 @@ type RecordSessionHumanMessageParams struct {
 // Chat message insertion already owns controller/idempotency fencing. Compare
 // against the dedicated fact timestamp here so unrelated lifecycle writes do
 // not suppress a newer human message.
+// Held replacement input is not provider history. Keep the verified checkpoint
+// and its corresponding prompt/answer together until delivery is released.
 func (q *Queries) RecordSessionHumanMessage(ctx context.Context, arg RecordSessionHumanMessageParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recordSessionHumanMessage, arg.LatestUserPrompt, arg.LatestUserPromptAt, arg.ID)
+	result, err := q.db.ExecContext(ctx, recordSessionHumanMessage,
+		arg.TurnID,
+		arg.LatestUserPrompt,
+		arg.LatestUserPromptAt,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

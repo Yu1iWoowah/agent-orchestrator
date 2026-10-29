@@ -40,7 +40,7 @@ jobs:
           cache: false
 
       - name: Native transcript publication policy
-        run: go test -count=1 -run '^TestNative(ChangeStampPreservesDeviceAndNanoseconds|StabilityMissingChangeTimeFailsClosed|TranscriptPlatformStabilityPolicy)$' ./internal/adapters/agent/claudecode
+        run: go test -count=1 ./internal/filefingerprint && go test -count=1 -run '^TestNative(StabilityMissingChangeTimeFailsClosed|TranscriptPlatformStabilityPolicy)$' ./internal/adapters/agent/claudecode
 
       - name: CLI E2E (native)
         run: go test -tags e2e -v ./internal/cli/...

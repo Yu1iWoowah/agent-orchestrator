@@ -448,29 +448,31 @@ type ConversationSteerDelivery struct {
 }
 
 type ConversationTurn struct {
-	ID                    string
-	ConversationID        string
-	HandledBySessionID    domain.SessionID
-	ProviderTurnID        string
-	ControllerGeneration  string
-	State                 domain.TurnState
-	ErrorMessage          string
-	RequestedAt           time.Time
-	StartedAt             sql.NullTime
-	CompletedAt           sql.NullTime
-	DiffJson              string
-	RolledBackAt          sql.NullTime
-	PlanJson              string
-	BranchID              string
-	PromotionStartedAt    sql.NullTime
-	PromotedToTurnID      sql.NullString
-	RetryOfTurnID         sql.NullString
-	HandledByReviewID     sql.NullString
-	UsageLimitResetsAt    sql.NullTime
-	UsageLimitAutoResume  int64
-	UsageLimitResumeError string
-	BatchedInput          int64
-	ProviderInputText     string
+	ID                        string
+	ConversationID            string
+	HandledBySessionID        domain.SessionID
+	ProviderTurnID            string
+	ControllerGeneration      string
+	State                     domain.TurnState
+	ErrorMessage              string
+	RequestedAt               time.Time
+	StartedAt                 sql.NullTime
+	CompletedAt               sql.NullTime
+	DiffJson                  string
+	RolledBackAt              sql.NullTime
+	PlanJson                  string
+	BranchID                  string
+	PromotionStartedAt        sql.NullTime
+	PromotedToTurnID          sql.NullString
+	RetryOfTurnID             sql.NullString
+	HandledByReviewID         sql.NullString
+	UsageLimitResetsAt        sql.NullTime
+	UsageLimitAutoResume      int64
+	UsageLimitResumeError     string
+	BatchedInput              int64
+	ProviderInputText         string
+	IntakeSequence            int64
+	AgentSettingsSnapshotJson string
 }
 
 type Cue struct {
@@ -526,6 +528,46 @@ type Notification struct {
 	ResolvedAt  sql.NullTime
 	DismissedAt sql.NullTime
 	SourceKey   string
+}
+
+type OrchestratorReplacement struct {
+	ID              string
+	ProjectID       string
+	SourceSessionID string
+	OperationKey    string
+	RequestHash     string
+	Phase           string
+	IsActive        bool
+	Revision        int64
+	IntakeRevision  int64
+	StateJson       string
+	CreatedAt       string
+	UpdatedAt       string
+}
+
+type OrchestratorReplacementHeldTurn struct {
+	OperationID string
+	TurnID      string
+}
+
+type OrchestratorReplacementIntakeTransfer struct {
+	OperationID                string
+	MessageID                  string
+	TurnID                     string
+	SourceConversationID       string
+	SourceSequence             int64
+	SourceSessionID            string
+	SourceControllerGeneration string
+	SourceBranchID             string
+	TargetConversationID       string
+	TargetSequence             int64
+	PayloadHash                string
+	TransferredAt              time.Time
+}
+
+type OrchestratorReplacementReleasedSession struct {
+	OperationID string
+	SessionID   string
 }
 
 type PR struct {
@@ -846,6 +888,7 @@ type SessionAgentSettingsOperation struct {
 	StartedAt              sql.NullTime
 	FinishedAt             sql.NullTime
 	RecoveryJson           string
+	ExecutionJson          string
 }
 
 type SessionArtifactVersion struct {

@@ -456,6 +456,7 @@ func (s *Service) EditMessage(
 	// Consume the replacement privately while its bootstrap prompt is recorded.
 	// The source remains the registry owner with its intake fence installed, so a
 	// concurrent ordinary send cannot become the first turn on the new branch.
+	replacement.initializeAgentSettings(operationCtx)
 	replacement.start()
 	if replayContent.Type != "" {
 		msg.Content = append([]ports.ChatContent{replayContent}, msg.Content...)
@@ -1097,6 +1098,7 @@ func (s *Service) installBranchController(
 	source, replacement *Controller,
 	sourceBranchID string,
 ) error {
+	replacement.initializeAgentSettings(ctx)
 	replacement.start()
 	return s.installStartedBranchController(ctx, id, source, replacement, sourceBranchID)
 }

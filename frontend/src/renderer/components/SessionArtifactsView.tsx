@@ -19,6 +19,7 @@ import { cn } from "../lib/utils";
 import type { SessionArtifact, WorkspaceSession } from "../types/workspace";
 import { ArtifactActionsMenu } from "./ArtifactActionsMenu";
 import { ArtifactGalleryCard } from "./ArtifactGalleryCard";
+import { ArtifactThumbnail } from "./ArtifactThumbnail";
 import { ArtifactFileView } from "./ArtifactFileView";
 import { CloudArtifactFrame } from "./CloudArtifactFrame";
 import { ArtifactHistoryMenu, ArtifactVersionPreview } from "./ArtifactHistory";
@@ -531,7 +532,7 @@ export function SessionArtifactsView({
 							<ArtifactGalleryCard
 								key={artifact.path}
 								row={row}
-								previewLive={livePreviewPaths.has(artifact.path)}
+								thumbnail={<ArtifactThumbnail key={`${row.rawUrl}:${row.inlineUrl}:${row.updatedAt}`} row={row} previewLive={livePreviewPaths.has(artifact.path)} />}
 								context={session.title ?? ""}
 								onPreview={() => openArtifact(artifact)}
 								actions={<ArtifactActionsMenu

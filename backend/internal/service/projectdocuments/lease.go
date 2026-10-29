@@ -69,7 +69,7 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 		if lease.Frozen {
 			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen")
 		}
-		if lease.SessionID != rec.ID {
+		if lease.SessionID != rec.ID && (lease.TokenHash != "" || lease.ClaimVerifier != "" || lease.ReplacementID != "") {
 			previous, ok, err := s.store.GetSession(ctx, lease.SessionID)
 			if err != nil {
 				return Grant{}, err
@@ -77,8 +77,24 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 			if !ok || !previous.IsTerminated {
 				return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_HELD", "Project lease is held by session "+string(lease.SessionID))
 			}
-		} else if lease.Owner == rec.ControllerOwner() {
+		} else if lease.Owner == rec.ControllerOwner() && (lease.TokenHash != "" || lease.ClaimVerifier != "") {
 			grant := grantFor(id, a, lease.Epoch)
+			if lease.ClaimVerifier != "" {
+				if lease.ClaimVerifier != rec.Metadata.BrowserCapabilityVerifier || lease.TokenHash != "" || lease.ReplacementID == "" {
+					return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Pending writer claim is stale")
+				}
+				published, err := s.store.WithProjectDocumentPublication(ctx, id, rec, state.Revision, func(reserved context.Context) error {
+					state.Lease.TokenHash, state.Lease.ClaimVerifier = hash([]byte(grant.Token)), ""
+					return s.save(reserved, id, &state)
+				})
+				if err != nil {
+					return Grant{}, err
+				}
+				if !published {
+					return Grant{}, conflict("PROJECT_DOCUMENT_STATE_CHANGED", "Writer claim changed")
+				}
+				return grant, nil
+			}
 			if subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(grant.Token)))) != 1 {
 				return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Controller capability no longer matches the lease")
 			}
@@ -96,7 +112,7 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 		return Grant{}, err
 	}
 	if previous != nil && previous.SessionID != rec.ID {
-		slog.InfoContext(ctx, "Reclaimed project document lease from terminated session",
+		slog.InfoContext(ctx, "Reclaimed project document lease from inactive or revoked writer",
 			"project_id", id, "previous_session_id", previous.SessionID, "previous_epoch", previous.Epoch,
 			"session_id", rec.ID, "epoch", epoch)
 	}

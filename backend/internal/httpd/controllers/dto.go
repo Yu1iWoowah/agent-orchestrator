@@ -3120,9 +3120,10 @@ type CompactConversationResponse struct {
 
 // ConversationTurnResponse is one request and the work that followed it.
 type ConversationTurnResponse struct {
-	ID             string `json:"id"`
-	State          string `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
-	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	ID             string                            `json:"id"`
+	AgentSettings  *domain.AgentSettingsTurnSnapshot `json:"agentSettings,omitempty"`
+	State          string                            `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
+	ProviderTurnID string                            `json:"providerTurnId,omitempty"`
 	// BatchInputTurnIDs identifies consumed inputs outside this message page too.
 	BatchInputTurnIDs []string `json:"batchInputTurnIds,omitempty"`
 
