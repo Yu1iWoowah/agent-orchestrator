@@ -116,8 +116,18 @@ func TestCleanupHookRunsCommandsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	hook := filepath.Join(dataDir, CleanupHookFile)
+	info, err := os.Stat(hook)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("hook executable permissions: info=%v err=%v", info, err)
+	}
+	script, err := os.ReadFile(hook)
+	if err != nil || !strings.HasPrefix(string(script), "#!/bin/sh\n") {
+		t.Fatalf("hook interpreter: script=%q err=%v", script, err)
+	}
+	// Run the declared interpreter: Linux can return ETXTBSY for direct exec
+	// of freshly written fixtures while parallel subprocesses are starting.
 	run := func() (string, int) {
-		output, err := exec.Command(hook).CombinedOutput()
+		output, err := exec.Command("sh", hook).CombinedOutput()
 		code := 0
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
@@ -145,7 +155,7 @@ func TestCleanupHookRunsCommandsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err = func() (string, error) {
-		out, err := exec.Command(filepath.Join(emptyDir, CleanupHookFile)).CombinedOutput()
+		out, err := exec.Command("sh", filepath.Join(emptyDir, CleanupHookFile)).CombinedOutput()
 		return string(out), err
 	}()
 	if err != nil || strings.TrimSpace(output) != "" {
@@ -242,7 +252,7 @@ func TestCleanupHookKeepsTheWorkersHome(t *testing.T) {
 	if err := WriteCleanupHook(dataDir, []string{`echo "home=$HOME" > home-seen`}, workspace, scriptEnvironment(workspace)); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(filepath.Join(dataDir, CleanupHookFile))
+	command := exec.Command("sh", filepath.Join(dataDir, CleanupHookFile))
 	command.Env = append(os.Environ(), "HOME=/home/someone-else")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("run hook: %v: %s", err, output)

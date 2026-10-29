@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -167,7 +168,22 @@ func TestClaudeTranscriptTailFollowsAConversationSwitch(t *testing.T) {
 	tail := newClaudeTranscriptTail(configDir, launch, dataDir, start.Add(-time.Second))
 	// Live processes, as hook helpers record only running Claude processes'
 	// conversations and prune the others.
-	terminalPID, headlessPID := strconv.Itoa(os.Getpid()), strconv.Itoa(os.Getppid())
+	headlessProcess := exec.Command(os.Args[0], "-test.run=^TestClaudeTranscriptHeadlessProcess$")
+	headlessProcess.Env = append(os.Environ(), "AO_TEST_CLAUDE_HEADLESS=1")
+	stdin, err := headlessProcess.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := headlessProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if err := headlessProcess.Wait(); err != nil {
+			t.Errorf("headless fixture: %v", err)
+		}
+	})
+	terminalPID, headlessPID := strconv.Itoa(os.Getpid()), strconv.Itoa(headlessProcess.Process.Pid)
 	record := func(pid, session string, at time.Time) {
 		t.Helper()
 		if err := worker.RecordClaudeConversation(dataDir, pid, session, at); err != nil {
@@ -461,4 +477,13 @@ func TestClaudeTerminalToolInterruptLetsAChatSwitchDrain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The parent owns this live process even when its own parent is outside its PID namespace.
+func TestClaudeTranscriptHeadlessProcess(t *testing.T) {
+	if os.Getenv("AO_TEST_CLAUDE_HEADLESS") != "1" {
+		return
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
 }
