@@ -72,10 +72,12 @@ func TestWindowsProviderGrandchild(t *testing.T) {
 
 func TestWindowsProviderJobReapsGrandchild(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		providerExit bool
+		name           string
+		providerExit   bool
+		openDescriptor bool
 	}{
 		{name: "explicit shutdown"},
+		{name: "shutdown with descriptor pending deletion", openDescriptor: true},
 		{name: "bridge exits first", providerExit: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,6 +95,25 @@ func TestWindowsProviderJobReapsGrandchild(t *testing.T) {
 				_ = Shutdown(context.Background(), dataDir, cfg.SessionID)
 			})
 			d := awaitDescriptor(t, dataDir, cfg.SessionID)
+			if tc.openDescriptor {
+				path, err := descriptorPath(dataDir, cfg.SessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				name, err := windows.UTF16PtrFromString(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep deletion pending until Shutdown returns. Unlike os.Open,
+				// this handle lets Remove succeed while it remains open.
+				handle, err := windows.CreateFile(name, windows.GENERIC_READ,
+					windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+					nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = windows.CloseHandle(handle) })
+			}
 			var pid int
 			deadline := time.Now().Add(3 * time.Second)
 			for time.Now().Before(deadline) {
