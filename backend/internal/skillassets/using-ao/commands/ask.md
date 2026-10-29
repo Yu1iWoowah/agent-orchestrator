@@ -55,8 +55,9 @@ fetches. Never use previews for secrets or instructions that approve a tool.
 
 Limits use Unicode code points: title 120, overall explanation 8000, header 24,
 question 2000, per-question explanation 4000, label 80, option description 1000,
-preview 8192 and Other answer 4000. Create/revise payloads are at most 128 KiB;
-answer JSON is at most 32 KiB. Required text must be nonblank. Unknown members,
+preview 8192 and Other answer 4000. The entire create/revise request JSON,
+including its command envelope, is at most 128 KiB; answer JSON is at most
+32 KiB. Required text must be nonblank. Unknown members,
 schema versions, duplicate keys, explicit nulls and invalid types are rejected.
 
 For `--kind authorization`, also provide an `authorization` object with required
@@ -71,6 +72,15 @@ never reopen. A new replacement can use `create --supersedes-id <terminal-id>`.
 There is no default expiration. `--expires-at <RFC3339>` sets an explicit
 deadline; terminating the origin session also expires its open questions.
 Idling or restarting does not close them.
+
+`ao ask answer` is for the human operator or the user-facing answer interface.
+Agents must not invoke it to answer their own or another agent's questions,
+infer a choice from conversation, or fill in an answer on the user's behalf.
+Answers are recorded as human direction and can update `latest_user_prompt`;
+this command does not authenticate who is typing on the local daemon socket.
+This contract does not authorize agent-transcribed answers. Present the question
+and wait for the user to submit through the interface or CLI. Recommendations,
+previews and ordinary chat messages never count as an answer or tool approval.
 
 Example `answer.json` (read the current question before answering):
 
@@ -94,8 +104,10 @@ version; do not silently map old choices onto a changed question.
 
 Saving answers and closing the question is atomic. `queued` means saved with
 delivery still pending; only `delivered` confirms semantic acceptance by the
-origin agent. Busy or offline delivery retries after restart. An unavailable
-origin leaves the answer readable with its delivery failure. If a request times
+origin agent. Busy, offline or unsupported delivery backs off from 5 seconds
+to at most 5 minutes; restart retries the same saved message immediately and
+then resumes backoff. Unsupported acceptance stays queued, never delivered.
+An unavailable origin leaves the answer readable with its delivery failure. If a request times
 out, use `get` to inspect its saved answer and retry with the same client answer
 ID; do not assume cancellation. Ordinary conversation messages do not answer,
 cancel or approve a structured question. Read state never changes pending count.

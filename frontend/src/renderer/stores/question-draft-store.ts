@@ -10,7 +10,8 @@ export type QuestionDraftPhase =
 	| { state: "submitting"; answer: Submission; startedAt: number }
 	| { state: "unknown"; answer: Submission; nextRetryAt: number; message?: string }
 	| { state: "conflict"; message: string };
-export interface QuestionDraft { scope: QuestionScope; question: SessionQuestion; fields: QuestionFields; phase: QuestionDraftPhase }
+export interface QuestionDraft { scope: QuestionScope; question: SessionQuestion; fields: QuestionFields; phase: QuestionDraftPhase; updatedAt: number }
+type SourceScope = Omit<QuestionScope, "version">;
 interface QuestionDraftState {
 	entries: Record<string, QuestionDraft>;
 	storageAvailable: boolean;
@@ -22,9 +23,20 @@ interface QuestionDraftState {
 	conflict: (key: string, clientAnswerId: string, message: string) => void;
 	rejected: (key: string, clientAnswerId: string, message: string, fieldErrors?: Record<string, string>) => void;
 	clearSaved: (key: string, clientAnswerId: string) => void;
+	reconcileSource: (scope: SourceScope, question: SessionQuestion | null) => void;
+	prune: () => void;
+	syncStorage: (key: string | null, value: string | null) => void;
 }
 
-export const questionDraftStorageKey = "ao.question.drafts.v1";
+export const questionDraftStorageKey = "ao.question.drafts.v2";
+const legacyStorageKey = "ao.question.drafts.v1";
+const maxDrafts = 32;
+const maxStorageChars = 512 * 1024;
+const retention = 7 * 24 * 60 * 60 * 1000;
+const storageKey = (key: string) => `${questionDraftStorageKey}:${key}`;
+const hasFields = (entry: QuestionDraft) => Object.values(entry.fields).some((field) => field.selectedOptionIds.length || field.otherSelected || field.otherText);
+const isPending = (entry: QuestionDraft) => entry.phase.state === "submitting" || entry.phase.state === "unknown";
+const sameSource = (a: SourceScope, b: SourceScope) => (a.hostId ?? null) === (b.hostId ?? null) && a.sessionId === b.sessionId && a.questionId === b.questionId;
 export const questionDraftKey = (scope: QuestionScope) => JSON.stringify([scope.hostId ?? null, scope.sessionId, scope.questionId, scope.version]);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
@@ -42,33 +54,63 @@ function savedFields(value: unknown, question: SessionQuestion): QuestionFields 
 	return fields;
 }
 
-function readDrafts(storage: Storage): Record<string, QuestionDraft> {
+function parseDraft(key: string, value: unknown): QuestionDraft | undefined {
 	try {
-		const saved: unknown = JSON.parse(storage.getItem(questionDraftStorageKey) ?? "null");
-		if (!isRecord(saved) || saved.version !== 1 || !isRecord(saved.entries)) return {};
-		const entries: Record<string, QuestionDraft> = {};
-		for (const [key, value] of Object.entries(saved.entries)) {
-			try {
-				if (!isRecord(value) || !isRecord(value.scope) || typeof value.scope.sessionId !== "string" ||
-					(value.scope.hostId !== undefined && typeof value.scope.hostId !== "string") || !isRecord(value.phase)) continue;
-				const question = parseSessionQuestion(value.question, value.scope.sessionId);
-				if (question.state !== "open") continue;
-				const scope: QuestionScope = { hostId: value.scope.hostId, sessionId: question.originSessionId, questionId: question.id, version: question.version };
-				if (value.scope.questionId !== question.id || value.scope.version !== question.version || questionDraftKey(scope) !== key) continue;
-				const fields = savedFields(value.fields, question);
-				let phase: QuestionDraftPhase;
-				switch (value.phase.state) {
-					case "editing": phase = { state: "editing" }; break;
-					case "conflict": phase = { state: "conflict", message: typeof value.phase.message === "string" ? value.phase.message : "" }; break;
-					case "submitting":
-					case "unknown": phase = { state: "unknown", answer: parseQuestionSubmission(value.phase.answer, question), nextRetryAt: 0 }; break;
-					default: continue;
-				}
-				entries[key] = { scope, question, fields, phase };
-			} catch { /* Invalid saved input never becomes an automatic answer. */ }
+		if (!isRecord(value) || !isRecord(value.scope) || typeof value.scope.sessionId !== "string" ||
+			(value.scope.hostId !== undefined && typeof value.scope.hostId !== "string") || !isRecord(value.phase)) return;
+		const updatedAt = typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? Math.min(value.updatedAt, Date.now()) : Date.now();
+		if (value.phase.state !== "submitting" && value.phase.state !== "unknown" && Date.now() - updatedAt >= retention) return;
+		const question = parseSessionQuestion(value.question, value.scope.sessionId);
+		if (question.state !== "open") return;
+		const scope: QuestionScope = { hostId: value.scope.hostId, sessionId: question.originSessionId, questionId: question.id, version: question.version };
+		if (value.scope.questionId !== question.id || value.scope.version !== question.version || questionDraftKey(scope) !== key) return;
+		const fields = savedFields(value.fields, question);
+		let phase: QuestionDraftPhase;
+		switch (value.phase.state) {
+			case "editing": phase = { state: "editing" }; break;
+			case "conflict": phase = { state: "conflict", message: typeof value.phase.message === "string" ? value.phase.message : "" }; break;
+			case "submitting":
+			case "unknown": phase = { state: "unknown", answer: parseQuestionSubmission(value.phase.answer, question), nextRetryAt: 0 }; break;
+			default: return;
 		}
-		return entries;
-	} catch { return {}; }
+		const entry = { scope, question, fields, phase, updatedAt };
+		return hasFields(entry) || isPending(entry) ? entry : undefined;
+	} catch { /* Invalid saved input never becomes an automatic answer. */ }
+	return undefined;
+}
+
+function diskEntries(storage: Storage): Map<string, string> {
+	const result = new Map<string, string>();
+	for (let i = 0; i < storage.length; i++) {
+		const key = storage.key(i);
+		if (key?.startsWith(`${questionDraftStorageKey}:`)) result.set(key.slice(questionDraftStorageKey.length + 1), storage.getItem(key) ?? "null");
+	}
+	return result;
+}
+
+function readDrafts(storage: Storage): Record<string, QuestionDraft> {
+	const entries: Record<string, QuestionDraft> = {};
+	try {
+		const candidates = diskEntries(storage);
+		let legacy: unknown;
+		try { legacy = JSON.parse(storage.getItem(legacyStorageKey) ?? "null"); } catch { /* A broken legacy envelope must not hide valid v2 entries. */ }
+		if (isRecord(legacy) && legacy.version === 1 && isRecord(legacy.entries)) {
+			for (const [key, value] of Object.entries(legacy.entries)) if (!candidates.has(key)) candidates.set(key, JSON.stringify(value));
+		}
+		let count = 0, size = 0;
+		for (const [key, raw] of [...candidates].reverse()) {
+			try {
+				const value: unknown = JSON.parse(raw);
+				const pending = isRecord(value) && isRecord(value.phase) && (value.phase.state === "submitting" || value.phase.state === "unknown");
+				// Bound expensive question/Markdown validation before parsing ordinary drafts.
+				if (!pending && (count >= maxDrafts || size + raw.length > maxStorageChars)) { storage.removeItem(storageKey(key)); continue; }
+				const entry = parseDraft(key, value);
+				if (entry) { entries[key] = entry; count++; size += raw.length; }
+				else storage.removeItem(storageKey(key));
+			} catch { storage.removeItem(storageKey(key)); }
+		}
+	} catch { /* Storage may be unavailable. */ }
+	return entries;
 }
 
 function pendingAnswer(entry: QuestionDraft | undefined, clientAnswerId: string) {
@@ -78,28 +120,80 @@ function pendingAnswer(entry: QuestionDraft | undefined, clientAnswerId: string)
 
 export function createQuestionDraftStore(storage: Storage) {
 	return create<QuestionDraftState>((set, get) => {
-		const update = (change: (entries: Record<string, QuestionDraft>) => Record<string, QuestionDraft>) =>
+		const snapshots = new WeakMap<SessionQuestion, string>();
+		const metadata = new Map<string, { raw: string; pending: boolean; at: number }>();
+		const encode = (entry: QuestionDraft) => {
+			const { question, ...mutable } = entry;
+			let snapshot = snapshots.get(question);
+			if (!snapshot) { snapshot = JSON.stringify(question); snapshots.set(question, snapshot); }
+			return `${JSON.stringify(mutable).slice(0, -1)},"question":${snapshot}}`;
+		};
+		const persist = (entries: Record<string, QuestionDraft>, previous: Record<string, QuestionDraft>, protectedKey?: string) => {
+			const next = { ...entries };
+			let storageAvailable = true;
+			try {
+				const before = diskEntries(storage), after = new Map(before);
+				for (const key of Object.keys(previous)) if (!next[key]) after.delete(key);
+				for (const [key, entry] of Object.entries(next)) {
+					if (!isPending(entry) && Date.now() - entry.updatedAt >= retention) { delete next[key]; after.delete(key); }
+					else if (!hasFields(entry) && !isPending(entry)) after.delete(key);
+					else if (entry !== previous[key] || !after.has(key)) after.set(key, encode(entry));
+				}
+				let size = [...after.values()].reduce((total, raw) => total + raw.length, 0);
+				const removable = [...after].flatMap(([key, raw]) => {
+					let meta = metadata.get(key);
+					if (meta?.raw !== raw) {
+						let value: unknown;
+						try { value = JSON.parse(raw); } catch { after.delete(key); delete next[key]; size -= raw.length; return []; }
+						meta = { raw, pending: isRecord(value) && isRecord(value.phase) && (value.phase.state === "submitting" || value.phase.state === "unknown"), at: isRecord(value) && typeof value.updatedAt === "number" ? value.updatedAt : 0 };
+						metadata.set(key, meta);
+					}
+					return key !== protectedKey && !meta.pending ? [{ key, size: raw.length, at: meta.at }] : [];
+				}).sort((a, b) => a.at - b.at);
+				for (const item of removable) {
+					if (after.size <= maxDrafts && size <= maxStorageChars) break;
+					after.delete(item.key); delete next[item.key]; size -= item.size;
+				}
+				if (after.size > maxDrafts || size > maxStorageChars) {
+					// Never evict an unconfirmed submission to admit a new draft.
+					if (protectedKey) {
+						const prior = before.get(protectedKey);
+						if (prior) after.set(protectedKey, prior); else after.delete(protectedKey);
+					}
+					storageAvailable = false;
+				}
+				for (const key of before.keys()) if (!after.has(key)) storage.removeItem(storageKey(key));
+				for (const [key, raw] of after) if (raw !== before.get(key)) storage.setItem(storageKey(key), raw);
+				for (const key of metadata.keys()) if (!after.has(key)) metadata.delete(key);
+			} catch { storageAvailable = false; }
+			return { entries: next, storageAvailable };
+		};
+		const update = (change: (entries: Record<string, QuestionDraft>) => Record<string, QuestionDraft>, protectedKey?: string) =>
 			set((state) => {
 				const entries = change(state.entries);
 				if (entries === state.entries) return state;
-				let storageAvailable = true;
-				try { storage.setItem(questionDraftStorageKey, JSON.stringify({ version: 1, entries })); }
-				catch { storageAvailable = false; }
-				return { entries, storageAvailable };
+				return persist(entries, state.entries, protectedKey);
 			});
 		const change = (key: string, transform: (entry: QuestionDraft) => QuestionDraft) =>
 			update((entries) => {
 				const entry = entries[key];
 				if (!entry) return entries;
 				const next = transform(entry);
-				return next === entry ? entries : { ...entries, [key]: next };
-			});
+				return next === entry ? entries : { ...entries, [key]: { ...next, updatedAt: Date.now() } };
+			}, key);
+		const restored = readDrafts(storage);
+		// Shrink a legacy envelope before migrating, leaving it as a fallback if writes fail.
+		try {
+			if (storage.getItem(legacyStorageKey)) storage.setItem(legacyStorageKey, JSON.stringify({ version: 1, entries: restored }));
+		} catch { /* Persist will surface unavailability. */ }
+		const initial = persist(restored, {});
+		if (initial.storageAvailable) { try { storage.removeItem(legacyStorageKey); } catch { initial.storageAvailable = false; } }
 		return {
-			entries: readDrafts(storage), storageAvailable: true,
+			...initial,
 			ensure: (question, hostId) => {
 				const scope = { hostId, sessionId: question.originSessionId, questionId: question.id, version: question.version };
 				const key = questionDraftKey(scope);
-				if (!get().entries[key]) update((entries) => ({ ...entries, [key]: { scope, question: structuredClone(question), fields: emptyQuestionFields(question.payload), phase: { state: "editing" } } }));
+				if (!get().entries[key]) update((entries) => ({ ...Object.fromEntries(Object.entries(entries).filter(([, entry]) => hasFields(entry) || isPending(entry))), [key]: { scope, question: structuredClone(question), fields: emptyQuestionFields(question.payload), phase: { state: "editing" }, updatedAt: Date.now() } }), key);
 				return key;
 			},
 			setField: (key, promptKey, field) => change(key, (entry) =>
@@ -116,6 +210,10 @@ export function createQuestionDraftStore(storage: Storage) {
 					change(key, (current) => ({ ...current, phase: { state: "editing", errorCode: "answerTooLarge" } })); return;
 				}
 				change(key, (current) => ({ ...current, phase: { state: "submitting", answer, startedAt: at } }));
+				if (!get().storageAvailable) {
+					change(key, (current) => ({ ...current, phase: { state: "editing" } }));
+					set({ storageAvailable: false }); return;
+				}
 				return structuredClone(answer);
 			},
 			retry: (key, at) => {
@@ -136,6 +234,36 @@ export function createQuestionDraftStore(storage: Storage) {
 				if (!pendingAnswer(entries[key], clientAnswerId)) return entries;
 				const next = { ...entries }; delete next[key]; return next;
 			}),
+			reconcileSource: (scope, question) => update((entries) => {
+				const matching = Object.entries(entries).filter(([, entry]) => sameSource(entry.scope, scope));
+				const reference = matching.filter(([, entry]) => hasFields(entry) && (question?.state === "open" && entry.scope.version < question.version || entry.phase.state === "conflict"))
+					.sort(([, a], [, b]) => b.scope.version - a.scope.version)[0]?.[0];
+				let next = entries;
+				for (const [key, entry] of matching) {
+					if (isPending(entry) || question && (entry.scope.version > question.version || question.state === "open" && entry.scope.version === question.version)) continue;
+					if (key === reference && entry.phase.state === "conflict") continue;
+					if (next === entries) next = { ...entries };
+					if (key === reference) {
+						if (entry.phase.state !== "conflict") next[key] = { ...entry, phase: { state: "conflict", message: "Question changed; previous draft retained for reference." } };
+					} else delete next[key];
+				}
+				return next;
+			}),
+			prune: () => update((entries) => ({ ...entries })),
+			syncStorage: (key, value) => {
+				if (key !== null && !key.startsWith(`${questionDraftStorageKey}:`)) return;
+				set((state) => {
+					if (key === null) return { entries: Object.fromEntries(Object.entries(state.entries).filter(([, entry]) => isPending(entry))) };
+					const draftKey = key.slice(questionDraftStorageKey.length + 1);
+					if (state.entries[draftKey] && isPending(state.entries[draftKey])) return state;
+					let entry: QuestionDraft | undefined;
+					try { if (value) entry = parseDraft(draftKey, JSON.parse(value)); } catch { /* Ignore invalid external storage. */ }
+					if (entry && state.entries[draftKey] && entry.updatedAt < state.entries[draftKey].updatedAt) return state;
+					const entries = { ...state.entries };
+					if (entry) entries[draftKey] = entry; else delete entries[draftKey];
+					return { entries };
+				});
+			},
 		};
 	});
 }

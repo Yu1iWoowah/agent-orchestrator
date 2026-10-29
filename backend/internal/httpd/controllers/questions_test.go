@@ -2,6 +2,7 @@ package controllers_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -100,5 +101,50 @@ func TestQuestionsAPIRejectsSpoofingUnknownFieldsAndInvalidPayload(t *testing.T)
 				t.Fatalf("invalid wrote row %d %s", status, response)
 			}
 		})
+	}
+}
+
+func TestQuestionsAPIWholeCreateAndReviseByteLimit(t *testing.T) {
+	for _, operation := range []string{"create", "revise"} {
+		for _, extra := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/limit+%d", operation, extra), func(t *testing.T) {
+				server, path := questionAPIServer(t)
+				create := `{"clientKey":"deploy","audience":"user","kind":"question","payload":` + questionAPIPayload + `}`
+				body, endpoint, expectedStatus, expectedVersion := create, path, http.StatusCreated, 1
+				if operation == "revise" {
+					if _, status, _ := doRequest(t, server, "POST", path, create); status != http.StatusCreated {
+						t.Fatalf("setup create: %d", status)
+					}
+					body = `{"expectedVersion":1,"payload":` + questionAPIPayload + `}`
+					endpoint, expectedStatus, expectedVersion = path+"/ask-1/revise", http.StatusOK, 2
+				}
+				// JSON whitespace is part of the entire request, not just its payload value.
+				body += strings.Repeat(" ", domain.MaxAttentionCreateBytes+extra-len(body))
+				response, status, _ := doRequest(t, server, "POST", endpoint, body)
+				if extra == 1 {
+					expectedStatus = http.StatusBadRequest
+					if !reportContainsAll(string(response), "QUESTION_INVALID", "fieldErrors", "requestId") {
+						t.Fatalf("missing limit envelope: %d %s", status, response)
+					}
+				}
+				if status != expectedStatus {
+					t.Fatalf("%d-byte %s: status %d, want %d", len(body), operation, status, expectedStatus)
+				}
+				if extra == 1 && operation == "create" {
+					response, status, _ = doRequest(t, server, "GET", path, "")
+					if status != http.StatusOK || !strings.Contains(string(response), `"open":0`) {
+						t.Fatalf("oversize create wrote a question: %d %s", status, response)
+					}
+				} else {
+					if extra == 1 {
+						expectedVersion = 1
+					}
+					response, status, _ = doRequest(t, server, "GET", path+"/ask-1", "")
+					if status != http.StatusOK || !strings.Contains(string(response), fmt.Sprintf(`"version":%d`, expectedVersion)) {
+						t.Fatalf("wrong persisted version: %d %s", status, response)
+					}
+				}
+			})
+		}
 	}
 }

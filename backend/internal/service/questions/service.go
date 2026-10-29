@@ -49,6 +49,12 @@ type Service struct {
 	newID      func() string
 	wake       chan struct{}
 	deliveryMu sync.Mutex
+	retries    map[string]answerRetry
+}
+
+type answerRetry struct {
+	delay time.Duration
+	at    time.Time
 }
 
 // New creates a question coordinator without starting background work.
@@ -59,7 +65,7 @@ func New(deps Deps) *Service {
 	if deps.NewID == nil {
 		deps.NewID = func() string { return "ask_" + uuid.NewString() }
 	}
-	return &Service{store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1)}
+	return &Service{store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1), retries: make(map[string]answerRetry)}
 }
 
 // Create creates or finds a question using its source-scoped retry key.
@@ -142,6 +148,9 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if retry := s.retries[item.QuestionID]; s.now().Before(retry.at) {
+			continue
+		}
 		owner, found, err := s.store.GetSession(ctx, item.OriginSessionID)
 		if err != nil {
 			return err
@@ -150,6 +159,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 			if err := s.store.RecordAttentionAnswerDelivery(ctx, item.QuestionID, "failed", "Origin session or agent is no longer available; the answer remains saved", s.now().UTC()); err != nil {
 				return err
 			}
+			delete(s.retries, item.QuestionID)
 			continue
 		}
 		attempt, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -168,6 +178,18 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 		}
 		if err := s.store.RecordAttentionAnswerDelivery(ctx, item.QuestionID, state, lastError, s.now().UTC()); err != nil {
 			return err
+		}
+		if sendErr == nil {
+			delete(s.retries, item.QuestionID)
+		} else {
+			delay := s.retries[item.QuestionID].delay * 2
+			if delay < 5*time.Second {
+				delay = 5 * time.Second
+			}
+			if delay > 5*time.Minute {
+				delay = 5 * time.Minute
+			}
+			s.retries[item.QuestionID] = answerRetry{delay: delay, at: s.now().UTC().Add(delay)}
 		}
 	}
 	return nil

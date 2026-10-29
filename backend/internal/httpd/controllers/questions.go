@@ -96,7 +96,7 @@ type questionCreateBody struct {
 
 func (c *QuestionsController) create(w http.ResponseWriter, r *http.Request) {
 	var body questionCreateBody
-	if !readQuestionBody(w, r, domain.MaxAttentionCreateBytes+4096, &body) {
+	if !readQuestionBody(w, r, domain.MaxAttentionCreateBytes, &body) {
 		return
 	}
 	session, _ := questionScope(r)
@@ -206,7 +206,7 @@ func (c *QuestionsController) revise(w http.ResponseWriter, r *http.Request) {
 		ExpectedVersion int64           `json:"expectedVersion"`
 		Payload         json.RawMessage `json:"payload"`
 	}
-	if !readQuestionBody(w, r, domain.MaxAttentionCreateBytes+4096, &body) || !validQuestionVersion(w, r, body.ExpectedVersion) {
+	if !readQuestionBody(w, r, domain.MaxAttentionCreateBytes, &body) || !validQuestionVersion(w, r, body.ExpectedVersion) {
 		return
 	}
 	session, id := questionScope(r)

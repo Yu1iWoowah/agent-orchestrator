@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sessionQuestionFixture } from "../../test/fixtures/session-question";
 import { questionSourceQueryOptions } from "../../hooks/useSessionQuestions";
-import { useQuestionDraftStore } from "../../stores/question-draft-store";
+import { questionDraftStorageKey, useQuestionDraftStore } from "../../stores/question-draft-store";
 import { QuestionDecisionView } from "./QuestionDecisionView";
 import type { SessionQuestion } from "../../lib/session-questions";
 
@@ -34,6 +34,24 @@ it("shows descriptions and one recommendation with no preselected choice", async
 	expect(screen.getAllByText("Recommended")).toHaveLength(1);
 	expect(screen.getByText("Validate with internal users first.")).toBeVisible();
 	expect(screen.getByText("Run automated regression checks.")).toBeVisible();
+});
+
+it("keeps an open form usable after its draft is evicted in another window", async () => {
+	show();
+	await userEvent.click(await screen.findByRole("radio", { name: /Staging/ }));
+	const key = Object.keys(useQuestionDraftStore.getState().entries)[0];
+	act(() => useQuestionDraftStore.getState().syncStorage(`${questionDraftStorageKey}:${key}`, null));
+	await waitFor(() => expect(screen.getByRole("radio", { name: /Staging/ })).toBeEnabled());
+	expect(screen.getByRole("radio", { name: /Staging/ })).not.toBeChecked();
+});
+
+it("does not recreate a removed draft from stale offline source data", async () => {
+	show({ online: false });
+	await screen.findByRole("radio", { name: /Staging/ });
+	const key = Object.keys(useQuestionDraftStore.getState().entries)[0];
+	act(() => useQuestionDraftStore.getState().syncStorage(`${questionDraftStorageKey}:${key}`, null));
+	expect(useQuestionDraftStore.getState().entries[key]).toBeUndefined();
+	expect(screen.getByRole("button", { name: "Submit all answers" })).toBeDisabled();
 });
 
 it("opens preview separately from selecting an option and submits the complete group once", async () => {

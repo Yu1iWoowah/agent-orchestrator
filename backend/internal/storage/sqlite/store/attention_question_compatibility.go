@@ -96,5 +96,9 @@ func appendQuestionCompatibility(ctx context.Context, q *gen.Queries, question d
 	if err != nil {
 		return err
 	}
-	return q.InsertConversationActivity(ctx, gen.InsertConversationActivityParams{ID: uuid.NewString(), ConversationID: conversation.ID, Sequence: sequence, Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: message, DetailJson: string(detail), CreatedAt: at.UTC(), UpdatedAt: at.UTC()})
+	summary := message
+	if runes := []rune(summary); len(runes) > 512 {
+		summary = string(runes[:511]) + "…"
+	}
+	return q.InsertConversationActivity(ctx, gen.InsertConversationActivityParams{ID: uuid.NewString(), ConversationID: conversation.ID, Sequence: sequence, Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: summary, DetailJson: string(detail), CreatedAt: at.UTC(), UpdatedAt: at.UTC()})
 }

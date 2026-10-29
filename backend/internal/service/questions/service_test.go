@@ -179,6 +179,63 @@ func (f deliveryFunc) Submit(ctx context.Context, id domain.SessionID, message, 
 	return f(ctx, id, message, key)
 }
 
+type deliveryWrites struct {
+	*sqlite.Store
+	writes int
+}
+
+func (s *deliveryWrites) RecordAttentionAnswerDelivery(ctx context.Context, id, state, message string, at time.Time) error {
+	s.writes++
+	return s.Store.RecordAttentionAnswerDelivery(ctx, id, state, message, at)
+}
+
+func TestQuestionsDeliveryBackoffBoundsWritesWithoutBlockingNewAnswers(t *testing.T) {
+	store, session := fixture(t)
+	recorded := &deliveryWrites{Store: store}
+	now := clock
+	target := &delivery{err: errors.New("semantic acceptance unavailable")}
+	svc := questions.New(questions.Deps{Store: recorded, Delivery: target, Now: func() time.Time { return now }})
+	ctx := context.Background()
+	createAnswer := func(key string) {
+		t.Helper()
+		q, _, err := svc.Create(ctx, domain.AttentionQuestionCreate{OriginSessionID: session, ClientKey: key, Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: []byte(payload)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = svc.Answer(ctx, session, domain.AttentionAnswerSubmission{QuestionID: q.ID, ExpectedVersion: 1, ClientAnswerID: key, Answers: []domain.AttentionQuestionAnswer{{QuestionKey: "target", SelectedOptionIDs: []string{"stage"}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createAnswer("old-answer")
+	if err := svc.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i, delay := range []time.Duration{5, 10, 20, 40, 80, 160, 300, 300} {
+		now = now.Add((delay - 1) * time.Second)
+		if err := svc.DeliverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if recorded.writes != i+1 || len(target.keys) != i+1 {
+			t.Fatalf("attempt before retry deadline: writes=%d calls=%d", recorded.writes, len(target.keys))
+		}
+		now = now.Add(time.Second)
+		if err := svc.DeliverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recorded.writes != 9 {
+		t.Fatalf("retry writes = %d", recorded.writes)
+	}
+	createAnswer("new-answer")
+	target.err = nil
+	if err := svc.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.keys) != 10 || recorded.writes != 10 || target.keys[9] == target.keys[0] {
+		t.Fatalf("new answer blocked by old backoff: %+v writes=%d", target.keys, recorded.writes)
+	}
+}
+
 func TestQuestionsCoordinatorShutdownCancelsDeliveryWithoutLosingSavedAnswer(t *testing.T) {
 	store, session := fixture(t)
 	started := make(chan struct{})

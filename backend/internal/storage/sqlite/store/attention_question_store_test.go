@@ -2,12 +2,14 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -21,6 +23,41 @@ func askCreate(session domain.SessionID) domain.AttentionQuestionCreate {
 
 func askAnswer(id string) domain.AttentionAnswerSubmission {
 	return domain.AttentionAnswerSubmission{QuestionID: id, ExpectedVersion: 1, ClientAnswerID: "answer-1", Answers: []domain.AttentionQuestionAnswer{{QuestionKey: "target", SelectedOptionIDs: []string{"staging"}}}}
+}
+
+func TestAttentionQuestionCompatibilitySummaryIsBoundedButDetailIsComplete(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	command := askCreate(session)
+	explanation := strings.Repeat("界", 8000)
+	var payload map[string]any
+	if err := json.Unmarshal(command.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["explanation"] = explanation
+	var err error
+	command.Payload, err = json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, _, err := s.CreateAttentionQuestion(context.Background(), command, histClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AnswerAttentionQuestion(context.Background(), session, askAnswer(q.ID), histClock); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := s.LoadConversationSnapshot(context.Background(), conversation)
+	if err != nil || len(snapshot.Activities) != 2 {
+		t.Fatalf("snapshot: %v count %d", err, len(snapshot.Activities))
+	}
+	for _, activity := range snapshot.Activities {
+		if !utf8.ValidString(activity.Summary) || utf8.RuneCountInString(activity.Summary) > 512 || !strings.HasSuffix(activity.Summary, "…") {
+			t.Fatalf("unbounded or invalid summary: %d runes", utf8.RuneCountInString(activity.Summary))
+		}
+		if !strings.Contains(string(activity.Detail), explanation) {
+			t.Fatal("compatibility detail lost full question")
+		}
+	}
 }
 
 func TestAttentionQuestionCreateIsValidatedScopedAndIdempotent(t *testing.T) {
@@ -225,7 +262,7 @@ func TestAttentionQuestionGroupedAnswerHasNoPartialCommit(t *testing.T) {
 		t.Fatalf("compatibility records = %+v %v", snapshot.Activities, err)
 	}
 	for _, activity := range snapshot.Activities {
-		if activity.Kind != domain.ActivityKindSystem || !strings.Contains(activity.Summary, "Which region?") || !strings.Contains(activity.Summary, "Production") || !strings.Contains(string(activity.Detail), "question-1") {
+		if activity.Kind != domain.ActivityKindSystem || !strings.Contains(string(activity.Detail), "Which region?") || !strings.Contains(string(activity.Detail), "Production") || !strings.Contains(string(activity.Detail), "question-1") {
 			t.Fatalf("unreadable compatibility record: %+v", activity)
 		}
 	}

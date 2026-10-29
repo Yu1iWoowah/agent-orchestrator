@@ -82,40 +82,60 @@ export async function sendQuestionAnswer(client: QueryClient, key: string): Prom
 export function useQuestionAnswerRecovery(): void {
 	const client = useQueryClient();
 	const entries = useQuestionDraftStore((state) => state.entries);
-	const pending = useMemo(() => Object.entries(entries).filter(([, entry]) => isPending(entry)), [entries]);
+	const sources = useMemo(() => {
+		const grouped = new Map<string, { scope: QuestionDraft["scope"]; keys: string[]; pending: boolean }>();
+		for (const [key, entry] of Object.entries(entries)) {
+			const sourceKey = JSON.stringify([entry.scope.hostId ?? null, entry.scope.sessionId, entry.scope.questionId]);
+			const source = grouped.get(sourceKey) ?? { scope: entry.scope, keys: [], pending: false };
+			source.keys.push(key); source.pending ||= Boolean(isPending(entry)); grouped.set(sourceKey, source);
+		}
+		return [...grouped.values()];
+	}, [entries]);
+	useEffect(() => {
+		const sync = (event: StorageEvent) => {
+			if (event.storageArea === window.localStorage) useQuestionDraftStore.getState().syncStorage(event.key, event.newValue);
+		};
+		window.addEventListener("storage", sync);
+		const timer = window.setInterval(() => useQuestionDraftStore.getState().prune(), 60_000);
+		return () => { window.removeEventListener("storage", sync); window.clearInterval(timer); };
+	}, []);
 	const queries = useQueries({
-		queries: pending.map(([, entry]) => ({
-			...questionSourceQueryOptions(entry.scope),
-			staleTime: 0,
-			refetchInterval: 2000,
+		queries: sources.map((source) => ({
+			...questionSourceQueryOptions(source.scope),
+			staleTime: source.pending ? 0 : Infinity,
+			refetchInterval: source.pending ? 2000 : 30_000,
 		})),
 	});
 	useEffect(() => {
-		for (const [index, [key]] of pending.entries()) {
+		for (const [index, source] of sources.entries()) {
 			const query = queries[index];
-			const entry = useQuestionDraftStore.getState().entries[key];
-			if (!entry || (entry.phase.state !== "submitting" && entry.phase.state !== "unknown")) continue;
-			const expected = entry.phase.answer;
-			if (query?.error instanceof QuestionNotFound) {
-				useQuestionDraftStore.getState().conflict(key, expected.clientAnswerId, "Source is unavailable; the previous save result cannot be confirmed."); continue;
-			}
-			if (!query?.isSuccess || query.isFetching || !query.data) continue;
-			const question = query.data;
-			if (question.answer) {
-				try {
-					const receipt = parseQuestionReceipt(question.answer, expected);
-					void savedAnswer(client, key, receipt, question).catch((error: unknown) => useQuestionDraftStore.getState().unknown(key, expected.clientAnswerId, error instanceof Error ? error.message : "Could not confirm saved answer.", Date.now()));
-				} catch {
-					useQuestionDraftStore.getState().conflict(key, expected.clientAnswerId, "Another answer is already saved; your previous draft is retained for reference.");
+			for (const key of source.keys) {
+				const entry = useQuestionDraftStore.getState().entries[key];
+				if (!entry || (entry.phase.state !== "submitting" && entry.phase.state !== "unknown")) continue;
+				const expected = entry.phase.answer;
+				if (query?.error instanceof QuestionNotFound) {
+					useQuestionDraftStore.getState().conflict(key, expected.clientAnswerId, "Source is unavailable; the previous save result cannot be confirmed."); continue;
 				}
-				continue;
+				if (!query?.isSuccess || query.isFetching || !query.data) continue;
+				const question = query.data;
+				if (question.answer) {
+					try {
+						const receipt = parseQuestionReceipt(question.answer, expected);
+						void savedAnswer(client, key, receipt, question).catch((error: unknown) => useQuestionDraftStore.getState().unknown(key, expected.clientAnswerId, error instanceof Error ? error.message : "Could not confirm saved answer.", Date.now()));
+					} catch {
+						useQuestionDraftStore.getState().conflict(key, expected.clientAnswerId, "Another answer is already saved; your previous draft is retained for reference.");
+					}
+					continue;
+				}
+				if (question.version !== expected.expectedVersion || question.state !== "open") {
+					useQuestionDraftStore.getState().conflict(key, expected.clientAnswerId, "Question changed; review the latest version before answering."); continue;
+				}
+				if (entry.phase.state === "unknown" && useQuestionDraftStore.getState().retry(key, Date.now())) void sendQuestionAnswer(client, key);
 			}
-			if (question.version !== expected.expectedVersion || question.state !== "open") {
-				useQuestionDraftStore.getState().conflict(key, expected.clientAnswerId, "Question changed; review the latest version before answering."); continue;
-			}
-			if (entry.phase.state === "unknown" && useQuestionDraftStore.getState().retry(key, Date.now())) void sendQuestionAnswer(client, key);
+			if (query?.error instanceof QuestionNotFound) useQuestionDraftStore.getState().reconcileSource(source.scope, null);
+			else if (query?.isSuccess && !query.isFetching && query.data) useQuestionDraftStore.getState().reconcileSource(source.scope, query.data);
 		}
-	}, [client, pending, queries]);
+	}, [client, sources, queries]);
 }
 
 export function QuestionAnswerRuntime() {

@@ -36,14 +36,17 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 	const storageAvailable = useQuestionDraftStore((state) => state.storageAvailable);
 	const key = questionDraftKey({ hostId, sessionId: question.originSessionId, questionId: question.id, version: question.version });
 	const entry = entries[key];
+	const hasEntry = Boolean(entry);
 	const [showErrors, setShowErrors] = useState(false);
 	const prefix = useId();
 	const groups = useRef(new Map<string, HTMLFieldSetElement>());
 	const notice = useRef<HTMLDivElement>(null);
 	const previousVersion = useRef(question.version);
+	const initialized = useRef<string | undefined>(undefined);
 	useEffect(() => {
-		if (question.state === "open") useQuestionDraftStore.getState().ensure(question, hostId);
-	}, [question.id, question.version, question.state, hostId]);
+		if (question.state === "open" && !hasEntry && (submitAllowed || initialized.current !== key)) useQuestionDraftStore.getState().ensure(question, hostId);
+		initialized.current = key;
+	}, [key, question.id, question.version, question.state, hostId, hasEntry, submitAllowed]);
 	useEffect(() => {
 		if (entry && previousVersion.current !== question.version) {
 			previousVersion.current = question.version;
