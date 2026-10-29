@@ -43,6 +43,9 @@ export function agentAccountErrorMessage(error: unknown, accountEmail?: string):
 		case "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED":
 		case "account_credential_store_unsupported":
 			return appI18n.t("settings.agentAccounts.credentialStoreUnsupported");
+		case "AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED":
+		case "account_unavailable_home_occupied":
+			return appI18n.t("settings.agentAccounts.unavailableHomeOccupied");
 		case "AGENT_ACCOUNT_STORAGE_UNSAFE":
 		case "account_storage_unsafe":
 			return appI18n.t("settings.agentAccounts.storageUnsafe");

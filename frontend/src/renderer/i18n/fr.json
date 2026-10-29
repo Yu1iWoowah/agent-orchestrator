@@ -3599,6 +3599,7 @@
 	"settings.defaultSandbox.adminOnly": "Seuls les administrateurs de l'organisation peuvent modifier ce réglage.",
 	"settings.defaultSandbox.saveFailed": "Impossible d'enregistrer la sandbox par défaut. Réessayez.",
 	"settings.agentAccounts.cleanupScheduled": "Ce compte est désactivé et son nettoyage est planifié. AO réessaiera après l’arrêt de ses agents. Vous pouvez aussi les arrêter et réessayer pour terminer plus tôt.",
+	"settings.agentAccounts.unavailableHomeOccupied": "Le répertoire de comptes unavailable réservé par AO est occupé ou ne peut pas être inspecté en toute sécurité. Arrêtez les outils enfants concernés, vérifiez et déplacez les données hors de .unavailable dans le stockage des comptes AO, puis réessayez. AO ne supprime automatiquement que les dossiers réservés vides.",
 	"settings.agentAccounts.storageUnsafe": "Le stockage du compte n’est pas sécurisé. Vérifiez les permissions des dossiers et les liens symboliques, puis réessayez.",
 	"settings.agentAccounts.storageUnavailable": "Le stockage du compte est temporairement indisponible. Réessayez plus tard.",
 	"settings.agentAccounts.storageUnsupported": "Les profils de compte privés sont actuellement pris en charge uniquement sous Linux.",

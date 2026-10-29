@@ -10,6 +10,7 @@ import (
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountUnavailableHomeOccupied    = errors.New("account_unavailable_home_occupied")
 	ErrAgentAccountCleanupUnconfirmed         = errors.New("account_cleanup_unconfirmed")
 	ErrAgentAccountOperationBusy              = errors.New("account_operation_busy")
 	ErrAgentAccountCredentialStoreUnsupported = errors.New("account_credential_store_unsupported")
@@ -29,6 +30,10 @@ var (
 	ErrAgentAccountInUse              = errors.New("an agent that uses the account could not be stopped")
 	ErrAgentAccountDefaultUnusable    = errors.New("the default account is signed out or now holds another login")
 )
+
+// AgentAccountUnavailableHomeOccupiedMessage identifies the reserved namespace
+// without exposing an absolute account path or suggesting deletion of user data.
+const AgentAccountUnavailableHomeOccupiedMessage = "AO's reserved unavailable account directory is occupied or cannot be safely inspected. Stop related child tools, review and move any data out of .unavailable under AO account storage, then retry. AO only removes empty reserved folders automatically."
 
 // AgentAccountProviderCLI reads and prepares one provider's CLI config
 // folders. home is empty for the computer's own folder. Implementations ask the

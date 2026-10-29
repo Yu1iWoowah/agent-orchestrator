@@ -149,7 +149,7 @@ func TestOrphanEnvironmentRejectsOccupiedUnavailableNamespace(t *testing.T) {
 			}
 			s := New(&isolatedOrphanStore{memStore: &memStore{}, missing: domain.AgentAccountProviderCodex}, []ports.AgentAccountProviderCLI{&agentaccount.Claude{}, &agentaccount.Codex{}}, root, nil, nil)
 			env, e := s.SessionLaunchEnv(context.Background(), "old", domain.HarnessClaudeCode)
-			if !errors.Is(e, ports.ErrAgentAccountStorageUnsafe) {
+			if !errors.Is(e, ports.ErrAgentAccountUnavailableHomeOccupied) {
 				t.Errorf("occupied unavailable namespace accepted: %v", e)
 			}
 			if env["CODEX_HOME"] != filepath.Join(reserved, "codex") || env[agentlaunch.ManagedCodexAccountEnv] != "1" {

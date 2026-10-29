@@ -60,6 +60,7 @@ type Service struct {
 	activeLogins   map[string]bool
 	retries        map[string]lifecycleRetry
 	opMu           sync.Mutex
+	unavailableMu  sync.Mutex
 	defaultChanged func(domain.AgentAccountProvider)
 }
 
@@ -848,11 +849,14 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 	var errs []error
 	active, _ := domain.AgentAccountProviderFor(harness)
 	validationError := func(p domain.AgentAccountProvider, id string, err error) {
-		if p == active {
+		occupied := errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied)
+		if p == active || occupied {
 			if err != nil {
 				errs = append(errs, err)
 			}
-			return
+			if !occupied {
+				return
+			}
 		}
 		reason := ""
 		if err != nil {
@@ -867,7 +871,11 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		}
 		s.mu.Unlock()
 		if reason != "" && previous != reason {
-			s.log.Warn("non-launch account unavailable", "provider", p, "accountId", id, "reasonCode", reason)
+			message := "non-launch account unavailable"
+			if occupied {
+				message = ports.AgentAccountUnavailableHomeOccupiedMessage
+			}
+			s.log.Warn(message, "provider", p, "accountId", id, "reasonCode", reason)
 		}
 	}
 	for _, p := range domain.AgentAccountProviders {
@@ -901,17 +909,26 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		// namespace, never an empty home or a path derived from the missing ID.
 		// Availability is checked before Prepare, so this home is not created.
 		home := account.Home
+		var namespaceErr error
 		if home == "" {
 			reserved := filepath.Join(s.root, ".unavailable")
 			home = filepath.Join(reserved, string(p))
-			// The sink must stay absent. Never reuse data or follow a link
-			// placed in its reserved namespace, even for an inactive provider.
-			if _, err := os.Lstat(reserved); !errors.Is(err, os.ErrNotExist) {
-				errs = append(errs, ports.ErrAgentAccountStorageUnsafe)
+			// Native children may create these directories. Only an empty,
+			// owned reserved skeleton can be removed; all data is preserved.
+			s.unavailableMu.Lock()
+			recovered, err := recoverUnavailableNamespace(s.root)
+			s.unavailableMu.Unlock()
+			namespaceErr = err
+			if recovered {
+				s.log.Info("removed empty reserved unavailable account folders", "provider", p, "reasonCode", "account_unavailable_home_recovered")
 			}
 		}
 		for key, value := range provider.LaunchEnv(home) {
 			env[key] = value
+		}
+		if namespaceErr != nil {
+			validationError(p, account.ID, namespaceErr)
+			continue
 		}
 		if err := accountAvailability(account); err != nil {
 			validationError(p, account.ID, err)
