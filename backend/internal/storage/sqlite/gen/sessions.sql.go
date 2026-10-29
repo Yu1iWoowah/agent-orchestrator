@@ -16,28 +16,29 @@ import (
 const activateConversationBranchSession = `-- name: ActivateConversationBranchSession :execrows
 UPDATE sessions
 SET updated_at = ?1,
-    latest_user_prompt = CASE WHEN provider_conversation_id = ?2 THEN latest_user_prompt ELSE '' END,
-    latest_assistant_update = CASE WHEN provider_conversation_id = ?2 THEN latest_assistant_update ELSE '' END,
-    latest_assistant_update_at = CASE WHEN provider_conversation_id = ?2 THEN latest_assistant_update_at ELSE NULL END,
-    conversation_checkpoint_state = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_state ELSE 'empty' END,
-    conversation_checkpoint_generation = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_generation ELSE '' END,
-    conversation_checkpoint_native_id = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_native_id ELSE '' END,
-    conversation_checkpoint_turn_id = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_turn_id ELSE '' END,
-    conversation_checkpoint_unsettled = CASE WHEN provider_conversation_id = ?2 THEN conversation_checkpoint_unsettled ELSE 0 END,
-    native_checkpoint_evidence = CASE WHEN provider_conversation_id = ?2 THEN native_checkpoint_evidence ELSE '' END,
-    native_transcript_path = CASE WHEN provider_conversation_id = ?2 THEN native_transcript_path ELSE '' END,
-    agent_session_id = ?2,
+    agent_settings_launch_id = ?2,
+    latest_user_prompt = CASE WHEN provider_conversation_id = ?3 THEN latest_user_prompt ELSE '' END,
+    latest_assistant_update = CASE WHEN provider_conversation_id = ?3 THEN latest_assistant_update ELSE '' END,
+    latest_assistant_update_at = CASE WHEN provider_conversation_id = ?3 THEN latest_assistant_update_at ELSE NULL END,
+    conversation_checkpoint_state = CASE WHEN provider_conversation_id = ?3 THEN conversation_checkpoint_state ELSE 'empty' END,
+    conversation_checkpoint_generation = CASE WHEN provider_conversation_id = ?3 THEN conversation_checkpoint_generation ELSE '' END,
+    conversation_checkpoint_native_id = CASE WHEN provider_conversation_id = ?3 THEN conversation_checkpoint_native_id ELSE '' END,
+    conversation_checkpoint_turn_id = CASE WHEN provider_conversation_id = ?3 THEN conversation_checkpoint_turn_id ELSE '' END,
+    conversation_checkpoint_unsettled = CASE WHEN provider_conversation_id = ?3 THEN conversation_checkpoint_unsettled ELSE 0 END,
+    native_checkpoint_evidence = CASE WHEN provider_conversation_id = ?3 THEN native_checkpoint_evidence ELSE '' END,
+    native_transcript_path = CASE WHEN provider_conversation_id = ?3 THEN native_transcript_path ELSE '' END,
+    agent_session_id = ?3,
     agent_session_id_launch_id = '',
     native_identity_observed_at = ?1,
-    provider_conversation_id = ?2,
-    controller_generation = ?3
+    provider_conversation_id = ?3,
+    controller_generation = ?2
 WHERE id = ?4 AND session_mode = 'chat' AND is_terminated = 0
 `
 
 type ActivateConversationBranchSessionParams struct {
 	UpdatedAt              time.Time
-	ProviderConversationID string
 	ControllerGeneration   string
+	ProviderConversationID string
 	ID                     domain.SessionID
 }
 
@@ -46,8 +47,8 @@ type ActivateConversationBranchSessionParams struct {
 func (q *Queries) ActivateConversationBranchSession(ctx context.Context, arg ActivateConversationBranchSessionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, activateConversationBranchSession,
 		arg.UpdatedAt,
-		arg.ProviderConversationID,
 		arg.ControllerGeneration,
+		arg.ProviderConversationID,
 		arg.ID,
 	)
 	if err != nil {
@@ -58,11 +59,15 @@ func (q *Queries) ActivateConversationBranchSession(ctx context.Context, arg Act
 
 const claimChatControllerGeneration = `-- name: ClaimChatControllerGeneration :execrows
 UPDATE sessions
-SET controller_generation = ?
-WHERE id = ? AND session_mode = 'chat'
+SET agent_settings_launch_id = CASE WHEN ?1=1
+      THEN COALESCE(NULLIF(agent_settings_launch_id,''),controller_generation)
+      ELSE ?2 END,
+    controller_generation = ?2
+WHERE id = ?3 AND session_mode = 'chat'
 `
 
 type ClaimChatControllerGenerationParams struct {
+	LiveReconnect        interface{}
 	ControllerGeneration string
 	ID                   domain.SessionID
 }
@@ -72,7 +77,7 @@ type ClaimChatControllerGenerationParams struct {
 // so an older controller cannot mutate a session after a replacement takes over.
 // Ownership changes are not activity and must not advance the board's recency.
 func (q *Queries) ClaimChatControllerGeneration(ctx context.Context, arg ClaimChatControllerGenerationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, claimChatControllerGeneration, arg.ControllerGeneration, arg.ID)
+	result, err := q.db.ExecContext(ctx, claimChatControllerGeneration, arg.LiveReconnect, arg.ControllerGeneration, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -110,6 +115,7 @@ SET session_mode = ?1,
     agent_session_id_launch_id = '',
     provider_conversation_id = ?3,
     controller_generation = '',
+    agent_settings_launch_id = '',
     latest_user_prompt = CASE WHEN ?1 = 'tui' THEN '' ELSE latest_user_prompt END,
     latest_assistant_update = CASE WHEN ?1 = 'tui' THEN '' ELSE latest_assistant_update END,
     conversation_checkpoint_state = CASE WHEN ?1 = 'tui' THEN 'empty' ELSE conversation_checkpoint_state END,
@@ -216,7 +222,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -268,6 +274,7 @@ type GetSessionRow struct {
 	SessionMode                      domain.SessionMode
 	ProviderConversationID           string
 	ControllerGeneration             string
+	AgentSettingsLaunchID            string
 	BrowserCapabilityVerifier        string
 	ArtifactDir                      string
 	SessionOutputType                string
@@ -354,6 +361,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.SessionMode,
 		&i.ProviderConversationID,
 		&i.ControllerGeneration,
+		&i.AgentSettingsLaunchID,
 		&i.BrowserCapabilityVerifier,
 		&i.ArtifactDir,
 		&i.SessionOutputType,
@@ -410,7 +418,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -462,6 +470,7 @@ type GetSessionByAutomationRunIDRow struct {
 	SessionMode                      domain.SessionMode
 	ProviderConversationID           string
 	ControllerGeneration             string
+	AgentSettingsLaunchID            string
 	BrowserCapabilityVerifier        string
 	ArtifactDir                      string
 	SessionOutputType                string
@@ -548,6 +557,7 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 		&i.SessionMode,
 		&i.ProviderConversationID,
 		&i.ControllerGeneration,
+		&i.AgentSettingsLaunchID,
 		&i.BrowserCapabilityVerifier,
 		&i.ArtifactDir,
 		&i.SessionOutputType,
@@ -767,7 +777,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -819,6 +829,7 @@ type ListAllSessionsRow struct {
 	SessionMode                      domain.SessionMode
 	ProviderConversationID           string
 	ControllerGeneration             string
+	AgentSettingsLaunchID            string
 	BrowserCapabilityVerifier        string
 	ArtifactDir                      string
 	SessionOutputType                string
@@ -911,6 +922,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.SessionMode,
 			&i.ProviderConversationID,
 			&i.ControllerGeneration,
+			&i.AgentSettingsLaunchID,
 			&i.BrowserCapabilityVerifier,
 			&i.ArtifactDir,
 			&i.SessionOutputType,
@@ -1010,7 +1022,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -1062,6 +1074,7 @@ type ListSessionsByProjectRow struct {
 	SessionMode                      domain.SessionMode
 	ProviderConversationID           string
 	ControllerGeneration             string
+	AgentSettingsLaunchID            string
 	BrowserCapabilityVerifier        string
 	ArtifactDir                      string
 	SessionOutputType                string
@@ -1154,6 +1167,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.SessionMode,
 			&i.ProviderConversationID,
 			&i.ControllerGeneration,
+			&i.AgentSettingsLaunchID,
 			&i.BrowserCapabilityVerifier,
 			&i.ArtifactDir,
 			&i.SessionOutputType,
@@ -1619,6 +1633,7 @@ SET session_mode = ?1,
     agent_session_id_launch_id = '',
     provider_conversation_id = ?3,
     controller_generation = '',
+    agent_settings_launch_id = '',
     activity_state = 'idle',
     activity_last_at = ?4,
     updated_at = ?5
@@ -2167,20 +2182,23 @@ func (q *Queries) UpdateBrowserCapabilityVerifier(ctx context.Context, arg Updat
 
 const updateSession = `-- name: UpdateSession :exec
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?,
-    activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
-    branch = CASE WHEN temporary_branch <> '' AND temporary_branch = ? THEN branch ELSE ? END, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, native_identity_observed_at = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, latest_assistant_update_at = ?,
-    conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
-    conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?, native_checkpoint_evidence = ?,
-    native_transcript_path = ?,
-    preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
-    cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, model = ?, effort = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
-    automation_launch_completed = ?
-WHERE id = ?
+    issue_id = ?1, kind = ?2, harness = ?3, reviewer_harness = ?4, reviewer_agent_config = ?5, auto_review_enabled = ?6,
+    activity_state = ?7, activity_last_at = ?8, first_signal_at = ?9, is_terminated = ?10,
+    branch = CASE WHEN temporary_branch <> '' AND temporary_branch = ?11 THEN branch ELSE ?12 END, workspace_path = ?13, workspace_repo_path = ?14, diff_base_sha = ?15, diff_base_ref = ?16, runtime_handle_id = ?17,
+    runtime_launch_id = ?18, agent_session_id = ?19, agent_session_id_launch_id = ?20, native_identity_observed_at = ?21, prompt = ?22,
+    latest_user_prompt = ?23, latest_user_prompt_at = ?24, latest_assistant_update = ?25, latest_assistant_update_at = ?26,
+    conversation_checkpoint_state = ?27, conversation_checkpoint_generation = ?28, conversation_checkpoint_native_id = ?29,
+    conversation_checkpoint_unsettled = ?30, conversation_checkpoint_turn_id = ?31, native_checkpoint_evidence = ?32,
+    native_transcript_path = ?33,
+    preview_url = ?34, preview_revision = ?35, terminate_on_pr_merge = ?36,
+    cleanup_generation = ?37, browser_capability_verifier = ?38,
+    provider_conversation_id = ?39,
+    agent_settings_launch_id = CASE WHEN controller_generation <> ?40
+      THEN ?40 ELSE agent_settings_launch_id END,
+    controller_generation = ?40, model = ?41, effort = ?42, updated_at = ?43,
+    is_pinned = ?44, pinned_at = ?45, auto_inject_review = ?46, auto_inject_ci = ?47,
+    automation_launch_completed = ?48
+WHERE id = ?49
 `
 
 type UpdateSessionParams struct {

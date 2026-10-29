@@ -27,31 +27,41 @@ func (s *Store) CreateSessionInterfaceTransition(
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	row, err := s.qw.InsertSessionInterfaceTransition(ctx, gen.InsertSessionInterfaceTransitionParams{
-		ID:                   rec.ID,
-		SessionID:            rec.SessionID,
-		SourceMode:           rec.SourceMode,
-		TargetMode:           rec.TargetMode,
-		Policy:               rec.Policy,
-		HistoryPolicy:        rec.HistoryPolicy,
-		Phase:                rec.Phase,
-		NativeConversationID: rec.NativeConversationID,
-		CreatedAt:            rec.CreatedAt,
-		UpdatedAt:            rec.UpdatedAt,
-		SourceAccountID:      rec.SourceAccountID,
-		TargetAccountID:      rec.TargetAccountID,
+	var transition domain.SessionInterfaceTransition
+	var created bool
+	err := s.inTx(ctx, "claim interface transition", func(q *gen.Queries) error {
+		if err := settingsTransitionAvailable(ctx, q, rec.SessionID); err != nil {
+			return err
+		}
+		row, err := q.InsertSessionInterfaceTransition(ctx, gen.InsertSessionInterfaceTransitionParams{
+			ID:                   rec.ID,
+			SessionID:            rec.SessionID,
+			SourceMode:           rec.SourceMode,
+			TargetMode:           rec.TargetMode,
+			Policy:               rec.Policy,
+			HistoryPolicy:        rec.HistoryPolicy,
+			Phase:                rec.Phase,
+			NativeConversationID: rec.NativeConversationID,
+			CreatedAt:            rec.CreatedAt,
+			UpdatedAt:            rec.UpdatedAt,
+			SourceAccountID:      rec.SourceAccountID,
+			TargetAccountID:      rec.TargetAccountID,
+		})
+		if err == nil {
+			transition, created = interfaceTransitionToDomain(row), true
+			return nil
+		}
+		if !isSQLiteUnique(err) {
+			return fmt.Errorf("create interface transition for %s: %w", rec.SessionID, err)
+		}
+		existing, lookupErr := q.GetActiveSessionInterfaceTransition(ctx, rec.SessionID)
+		if lookupErr != nil {
+			return fmt.Errorf("read winning interface transition for %s: %w", rec.SessionID, lookupErr)
+		}
+		transition = interfaceTransitionToDomain(existing)
+		return nil
 	})
-	if err == nil {
-		return interfaceTransitionToDomain(row), true, nil
-	}
-	if !isSQLiteUnique(err) {
-		return domain.SessionInterfaceTransition{}, false, fmt.Errorf("create interface transition for %s: %w", rec.SessionID, err)
-	}
-	existing, lookupErr := s.qw.GetActiveSessionInterfaceTransition(ctx, rec.SessionID)
-	if lookupErr != nil {
-		return domain.SessionInterfaceTransition{}, false, fmt.Errorf("read winning interface transition for %s: %w", rec.SessionID, lookupErr)
-	}
-	return interfaceTransitionToDomain(existing), false, nil
+	return transition, created, err
 }
 
 // CreateSessionInterfaceTransitionAfter claims a provider-history recovery
@@ -84,6 +94,9 @@ func (s *Store) CreateSessionInterfaceTransitionAfter(
 			return nil
 		}
 		predecessorMatched = true
+		if err := settingsTransitionAvailable(ctx, q, rec.SessionID); err != nil {
+			return err
+		}
 		row, insertErr := q.InsertSessionInterfaceTransition(ctx, gen.InsertSessionInterfaceTransitionParams{
 			ID: rec.ID, SessionID: rec.SessionID, SourceMode: rec.SourceMode,
 			TargetMode: rec.TargetMode, Policy: rec.Policy, HistoryPolicy: rec.HistoryPolicy,
@@ -463,4 +476,17 @@ func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.Sess
 		CompletedAt:          nullTimeToTime(row.CompletedAt),
 		NoticeAcknowledgedAt: nullTimeToTime(row.NoticeAcknowledgedAt),
 	}
+}
+
+// Both saga claims use the same writer transaction. A pending recovery remains
+// a fence; it must never race an account move or interface replacement.
+func settingsTransitionAvailable(ctx context.Context, q *gen.Queries, id domain.SessionID) error {
+	_, err := q.GetPendingAgentSettingsOperation(ctx, string(id))
+	if err == nil {
+		return ports.ErrAgentSettingsConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return nil
 }

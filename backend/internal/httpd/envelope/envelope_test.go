@@ -14,6 +14,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestSettingsFenceIsConflictAcrossExistingTransports(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/worker/account", nil)
+	w := httptest.NewRecorder()
+	WriteError(w, r, fmt.Errorf("account/interface claim: %w", ports.ErrAgentSettingsConflict))
+	var body APIError
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusConflict || body.Code != "AGENT_SETTINGS_CONFLICT" {
+		t.Fatalf("settings fence became internal error: %d %+v", w.Code, body)
+	}
+}
+
 func TestWriteErrorSerializesWrappedReportingOwner(t *testing.T) {
 	err := fmt.Errorf("outer: %w", fmt.Errorf("middle: %w", ownership.Own(
 		apierr.Internal("INTERNAL", "Internal failure"),

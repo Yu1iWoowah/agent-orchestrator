@@ -213,6 +213,11 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
+	if err != nil {
+		return fmt.Errorf("initialize settings authority: %w", err)
+	}
+	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
 	}
@@ -591,6 +596,15 @@ func Run(buildVersion string) error {
 	agentSettingsSvc := agentsettings.New(store, time.Now)
 	agentSettingsSvc.SetCatalogFingerprintSource(agentSvc)
 	agentSettingsSvc.SetObservationSource(chatSvc)
+	settingsControl := agentsettings.NewControl(agentSettingsSvc, store, agentsettings.NewAuthorizer(store, settingsGrantAuthority, time.Now), chatSvc, time.Now)
+	chatSvc.SetAgentSettingsMutator(settingsControl)
+	chatSvc.SetAgentSettingsValidator(settingsControl)
+	chatSvc.SetAgentSettingsGrantEnvironment(settingsGrantEnv)
+	if wired, ok := sessMgr.(interface {
+		SetAgentSettingsGrantEnvironment(ports.AgentSettingsGrantEnvironment)
+	}); ok {
+		wired.SetAgentSettingsGrantEnvironment(settingsGrantEnv)
+	}
 	if wired, ok := sessMgr.(interface {
 		SetAgentSettingsPreflight(ports.AgentSettingsPreflight)
 	}); ok {
@@ -1077,7 +1091,6 @@ func Run(buildVersion string) error {
 		Reviews:            reviewSvc,
 		Notifications:      notifier,
 		Reports:            reportSvc,
-		Questions:          questionSvc,
 		NotificationStream: notificationHub,
 		Push:               pushRegistry,
 		Presence:           presenceTracker,
@@ -1104,6 +1117,7 @@ func Run(buildVersion string) error {
 		TelemetryIdentity:  telemetryIdentity,
 		Mobile:             mc,
 		BrowserLive:        browserLive,
+		Questions:          questionSvc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
 			Store:         store,
 			TargetDataDir: cfg.DataDir,
@@ -1118,6 +1132,7 @@ func Run(buildVersion string) error {
 		PreviewServer:            managedPreview,
 		SessionCapabilities:      browserAuthority,
 		ShellPreviewCapabilities: shellTermSvc,
+		AgentSettingsControl:     settingsControl,
 	})
 	if err != nil {
 		stop()

@@ -26,10 +26,12 @@ type settingsRequest struct {
 	ApplyMode              domain.AgentSettingsApplyMode `json:"applyMode"`
 	ProviderConversationID string                        `json:"providerConversationId"`
 	BranchID               string                        `json:"branchId"`
+	Authority              domain.AgentSettingsAuthority `json:"authority,omitempty"`
+	RequestFingerprint     string                        `json:"requestFingerprint,omitempty"`
 }
 
 func requestForSettings(op domain.AgentSettingsOperation) settingsRequest {
-	return settingsRequest{op.BaseRevision, op.Source, op.Target, op.AccountID, op.ControllerGeneration, op.Actor, op.ApplyMode, op.ProviderConversationID, op.BranchID}
+	return settingsRequest{op.BaseRevision, op.Source, op.Target, op.AccountID, op.ControllerGeneration, op.Actor, op.ApplyMode, op.ProviderConversationID, op.BranchID, op.Authority, op.RequestFingerprint}
 }
 
 // SessionAgentSettings reads preferences and owner context from one snapshot.
@@ -61,7 +63,8 @@ func decodeSettingsOperation(row gen.SessionAgentSettingsOperation) (domain.Agen
 		BaseRevision: req.BaseRevision, Source: req.Source, Target: req.Target, AccountID: req.AccountID, ControllerGeneration: req.Generation, Actor: req.Actor,
 		Phase: domain.AgentSettingsPhase(row.Phase), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		ApplyMode: domain.AgentSettingsApplyMode(row.ApplyMode), Checkpoint: domain.AgentSettingsCheckpoint(row.Checkpoint), Version: row.OperationRevision,
-		ErrorCategory: domain.AgentSettingsErrorCategory(row.ErrorCategory), RequestID: row.RequestID, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID}
+		ErrorCategory: domain.AgentSettingsErrorCategory(row.ErrorCategory), ErrorCode: row.ErrorCode, RequestID: row.RequestID, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID}
+	op.Authority, op.RequestFingerprint = req.Authority, req.RequestFingerprint
 	if row.StartedAt.Valid {
 		op.StartedAt = &row.StartedAt.Time
 	}
@@ -90,8 +93,22 @@ func (s *Store) AgentSettingsOperation(ctx context.Context, id domain.SessionID,
 	return decodeSettingsOperation(row)
 }
 
+// AgentSettingsOperationByKey looks up the originally accepted request before
+// a retry can reinterpret its patch against a newer preference or owner.
+func (s *Store) AgentSettingsOperationByKey(ctx context.Context, id domain.SessionID, key string) (domain.AgentSettingsOperation, bool, error) {
+	row, err := s.qr.GetAgentSettingsOperationByKey(ctx, gen.GetAgentSettingsOperationByKeyParams{SessionID: string(id), IdempotencyKey: key})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AgentSettingsOperation{}, false, nil
+	}
+	if err != nil {
+		return domain.AgentSettingsOperation{}, false, err
+	}
+	op, err := decodeSettingsOperation(row)
+	return op, err == nil, err
+}
+
 func validateSettingsOperation(op domain.AgentSettingsOperation) error {
-	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.Recovery != nil || op.Execution != nil {
+	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.ErrorCode != "" || op.Recovery != nil || op.Execution != nil {
 		return fmt.Errorf("invalid initial agent settings journal")
 	}
 	for _, ref := range []string{op.RequestID, op.ProviderConversationID, op.BranchID} {
@@ -144,63 +161,74 @@ func (s *Store) BeginAgentSettingsOperation(ctx context.Context, op domain.Agent
 	defer s.writeMu.Unlock()
 	var result domain.AgentSettingsOperation
 	err := s.inTx(ctx, "begin agent settings", func(q *gen.Queries) error {
-		row, err := q.GetAgentSettingsOperationByKey(ctx, gen.GetAgentSettingsOperationByKeyParams{SessionID: string(op.SessionID), IdempotencyKey: op.IdempotencyKey})
-		if err == nil {
-			existing, err := decodeSettingsOperation(row)
-			if err != nil {
-				return err
-			}
-			// Omitted internal owner references pin the first accepted context; a
-			// replay must never derive a different branch from today's session.
-			if op.ProviderConversationID == "" {
-				op.ProviderConversationID = existing.ProviderConversationID
-			}
-			if op.BranchID == "" {
-				op.BranchID = existing.BranchID
-			}
-			if requestForSettings(existing) != requestForSettings(op) {
-				return ports.ErrAgentSettingsConflict
-			}
-			result = existing
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		current, err := q.GetSessionAgentSettings(ctx, op.SessionID)
-		if err != nil {
-			return settingsStoreError(err)
-		}
-		if op.ProviderConversationID == "" {
-			op.ProviderConversationID = current.ProviderConversationID
-		}
-		if op.BranchID == "" {
-			op.BranchID = current.BranchID
-		}
-		if !settingsOwnerMatches(current, op) {
-			return ports.ErrAgentSettingsConflict
-		}
-		raw, err := json.Marshal(requestForSettings(op))
-		if err != nil {
-			return err
-		}
-		err = q.InsertAgentSettingsOperation(ctx, gen.InsertAgentSettingsOperationParams{ID: op.ID, SessionID: string(op.SessionID), IdempotencyKey: op.IdempotencyKey, RequestJson: string(raw), CreatedAt: op.CreatedAt, UpdatedAt: op.CreatedAt,
-			ApplyMode: string(op.ApplyMode), RequestID: op.RequestID, ProviderConversationID: op.ProviderConversationID, BranchID: op.BranchID})
-		if err != nil {
-			if isSQLiteUnique(err) {
-				return ports.ErrAgentSettingsConflict
-			}
-			return err
-		}
-		if err := q.InsertAgentSettingsAudit(ctx, gen.InsertAgentSettingsAuditParams{OperationID: op.ID, Phase: "pending", RecordedAt: op.CreatedAt, RequestID: op.RequestID}); err != nil {
-			return err
-		}
-		result = op
-		result.Phase = domain.AgentSettingsPending
-		result.UpdatedAt = op.CreatedAt
-		return nil
+		var err error
+		result, err = beginAgentSettingsOperationTx(ctx, q, op)
+		return err
 	})
 	return result, err
+}
+
+func beginAgentSettingsOperationTx(ctx context.Context, q *gen.Queries, op domain.AgentSettingsOperation) (result domain.AgentSettingsOperation, resultErr error) {
+	row, err := q.GetAgentSettingsOperationByKey(ctx, gen.GetAgentSettingsOperationByKeyParams{SessionID: string(op.SessionID), IdempotencyKey: op.IdempotencyKey})
+	if err == nil {
+		existing, err := decodeSettingsOperation(row)
+		if err != nil {
+			return result, err
+		}
+		// Omitted internal owner references pin the first accepted context; a
+		// replay must never derive a different branch from today's session.
+		if op.ProviderConversationID == "" {
+			op.ProviderConversationID = existing.ProviderConversationID
+		}
+		if op.BranchID == "" {
+			op.BranchID = existing.BranchID
+		}
+		if requestForSettings(existing) != requestForSettings(op) {
+			return result, ports.ErrAgentSettingsConflict
+		}
+		result = existing
+		return result, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	if _, err := q.GetActiveSessionInterfaceTransition(ctx, op.SessionID); err == nil {
+		return result, ports.ErrAgentSettingsConflict
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	current, err := q.GetSessionAgentSettings(ctx, op.SessionID)
+	if err != nil {
+		return result, settingsStoreError(err)
+	}
+	if op.ProviderConversationID == "" {
+		op.ProviderConversationID = current.ProviderConversationID
+	}
+	if op.BranchID == "" {
+		op.BranchID = current.BranchID
+	}
+	if !settingsOwnerMatches(current, op) {
+		return result, ports.ErrAgentSettingsConflict
+	}
+	raw, err := json.Marshal(requestForSettings(op))
+	if err != nil {
+		return result, err
+	}
+	err = q.InsertAgentSettingsOperation(ctx, gen.InsertAgentSettingsOperationParams{ID: op.ID, SessionID: string(op.SessionID), IdempotencyKey: op.IdempotencyKey, RequestJson: string(raw), CreatedAt: op.CreatedAt, UpdatedAt: op.CreatedAt,
+		ApplyMode: string(op.ApplyMode), RequestID: op.RequestID, ProviderConversationID: op.ProviderConversationID, BranchID: op.BranchID})
+	if err != nil {
+		if isSQLiteUnique(err) {
+			return result, ports.ErrAgentSettingsConflict
+		}
+		return result, err
+	}
+	if err := q.InsertAgentSettingsAudit(ctx, gen.InsertAgentSettingsAuditParams{OperationID: op.ID, Phase: "pending", RecordedAt: op.CreatedAt, RequestID: op.RequestID}); err != nil {
+		return result, err
+	}
+	result = op
+	result.Phase = domain.AgentSettingsPending
+	result.UpdatedAt = op.CreatedAt
+	return result, nil
 }
 
 func settingsOwnerMatches(row gen.GetSessionAgentSettingsRow, op domain.AgentSettingsOperation) bool {

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -216,6 +217,8 @@ type Controller struct {
 	settingsObservationOwner    domain.AgentSettingsOwner
 	settingsDispatchSnapshot    *domain.AgentSettingsTurnSnapshot
 	settingsValidator           ports.ChatAgentSettingsValidator // guarded by mu
+	settingsMutator             ports.ChatAgentSettingsMutator   // guarded by mu
+	settingsRecheckQueued       bool                             // guarded by mu; at most one waiting recheck
 	settingsInitializationError error                            // guarded by sendMu; failed cold replay fences dispatch
 
 	conv                   ports.ChatConversation
@@ -1825,6 +1828,12 @@ func (c *Controller) Settings() domain.ConversationSettings {
 // The row is written first: if that fails, the in-memory copy must not move, or a
 // restart would silently revert a choice the user watched take effect.
 func (c *Controller) SetSettings(ctx context.Context, settings domain.ConversationSettings) error {
+	if mutator := c.agentSettingsMutator(); mutator != nil {
+		return c.scheduleLegacySettings(ctx, settings, mutator)
+	}
+	if settingsIdentityPresent(ctx) {
+		return apierr.Forbidden("AGENT_SETTINGS_TARGET_DENIED", "This target has no managed settings scheduler")
+	}
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := c.rejectPendingAgentSettings(ctx); err != nil {

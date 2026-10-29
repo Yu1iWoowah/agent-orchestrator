@@ -430,6 +430,7 @@ type Manager struct {
 	agentBrowserToken           string
 	agentAccounts               ports.AgentAccountLaunchEnv
 	agentSettings               ports.AgentSettingsPreflight
+	settingsGrants              ports.AgentSettingsGrantEnvironment
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -1586,6 +1587,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSupervisor, err)
 	}
+	if err := m.injectSettingsGrant(ctx, id, cfg.Harness, launchID, env); err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
+	}
 	if err := m.prepareRuntimeLaunch(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
@@ -1609,7 +1614,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	})
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
-		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrRuntimeCreate, agentlaunch.RedactError(err, project.Config.Env))
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrRuntimeCreate, agentlaunch.RedactError(redactSettingsGrantError(err, env), project.Config.Env))
 	}
 
 	metadata := domain.SessionMetadata{
@@ -3808,6 +3813,10 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, relaunchFailed("supervisor", fmt.Errorf("%s %s: supervisor: %w", operation, rec.ID, err))
 	}
+	if err := m.injectSettingsGrant(ctx, rec.ID, rec.Harness, launchID, env); err != nil {
+		m.cleanupSystemPromptDir(rec.ID)
+		return RestoreResult{}, relaunchFailed("settings grant", err)
+	}
 	if err := m.prepareRuntimeLaunch(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, relaunchFailed("runtime preparation", fmt.Errorf("%s %s: runtime preparation: %w", operation, rec.ID, err))
@@ -3842,7 +3851,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	err = m.accountRuntimeCreated(ctx, launchID, handle, err)
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
-		return RestoreResult{}, relaunchFailed("runtime", fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, agentlaunch.RedactError(err, project.Config.Env)))
+		return RestoreResult{}, relaunchFailed("runtime", fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, agentlaunch.RedactError(redactSettingsGrantError(err, env), project.Config.Env)))
 	}
 	// A runtime accepting Restart only proves that its supervisor was created.
 	// Keep the previous launch (and stale/release references) until the exact
@@ -6413,6 +6422,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvRunFile] = runFilePath
 	}
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
+	setProtectedEnv(env, ports.EnvAgentSettingsGrant, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
 	// The agent-browser service credential is host configuration, not a
@@ -6872,7 +6882,7 @@ func (m *Manager) prepareRuntimeLaunch(ctx context.Context, agent ports.Agent, i
 	if !ok {
 		return nil
 	}
-	return preparer.PrepareRuntimeLaunch(ctx, ports.WorkspaceHookConfig{
+	err := preparer.PrepareRuntimeLaunch(ctx, ports.WorkspaceHookConfig{
 		SessionID:        string(id),
 		WorkspacePath:    workspacePath,
 		DataDir:          m.dataDir,
@@ -6881,12 +6891,13 @@ func (m *Manager) prepareRuntimeLaunch(ctx context.Context, agent ports.Agent, i
 		SystemPromptFile: systemPromptFile,
 		Config:           agentConfig,
 	})
+	return redactSettingsGrantError(err, env)
 }
 
 func (m *Manager) cleanupPreparedAgentWorkspace(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, env map[string]string) {
 	if err := m.cleanupPreparedAgentWorkspaceStrict(ctx, agent, id, workspacePath, env); err != nil {
 		m.logger.Warn("session prepare rollback: failed to clean agent workspace state",
-			"session", id, "workspacePath", workspacePath, "error", err)
+			"session", id, "workspacePath", workspacePath, "error", redactSettingsGrantError(err, env))
 	}
 }
 

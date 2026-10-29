@@ -244,6 +244,7 @@ var shippedMigrations = map[int64]string{
 	20261029043347587: "20261029043347587_agent_settings_dispatch.sql",
 	20261029075720713: "20261029075720713_agent_settings_execution.sql",
 	20261029104125598: "20261029104125598_agent_account_execution_bindings.sql",
+	20261029115938350: "20261029115938350_agent_settings_managed_controls.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
