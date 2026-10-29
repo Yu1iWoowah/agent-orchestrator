@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 type diskStore struct {
@@ -371,7 +373,7 @@ func validSnapshotRecord(id string, row Record) bool {
 }
 
 func validSnapshotV1(snapshot Snapshot) bool {
-	return snapshot.SchemaVersion == 1 && snapshot.InstanceID != "" && snapshot.WindowID != "" && snapshot.Generation > 0 && !snapshot.CapturedAt.IsZero() && snapshot.Completeness == "partial"
+	return domain.ValidAppDiagnosticsSnapshot(snapshot)
 }
 
 // reset never revives a credential or payload from another daemon epoch.

@@ -19,13 +19,20 @@ func (diagnosticStartupSessions) Get(_ context.Context, id domain.SessionID) (do
 	return domain.Session{SessionRecord: domain.SessionRecord{ID: id, ProjectID: "fixture-project", Kind: domain.KindOrchestrator, Metadata: domain.SessionMetadata{ControllerGeneration: "fixture-launch"}}}, nil
 }
 
-type diagnosticStartupRuntime struct{ now *time.Time }
+type diagnosticStartupRuntime struct {
+	now      *time.Time
+	snapshot appdiag.Snapshot
+}
 
 func (diagnosticStartupRuntime) State() appdiag.RuntimeState {
 	return appdiag.RuntimeState{Ready: true, InstanceID: "fixture-app", Epoch: "fixture-epoch", Windows: []appdiag.Window{{ID: "fixture-window", Generation: 1}}}
 }
 func (r diagnosticStartupRuntime) Capture(_ context.Context, in appdiag.CaptureRequest) (appdiag.Snapshot, error) {
-	return appdiag.Snapshot{SchemaVersion: 1, InstanceID: "fixture-app", WindowID: in.WindowID, Generation: 1, CapturedAt: *r.now, Completeness: "partial"}, nil
+	out := r.snapshot
+	out.InstanceID = "fixture-app"
+	out.WindowID = in.WindowID
+	out.CapturedAt = *r.now
+	return out, nil
 }
 
 func TestAppDiagnosticsStartupCleansBeforeEnablingAPI(t *testing.T) {
@@ -39,7 +46,15 @@ func TestAppDiagnosticsStartupCleansBeforeEnablingAPI(t *testing.T) {
 			now := time.Now().Add(-8 * 24 * time.Hour)
 			// Generate old files through the real service, including Windows owner/ACL
 			// handling. No process, network, external account, or manual permission bypass.
-			seed, err := appdiag.New(dir, diagnosticStartupSessions{}, diagnosticStartupRuntime{&now}, func() time.Time { return now })
+			fixture, err := os.ReadFile("../../../test/fixtures/app-diagnostics-v1.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var snapshot appdiag.Snapshot
+			if err := json.Unmarshal(fixture, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			seed, err := appdiag.New(dir, diagnosticStartupSessions{}, diagnosticStartupRuntime{now: &now, snapshot: snapshot}, func() time.Time { return now })
 			if err != nil {
 				t.Fatal(err)
 			}

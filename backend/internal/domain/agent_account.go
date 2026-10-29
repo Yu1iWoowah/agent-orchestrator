@@ -47,17 +47,21 @@ const (
 // Home is the CLI config folder (CLAUDE_CONFIG_DIR or CODEX_HOME); it is empty
 // for the device account, whose folder is the CLI's own default.
 type AgentAccount struct {
-	ID          string
-	Provider    AgentAccountProvider
-	Home        string
-	Email       string
-	Plan        string
-	CreatedAt   time.Time
-	ProfileKind AgentAccountProfileKind
+	ID                   string
+	Provider             AgentAccountProvider
+	Home                 string
+	Email                string
+	Plan                 string
+	CreatedAt            time.Time
+	ProfileKind          AgentAccountProfileKind
+	Label                string
+	LifecycleOperationID string
+	DisabledAt           *time.Time
+	RetiredAt            *time.Time
 }
 
 // Device reports the "This computer" account.
-func (a AgentAccount) Device() bool { return strings.TrimSpace(a.Home) == "" }
+func (a AgentAccount) Device() bool { return strings.TrimSpace(a.Home) == "" && a.RetiredAt == nil }
 
 // AgentAccountLimitWindow is one usage meter of an account, such as the
 // five-hour session or the weekly limit.
@@ -125,4 +129,21 @@ type AgentAccountIdentityCheck struct {
 	LoggedIn bool
 	Email    string
 	Plan     string
+}
+
+// AgentAccountOperation contains only non-secret recovery facts. Profile paths
+// are resolved internally from AccountID; provider output never enters it.
+type AgentAccountOperation struct {
+	ID              string
+	AccountID       string
+	Provider        AgentAccountProvider
+	Action          string
+	Phase           string
+	Outcome         string
+	ReasonCode      string
+	TerminalID      string
+	ResultAccountID string
+	WasDisabled     bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }

@@ -30,6 +30,22 @@ it("recovers once and adds no requests or timers while healthy", async () => {
 	expect(vi.getTimerCount()).toBe(0);
 });
 
+it("preserves private settings receipts in the RAM restore payload", async () => {
+	const snapshot = { appRunId: "run", sides: [{
+		side: { id: "side", sessionId: "root" },
+		turns: [{ turn: { id: "turn", text: "unchanged question" }, settingsAttempts: [{
+			state: "known", source: "side", attempt: 1,
+			owner: { sessionId: "btw-run-side", controllerGeneration: "child-generation", providerConversationId: "child-native", branchId: "side" },
+			settings: { model: "child-model", effort: "low", fastMode: "default" },
+		}] }],
+	}] };
+	const { recovery, fetcher } = setup(snapshot);
+	recovery.setAttachment(attachment);
+	await recovery.ensureReady();
+	expect(fetcher).toHaveBeenCalledTimes(2);
+	expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual(snapshot);
+});
+
 it("releases unused HTTP bodies so retrying does not strand loopback connections", async () => {
 	const { recovery, fetcher } = setup();
 	const cancel = vi.fn().mockResolvedValue(undefined);

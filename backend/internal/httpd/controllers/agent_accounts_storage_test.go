@@ -17,6 +17,7 @@ func TestAccountStorageErrorsAreCategorizedWithoutPaths(t *testing.T) {
 		status int
 		code   string
 	}{
+		{"occupied reserved home", ports.ErrAgentAccountUnavailableHomeOccupied, http.StatusConflict, "AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED"},
 		{"unsafe", ports.ErrAgentAccountStorageUnsafe, http.StatusConflict, "AGENT_ACCOUNT_STORAGE_UNSAFE"},
 		{"unavailable", ports.ErrAgentAccountStorageUnavailable, http.StatusServiceUnavailable, "AGENT_ACCOUNT_STORAGE_UNAVAILABLE"},
 		{"unsupported", ports.ErrAgentAccountStorageUnsupported, http.StatusNotImplemented, "AGENT_ACCOUNT_STORAGE_UNSUPPORTED"},
@@ -33,5 +34,18 @@ func TestAccountStorageErrorsAreCategorizedWithoutPaths(t *testing.T) {
 				t.Fatal("storage error disclosed private data")
 			}
 		})
+	}
+}
+
+func TestOccupiedUnavailableHomeExplainsSafeRecovery(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeAgentAccountError(rec, httptest.NewRequest(http.MethodPost, "/", nil), fmt.Errorf("fake-secret-marker: %w", ports.ErrAgentAccountUnavailableHomeOccupied))
+	for _, want := range []string{"account_unavailable_home_occupied", "Stop related child tools", ".unavailable", "only removes empty", `"retryable":true`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("missing diagnostic %q: %s", want, rec.Body.String())
+		}
+	}
+	if strings.Contains(rec.Body.String(), "fake-secret-marker") {
+		t.Fatal("private cause exposed")
 	}
 }

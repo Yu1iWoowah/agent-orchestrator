@@ -1,3 +1,5 @@
+import { useDiagnosticCommit } from "../lib/app-diagnostics-registry";
+import { componentObservation } from "../lib/app-diagnostics-projectors";
 import { useQueryClient } from "@tanstack/react-query";
 import { paidPlanBadge, useCloudBilling } from "../hooks/useCloudBilling";
 import { useTranslation } from "react-i18next";
@@ -59,7 +61,9 @@ import {
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
-import { artifactCount, groupArtifactsByProject } from "../lib/artifacts";
+import { isCatalogIncomplete } from "../lib/artifact-catalog";
+import { useArtifactCatalogs } from "../hooks/useArtifactCatalogs";
+import { legacyGalleryGroups } from "../lib/gallery-artifacts";
 import { parseNightlyVersion } from "../lib/build-channel";
 import {
 	hasConfiguredOrchestratorAgent,
@@ -646,6 +650,11 @@ export function Sidebar({
 	const selection = useSelection();
 	const { state, setOpen, toggleSidebar } = useSidebar();
 	const isCollapsed = state === "collapsed";
+	useDiagnosticCommit(
+		"sidebar",
+		() => componentObservation("sidebar", undefined, { expanded: !isCollapsed, workspaces: [...workspaces, ...remoteWorkspaces] }),
+		() => document.querySelector<HTMLElement>('[data-slot="sidebar-container"]'),
+	);
 	// List behavior (force-open sections, lifted Show more caps) belongs to the
 	// icon rail only; toggling an offcanvas sidebar must not change any list.
 	const isIconRail = isCollapsed && SIDEBAR_COLLAPSIBLE === "icon";
@@ -661,11 +670,16 @@ export function Sidebar({
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const settingsPage = useSettingsPage();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
-	// Cloud projects count only while the control plane keeps artifacts, as on the Artifacts page.
+	// Observe the gallery's metadata cache without scanning files in the sidebar.
+	// An incomplete or not-yet-loaded inventory has no exact badge count.
 	const cloudArtifacts = useCloudOffering().artifacts;
+	const artifactWorkspaces = useMemo(() => cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"), [cloudArtifacts, workspaces]);
+	const artifactCatalog = useArtifactCatalogs(artifactWorkspaces, false);
 	const artifactTotal = useMemo(
-		() => artifactCount(groupArtifactsByProject(cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"))),
-		[cloudArtifacts, workspaces],
+		() => artifactCatalog.data?.every((project) => !isCatalogIncomplete(project))
+			? artifactCatalog.data.reduce((total, project) => total + project.items.length, 0) + legacyGalleryGroups(artifactWorkspaces, artifactCatalog.connection).reduce((total, group) => total + group.rows.length, 0)
+			: 0,
+		[artifactCatalog.data, artifactCatalog.connection, artifactWorkspaces],
 	);
 	const existingProjectPaths = useMemo(
 		() => workspaces
@@ -1544,6 +1558,23 @@ const ProjectItem = memo(function ProjectItem({
 			content.style.removeProperty("clip-path");
 		};
 	}, [activeProjectMatches, expanded, showAllSessions]);
+	useDiagnosticCommit(
+		`project:${workspace.hostId ? "remote" : workspace.kind === "cloud" ? "cloud" : "local"}:${workspace.hostId ?? ""}:${workspace.id}`,
+		() =>
+			componentObservation("project", workspace, {
+				expanded,
+				shared: Boolean(workspace.shared),
+				showAll: showAllSessions,
+				hiddenCount: hiddenSessionCount,
+				sessionCount: sessions.length,
+				live: workspace.sessions.filter((row) => !row.isTerminated),
+				workers: visibleSessions.filter((row) => !isOrchestratorSession(row)),
+				ordered: sessions,
+				listed: listedSessions,
+			}),
+		() => projectHeaderRef.current?.parentElement ?? null,
+		() => projectSessionsRef.current,
+	);
 	// Stable while the ids are: a rebuilt array would invalidate every sortable row.
 	const listedSessionIds = useStableArray(useMemo(() => listedSessions.map((session) => session.id), [listedSessions]));
 	const commitSessionOrder = useCallback(

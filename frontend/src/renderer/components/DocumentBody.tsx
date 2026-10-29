@@ -411,7 +411,7 @@ function DocumentImage({
 			) : null}
 			{code === "DOCUMENT_TOO_LARGE"
 				? ` ${t("documents.sheet.resourceTooLarge")}`
-				: resources.limited() || code === "DOCUMENT_RESOURCE_LIMIT"
+				: code === "DOCUMENT_RESOURCE_LIMIT"
 					? ` ${t("documents.sheet.resourceLimit")}`
 					: null}
 		</span>

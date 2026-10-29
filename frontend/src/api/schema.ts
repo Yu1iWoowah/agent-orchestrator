@@ -260,6 +260,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/accounts/{accountId}/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign out a managed account while preserving its metadata and bindings */
+        post: operations["logoutAgentAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/accounts/{accountId}/reset-credit": {
         parameters: {
             query?: never;
@@ -322,6 +339,23 @@ export interface paths {
         put?: never;
         /** Check a sign-in and save the account when it finished */
         post: operations["verifyAgentAccountLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/accounts/operations/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read non-secret durable account lifecycle progress */
+        get: operations["getAgentAccountOperation"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4812,6 +4846,20 @@ export interface components {
             resetCredits?: null | number;
             windows: components["schemas"]["AgentAccountLimitWindow"][];
         };
+        AgentAccountOperationResponse: {
+            accountId: string;
+            action: string;
+            /** Format: date-time */
+            createdAt: string;
+            operationId: string;
+            outcome?: string;
+            phase: string;
+            provider: string;
+            reasonCode?: string;
+            resultAccountId?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
         AgentAccountResponse: {
             /** Format: date-time */
             createdAt?: null | string;
@@ -5124,12 +5172,16 @@ export interface components {
             model: string;
         };
         AgentSettingsTurnSnapshot: {
+            attempt?: number;
             /** Format: date-time */
             capturedAt?: null | string;
+            owner?: components["schemas"]["AgentSettingsOwner"];
             providerTurnId?: string;
             reason?: string;
             revision?: null | number;
             settings?: components["schemas"]["AgentSettings"];
+            /** @enum {string} */
+            source?: "root" | "side" | "background";
             /** @enum {string} */
             state: "known" | "unknown";
             turnId?: string;
@@ -5182,13 +5234,136 @@ export interface components {
             invalidSnapshotDeletedCount?: number;
             /** Format: date-time */
             oldestRetainedAt: null | string;
+            partial: boolean;
             readErrorCount?: number;
             records: components["schemas"]["AppDiagnosticsAudit"][];
             skippedCount?: number;
         };
+        AppDiagnosticsBox: {
+            /** Format: double */
+            height: number;
+            /** Format: double */
+            width: number;
+            /** Format: double */
+            x: number;
+            /** Format: double */
+            y: number;
+        };
+        AppDiagnosticsCache: {
+            availability: string;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            queries: components["schemas"]["AppDiagnosticsQuery"][];
+            revision: number;
+        };
         AppDiagnosticsCaptureRequest: {
             projectId?: string;
             windowId?: string;
+        };
+        AppDiagnosticsCollector: {
+            cache: components["schemas"]["AppDiagnosticsCache"];
+            /** Format: date-time */
+            captureFinishedAt: string;
+            /** Format: date-time */
+            captureStartedAt: string;
+            components: components["schemas"]["AppDiagnosticsComponents"];
+            consistency: string;
+            errors: components["schemas"]["AppDiagnosticsErrors"];
+            geometry: components["schemas"]["AppDiagnosticsGeometry"];
+            redactionSchemaVersion: number;
+            route: components["schemas"]["AppDiagnosticsRoute"];
+            shell: components["schemas"]["AppDiagnosticsShell"];
+        };
+        AppDiagnosticsComponent: {
+            expanded: boolean;
+            hiddenCount: number;
+            hostId: string;
+            kind: string;
+            listedIds: string[];
+            liveIds: string[];
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            orderedIds: string[];
+            projectId: string;
+            revision: number;
+            sessionCount: number;
+            shared: boolean;
+            showAll: boolean;
+            source: string;
+            workerIds: string[];
+            workspaces: components["schemas"]["AppDiagnosticsWorkspace"][];
+        };
+        AppDiagnosticsComponents: {
+            availability: string;
+            entries: components["schemas"]["AppDiagnosticsComponent"][];
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            revision: number;
+        };
+        AppDiagnosticsErrorSummary: {
+            /** Format: date-time */
+            at: string;
+            count: number;
+            message: string;
+            name: string;
+            source: string;
+        };
+        AppDiagnosticsErrors: {
+            availability: string;
+            /** Format: date-time */
+            enabledAt: string;
+            notRecordedBeforeEnable: boolean;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            records: components["schemas"]["AppDiagnosticsErrorSummary"][];
+            revision: number;
+        };
+        AppDiagnosticsGeometry: {
+            ancestorTruncatedCount: number;
+            availability: string;
+            nodes: components["schemas"]["AppDiagnosticsNode"][];
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            revision: number;
+        };
+        AppDiagnosticsIdentity: {
+            appVersion: string;
+            buildCommit: string;
+            daemonVersion: string;
+            os: string;
+        };
+        AppDiagnosticsNode: {
+            ancestors: components["schemas"]["AppDiagnosticsStyle"][];
+            availability: string;
+            hit: string;
+            hostId: string;
+            id: string;
+            intersectsViewport: boolean;
+            projectId: string;
+            role: string;
+            sessionId: string;
+            source: string;
+            style?: components["schemas"]["AppDiagnosticsStyle"];
+        };
+        AppDiagnosticsQuery: {
+            count: number;
+            /** Format: double */
+            dataUpdatedAt: number;
+            /** Format: double */
+            errorUpdatedAt: number;
+            failureCount: number;
+            fetchStatus: string;
+            hostId: string;
+            invalidated: boolean;
+            kind: string;
+            observerCount: number;
+            status: string;
+            workspaces: components["schemas"]["AppDiagnosticsWorkspace"][];
         };
         AppDiagnosticsRecord: {
             /** Format: date-time */
@@ -5199,7 +5374,20 @@ export interface components {
             snapshot: components["schemas"]["AppDiagnosticsSnapshot"];
         };
         AppDiagnosticsRevokeResponse: {
+            cleanup: string;
             revoked: boolean;
+        };
+        AppDiagnosticsRoute: {
+            availability: string;
+            hostId: string;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            projectId: string;
+            revision: number;
+            routeId: string;
+            sessionId: string;
+            source: string;
         };
         AppDiagnosticsRuntimeState: {
             epoch: string;
@@ -5207,22 +5395,75 @@ export interface components {
             ready: boolean;
             windows: components["schemas"]["AppDiagnosticsWindow"][];
         };
+        AppDiagnosticsSession: {
+            activity: string;
+            column: string;
+            id: string;
+            kind: string;
+            status: string;
+            terminated: boolean;
+        };
+        AppDiagnosticsShell: {
+            availability: string;
+            /** Format: double */
+            devicePixelRatio: number;
+            /** Format: double */
+            height: number;
+            inspectorOpen: boolean;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            revision: number;
+            sidebarCollapsed: boolean;
+            /** Format: double */
+            sidebarWidth: number;
+            /** Format: double */
+            width: number;
+        };
         AppDiagnosticsSnapshot: {
             /** Format: date-time */
             capturedAt: string;
+            collector?: components["schemas"]["AppDiagnosticsCollector"];
             completeness: string;
+            identity?: components["schemas"]["AppDiagnosticsIdentity"];
             instanceId: string;
             rendererGeneration: number;
             schemaVersion: number;
             windowId: string;
         };
         AppDiagnosticsSnapshotList: {
+            partial: boolean;
             readErrorCount?: number;
             records: components["schemas"]["AppDiagnosticsRecord"][];
+        };
+        AppDiagnosticsStyle: {
+            box: components["schemas"]["AppDiagnosticsBox"];
+            clip: string;
+            display: string;
+            gridRows: number[];
+            /** Format: double */
+            opacity: number;
+            overflowX: string;
+            overflowY: string;
+            transform: number[];
+            visibility: string;
+            /** Format: double */
+            zIndex: number;
         };
         AppDiagnosticsWindow: {
             generation: number;
             id: string;
+        };
+        AppDiagnosticsWorkspace: {
+            folderMissing: boolean;
+            hostId: string;
+            omittedCount: number;
+            projectId: string;
+            scope: string;
+            sessionCount: number;
+            sessions: components["schemas"]["AppDiagnosticsSession"][];
+            shared: boolean;
+            source: string;
         };
         AppMemoryResponse: {
             /** @description False when there was no earlier sample to measure against: cpuPercent is unknown, not zero. */
@@ -6263,6 +6504,7 @@ export interface components {
             truncated?: boolean;
         };
         ConversationTurnResponse: {
+            agentSettings?: components["schemas"]["AgentSettingsTurnSnapshot"];
             batchInputTurnIds?: string[];
             completedAt?: null | string;
             diff?: components["schemas"]["ConversationTurnDiffResponse"];
@@ -8123,6 +8365,7 @@ export interface components {
             dispatchAttempt?: number;
             providerTurnId?: string;
             referenceContexts: string[];
+            settingsAttempts?: components["schemas"]["AgentSettingsTurnSnapshot"][];
             turn: components["schemas"]["SideTurn"];
         };
         SideSettingsRequest: {
@@ -9620,6 +9863,65 @@ export interface operations {
             };
         };
     };
+    logoutAgentAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent account identifier; device-claude and device-codex are this computer's own logins. */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentAccountsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     consumeAgentAccountResetCredit: {
         parameters: {
             query?: never;
@@ -9780,8 +10082,26 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9823,6 +10143,56 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getAgentAccountOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent account sign-in operation identifier. */
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentAccountOperationResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

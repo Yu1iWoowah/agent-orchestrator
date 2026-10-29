@@ -24,6 +24,8 @@ type AgentAccountService interface {
 	StartSignInAgain(context.Context, string) (agentaccounts.LoginStart, error)
 	VerifyLogin(context.Context, string) (agentaccounts.LoginStatus, *agentaccounts.AccountView, error)
 	CancelLogin(context.Context, string) error
+	Logout(context.Context, string) error
+	Operation(context.Context, string) (domain.AgentAccountOperation, error)
 	SetDefault(context.Context, string) error
 	Remove(context.Context, string) error
 	ConsumeResetCredit(context.Context, string, string) (domain.CodexResetCreditOutcome, error)
@@ -47,6 +49,8 @@ type AgentAccountsController struct {
 func (c *AgentAccountsController) Register(r chi.Router) {
 	r.Get("/agents/accounts", c.list)
 	r.Get("/agents/accounts/usage", c.usage)
+	r.Get("/agents/accounts/operations/{operationId}", c.operation)
+	r.Post("/agents/accounts/{accountId}/logout", c.logout)
 	r.Post("/agents/accounts/login", c.startLogin)
 	r.Post("/agents/accounts/login/{operationId}/verify", c.verifyLogin)
 	r.Post("/agents/accounts/login/{operationId}/cancel", c.cancelLogin)
@@ -275,8 +279,16 @@ const agentAccountUnsharedMessage = "AO cannot link this account's folder to thi
 
 func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrAgentAccountCleanupUnconfirmed):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_CLEANUP_UNCONFIRMED", "Account cleanup is not confirmed. Retry the operation.", accountOperationErrorDetails(err, "account_cleanup_unconfirmed"))
+	case errors.Is(err, ports.ErrAgentAccountOperationBusy):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_OPERATION_BUSY", "Another account operation must finish first.", accountOperationErrorDetails(err, "account_operation_busy"))
+	case errors.Is(err, ports.ErrAgentAccountSignedOut):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_SIGNED_OUT", "Sign in to this account again.", nil)
 	case errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported):
 		envelope.WriteAPIError(w, r, http.StatusNotImplemented, "not_implemented", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "Codex did not provide a private file-backed login for this account.", map[string]any{"reasonCode": "account_credential_store_unsupported", "retryable": false})
+	case errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED", ports.AgentAccountUnavailableHomeOccupiedMessage, map[string]any{"reasonCode": "account_unavailable_home_occupied", "retryable": true})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
@@ -292,10 +304,47 @@ func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ports.ErrAgentAccountUnshared):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_UNSHARED", agentAccountUnsharedMessage, nil)
 	case errors.Is(err, ports.ErrAgentAccountInUse):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_IN_USE", "AO could not stop an agent that uses this account, so it kept the account. Stop that agent, then remove the account again.", nil)
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_IN_USE", "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. Stop them and retry to finish sooner.", accountOperationErrorDetails(err, "account_operation_busy"))
 	case errors.Is(err, ports.ErrAgentAccountDeviceFixed):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_DEVICE_FIXED", "This computer's own login is managed by its CLI, not AO", nil)
 	default:
 		envelope.WriteError(w, r, err)
 	}
+}
+
+func (c *AgentAccountsController) operation(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/accounts/operations/{operationId}")
+		return
+	}
+	o, e := c.Svc.Operation(r.Context(), strings.TrimSpace(chi.URLParam(r, "operationId")))
+	if e != nil {
+		writeAgentAccountError(w, r, e)
+		return
+	}
+	outcome := ""
+	if o.Phase == "complete" {
+		outcome = o.Outcome
+	}
+	envelope.WriteJSON(w, http.StatusOK, AgentAccountOperationResponse{OperationID: o.ID, AccountID: o.AccountID, Provider: o.Provider, Action: o.Action, Phase: o.Phase, Outcome: outcome, ReasonCode: o.ReasonCode, ResultAccountID: o.ResultAccountID, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt})
+}
+func (c *AgentAccountsController) logout(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/accounts/{accountId}/logout")
+		return
+	}
+	if e := c.Svc.Logout(r.Context(), strings.TrimSpace(chi.URLParam(r, "accountId"))); e != nil {
+		writeAgentAccountError(w, r, e)
+		return
+	}
+	c.writeAccounts(w, r, true)
+}
+
+func accountOperationErrorDetails(err error, reason string) map[string]any {
+	details := map[string]any{"reasonCode": reason, "retryable": true}
+	var op *agentaccounts.OperationError
+	if errors.As(err, &op) {
+		details["operationId"] = op.OperationID
+	}
+	return details
 }

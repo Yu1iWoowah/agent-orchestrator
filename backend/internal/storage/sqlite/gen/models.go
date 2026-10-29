@@ -13,18 +13,37 @@ import (
 )
 
 type AgentAccount struct {
-	ID          string
-	Provider    string
-	Home        string
-	Email       string
-	Plan        string
-	CreatedAt   time.Time
-	ProfileKind string
+	ID                   string
+	Provider             string
+	Home                 string
+	Email                string
+	Plan                 string
+	CreatedAt            time.Time
+	ProfileKind          string
+	Label                string
+	LifecycleOperationID string
+	DisabledAt           sql.NullTime
+	RetiredAt            sql.NullTime
 }
 
 type AgentAccountDefault struct {
 	Provider  string
 	AccountID string
+}
+
+type AgentAccountOperation struct {
+	ID              string
+	AccountID       string
+	Provider        string
+	Action          string
+	Phase           string
+	Outcome         string
+	ReasonCode      string
+	TerminalID      string
+	ResultAccountID string
+	WasDisabled     bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type AgentInstallJob struct {
@@ -428,30 +447,31 @@ type ConversationSteerDelivery struct {
 }
 
 type ConversationTurn struct {
-	ID                    string
-	ConversationID        string
-	HandledBySessionID    domain.SessionID
-	ProviderTurnID        string
-	ControllerGeneration  string
-	State                 domain.TurnState
-	ErrorMessage          string
-	RequestedAt           time.Time
-	StartedAt             sql.NullTime
-	CompletedAt           sql.NullTime
-	DiffJson              string
-	RolledBackAt          sql.NullTime
-	PlanJson              string
-	BranchID              string
-	PromotionStartedAt    sql.NullTime
-	PromotedToTurnID      sql.NullString
-	RetryOfTurnID         sql.NullString
-	HandledByReviewID     sql.NullString
-	UsageLimitResetsAt    sql.NullTime
-	UsageLimitAutoResume  int64
-	UsageLimitResumeError string
-	BatchedInput          int64
-	ProviderInputText     string
-	IntakeSequence        int64
+	ID                        string
+	ConversationID            string
+	HandledBySessionID        domain.SessionID
+	ProviderTurnID            string
+	ControllerGeneration      string
+	State                     domain.TurnState
+	ErrorMessage              string
+	RequestedAt               time.Time
+	StartedAt                 sql.NullTime
+	CompletedAt               sql.NullTime
+	DiffJson                  string
+	RolledBackAt              sql.NullTime
+	PlanJson                  string
+	BranchID                  string
+	PromotionStartedAt        sql.NullTime
+	PromotedToTurnID          sql.NullString
+	RetryOfTurnID             sql.NullString
+	HandledByReviewID         sql.NullString
+	UsageLimitResetsAt        sql.NullTime
+	UsageLimitAutoResume      int64
+	UsageLimitResumeError     string
+	BatchedInput              int64
+	ProviderInputText         string
+	IntakeSequence            int64
+	AgentSettingsSnapshotJson string
 }
 
 type Cue struct {
@@ -858,6 +878,7 @@ type SessionAgentSettingsOperation struct {
 	StartedAt              sql.NullTime
 	FinishedAt             sql.NullTime
 	RecoveryJson           string
+	ExecutionJson          string
 }
 
 type SessionArtifactVersion struct {

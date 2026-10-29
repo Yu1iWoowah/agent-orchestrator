@@ -49,8 +49,19 @@ func fixture(t *testing.T) (*Service, *sessions, *runtime, *time.Time, string) {
 	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
 	rows := &sessions{row: domain.Session{SessionRecord: domain.SessionRecord{ID: "orchestrator-1", ProjectID: "project", Kind: domain.KindOrchestrator, Metadata: domain.SessionMetadata{ControllerGeneration: "launch-1"}}}}
 	rt := &runtime{state: RuntimeState{InstanceID: "app-1", Epoch: "epoch-1", Ready: true, Windows: []Window{{ID: "window-1", Generation: 1}}}}
+	raw, err := os.ReadFile("../../../../test/fixtures/app-diagnostics-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base Snapshot
+	if err := json.Unmarshal(raw, &base); err != nil {
+		t.Fatal(err)
+	}
 	rt.capture = func(_ context.Context, in CaptureRequest) (Snapshot, error) {
-		return Snapshot{SchemaVersion: 1, InstanceID: "app-1", WindowID: in.WindowID, Generation: 1, CapturedAt: now, Completeness: "partial"}, nil
+		out := base
+		out.WindowID = in.WindowID
+		out.CapturedAt = now
+		return out, nil
 	}
 	dir := t.TempDir()
 	svc, err := New(dir, rows, rt, func() time.Time { return now })
@@ -277,7 +288,7 @@ func TestListsAndAuditAreGrantScoped(t *testing.T) {
 			t.Fatal("cross-grant audit")
 		}
 	}
-	if err := s.RevokeID(context.Background(), second.Token, first.ID); err == nil {
+	if _, err := s.RevokeID(context.Background(), second.Token, first.ID); err == nil {
 		t.Fatal("wrong revoke path accepted")
 	}
 	*now = now.Add(2 * time.Second)
@@ -640,5 +651,91 @@ func TestCaptureAuditHasSafeSnapshotMetadata(t *testing.T) {
 		if _, ok := row[forbidden]; ok {
 			t.Errorf("sensitive field %s entered audit", forbidden)
 		}
+	}
+}
+
+func TestLiveCaptureRequiresCollectorIdentityAndAllProvenance(t *testing.T) {
+	for _, missing := range []string{"collector", "identity", "route", "shell", "cache", "components", "geometry", "errors"} {
+		t.Run(missing, func(t *testing.T) {
+			s, _, rt, _, dir := fixture(t)
+			g := grant(t, s)
+			snapshot, err := rt.capture(context.Background(), CaptureRequest{WindowID: "window-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			empty := domain.AppDiagnosticsProvenance{}
+			switch missing {
+			case "collector":
+				snapshot.Collector = nil
+				snapshot.Identity = nil
+			case "identity":
+				snapshot.Identity = nil
+			case "route":
+				snapshot.Collector.Route.AppDiagnosticsProvenance = empty
+			case "shell":
+				snapshot.Collector.Shell.AppDiagnosticsProvenance = empty
+			case "cache":
+				snapshot.Collector.Cache.AppDiagnosticsProvenance = empty
+			case "components":
+				snapshot.Collector.Components.AppDiagnosticsProvenance = empty
+			case "geometry":
+				snapshot.Collector.Geometry.AppDiagnosticsProvenance = empty
+			case "errors":
+				snapshot.Collector.Errors.AppDiagnosticsProvenance = empty
+			}
+			rt.capture = func(context.Context, CaptureRequest) (Snapshot, error) { return snapshot, nil }
+			_, err = s.Capture(context.Background(), g.Token, CaptureRequest{})
+			var typed *Error
+			if !errors.As(err, &typed) || typed.Code != "APP_DIAGNOSTICS_INVALID_PAYLOAD" {
+				t.Fatalf("missing %s accepted: %v", missing, err)
+			}
+			files, err := os.ReadDir(filepath.Join(dir, "diagnostics", "snapshots"))
+			if err != nil || len(files) != 0 {
+				t.Fatalf("invalid live payload persisted: %v", err)
+			}
+		})
+	}
+}
+func TestRetainedMetadataSnapshotRemainsReadable(t *testing.T) {
+	s, _, _, _, _ := fixture(t)
+	g := grant(t, s)
+	record := Record{ID: uuid.NewString(), RequestID: uuid.NewString(), GrantID: g.ID, CreatedAt: s.now(), Snapshot: Snapshot{SchemaVersion: 1, InstanceID: "app-1", WindowID: "window-1", Generation: 1, CapturedAt: s.now(), Completeness: "partial"}}
+	if err := s.store.write("snapshots", record.ID, record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Read(context.Background(), g.Token, record.ID); err != nil {
+		t.Fatalf("retained PR1 metadata unreadable: %v", err)
+	}
+}
+
+func TestLiveCaptureRetainsMissingJSONFieldSignal(t *testing.T) {
+	s, _, rt, _, dir := fixture(t)
+	g := grant(t, s)
+	raw, err := os.ReadFile("../../../../test/fixtures/app-diagnostics-complete-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	delete(value["collector"].(map[string]any)["route"].(map[string]any), "revision")
+	raw, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	rt.capture = func(context.Context, CaptureRequest) (Snapshot, error) { return snapshot, nil }
+	_, err = s.Capture(context.Background(), g.Token, CaptureRequest{})
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Code != "APP_DIAGNOSTICS_INVALID_PAYLOAD" {
+		t.Fatalf("JSON omission lost at runtime port: %v", err)
+	}
+	files, err := os.ReadDir(filepath.Join(dir, "diagnostics", "snapshots"))
+	if err != nil || len(files) != 0 {
+		t.Fatalf("invalid snapshot saved: %v", err)
 	}
 }

@@ -3107,9 +3107,10 @@ type CompactConversationResponse struct {
 
 // ConversationTurnResponse is one request and the work that followed it.
 type ConversationTurnResponse struct {
-	ID             string `json:"id"`
-	State          string `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
-	ProviderTurnID string `json:"providerTurnId,omitempty"`
+	ID             string                            `json:"id"`
+	AgentSettings  *domain.AgentSettingsTurnSnapshot `json:"agentSettings,omitempty"`
+	State          string                            `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
+	ProviderTurnID string                            `json:"providerTurnId,omitempty"`
 	// BatchInputTurnIDs identifies consumed inputs outside this message page too.
 	BatchInputTurnIDs []string `json:"batchInputTurnIds,omitempty"`
 
@@ -4081,7 +4082,8 @@ type DocumentCatalogResponse struct {
 
 // AppDiagnosticsRevokeResponse reports cancellation of a diagnostic grant.
 type AppDiagnosticsRevokeResponse struct {
-	Revoked bool `json:"revoked"`
+	Cleanup string `json:"cleanup"`
+	Revoked bool   `json:"revoked"`
 }
 
 // AppDiagnosticsCapabilityHeader is separate from Browser and mobile credentials.
@@ -4097,6 +4099,22 @@ type AppSnapshotIDParam struct {
 // AppGrantIDParam identifies the caller's diagnostic grant.
 type AppGrantIDParam struct {
 	GrantID string `path:"grantId"`
+}
+
+// AgentAccountOperationResponse is a non-secret lifecycle projection. Provider
+// output, profile paths, credential bytes and terminal transcripts are excluded.
+type AgentAccountOperationResponse struct {
+	OperationID string                      `json:"operationId"`
+	AccountID   string                      `json:"accountId"`
+	Provider    domain.AgentAccountProvider `json:"provider"`
+	Action      string                      `json:"action"`
+	Phase       string                      `json:"phase"`
+	// Outcome is confirmed only when Phase is complete.
+	Outcome         string    `json:"outcome,omitempty"`
+	ReasonCode      string    `json:"reasonCode,omitempty"`
+	ResultAccountID string    `json:"resultAccountId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // DocumentContentQuery bounds a managed raw read and optionally pins metadata.
