@@ -54,7 +54,9 @@ type SessionReader interface {
 // Service owns the live Chat controllers.
 type Service struct {
 	store                  Store
-	settingsValidator      ports.ChatAgentSettingsValidator // guarded by mu
+	settingsValidator      ports.ChatAgentSettingsValidator    // guarded by mu
+	settingsMutator        ports.ChatAgentSettingsMutator      // guarded by mu
+	settingsGrants         ports.AgentSettingsGrantEnvironment // guarded by mu
 	reader                 SnapshotReader
 	pageReader             SnapshotPageReader
 	sessions               SessionReader
@@ -800,6 +802,14 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 	}
 
+	generation := strings.TrimSpace(cfg.ControllerGeneration)
+	if generation == "" {
+		generation = s.newID()
+	}
+	cfg.Env, err = s.settingsLaunchEnvironment(ctx, cfg, generation, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
 	var prepareEnv func(context.Context) (map[string]string, error)
 	if cfg.PrepareControllerEnv != nil {
 		prepareEnv = func(prepareCtx context.Context) (map[string]string, error) {
@@ -807,7 +817,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			if prepareErr != nil {
 				return nil, fmt.Errorf("prepare chat controller environment: %w", prepareErr)
 			}
-			return env, nil
+			return pinnedSettingsGrantEnvironment(cfg.Env, env), nil
 		}
 	}
 
@@ -868,7 +878,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		})
 	}
 	if err != nil {
-		return nil, err
+		return nil, redactSettingsGrantError(err, cfg.Env)
 	}
 	liveReconnect := false
 	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
@@ -976,10 +986,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// pending provider boundary claims it in ControllerReady's atomic ownership
 	// commit instead, so a failed provider connect or callback cannot split the
 	// session owner from the conversation head.
-	generation := strings.TrimSpace(cfg.ControllerGeneration)
-	if generation == "" {
-		generation = s.newID()
-	}
 	if providerBoundaryID == "" {
 		if owner.Kind == domain.ConversationOwnerReview {
 			claimed, claimErr := s.store.ClaimReviewChatController(ctx, owner.ID, conv.ProviderConversationID(), generation, s.now())
@@ -2550,10 +2556,18 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	var releaseOnce sync.Once
+	releaseWork := func() { releaseOnce.Do(release) }
+	defer releaseWork()
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
+	}
+	if scheduled, err := controller.scheduleLegacyConfigOption(ctx, configID, value, releaseWork); scheduled {
+		if err != nil {
+			return nil, err
+		}
+		return configurer.ListConfigOptions(ctx)
 	}
 	if record.Harness == domain.HarnessCopilot {
 		if err := copilotConfigOptionAllowed(configID, value); err != nil {
@@ -2763,6 +2777,10 @@ func (s *Service) SetTurnSettings(
 	if err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	if controller.agentSettingsMutator() != nil {
+		release()
+		return s.setTurnSettings(ctx, controller, domain.SessionConversationOwner(id), settings)
+	}
 	defer release()
 	return s.setTurnSettings(ctx, controller, domain.SessionConversationOwner(id), settings)
 }
@@ -2791,7 +2809,7 @@ func (s *Service) setTurnSettings(ctx context.Context, controller *Controller, o
 	if err := controller.SetSettings(ctx, settings); err != nil {
 		return domain.ConversationSettings{}, err
 	}
-	if owner.Kind == domain.ConversationOwnerSession {
+	if owner.Kind == domain.ConversationOwnerSession && controller.agentSettingsMutator() == nil {
 		s.persistPickedModel(domain.SessionID(owner.ID), previous, settings)
 	}
 	return controller.Settings(), nil

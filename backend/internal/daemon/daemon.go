@@ -212,6 +212,11 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
+	if err != nil {
+		return fmt.Errorf("initialize settings authority: %w", err)
+	}
+	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
 	}
@@ -588,6 +593,15 @@ func Run(buildVersion string) error {
 	agentSettingsSvc := agentsettings.New(store, time.Now)
 	agentSettingsSvc.SetCatalogFingerprintSource(agentSvc)
 	agentSettingsSvc.SetObservationSource(chatSvc)
+	settingsControl := agentsettings.NewControl(agentSettingsSvc, store, agentsettings.NewAuthorizer(store, settingsGrantAuthority, time.Now), chatSvc, time.Now)
+	chatSvc.SetAgentSettingsMutator(settingsControl)
+	chatSvc.SetAgentSettingsValidator(settingsControl)
+	chatSvc.SetAgentSettingsGrantEnvironment(settingsGrantEnv)
+	if wired, ok := sessMgr.(interface {
+		SetAgentSettingsGrantEnvironment(ports.AgentSettingsGrantEnvironment)
+	}); ok {
+		wired.SetAgentSettingsGrantEnvironment(settingsGrantEnv)
+	}
 	if wired, ok := sessMgr.(interface {
 		SetAgentSettingsPreflight(ports.AgentSettingsPreflight)
 	}); ok {
@@ -1032,52 +1046,53 @@ func Run(buildVersion string) error {
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
-		Awake:              awakeSvc,
-		Projects:           projectSvc,
-		AgentSettings:      agentSettingsSvc,
-		ProjectDocuments:   sharedDocuments,
-		DocumentRead:       documentread.New(documentread.Deps{Store: store, Shared: sharedDocuments, DataDir: cfg.DataDir}),
-		ArtifactVersions:   lcStack.ArtifactVersions,
-		HostID:             hostIdentity.HostID,
-		Endpoints:          bs,
-		Agents:             agentSvc,
-		CodexAccounts:      agentSvc,
-		AgentAccounts:      agentAccountSvc,
-		SystemChecks:       systemChecks,
-		Installer:          systemInstall,
-		Sessions:           sessionSvc,
-		Automations:        automationSvc,
-		DesktopWorkspaces:  sessionSvc,
-		PRs:                prActions,
-		Reviews:            reviewSvc,
-		Notifications:      notifier,
-		Reports:            reportSvc,
-		NotificationStream: notificationHub,
-		Push:               pushRegistry,
-		Presence:           presenceTracker,
-		DeviceRoster:       deviceRoster,
-		DeviceLive:         presenceTracker,
-		Import:             importsvc.New(importsvc.Deps{Store: store}),
-		Directories:        fsbrowsersvc.New(),
-		ShellTerminals:     shellTermSvc,
-		Cues:               cuesvc.New(cuesvc.Deps{Store: store, Sessions: sessionSvc, Terminals: shellTermSvc}),
-		AgentAuth:          agentAuthSvc,
-		GitHub:             newGitHubStatusService(githubpat.New(cfg.DataDir), prReader),
-		Conversations:      chatSvc,
-		ConversationSearch: store,
-		Settings:           settingsSvc,
-		CDC:                store,
-		Events:             cdcPipe.Broadcaster,
-		Activity:           hookActivity,
-		NativeSessions:     nativeSessions,
-		UsageHooks:         usageCollector,
-		UsageSummary:       usagesvc.NewSummaryReader(store),
-		SessionMemory:      memoryReader,
-		SessionSteps:       lcStack.LCM,
-		Telemetry:          telemetrySink,
-		TelemetryIdentity:  telemetryIdentity,
-		Mobile:             mc,
-		BrowserLive:        browserLive,
+		Awake:                awakeSvc,
+		Projects:             projectSvc,
+		AgentSettings:        agentSettingsSvc,
+		AgentSettingsControl: settingsControl,
+		ProjectDocuments:     sharedDocuments,
+		DocumentRead:         documentread.New(documentread.Deps{Store: store, Shared: sharedDocuments, DataDir: cfg.DataDir}),
+		ArtifactVersions:     lcStack.ArtifactVersions,
+		HostID:               hostIdentity.HostID,
+		Endpoints:            bs,
+		Agents:               agentSvc,
+		CodexAccounts:        agentSvc,
+		AgentAccounts:        agentAccountSvc,
+		SystemChecks:         systemChecks,
+		Installer:            systemInstall,
+		Sessions:             sessionSvc,
+		Automations:          automationSvc,
+		DesktopWorkspaces:    sessionSvc,
+		PRs:                  prActions,
+		Reviews:              reviewSvc,
+		Notifications:        notifier,
+		Reports:              reportSvc,
+		NotificationStream:   notificationHub,
+		Push:                 pushRegistry,
+		Presence:             presenceTracker,
+		DeviceRoster:         deviceRoster,
+		DeviceLive:           presenceTracker,
+		Import:               importsvc.New(importsvc.Deps{Store: store}),
+		Directories:          fsbrowsersvc.New(),
+		ShellTerminals:       shellTermSvc,
+		Cues:                 cuesvc.New(cuesvc.Deps{Store: store, Sessions: sessionSvc, Terminals: shellTermSvc}),
+		AgentAuth:            agentAuthSvc,
+		GitHub:               newGitHubStatusService(githubpat.New(cfg.DataDir), prReader),
+		Conversations:        chatSvc,
+		ConversationSearch:   store,
+		Settings:             settingsSvc,
+		CDC:                  store,
+		Events:               cdcPipe.Broadcaster,
+		Activity:             hookActivity,
+		NativeSessions:       nativeSessions,
+		UsageHooks:           usageCollector,
+		UsageSummary:         usagesvc.NewSummaryReader(store),
+		SessionMemory:        memoryReader,
+		SessionSteps:         lcStack.LCM,
+		Telemetry:            telemetrySink,
+		TelemetryIdentity:    telemetryIdentity,
+		Mobile:               mc,
+		BrowserLive:          browserLive,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
 			Store:         store,
 			TargetDataDir: cfg.DataDir,

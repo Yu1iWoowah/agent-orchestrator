@@ -6,6 +6,36 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// AgentSettingsCaller is untrusted transport identity. It contains a bearer
+// only in memory; durable actor attribution is resolved by the service.
+type AgentSettingsCaller struct {
+	SessionID domain.SessionID
+	Grant     string `json:"-"`
+}
+
+type agentSettingsCallerKey struct{}
+
+func WithAgentSettingsCaller(ctx context.Context, caller AgentSettingsCaller) context.Context {
+	return context.WithValue(ctx, agentSettingsCallerKey{}, caller)
+}
+
+func AgentSettingsCallerFromContext(ctx context.Context) AgentSettingsCaller {
+	caller, _ := ctx.Value(agentSettingsCallerKey{}).(AgentSettingsCaller)
+	return caller
+}
+
+// ChatAgentSettingsMutator is shared by legacy selection menus and typed HTTP.
+type ChatAgentSettingsMutator interface {
+	ChangeAgentSettings(context.Context, domain.SessionID, domain.AgentSettingsPatch) (domain.AgentSettingsOperation, error)
+}
+
+// EnvAgentSettingsGrant is private launch state, never a response field.
+const EnvAgentSettingsGrant = "AO_AGENT_SETTINGS_GRANT"
+
+type AgentSettingsGrantEnvironment interface {
+	AgentSettingsGrantEnv(context.Context, domain.SessionID, domain.AgentHarness, domain.SessionMode, string) (map[string]string, error)
+}
+
 // ChatAgentSettingsController stages an internal, journalled settings operation.
 // Preparation is read-only. The caller owns the dispatch gate, persists the
 // preimage and checkpoints before setters, and qualifies the provider identity.

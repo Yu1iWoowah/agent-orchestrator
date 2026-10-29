@@ -289,6 +289,8 @@ func (s *Service) EditMessage(
 	if err != nil {
 		return reject(EditMessageResult{}, err)
 	}
+	generation := s.newID()
+	cfg.ControllerGeneration = generation
 	settingsAccount := s.settingsAccountBeforeLaunch(ctx, id)
 	var providerConversationID string
 	var provider ports.ChatConversation
@@ -332,6 +334,7 @@ func (s *Service) EditMessage(
 						ProviderIDsScoped:     sourceBranch.ProviderIDsScoped,
 						AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 					})
+					err = redactSettingsGrantError(err, launchEnv)
 				}
 			}
 		}
@@ -370,6 +373,7 @@ func (s *Service) EditMessage(
 					SystemPrompt: withHandoffNote(cfg.SystemPrompt, sourceBranch.HandoffNote), AdditionalDirectories: cfg.AdditionalDirectories,
 					MCPServers: cfg.MCPServers, ProviderScopeID: providerScopeID, ProviderIDsScoped: true,
 				})
+				err = redactSettingsGrantError(err, launchEnv)
 				if err == nil {
 					providerConversationID = provider.ProviderConversationID()
 				}
@@ -419,7 +423,6 @@ func (s *Service) EditMessage(
 	}
 
 	branchID := s.newID()
-	generation := s.newID()
 	branch := domain.ConversationBranch{
 		ID: branchID, ConversationID: source.conversation.ID, SessionID: id,
 		ProviderConversationID: providerConversationID, ParentBranchID: anchor.SourceBranchID,
@@ -902,6 +905,8 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 	if err != nil {
 		return "", err
 	}
+	generation := s.newID()
+	cfg.ControllerGeneration = generation
 	settingsAccount := s.settingsAccountBeforeLaunch(ctx, id)
 	if branch.ProviderBindingID != activeBranch.ProviderBindingID {
 		// Provider scopes may differ between approximate siblings, but their
@@ -951,6 +956,7 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 		ProviderIDsScoped:     branch.ProviderIDsScoped,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
+	err = redactSettingsGrantError(err, launchEnv)
 	if err != nil {
 		resumeErr := fmt.Errorf("resume conversation branch %s: %w", branchID, err)
 		if restoreErr := s.restoreClosedSourceController(
@@ -961,7 +967,6 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 		}
 		return "", resumeErr
 	}
-	generation := s.newID()
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
 	replacement := s.newObservedBranchController(id, source, conversation, generation, provider, settingsAccount)
@@ -1009,13 +1014,13 @@ func (s *Service) branchLaunchConfig(
 
 func (s *Service) prepareBranchControllerEnv(ctx context.Context, cfg StartConfig) (map[string]string, error) {
 	if cfg.PrepareControllerEnv == nil {
-		return cloneStartConfig(cfg).Env, nil
+		return s.settingsLaunchEnvironment(ctx, cfg, cfg.ControllerGeneration, cloneStartConfig(cfg).Env)
 	}
 	env, err := cfg.PrepareControllerEnv(ctx, cfg.ExpectedControllerOwner)
 	if err != nil {
 		return nil, fmt.Errorf("prepare replacement controller environment: %w", err)
 	}
-	return env, nil
+	return s.settingsLaunchEnvironment(ctx, cfg, cfg.ControllerGeneration, env)
 }
 
 // restoreClosedSourceController reopens the original provider branch when a
@@ -1042,6 +1047,8 @@ func (s *Service) restoreClosedSourceController(
 	if err := source.closeForBranchHandoff(recoveryCtx); err != nil {
 		return fmt.Errorf("confirm source stopped before failed native edit recovery: %w", err)
 	}
+	generation := s.newID()
+	cfg.ControllerGeneration = generation
 	providerConversationID := source.ProviderConversationID()
 	launchEnv, err := s.prepareBranchControllerEnv(recoveryCtx, cfg)
 	if err != nil {
@@ -1064,6 +1071,7 @@ func (s *Service) restoreClosedSourceController(
 		ProviderIDsScoped:     branch.ProviderIDsScoped,
 		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
 	})
+	err = redactSettingsGrantError(err, launchEnv)
 	if err != nil {
 		return fmt.Errorf("resume source after failed native edit: %w", err)
 	}
@@ -1078,7 +1086,6 @@ func (s *Service) restoreClosedSourceController(
 		}
 		providerConversationID = fresh
 	}
-	generation := s.newID()
 	conversation.ActiveBranchID = branch.ID
 	replacement := s.newObservedBranchController(id, source, conversation, generation, provider, settingsAccount)
 	if err := s.store.ActivateConversationBranch(recoveryCtx, id, conversation.ID, branch.ID,

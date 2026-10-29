@@ -4064,6 +4064,29 @@ type HandoffEvidenceFileParam struct {
 // SessionAgentSettingsResponse reads preferences without authorizing mutation.
 type SessionAgentSettingsResponse = agentsettings.Snapshot
 
+type ChangeSessionAgentSettingsPayload = agentsettings.Change
+
+type AgentSettingsOperationResponse struct {
+	Operation domain.AgentSettingsOperation `json:"operation"`
+}
+
+type CancelAgentSettingsOperationPayload struct {
+	ExpectedVersion *int64 `json:"expectedVersion" nullable:"false" minimum:"0"`
+}
+
+type AgentSettingsOperationIDParam struct {
+	OperationID string `path:"operationId"`
+}
+
+type AgentSettingsCallerHeaders struct {
+	SessionID string `header:"X-AO-Session-ID,omitempty"`
+	Grant     string `header:"X-AO-Settings-Grant,omitempty" description:"Settings-purpose native-environment grant; never returned or persisted."`
+}
+
+type AgentSettingsIdempotencyHeader struct {
+	Key string `header:"Idempotency-Key"`
+}
+
 // ResolveDocumentRequest is the strictly parsed document-source union.
 type ResolveDocumentRequest = documentread.Input
 

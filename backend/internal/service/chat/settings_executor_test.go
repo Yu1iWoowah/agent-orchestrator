@@ -289,6 +289,57 @@ func journalIntent(t *testing.T, h *harness) domain.AgentSettingsOperation {
 	return domain.AgentSettingsOperation{ID: "settings-operation", SessionID: testSession, IdempotencyKey: "settings-key", Source: current.Settings, Target: domain.AgentSettings{Model: "new-model", Effort: "high", FastMode: domain.AgentFastOff}, BaseRevision: current.Revision, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID, Actor: domain.AgentSettingsActor{Kind: domain.AgentSettingsActorLocal}, CreatedAt: h.now(), ApplyMode: domain.AgentSettingsAfterTurn}
 }
 
+func TestSettingsIntentionReturnsWhileProviderDispatchIsBlocked(t *testing.T) {
+	h, conv, _, commands := journalHarness(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	conv.onSend = func(string) { close(entered); <-release }
+	sent := make(chan error, 1)
+	go func() { _, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "slow provider"}); sent <- err }()
+	<-entered
+	intent := journalIntent(t, h)
+	type outcome struct {
+		op  domain.AgentSettingsOperation
+		err error
+	}
+	accepted := make(chan outcome, 1)
+	go func() { op, err := commands.QueueAgentSettings(t.Context(), intent); accepted <- outcome{op, err} }()
+	select {
+	case got := <-accepted:
+		if got.err != nil || got.op.Phase != domain.AgentSettingsPending || conv.stepCount() != 0 {
+			t.Fatalf("dispatch changed while busy: %+v %v", got.op, got.err)
+		}
+	case <-time.After(time.Second):
+		once.Do(func() { close(release) })
+		<-sent
+		<-accepted
+		t.Fatal("accepting a durable intention waited for provider dispatch")
+	}
+	once.Do(func() { close(release) })
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSettingsPendingValidationFailureHasDurableSafeCode(t *testing.T) {
+	h, conv, validator, commands := journalHarness(t)
+	conv.quiet.Store(false)
+	op, err := commands.QueueAgentSettings(t.Context(), journalIntent(t, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator.denied.Store(true)
+	conv.quiet.Store(true)
+	if err := commands.RunAgentSettings(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := h.st.AgentSettingsOperation(t.Context(), testSession, op.ID)
+	if err != nil || failed.Phase != domain.AgentSettingsFailed || failed.ErrorCode != "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" || conv.stepCount() != 0 {
+		t.Fatalf("failure without reason: %+v %v", failed, err)
+	}
+}
+
 func TestSettingsSchedulerBusyDefersSettersAndPrecedesQueuedRelay(t *testing.T) {
 	h, conv, _, commands := journalHarness(t)
 	first, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "current turn"})

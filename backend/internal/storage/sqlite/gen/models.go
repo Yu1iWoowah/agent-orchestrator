@@ -88,6 +88,11 @@ type AgentNativeSession struct {
 	LastUsedAt       time.Time
 }
 
+type AgentSettingsAuthorityKey struct {
+	Singleton int64
+	KeyBytes  []byte
+}
+
 type AgentSwitch struct {
 	ID                      string
 	SessionID               string
@@ -817,6 +822,7 @@ type SessionAgentSettingsAudit struct {
 	RecordedAt    time.Time
 	ErrorCategory string
 	RequestID     string
+	ErrorCode     string
 }
 
 type SessionAgentSettingsOperation struct {
@@ -838,6 +844,7 @@ type SessionAgentSettingsOperation struct {
 	FinishedAt             sql.NullTime
 	RecoveryJson           string
 	ExecutionJson          string
+	ErrorCode              string
 }
 
 type SessionArtifactVersion struct {

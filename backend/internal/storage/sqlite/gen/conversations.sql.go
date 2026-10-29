@@ -5116,6 +5116,30 @@ func (q *Queries) UpdateConversationBranchReplacement(ctx context.Context, arg U
 	return result.RowsAffected()
 }
 
+const updateConversationManualControls = `-- name: UpdateConversationManualControls :exec
+UPDATE conversations
+SET approval_mode=?1, opencode_mode=?2,
+ auto_compact_window=?3
+WHERE id=?4
+`
+
+type UpdateConversationManualControlsParams struct {
+	ApprovalMode      sql.NullString
+	OpencodeMode      string
+	AutoCompactWindow string
+	ID                string
+}
+
+func (q *Queries) UpdateConversationManualControls(ctx context.Context, arg UpdateConversationManualControlsParams) error {
+	_, err := q.db.ExecContext(ctx, updateConversationManualControls,
+		arg.ApprovalMode,
+		arg.OpencodeMode,
+		arg.AutoCompactWindow,
+		arg.ID,
+	)
+	return err
+}
+
 const updateConversationMcpServers = `-- name: UpdateConversationMcpServers :exec
 UPDATE conversations
 SET mcp_servers_json = ?

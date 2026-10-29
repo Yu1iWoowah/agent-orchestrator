@@ -115,6 +115,7 @@ type orchestratorHandoffConfig struct {
 }
 
 type projectConfig struct {
+	AgentSettingsPolicy *agentSettingsPolicy      `json:"agentSettingsPolicy,omitempty"`
 	OrchestratorHandoff orchestratorHandoffConfig `json:"orchestratorHandoff,omitempty,omitzero"`
 
 	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`
@@ -137,6 +138,17 @@ type projectConfig struct {
 	// of another field never silently turns it off.
 	WorkersRequestReview bool             `json:"workersRequestReview,omitempty"`
 	Reviewers            []reviewerConfig `json:"reviewers,omitempty"`
+}
+
+type agentSettingsPolicy struct {
+	Enabled   bool                              `json:"enabled"`
+	Harnesses map[string]agentSettingsAllowance `json:"harnesses"`
+}
+
+type agentSettingsAllowance struct {
+	Models    []string `json:"models"`
+	Efforts   []string `json:"efforts"`
+	AllowFast bool     `json:"allowFast"`
 }
 
 // setConfigRequest mirrors the daemon's SetConfigInput body for

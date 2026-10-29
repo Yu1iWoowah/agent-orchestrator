@@ -61,6 +61,7 @@ type AgentSettingsOperation struct {
 	Checkpoint             AgentSettingsCheckpoint    `json:"checkpoint" enum:"queued,applying_model,applying_effort,applying_fast,verifying,verified,rolling_back,restored"`
 	Version                int64                      `json:"version"`
 	ErrorCategory          AgentSettingsErrorCategory `json:"errorCategory,omitempty" enum:"conflict,cancelled,provider,storage,validation,recovery_required"`
+	ErrorCode              string                     `json:"errorCode,omitempty"`
 	RequestID              string                     `json:"requestId,omitempty"`
 	ProviderConversationID string                     `json:"providerConversationId,omitempty"`
 	BranchID               string                     `json:"branchId,omitempty"`
@@ -68,6 +69,8 @@ type AgentSettingsOperation struct {
 	FinishedAt             *time.Time                 `json:"finishedAt,omitempty"`
 	Recovery               *AgentSettingsRecovery     `json:"recovery,omitempty"`
 	Execution              *AgentSettingsExecution    `json:"-"`
+	Authority              AgentSettingsAuthority     `json:"-"`
+	RequestFingerprint     string                     `json:"-"`
 }
 
 // AgentSettingsRecovery pins a replacement executor and its durable restoration

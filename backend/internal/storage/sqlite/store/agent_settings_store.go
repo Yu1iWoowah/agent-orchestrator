@@ -26,10 +26,12 @@ type settingsRequest struct {
 	ApplyMode              domain.AgentSettingsApplyMode `json:"applyMode"`
 	ProviderConversationID string                        `json:"providerConversationId"`
 	BranchID               string                        `json:"branchId"`
+	Authority              domain.AgentSettingsAuthority `json:"authority,omitempty"`
+	RequestFingerprint     string                        `json:"requestFingerprint,omitempty"`
 }
 
 func requestForSettings(op domain.AgentSettingsOperation) settingsRequest {
-	return settingsRequest{op.BaseRevision, op.Source, op.Target, op.AccountID, op.ControllerGeneration, op.Actor, op.ApplyMode, op.ProviderConversationID, op.BranchID}
+	return settingsRequest{op.BaseRevision, op.Source, op.Target, op.AccountID, op.ControllerGeneration, op.Actor, op.ApplyMode, op.ProviderConversationID, op.BranchID, op.Authority, op.RequestFingerprint}
 }
 
 // SessionAgentSettings reads preferences and owner context from one snapshot.
@@ -61,7 +63,8 @@ func decodeSettingsOperation(row gen.SessionAgentSettingsOperation) (domain.Agen
 		BaseRevision: req.BaseRevision, Source: req.Source, Target: req.Target, AccountID: req.AccountID, ControllerGeneration: req.Generation, Actor: req.Actor,
 		Phase: domain.AgentSettingsPhase(row.Phase), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		ApplyMode: domain.AgentSettingsApplyMode(row.ApplyMode), Checkpoint: domain.AgentSettingsCheckpoint(row.Checkpoint), Version: row.OperationRevision,
-		ErrorCategory: domain.AgentSettingsErrorCategory(row.ErrorCategory), RequestID: row.RequestID, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID}
+		ErrorCategory: domain.AgentSettingsErrorCategory(row.ErrorCategory), ErrorCode: row.ErrorCode, RequestID: row.RequestID, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID}
+	op.Authority, op.RequestFingerprint = req.Authority, req.RequestFingerprint
 	if row.StartedAt.Valid {
 		op.StartedAt = &row.StartedAt.Time
 	}
@@ -90,8 +93,22 @@ func (s *Store) AgentSettingsOperation(ctx context.Context, id domain.SessionID,
 	return decodeSettingsOperation(row)
 }
 
+// AgentSettingsOperationByKey looks up the originally accepted request before
+// a retry can reinterpret its patch against a newer preference or owner.
+func (s *Store) AgentSettingsOperationByKey(ctx context.Context, id domain.SessionID, key string) (domain.AgentSettingsOperation, bool, error) {
+	row, err := s.qr.GetAgentSettingsOperationByKey(ctx, gen.GetAgentSettingsOperationByKeyParams{SessionID: string(id), IdempotencyKey: key})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AgentSettingsOperation{}, false, nil
+	}
+	if err != nil {
+		return domain.AgentSettingsOperation{}, false, err
+	}
+	op, err := decodeSettingsOperation(row)
+	return op, err == nil, err
+}
+
 func validateSettingsOperation(op domain.AgentSettingsOperation) error {
-	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.Recovery != nil || op.Execution != nil {
+	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.ErrorCode != "" || op.Recovery != nil || op.Execution != nil {
 		return fmt.Errorf("invalid initial agent settings journal")
 	}
 	for _, ref := range []string{op.RequestID, op.ProviderConversationID, op.BranchID} {
@@ -165,6 +182,11 @@ func (s *Store) BeginAgentSettingsOperation(ctx context.Context, op domain.Agent
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := q.GetActiveSessionInterfaceTransition(ctx, op.SessionID); err == nil {
+			return ports.ErrAgentSettingsConflict
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		current, err := q.GetSessionAgentSettings(ctx, op.SessionID)

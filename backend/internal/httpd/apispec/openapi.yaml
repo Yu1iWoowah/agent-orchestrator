@@ -7257,6 +7257,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionAgentSettingsResponse'
           description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -7277,6 +7283,262 @@ paths:
           description: Not Implemented
       summary: Read durable agent preferences and saved capability evidence without
         waking the provider
+      tags:
+      - sessions
+    patch:
+      operationId: changeSessionAgentSettings
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: header
+        name: X-AO-Session-ID
+        schema:
+          type: string
+      - description: Settings-purpose native-environment grant; never returned or
+          persisted.
+        in: header
+        name: X-AO-Settings-Grant
+        schema:
+          description: Settings-purpose native-environment grant; never returned or
+            persisted.
+          type: string
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeSessionAgentSettingsPayload'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSettingsOperationResponse'
+          description: OK
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSettingsOperationResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Queue a revision-checked settings operation; accepted is not completion
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}:
+    get:
+      operationId: getAgentSettingsOperation
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      - in: header
+        name: X-AO-Session-ID
+        schema:
+          type: string
+      - description: Settings-purpose native-environment grant; never returned or
+          persisted.
+        in: header
+        name: X-AO-Settings-Grant
+        schema:
+          description: Settings-purpose native-environment grant; never returned or
+            persisted.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSettingsOperationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Read an authorized session settings operation
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/cancel:
+    post:
+      operationId: cancelAgentSettingsOperation
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      - in: header
+        name: X-AO-Session-ID
+        schema:
+          type: string
+      - description: Settings-purpose native-environment grant; never returned or
+          persisted.
+        in: header
+        name: X-AO-Settings-Grant
+        schema:
+          description: Settings-purpose native-environment grant; never returned or
+            persisted.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelAgentSettingsOperationPayload'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSettingsOperationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Cancel an unstarted settings operation using its version
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/artifact-files:
@@ -15508,6 +15770,23 @@ components:
       required:
       - kind
       type: object
+    AgentSettingsAllowance:
+      properties:
+        allowFast:
+          type: boolean
+        efforts:
+          items:
+            type: string
+          type: array
+        models:
+          items:
+            type: string
+          type: array
+      required:
+      - models
+      - efforts
+      - allowFast
+      type: object
     AgentSettingsEffective:
       properties:
         effort:
@@ -15571,6 +15850,8 @@ components:
           - validation
           - recovery_required
           type: string
+        errorCode:
+          type: string
         finishedAt:
           format: date-time
           type:
@@ -15624,6 +15905,13 @@ components:
       - checkpoint
       - version
       type: object
+    AgentSettingsOperationResponse:
+      properties:
+        operation:
+          $ref: '#/components/schemas/AgentSettingsOperation'
+      required:
+      - operation
+      type: object
     AgentSettingsOwner:
       properties:
         accountId:
@@ -15659,6 +15947,20 @@ components:
           type:
           - "null"
           - string
+      type: object
+    AgentSettingsPolicy:
+      properties:
+        enabled:
+          type: boolean
+        harnesses:
+          additionalProperties:
+            $ref: '#/components/schemas/AgentSettingsAllowance'
+          type:
+          - object
+          - "null"
+      required:
+      - enabled
+      - harnesses
       type: object
     AgentSettingsRecovery:
       properties:
@@ -17230,6 +17532,14 @@ components:
       - transport
       - target
       type: object
+    CancelAgentSettingsOperationPayload:
+      properties:
+        expectedVersion:
+          minimum: 0
+          type: integer
+      required:
+      - expectedVersion
+      type: object
     CancelReviewResponse:
       properties:
         reviewerHandleId:
@@ -17251,6 +17561,22 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    ChangeSessionAgentSettingsPayload:
+      properties:
+        applyMode:
+          enum:
+          - after-turn
+          - restart
+          type: string
+        expectedRevision:
+          minimum: 0
+          type: integer
+        settings:
+          $ref: '#/components/schemas/AgentSettingsPatch'
+      required:
+      - expectedRevision
+      - settings
       type: object
     ChatAgentPermissionModes:
       properties:
@@ -21369,6 +21695,8 @@ components:
           type: string
         agentRulesFile:
           type: string
+        agentSettingsPolicy:
+          $ref: '#/components/schemas/AgentSettingsPolicy'
         autoReview:
           type: boolean
         canonicalRepoURL:
