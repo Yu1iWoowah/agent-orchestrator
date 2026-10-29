@@ -333,6 +333,11 @@ func (c *conversation) configuredServiceTier(ctx context.Context) string {
 // codexFastServiceTier is the fast tier's id before a model list is read.
 const codexFastServiceTier = "priority"
 
+// fastServiceTier uses the last account-scoped model list. Call under sendMu.
+func (c *conversation) fastServiceTier(model string) string {
+	return cmp.Or(c.fastTiers[cmp.Or(model, c.threadModel)], c.fastTiers[c.threadModel], c.fastTiers[""], codexFastServiceTier)
+}
+
 // SendTurn delivers one message to the provider.
 func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	if strings.TrimSpace(msg.Text) == "" {
@@ -356,8 +361,10 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	applyTurnSettings(params, msg.Settings, c.readOnly, c.disableNetwork)
 	// A service tier sticks to the thread once set, so leaving the fast tier
 	// has to be said: an explicit null returns the thread to its default.
-	if msg.Settings.Fast {
-		params["serviceTier"] = cmp.Or(c.fastTiers[msg.Settings.Model], c.fastTiers[c.threadModel], codexFastServiceTier)
+	if msg.Settings.Fast || msg.Settings.FastMode == domain.AgentFastOn {
+		params["serviceTier"] = c.fastServiceTier(msg.Settings.Model)
+	} else if msg.Settings.FastMode == domain.AgentFastOff {
+		params["serviceTier"] = "default"
 	} else if c.fastTier || c.tierUnknown && c.configuredServiceTier(ctx) == "" {
 		params["serviceTier"] = nil
 	}
@@ -458,6 +465,9 @@ func (c *conversation) ListModels(ctx context.Context) ([]ports.ChatModel, error
 	for _, model := range models {
 		if model.FastTier != "" {
 			fastTiers[model.ID] = model.FastTier
+			if model.Default {
+				fastTiers[""] = model.FastTier
+			}
 		}
 	}
 	c.sendMu.Lock()

@@ -36,6 +36,7 @@ type ChatControllerStart struct {
 	Env           map[string]string
 	Model         string
 	Effort        string
+	FastMode      domain.AgentFastMode
 	Permissions   PermissionMode
 	// ReadOnly forces the provider's native sandbox to reject workspace writes.
 	// Reviewer-owned conversations set this independently of approval behavior.

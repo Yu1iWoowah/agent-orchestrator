@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 // maxDisplayNameLen caps the sidebar label set by `--name`. Mirrored by the
@@ -32,6 +34,7 @@ type spawnOptions struct {
 	model           string
 	output          string
 	effort          string
+	fastMode        string
 	claimPR         string
 	noTakeover      bool
 	skipAgentCheck  bool
@@ -41,26 +44,31 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
-	ProjectID       string `json:"projectId,omitempty"`
-	IssueID         string `json:"issueId,omitempty"`
-	ParentSessionID string `json:"parentSessionId,omitempty"`
-	TrackerProvider string `json:"trackerProvider,omitempty"`
-	Kind            string `json:"kind,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-	Harness         string `json:"harness,omitempty"`
-	Branch          string `json:"branch,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Effort          string `json:"effort,omitempty"`
-	RequestedOutput string `json:"requestedOutput,omitempty"`
-	DisplayName     string `json:"displayName"`
+	AgentSettings   *domain.AgentSettingsPatch `json:"agentSettings,omitempty"`
+	ProjectID       string                     `json:"projectId,omitempty"`
+	IssueID         string                     `json:"issueId,omitempty"`
+	ParentSessionID string                     `json:"parentSessionId,omitempty"`
+	TrackerProvider string                     `json:"trackerProvider,omitempty"`
+	Kind            string                     `json:"kind,omitempty"`
+	Mode            string                     `json:"mode,omitempty"`
+	Harness         string                     `json:"harness,omitempty"`
+	Branch          string                     `json:"branch,omitempty"`
+	Prompt          string                     `json:"prompt,omitempty"`
+	Model           string                     `json:"model,omitempty"`
+	Effort          string                     `json:"effort,omitempty"`
+	RequestedOutput string                     `json:"requestedOutput,omitempty"`
+	DisplayName     string                     `json:"displayName"`
 }
 
 type spawnResult struct {
 	Session struct {
-		ID          string `json:"id"`
-		Status      string `json:"status"`
-		DisplayName string `json:"displayName"`
+		ID                 string `json:"id"`
+		Status             string `json:"status"`
+		DisplayName        string `json:"displayName"`
+		SpawnAgentSettings *struct {
+			Validation    string `json:"validation"`
+			EffortCleared bool   `json:"effortCleared"`
+		} `json:"spawnAgentSettings,omitempty"`
 	} `json:"session"`
 	PromptBytes       int `json:"promptBytes,omitempty"`
 	SystemPromptBytes int `json:"systemPromptBytes,omitempty"`
@@ -126,6 +134,21 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			opts.trackerProvider = tp
 
+			settingsPatch, patchErr := spawnSettingsPatch(cmd, opts)
+			if patchErr != nil {
+				return patchErr
+			}
+			if settingsPatch != nil {
+				var capabilities struct {
+					AgentSettingsVersion int `json:"agentSettingsVersion"`
+				}
+				if err := ctx.getJSON(cmd.Context(), "sessions/spawn-capabilities", &capabilities); err != nil {
+					return fmt.Errorf("daemon does not support typed spawn settings; update the daemon: %w", err)
+				}
+				if capabilities.AgentSettingsVersion < 1 {
+					return fmt.Errorf("daemon does not support typed spawn settings; update the daemon")
+				}
+			}
 			var project projectDetails
 			var err error
 			if !opts.standalone {
@@ -178,8 +201,21 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				RequestedOutput: opts.output,
 				DisplayName:     name,
 			}
+			req.AgentSettings = settingsPatch
+			if settingsPatch != nil {
+				if settingsPatch.Model != nil {
+					req.Model = ""
+				}
+				if settingsPatch.Effort != nil {
+					req.Effort = ""
+				}
+			}
 			var res spawnResult
 			if err := ctx.postSetupJSON(cmd.Context(), "sessions", req, &res); err != nil {
+				var apiErr apiResponseError
+				if errors.As(err, &apiErr) && apiErr.ErrorBody.Code == "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" && strings.Contains(apiErr.ErrorBody.Message, "catalog_stale") {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "hint: refresh the agent model catalog, then retry spawn.")
+				}
 				return err
 			}
 			if strings.TrimSpace(res.Session.ID) == "" {
@@ -211,7 +247,16 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if displayName == "" {
 				displayName = name
 			}
-			if _, err := fmt.Fprintf(out, "spawned session %s %q (%s)%s%s\n", res.Session.ID, displayName, res.Session.Status, claimLabel, promptSize); err != nil {
+			settingsResult := ""
+			if settings := res.Session.SpawnAgentSettings; settings != nil {
+				if settings.Validation == "native-validation" {
+					settingsResult = " [settings: native-validation]"
+				}
+				if settings.EffortCleared {
+					settingsResult += " [inherited effort reset to provider default]"
+				}
+			}
+			if _, err := fmt.Fprintf(out, "spawned session %s %q (%s)%s%s%s\n", res.Session.ID, displayName, res.Session.Status, claimLabel, promptSize, settingsResult); err != nil {
 				return err
 			}
 			if opts.claimPR != "" {
@@ -237,6 +282,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for standalone or Scratch sessions)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
+	f.StringVar(&opts.fastMode, "fast", "", "Fast preference: on, off, or default (provider baseline)")
 	f.StringVar(&opts.output, "output", "", "Deliverable for the session: artifact asks the agent to write a file in its artifact directory instead of opening a PR (default: ordinary task)")
 	f.StringVar(&opts.effort, "effort", "", "Reasoning effort override for this session only (e.g. low, medium, high); empty defers to the agent/model default")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")

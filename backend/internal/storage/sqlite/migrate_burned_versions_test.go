@@ -20,6 +20,8 @@ import (
 // session list). Renaming, renumbering, or deleting a shipped migration
 // produces exactly that class of failure, so this list is append-only.
 var shippedMigrations = map[int64]string{
+	20261028193324307: "20261028193324307_contained_agent_profiles.sql",
+
 	1:   "0001_init.sql",
 	2:   "0002_remove_activity_source.sql",
 	3:   "0003_add_session_display_name.sql",
@@ -230,6 +232,8 @@ var shippedMigrations = map[int64]string{
 	20261028114415395: "20261028114415395_agent_reply_language.sql",
 	20261028143735416: "20261028143735416_conversation_plan_heads.sql",
 	20261028170441550: "20261028170441550_session_agent_settings.sql",
+	20261028193618172: "20261028193618172_conversation_attention_reads.sql",
+	20261028204037417: "20261028204037417_spawn_agent_settings_resolution.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

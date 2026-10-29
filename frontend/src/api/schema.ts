@@ -2632,6 +2632,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read pending provider requests with complete counts */
+        get: operations["getSessionAttention"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/attention/{activityId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a fresh visible provider request before navigating to its original form */
+        get: operations["getSessionAttentionSource"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/attention/{activityId}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark an explicitly viewed request revision read without resolving it */
+        post: operations["markSessionAttentionRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/auto-inject-ci": {
         parameters: {
             query?: never;
@@ -4297,6 +4348,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/spawn-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read supported spawn settings contract */
+        get: operations["getSpawnCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings": {
         parameters: {
             query?: never;
@@ -4833,6 +4901,8 @@ export interface components {
         };
         AgentConfig: {
             effort?: string;
+            /** @enum {string} */
+            fastMode?: "default" | "on" | "off";
             mode?: string;
             model?: string;
             permissions?: string;
@@ -4917,6 +4987,7 @@ export interface components {
             efforts: string[];
             /** @enum {string} */
             fast: "unknown" | "supported" | "unsupported";
+            isDefault: boolean;
             model: string;
         };
         AgentModelsResponse: {
@@ -4971,6 +5042,17 @@ export interface components {
             effort: string;
             /** @enum {string} */
             fastMode: "default" | "on" | "off";
+            model: string;
+        };
+        AgentSettingsPatch: {
+            effort?: null | string;
+            /** @enum {string} */
+            fastMode?: "default" | "on" | "off";
+            model?: null | string;
+        };
+        AgentSettingsSources: {
+            effort: string;
+            fastMode: string;
             model: string;
         };
         AgentUpdateAdvisory: {
@@ -5132,6 +5214,25 @@ export interface components {
         AttachmentInput: {
             data: string;
             mimeType?: string;
+        };
+        AttentionCountsResponse: {
+            /** Format: int64 */
+            history: number;
+            /** Format: int64 */
+            open: number;
+            /** Format: int64 */
+            unread: number;
+        };
+        AttentionItemResponse: {
+            actionable: boolean;
+            activity: components["schemas"]["ConversationActivityResponse"];
+            branchId: string;
+            read: boolean;
+        };
+        AttentionReadRequest: {
+            expectedBranchId: string;
+            /** Format: int64 */
+            expectedRevision: number;
         };
         AutomationEnvelope: {
             automation: components["schemas"]["AutomationResponse"];
@@ -5752,6 +5853,7 @@ export interface components {
             reviewerHarness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "opencode-v2" | "kiro" | "pi" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
             /** @enum {string} */
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "commented" | "approved" | "mergeable" | "merged";
+            spawnAgentSettings?: components["schemas"]["SpawnAgentSettingsResolution"];
             staleBinary?: components["schemas"]["SessionStaleBinary"];
             /** @enum {string} */
             status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "commented" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "terminated" | "no_signal";
@@ -7358,6 +7460,15 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        SessionAttentionResponse: {
+            activeBranchId: string;
+            conversationId: string;
+            counts: components["schemas"]["AttentionCountsResponse"];
+            hasMoreBefore: boolean;
+            items: components["schemas"]["AttentionItemResponse"][];
+            /** Format: int64 */
+            nextBeforeSequence?: number;
+        };
         SessionBranchState: {
             commits: number;
             remoteBranch?: string;
@@ -7960,6 +8071,17 @@ export interface components {
             state: string;
             text: string;
         };
+        SpawnAgentSettingsResolution: {
+            accountId?: string;
+            effortCleared: boolean;
+            reason?: string;
+            settings: components["schemas"]["AgentSettings"];
+            sources: components["schemas"]["AgentSettingsSources"];
+            validation: string;
+        };
+        SpawnCapabilitiesResponse: {
+            agentSettingsVersion: number;
+        };
         SpawnOrchestratorRequest: {
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
@@ -7972,6 +8094,7 @@ export interface components {
             orchestrator: components["schemas"]["OrchestratorResponse"];
         };
         SpawnSessionRequest: {
+            agentSettings?: components["schemas"]["AgentSettingsPatch"];
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
@@ -18460,6 +18583,219 @@ export interface operations {
             };
         };
     };
+    getSessionAttention: {
+        parameters: {
+            query?: {
+                /** @description Open requests (default) or read-only history. */
+                state?: "open" | "history";
+                beforeSequence?: null | number;
+                limit?: null | number;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAttentionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionAttentionSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                activityId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAttentionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    markSessionAttentionRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                activityId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttentionReadRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     setSessionAutoInjectCI: {
         parameters: {
             query?: never;
@@ -25159,6 +25495,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSpawnCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpawnCapabilitiesResponse"];
                 };
             };
         };

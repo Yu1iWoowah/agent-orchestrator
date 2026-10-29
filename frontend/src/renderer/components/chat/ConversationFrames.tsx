@@ -2,6 +2,8 @@ import { useTranslation } from "react-i18next";
 import {
 	type CSSProperties,
 	type ReactNode,
+	createContext,
+	useContext,
 	useCallback,
 	useEffect,
 	useId,
@@ -34,6 +36,11 @@ export interface ConversationFrameDescriptor {
 	content: ReactNode;
 }
 const defaults = defaultConversationFramePreferences();
+const FrameNavigationContext = createContext<
+	((navigate: () => void) => void) | undefined
+>(undefined);
+export const useConversationFrameNavigation = () =>
+	useContext(FrameNavigationContext);
 
 /** Inline header controls plus a non-layout overlay owned by the Chat surface. */
 export function ConversationFrames({
@@ -54,6 +61,7 @@ export function ConversationFrames({
 	const preferences = useConversationFrameStore((state) => state.sessions[key] ?? defaults);
 	const setOpen = useConversationFrameStore((state) => state.setFrameOpen);
 	const [focusedFrame, setFocusedFrame] = useState<ConversationFrameKind>();
+	const navigatingFromSheet = useRef(false);
 	const entryRefs = useRef(new Map<ConversationFrameKind, HTMLButtonElement>());
 	const headerRefs = useRef(new Map<ConversationFrameKind, HTMLButtonElement>());
 	const id = useId();
@@ -86,12 +94,21 @@ export function ConversationFrames({
 	const close = (kind: ConversationFrameKind) => {
 		setFocusedFrame(undefined);
 		if (!layout.compact && focusedFrame !== kind) setOpen(key, kind, false);
-		requestAnimationFrame(() =>
-			(entryRefs.current.get(kind) ?? headerRefs.current.get(kind))?.focus(),
-		);
+		if (!navigatingFromSheet.current)
+			requestAnimationFrame(() =>
+				(entryRefs.current.get(kind) ?? headerRefs.current.get(kind))?.focus(),
+			);
 	};
 	return (
-		<>
+		<FrameNavigationContext.Provider
+			value={(navigate) => {
+				if (focusedFrame) {
+					navigatingFromSheet.current = true;
+					setFocusedFrame(undefined);
+				}
+				navigate();
+			}}
+		>
 			{frames.map((frame) => (
 				<Tooltip key={frame.kind}>
 					<TooltipTrigger asChild>
@@ -211,7 +228,9 @@ export function ConversationFrames({
 						className="gap-0 overflow-hidden rounded-xl border bg-card"
 						onCloseAutoFocus={(event) => {
 							event.preventDefault();
-							headerRefs.current.get(frame.kind)?.focus();
+							if (!navigatingFromSheet.current)
+								headerRefs.current.get(frame.kind)?.focus();
+						navigatingFromSheet.current = false;
 						}}
 					>
 						<div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
@@ -229,7 +248,7 @@ export function ConversationFrames({
 					</SheetContent>
 				</Sheet>
 			))}
-		</>
+		</FrameNavigationContext.Provider>
 	);
 }
 

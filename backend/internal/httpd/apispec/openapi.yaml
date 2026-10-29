@@ -7604,6 +7604,196 @@ paths:
       summary: Write images into a running session's worktree and return their paths
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/attention:
+    get:
+      operationId: getSessionAttention
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Open requests (default) or read-only history.
+        in: query
+        name: state
+        schema:
+          description: Open requests (default) or read-only history.
+          enum:
+          - open
+          - history
+          type: string
+      - in: query
+        name: beforeSequence
+        schema:
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: limit
+        schema:
+          maximum: 100
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAttentionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read pending provider requests with complete counts
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/attention/{activityId}:
+    get:
+      operationId: getSessionAttentionSource
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: activityId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAttentionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a fresh visible provider request before navigating to its original
+        form
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/attention/{activityId}/read:
+    post:
+      operationId: markSessionAttentionRead
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: activityId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttentionReadRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Mark an explicitly viewed request revision read without resolving it
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/auto-inject-ci:
     patch:
       operationId: setSessionAutoInjectCI
@@ -13512,6 +13702,19 @@ paths:
       summary: Clean up terminated session workspaces
       tags:
       - sessions
+  /api/v1/sessions/spawn-capabilities:
+    get:
+      operationId: getSpawnCapabilities
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpawnCapabilitiesResponse'
+          description: OK
+      summary: Read supported spawn settings contract
+      tags:
+      - sessions
   /api/v1/settings:
     get:
       operationId: getSettings
@@ -14779,6 +14982,12 @@ components:
       properties:
         effort:
           type: string
+        fastMode:
+          enum:
+          - default
+          - "on"
+          - "off"
+          type: string
         mode:
           type: string
         model:
@@ -14987,10 +15196,13 @@ components:
           - supported
           - unsupported
           type: string
+        isDefault:
+          type: boolean
         model:
           type: string
       required:
       - model
+      - isDefault
       - efforts
       - fast
       type: object
@@ -15133,6 +15345,36 @@ components:
           - default
           - "on"
           - "off"
+          type: string
+        model:
+          type: string
+      required:
+      - model
+      - effort
+      - fastMode
+      type: object
+    AgentSettingsPatch:
+      properties:
+        effort:
+          type:
+          - "null"
+          - string
+        fastMode:
+          enum:
+          - default
+          - "on"
+          - "off"
+          type: string
+        model:
+          type:
+          - "null"
+          - string
+      type: object
+    AgentSettingsSources:
+      properties:
+        effort:
+          type: string
+        fastMode:
           type: string
         model:
           type: string
@@ -15514,6 +15756,51 @@ components:
           type: string
       required:
       - data
+      type: object
+    AttentionCountsResponse:
+      properties:
+        history:
+          format: int64
+          type: integer
+        open:
+          format: int64
+          type: integer
+        unread:
+          format: int64
+          type: integer
+      required:
+      - open
+      - unread
+      - history
+      type: object
+    AttentionItemResponse:
+      properties:
+        actionable:
+          type: boolean
+        activity:
+          $ref: '#/components/schemas/ConversationActivityResponse'
+        branchId:
+          type: string
+        read:
+          type: boolean
+      required:
+      - branchId
+      - activity
+      - actionable
+      - read
+      type: object
+    AttentionReadRequest:
+      properties:
+        expectedBranchId:
+          minLength: 1
+          type: string
+        expectedRevision:
+          format: int64
+          minimum: 0
+          type: integer
+      required:
+      - expectedBranchId
+      - expectedRevision
       type: object
     AutomationEnvelope:
       properties:
@@ -17238,6 +17525,8 @@ components:
           - mergeable
           - merged
           type: string
+        spawnAgentSettings:
+          $ref: '#/components/schemas/SpawnAgentSettingsResolution'
         staleBinary:
           $ref: '#/components/schemas/SessionStaleBinary'
         status:
@@ -21435,6 +21724,30 @@ components:
       - size
       - updatedAt
       type: object
+    SessionAttentionResponse:
+      properties:
+        activeBranchId:
+          type: string
+        conversationId:
+          type: string
+        counts:
+          $ref: '#/components/schemas/AttentionCountsResponse'
+        hasMoreBefore:
+          type: boolean
+        items:
+          items:
+            $ref: '#/components/schemas/AttentionItemResponse'
+          type: array
+        nextBeforeSequence:
+          format: int64
+          type: integer
+      required:
+      - conversationId
+      - activeBranchId
+      - items
+      - counts
+      - hasMoreBefore
+      type: object
     SessionBranchState:
       properties:
         commits:
@@ -22939,6 +23252,33 @@ components:
       - state
       - createdAt
       type: object
+    SpawnAgentSettingsResolution:
+      properties:
+        accountId:
+          type: string
+        effortCleared:
+          type: boolean
+        reason:
+          type: string
+        settings:
+          $ref: '#/components/schemas/AgentSettings'
+        sources:
+          $ref: '#/components/schemas/AgentSettingsSources'
+        validation:
+          type: string
+      required:
+      - settings
+      - sources
+      - validation
+      - effortCleared
+      type: object
+    SpawnCapabilitiesResponse:
+      properties:
+        agentSettingsVersion:
+          type: integer
+      required:
+      - agentSettingsVersion
+      type: object
     SpawnOrchestratorRequest:
       properties:
         approvalMode:
@@ -22969,6 +23309,8 @@ components:
       type: object
     SpawnSessionRequest:
       properties:
+        agentSettings:
+          $ref: '#/components/schemas/AgentSettingsPatch'
         approvalMode:
           enum:
           - default

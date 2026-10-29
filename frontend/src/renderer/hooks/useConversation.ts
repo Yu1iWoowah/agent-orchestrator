@@ -2013,7 +2013,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 	};
 }
 
-function toActivity(wire: WireActivity): ConversationActivity {
+export function toActivity(wire: WireActivity): ConversationActivity {
 	const detail = (wire.detail ?? {}) as Record<string, unknown>;
 	return {
 		kind: "activity",

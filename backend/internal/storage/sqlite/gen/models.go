@@ -13,12 +13,13 @@ import (
 )
 
 type AgentAccount struct {
-	ID        string
-	Provider  string
-	Home      string
-	Email     string
-	Plan      string
-	CreatedAt time.Time
+	ID          string
+	Provider    string
+	Home        string
+	Email       string
+	Plan        string
+	CreatedAt   time.Time
+	ProfileKind string
 }
 
 type AgentAccountDefault struct {
@@ -172,6 +173,14 @@ type AppSetting struct {
 	HarnessDefaults    string
 	VersionRefresh     bool
 	ReplyLanguage      string
+}
+
+type AttentionRead struct {
+	OperatorScope    string
+	ConversationID   string
+	ActivityID       string
+	LastSeenRevision int64
+	SeenAt           time.Time
 }
 
 type Automation struct {
@@ -772,6 +781,7 @@ type Session struct {
 	TemporaryBranch                  string
 	AgentFastMode                    string
 	AgentSettingsRevision            int64
+	SpawnAgentSettingsJson           string
 }
 
 type SessionAgentAccount struct {

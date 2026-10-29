@@ -27,28 +27,29 @@ func (p *prepareFailureAfterLogin) Prepare(string) error {
 	return nil
 }
 
-func TestVerifyLoginPrepareFailureLogsOnlySafeCategory(t *testing.T) {
+func TestVerifyLoginPrepareFailureRefusesWithoutLeaking(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("new managed login is Linux-only")
 	}
 	var output bytes.Buffer
 	provider := &prepareFailureAfterLogin{fakeClaude: &fakeClaude{signedInAs: map[string]string{}}}
 	root := filepath.Join(t.TempDir(), "accounts")
-	svc := New(&memStore{}, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, slog.New(slog.NewTextHandler(&output, nil)))
+	store := &memStore{}
+	svc := New(store, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, slog.New(slog.NewTextHandler(&output, nil)))
 	start, err := svc.StartLogin(context.Background(), domain.AgentAccountProviderClaude)
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider.signedInAs[filepath.Join(root, "claude", start.OperationID)] = "fake@example.invalid"
 	status, _, err := svc.VerifyLogin(context.Background(), start.OperationID)
-	if err != nil || status != LoginComplete {
+	if !errors.Is(err, ports.ErrAgentAccountStorageUnavailable) || status != "" || len(store.accounts) != 0 {
 		t.Fatalf("verify = %q, %v", status, err)
 	}
-	log := output.String()
+	log := output.String() + err.Error()
 	if strings.Contains(log, "/fake/private/account") || strings.Contains(log, "fake-secret-marker") {
 		t.Fatalf("prepare error leaked through log: %s", log)
 	}
-	if !strings.Contains(log, "reasonCode=account_prepare_failed") {
+	if !strings.Contains(log, "account_storage_unavailable") {
 		t.Fatalf("missing safe category: %s", log)
 	}
 }

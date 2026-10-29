@@ -296,9 +296,9 @@ func (b claudeUsageBody) autoResumeResetAt(now time.Time) *time.Time {
 	return &latest
 }
 
-// Prepare links home's history and the user's own config to the computer's
+// PrepareLegacy links home's history and the user's own config to the computer's
 // Claude folder, and shares the user's settings and MCP servers into it.
-func (c *Claude) Prepare(home string) error {
+func (c *Claude) PrepareLegacy(home string) error {
 	if home == "" {
 		return nil
 	}

@@ -59,7 +59,7 @@ func TestClaudePrepareSharesHistoryNotLogin(t *testing.T) {
 
 	c := &Claude{DeviceHome: device, DeviceConfig: config}
 	for range 2 { // idempotent: every launch runs it
-		if err := c.Prepare(home); err != nil {
+		if err := c.PrepareLegacy(home); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -100,7 +100,7 @@ func TestClaudePrepareKeepsChangesMadeOnTheAccount(t *testing.T) {
 	write(t, filepath.Join(device, "settings.json"), `{"model":"opus","verbose":false,"cleanupPeriodDays":30,"env":{"FOO":"1","BAR":"1"}}`)
 	write(t, config, `{"mcpServers":{"m":{"command":"x"}},"theme":"light"}`)
 	c := &Claude{DeviceHome: device, DeviceConfig: config}
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 
@@ -111,7 +111,7 @@ func TestClaudePrepareKeepsChangesMadeOnTheAccount(t *testing.T) {
 	// On the computer: every shared value changes, one key goes, a server is added.
 	write(t, filepath.Join(device, "settings.json"), `{"model":"sonnet","verbose":true,"env":{"FOO":"2","BAR":"2"}}`)
 	write(t, config, `{"mcpServers":{"m":{"command":"x2"},"new":{"command":"z"}},"theme":"dark"}`)
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,11 +147,11 @@ func TestClaudePrepareKeepsChangesMadeOnTheAccount(t *testing.T) {
 	// A change set back to the computer's value, and a shared key deleted on
 	// the account, follow the computer again.
 	write(t, filepath.Join(home, "settings.json"), `{"model":"sonnet","env":{"FOO":"2","BAR":"mine"}}`)
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(device, "settings.json"), `{"model":"fable","verbose":true,"env":{"FOO":"2","BAR":"2"}}`)
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(filepath.Join(home, "settings.json"))
@@ -171,8 +171,8 @@ func TestPrepareRefusesWhenItCannotLink(t *testing.T) {
 		t.Skip("needs a folder this user cannot write")
 	}
 	for name, prepare := range map[string]func(string) error{
-		"claude": (&Claude{DeviceHome: t.TempDir(), DeviceConfig: filepath.Join(t.TempDir(), ".claude.json")}).Prepare,
-		"codex":  (&Codex{DeviceHome: t.TempDir()}).Prepare,
+		"claude": (&Claude{DeviceHome: t.TempDir(), DeviceConfig: filepath.Join(t.TempDir(), ".claude.json")}).PrepareLegacy,
+		"codex":  (&Codex{DeviceHome: t.TempDir()}).PrepareLegacy,
 	} {
 		home := filepath.Join(t.TempDir(), "acct")
 		if err := os.Mkdir(home, 0o500); err != nil {
@@ -200,7 +200,7 @@ func TestCodexPrepareKeepsLoginAndDaemonPrivate(t *testing.T) {
 
 	c := &Codex{DeviceHome: device}
 	for range 2 {
-		if err := c.Prepare(home); err != nil {
+		if err := c.PrepareLegacy(home); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -219,7 +219,7 @@ func TestCodexPrepareSharesFilesTheComputerDoesNotHaveYet(t *testing.T) {
 	write(t, filepath.Join(home, "history.jsonl"), "{\"text\":\"asked on the account\"}\n")
 
 	c := &Codex{DeviceHome: device}
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"config.toml", "history.jsonl"} {
@@ -236,7 +236,7 @@ func TestPrepareDropsLinksToDeletedEntries(t *testing.T) {
 	device, home := t.TempDir(), filepath.Join(t.TempDir(), "acct")
 	write(t, filepath.Join(device, "rules", "r.md"), "x")
 	c := &Codex{DeviceHome: device}
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 	linksTo(t, filepath.Join(home, "rules"), filepath.Join(device, "rules"))
@@ -246,7 +246,7 @@ func TestPrepareDropsLinksToDeletedEntries(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(device, "sessions")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Prepare(home); err != nil {
+	if err := c.PrepareLegacy(home); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(home, "rules")); !errors.Is(err, fs.ErrNotExist) {
@@ -270,12 +270,18 @@ func TestLaunchEnvOverridesCredentialEnv(t *testing.T) {
 	if value, set := claude["ANTHROPIC_API_KEY"]; !set || value != "" {
 		t.Fatalf("ANTHROPIC_API_KEY not cleared: %v", claude)
 	}
-	if _, set := claude["CLAUDE_CODE_OAUTH_TOKEN"]; set {
-		t.Fatalf("unset variable added: %v", claude)
+	// Clear even an absent daemon key: a project overlay may supply it later.
+	if value, set := claude["CLAUDE_CODE_OAUTH_TOKEN"]; !set || value != "" {
+		t.Fatal("project OAuth token could override the managed Claude account")
 	}
 	codex := (&Codex{}).LaunchEnv("/acct")
 	if codex["CODEX_HOME"] != "/acct" || codex["OPENAI_API_KEY"] != "" {
 		t.Fatalf("codex env = %v", codex)
+	}
+	for _, key := range []string{"CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+		if value, set := codex[key]; !set || value != "" {
+			t.Errorf("project %s could override the managed Codex account", key)
+		}
 	}
 	if (&Claude{}).LaunchEnv("") != nil || (&Codex{}).LaunchEnv("") != nil {
 		t.Fatal("the device account must launch with the environment untouched")

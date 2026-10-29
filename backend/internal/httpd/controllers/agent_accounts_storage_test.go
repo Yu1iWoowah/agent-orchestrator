@@ -20,6 +20,7 @@ func TestAccountStorageErrorsAreCategorizedWithoutPaths(t *testing.T) {
 		{"unsafe", ports.ErrAgentAccountStorageUnsafe, http.StatusConflict, "AGENT_ACCOUNT_STORAGE_UNSAFE"},
 		{"unavailable", ports.ErrAgentAccountStorageUnavailable, http.StatusServiceUnavailable, "AGENT_ACCOUNT_STORAGE_UNAVAILABLE"},
 		{"unsupported", ports.ErrAgentAccountStorageUnsupported, http.StatusNotImplemented, "AGENT_ACCOUNT_STORAGE_UNSUPPORTED"},
+		{"credential store", ports.ErrAgentAccountCredentialStoreUnsupported, http.StatusNotImplemented, "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/accounts/login", nil)

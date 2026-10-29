@@ -274,7 +274,7 @@ func (v codexVersion) String() string {
 
 func installedCodexVersion(ctx context.Context, bin string) (string, error) {
 	cmd := aoprocess.CommandContext(ctx, bin, "--version")
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = codexProbeProcessEnv(ctx, bin)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
@@ -325,7 +325,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	// thread/start has no top-level effort field either; carry the durable AO
 	// choice as a config override like thread/resume does, so a fresh thread
 	// does not silently fall back to the provider default.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers); len(config) > 0 {
+	config, err := conv.threadConfig(ctx, cfg.Effort, cfg.MCPServers, cfg.FastMode, cfg.Model)
+	if err != nil {
+		_ = conv.Close()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	if cfg.SystemPrompt != "" {
@@ -408,7 +413,12 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	// thread/resume has no top-level effort field. Codex exposes persistent
 	// reasoning effort as a config override, so carry the durable AO choice into
 	// the resumed thread instead of silently falling back to the provider default.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers); len(config) > 0 {
+	config, err := conv.threadConfig(ctx, cfg.Effort, cfg.MCPServers, cfg.FastMode, cfg.Model)
+	if err != nil {
+		_ = conv.Close()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	// Developer instructions are launch context, not durable conversation
@@ -481,6 +491,24 @@ func codexThreadMissing(err error) bool {
 // Verified live on codex-cli 0.160.1: a tool not marked read-only raised that
 // request under on-request and was refused under never/read-only, and
 // default_tools_approval_mode "approve" removed both.
+func (c *conversation) threadConfig(ctx context.Context, effort string, servers []ports.ChatMCPServerConfig, fastMode domain.AgentFastMode, model string) (map[string]any, error) {
+	config := threadConfig(effort, servers)
+	switch fastMode {
+	case domain.AgentFastOn:
+		catalogCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+		defer cancel()
+		if _, err := c.ListModels(catalogCtx); err != nil {
+			return nil, fmt.Errorf("fast thread config: %w", err)
+		}
+		c.sendMu.Lock()
+		config["service_tier"] = c.fastServiceTier(model)
+		c.sendMu.Unlock()
+	case domain.AgentFastOff:
+		config["service_tier"] = "default"
+	}
+	return config, nil
+}
+
 func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string]any {
 	config := map[string]any{}
 	if effort != "" {
@@ -517,6 +545,9 @@ func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string
 
 // connect spawns app-server and completes the initialize handshake.
 func (d *Driver) connect(ctx context.Context, workdir string, env map[string]string, providerScopeID string) (*conversation, error) {
+	if err := agentlaunch.ValidateManagedCodexEnv(env); err != nil {
+		return nil, err
+	}
 	bin, err := d.plugin.ResolveBinary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
@@ -577,17 +608,20 @@ func (d *Driver) connectSession(
 		Env:           providerEnv,
 		Argv:          append([]string{bin}, accountAppServerArgs(providerEnv)...),
 	}
-	if prepareEnv != nil {
-		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
-			preparedEnv, prepareErr := prepareEnv(prepareCtx)
-			if prepareErr != nil {
-				return persistenthost.PreparedProvider{}, prepareErr
+	hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
+		preparedEnv := env
+		if prepareEnv != nil {
+			var err error
+			preparedEnv, err = prepareEnv(prepareCtx)
+			if err != nil {
+				return persistenthost.PreparedProvider{}, err
 			}
-			providerEnv := envSlice(preparedEnv)
-			return persistenthost.PreparedProvider{
-				Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...),
-			}, nil
 		}
+		if err := agentlaunch.ValidateManagedCodexEnv(preparedEnv); err != nil {
+			return persistenthost.PreparedProvider{}, err
+		}
+		providerEnv := envSlice(preparedEnv)
+		return persistenthost.PreparedProvider{Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...)}, nil
 	}
 	transport, err := d.connectHost(ctx, hostConfig)
 	if err != nil {
@@ -795,7 +829,18 @@ func envSlice(env map[string]string) []string {
 	for key, value := range env {
 		overlay[key] = value
 	}
+	if overlay[agentlaunch.ManagedCodexAccountEnv] == "1" {
+		agentlaunch.ClearCodexCredentialEnv(overlay)
+	}
 	return processenv.Merge(overlay)
+}
+
+// Version/help/schema probes are account-independent and need no credential.
+// They also run before a new managed account has a home or auth.json.
+func codexProbeProcessEnv(ctx context.Context, bin string) []string {
+	env := map[string]string{}
+	agentlaunch.ClearCodexCredentialEnv(env)
+	return codexProcessEnv(ctx, bin, env)
 }
 
 func accountAppServerArgs(env []string) []string {
@@ -857,7 +902,12 @@ func (d *Driver) ForkIntoHost(ctx context.Context, sourceProviderConversationID,
 	}
 	// Same overrides as thread/start and thread/resume: without the MCP servers
 	// a fresh fork has no AO tools until a restart resumes it.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers); len(config) > 0 {
+	config, err := conv.threadConfig(ctx, cfg.Effort, cfg.MCPServers, cfg.FastMode, cfg.Model)
+	if err != nil {
+		_ = conv.Close()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	if cfg.SystemPrompt != "" {

@@ -130,12 +130,31 @@ afterEach(async () => {
 });
 
 it.each([
+	["en", "account_identity_mismatch", "This account is b@example.com. Sign in again with that login."],
+	["zh-TW", "account_identity_mismatch", "此帳號為 b@example.com。請使用該帳號重新登入。"],
+	["en", "account_provider_unavailable", "Couldn't check this account. Try again later."],
+	["zh-TW", "account_provider_unavailable", "無法檢查此帳號。請稍後再試。"],
+	["en", "account_credential_store_unsupported", "AO does not support this account's sign-in storage. Check your Codex settings or organization policy."],
+	["zh-TW", "account_credential_store_unsupported", "AO 不支援此帳號的登入儲存方式。請檢查 Codex 設定或組織政策。"],
+])("shows a readable %s account-card problem for %s", async (locale, code, message) => {
+	await act(async () => { await appI18n.changeLanguage(locale); });
+	getMock.mockImplementation((path: string) => Promise.resolve({
+		data: path === "/api/v1/agents/accounts/usage" ? { days: 30, usage: [] } : { accounts: [device, { ...saved, problem: code }] },
+	}));
+	renderPanel();
+	expect(await screen.findByText(message)).toBeInTheDocument();
+	expect(document.querySelector('[data-agent-account="acct-b"]')).not.toHaveTextContent(code);
+});
+
+it.each([
 	["en", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Check folder permissions and symbolic links, then retry."],
 	["zh-TW", "AGENT_ACCOUNT_STORAGE_UNSAFE", "帳號儲存空間不安全。請檢查資料夾權限與符號連結後重試。"],
 	["en", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is temporarily unavailable. Retry later."],
 	["zh-TW", "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "帳號儲存空間暫時無法使用。請稍後重試。"],
 	["en", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "Private account profiles are currently supported on Linux only."],
 	["zh-TW", "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", "私有帳號 profile 目前僅支援 Linux。"],
+	["en", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "AO does not support this account's sign-in storage. Check your Codex settings or organization policy."],
+	["zh-TW", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "AO 不支援此帳號的登入儲存方式。請檢查 Codex 設定或組織政策。"],
 ])("shows the %s storage diagnostic for %s", async (locale, code, message) => {
 	await act(async () => { await appI18n.changeLanguage(locale); });
 	postMock.mockResolvedValue({ error: { code, message: "raw provider error" } });

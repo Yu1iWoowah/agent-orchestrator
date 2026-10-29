@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { type RefObject, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { Check, Circle, LoaderCircle } from "lucide-react";
 import { useConversationFrameSafeRect } from "../../hooks/useConversationFrameSafeRect";
 import {
@@ -11,21 +11,93 @@ import {
 import { ConversationFrames } from "./ConversationFrames";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { useSessionAttentionFrame } from "./SessionAttentionContent";
+import { useAttentionSelection } from "../../hooks/useSessionAttention";
+import type { ConversationActivity } from "../../types/conversation";
 
-export function SessionPlanFrames({
+export interface AttentionSourceSelection {
+	scope: string;
+	selectedId?: string;
+	activity?: ConversationActivity;
+	loading: boolean;
+	error: boolean;
+	unavailable: boolean;
+	readError: boolean;
+}
+
+export function SessionConversationFrames({
 	sessionId,
 	hostId,
 	surfaceRef,
 	composerRef,
+	activeBranchId,
+	onLocateAttention,
+	onAttentionSourceChange,
+	onAttentionSourceFocus,
 }: {
 	sessionId: string;
 	hostId?: string;
 	surfaceRef: RefObject<HTMLElement | null>;
 	composerRef: RefObject<HTMLElement | null>;
+	activeBranchId?: string;
+	onLocateAttention?: (id: string) => void;
+	onAttentionSourceChange?: (selection: AttentionSourceSelection) => void;
+	onAttentionSourceFocus?: (activity: ConversationActivity) => boolean;
 }) {
 	const { t } = useTranslation();
 	const bounds = useConversationFrameSafeRect(surfaceRef, composerRef);
 	const plan = useSessionPlan(sessionId, hostId);
+	const selection = useAttentionSelection(
+		sessionId,
+		hostId,
+		activeBranchId,
+		Boolean(onAttentionSourceChange),
+	);
+	const attention = useSessionAttentionFrame({
+		sessionId,
+		hostId,
+		branchId: activeBranchId,
+		onLocate: (id) => {
+			onLocateAttention?.(id);
+			if (onAttentionSourceChange) selection.locate(id);
+		},
+		locatingId: selection.loading ? selection.selectedId : undefined,
+	});
+	const focusedSelection = useRef<number | undefined>(undefined);
+	useEffect(() => {
+		onAttentionSourceChange?.({
+			scope: selection.scope,
+			selectedId: selection.selectedId,
+			activity: selection.activity,
+			loading: selection.loading,
+			error: selection.error,
+			unavailable: selection.unavailable,
+			readError: selection.readError,
+		});
+	}, [
+		onAttentionSourceChange,
+		selection.scope,
+		selection.selectedId,
+		selection.activity,
+		selection.loading,
+		selection.error,
+		selection.unavailable,
+		selection.readError,
+	]);
+	useEffect(() => {
+		if (
+			!selection.activity ||
+			selection.selectionNonce === focusedSelection.current
+		)
+			return;
+		const frame = requestAnimationFrame(() => {
+			if (selection.activity && onAttentionSourceFocus?.(selection.activity)) {
+				focusedSelection.current = selection.selectionNonce;
+				selection.markViewed();
+			}
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [selection.activity, selection.selectionNonce, onAttentionSourceFocus]);
 	const [tab, setTab] = useState("latest");
 	const history = useSessionPlanHistory(
 		sessionId,
@@ -54,10 +126,16 @@ export function SessionPlanFrames({
 				{plan.isError ? (
 					<div role="alert" className="text-xs text-muted-foreground">
 						<p>
-							{plan.error instanceof PlanUnavailable ? t("plan.unsupported") : t("plan.offline")}
+							{plan.error instanceof PlanUnavailable
+								? t("plan.unsupported")
+								: t("plan.offline")}
 						</p>
 						{plan.error instanceof PlanUnavailable ? null : (
-							<Button variant="ghost" size="sm" onClick={() => void plan.refetch()}>
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => void plan.refetch()}
+							>
 								{t("plan.retry")}
 							</Button>
 						)}
@@ -75,8 +153,14 @@ export function SessionPlanFrames({
 			<TabsContent value="history">
 				{history.isError ? (
 					<div role="alert">
-						<p className="text-xs text-muted-foreground">{t("plan.historyError")}</p>
-						<Button variant="ghost" size="sm" onClick={() => void history.refetch()}>
+						<p className="text-xs text-muted-foreground">
+							{t("plan.historyError")}
+						</p>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => void history.refetch()}
+						>
 							{t("plan.retry")}
 						</Button>
 					</div>
@@ -125,7 +209,10 @@ export function SessionPlanFrames({
 			hostId={hostId}
 			surface={bounds.surface}
 			safeRect={bounds.rect}
-			frames={[{ kind: "plan", title: t("plan.title"), summary, content }]}
+			frames={[
+				attention,
+				{ kind: "plan", title: t("plan.title"), summary, content },
+			]}
 		/>
 	);
 }
@@ -135,8 +222,13 @@ function PlanVersion({ version }: { version: SessionPlanVersion }) {
 	return (
 		<div>
 			<p className="mb-3 text-xs text-muted-foreground">
-				<time dateTime={version.updatedAt}>{new Date(version.updatedAt).toLocaleString()}</time> ·{" "}
-				{version.turnId ? t("plan.turn", { id: version.turnId }) : t("plan.unknownTurn")}
+				<time dateTime={version.updatedAt}>
+					{new Date(version.updatedAt).toLocaleString()}
+				</time>{" "}
+				·{" "}
+				{version.turnId
+					? t("plan.turn", { id: version.turnId })
+					: t("plan.unknownTurn")}
 			</p>
 			{version.plan.explanation ? (
 				<p className="mb-3 whitespace-pre-wrap text-sm text-muted-foreground">
@@ -157,7 +249,10 @@ function PlanVersion({ version }: { version: SessionPlanVersion }) {
 									className="mt-0.5 size-4 shrink-0 text-muted-foreground"
 								/>
 							) : step.status === "in_progress" ? (
-								<LoaderCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+								<LoaderCircle
+									aria-hidden="true"
+									className="mt-0.5 size-4 shrink-0 text-primary"
+								/>
 							) : (
 								<Circle
 									aria-hidden="true"

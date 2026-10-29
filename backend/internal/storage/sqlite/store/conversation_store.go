@@ -602,7 +602,8 @@ func (s *Store) CommitProviderSwitch(ctx context.Context, rec domain.SessionReco
 			return fmt.Errorf("update switched session: %w", err)
 		}
 		if err := q.UpdateConversationTurnSettings(ctx, gen.UpdateConversationTurnSettingsParams{
-			Model: nullableString(settings.Model), ReasoningEffort: nullableString(settings.ReasoningEffort),
+			FastMode: string(settings.AgentFastMode),
+			Model:    nullableString(settings.Model), ReasoningEffort: nullableString(settings.ReasoningEffort),
 			ApprovalMode: nullableString(string(settings.ApprovalMode)), OpencodeMode: settings.OpenCodeMode,
 			AutoCompactWindow: settings.AutoCompactWindow, UpdatedAt: rec.UpdatedAt, ID: branch.ConversationID,
 		}); err != nil {
@@ -1998,16 +1999,22 @@ func (s *Store) ListVisibleRunningTurnProviderIDs(
 //
 // An empty field is stored as NULL rather than as an empty string, so "the user
 // cleared this" and "the user never chose" stay the same thing: fall back to the
-// provider's default.
+// provider's default. Fast is different: turning the live boolean off must
+// replace an existing paid-tier preference with an explicit off.
 func (s *Store) SetConversationSettings(
 	ctx context.Context,
 	conversationID string,
 	settings domain.ConversationSettings,
 	now time.Time,
 ) error {
+	fastMode := settings.AgentFastMode
+	if fastMode == "" && settings.FastMode {
+		fastMode = domain.AgentFastOn
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.qw.UpdateConversationTurnSettings(ctx, gen.UpdateConversationTurnSettingsParams{
+		FastMode:        string(fastMode),
 		Model:           nullableString(settings.Model),
 		ReasoningEffort: nullableString(settings.ReasoningEffort),
 		ApprovalMode:    nullableString(string(settings.ApprovalMode)),
@@ -3119,7 +3126,7 @@ func (s *Store) upsertActivity(ctx context.Context, q *gen.Queries, conversation
 				ProviderItemID: activity.ProviderItemID,
 			})
 		if err == nil {
-			if activity.Kind == domain.ActivityKindPlan && row.Status == activity.Status &&
+			if (activity.Kind == domain.ActivityKindPlan || activity.Kind == domain.ActivityKindApproval || activity.Kind == domain.ActivityKindUserInput) && row.Kind == activity.Kind && row.Status == activity.Status &&
 				row.Summary == activity.Summary && row.DetailJson == detail {
 				return nil
 			}
@@ -4462,6 +4469,8 @@ func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
 		Settings: domain.ConversationSettings{
 			Model:           row.Model.String,
 			ReasoningEffort: row.ReasoningEffort.String,
+			AgentFastMode:   storedFastPreference(row.AgentFastMode),
+			FastMode:        row.AgentFastMode == "on",
 			ApprovalMode:    domain.PermissionMode(row.ApprovalMode.String),
 			OpenCodeMode:    row.OpencodeMode,
 

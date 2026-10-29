@@ -1,7 +1,7 @@
 // Package agentaccount runs Claude Code and Codex under subscription accounts
 // that are config folders of the CLIs themselves. Each folder keeps only its
-// own login; everything a conversation needs to resume under another account
-// is a link to the computer's own folder. Nothing here reads a token.
+// own login. New profiles share only AO-owned history; legacy profiles keep
+// their explicit device-linked preparation. Nothing here reads a token.
 package agentaccount
 
 import (
@@ -128,13 +128,11 @@ func writeIfChanged(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// neutralize returns key="" for each key set in the daemon's environment, so a
-// key or token the computer has for its own login cannot override the account.
+// neutralize returns key="" even when the daemon has no value: a project's
+// key or token must not override the managed account either.
 func neutralize(env map[string]string, keys ...string) {
 	for _, key := range keys {
-		if _, set := os.LookupEnv(key); set {
-			env[key] = ""
-		}
+		env[key] = ""
 	}
 }
 

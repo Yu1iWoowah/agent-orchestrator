@@ -462,6 +462,7 @@ type WorkspaceTreeEntry struct {
 // prs is a list. The embedded domain.Session.Metadata and domain.Session.PRs
 // fields are json:"-"; these curated fields are what serialize.
 type SessionView struct {
+	SpawnAgentSettings *domain.SpawnAgentSettingsResolution `json:"spawnAgentSettings,omitempty"`
 	domain.Session
 	Branch string `json:"branch,omitempty"`
 	// TerminalGeneration is an opaque renderer fence. A restarted controller
@@ -534,7 +535,10 @@ type SessionArchiveSummary struct {
 
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
-	ClientRequestID string `json:"clientRequestId,omitempty" maxLength:"128"`
+	AgentSettings       *domain.AgentSettingsPatch `json:"agentSettings,omitempty"`
+	legacyModelPresent  bool
+	legacyEffortPresent bool
+	ClientRequestID     string `json:"clientRequestId,omitempty" maxLength:"128"`
 	// ProjectID is omitted for a standalone worker session.
 	ProjectID domain.ProjectID `json:"projectId,omitempty"`
 	IssueID   domain.IssueID   `json:"issueId,omitempty"`
@@ -601,6 +605,12 @@ type SpawnSessionResponse struct {
 	Session           SessionView `json:"session"`
 	PromptBytes       int         `json:"promptBytes"`
 	SystemPromptBytes int         `json:"systemPromptBytes"`
+}
+
+// SpawnCapabilitiesResponse allows a new CLI to refuse unsupported typed wire
+// semantics before posting to an older daemon that silently ignores fields.
+type SpawnCapabilitiesResponse struct {
+	AgentSettingsVersion int `json:"agentSettingsVersion"`
 }
 
 // StageSessionAttachmentsRequest attaches files to a session that is already
@@ -3245,6 +3255,42 @@ type ConversationMessageResponse struct {
 	// shown as a marker instead of a message bubble.
 	Continuation bool   `json:"continuation,omitempty"`
 	CreatedAt    string `json:"createdAt"`
+}
+
+// AttentionItemResponse keeps provider state and read status separate.
+type AttentionItemResponse struct {
+	BranchID   string                       `json:"branchId"`
+	Activity   ConversationActivityResponse `json:"activity"`
+	Actionable bool                         `json:"actionable"`
+	Read       bool                         `json:"read"`
+}
+
+// AttentionCountsResponse counts all visible sources independently of pagination.
+type AttentionCountsResponse struct {
+	Open    int64 `json:"open"`
+	Unread  int64 `json:"unread"`
+	History int64 `json:"history"`
+}
+
+// SessionAttentionResponse is a branch-scoped attention page.
+type SessionAttentionResponse struct {
+	ConversationID     string                  `json:"conversationId"`
+	ActiveBranchID     string                  `json:"activeBranchId"`
+	Items              []AttentionItemResponse `json:"items"`
+	Counts             AttentionCountsResponse `json:"counts"`
+	HasMoreBefore      bool                    `json:"hasMoreBefore"`
+	NextBeforeSequence int64                   `json:"nextBeforeSequence,omitempty"`
+}
+
+// AttentionReadRequest marks one exact source revision seen without resolving it.
+type AttentionReadRequest struct {
+	ExpectedBranchID string `json:"expectedBranchId" minLength:"1"`
+	ExpectedRevision int64  `json:"expectedRevision" minimum:"0"`
+}
+
+// AttentionActivityIDParam identifies an existing provider activity.
+type AttentionActivityIDParam struct {
+	ActivityID string `path:"activityId"`
 }
 
 // ConversationActivityResponse is one non-message timeline entry.

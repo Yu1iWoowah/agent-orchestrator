@@ -85,7 +85,7 @@ func TestRuntimeEnvInjectsBrowserCapability(t *testing.T) {
 		executable:          func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env, verifier, err := manager.launchRuntimeEnv("mer-1", "mer", "", nil)
+	env, verifier, err := manager.launchRuntimeEnv("mer-1", "mer", "", nil, domain.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +103,13 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
-	})
+	}, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
 		t.Fatalf("daemon browser runtime credentials leaked to worker: token=%q stdin=%q", env[EnvBrowserRuntimeToken], env[EnvBrowserRuntimeTokenStdin])
 	}
@@ -124,7 +127,7 @@ func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) 
 		executable:  func() (string, error) { return filepath.Join(t.TempDir(), "ao"), nil },
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "issue-9", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "issue-9", map[string]string{
 		"Path":                           `C:\project\bin`,
 		"ao_session_id":                  "hacked",
 		"Ao_Project_Id":                  "hacked",
@@ -134,7 +137,10 @@ func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) 
 		"ao_browser_runtime_token":       "runtime-secret",
 		"ao_browser_runtime_token_stdin": "1",
 		"buildMode":                      "production",
-	})
+	}, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, key := range []string{
 		"Path",
@@ -173,9 +179,12 @@ func TestRuntimeEnvPinsHooksToDaemonRunFile(t *testing.T) {
 		executable:  func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		"AO_RUN_FILE": "/project/cannot-redirect-hooks.json",
-	})
+	}, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got, want := env["AO_RUN_FILE"], daemonRunFile; got != want {
 		t.Fatalf("AO_RUN_FILE = %q, want daemon run-file %q", got, want)
 	}
@@ -984,9 +993,12 @@ func TestRuntimeEnvInjectsAgentBrowserConfigOnRemoteHosts(t *testing.T) {
 		executable:        func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvAgentBrowserURL: "http://hacked:1",
-	})
+	}, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if env[EnvAgentBrowserURL] != "http://127.0.0.1:8080" || env[EnvAgentBrowserToken] != "shared-secret" {
 		t.Fatalf("agent browser env = %q / %q, want daemon-configured service", env[EnvAgentBrowserURL], env[EnvAgentBrowserToken])
 	}
@@ -998,10 +1010,13 @@ func TestRuntimeEnvOmitsAgentBrowserConfigOnDesktopHosts(t *testing.T) {
 		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvAgentBrowserURL:   "http://project-supplied:8080",
 		EnvAgentBrowserToken: "project-secret",
-	})
+	}, domain.HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if value, ok := env[EnvAgentBrowserURL]; ok && value != "" {
 		t.Fatalf("%s = %q on a desktop host; project env must not select a remote browser", EnvAgentBrowserURL, value)
 	}

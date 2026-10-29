@@ -454,6 +454,11 @@ func claudeSessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOp
 	if settings.Effort != "" {
 		options = append(options, acpdriver.SessionOption{ID: "effort", Value: settings.Effort})
 	}
+	if settings.FastMode == "on" || settings.Fast {
+		options = append(options, acpdriver.SessionOption{ID: "fast", Value: "on", IfAdvertised: true})
+	} else if settings.FastMode == "off" {
+		options = append(options, acpdriver.SessionOption{ID: "fast", Value: "off", IfAdvertised: true})
+	}
 	return options
 }
 

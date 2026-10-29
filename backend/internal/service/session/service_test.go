@@ -3762,6 +3762,19 @@ func TestSpawnOrchestratorUnknownProjectReturns404(t *testing.T) {
 	}
 }
 
+func TestSessionCredentialStoreErrorEnvelope(t *testing.T) {
+	for _, mapError := range []func(error) error{toAPIError, toSpawnAPIError} {
+		mapped := mapError(fmt.Errorf("/private/fake-credential: %w", ports.ErrAgentAccountCredentialStoreUnsupported))
+		var e *apierr.Error
+		if !errors.As(mapped, &e) || e.Kind != apierr.KindNotImplemented || e.Code != "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED" {
+			t.Fatalf("session account failure mapped incorrectly: %v", mapped)
+		}
+		if e.Details["reasonCode"] != "account_credential_store_unsupported" || e.Details["retryable"] != false || strings.Contains(e.Message, "/private/") {
+			t.Fatalf("unsafe or incomplete envelope: %+v", e)
+		}
+	}
+}
+
 // TestToAPIErrorMapsWorkspaceBranchSentinels covers Bug 3: the workspace
 // adapter's typed branch errors map to typed envelope errors instead of
 // collapsing to a 500.
@@ -3809,6 +3822,9 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"native conversation missing", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationMissing), apierr.KindConflict, "NATIVE_SESSION_MISSING"},
 		{"native conversation unverified", fmt.Errorf("switch interface: %w", sessionmanager.ErrNativeConversationUnverified), apierr.KindConflict, "NATIVE_SESSION_UNVERIFIED"},
 		{"unsupported effort", fmt.Errorf("spawn: %w", ports.ErrUnsupportedEffort), apierr.KindInvalid, "UNSUPPORTED_EFFORT"},
+		{"agent settings invalid", fmt.Errorf("spawn: %w", ports.ErrAgentSettingsInvalid), apierr.KindInvalid, "AGENT_SETTINGS_INVALID"},
+		{"agent settings unsupported", fmt.Errorf("spawn: %w", ports.ErrAgentSettingsUnsupported), apierr.KindInvalid, "AGENT_SETTINGS_UNSUPPORTED"},
+		{"agent settings capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrAgentSettingsCapabilitiesUnavailable), apierr.KindInvalid, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE"},
 		{"model capabilities unavailable", fmt.Errorf("spawn: %w", ports.ErrModelCapabilitiesUnavailable), apierr.KindInvalid, "MODEL_CAPABILITIES_UNAVAILABLE"},
 	}
 	for _, tc := range cases {

@@ -8,6 +8,27 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+func TestContainedAgentAccountMetadataRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	for _, kind := range []domain.AgentAccountProfileKind{"", domain.AgentAccountProfileContained} {
+		id := "legacy"
+		if kind != "" {
+			id = "contained"
+		}
+		mustNoError(t, s.CreateAgentAccount(ctx, domain.AgentAccount{ID: id, Provider: domain.AgentAccountProviderCodex, Home: "/fake/" + id, ProfileKind: kind, CreatedAt: time.Now().UTC()}))
+	}
+	rows, err := s.ListAgentAccounts(ctx)
+	mustNoError(t, err)
+	got := map[string]domain.AgentAccountProfileKind{}
+	for _, row := range rows {
+		got[row.ID] = row.ProfileKind
+	}
+	if len(got) != 2 || got["legacy"] != domain.AgentAccountProfileExternal || got["contained"] != domain.AgentAccountProfileContained {
+		t.Fatalf("profile kinds = %v", got)
+	}
+}
+
 // TestAgentAccountUsageFollowsBindingHistory pins the per-account statistics:
 // each usage event counts for the account the session was on when it happened,
 // so a session moved from one account to another splits its usage between them.
