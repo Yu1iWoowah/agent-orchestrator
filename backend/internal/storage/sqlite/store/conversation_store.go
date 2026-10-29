@@ -1302,24 +1302,8 @@ func (s *Store) appendUserMessage(
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if generation == "" && reviewID == "" {
-		// A Send may have read "provisioning" just before Kill or Ready.
-		// Session writes share writeMu, so this check and the append are atomic.
-		record, readErr := s.qw.GetSession(ctx, session)
-		if readErr != nil {
-			return false, fmt.Errorf("check queued session %s: %w", session, readErr)
-		}
-		if record.IsTerminated || (!record.ProvisionState.IsProvisioning() && !record.HibernatedAt.Valid) {
-			return false, domain.ErrSessionNotProvisioning
-		}
-		// The caller read the conversation before taking writeMu. An orchestrator's
-		// first controller may have moved the queue out of it since then; a turn
-		// appended here would never drain or show.
-		conversation, readErr := s.qw.SelectConversationByID(ctx, conversationID)
-		if readErr != nil {
-			return false, fmt.Errorf("check queued conversation %s: %w", conversationID, readErr)
-		}
-		if conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != session {
-			return false, domain.ErrConversationRebound
+		if err := s.validateUndispatchedConversation(ctx, s.qw, session, conversationID); err != nil {
+			return false, err
 		}
 	}
 
@@ -1360,6 +1344,12 @@ func (s *Store) appendUserMessage(
 	}
 
 	err = s.inTx(ctx, "append user message", func(q *gen.Queries) error {
+		if generation == "" && reviewID == "" {
+			// Another connection may have changed ownership after the preflight.
+			if err := s.validateUndispatchedConversation(ctx, q, session, conversationID); err != nil {
+				return err
+			}
+		}
 		if autoResume {
 			source, err := q.SelectConversationTurnByID(ctx, retryOfTurnID)
 			if err != nil {

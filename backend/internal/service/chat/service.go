@@ -115,14 +115,15 @@ type Service struct {
 	awakeInterrupted map[domain.ConversationOwner]domain.AwakeAgentTarget
 	// handoffInterrupted is the provider turn each session's pending handoff
 	// stopped, kept until the account move that stopped it commits.
-	handoffInterrupted map[domain.SessionID]string
-	gateMu             sync.Mutex
-	gates              map[domain.ConversationOwner]controllerGate
-	probeMu            sync.Mutex
-	probed             map[domain.AgentHarness]ports.ChatCapabilities
-	prewarming         sync.Map // domain.AgentHarness -> struct{}
-	providerSwitches   sync.Map // domain.SessionID -> chan struct{}, one switch at a time
-	terminalSwitcher   TerminalProviderSwitcher
+	handoffInterrupted      map[domain.SessionID]string
+	gateMu                  sync.Mutex
+	gates                   map[domain.ConversationOwner]controllerGate
+	probeMu                 sync.Mutex
+	probed                  map[domain.AgentHarness]ports.ChatCapabilities
+	prewarming              sync.Map // domain.AgentHarness -> struct{}
+	providerSwitches        sync.Map // domain.SessionID -> chan struct{}, one switch at a time
+	terminalSwitcher        TerminalProviderSwitcher
+	replacementMutationGate ReplacementMutationGate
 }
 
 // SetReportCoordinator installs the report piggyback hook after daemon wiring
@@ -1364,6 +1365,9 @@ func (s *Service) Send(
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
+	if record.IsTerminated && record.Kind == domain.KindOrchestrator {
+		return s.QueueReplacementIntake(ctx, id, msg)
+	}
 	if err := validateFileReferenceContent(msg, string(id)); err != nil {
 		return domain.ConversationTurn{}, err
 	}
@@ -1492,13 +1496,17 @@ func (s *Service) SendForOwner(ctx context.Context, owner domain.ConversationOwn
 }
 
 func hydrateExcerptReferences(ctx context.Context, controller *Controller, msg *ports.ChatUserMessage) error {
+	return hydrateExcerptConversation(ctx, controller.store, controller.conversation.ID, msg)
+}
+
+func hydrateExcerptConversation(ctx context.Context, store Store, conversationID string, msg *ports.ChatUserMessage) error {
 	if len(msg.Excerpts) == 0 {
 		return nil
 	}
-	if err := validateExcerptReferences(msg.Excerpts, controller.conversation.ID); err != nil {
+	if err := validateExcerptReferences(msg.Excerpts, conversationID); err != nil {
 		return err
 	}
-	messages, err := controller.store.ConversationMessages(ctx, controller.conversation.ID)
+	messages, err := store.ConversationMessages(ctx, conversationID)
 	if err != nil {
 		return fmt.Errorf("read excerpt transcript: %w", err)
 	}
@@ -1515,8 +1523,8 @@ func hydrateExcerptReferences(ctx context.Context, controller *Controller, msg *
 		if !found || source.Revision != excerpt.Revision || source.Streaming || source.TurnID == "" || !sourceContainsExcerptSelection(source, text) || (source.Role != domain.MessageRoleUser && source.Role != domain.MessageRoleAssistant) {
 			return fmt.Errorf("%w: source message changed or no longer contains the selection; reselect it", ErrExcerptStale)
 		}
-		turn, err := controller.store.TurnByID(ctx, source.TurnID)
-		if err != nil || turn.ConversationID != controller.conversation.ID || turn.State != domain.TurnStateCompleted || turn.RolledBackAt != nil {
+		turn, err := store.TurnByID(ctx, source.TurnID)
+		if err != nil || turn.ConversationID != conversationID || turn.State != domain.TurnStateCompleted || turn.RolledBackAt != nil {
 			return fmt.Errorf("%w: source turn is not complete", ErrExcerptStale)
 		}
 		var userText, assistantText string
@@ -1557,13 +1565,25 @@ func hydrateExcerptReferences(ctx context.Context, controller *Controller, msg *
 // validateExcerptReferences checks what can be checked without the transcript,
 // so a send queued before its controller starts is bounded the same way.
 func validateExcerptReferences(excerpts []ports.ChatExcerptReference, conversationID string) error {
+	if err := validateExcerptReferenceShapes(excerpts); err != nil {
+		return err
+	}
+	for _, excerpt := range excerpts {
+		if excerpt.ConversationID != conversationID {
+			return fmt.Errorf("%w: source conversation, message, revision, and text are required", ErrExcerptInvalid)
+		}
+	}
+	return nil
+}
+
+func validateExcerptReferenceShapes(excerpts []ports.ChatExcerptReference) error {
 	if len(excerpts) > maxExcerptReferences {
 		return fmt.Errorf("%w: at most %d excerpts may be attached", ErrExcerptInvalid, maxExcerptReferences)
 	}
 	total := 0
 	for _, excerpt := range excerpts {
 		text := strings.TrimSpace(excerpt.Text)
-		if excerpt.ConversationID != conversationID || excerpt.MessageID == "" || text == "" || excerpt.Revision < 0 {
+		if excerpt.ConversationID == "" || excerpt.MessageID == "" || text == "" || excerpt.Revision < 0 {
 			return fmt.Errorf("%w: source conversation, message, revision, and text are required", ErrExcerptInvalid)
 		}
 		total += len(text)
@@ -1637,6 +1657,11 @@ func (s *Service) ResolveInputForOwner(ctx context.Context, owner domain.Convers
 
 // Interrupt cancels a session's in-flight turn.
 func (s *Service) Interrupt(ctx context.Context, id domain.SessionID) error {
+	ctx, releaseMutation, err := s.beginReplacementMutation(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return err
 	}
@@ -2862,6 +2887,10 @@ func (s *Service) relayChatTurn(
 		record, err := s.requireChatSession(ctx, id)
 		if err != nil {
 			return "", err
+		}
+		if record.IsTerminated && record.Kind == domain.KindOrchestrator {
+			turn, err := s.QueueReplacementIntake(ctx, id, msg)
+			return turn.ID, err
 		}
 		if record.HibernatedAt != nil {
 			turn, err := s.queueWithoutController(ctx, record, msg)

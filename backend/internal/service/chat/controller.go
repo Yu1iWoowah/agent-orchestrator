@@ -1498,6 +1498,9 @@ func (c *Controller) sendLocked(
 	providerOverride *ports.ChatUserMessage,
 	followers []string,
 ) (domain.ConversationTurn, error) {
+	if err := validateReplacementControlMessage(ctx, c.sessionID, c.generation, msg); err != nil {
+		return domain.ConversationTurn{}, err
+	}
 	if msg.ClientPayloadHash == "" {
 		var err error
 		msg.ClientPayloadHash, err = clientPayloadHash(msg)
@@ -1620,7 +1623,7 @@ func (c *Controller) sendLocked(
 		providerMessage = *providerOverride
 	}
 	turn, err := c.dispatch(ctx, turnID, providerMessage, now, false, followers)
-	dispatched = err == nil
+	dispatched = err == nil && turn.State != domain.TurnStateQueued
 	return turn, err
 }
 
@@ -1999,6 +2002,9 @@ func (c *Controller) dispatch(
 	// deferred start crosses the provider boundary only after binding succeeds.
 	if !hasDeferredStart && !claimed {
 		if err := c.store.MarkTurnDispatching(ctx, turnID); err != nil {
+			if errors.Is(err, domain.ErrReplacementIntakeFenced) {
+				return c.queuedDispatchReceipt(turnID, requestedAt), nil
+			}
 			return domain.ConversationTurn{}, fmt.Errorf("mark turn dispatching: %w", err)
 		}
 	}
@@ -2038,7 +2044,6 @@ func (c *Controller) dispatch(
 	}
 
 	if err := c.store.BindTurnToProvider(ctx, turnID, ref.ProviderTurnID, c.now()); err != nil {
-		failFollowers("batch provider binding is uncertain: " + err.Error())
 		c.mu.Lock()
 		if c.dispatchingTurnID == turnID {
 			c.dispatchingTurnID = ""
@@ -2047,6 +2052,10 @@ func (c *Controller) dispatch(
 		if hasDeferredStart {
 			deferred.DiscardDeferredTurn(ref.ProviderTurnID)
 		}
+		if hasDeferredStart && !claimed && errors.Is(err, domain.ErrReplacementIntakeFenced) {
+			return c.queuedDispatchReceipt(turnID, requestedAt), nil
+		}
+		failFollowers("batch provider binding is uncertain: " + err.Error())
 		return domain.ConversationTurn{}, fmt.Errorf("bind turn: %w", err)
 	}
 
@@ -2095,6 +2104,10 @@ func (c *Controller) dispatch(
 		State:              domain.TurnStateRunning,
 		RequestedAt:        requestedAt,
 	}, nil
+}
+
+func (c *Controller) queuedDispatchReceipt(id string, at time.Time) domain.ConversationTurn {
+	return domain.ConversationTurn{ID: id, ConversationID: c.conversation.ID, HandledBySessionID: c.sessionID, HandledByReviewID: c.reviewID, State: domain.TurnStateQueued, RequestedAt: at}
 }
 
 // excerptDeliveryMessage renders verified excerpts into deterministic prompt
@@ -2246,6 +2259,9 @@ func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch boo
 		break
 	}
 	batch, err := c.store.ClaimQueuedBatch(ctx, c.conversation.ID, true, limit, c.now())
+	if errors.Is(err, domain.ErrReplacementIntakeFenced) {
+		return nil
+	}
 	if errors.Is(err, domain.ErrNoQueuedTurn) {
 		return nil
 	}

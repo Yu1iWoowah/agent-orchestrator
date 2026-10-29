@@ -120,6 +120,11 @@ func (s *Service) Steer(
 	if strings.TrimSpace(msg.Text) == "" {
 		return SteerResult{}, ErrSteerTextRequired
 	}
+	ctx, releaseMutation, err := s.beginReplacementMutation(ctx, id)
+	if err != nil {
+		return SteerResult{}, err
+	}
+	defer releaseMutation()
 	msg = s.resolveSteerSender(ctx, msg)
 	if msg.SenderSessionID != "" {
 		msg.Origin = domain.MessageOriginAutomation
@@ -166,6 +171,14 @@ func (s *Service) SteerOrSend(
 	if msg.ClientMessageID == "" {
 		return SteerOrSendResult{}, ErrSteerDeliveryUncertain
 	}
+	if !recoverOnly {
+		locked, releaseMutation, err := s.beginReplacementMutation(ctx, id)
+		if err != nil {
+			return SteerOrSendResult{}, err
+		}
+		defer releaseMutation()
+		ctx = locked
+	}
 	msg = s.resolveSteerSender(ctx, msg)
 	// A cross-session steer that finds no active turn falls through to the normal
 	// send path. Keep that message attributed as automation so idle and busy
@@ -188,6 +201,11 @@ func (s *Service) PromoteQueuedTurn(
 	id domain.SessionID,
 	turnID string,
 ) (PromoteQueuedTurnResult, error) {
+	ctx, releaseMutation, err := s.beginReplacementMutation(ctx, id)
+	if err != nil {
+		return PromoteQueuedTurnResult{}, err
+	}
+	defer releaseMutation()
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return PromoteQueuedTurnResult{}, err
 	}
@@ -374,7 +392,9 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 }
 
 func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
-
+	if err := validateReplacementControlMessage(ctx, c.sessionID, c.generation, msg); err != nil {
+		return SteerResult{}, err
+	}
 	requestJSON, err := encodeSteerDeliveryRequest(msg)
 	if err != nil {
 		return SteerResult{}, err

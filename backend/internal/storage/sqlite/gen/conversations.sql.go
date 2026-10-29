@@ -1413,6 +1413,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     LEFT JOIN conversation_turns AS turn ON turn.id = message.turn_id
     WHERE message.conversation_id = ?2
       AND message.role = 'user'
+      AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = message.turn_id)
       AND (path.max_sequence IS NULL OR message.sequence <= path.max_sequence)
       AND (message.turn_id IS NULL OR turn.id IS NULL OR (
           turn.rolled_back_at IS NULL AND turn.promoted_to_turn_id IS NULL AND turn.state <> 'cancelled'
@@ -4985,6 +4986,7 @@ SET state = 'failed',
     error_message = 'controller ended before the turn completed',
     completed_at = ?
 WHERE handled_by_session_id = ? AND state IN ('queued', 'running')
+  AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
 `
 
 type SettleOrphanedConversationTurnsParams struct {
