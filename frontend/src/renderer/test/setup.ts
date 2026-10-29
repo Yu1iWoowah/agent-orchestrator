@@ -207,6 +207,10 @@ if (typeof window !== "undefined") {
 			onFrameNavigated: () => () => undefined,
 		},
 		appDiagnostics: {
+ getConsent: async () => null,
+ requestEnable: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ revoke: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ audit: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
 			getStatus: async () => ({state:"disabled",reason:"consent_required"}),
 			register: async () => ({documentId:"test-document",windowId:"window-1",generation:1,enabled:false,expiresAt:0}),
 			submit: async () => false, onRequest: () => () => undefined, onConfigure: () => () => undefined,

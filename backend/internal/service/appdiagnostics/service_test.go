@@ -549,7 +549,7 @@ func TestSweepContinuesAfterRevokeStorageFailure(t *testing.T) {
 	}
 	*now = now.Add(16 * time.Minute)
 	err := s.Sweep(context.Background())
-	if err == nil || strings.Count(err.Error(), "APP_DIAGNOSTICS_STORAGE_FAILED") != 2 {
+	if err == nil || strings.Count(err.Error(), "APP_DIAGNOSTICS_CLEANUP_FAILED") != 2 {
 		t.Fatalf("cleanup errors not aggregated: %v", err)
 	}
 	if len(s.grants) != 0 {
@@ -737,5 +737,142 @@ func TestLiveCaptureRetainsMissingJSONFieldSignal(t *testing.T) {
 	files, err := os.ReadDir(filepath.Join(dir, "diagnostics", "snapshots"))
 	if err != nil || len(files) != 0 {
 		t.Fatalf("invalid snapshot saved: %v", err)
+	}
+}
+
+func TestRuntimeAuditRequiresCurrentGrantAndEpoch(t *testing.T) {
+	s, _, _, _, _ := fixture(t)
+	g := grant(t, s)
+	if _, err := s.AuditRuntime(context.Background(), "wrong", g.ID); err == nil {
+		t.Fatal("wrong runtime epoch read audit")
+	}
+	raw, err := s.AuditRuntime(context.Background(), "epoch-1", g.ID)
+	if err != nil || !strings.Contains(string(raw), "granted") || strings.Contains(string(raw), g.Token) {
+		t.Fatalf("runtime audit: %s %v", raw, err)
+	}
+	if err := s.RevokeRuntime(context.Background(), "epoch-1", g.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AuditRuntime(context.Background(), "epoch-1", g.ID); err == nil {
+		t.Fatal("revoked runtime grant read audit")
+	}
+}
+
+type notifyingRuntime struct {
+	*runtime
+	revoked []string
+}
+
+func (r *notifyingRuntime) NotifyGrantRevoked(epoch, id string) {
+	r.revoked = append(r.revoked, epoch+"/"+id)
+}
+func TestRevocationNotifiesNativeOwner(t *testing.T) {
+	for _, mode := range []string{"cli", "expiry", "session-termination"} {
+		t.Run(mode, func(t *testing.T) {
+			s, rows, rt, now, _ := fixture(t)
+			native := &notifyingRuntime{runtime: rt}
+			s.runtime = native
+			g := grant(t, s)
+			switch mode {
+			case "cli":
+				if _, err := s.RevokeID(context.Background(), g.Token, g.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "expiry":
+				*now = now.Add(16 * time.Minute)
+				if err := s.Sweep(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			case "session-termination":
+				rows.row.IsTerminated = true
+				if err := s.Sweep(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(native.revoked) != 1 || native.revoked[0] != "epoch-1/"+g.ID {
+				t.Fatalf("native owner not notified: %v", native.revoked)
+			}
+		})
+	}
+}
+
+func TestRuntimeAuditNormalizesLocalTimesToUTC(t *testing.T) {
+	s, _, _, now, _ := fixture(t)
+	*now = now.In(time.FixedZone("local", 8*60*60))
+	g := grant(t, s)
+	raw, err := s.AuditRuntime(context.Background(), "epoch-1", g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Records []struct {
+			At string `json:"at"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) == 0 {
+		t.Fatal("no audit records")
+	}
+	for _, row := range result.Records {
+		if !strings.HasSuffix(row.At, "Z") {
+			t.Fatalf("audit timestamp must be UTC: %s", row.At)
+		}
+	}
+}
+
+func TestRevokeAuditsAndRetriesFailedCredentialCleanup(t *testing.T) {
+	s, _, _, _, dir := fixture(t)
+	g := grant(t, s)
+	record, err := s.Capture(context.Background(), g.Token, CaptureRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "diagnostics", "grants", g.ID+".json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(path, "blocked")
+	if err := os.WriteFile(child, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.RevokeID(context.Background(), g.Token, g.ID)
+	if err != nil || !result.Revoked || result.Cleanup != "failed" {
+		t.Fatalf("revocation result: %+v %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "diagnostics", "snapshots", record.ID+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("snapshot not cleared: %v", err)
+	}
+	rows, err := documents[Audit](s.store, "audit", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.value.GrantID == g.ID && row.value.Outcome == "revoked" && row.value.ReasonCode == "APP_DIAGNOSTICS_CLEANUP_FAILED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("revoked audit missing")
+	}
+	if _, err := s.Status(context.Background(), g.Token); err == nil {
+		t.Fatal("revoked credential still authorized")
+	}
+	if err := s.Sweep(context.Background()); err == nil || strings.Contains(err.Error(), dir) {
+		t.Fatalf("cleanup retry must fail without exposing storage paths: %v", err)
+	}
+	if err := os.Remove(child); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("credential cleanup not retried: %v", err)
 	}
 }

@@ -75,6 +75,10 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 			// a missing method.
 			const ao = {
 					appDiagnostics: {
+ getConsent: async () => null,
+ requestEnable: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ revoke: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ audit: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
 						getStatus: async () => ({ state: "disabled", reason: "consent_required" }),
 						register: async () => ({ documentId: "fixture-document", windowId: "fixture-window", generation: 1, enabled: false, expiresAt: 0 }),
 						submit: async () => false,
@@ -993,6 +997,10 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 			});
 			const ao = {
 					appDiagnostics: {
+ getConsent: async () => null,
+ requestEnable: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ revoke: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ audit: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
 						getStatus: async () => ({ state: "disabled", reason: "consent_required" }),
 						register: async () => ({ documentId: "fixture-document", windowId: "fixture-window", generation: 1, enabled: false, expiresAt: 0 }),
 						submit: async () => false,

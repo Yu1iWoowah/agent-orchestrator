@@ -194,7 +194,7 @@ func TestAuthenticatedRuntimeCannotGrantBeforeCollectorReady(t *testing.T) {
 	if err := decoder.Decode(&hello); err != nil {
 		t.Fatal(err)
 	}
-	if err := encoder.Encode(map[string]any{"type": "grant", "requestId": "request-1", "sessionId": "orchestrator-1"}); err != nil {
+	if err := encoder.Encode(map[string]any{"type": "grant", "schemaVersion": 1, "requestId": "request-1", "sessionId": "orchestrator-1"}); err != nil {
 		t.Fatal(err)
 	}
 	var reply map[string]any
@@ -428,5 +428,57 @@ func TestBrokerRejectsEveryMissingSnapshotField(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNativeRuntimeGrantAuditRevokeRoundTrip(t *testing.T) {
+	b := New("diagnostics-token")
+	service, err := diag.New(t.TempDir(), grantSessions{}, b, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	b.BindAuthority(service)
+	_, d, e := connect(t, b, "diagnostics-token")
+	var hello frame
+	if err := d.Decode(&hello); err != nil {
+		t.Fatal(err)
+	}
+	if hello.SchemaVersion != 1 {
+		t.Fatal("snapshot schema not negotiated")
+	}
+	if err := e.Encode(frame{Type: "ready", Windows: []domain.AppDiagnosticsWindow{{ID: "window-1", Generation: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Encode(frame{Type: "grant", SchemaVersion: 1, RequestID: "grant-request", SessionID: "project-1"}); err != nil {
+		t.Fatal(err)
+	}
+	var granted frame
+	if err := d.Decode(&granted); err != nil || granted.GrantID == "" || granted.Code != "" {
+		t.Fatalf("grant: %+v %v", granted, err)
+	}
+	if err := e.Encode(frame{Type: "audit", SchemaVersion: 1, RequestID: "audit-request", GrantID: granted.GrantID}); err != nil {
+		t.Fatal(err)
+	}
+	var audit frame
+	if err := d.Decode(&audit); err != nil || !strings.Contains(string(audit.Audit), "granted") || audit.Code != "" {
+		t.Fatalf("audit: %+v %v", audit, err)
+	}
+	if err := e.Encode(frame{Type: "revoke", SchemaVersion: 1, RequestID: "revoke-request", GrantID: granted.GrantID}); err != nil {
+		t.Fatal(err)
+	}
+	var notice frame
+	if err := d.Decode(&notice); err != nil || notice.Type != "grant-revoked" || notice.GrantID != granted.GrantID {
+		t.Fatalf("native revoke notice: %+v %v", notice, err)
+	}
+	var revoked frame
+	if err := d.Decode(&revoked); err != nil || revoked.Code != "" {
+		t.Fatalf("revoke: %+v %v", revoked, err)
+	}
+	if err := e.Encode(frame{Type: "audit", SchemaVersion: 1, RequestID: "revoked-audit", GrantID: granted.GrantID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Decode(&audit); err != nil || audit.Code != "APP_DIAGNOSTICS_CAPABILITY_INVALID" {
+		t.Fatalf("revoked audit: %+v %v", audit, err)
 	}
 }

@@ -1,4 +1,4 @@
-import { DIAGNOSTIC_CHANNEL, isCollectorReply, isCollectorRequest, isDiagnosticDocument, isDiagnosticsStatus, isDiagnosticCancellation, type CollectorRequest, type DiagnosticDocument, type DiagnosticsStatus } from "./shared/app-diagnostics";
+import { isAuditResponse, isConsentAck, sameConsentIdentity, type DiagnosticAudit, isConsentRequest, isEnableRequest, isDiagnosticConsent, isEnableResult, type ConsentRequest, type EnableRequest, type EnableResult, type DiagnosticConsent, DIAGNOSTIC_CHANNEL, isCollectorReply, isCollectorRequest, isDiagnosticDocument, isDiagnosticsStatus, isDiagnosticCancellation, type CollectorRequest, type DiagnosticDocument, type DiagnosticsStatus } from "./shared/app-diagnostics";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { DOCUMENT_ESCAPE_CHANNEL, APP_SHORTCUT_CHANNEL, CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEXT_TAB_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL, PREVIOUS_TAB_SHORTCUT_CHANNEL, QUIT_CONFIRM_REQUEST_CHANNEL, QUIT_CONFIRM_RESULT_CHANNEL, SET_CLOSE_SHELL_TERMINAL_SHORTCUT_ENABLED_CHANNEL, SET_TERMINAL_FOCUSED_CHANNEL, TERMINAL_FONT_SIZE_SHORTCUT_CHANNEL, type AppShortcutEvent, type KeybindingOverrides, type QuitConfirmRequest } from "./shared/shortcuts";
 import { SCROLL_PHASE_CHANNEL, type ScrollPhase } from "./shared/scroll-phase";
@@ -403,6 +403,29 @@ const api = {
 		},
 	},
 	appDiagnostics: {
+		audit: async (request: ConsentRequest): Promise<DiagnosticAudit> => {
+			if (!isConsentRequest(request)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.audit, request);
+			if (!isAuditResponse(value) || !sameConsentIdentity(request, value)) throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+			return value.audit;
+		},
+		getConsent: async (): Promise<DiagnosticConsent | null> => {
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.consent);
+			if (value === null || isDiagnosticConsent(value)) return value;
+			throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+		},
+		requestEnable: async (request: EnableRequest): Promise<EnableResult> => {
+			if (!isEnableRequest(request)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.enable, request);
+			if (!isEnableResult(value) || !sameConsentIdentity(request, value) || value.sessionId !== request.sessionId)
+				throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+			return value;
+		},
+		revoke: async (request: ConsentRequest): Promise<void> => {
+			if (!isConsentRequest(request)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.revoke, request);
+			if (!isConsentAck(value) || !sameConsentIdentity(request, value)) throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+		},
 		getStatus: async (): Promise<DiagnosticsStatus> => {
 			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.status);
 			return isDiagnosticsStatus(value) ? value : { state: "unavailable", reason: "unsupported" };

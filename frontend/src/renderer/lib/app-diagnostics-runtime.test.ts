@@ -18,6 +18,10 @@ function fixture() {
 	const unsubscribe = vi.fn();
 	const observeRoute = vi.fn(() => vi.fn());
 	const bridge: AoBridge["appDiagnostics"] = {
+ getConsent: async () => null,
+ requestEnable: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ revoke: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+ audit: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
 		getStatus: async () => ({ state: "disabled", reason: "consent_required" }),
 		register: () =>
 			new Promise((resolve) => {

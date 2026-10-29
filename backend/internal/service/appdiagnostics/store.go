@@ -235,7 +235,10 @@ func (s *diskStore) entries(dir string) ([]os.DirEntry, error) {
 }
 func (s *diskStore) removeGrant(id string, now time.Time) (result error) {
 	s.pendingRevocations[id] = true
-	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
+	// Revocation already fenced the in-memory capability. Attempt credential and
+	// snapshot cleanup independently; Sweep retries either failed removal.
+	credentialErr := s.remove("grants", id)
+	defer func() { result = errors.Join(result, credentialErr, s.retentionSummary(now)) }()
 	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
 	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
 		return readErr
@@ -247,7 +250,7 @@ func (s *diskStore) removeGrant(id string, now time.Time) (result error) {
 			}
 		}
 	}
-	if readErr == nil {
+	if readErr == nil && credentialErr == nil {
 		delete(s.pendingRevocations, id)
 	}
 	return nil
@@ -461,8 +464,12 @@ func (s *diskStore) prune(now time.Time) (result error) {
 		count--
 		total -= row.size
 	}
-	if readErr == nil {
-		clear(s.pendingRevocations)
+	for id := range s.pendingRevocations {
+		if err := s.remove("grants", id); err != nil {
+			result = errors.Join(result, err)
+		} else if readErr == nil {
+			delete(s.pendingRevocations, id)
+		}
 	}
 	audits, err := documents[Audit](s, "audit", nil)
 	if err != nil && !errors.Is(err, errReadUnavailable) {
@@ -490,7 +497,7 @@ func (s *diskStore) prune(now time.Time) (result error) {
 	}
 	// Unreadable documents remain on disk for the next sweep. Read failures are
 	// observable through the summary, while healthy records still get retention.
-	return nil
+	return result
 }
 func (s *diskStore) retentionSummary(now time.Time) error {
 	if s.dropped == 0 && s.skipped == 0 && s.readErrors == 0 && s.invalidSnapshotDeleted == 0 {

@@ -217,12 +217,14 @@ export function createAppDiagnosticsCollector(options: {
 		const committed = diagnosticRegions();
 		const entries = committed.regions.map(({ value }) => ({
 			...value,
+			omittedCount: value.projectId && !scope.has(value.projectId) ? 0 : value.omittedCount,
 			liveIds: value.projectId && !scope.has(value.projectId) ? [] : [...value.liveIds],
 			workerIds: value.projectId && !scope.has(value.projectId) ? [] : [...value.workerIds],
 			orderedIds: value.projectId && !scope.has(value.projectId) ? [] : [...value.orderedIds],
 			listedIds: value.projectId && !scope.has(value.projectId) ? [] : [...value.listedIds],
 			workspaces: value.workspaces.map((row) => ({
 				...row,
+				omittedCount: scope.has(row.projectId) ? row.omittedCount : 0,
 				scope: scope.has(row.projectId) ? "ids" : "counts",
 				sessions: scope.has(row.projectId) ? row.sessions.map((session) => ({ ...session })) : [],
 			})),

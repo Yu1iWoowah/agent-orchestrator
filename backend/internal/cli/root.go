@@ -230,6 +230,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newRenderCommand(ctx))
 	root.AddCommand(newMCPCommand(ctx))
 	root.AddCommand(newBrowserCommand(ctx))
+	root.AddCommand(newAppCommand(ctx))
 	root.AddCommand(newBrowserHostCommand())
 	root.AddCommand(newHooksCommand(ctx))
 	root.AddCommand(newAgentProcessCommand(ctx))
@@ -297,6 +298,9 @@ func cliInvocationActorType(cmd *cobra.Command) string {
 
 func (c *commandContext) emitCLIUsageError(ctx context.Context, args []string, err error) {
 	command, commandPath := usageErrorCommand(args)
+	if commandPath == "ao app" || strings.HasPrefix(commandPath, "ao app ") {
+		return
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	_ = c.postLoopbackJSON(reqCtx, "/internal/telemetry/cli-usage-error", map[string]string{

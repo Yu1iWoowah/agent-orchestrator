@@ -1,5 +1,6 @@
+import { appDiagnosticsDialog } from "./main/app-diagnostics-dialog";
 import { AppDiagnosticsMain } from "./main/app-diagnostics";
-import { DIAGNOSTIC_CHANNEL } from "./shared/app-diagnostics";
+import { DIAGNOSTIC_CHANNEL, diagnosticId } from "./shared/app-diagnostics";
 import { SideCloseRecovery } from "./main/side-close";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { syncMacWindowButtons } from "./main/window-chrome";
@@ -1500,6 +1501,54 @@ const appDiagnosticsMain = new AppDiagnosticsMain({
 	rendererURL: rendererUrl,
 	shell: () => (mainWindow && !mainWindow.isDestroyed() ? getShellWebContents() : null),
 	identity: () => ({ appVersion: app.getVersion(), daemonVersion: "unknown", buildCommit: "unknown", os: process.platform }),
+	consent: {
+		confirm: async (sessionId) => {
+			const win = mainWindow;
+			const status = daemonStatus;
+			if (!win || win.isDestroyed() || status.state !== "ready" || !status.port) throw new Error("APP_NOT_CONNECTED");
+			const response = await fetch(`http://127.0.0.1:${status.port}/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+				signal: AbortSignal.timeout(5000),
+			});
+			if (!response.ok) throw new Error("APP_DIAGNOSTICS_SESSION_UNAVAILABLE");
+			const value: unknown = await response.json();
+			if (
+				typeof value !== "object" ||
+				value === null ||
+				!("session" in value) ||
+				typeof value.session !== "object" ||
+				value.session === null
+			)
+				throw new Error("APP_DIAGNOSTICS_SESSION_UNAVAILABLE");
+			const row = value.session;
+			if (
+				!("id" in row) ||
+				row.id !== sessionId ||
+				!("kind" in row) ||
+				row.kind !== "orchestrator" ||
+				!("projectId" in row) ||
+				typeof row.projectId !== "string" ||
+				!diagnosticId(row.projectId) ||
+				("isTerminated" in row && row.isTerminated === true)
+			)
+				throw new Error("APP_DIAGNOSTICS_CAPABILITY_INVALID");
+			const rfp = runFilePath();
+			const locale = rfp ? (await readUiSettings(path.dirname(rfp))).locale : "en";
+			const result = await dialog.showMessageBox(win, appDiagnosticsDialog(locale, sessionId, row.projectId));
+			return result.response === 1;
+		},
+		grant: (sessionId) => {
+			if (!appDiagnosticsLink) throw new Error("APP_NOT_CONNECTED");
+			return appDiagnosticsLink.grant(sessionId);
+		},
+		audit: (grantId) => {
+			if (!appDiagnosticsLink) throw new Error("APP_NOT_CONNECTED");
+			return appDiagnosticsLink.audit(grantId);
+		},
+		revoke: (grantId) => {
+			if (!appDiagnosticsLink) throw new Error("APP_NOT_CONNECTED");
+			return appDiagnosticsLink.revoke(grantId);
+		},
+	},
 	changed: () => appDiagnosticsLink?.refresh(),
 	consentCleared: () => {
 		disposeAppDiagnosticsLink();
@@ -1743,7 +1792,10 @@ function establishAppDiagnosticsLink(): void {
 	} catch {
 		return;
 	}
-	if (!info?.appDiagnosticsAddress) return;
+	if (!info?.appDiagnosticsAddress) {
+		appDiagnosticsMain.setConnection({ connected: false, unsupported: true });
+		return;
+	}
 	const address = info.appDiagnosticsAddress;
 	const identity = `${info.pid}:${info.startedAtMs}:${address}`;
 	if (identity === appDiagnosticsLinkIdentity) return;
@@ -1752,8 +1804,9 @@ function establishAppDiagnosticsLink(): void {
 	// A rejected capability stops retries inside the handle until identity changes.
 	appDiagnosticsLink = connectAppDiagnostics({ path: address }, appDiagnosticsToken, appRunId, {
 		windows: () => appDiagnosticsMain.windows(),
+		revoked: (grantId) => appDiagnosticsMain.grantRevoked(grantId),
 		capture: (request, signal) => appDiagnosticsMain.capture(request, signal),
-		state: (state) => appDiagnosticsMain.setConnection({ connected: state === "connected" }),
+		state: (state) => appDiagnosticsMain.setConnection({ connected: state === "connected", unsupported: state === "unsupported" || state === "rejected" }),
 	});
 	appDiagnosticsLinkIdentity = identity;
 }
@@ -2737,6 +2790,10 @@ ipcMain.handle("editorHandoff:copyWorkspacePath", (event, sessionId: string) => 
 });
 ipcMain.handle(DIAGNOSTIC_CHANNEL.status, (event) => appDiagnosticsMain.readStatus(event));
 ipcMain.handle(DIAGNOSTIC_CHANNEL.register, (event) => appDiagnosticsMain.register(event));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.audit, (event, value: unknown) => appDiagnosticsMain.readAudit(event, value));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.consent, (event) => appDiagnosticsMain.readConsent(event));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.enable, (event, value: unknown) => appDiagnosticsMain.requestEnable(event, value));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.revoke, (event, value: unknown) => appDiagnosticsMain.requestRevoke(event, value));
 ipcMain.handle(DIAGNOSTIC_CHANNEL.submit, (event, value: unknown) => appDiagnosticsMain.submit(event, value));
 ipcMain.handle("app:getVersion", () => app.getVersion());
 ipcMain.handle("app:openExternal", async (_event, url: string) => {

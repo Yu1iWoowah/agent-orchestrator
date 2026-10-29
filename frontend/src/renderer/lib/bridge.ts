@@ -99,6 +99,10 @@ export const aoBridge: AoBridge =
 			onFrameNavigated: () => () => undefined,
 		},
 		appDiagnostics: {
+ audit: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+   getConsent: async () => null,
+   requestEnable: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
+   revoke: async () => { throw new Error("APP_DIAGNOSTICS_UNSUPPORTED"); },
 			getStatus: async () => ({state:"unavailable",reason:"unsupported"}),
 			register: async () => ({documentId:"preview",windowId:"preview",generation:1,enabled:false,expiresAt:0}),
 			submit: async () => false,

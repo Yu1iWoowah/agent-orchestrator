@@ -24,7 +24,7 @@ func (s *AppDiagnosticsSnapshot) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*s = AppDiagnosticsSnapshot(decoded)
-	s.liveFieldsMissing = !diagnosticJSONFieldsPresent(wire, reflect.TypeFor[AppDiagnosticsSnapshot](), true)
+	s.liveFieldsValidated = diagnosticJSONFieldsPresent(wire, reflect.TypeFor[AppDiagnosticsSnapshot](), true)
 	return nil
 }
 
@@ -72,6 +72,19 @@ func diagnosticJSONFieldsPresent(value any, typ reflect.Type, root bool) bool {
 		for name, field := range fields {
 			_, present := object[name]
 			if !present && (root || !slices.Contains(strings.Split(field.Tag.Get("json"), ",")[1:], "omitempty")) {
+				return false
+			}
+		}
+	case reflect.Interface:
+		// No fixed field inventory exists for an arbitrary object bag.
+		return false
+	case reflect.Map:
+		object, ok := value.(map[string]any)
+		if !ok || typ.Key().Kind() != reflect.String {
+			return false
+		}
+		for _, child := range object {
+			if !diagnosticJSONFieldsPresent(child, typ.Elem(), false) {
 				return false
 			}
 		}

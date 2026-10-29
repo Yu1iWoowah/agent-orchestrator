@@ -202,6 +202,9 @@ func (s *Service) authorize(ctx context.Context, token string) (*grantState, err
 	if found == nil {
 		return nil, failure("APP_DIAGNOSTICS_CAPABILITY_INVALID", 403)
 	}
+	return s.authorizeGrant(ctx, found)
+}
+func (s *Service) authorizeGrant(ctx context.Context, found *grantState) (*grantState, error) {
 	code := ""
 	if !s.now().Before(found.credential.ExpiresAt) {
 		code = "APP_DIAGNOSTICS_GRANT_EXPIRED"
@@ -447,9 +450,10 @@ func (s *Service) revokeResult(g *grantState) (RevokeResult, error) {
 		g.cancel()
 	}
 	delete(s.grants, g.credential.ID)
-	if err := s.store.remove("grants", g.credential.ID); err != nil {
-		return RevokeResult{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+	if owner, ok := s.runtime.(interface{ NotifyGrantRevoked(string, string) }); ok {
+		owner.NotifyGrantRevoked(g.epoch, g.credential.ID)
 	}
+
 	out := RevokeResult{Revoked: true, Cleanup: "complete"}
 	cleanupErr := s.store.removeGrant(g.credential.ID, s.now())
 	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "revoked"}
@@ -490,7 +494,9 @@ func (s *Service) Sweep(ctx context.Context) error {
 			failures = append(failures, failure("APP_DIAGNOSTICS_SESSION_UNAVAILABLE", 503))
 		}
 	}
-	failures = append(failures, s.store.prune(s.now()))
+	if err := s.store.prune(s.now()); err != nil {
+		failures = append(failures, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500))
+	}
 	return errors.Join(failures...)
 }
 
@@ -550,6 +556,9 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	if err != nil {
 		return AuditLog{}, err
 	}
+	return s.auditsForGrant(g)
+}
+func (s *Service) auditsForGrant(g *grantState) (AuditLog, error) {
 	if err := s.store.prune(s.now()); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
@@ -611,4 +620,50 @@ func (s *Service) RevokeRuntime(_ context.Context, epoch, id string) error {
 func (s *Service) GrantRuntime(ctx context.Context, id domain.SessionID, epoch string) (string, error) {
 	credential, err := s.issueGrant(ctx, id, epoch)
 	return credential.ID, err
+}
+
+// AuditRuntime serves the current native-consent owner without exporting a token.
+// The Settings projection is deliberately smaller than the CLI audit envelope.
+func (s *Service) AuditRuntime(ctx context.Context, epoch, id string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.grants[id]
+	if s.closed || !ok || g.epoch != epoch {
+		return nil, failure("APP_DIAGNOSTICS_CAPABILITY_INVALID", 403)
+	}
+	if _, err := s.authorizeGrant(ctx, g); err != nil {
+		return nil, err
+	}
+	log, err := s.auditsForGrant(g)
+	if err != nil {
+		return nil, err
+	}
+	type item struct {
+		At      time.Time `json:"at"`
+		Outcome string    `json:"outcome"`
+		Bytes   int       `json:"bytes"`
+		Partial bool      `json:"partial"`
+	}
+	records := []item{}
+	dropped := 0
+	if len(log.Records) > 100 {
+		dropped = len(log.Records) - 100
+		log.Records = log.Records[dropped:]
+	}
+	for _, row := range log.Records {
+		outcome := row.Outcome
+		switch outcome {
+		case "granted", "accepted", "completed", "failed", "interrupted", "revoked", "read", "list", "audit_read":
+		default:
+			outcome = "unknown"
+		}
+		partial := row.Partial != nil && *row.Partial
+		records = append(records, item{row.At.UTC(), outcome, row.Bytes, partial})
+	}
+	//nolint:gosec // dropped is a non-negative count bounded by the 10,000-record audit cap.
+	return json.Marshal(struct {
+		Records      []item `json:"records"`
+		Partial      bool   `json:"partial"`
+		DroppedCount uint64 `json:"droppedCount"`
+	}{records, log.Partial || dropped > 0, log.DroppedCount + uint64(dropped)})
 }
