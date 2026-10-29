@@ -21,6 +21,7 @@ func IsRoutineInternalCLICommand(commandPath string) bool {
 }
 
 var routineInternalCLICommands = []string{
+	"ao app", // Consent and diagnostic activity stays local.
 	"ao status",
 	"ao session ls",
 	"ao session top",

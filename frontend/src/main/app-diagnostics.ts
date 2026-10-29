@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
 	DIAGNOSTIC_CHANNEL,
+	isConsentRequest,
+	isEnableRequest,
+	type ConsentRequest,
+	type DiagnosticConsent,
+	type DiagnosticAudit,
+	type EnableResult,
+	type ConsentAck,
+	type AuditResponse,
 	isAppSnapshot,
 	isCollectorReply,
 	type AppSnapshot,
@@ -22,13 +30,24 @@ export type DiagnosticsMainOptions = {
 	identity: () => NonNullable<AppSnapshot["identity"]>;
 	changed?: () => void;
 	consentCleared?: () => void;
+	consent?: {
+		confirm: (sessionId: string) => Promise<boolean>;
+		grant: (sessionId: string) => Promise<string>;
+		revoke: (grantId: string) => Promise<void>;
+		audit?: (grantId: string) => Promise<DiagnosticAudit>;
+	};
 };
 type Pending = { request: CollectorRequest; frame: unknown; finish: (error?: string, value?: AppSnapshot) => void };
 
 /** Internal native-consent owner. No IPC endpoint can call allowUntil. */
 export class AppDiagnosticsMain {
+	private grant: DiagnosticConsent | null = null;
+	private consenting = false;
+	private consentRequests = new Set<string>();
 	private connected = false;
 	private adopted = false;
+	private unsupported = false;
+	private connectionGeneration = 0;
 	private expiresAt = 0;
 	private expiry: ReturnType<typeof setTimeout> | undefined;
 	private registered = false;
@@ -46,6 +65,7 @@ export class AppDiagnosticsMain {
 	status(): DiagnosticsStatus {
 		if (!this.shell()) return { state: "unavailable", reason: "no_window" };
 		if (this.adopted) return { state: "unavailable", reason: "adopted_daemon" };
+		if (this.unsupported) return { state: "unavailable", reason: "unsupported" };
 		if (!this.connected) return { state: "unavailable", reason: "not_connected" };
 		if (!this.enabled()) return { state: "disabled", reason: "consent_required" };
 		if (!this.registered) return { state: "unavailable", reason: "renderer_unavailable" };
@@ -65,14 +85,17 @@ export class AppDiagnosticsMain {
 		this.shell()?.send(DIAGNOSTIC_CHANNEL.configure, this.document());
 		this.options.changed?.();
 	}
-	setConnection(value: { connected: boolean; adopted?: boolean }): void {
+	setConnection(value: { connected: boolean; adopted?: boolean; unsupported?: boolean }): void {
 		const lost = this.connected && !value.connected;
+		if (this.connected !== value.connected) this.connectionGeneration++;
 		this.connected = value.connected;
 		this.adopted = value.adopted === true;
+		this.unsupported = value.unsupported === true;
 		if (lost || this.adopted) {
 			this.pending?.finish("APP_NOT_CONNECTED");
 			clearTimeout(this.expiry);
 			this.expiresAt = 0;
+			this.grant = null;
 		}
 		this.publish();
 	}
@@ -85,6 +108,7 @@ export class AppDiagnosticsMain {
 		if (this.expiresAt > Date.now()) this.expiry = setTimeout(() => this.allowUntil(0), this.expiresAt - Date.now());
 		else {
 			this.expiresAt = 0;
+			this.grant = null;
 			this.pending?.finish("APP_DIAGNOSTICS_DISABLED");
 		}
 		this.publish();
@@ -107,12 +131,117 @@ export class AppDiagnosticsMain {
 		this.trust(event);
 		return this.status();
 	}
+	readIdentity(event: DiagnosticsEvent): DiagnosticDocument {
+		this.trust(event);
+		return this.document();
+	}
 	register(event: DiagnosticsEvent): DiagnosticDocument {
 		this.trust(event);
 		this.registered = true;
 		this.publish();
 		return this.document();
 	}
+	readConsent(event: DiagnosticsEvent): DiagnosticConsent | null {
+		this.trust(event);
+		return this.enabled() && this.grant ? { ...this.grant } : null;
+	}
+	private consentIdentity(event: DiagnosticsEvent, request: ConsentRequest): void {
+		this.trust(event);
+		if (
+			request.documentId !== this.documentId ||
+			request.generation !== this.generation ||
+			request.windowId !== `window-${this.shell()?.id}`
+		)
+			throw new Error("APP_RENDERER_CHANGED");
+	}
+	private consumeConsent(request: ConsentRequest): void {
+		if (this.consentRequests.has(request.requestId) || this.consentRequests.size >= 1024)
+			throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+		this.consentRequests.add(request.requestId);
+	}
+	async requestEnable(event: DiagnosticsEvent, value: unknown): Promise<EnableResult> {
+		this.trust(event);
+		if (!isEnableRequest(value)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+		this.consentIdentity(event, value);
+		this.consumeConsent(value);
+		const consent = this.options.consent;
+		if (!consent || !this.connected || this.adopted || !this.registered) throw new Error("APP_DIAGNOSTICS_UNSUPPORTED");
+		if (this.consenting || this.grant) throw new Error("APP_DIAGNOSTICS_BUSY");
+		this.consenting = true;
+		const connection = this.connectionGeneration;
+		try {
+			if (!(await consent.confirm(value.sessionId))) return { ...value, outcome: "cancelled" };
+			this.consentIdentity(event, value);
+			if (!this.connected || connection !== this.connectionGeneration) throw new Error("APP_NOT_CONNECTED");
+			const expiresAt = Date.now() + 900_000;
+			this.allowUntil(expiresAt);
+			const grantId = await consent.grant(value.sessionId);
+			try {
+				this.consentIdentity(event, value);
+				if (!this.enabled() || connection !== this.connectionGeneration) throw new Error("APP_NOT_CONNECTED");
+			} catch (error) {
+				await consent.revoke(grantId);
+				throw error;
+			}
+			this.grant = { grantId, sessionId: value.sessionId, expiresAt };
+			this.publish();
+			return { ...value, outcome: "enabled", ...this.grant };
+		} catch (error) {
+			this.allowUntil(0);
+			const codes = new Set([
+				"APP_RENDERER_CHANGED",
+				"APP_NOT_CONNECTED",
+				"APP_DIAGNOSTICS_DISABLED",
+				"APP_DIAGNOSTICS_UNSUPPORTED",
+				"APP_DIAGNOSTICS_CAPABILITY_INVALID",
+				"APP_DIAGNOSTICS_STORAGE_FAILED",
+				"APP_DIAGNOSTICS_AUDIT_FAILED",
+				"APP_DIAGNOSTICS_SESSION_UNAVAILABLE",
+				"APP_DIAGNOSTICS_GRANT_EXPIRED",
+				"APP_DIAGNOSTICS_CLEANUP_FAILED",
+			]);
+			throw new Error(error instanceof Error && codes.has(error.message) ? error.message : "APP_DIAGNOSTICS_UNSUPPORTED");
+		} finally {
+			this.consenting = false;
+		}
+	}
+	async readAudit(event: DiagnosticsEvent, value: unknown): Promise<AuditResponse> {
+		this.trust(event);
+		if (!isConsentRequest(value)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+		this.consentIdentity(event, value);
+		this.consumeConsent(value);
+		const grant = this.readConsent(event);
+		if (!grant || !this.options.consent?.audit) throw new Error("APP_DIAGNOSTICS_DISABLED");
+		const result = await this.options.consent.audit(grant.grantId);
+		this.consentIdentity(event, value);
+		if (this.readConsent(event)?.grantId !== grant.grantId) throw new Error("APP_DIAGNOSTICS_DISABLED");
+		return { ...value, audit: result };
+	}
+
+	grantRevoked(grantId: string): void {
+		if (this.grant?.grantId === grantId || (this.consenting && this.enabled())) this.allowUntil(0);
+	}
+
+	async requestRevoke(event: DiagnosticsEvent, value: unknown): Promise<ConsentAck> {
+		this.trust(event);
+		if (!isConsentRequest(value)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
+		this.consentIdentity(event, value);
+		this.consumeConsent(value);
+		const grant = this.grant;
+		// Stop collection synchronously; retain the channel until revoke is acknowledged.
+		clearTimeout(this.expiry);
+		this.expiresAt = 0;
+		this.grant = null;
+		this.pending?.finish("APP_DIAGNOSTICS_DISABLED");
+		this.publish();
+		try {
+			if (grant) await this.options.consent?.revoke(grant.grantId);
+			return { ...value, revoked: true };
+		} finally {
+			this.options.consentCleared?.();
+		}
+	}
+
 	submit(event: DiagnosticsEvent, value: unknown): boolean {
 		this.trust(event);
 		const pending = this.pending;
@@ -204,6 +333,7 @@ export class AppDiagnosticsMain {
 		this.registered = false;
 		this.generation++;
 		this.documentId = randomUUID();
+		this.consentRequests.clear();
 		this.publish();
 	}
 	windows(): { id: string; generation: number }[] {

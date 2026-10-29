@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 )
@@ -115,5 +116,47 @@ func TestLiveSnapshotRejectsJSONFieldCaseAliases(t *testing.T) {
 	var snapshot AppDiagnosticsSnapshot
 	if err := json.Unmarshal(raw, &snapshot); err == nil && ValidAppDiagnosticsCaptureSnapshot(snapshot) {
 		t.Fatal("case-insensitive optional field bypassed the exact wire contract")
+	}
+}
+
+func TestLiveSnapshotRequiresValidatedWire(t *testing.T) {
+	raw, err := os.ReadFile("../../../test/fixtures/app-diagnostics-complete-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Decoding through a plain type simulates an internal Go constructor, without
+	// the boundary decoder's evidence that all required wire members were present.
+	type plain AppDiagnosticsSnapshot
+	var built plain
+	if err := json.Unmarshal(raw, &built); err != nil {
+		t.Fatal(err)
+	}
+	if ValidAppDiagnosticsCaptureSnapshot(AppDiagnosticsSnapshot(built)) {
+		t.Fatal("Go-constructed snapshot bypassed live wire validation")
+	}
+}
+
+func TestDiagnosticJSONFieldsRejectUnvalidatedContainers(t *testing.T) {
+	type row struct {
+		Revision int `json:"revision"`
+		Omitted  int `json:"omittedCount"`
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+		typ   reflect.Type
+		want  bool
+	}{
+		{"typed map complete", map[string]any{"entry": map[string]any{"revision": float64(0), "omittedCount": float64(0)}}, reflect.TypeFor[map[string]row](), true},
+		{"typed map missing", map[string]any{"entry": map[string]any{"revision": float64(0)}}, reflect.TypeFor[map[string]row](), false},
+		{"typed map null", map[string]any{"entry": nil}, reflect.TypeFor[map[string]row](), false},
+		{"interface has no schema", map[string]any{"unknown": "secret"}, reflect.TypeFor[any](), false},
+		{"map interface has no schema", map[string]any{"entry": map[string]any{"unknown": "secret"}}, reflect.TypeFor[map[string]any](), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := diagnosticJSONFieldsPresent(tc.value, tc.typ, false); got != tc.want {
+				t.Fatalf("valid=%v want=%v", got, tc.want)
+			}
+		})
 	}
 }

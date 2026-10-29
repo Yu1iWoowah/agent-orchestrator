@@ -94,6 +94,13 @@ function setup() {
 	});
 	return { queryClient, collector };
 }
+function OutOfScopeProject() {
+ const root = useRef<HTMLDivElement>(null);
+ useDiagnosticCommit("outside", () => ({ ...empty(), projectId: "outside", omittedCount: 12,
+  workspaces: [{ projectId: "outside", source: "local", hostId: "", scope: "ids", shared: false, folderMissing: false, sessionCount: 212, omittedCount: 12, sessions: [] }],
+ }), () => root.current);
+ return <div ref={root} />;
+}
 afterEach(() => {
 	cleanup();
 	setDiagnosticRecording(false);
@@ -297,4 +304,18 @@ describe("collector consistency and bounds", () => {
 			collector.disable();
 		}
 	});
+});
+
+it("uses count-only scope consistently for component and cache omissions", () => {
+ const { collector, queryClient } = setup();
+ queryClient.setQueryData(["workspaces"], [{ id: "outside", sessions: Array.from({ length: 212 }, (_, i) => ({ id: `outside-${i}`, kind: "worker" })) }]);
+ render(<OutOfScopeProject />);
+ try {
+  act(() => collector.enable());
+  const value = collector.capture("project-1");
+  const entry = value.components.entries.find(row => row.projectId === "outside");
+  expect(entry?.omittedCount).toBe(0);
+  expect(entry?.workspaces[0]).toMatchObject({ scope: "counts", sessionCount: 212, omittedCount: 0, sessions: [] });
+  expect(value.components.omittedCount).toBe(value.cache.omittedCount);
+ } finally { act(() => collector.disable()); }
 });

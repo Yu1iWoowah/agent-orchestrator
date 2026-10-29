@@ -208,6 +208,9 @@ jobs:
       - name: Test app diagnostic Windows permissions and protocol
         run: go test -race -count=1 -v ./internal/service/appdiagnostics ./internal/appdiagnostics
 
+      - name: Test desktop diagnostics CLI credentials on Windows
+        run: go test -race -count=1 -run '^(TestApp|TestWindowsAppCredential)' ./internal/cli
+
       - name: Test OpenCode Windows npm shim version probe
         run: go test -race -count=1 -run '^TestResolveBinaryForMajorAcceptsSlowShim$' ./internal/adapters/agent/opencode
 

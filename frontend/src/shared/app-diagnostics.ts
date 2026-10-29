@@ -11,6 +11,11 @@ export type QueryObservation = Collector["cache"]["queries"][number];
 export const DIAGNOSTIC_MAX_BYTES = 1 << 20;
 export const DIAGNOSTIC_CHANNEL = {
 	status: "appDiagnostics:status",
+	identity: "appDiagnostics:identity",
+	consent: "appDiagnostics:consent",
+	audit: "appDiagnostics:audit",
+	enable: "appDiagnostics:enable",
+	revoke: "appDiagnostics:revoke",
 	register: "appDiagnostics:register",
 	configure: "appDiagnostics:configure",
 	request: "appDiagnostics:request",
@@ -292,3 +297,64 @@ export function isDiagnosticsStatus(value: unknown): value is DiagnosticsStatus 
 export function isDiagnosticCancellation(value: unknown): value is { requestId: string; documentId: string } {
 	return bounded(value, object({ requestId: diagnosticId, documentId: diagnosticId }));
 }
+
+export type DiagnosticConsent = { grantId: string; sessionId: string; expiresAt: number };
+export type ConsentRequest = Pick<CollectorRequest, "schemaVersion" | "requestId" | "documentId" | "windowId" | "generation">;
+export type EnableRequest = ConsentRequest & { sessionId: string };
+export type EnableResult = EnableRequest & ({ outcome: "cancelled" } | ({ outcome: "enabled" } & DiagnosticConsent));
+const consentIdentity = {
+	schemaVersion: (v: unknown) => v === 1,
+	requestId: diagnosticId,
+	documentId: diagnosticId,
+	windowId: diagnosticId,
+	generation: (v: unknown) => revision(v) && Number(v) > 0,
+};
+export const isConsentRequest = (v: unknown): v is ConsentRequest => object(consentIdentity)(v);
+export const isEnableRequest = (v: unknown): v is EnableRequest => object({ ...consentIdentity, sessionId: diagnosticId })(v);
+export const isDiagnosticConsent = (v: unknown): v is DiagnosticConsent =>
+	object({ grantId: diagnosticId, sessionId: diagnosticId, expiresAt: milliseconds })(v);
+export const isEnableResult = (v: unknown): v is EnableResult =>
+	object({ ...consentIdentity, sessionId: diagnosticId, outcome: (v: unknown) => v === "cancelled" })(v) ||
+	object({
+		...consentIdentity,
+		outcome: (v: unknown) => v === "enabled",
+		grantId: diagnosticId,
+		sessionId: diagnosticId,
+		expiresAt: milliseconds,
+	})(v);
+export const sameConsentIdentity = (request: ConsentRequest, reply: ConsentRequest): boolean =>
+	request.schemaVersion === reply.schemaVersion &&
+	request.requestId === reply.requestId &&
+	request.documentId === reply.documentId &&
+	request.windowId === reply.windowId &&
+	request.generation === reply.generation;
+export type ConsentAck = ConsentRequest & { revoked: true };
+export const isConsentAck = (v: unknown): v is ConsentAck => object({ ...consentIdentity, revoked: (v: unknown) => v === true })(v);
+
+export type DiagnosticAudit = {
+	records: {
+		at: string;
+		outcome: "granted" | "accepted" | "completed" | "failed" | "interrupted" | "revoked" | "read" | "list" | "audit_read" | "unknown";
+		bytes: number;
+		partial: boolean;
+	}[];
+	partial: boolean;
+	droppedCount: number;
+};
+export const isDiagnosticAudit = (v: unknown): v is DiagnosticAudit =>
+	object({
+		records: array(
+			object({
+				at: timestamp,
+				outcome: oneOf("granted,accepted,completed,failed,interrupted,revoked,read,list,audit_read,unknown"),
+				bytes: count,
+				partial: boolean,
+			}),
+			100,
+		),
+		partial: boolean,
+		droppedCount: revision,
+	})(v);
+
+export type AuditResponse = ConsentRequest & { audit: DiagnosticAudit };
+export const isAuditResponse = (v: unknown): v is AuditResponse => object({ ...consentIdentity, audit: isDiagnosticAudit })(v);
