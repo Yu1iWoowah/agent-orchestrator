@@ -59,7 +59,8 @@ import {
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
-import { artifactCount, groupArtifactsByProject } from "../lib/artifacts";
+import { useArtifactCatalogs } from "../hooks/useArtifactCatalogs";
+import { legacyGalleryGroups } from "../lib/gallery-artifacts";
 import { parseNightlyVersion } from "../lib/build-channel";
 import {
 	hasConfiguredOrchestratorAgent,
@@ -661,11 +662,16 @@ export function Sidebar({
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const settingsPage = useSettingsPage();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
-	// Cloud projects count only while the control plane keeps artifacts, as on the Artifacts page.
+	// Observe the gallery's metadata cache without scanning files in the sidebar.
+	// An incomplete or not-yet-loaded inventory has no exact badge count.
 	const cloudArtifacts = useCloudOffering().artifacts;
+	const artifactWorkspaces = useMemo(() => cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"), [cloudArtifacts, workspaces]);
+	const artifactCatalog = useArtifactCatalogs(artifactWorkspaces, false);
 	const artifactTotal = useMemo(
-		() => artifactCount(groupArtifactsByProject(cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"))),
-		[cloudArtifacts, workspaces],
+		() => artifactCatalog.data?.every((project) => !project.loading && !project.incomplete && !project.error)
+			? artifactCatalog.data.reduce((total, project) => total + project.items.length, 0) + legacyGalleryGroups(artifactWorkspaces, artifactCatalog.connection).reduce((total, group) => total + group.rows.length, 0)
+			: 0,
+		[artifactCatalog.data, artifactCatalog.connection, artifactWorkspaces],
 	);
 	const existingProjectPaths = useMemo(
 		() => workspaces

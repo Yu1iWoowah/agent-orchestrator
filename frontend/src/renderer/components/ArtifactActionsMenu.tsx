@@ -36,6 +36,7 @@ function terminalName(): string {
  */
 export function ArtifactActionsMenu({
 	artifact,
+	pinId,
 	downloadUrl,
 	hostId,
 	session,
@@ -52,6 +53,7 @@ export function ArtifactActionsMenu({
 	children,
 }: {
 	artifact: Pick<SessionArtifact, "name" | "path" | "rawUrl" | "updatedAt">;
+	pinId?: string;
 	downloadUrl?: string;
 	hostId?: string;
 	session: Pick<WorkspaceSession, "id" | "cloud">;
@@ -89,7 +91,7 @@ export function ArtifactActionsMenu({
 			: deleteSessionArtifactFile({ path: artifact.path, sessionId: session.id, hostId }),
 		onSuccess: async () => {
 			setConfirmingDelete(false);
-			if (!hostId) useArtifactsViewStore.getState().unpinArtifact(artifactKey({ sessionId: session.id, path: artifact.path }));
+			if (!hostId) useArtifactsViewStore.getState().unpinArtifact(pinId ?? artifactKey({ sessionId: session.id, path: artifact.path }));
 			onDeleted?.();
 			await queryClient.invalidateQueries({ queryKey: session.cloud ? cloudSessionsQueryKey : workspaceQueryKeyForHost(hostId) });
 		},
