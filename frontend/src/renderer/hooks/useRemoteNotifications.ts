@@ -42,7 +42,7 @@ export function connectRemoteNotificationStreams(queryClient: QueryClient): () =
 			if (!base || connections.has(hostId)) continue;
 			const close = probeRemoteSse(
 				`${base.replace(/\/+$/, "")}/api/v1/notifications/stream`,
-				["notification_created", "notification_resolved", "notification_deleted", "notification_cleared"],
+				["notification_created", "notification_read", "notification_resolved", "notification_deleted", "notification_cleared"],
 				() => invalidate(hostId),
 				() => { setStreaming(hostId, true); invalidate(hostId); },
 				() => { setStreaming(hostId, false); invalidate(hostId); },

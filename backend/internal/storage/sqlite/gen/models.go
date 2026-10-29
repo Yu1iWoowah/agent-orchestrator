@@ -88,6 +88,11 @@ type AgentNativeSession struct {
 	LastUsedAt       time.Time
 }
 
+type AgentSettingsAuthorityKey struct {
+	Singleton int64
+	KeyBytes  []byte
+}
+
 type AgentSwitch struct {
 	ID                      string
 	SessionID               string
@@ -208,6 +213,11 @@ type AttentionAnswer struct {
 	DeliveryAttempts int64
 }
 
+type AttentionNotificationReceipt struct {
+	SourceKey string
+	ProjectID string
+}
+
 type AttentionQuestion struct {
 	Sequence          int64
 	ID                string
@@ -238,6 +248,18 @@ type AttentionRead struct {
 	ActivityID       string
 	LastSeenRevision int64
 	SeenAt           time.Time
+}
+
+type AttentionReportQuestion struct {
+	ReportID    string
+	QuestionID  string
+	ForwardedBy string
+	CreatedAt   time.Time
+}
+
+type AttentionReportRead struct {
+	ReportID string
+	SeenAt   time.Time
 }
 
 type Automation struct {
@@ -730,6 +752,11 @@ type Project struct {
 	Kind          string
 }
 
+type ProjectAttentionRevision struct {
+	ProjectID string
+	Revision  int64
+}
+
 type ProjectDocumentState struct {
 	ProjectID string
 	Revision  int64
@@ -902,6 +929,7 @@ type Session struct {
 	AgentFastMode                    string
 	AgentSettingsRevision            int64
 	SpawnAgentSettingsJson           string
+	AgentSettingsLaunchID            string
 }
 
 type SessionAgentAccount struct {
@@ -918,6 +946,7 @@ type SessionAgentSettingsAudit struct {
 	RecordedAt    time.Time
 	ErrorCategory string
 	RequestID     string
+	ErrorCode     string
 }
 
 type SessionAgentSettingsOperation struct {
@@ -939,6 +968,7 @@ type SessionAgentSettingsOperation struct {
 	FinishedAt             sql.NullTime
 	RecoveryJson           string
 	ExecutionJson          string
+	ErrorCode              string
 }
 
 type SessionArtifactVersion struct {

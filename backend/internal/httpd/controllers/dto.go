@@ -3273,12 +3273,13 @@ type ConversationMessageResponse struct {
 
 // QuestionCreateRequest is the HTTP envelope for a session-owned structured question.
 type QuestionCreateRequest struct {
-	ClientKey    string                          `json:"clientKey" minLength:"1" maxLength:"64"`
-	Audience     string                          `json:"audience" enum:"user"`
-	Kind         domain.AttentionQuestionKind    `json:"kind" enum:"question,authorization"`
-	Payload      domain.AttentionQuestionPayload `json:"payload"`
-	ExpiresAt    *time.Time                      `json:"expiresAt,omitempty"`
-	SupersedesID string                          `json:"supersedesId,omitempty"`
+	ClientKey      string                          `json:"clientKey" minLength:"1" maxLength:"64"`
+	Audience       string                          `json:"audience" enum:"user"`
+	Kind           domain.AttentionQuestionKind    `json:"kind" enum:"question,authorization"`
+	Payload        domain.AttentionQuestionPayload `json:"payload"`
+	ExpiresAt      *time.Time                      `json:"expiresAt,omitempty"`
+	SourceReportID string                          `json:"sourceReportId,omitempty"`
+	SupersedesID   string                          `json:"supersedesId,omitempty"`
 }
 
 // QuestionReviseRequest replaces question content using version compare-and-swap.
@@ -4120,6 +4121,35 @@ type HandoffEvidenceFileParam struct {
 
 // SessionAgentSettingsResponse reads preferences without authorizing mutation.
 type SessionAgentSettingsResponse = agentsettings.Snapshot
+
+// ChangeSessionAgentSettingsPayload carries a revision-checked settings patch.
+type ChangeSessionAgentSettingsPayload = agentsettings.Change
+
+// AgentSettingsOperationResponse reports accepted intent and its durable phase.
+type AgentSettingsOperationResponse struct {
+	Operation domain.AgentSettingsOperation `json:"operation"`
+}
+
+// CancelAgentSettingsOperationPayload fences cancellation by operation version.
+type CancelAgentSettingsOperationPayload struct {
+	ExpectedVersion *int64 `json:"expectedVersion" nullable:"false" minimum:"0"`
+}
+
+// AgentSettingsOperationIDParam identifies an operation within its session.
+type AgentSettingsOperationIDParam struct {
+	OperationID string `path:"operationId"`
+}
+
+// AgentSettingsCallerHeaders carry untrusted managed caller identity.
+type AgentSettingsCallerHeaders struct {
+	SessionID string `header:"X-AO-Session-ID,omitempty"`
+	Grant     string `header:"X-AO-Settings-Grant,omitempty" description:"Settings-purpose native-environment grant; never returned or persisted."`
+}
+
+// AgentSettingsIdempotencyHeader identifies one mutation intent across retries.
+type AgentSettingsIdempotencyHeader struct {
+	Key string `header:"Idempotency-Key"`
+}
 
 // ResolveDocumentRequest is the strictly parsed document-source union.
 type ResolveDocumentRequest = documentread.Input

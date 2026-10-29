@@ -645,6 +645,7 @@ func (s *Store) ClaimChatControllerGeneration(
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.ClaimChatControllerGeneration(ctx, gen.ClaimChatControllerGenerationParams{
+		LiveReconnect:        int64(0),
 		ControllerGeneration: generation,
 		ID:                   id,
 	})
@@ -1071,6 +1072,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			BrowserCapabilityVerifier:        row.BrowserCapabilityVerifier,
 			ProviderConversationID:           row.ProviderConversationID,
 			ControllerGeneration:             row.ControllerGeneration,
+			AgentSettingsLaunchID:            row.AgentSettingsLaunchID,
 			Model:                            row.Model,
 			Effort:                           row.Effort,
 			FastMode:                         storedFastPreference(row.AgentFastMode),

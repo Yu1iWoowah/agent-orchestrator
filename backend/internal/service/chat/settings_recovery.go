@@ -47,14 +47,14 @@ func (c *Controller) recoverAgentSettingsLocked(ctx context.Context, journal age
 		}
 		plan, err = fresh.PrepareAgentSettingsRecovery(ctx, current.Settings)
 		if err != nil {
-			return true, err
+			return true, providerSettingsError(err)
 		}
 		if plan.Source != current.Settings || plan.Target != current.Settings || plan.ProviderConversationID != owner.ProviderConversationID {
 			return true, ports.ErrAgentSettingsConflict
 		}
 	}
 	if err := provider.ApplyAgentSettingsStep(ctx, plan, domain.AgentSettingsRollingBack, true); err != nil {
-		return true, err
+		return true, providerSettingsError(err)
 	}
 	fresh, err := c.settingsContext(ctx, journal)
 	if err != nil {

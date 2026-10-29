@@ -1892,6 +1892,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{id}/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read project human decisions or coordination reports with complete counts */
+        get: operations["listProjectAttention"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/attention/reports/{reportId}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark an inspected report seen without changing delivery or answer state */
+        post: operations["readProjectAttentionReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{id}/config": {
         parameters: {
             query?: never;
@@ -2540,6 +2574,41 @@ export interface paths {
         get: operations["getSessionAgentSettings"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Queue a revision-checked settings operation; accepted is not completion */
+        patch: operations["changeSessionAgentSettings"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read an authorized session settings operation */
+        get: operations["getAgentSettingsOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel an unstarted settings operation using its version */
+        post: operations["cancelAgentSettingsOperation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3830,7 +3899,7 @@ export interface paths {
         /** List structured questions with complete open, unread and history counts */
         get: operations["listSessionQuestions"];
         put?: never;
-        /** Create an idempotent user question and its readable compatibility record */
+        /** Create an idempotent user question; sourceReportId requires the active orchestrator session capability */
         post: operations["createSessionQuestion"];
         delete?: never;
         options?: never;
@@ -5215,6 +5284,11 @@ export interface components {
             kind: string;
             sessionId?: string;
         };
+        AgentSettingsAllowance: {
+            allowFast: boolean;
+            efforts: string[];
+            models: string[];
+        };
         AgentSettingsEffective: {
             effort: components["schemas"]["AgentSettingObservation"];
             fastMode: components["schemas"]["AgentSettingObservation"];
@@ -5239,6 +5313,7 @@ export interface components {
             createdAt: string;
             /** @enum {string} */
             errorCategory?: "conflict" | "cancelled" | "provider" | "storage" | "validation" | "recovery_required";
+            errorCode?: string;
             /** Format: date-time */
             finishedAt?: null | string;
             id: string;
@@ -5257,6 +5332,9 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        AgentSettingsOperationResponse: {
+            operation: components["schemas"]["AgentSettingsOperation"];
+        };
         AgentSettingsOwner: {
             accountId: string;
             branchId: string;
@@ -5269,6 +5347,12 @@ export interface components {
             /** @enum {string} */
             fastMode?: "default" | "on" | "off";
             model?: null | string;
+        };
+        AgentSettingsPolicy: {
+            enabled: boolean;
+            harnesses: {
+                [key: string]: components["schemas"]["AgentSettingsAllowance"];
+            } | null;
         };
         AgentSettingsRecovery: {
             /** Format: date-time */
@@ -5743,6 +5827,7 @@ export interface components {
             read: boolean;
             /** Format: int64 */
             sequence: number;
+            sourceReportId?: string;
             /** @enum {string} */
             state: "open" | "answered" | "cancelled" | "expired";
             supersedesId?: string;
@@ -5956,6 +6041,9 @@ export interface components {
             /** @enum {string} */
             transport: "electron-webcontents-debugger" | "chrome-extension";
         };
+        CancelAgentSettingsOperationPayload: {
+            expectedVersion: number;
+        };
         CancelReviewResponse: {
             reviewerHandleId: string;
             reviews: components["schemas"]["PRReviewState"][];
@@ -5963,6 +6051,12 @@ export interface components {
         CancelSessionInterfaceTransitionResponse: {
             ok: boolean;
             sessionId: string;
+        };
+        ChangeSessionAgentSettingsPayload: {
+            /** @enum {string} */
+            applyMode?: "after-turn" | "restart";
+            expectedRevision: number;
+            settings: components["schemas"]["AgentSettingsPatch"];
         };
         ChatAgentPermissionModes: {
             agent: string;
@@ -7487,6 +7581,39 @@ export interface components {
             repo: string;
             workspaceRepos?: components["schemas"]["WorkspaceRepo"][];
         };
+        ProjectAttentionItem: {
+            activityId?: string;
+            /** @enum {string} */
+            answerState?: "unknown";
+            branchId?: string;
+            conversationId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            deliveryState?: string;
+            id: string;
+            /** @enum {string} */
+            kind: "agent_question" | "provider_approval" | "provider_input" | "worker_report";
+            originHarness?: string;
+            questionId?: string;
+            read: boolean;
+            reportId?: string;
+            reportState?: string;
+            requestId?: string;
+            /** Format: int64 */
+            revision: number;
+            sessionId: string;
+            sessionName: string;
+            sourceBranchId?: string;
+            title: string;
+        };
+        ProjectAttentionPage: {
+            items: components["schemas"]["ProjectAttentionItem"][];
+            nextCursor?: string;
+            /** Format: int64 */
+            open: number;
+            /** Format: int64 */
+            unread: number;
+        };
         ProjectClonePreparationCleanupInput: {
             keepCheckout?: boolean;
             path: string;
@@ -7499,6 +7626,7 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             agentRules?: string;
             agentRulesFile?: string;
+            agentSettingsPolicy?: components["schemas"]["AgentSettingsPolicy"];
             autoReview?: boolean;
             canonicalRepoURL?: string;
             containerReap?: components["schemas"]["ContainerReapConfig"];
@@ -7699,6 +7827,7 @@ export interface components {
             /** @enum {string} */
             kind: "question" | "authorization";
             payload: components["schemas"]["AttentionQuestionPayload"];
+            sourceReportId?: string;
             supersedesId?: string;
         };
         QuestionPageResponse: {
@@ -7740,6 +7869,7 @@ export interface components {
             read: boolean;
             /** Format: int64 */
             sequence: number;
+            sourceReportId?: string;
             /** @enum {string} */
             state: "open" | "answered" | "cancelled" | "expired";
             supersedesId?: string;
@@ -16114,6 +16244,163 @@ export interface operations {
             };
         };
     };
+    listProjectAttention: {
+        parameters: {
+            query?: {
+                audience?: "user" | "orchestrator";
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Project identifier (registry key). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectAttentionPage"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    readProjectAttentionReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project identifier (registry key). */
+                id: string;
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     setProjectConfig: {
         parameters: {
             query?: never;
@@ -18829,6 +19116,15 @@ export interface operations {
                     "application/json": components["schemas"]["SessionAgentSettingsResponse"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -18849,6 +19145,296 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    changeSessionAgentSettings: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeSessionAgentSettingsPayload"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsOperationResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getAgentSettingsOperation: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+            };
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelAgentSettingsOperation: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+            };
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelAgentSettingsOperationPayload"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -24142,6 +24728,15 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -24183,7 +24778,10 @@ export interface operations {
     createSessionQuestion: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Opaque browser capability injected into the owning AO worker. */
+                "X-AO-Browser-Capability"?: string;
+            };
             path: {
                 /** @description Session identifier, e.g. project-1. */
                 sessionId: string;
@@ -24216,6 +24814,15 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -24285,6 +24892,15 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -24365,6 +24981,15 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -24431,6 +25056,15 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -24509,6 +25143,15 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Not Found */
             404: {
                 headers: {
@@ -24575,6 +25218,15 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -137,6 +137,7 @@ import { Badge } from "./ui/badge";
 import { cn } from "../lib/utils";
 import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { AwakeControl } from "./AwakeControl";
+import { ProjectAttentionCount } from "./ProjectAttention";
 import { SettingsSaveStatus, useSettingsPage } from "./SettingsDialog";
 import { useUiStore } from "../stores/ui-store";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
@@ -1842,6 +1843,7 @@ const ProjectItem = memo(function ProjectItem({
 									>
 										{workspace.name}
 									</span>
+									{workspace.kind !== "cloud" && !isStandalone ? <ProjectAttentionCount projectId={workspace.id} hostId={workspace.hostId}/> : null}
 									{hostLabel && <Badge variant="outline" className="sidebar-expanded-chrome relative z-[1] h-4 shrink-0 px-1.5 text-2xs group-data-[collapsible=icon]:hidden">{hostLabel}</Badge>}
 									{workspace.kind === "cloud" && (
 										<Badge

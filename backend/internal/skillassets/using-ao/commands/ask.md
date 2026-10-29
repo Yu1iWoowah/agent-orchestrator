@@ -111,3 +111,34 @@ An unavailable origin leaves the answer readable with its delivery failure. If a
 out, use `get` to inspect its saved answer and retry with the same client answer
 ID; do not assume cancellation. Ordinary conversation messages do not answer,
 cancel or approve a structured question. Read state never changes pending count.
+
+## Project coordination and explicit report handoff
+
+`ao ask project --project <project-id> --audience orchestrator --json` lists
+worker `needs_input` / `stuck` reports by stable report ID. Their answer state is
+unknown: acknowledgement/delivery is not a human answer. `--audience user`
+returns user questions and native provider requests separately, with complete
+counts and an opaque `--cursor` for subsequent pages.
+
+To involve the user, the active orchestrator of the same project explicitly
+writes a structured payload and runs:
+
+```bash
+ao ask create --key report-decision --audience user --kind question \
+  --source-report <report-id> --payload-file question.json --json
+```
+
+Keep `AO_SESSION_ID` as the orchestrator; `--session` may repeat that same ID.
+The daemon validates the managed relationship and derives the original worker.
+Forwarding also requires the owning orchestrator's existing session capability
+(`AO_SESSION_ID` and `AO_BROWSER_CAPABILITY`). The CLI sends that proof in
+`X-AO-Browser-Capability`; `--session` cannot select a different actor for a
+forward. Missing, wrong, rotated, cross-project or superseded actor proof is
+rejected. Raw credentials are not stored in the question or its retry key.
+It does not trust a supplied role or origin. A report can have only one canonical
+question. Retrying the handoff returns that question; changing its content uses
+an explicit versioned revision. The question retains `sourceReportId`, stays in
+the original worker session after orchestrator replacement, and delivers saved
+human answers to that worker. Forwarding neither answers nor acknowledges the
+original report and does not alter report delivery scheduling. Provider requests
+still use their sole native form in their original session.

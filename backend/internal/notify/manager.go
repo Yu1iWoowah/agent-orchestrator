@@ -84,6 +84,19 @@ func (m *Manager) Notify(ctx context.Context, intent Intent) error {
 	if m == nil || m.store == nil {
 		return errors.New("notify: store is required")
 	}
+	if intent.Type == domain.NotificationNeedsInput && intent.SourceKey == "" {
+		if sources, ok := m.store.(interface {
+			HasCanonicalAttention(context.Context, domain.SessionID) (bool, error)
+		}); ok {
+			canonical, err := sources.HasCanonicalAttention(ctx, intent.SessionID)
+			if err != nil {
+				return err
+			}
+			if canonical {
+				return nil
+			}
+		}
+	}
 	if intent.CreatedAt.IsZero() {
 		intent.CreatedAt = m.clock().UTC()
 	}
@@ -166,6 +179,38 @@ func (m *Manager) publishResolved(ctx context.Context, resolved []domain.Notific
 		event := domain.NotificationEvent{Kind: domain.NotificationResolved, Record: rec}
 		if err := m.publisher.Publish(ctx, event); err != nil {
 			return fmt.Errorf("notify publish resolved: %w", err)
+		}
+	}
+	return nil
+}
+
+// ReconcileAttention uses the existing notification channel/settings without navigation.
+func (m *Manager) ReconcileAttention(ctx context.Context, project domain.ProjectID, items []domain.ProjectAttentionItem) error {
+	for _, item := range items {
+		if item.Read || item.Kind == "worker_report" {
+			continue
+		}
+		if err := m.Notify(ctx, Intent{Type: domain.NotificationNeedsInput, SessionID: item.SessionID, ProjectID: project, SessionDisplayName: item.SessionName, SourceKey: fmt.Sprintf("attention:%s:%d", item.ID, item.Revision)}); err != nil {
+			return err
+		}
+	}
+	store, ok := m.store.(interface {
+		ReconcileAttentionNotifications(context.Context, domain.ProjectID, []domain.ProjectAttentionItem, time.Time) ([]domain.NotificationEvent, error)
+	})
+	if !ok {
+		return errors.New("attention notification reconciliation is unavailable")
+	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
+	events, err := store.ReconcileAttentionNotifications(ctx, project, items, m.clock().UTC())
+	if err != nil {
+		return err
+	}
+	if m.publisher != nil {
+		for _, event := range events {
+			if err := m.publisher.Publish(ctx, event); err != nil {
+				return fmt.Errorf("notify publish attention: %w", err)
+			}
 		}
 	}
 	return nil
