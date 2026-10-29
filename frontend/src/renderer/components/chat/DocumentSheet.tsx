@@ -443,7 +443,7 @@ function DocumentSheetReader({
 						data-conversation-nonmodal=""
 						showCloseButton={false}
 						aria-describedby={undefined}
-						className="pointer-events-none gap-0 border-0 bg-transparent p-0 shadow-none transition-none"
+						className="pointer-events-none gap-0 border-0 bg-transparent p-0 shadow-none transition-none data-[state=open]:animate-none data-[state=closed]:animate-none"
 						style={{
 							inset: "auto",
 							left:

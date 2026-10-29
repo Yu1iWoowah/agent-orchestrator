@@ -89,7 +89,7 @@ export function DocumentLink({
 			</ContextMenu>
 			<TooltipContent
 				data-document-link-preview=""
-				className="pointer-events-none max-w-md break-all"
+				className="pointer-events-none max-w-md break-all data-[state=closed]:animate-none"
 				aria-live="polite"
 			>
 				{query.data ? (

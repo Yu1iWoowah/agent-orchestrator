@@ -264,3 +264,19 @@ test("document Markdown follows the selected app theme independently of OS prefe
 	});
 	expect(colors.actual).toBe(colors.expected);
 });
+
+test("opening the temporary document keeps its first frame inside the Chat safe area @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.emulateMedia({ reducedMotion: "no-preference" });
+	await page.getByRole("link", { name: "Worker guide", exact: true }).click();
+	const sheet = page.getByRole("dialog", { name: "Document", exact: true });
+	const frame = sheet.getByRole("region");
+	await frame.waitFor({ state: "visible" });
+	const bounds = await frame.boundingBox();
+	const composer = await page.locator(".cursor-chat-composer-dock").boundingBox();
+	expect(bounds).not.toBeNull();
+	expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1440);
+	expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(composer!.y - 8);
+});
