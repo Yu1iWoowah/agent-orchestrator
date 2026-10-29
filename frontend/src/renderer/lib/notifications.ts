@@ -664,6 +664,13 @@ export function createNotificationsTransport(
 							watched: isWatchingNeedsInputSession(notification, getVisibleAgentSessionId()),
 						});
 					});
+					// Reading a source changes unread state, not its unresolved state.
+					// Reconcile both caches; an in-flight refresh is marked dirty so a
+					// stale response or buffered create cannot restore the old badge.
+					source.addEventListener("notification_read", (event) => {
+						const notification = parseNotificationEvent(event);
+						if (notification?.status === "read") void invalidateNotifications();
+					});
 					// AO closed the underlying issue (the session got its input, the
 					// PR stopped waiting on a merge). Patch the row live so an open
 					// panel reflects that without waiting for a refetch.

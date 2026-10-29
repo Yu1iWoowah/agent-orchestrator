@@ -90,6 +90,10 @@ vi.mock("../lib/telemetry", () => ({
 	captureRendererEvent: vi.fn(),
 	captureRendererException: vi.fn(),
 }));
+vi.mock("./ProjectAttention", () => ({
+	ProjectAttention: ({ projectId }: { projectId: string }) => <button type="button" aria-label="Open project attention" data-project-scope={projectId} />,
+}));
+
 vi.mock("./NotificationCenter", () => ({
 	NotificationCenter: () => <button aria-label="Notifications" type="button" />,
 }));
@@ -966,4 +970,12 @@ describe("TopbarArchiveButton", () => {
 		expect(await screen.findByText("worker one failed")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Archive session" })).toBeEnabled();
 	});
+});
+
+it("mounts project attention in the framed shell's project board actions", () => {
+	locationMock.pathname = "/projects/proj-1";
+	renderTopbarSessions([worker], "");
+	const entry = screen.getByRole("button", { name: "Open project attention" });
+	expect(entry).toHaveAttribute("data-project-scope", "proj-1");
+	expect(screen.getByTestId("workspace-topbar-actions")).toContainElement(entry);
 });

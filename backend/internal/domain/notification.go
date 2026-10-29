@@ -116,6 +116,8 @@ type NotificationEventKind string
 const (
 	// NotificationCreated announces a newly persisted notification.
 	NotificationCreated NotificationEventKind = "created"
+	// NotificationReadEvent synchronizes inspection without resolving the source.
+	NotificationReadEvent NotificationEventKind = "read"
 	// NotificationResolved announces that a stored notification's underlying
 	// issue went away, so open dashboards can drop it from the unresolved list.
 	NotificationResolved NotificationEventKind = "resolved"
