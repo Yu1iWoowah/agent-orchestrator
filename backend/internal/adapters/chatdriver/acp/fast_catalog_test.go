@@ -142,9 +142,17 @@ func TestFastPreferenceSkipsMissingModelOptionAndReturns(t *testing.T) {
 					if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 						t.Fatal(err)
 					}
-					event := nextEvent(t, conv.Events())
-					for event.Kind != ports.ChatEventTurnCompleted {
-						event = nextEvent(t, conv.Events())
+					// Completion is emitted before the active turn is released.
+					// Wait for the following readiness event before sending again.
+					completed := false
+					for {
+						event := nextEvent(t, conv.Events())
+						if event.Kind == ports.ChatEventTurnCompleted {
+							completed = true
+						}
+						if completed && event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady {
+							break
+						}
 					}
 				}
 				a.configMu.Lock()
