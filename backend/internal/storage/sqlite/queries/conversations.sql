@@ -681,14 +681,18 @@ RETURNING latest_sequence;
 -- name: InsertConversationTurn :exec
 INSERT INTO conversation_turns (
     id, conversation_id, handled_by_session_id, provider_turn_id,
-    controller_generation, retry_of_turn_id, state, requested_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+    controller_generation, retry_of_turn_id, state, requested_at, intake_sequence
+) VALUES (sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(handled_by_session_id), sqlc.arg(provider_turn_id),
+    sqlc.arg(controller_generation), sqlc.narg(retry_of_turn_id), sqlc.arg(state), sqlc.arg(requested_at),
+    (SELECT latest_sequence FROM conversations WHERE id = sqlc.arg(conversation_id)));
 
 -- name: InsertReviewConversationTurn :exec
 INSERT INTO conversation_turns (
     id, conversation_id, handled_by_session_id, handled_by_review_id,
-    provider_turn_id, controller_generation, retry_of_turn_id, state, requested_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+    provider_turn_id, controller_generation, retry_of_turn_id, state, requested_at, intake_sequence
+) VALUES (sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(handled_by_session_id), sqlc.narg(handled_by_review_id),
+    sqlc.arg(provider_turn_id), sqlc.arg(controller_generation), sqlc.narg(retry_of_turn_id), sqlc.arg(state), sqlc.arg(requested_at),
+    (SELECT latest_sequence FROM conversations WHERE id = sqlc.arg(conversation_id)));
 
 -- A turn the PROVIDER started that AO never dispatched: a compaction runs as its
 -- own turn, and so does work resumed inside the provider's own history. Without a
@@ -699,14 +703,18 @@ INSERT INTO conversation_turns (
 -- name: AdoptProviderConversationTurn :exec
 INSERT OR IGNORE INTO conversation_turns (
     id, conversation_id, handled_by_session_id, provider_turn_id,
-    controller_generation, state, requested_at, started_at
-) VALUES (?, ?, ?, ?, ?, 'running', ?, ?);
+    controller_generation, state, requested_at, started_at, intake_sequence
+) VALUES (sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(handled_by_session_id), sqlc.arg(provider_turn_id),
+    sqlc.arg(controller_generation), 'running', sqlc.arg(requested_at), sqlc.narg(started_at),
+    (SELECT latest_sequence + 1 FROM conversations WHERE id = sqlc.arg(conversation_id)));
 
 -- name: AdoptReviewProviderConversationTurn :exec
 INSERT OR IGNORE INTO conversation_turns (
     id, conversation_id, handled_by_session_id, handled_by_review_id,
-    provider_turn_id, controller_generation, state, requested_at, started_at
-) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?);
+    provider_turn_id, controller_generation, state, requested_at, started_at, intake_sequence
+) VALUES (sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(handled_by_session_id), sqlc.narg(handled_by_review_id),
+    sqlc.arg(provider_turn_id), sqlc.arg(controller_generation), 'running', sqlc.arg(requested_at), sqlc.narg(started_at),
+    (SELECT latest_sequence + 1 FROM conversations WHERE id = sqlc.arg(conversation_id)));
 
 -- Correlating a provider notification back to its turn happens on every streamed
 -- event, so it is a keyed lookup rather than a scan.

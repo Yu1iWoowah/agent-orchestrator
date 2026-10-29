@@ -22,6 +22,13 @@ type TranscriptSourceSnapshot struct {
 	Sources             []UsageSourceRecord
 }
 
+// TranscriptSourceCutoff pins AO projection membership while later queued
+// intake remains visible and durable for the successor. It does not pin native
+// bytes, which have their own verified per-epoch boundaries.
+type TranscriptSourceCutoff struct {
+	ConversationCutoffs map[string]int64 `json:"conversationCutoffs"`
+}
+
 // TranscriptTerminalTurn retains the native identity omitted by summary views.
 type TranscriptTerminalTurn struct {
 	ID          int64
@@ -49,4 +56,13 @@ type TranscriptTurnInput struct {
 	PromotedToTurnID  string
 	BatchedInput      bool
 	Reserved          bool
+}
+
+// TranscriptEpochCutoff is the immutable native boundary of one export attempt.
+type TranscriptEpochCutoff struct {
+	SHA256   string `json:"sha256,omitempty"`
+	NativeID string `json:"nativeId"`
+	Schema   string `json:"schema"`
+	Bytes    int64  `json:"bytes"`
+	LeafID   string `json:"leafId"`
 }

@@ -298,7 +298,7 @@ func (q *Queries) SelectTranscriptTerminalTurns(ctx context.Context, sessionID s
 }
 
 const selectTranscriptTurns = `-- name: SelectTranscriptTurns :many
-SELECT id, conversation_id, handled_by_session_id, provider_turn_id, controller_generation, state, error_message, requested_at, started_at, completed_at, diff_json, rolled_back_at, plan_json, branch_id, promotion_started_at, promoted_to_turn_id, retry_of_turn_id, handled_by_review_id, usage_limit_resets_at, usage_limit_auto_resume, usage_limit_resume_error, batched_input, provider_input_text, agent_settings_snapshot_json FROM conversation_turns WHERE handled_by_session_id=?1 ORDER BY conversation_id, requested_at, id
+SELECT id, conversation_id, handled_by_session_id, provider_turn_id, controller_generation, state, error_message, requested_at, started_at, completed_at, diff_json, rolled_back_at, plan_json, branch_id, promotion_started_at, promoted_to_turn_id, retry_of_turn_id, handled_by_review_id, usage_limit_resets_at, usage_limit_auto_resume, usage_limit_resume_error, batched_input, provider_input_text, intake_sequence, agent_settings_snapshot_json FROM conversation_turns WHERE handled_by_session_id=?1 ORDER BY conversation_id, requested_at, id
 `
 
 func (q *Queries) SelectTranscriptTurns(ctx context.Context, sessionID domain.SessionID) ([]ConversationTurn, error) {
@@ -334,6 +334,7 @@ func (q *Queries) SelectTranscriptTurns(ctx context.Context, sessionID domain.Se
 			&i.UsageLimitResumeError,
 			&i.BatchedInput,
 			&i.ProviderInputText,
+			&i.IntakeSequence,
 			&i.AgentSettingsSnapshotJson,
 		); err != nil {
 			return nil, err

@@ -6,15 +6,11 @@ import (
 	"crypto/sha256"
 	"io"
 	"os"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/filefingerprint"
 )
 
 const transcriptTailWindow = 64 << 10
-
-type nativeFileStamp struct {
-	device           uint64
-	ctimeSeconds     int64
-	ctimeNanoseconds int64
-}
 
 // transcriptTail keeps bounded bytes from the stream actually parsed.
 type transcriptTail struct{ data []byte }
@@ -34,7 +30,7 @@ func (t *transcriptTail) Write(p []byte) (int, error) {
 }
 
 func nativeStabilityCheck(rootPath, relative string, rootInfo, expected os.FileInfo, tail [32]byte) (func(context.Context) error, bool) {
-	stamp, available := nativeFileChangeStamp(expected)
+	fingerprint, available := filefingerprint.Capture(expected)
 	check := func(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -54,10 +50,7 @@ func nativeStabilityCheck(rootPath, relative string, rootInfo, expected os.FileI
 		if err != nil || !os.SameFile(rootInfo, currentRoot) {
 			return changed()
 		}
-		matches := func(info os.FileInfo) bool {
-			current, ok := nativeFileChangeStamp(info)
-			return ok && current == stamp && info.Mode().IsRegular() && os.SameFile(expected, info) && info.Size() == expected.Size() && info.ModTime().Equal(expected.ModTime())
-		}
+		matches := fingerprint.Matches
 		named, err := root.Lstat(relative)
 		if err != nil || !matches(named) {
 			return changed()

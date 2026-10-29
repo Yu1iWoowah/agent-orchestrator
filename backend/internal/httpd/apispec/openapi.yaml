@@ -21494,6 +21494,8 @@ components:
         size:
           format: int64
           type: integer
+        writeReceiptId:
+          type: string
       required:
       - path
       - content
