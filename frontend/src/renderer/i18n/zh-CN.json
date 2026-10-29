@@ -1,4 +1,13 @@
 {
+	"decision.sourceReport": "Source report: {{id}}",
+	"projectAttention.count": "Awaiting you: {{count}}",
+	"projectAttention.open": "Open project attention",
+	"projectAttention.title": "Project attention",
+	"projectAttention.description": "Human decisions and orchestrator coordination stay separate. Open the original session for provider requests.",
+	"projectAttention.coordination": "Orchestrator reports",
+	"projectAttention.totals": "{{open}} items · {{unread}} unread",
+	"projectAttention.offline": "The project count is unknown. Check the host connection and retry.",
+	"projectAttention.reportStatus": "Answer state unknown · report delivery: {{delivery}}",
 	"documents.catalog.localOnly": "文档列表只能在这台电脑上使用。",
 	"documents.connection.localOnly": "文档路径查询只能在这台电脑上使用。",
 	"documents.read.error": "无法加载文档。",

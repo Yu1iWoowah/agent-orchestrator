@@ -7,13 +7,19 @@ import (
 
 // Durable question lookup and compare-and-swap errors.
 var (
-	ErrAttentionQuestionNotFound = errors.New("question not found in this session")
-	ErrAttentionQuestionConflict = errors.New("question or idempotency payload changed")
+	ErrAttentionQuestionForbidden = errors.New("only the active same-project orchestrator may forward this report")
+	ErrAttentionQuestionNotFound  = errors.New("question not found in this session")
+	ErrAttentionQuestionConflict  = errors.New("question or idempotency payload changed")
 )
 
 // AttentionQuestionCreate carries caller input; source ownership is derived from the session.
 type AttentionQuestionCreate struct {
+	// ActorCapability is transient request proof; ActorVerifier is set only by
+	// the service after validation and fenced again inside the store transaction.
+	ActorCapability string `json:"-"`
+	ActorVerifier   string `json:"-"`
 	ID              string
+	SourceReportID  string
 	OriginSessionID SessionID
 	ClientKey       string
 	Audience        string
@@ -26,6 +32,7 @@ type AttentionQuestionCreate struct {
 // AttentionQuestionRecord is the durable source, lifecycle, read state and optional answer.
 type AttentionQuestionRecord struct {
 	ID              string                   `json:"id"`
+	SourceReportID  string                   `json:"sourceReportId,omitempty"`
 	ProjectID       ProjectID                `json:"projectId"`
 	OriginSessionID SessionID                `json:"originSessionId"`
 	OriginHarness   string                   `json:"originHarness"`
