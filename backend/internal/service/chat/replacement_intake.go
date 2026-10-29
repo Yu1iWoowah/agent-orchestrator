@@ -66,15 +66,18 @@ func (s *Service) queueRetiredReplacementIntake(ctx context.Context, source doma
 		GetRetiredOrchestratorReplacementBySource(context.Context, domain.SessionID) (domain.OrchestratorReplacement, bool, error)
 	})
 	if !ok {
-		return zero, domain.ErrReplacementIntakeFenced
+		return zero, ErrNoController
 	}
 	op, found, err := reader.GetRetiredOrchestratorReplacementBySource(ctx, source.ID)
 	if err != nil {
 		return zero, err
 	}
+	if !found {
+		return zero, ErrNoController
+	}
 	owner := op.SourceOwner
 	owner.IsTerminated = true
-	if !found || op.ProjectID != source.ProjectID || source.ControllerOwner() != owner || source.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier {
+	if op.ProjectID != source.ProjectID || source.ControllerOwner() != owner || source.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier {
 		return zero, domain.ErrReplacementSourceChanged
 	}
 	writer, ok := s.store.(retiredReplacementIntakeWriter)

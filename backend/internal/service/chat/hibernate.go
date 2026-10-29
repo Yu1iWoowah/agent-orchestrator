@@ -572,6 +572,9 @@ func (s *Service) admitController(ctx context.Context, id domain.SessionID, wake
 }
 
 func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error {
+	if err := s.replacementWakeFence(ctx, id); err != nil {
+		return err
+	}
 	if s.wakeChat == nil {
 		return ErrNoController
 	}
@@ -666,6 +669,12 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 	wakeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	defer cancel()
 	if err := s.wakeChat(wakeCtx, id); err != nil {
+		// Admission may change after the preflight read. Manager's public
+		// resume path returns its own fence errors; preserve them while keeping
+		// view/background wake from treating refusal as provider failure.
+		if errors.Is(err, domain.ErrReplacementInProgress) || errors.Is(err, domain.ErrReplacementSourceRetired) {
+			err = fmt.Errorf("%w: %w", domain.ErrReplacementIntakeFenced, err)
+		}
 		return finish(err)
 	}
 	if !s.HasLiveChatController(id) {
