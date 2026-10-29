@@ -13443,6 +13443,19 @@ paths:
       summary: Clean up terminated session workspaces
       tags:
       - sessions
+  /api/v1/sessions/spawn-capabilities:
+    get:
+      operationId: getSpawnCapabilities
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpawnCapabilitiesResponse'
+          description: OK
+      summary: Read supported spawn settings contract
+      tags:
+      - sessions
   /api/v1/settings:
     get:
       operationId: getSettings
@@ -14710,6 +14723,12 @@ components:
       properties:
         effort:
           type: string
+        fastMode:
+          enum:
+          - default
+          - "on"
+          - "off"
+          type: string
         mode:
           type: string
         model:
@@ -14918,10 +14937,13 @@ components:
           - supported
           - unsupported
           type: string
+        isDefault:
+          type: boolean
         model:
           type: string
       required:
       - model
+      - isDefault
       - efforts
       - fast
       type: object
@@ -15064,6 +15086,36 @@ components:
           - default
           - "on"
           - "off"
+          type: string
+        model:
+          type: string
+      required:
+      - model
+      - effort
+      - fastMode
+      type: object
+    AgentSettingsPatch:
+      properties:
+        effort:
+          type:
+          - "null"
+          - string
+        fastMode:
+          enum:
+          - default
+          - "on"
+          - "off"
+          type: string
+        model:
+          type:
+          - "null"
+          - string
+      type: object
+    AgentSettingsSources:
+      properties:
+        effort:
+          type: string
+        fastMode:
           type: string
         model:
           type: string
@@ -17169,6 +17221,8 @@ components:
           - mergeable
           - merged
           type: string
+        spawnAgentSettings:
+          $ref: '#/components/schemas/SpawnAgentSettingsResolution'
         staleBinary:
           $ref: '#/components/schemas/SessionStaleBinary'
         status:
@@ -22870,6 +22924,33 @@ components:
       - state
       - createdAt
       type: object
+    SpawnAgentSettingsResolution:
+      properties:
+        accountId:
+          type: string
+        effortCleared:
+          type: boolean
+        reason:
+          type: string
+        settings:
+          $ref: '#/components/schemas/AgentSettings'
+        sources:
+          $ref: '#/components/schemas/AgentSettingsSources'
+        validation:
+          type: string
+      required:
+      - settings
+      - sources
+      - validation
+      - effortCleared
+      type: object
+    SpawnCapabilitiesResponse:
+      properties:
+        agentSettingsVersion:
+          type: integer
+      required:
+      - agentSettingsVersion
+      type: object
     SpawnOrchestratorRequest:
       properties:
         approvalMode:
@@ -22900,6 +22981,8 @@ components:
       type: object
     SpawnSessionRequest:
       properties:
+        agentSettings:
+          $ref: '#/components/schemas/AgentSettingsPatch'
         approvalMode:
           enum:
           - default

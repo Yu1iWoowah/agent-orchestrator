@@ -585,6 +585,13 @@ func Run(buildVersion string) error {
 	}
 	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
+	agentSettingsSvc := agentsettings.New(store, time.Now)
+	agentSettingsSvc.SetCatalogFingerprintSource(agentSvc)
+	if wired, ok := sessMgr.(interface {
+		SetAgentSettingsPreflight(ports.AgentSettingsPreflight)
+	}); ok {
+		wired.SetAgentSettingsPreflight(agentSettingsSvc)
+	}
 	if wired, ok := sessMgr.(interface {
 		SetAgentAccounts(ports.AgentAccountLaunchEnv)
 	}); ok {
@@ -1025,7 +1032,7 @@ func Run(buildVersion string) error {
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
-		AgentSettings:      agentsettings.New(store, time.Now),
+		AgentSettings:      agentSettingsSvc,
 		ProjectDocuments:   sharedDocuments,
 		DocumentRead:       documentread.New(documentread.Deps{Store: store, Shared: sharedDocuments, DataDir: cfg.DataDir}),
 		ArtifactVersions:   lcStack.ArtifactVersions,

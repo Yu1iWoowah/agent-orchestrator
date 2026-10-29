@@ -773,6 +773,12 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	if cfg.ProviderConversationID != "" {
 		cfg.Effort = conversation.Settings.ReasoningEffort
 	}
+	if cfg.ProviderConversationID != "" {
+		cfg.FastMode = conversation.Settings.AgentFastMode
+	}
+	if cfg.FastMode == "" {
+		cfg.FastMode = domain.AgentFastDefault
+	}
 	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
 		cfg.Permissions = conversation.Settings.ApprovalMode
 	}
@@ -782,6 +788,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		conversation.Settings.Model = cfg.Model
 		conversation.Settings.ReasoningEffort = cfg.Effort
+		conversation.Settings.AgentFastMode = cfg.FastMode
+		conversation.Settings.FastMode = cfg.FastMode == domain.AgentFastOn
 		conversation.Settings.ApprovalMode = cfg.Permissions
 		// A switch target's settings are saved by the switch's commit.
 		if cfg.ProviderSwitch == nil {
@@ -829,6 +837,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			PrepareEnv:             prepareEnv,
 			Model:                  cfg.Model,
 			Effort:                 cfg.Effort,
+			FastMode:               cfg.FastMode,
 			Permissions:            cfg.Permissions,
 			ReadOnly:               cfg.ReadOnly,
 			SystemPrompt:           providerSystemPrompt,
@@ -847,6 +856,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			PrepareEnv:            prepareEnv,
 			Model:                 cfg.Model,
 			Effort:                cfg.Effort,
+			FastMode:              cfg.FastMode,
 			Permissions:           cfg.Permissions,
 			ReadOnly:              cfg.ReadOnly,
 			SystemPrompt:          providerSystemPrompt,
@@ -2026,9 +2036,9 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 			state = live
 			caps = controller.Capabilities()
 		}
-		// Fast and plan mode live with the controller, not in the stored row.
+		// Overlay current controller choices; plan mode remains live-only.
 		live := controller.Settings()
-		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.PlanMode
+		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.AgentFastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.AgentFastMode, live.PlanMode
 	}
 
 	return Snapshot{
@@ -2134,9 +2144,9 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 			state = live
 			caps = controller.Capabilities()
 		}
-		// Fast and plan mode live with the controller, not in the stored row.
+		// Overlay current controller choices; plan mode remains live-only.
 		live := controller.Settings()
-		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.PlanMode
+		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.AgentFastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.AgentFastMode, live.PlanMode
 	}
 	return Snapshot{
 		Conversation:                     rows.Conversation,
@@ -2558,7 +2568,7 @@ func (s *Service) SetConfigOption(
 		}
 	}
 	options = permissionConfigOptions(record.Harness, options)
-	settings, _ := settingsFromConfigOptions(previous, options)
+	settings, _ := settingsFromConfigOptions(previous, options, configID)
 	if record.Harness == domain.HarnessClaudeCode {
 		// Provider-owned defaults stay implicit so future Claude defaults still apply.
 		if settings.Model == "default" {
@@ -2613,6 +2623,7 @@ func restoreOpenCodeMode(ctx context.Context, conv ports.ChatConversation, mode 
 func settingsFromConfigOptions(
 	settings domain.ConversationSettings,
 	options []ports.ChatConfigOption,
+	changedConfigID string,
 ) (domain.ConversationSettings, bool) {
 	next := settings
 	hasEffort := false
@@ -2623,6 +2634,22 @@ func settingsFromConfigOptions(
 			}
 		}
 		switch {
+		// A complete catalog also echoes provider defaults, not just user intent.
+		case option.ID == "fast" && changedConfigID == "fast":
+			mode := domain.AgentFastMode(option.Current.Select)
+			if option.Type == ports.ChatConfigOptionBoolean {
+				if option.Current.Boolean == nil {
+					continue
+				}
+				mode = domain.AgentFastOff
+				if *option.Current.Boolean {
+					mode = domain.AgentFastOn
+				}
+			}
+			if mode == domain.AgentFastOn || mode == domain.AgentFastOff {
+				next.AgentFastMode = mode
+				next.FastMode = mode == domain.AgentFastOn
+			}
 		case option.ID == "model" || option.Category == "model":
 			if option.Current.Select != "" {
 				next.Model = option.Current.Select

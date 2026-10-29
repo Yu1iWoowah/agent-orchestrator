@@ -29,9 +29,10 @@ const (
 
 // ModelCapabilities lists advertised choices, never inferred model features.
 type ModelCapabilities struct {
-	Model   string          `json:"model"`
-	Efforts []string        `json:"efforts"`
-	Fast    CapabilityState `json:"fast" enum:"unknown,supported,unsupported"`
+	Model     string          `json:"model"`
+	IsDefault bool            `json:"isDefault"`
+	Efforts   []string        `json:"efforts"`
+	Fast      CapabilityState `json:"fast" enum:"unknown,supported,unsupported"`
 }
 
 // Capabilities ties saved model evidence to its account and owner context.
@@ -49,13 +50,20 @@ type Capabilities struct {
 // Snapshot combines durable preferences with independently qualified evidence.
 type Snapshot struct {
 	domain.SessionAgentSettings
-	Capabilities Capabilities `json:"capabilities"`
+	Capabilities       Capabilities `json:"capabilities"`
+	catalogFingerprint string
+}
+
+// CatalogFingerprintSource owns the current discovery inputs for a catalog.
+type CatalogFingerprintSource interface {
+	CatalogFingerprint(context.Context, string, string) (string, error)
 }
 
 // Service provides read-only session settings.
 type Service struct {
-	store Store
-	now   func() time.Time
+	store         Store
+	now           func() time.Time
+	catalogInputs CatalogFingerprintSource
 }
 
 // New constructs a reader with an injectable freshness clock.
@@ -64,6 +72,11 @@ func New(store Store, now func() time.Time) *Service {
 		now = time.Now
 	}
 	return &Service{store: store, now: now}
+}
+
+// SetCatalogFingerprintSource completes startup wiring for strict spawn checks.
+func (s *Service) SetCatalogFingerprintSource(source CatalogFingerprintSource) {
+	s.catalogInputs = source
 }
 
 // Read only consumes saved facts. A managed-account catalog is deliberately
@@ -94,6 +107,10 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 	}
 	if !found {
 		return result, nil
+	}
+	result.catalogFingerprint = cached.InputFingerprint
+	if result.catalogFingerprint == "" {
+		result.catalogFingerprint = cached.BinaryVersion
 	}
 	var catalog ports.AgentModelCatalog
 	if err = json.Unmarshal([]byte(cached.CatalogJSON), &catalog); err != nil {
@@ -139,7 +156,7 @@ func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, erro
 			fast = CapabilitySupported
 		}
 		efforts := append([]string{}, model.Efforts...)
-		result.Capabilities.Models = append(result.Capabilities.Models, ModelCapabilities{Model: model.ID, Efforts: efforts, Fast: fast})
+		result.Capabilities.Models = append(result.Capabilities.Models, ModelCapabilities{Model: model.ID, IsDefault: model.IsDefault, Efforts: efforts, Fast: fast})
 	}
 	return result, nil
 }

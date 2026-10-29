@@ -164,6 +164,10 @@ var schemaNames = map[string]string{
 	"AgentsettingsCapabilities":                            "SessionAgentSettingsCapabilities",
 	"AgentsettingsModelCapabilities":                       "AgentModelSettingsCapabilities",
 	"DomainAgentSettings":                                  "AgentSettings",
+	"DomainAgentSettingsPatch":                             "AgentSettingsPatch",
+	"DomainAgentSettingsSources":                           "AgentSettingsSources",
+	"DomainSpawnAgentSettingsResolution":                   "SpawnAgentSettingsResolution",
+	"ControllersSpawnCapabilitiesResponse":                 "SpawnCapabilitiesResponse",
 	"ControllersResolveDocumentResponse":                   "ResolveDocumentResponse",
 	"ControllersDocumentCatalogResponse":                   "DocumentCatalogResponse",
 	"DocumentreadInput":                                    "ResolveDocumentRequest",
@@ -2890,6 +2894,11 @@ func sessionOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/spawn-capabilities", id: "getSpawnCapabilities", tag: "sessions",
+			summary: "Read supported spawn settings contract",
+			resps:   []respUnit{{http.StatusOK, controllers.SpawnCapabilitiesResponse{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/sessions", id: "spawnSession", tag: "sessions",

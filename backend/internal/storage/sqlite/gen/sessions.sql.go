@@ -221,7 +221,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions, agent_fast_mode, spawn_agent_settings_json,
     requested_output,
     provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
@@ -289,6 +289,8 @@ type GetSessionRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	AgentFastMode                    string
+	SpawnAgentSettingsJson           string
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
@@ -373,6 +375,8 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.Model,
 		&i.Effort,
 		&i.SessionPermissions,
+		&i.AgentFastMode,
+		&i.SpawnAgentSettingsJson,
 		&i.RequestedOutput,
 		&i.ProvisionState,
 		&i.ProvisionError,
@@ -411,7 +415,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions, agent_fast_mode, spawn_agent_settings_json,
     requested_output,
     provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
@@ -479,6 +483,8 @@ type GetSessionByAutomationRunIDRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	AgentFastMode                    string
+	SpawnAgentSettingsJson           string
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
@@ -563,6 +569,8 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 		&i.Model,
 		&i.Effort,
 		&i.SessionPermissions,
+		&i.AgentFastMode,
+		&i.SpawnAgentSettingsJson,
 		&i.RequestedOutput,
 		&i.ProvisionState,
 		&i.ProvisionError,
@@ -764,7 +772,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions, agent_fast_mode, spawn_agent_settings_json,
     requested_output,
     provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
@@ -832,6 +840,8 @@ type ListAllSessionsRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	AgentFastMode                    string
+	SpawnAgentSettingsJson           string
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
@@ -922,6 +932,8 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.Model,
 			&i.Effort,
 			&i.SessionPermissions,
+			&i.AgentFastMode,
+			&i.SpawnAgentSettingsJson,
 			&i.RequestedOutput,
 			&i.ProvisionState,
 			&i.ProvisionError,
@@ -1003,7 +1015,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions, agent_fast_mode, spawn_agent_settings_json,
     requested_output,
     provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
@@ -1071,6 +1083,8 @@ type ListSessionsByProjectRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	AgentFastMode                    string
+	SpawnAgentSettingsJson           string
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
@@ -1161,6 +1175,8 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.Model,
 			&i.Effort,
 			&i.SessionPermissions,
+			&i.AgentFastMode,
+			&i.SpawnAgentSettingsJson,
 			&i.RequestedOutput,
 			&i.ProvisionState,
 			&i.ProvisionError,
@@ -2066,6 +2082,26 @@ type SetTaskPreparationBaseParams struct {
 // here would overwrite the visible session's harness and display fields.
 func (q *Queries) SetTaskPreparationBase(ctx context.Context, arg SetTaskPreparationBaseParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setTaskPreparationBase, arg.DiffBaseSha, arg.DiffBaseRef, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setTaskPreparationHarness = `-- name: SetTaskPreparationHarness :execrows
+UPDATE sessions SET harness = ?1
+WHERE id = ?2 AND is_task_preparation = 1 AND is_terminated = 0 AND harness = ''
+`
+
+type SetTaskPreparationHarnessParams struct {
+	Harness domain.AgentHarness
+	ID      domain.SessionID
+}
+
+// Select the claimed preparation's harness before account binding and settings
+// validation, without publishing it or overwriting concurrent workspace facts.
+func (q *Queries) SetTaskPreparationHarness(ctx context.Context, arg SetTaskPreparationHarnessParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTaskPreparationHarness, arg.Harness, arg.ID)
 	if err != nil {
 		return 0, err
 	}
