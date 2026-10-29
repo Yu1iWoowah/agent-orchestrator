@@ -56,6 +56,8 @@ type SessionWorkspaceLocator interface {
 // User shells survive desktop and daemon restarts. appRunID scopes trusted
 // auth terminals, whose owning authentication flow ends with the app launch.
 type Service struct {
+	// commandMu keeps reconciliation from forgetting an intent before Create settles.
+	commandMu           sync.Mutex
 	runtime             ShellRuntime
 	store               Store
 	projects            ProjectRootLocator
@@ -358,9 +360,15 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 	if err := validateOpenCommandTerminalInput(in); err != nil {
 		return ShellTerminal{}, err
 	}
-	handleID, err := s.newHandleID()
-	if err != nil {
-		return ShellTerminal{}, fmt.Errorf("open command terminal: handle id: %w", err)
+	handleID := in.HandleID
+	if handleID == "" {
+		var err error
+		handleID, err = s.newHandleID()
+		if err != nil {
+			return ShellTerminal{}, err
+		}
+	} else if !strings.HasPrefix(handleID, "shellterm-") || strings.ContainsAny(handleID, "/\\:") {
+		return ShellTerminal{}, errors.New("invalid trusted terminal id")
 	}
 
 	workingDir := in.WorkingDir
@@ -598,9 +606,13 @@ type openTerminalConfig struct {
 	startOnAttach            bool
 }
 
-// openTerminal creates and persists a terminal, rolling the runtime back on
-// every failure after Create so an untracked PTY cannot leak.
+// openTerminal records trusted ownership before any runtime can start.
+// User shells retain their existing creation and rollback behavior.
 func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (ShellTerminal, error) {
+	if cfg.transient {
+		s.commandMu.Lock()
+		defer s.commandMu.Unlock()
+	}
 	handleID := cfg.handleID
 	if handleID == "" {
 		var err error
@@ -617,27 +629,8 @@ func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (She
 	// SessionID is the runtime adapters' name for "what to call this PTY"; it
 	// is not a session row and no sessions record is ever created. The
 	// shellterm- prefix keeps the two namespaces disjoint.
-	handle, err := s.runtime.Create(ctx, ports.RuntimeConfig{
-		SessionID:     domain.SessionID(handleID),
-		WorkspacePath: cfg.workingDir,
-		Argv:          cfg.argv,
-		Env:           cfg.env,
-		// A user shell's exit is final, just like a trusted command's exit.
-		// Durability across app launches is a separate persistence policy.
-		ExitOnCommandCompletion: true,
-		StartOnAttach:           cfg.startOnAttach,
-		// Only agent terminals are probed for their rendered screen.
-		LazyStyledOutput: true,
-	})
-	if err != nil {
-		if cfg.cleanupWorkingDirOnError {
-			s.cleanupAuthWorkspace(cfg.workingDir, handleID)
-		}
-		return ShellTerminal{}, fmt.Errorf("open shell terminal %s: runtime: %w", handleID, agentlaunch.RedactError(err, cfg.projectEnv))
-	}
-
 	rec := ShellTerminalRecord{
-		HandleID: handle.ID,
+		HandleID: handleID,
 		// The resolved project, not the requested one: a session-scoped open
 		// that named no project still belongs to the session's project, and
 		// persisting "" there would leave the row unattributable on the board.
@@ -650,6 +643,80 @@ func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (She
 		CreatedAt:                 createdAt,
 		PreviewCapabilityVerifier: cfg.previewVerifier,
 	}
+	var intents []ShellTerminalRecord
+	reserve := func(h ports.RuntimeHandle) error {
+		intent := rec
+		intent.HandleID = h.ID
+		if e := s.store.InsertShellTerminal(ctx, intent); e != nil {
+			return errors.New("trusted terminal storage unavailable")
+		}
+		intents = append(intents, intent)
+		return nil
+	}
+	config := ports.RuntimeConfig{
+		SessionID:     domain.SessionID(handleID),
+		WorkspacePath: cfg.workingDir,
+		Argv:          cfg.argv,
+		Env:           cfg.env,
+		// A user shell's exit is final, just like a trusted command's exit.
+		// Durability across app launches is a separate persistence policy.
+		ExitOnCommandCompletion: true,
+		StartOnAttach:           cfg.startOnAttach,
+		// Only agent terminals are probed for their rendered screen.
+		LazyStyledOutput: true,
+	}
+	var handle ports.RuntimeHandle
+	var err error
+	if cfg.transient {
+		if router, ok := s.runtime.(interface {
+			CreateCommand(context.Context, ports.RuntimeConfig, func(ports.RuntimeHandle) error) (ports.RuntimeHandle, error)
+		}); ok {
+			handle, err = router.CreateCommand(ctx, config, reserve)
+		} else {
+			for _, h := range s.commandHandles(handleID) {
+				if err = reserve(h); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				handle, err = s.runtime.Create(ctx, config)
+			}
+		}
+	} else {
+		handle, err = s.runtime.Create(ctx, config)
+	}
+
+	if err != nil {
+		if cfg.transient {
+			for _, intent := range intents {
+				_, _ = s.destroyConfirmed(context.WithoutCancel(ctx), intent)
+			}
+			if len(intents) == 0 && cfg.cleanupWorkingDirOnError {
+				s.cleanupAuthWorkspace(cfg.workingDir, handleID)
+			}
+		} else if cfg.cleanupWorkingDirOnError {
+			s.cleanupAuthWorkspace(cfg.workingDir, handleID)
+		}
+		return ShellTerminal{}, fmt.Errorf("open shell terminal %s: runtime: %w", handleID, agentlaunch.RedactError(err, cfg.projectEnv))
+	}
+	rec.HandleID = handle.ID
+	if cfg.transient {
+		known := false
+		for _, intent := range intents {
+			if intent.HandleID == handle.ID {
+				known = true
+				continue
+			}
+
+			_, _ = s.store.DeleteShellTerminalByHandleID(context.WithoutCancel(ctx), intent.HandleID)
+		}
+		if !known { // Adapter contracts must enumerate candidates before Create.
+			_, _ = s.destroyRuntimeConfirmed(context.WithoutCancel(ctx), handle)
+			return ShellTerminal{}, errors.New("unrecognized trusted runtime handle")
+		}
+		return shellTerminalFromRecord(rec), nil
+	}
+
 	if err := s.store.InsertShellTerminal(ctx, rec); err != nil {
 		stillAlive, destroyErr := s.destroyRuntimeConfirmed(context.WithoutCancel(ctx), handle)
 		if stillAlive {
@@ -751,6 +818,8 @@ func (s *Service) RenameShellTerminal(ctx context.Context, handleID, title strin
 // could vanish from that scan and leave a still-alive shell invisible to it
 // while the worktree it's rooted in gets removed anyway.
 func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	if handleID == "" {
 		return apierr.Invalid("SHELL_TERMINAL_ID_REQUIRED", "A shell terminal id is required", nil)
 	}
@@ -789,6 +858,8 @@ func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error
 // internal/terminal applies on attach — so a transient runtime hiccup cannot
 // silently delete a working terminal.
 func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]ShellTerminal, error) {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	recs, err := s.store.SelectRestorableShellTerminals(ctx, s.appRunID)
 	if err != nil {
 		return nil, fmt.Errorf("list shell terminals: %w", err)
@@ -820,6 +891,8 @@ func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]She
 // destroys abandoned trusted auth terminals. Live or unknown user runtimes
 // are preserved with their original associations and attach handles.
 func (s *Service) ReapShellTerminalsFromPreviousAppRuns(ctx context.Context) (int64, error) {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	orphans, err := s.store.SelectShellTerminalsFromPreviousAppRuns(ctx, s.appRunID)
 	if err != nil {
 		return 0, fmt.Errorf("reap shell terminals: %w", err)
@@ -903,6 +976,27 @@ func (s *Service) cleanupAuthWorkspace(workingDir, handleID string) {
 	if handleID != rel && !strings.HasSuffix(handleID, ":"+rel) {
 		return
 	}
+	// During a partial native/fallback Create, multiple intents can refer to
+	// one workspace. Never remove it while any recorded candidate is alive.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	current, e := s.store.SelectShellTerminalsByAppRunID(ctx, s.appRunID)
+	if e != nil {
+		return
+	}
+	old, e := s.store.SelectShellTerminalsFromPreviousAppRuns(ctx, s.appRunID)
+	if e != nil {
+		return
+	}
+	for _, other := range append(current, old...) {
+		if other.WorkingDir == workingDir && other.HandleID != handleID {
+			alive, e := s.runtime.IsAlive(ctx, ports.RuntimeHandle{ID: other.HandleID})
+			if e != nil || alive {
+				return
+			}
+		}
+	}
+
 	if err := os.RemoveAll(workingDir); err != nil {
 		s.log.Warn("shell terminal: remove private auth workspace failed", "workingDir", workingDir, "error", err)
 	}
@@ -1042,4 +1136,67 @@ func shellTerminalFromRecord(rec ShellTerminalRecord) ShellTerminal {
 		Title:      rec.Title,
 		CreatedAt:  rec.CreatedAt,
 	}
+}
+
+// commandHandles enumerates stable runtime addresses before creating a trusted
+// command. The router supplies native and fallback candidates; plain backends
+// preserve the requested logical id.
+func (s *Service) commandHandles(id string) []ports.RuntimeHandle {
+	if r, ok := s.runtime.(interface {
+		CommandHandles(string) []ports.RuntimeHandle
+	}); ok {
+		return r.CommandHandles(id)
+	}
+	return []ports.RuntimeHandle{{ID: id}}
+}
+
+// CloseCommandTerminal is the idempotent, daemon-only cleanup of a previously
+// allocated trusted logical id. It never destroys an unrecorded or user PTY.
+func (s *Service) CloseCommandTerminal(ctx context.Context, id string) error {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	for _, h := range s.commandHandles(id) {
+		row, found, err := s.store.SelectShellTerminalByHandleID(ctx, h.ID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		if !row.Transient {
+			return errors.New("terminal is not a trusted command")
+		}
+		if alive, _ := s.destroyConfirmed(ctx, row); alive {
+			return errors.New("trusted terminal cleanup unconfirmed")
+		}
+		if _, remains, e := s.store.SelectShellTerminalByHandleID(ctx, h.ID); e != nil || remains {
+			return errors.New("trusted terminal storage unavailable")
+		}
+
+	}
+	return nil
+}
+
+// CommandTerminalAlive probes only recorded candidates. Missing rows prove no
+// command survived intent cleanup; unknown probes preserve the pending login.
+func (s *Service) CommandTerminalAlive(ctx context.Context, id string) (bool, error) {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	for _, h := range s.commandHandles(id) {
+		row, found, e := s.store.SelectShellTerminalByHandleID(ctx, h.ID)
+		if e != nil {
+			return false, e
+		}
+		if !found {
+			continue
+		}
+		if !row.Transient {
+			return false, errors.New("terminal is not a trusted command")
+		}
+		alive, e := s.runtime.IsChildAlive(ctx, h)
+		if e != nil || alive {
+			return alive, e
+		}
+	}
+	return false, nil
 }

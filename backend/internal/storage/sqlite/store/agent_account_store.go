@@ -25,6 +25,7 @@ func (s *Store) ListAgentAccounts(ctx context.Context) ([]domain.AgentAccount, e
 		out = append(out, domain.AgentAccount{
 			ID: row.ID, Provider: domain.AgentAccountProvider(row.Provider), Home: row.Home,
 			Email: row.Email, Plan: row.Plan, CreatedAt: row.CreatedAt, ProfileKind: domain.AgentAccountProfileKind(row.ProfileKind),
+			Label: row.Label, LifecycleOperationID: row.LifecycleOperationID, DisabledAt: nullTimeToTimePtr(row.DisabledAt), RetiredAt: nullTimeToTimePtr(row.RetiredAt),
 		})
 	}
 	return out, nil
@@ -38,16 +39,15 @@ func (s *Store) CreateAgentAccount(ctx context.Context, a domain.AgentAccount) e
 		a.ProfileKind = domain.AgentAccountProfileExternal
 	}
 	if err := s.qw.CreateAgentAccount(ctx, gen.CreateAgentAccountParams{
-		ID: a.ID, Provider: string(a.Provider), Home: a.Home, Email: a.Email, Plan: a.Plan, CreatedAt: a.CreatedAt.UTC(), ProfileKind: string(a.ProfileKind),
+		ID: a.ID, Provider: string(a.Provider), Home: a.Home, Email: a.Email, Plan: a.Plan, CreatedAt: a.CreatedAt.UTC(), ProfileKind: string(a.ProfileKind), Label: a.Label, DisabledAt: timePtrToNullTime(a.DisabledAt), RetiredAt: timePtrToNullTime(a.RetiredAt),
 	}); err != nil {
 		return fmt.Errorf("create agent account %s: %w", a.ID, err)
 	}
 	return nil
 }
 
-// DeleteAgentAccount removes an account and any default that named it. Session
-// bindings stay for usage history; a session bound to a removed account falls
-// back to the provider's default at its next launch.
+// DeleteAgentAccount retains a tombstone and clears its default. Session
+// bindings and account metadata remain available for historical attribution.
 func (s *Store) DeleteAgentAccount(ctx context.Context, id string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

@@ -16,9 +16,10 @@ import (
 )
 
 type memStore struct {
-	accounts []domain.AgentAccount
-	defaults map[domain.AgentAccountProvider]string
-	bindings map[domain.SessionID]string
+	operations map[string]domain.AgentAccountOperation
+	accounts   []domain.AgentAccount
+	defaults   map[domain.AgentAccountProvider]string
+	bindings   map[domain.SessionID]string
 }
 
 func (m *memStore) ListAgentAccounts(context.Context) ([]domain.AgentAccount, error) {
@@ -100,10 +101,10 @@ func (*fakeClaude) LaunchEnv(home string) map[string]string {
 
 type fakeTerminals struct{}
 
-func (fakeTerminals) OpenCommandTerminal(context.Context, shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error) {
-	return shellterm.ShellTerminal{HandleID: "term-1"}, nil
+func (fakeTerminals) OpenCommandTerminal(_ context.Context, in shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error) {
+	return shellterm.ShellTerminal{HandleID: in.HandleID}, nil
 }
-func (fakeTerminals) CloseShellTerminal(context.Context, string) error { return nil }
+func (fakeTerminals) CloseCommandTerminal(context.Context, string) error { return nil }
 
 func TestAccountsRefuseTheWrongLogin(t *testing.T) {
 	if runtime.GOOS != "linux" {
@@ -353,7 +354,7 @@ func TestCancelDuringVerifyDoesNotSaveTheAccount(t *testing.T) {
 }
 
 // While an account is being removed no launch resolves to it: a session that
-// starts in that window runs on the default, and a pick is refused. The
+// starts in that window is refused, and a pick is refused. The
 // sessions still on it stay visible, so its agents can be found and stopped.
 func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 	if runtime.GOOS != "linux" {
@@ -382,14 +383,14 @@ func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 		if got, _ := svc.SessionAccountID(ctx, "running", domain.HarnessClaudeCode); got != accountID {
 			t.Errorf("session on the account reads as %q while it is removed", got)
 		}
-		env, _ := svc.SessionLaunchEnv(ctx, "launching", domain.HarnessClaudeCode)
-		if env["CLAUDE_CONFIG_DIR"] != "" || store.bindings["launching"] != "device-claude" {
-			t.Errorf("a launch during removal got %v bound to %q, want this computer", env, store.bindings["launching"])
+		env, launchErr := svc.SessionLaunchEnv(ctx, "launching", domain.HarnessClaudeCode)
+		if !errors.Is(launchErr, ports.ErrAgentAccountSignedOut) || env["CLAUDE_CONFIG_DIR"] != b || store.bindings["launching"] != accountID {
+			t.Errorf("a launch during removal got %v bound to %q, want original binding and refusal", env, store.bindings["launching"])
 		}
-		if err := svc.BindSession(ctx, "new", domain.HarnessClaudeCode, ""); err != nil || store.bindings["new"] != "device-claude" {
+		if err := svc.BindSession(ctx, "new", domain.HarnessClaudeCode, ""); !errors.Is(err, ports.ErrAgentAccountSignedOut) || store.bindings["new"] != "" {
 			t.Errorf("a new session during removal bound to %q (%v), want this computer", store.bindings["new"], err)
 		}
-		if err := svc.ValidateAccount(ctx, domain.HarnessClaudeCode, accountID); !errors.Is(err, ports.ErrAgentAccountUnknown) {
+		if err := svc.ValidateAccount(ctx, domain.HarnessClaudeCode, accountID); !errors.Is(err, ports.ErrAgentAccountSignedOut) {
 			t.Errorf("picking the account during removal: %v", err)
 		}
 		return refuse
@@ -397,8 +398,8 @@ func TestRemovingAnAccountKeepsNewLaunchesOffIt(t *testing.T) {
 	if err := svc.Remove(ctx, accountID); !errors.Is(err, ports.ErrAgentAccountInUse) {
 		t.Fatalf("remove: %v", err)
 	}
-	// The refused removal leaves the account usable.
-	if err := svc.ValidateAccount(ctx, domain.HarnessClaudeCode, accountID); err != nil {
+	// The unfinished durable removal keeps new uses disabled until resolved.
+	if err := svc.ValidateAccount(ctx, domain.HarnessClaudeCode, accountID); !errors.Is(err, ports.ErrAgentAccountSignedOut) {
 		t.Fatalf("account after a refused removal: %v", err)
 	}
 }
@@ -684,28 +685,25 @@ func TestDefaultSignInFollowsTheAccountNewSessionsStartOn(t *testing.T) {
 	}
 }
 
-// The data directory may be reached through a symlink now, though the account
-// was made under its real path. Removal still deletes the folder, and still
-// refuses anything outside the account root.
-func TestRemoveDeletesTheFolderThroughASymlinkedRoot(t *testing.T) {
+// Cleanup must not resolve a symlinked root into another physical tree.
+func TestRemoveRejectsSymlinkedRoot(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux profile cleanup")
+	}
 	physical := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(physical, alias); err != nil {
-		t.Skip("no symlinks here")
-	}
-	folder := filepath.Join(physical, "claude", "acct-b")
-	if err := os.MkdirAll(folder, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	outside := t.TempDir()
-	svc := New(&memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}, nil, alias, fakeTerminals{}, nil)
-	svc.removeFolder(outside)
-	if _, err := os.Stat(outside); err != nil {
-		t.Fatalf("removed a folder outside the root: %v", err)
+	folder := filepath.Join(physical, "claude", "saved")
+	if err := os.MkdirAll(folder, 0700); err != nil {
+		t.Fatal(err)
 	}
-	svc.removeFolder(folder)
-	if _, err := os.Stat(folder); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("account folder kept after removal through the alias: %v", err)
+	if err := removeAccountProfile(alias, filepath.Join(alias, "claude", "saved")); !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) {
+		t.Fatalf("symlinked root: %v", err)
+	}
+	if _, err := os.Stat(folder); err != nil {
+		t.Fatal("cleanup crossed root symlink")
 	}
 }
 
@@ -776,3 +774,70 @@ func TestLimitsWithNoWindowsAreReadAgainSoon(t *testing.T) {
 		}
 	}
 }
+
+func (m *memStore) CreateAgentAccountOperation(_ context.Context, o domain.AgentAccountOperation) error {
+	if m.operations == nil {
+		m.operations = map[string]domain.AgentAccountOperation{}
+	}
+	for _, prior := range m.operations {
+		if prior.AccountID == o.AccountID && prior.Phase != "complete" {
+			return ports.ErrAgentAccountOperationBusy
+		}
+	}
+	m.operations[o.ID] = o
+	if o.Action != "login" {
+		for i := range m.accounts {
+			if m.accounts[i].ID == o.AccountID {
+				at := o.CreatedAt
+				m.accounts[i].DisabledAt = &at
+				m.accounts[i].LifecycleOperationID = o.ID
+			}
+		}
+	}
+	return nil
+}
+func (m *memStore) UpdateAgentAccountOperation(_ context.Context, o domain.AgentAccountOperation) error {
+	m.operations[o.ID] = o
+	for i := range m.accounts {
+		a := &m.accounts[i]
+		if a.ID != o.AccountID {
+			continue
+		}
+		if o.Action == "remove" && o.Phase == "deleting" {
+			at := o.UpdatedAt
+			a.RetiredAt = &at
+		}
+		if o.Phase == "complete" && ((o.Action == "login" || o.Action == "login-again") && o.Outcome == "complete" || o.Action == "login-again" && o.Outcome == "cancelled" && !o.WasDisabled) {
+			a.DisabledAt = nil
+		}
+	}
+	return nil
+}
+func (m *memStore) GetAgentAccountOperation(_ context.Context, id string) (domain.AgentAccountOperation, bool, error) {
+	o, ok := m.operations[id]
+	return o, ok, nil
+}
+func (m *memStore) ListAgentAccountOperations(context.Context) ([]domain.AgentAccountOperation, error) {
+	rows := []domain.AgentAccountOperation{}
+	for _, o := range m.operations {
+		rows = append(rows, o)
+	}
+	return rows, nil
+}
+func (m *memStore) CommitAgentAccountLogin(ctx context.Context, o domain.AgentAccountOperation, a domain.AgentAccount) error {
+	at := o.UpdatedAt
+	a.DisabledAt = &at
+	found := false
+	for i := range m.accounts {
+		if m.accounts[i].ID == a.ID {
+			m.accounts[i] = a
+			found = true
+		}
+	}
+	if !found {
+		m.accounts = append(m.accounts, a)
+	}
+	return m.UpdateAgentAccountOperation(ctx, o)
+}
+
+func (fakeTerminals) CommandTerminalAlive(context.Context, string) (bool, error) { return true, nil }

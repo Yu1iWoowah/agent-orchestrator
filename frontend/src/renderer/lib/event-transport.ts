@@ -71,6 +71,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const pendingReviewSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			const pendingEditorHandoffSessions = new Set<string>();
+			let pendingAgentAccounts = false;
 			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
 			let workspaceInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
@@ -289,6 +290,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(["agent-models", scope.agentId]);
 				}
 				pendingModelCatalogScopes.clear();
+				if (pendingAgentAccounts) { invalidate(["agent-accounts"]); pendingAgentAccounts = false; }
 			};
 			// A busy stream must not postpone visible updates until traffic
 			// stops, and the first event after a quiet period must not wait out
@@ -332,6 +334,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				if (disposed) return;
 				let conversationOnly = false;
 				let modelCatalogOnly = false;
+				let accountOnly = false;
 				let idOnlySessionUpdate = false;
 				if (event === undefined) {
 					// A lifecycle refresh -- reconnect, daemon status change, base-URL change --
@@ -378,6 +381,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						) {
 							pendingReviewSessions.add(decoded.sessionId);
 						}
+						if (payload?.kind === "agent_accounts") { pendingAgentAccounts = true; accountOnly = true; }
 						if (payload?.kind === "model_catalog" && typeof payload.agentId === "string" && typeof payload.projectId === "string") {
 							pendingModelCatalogScopes.set(`${payload.agentId}\0${payload.projectId}`, {
 								agentId: payload.agentId,
@@ -437,7 +441,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					}
 				}
 				if (idOnlySessionUpdate) queueIdOnlyWorkspaceRefresh();
-				else if (!conversationOnly && !modelCatalogOnly) workspaceInvalidationPending = true;
+				else if (!conversationOnly && !modelCatalogOnly && !accountOnly) workspaceInvalidationPending = true;
 				scheduleFlush();
 			};
 

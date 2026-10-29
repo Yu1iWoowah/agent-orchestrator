@@ -10,6 +10,8 @@ import (
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountCleanupUnconfirmed         = errors.New("account_cleanup_unconfirmed")
+	ErrAgentAccountOperationBusy              = errors.New("account_operation_busy")
 	ErrAgentAccountCredentialStoreUnsupported = errors.New("account_credential_store_unsupported")
 
 	ErrAgentAccountStorageUnsafe      = errors.New("account_storage_unsafe")
@@ -88,4 +90,15 @@ type AgentAccountLaunchEnv interface {
 	// ValidateAccount checks that accountID can run harness now: it is of the
 	// harness's provider and signed in as the login it was added with.
 	ValidateAccount(ctx context.Context, harness domain.AgentHarness, accountID string) error
+}
+
+// AgentAccountJournal persists lifecycle intent before any provider/PTY effect.
+// CommitAgentAccountLogin atomically records a disabled account and accepted
+// operation; completing it enables the account only after PTY death is proven.
+type AgentAccountJournal interface {
+	CreateAgentAccountOperation(context.Context, domain.AgentAccountOperation) error
+	UpdateAgentAccountOperation(context.Context, domain.AgentAccountOperation) error
+	GetAgentAccountOperation(context.Context, string) (domain.AgentAccountOperation, bool, error)
+	ListAgentAccountOperations(context.Context) ([]domain.AgentAccountOperation, error)
+	CommitAgentAccountLogin(context.Context, domain.AgentAccountOperation, domain.AgentAccount) error
 }
