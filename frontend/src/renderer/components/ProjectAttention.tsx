@@ -201,6 +201,7 @@ export function ProjectAttention({
 		setOpen(false);
 		void navigate(sessionNavigateTarget(projectId, item.sessionId, hostId));
 	};
+	if (human.data?.pages[0]?.unsupported) return null;
 	return (
 		<>
 			{!selected ? (

@@ -63,6 +63,19 @@ function show() {
 		</QueryClientProvider>,
 	);
 }
+it("hides project attention and its sidebar count on an unsupported remote daemon", async () => {
+	get.mockResolvedValue({ error: {}, response: { status: 404 } });
+	render(
+		<QueryClientProvider client={client}>
+			<ProjectAttention projectId="project" hostId="old-host" />
+			<ProjectAttentionCount projectId="project" hostId="old-host" />
+		</QueryClientProvider>,
+	);
+	await waitFor(() =>
+		expect(screen.queryByRole("button", { name: "Open project attention" })).not.toBeInTheDocument(),
+	);
+	expect(screen.queryByLabelText("Awaiting you: ?")).not.toBeInTheDocument();
+});
 it("separates reports from user questions and marks only an inspected report read", async () => {
 	get.mockImplementation((_path, { params }) =>
 		Promise.resolve({

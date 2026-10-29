@@ -739,6 +739,11 @@ type Project struct {
 	Kind          string
 }
 
+type ProjectAttentionRevision struct {
+	ProjectID string
+	Revision  int64
+}
+
 type ProjectDocumentState struct {
 	ProjectID string
 	Revision  int64

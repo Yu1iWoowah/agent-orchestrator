@@ -311,6 +311,18 @@ func TestAttentionNotificationsSeparateReportsAndReconcileReadRevisionsAfterRest
 	if unread, err := store.CountUnreadNotifications(ctx); err != nil || unread != 0 {
 		t.Fatalf("read synchronization: %d %v", unread, err)
 	}
+	if len(events.events) != 2 || events.events[1].Kind != "read" || events.events[1].Record.Status != domain.NotificationRead {
+		t.Fatalf("source read did not publish live synchronization: %+v", events.events)
+	}
+	if err = svc.Read(ctx, session, q.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(events.events) != 2 {
+		t.Fatal("unchanged read emitted another event")
+	}
 	if _, err = svc.Revise(ctx, session, q.ID, 1, []byte(strings.Replace(payload, "Where?", "New scope?", 1))); err != nil {
 		t.Fatal(err)
 	}
@@ -338,5 +350,30 @@ func TestAttentionNotificationsSeparateReportsAndReconcileReadRevisionsAfterRest
 	}
 	if pending, err := store.CountUnresolvedNotifications(ctx); err != nil || pending != 0 {
 		t.Fatalf("cancel reconciliation: %d %v", pending, err)
+	}
+}
+
+func TestNotificationSourceCacheObservesDeadlineWithoutAnotherProviderEvent(t *testing.T) {
+	store, session := fixture(t)
+	ctx := context.Background()
+	now := clock
+	deadline := now.Add(time.Minute)
+	writer := notify.New(notify.Deps{Store: store, Clock: func() time.Time { return now }})
+	svc := questions.New(questions.Deps{Store: store, Notifications: writer, Now: func() time.Time { return now }})
+	if _, _, err := svc.Create(ctx, domain.AttentionQuestionCreate{OriginSessionID: session, ClientKey: "deadline", Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: []byte(payload), ExpiresAt: &deadline}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.CountUnresolvedNotifications(ctx); err != nil || pending != 1 {
+		t.Fatalf("initial notification: %d %v", pending, err)
+	}
+	now = deadline.Add(time.Second)
+	if err := svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.CountUnresolvedNotifications(ctx); err != nil || pending != 0 {
+		t.Fatalf("deadline left a cached notification open: %d %v", pending, err)
 	}
 }

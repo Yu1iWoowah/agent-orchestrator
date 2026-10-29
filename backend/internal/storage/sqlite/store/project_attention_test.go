@@ -14,7 +14,7 @@ import (
 func TestReportForwardingIsAtomicScopedAndSurvivesOrchestratorReplacement(t *testing.T) {
 	s, worker, _ := conversationFixture(t)
 	ctx := context.Background()
-	orchestrator, err := s.CreateSession(ctx, domain.SessionRecord{ProjectID: "hist", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: histClock}, CreatedAt: histClock, UpdatedAt: histClock})
+	orchestrator, err := s.CreateSession(ctx, domain.SessionRecord{ProjectID: "hist", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, Metadata: domain.SessionMetadata{BrowserCapabilityVerifier: "first-proof"}, Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: histClock}, CreatedAt: histClock, UpdatedAt: histClock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,6 +24,7 @@ func TestReportForwardingIsAtomicScopedAndSurvivesOrchestratorReplacement(t *tes
 	}
 	command := askCreate(orchestrator.ID)
 	command.SourceReportID = report.ID
+	command.ActorVerifier = orchestrator.Metadata.BrowserCapabilityVerifier
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
@@ -49,7 +50,7 @@ func TestReportForwardingIsAtomicScopedAndSurvivesOrchestratorReplacement(t *tes
 	if _, _, err = s.CreateAttentionQuestion(ctx, command, histClock); !errors.Is(err, domain.ErrAttentionQuestionForbidden) {
 		t.Fatalf("worker impersonation: %v", err)
 	}
-	replacement, err := s.CreateSession(ctx, domain.SessionRecord{ProjectID: "hist", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: histClock}, CreatedAt: histClock.Add(time.Second), UpdatedAt: histClock})
+	replacement, err := s.CreateSession(ctx, domain.SessionRecord{ProjectID: "hist", Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, Metadata: domain.SessionMetadata{BrowserCapabilityVerifier: "replacement-proof"}, Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: histClock}, CreatedAt: histClock.Add(time.Second), UpdatedAt: histClock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +59,10 @@ func TestReportForwardingIsAtomicScopedAndSurvivesOrchestratorReplacement(t *tes
 		t.Fatalf("superseded coordinator: %v", err)
 	}
 	command.OriginSessionID = replacement.ID
+	if _, _, err = s.CreateAttentionQuestion(ctx, command, histClock); !errors.Is(err, domain.ErrAttentionQuestionForbidden) {
+		t.Fatalf("stale authenticated verifier accepted: %v", err)
+	}
+	command.ActorVerifier = replacement.Metadata.BrowserCapabilityVerifier
 	q, created, err := s.CreateAttentionQuestion(ctx, command, histClock)
 	if err != nil || created || q.ID != page.Items[0].ID {
 		t.Fatalf("replacement duplicated or lost question: %+v %v %v", q, created, err)
@@ -147,5 +152,38 @@ func TestAttentionNotificationRevisionSurvivesReadClearAndReconnect(t *testing.T
 	rec.ID = "reconnected"
 	if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || inserted {
 		t.Fatalf("reconnect replayed cleared source: %v %v", inserted, err)
+	}
+}
+
+func TestProjectReportsExcludeTerminatedWorkersAndSupersededReports(t *testing.T) {
+	s, worker, _ := conversationFixture(t)
+	ctx := context.Background()
+	create := func(id string, session domain.SessionID, state domain.ReportState, at time.Time) {
+		t.Helper()
+		if _, err := s.CreateReport(ctx, domain.ReportRecord{ID: id, SessionID: session, ProjectID: "hist", State: state, Note: id, CreatedAt: at, AvailableAt: at, RepeatCount: 1, DeliveryState: domain.ReportPending}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create("first", worker, domain.ReportNeedsInput, histClock)
+	create("latest", worker, domain.ReportStuck, histClock.Add(time.Second))
+	ended := sampleRecord("hist")
+	ended.IsTerminated = true
+	owner, err := s.CreateSession(ctx, ended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create("ended", owner.ID, domain.ReportNeedsInput, histClock.Add(2*time.Second))
+	page, err := s.ProjectAttention(ctx, "hist", domain.ProjectAttentionQuery{Audience: "orchestrator"}, histClock)
+	if err != nil || page.Open != 1 || len(page.Items) != 1 || page.Items[0].ReportID != "latest" || page.Items[0].AnswerState != "unknown" {
+		t.Fatalf("open reports should keep only the latest active-worker source: %+v %v", page, err)
+	}
+	create("checkpoint", worker, domain.ReportCheckpoint, histClock.Add(3*time.Second))
+	page, err = s.ProjectAttention(ctx, "hist", domain.ProjectAttentionQuery{Audience: "orchestrator"}, histClock)
+	if err != nil || page.Open != 0 || len(page.Items) != 0 {
+		t.Fatalf("a newer checkpoint should supersede the old request: %+v %v", page, err)
+	}
+	report, found, err := s.GetReport(ctx, "latest")
+	if err != nil || !found || report.State != domain.ReportStuck || report.DeliveryState != domain.ReportPending {
+		t.Fatalf("indexing must not rewrite report delivery or answer state: %+v %v", report, err)
 	}
 }

@@ -195,16 +195,23 @@ func (m *Manager) ReconcileAttention(ctx context.Context, project domain.Project
 		}
 	}
 	store, ok := m.store.(interface {
-		ReconcileAttentionNotifications(context.Context, domain.ProjectID, []domain.ProjectAttentionItem, time.Time) ([]domain.NotificationRecord, error)
+		ReconcileAttentionNotifications(context.Context, domain.ProjectID, []domain.ProjectAttentionItem, time.Time) ([]domain.NotificationEvent, error)
 	})
 	if !ok {
 		return errors.New("attention notification reconciliation is unavailable")
 	}
 	m.barrier.Lock()
 	defer m.barrier.Unlock()
-	resolved, err := store.ReconcileAttentionNotifications(ctx, project, items, m.clock().UTC())
+	events, err := store.ReconcileAttentionNotifications(ctx, project, items, m.clock().UTC())
 	if err != nil {
 		return err
 	}
-	return m.publishResolved(ctx, resolved)
+	if m.publisher != nil {
+		for _, event := range events {
+			if err := m.publisher.Publish(ctx, event); err != nil {
+				return fmt.Errorf("notify publish attention: %w", err)
+			}
+		}
+	}
+	return nil
 }

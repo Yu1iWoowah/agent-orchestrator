@@ -15,6 +15,8 @@ import (
 // Store is the persistence boundary for question state and delivery receipts.
 type Store interface {
 	ProjectAttention(context.Context, domain.ProjectID, domain.ProjectAttentionQuery, time.Time) (domain.ProjectAttentionPage, error)
+	AttentionSourceRevisions(context.Context) (map[domain.ProjectID]int64, error)
+	AttentionNotificationSources(context.Context, domain.ProjectID, time.Time) ([]domain.ProjectAttentionItem, error)
 	ReadProjectAttentionReport(context.Context, domain.ProjectID, string, time.Time) error
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	CreateAttentionQuestion(context.Context, domain.AttentionQuestionCreate, time.Time) (domain.AttentionQuestionRecord, bool, error)
@@ -40,8 +42,14 @@ type AttentionNotifications interface {
 	ReconcileAttention(context.Context, domain.ProjectID, []domain.ProjectAttentionItem) error
 }
 
+// CapabilityValidator reuses the session-bound authority used by managed documents.
+type CapabilityValidator interface {
+	Valid(domain.SessionID, string, string) bool
+}
+
 // Deps supplies persistence, semantic delivery and deterministic identity sources.
 type Deps struct {
+	Capabilities  CapabilityValidator
 	Notifications AttentionNotifications
 	Store         Store
 	Delivery      Delivery
@@ -51,14 +59,17 @@ type Deps struct {
 
 // Service coordinates durable questions, expiry and answer delivery retries.
 type Service struct {
-	notifications AttentionNotifications
-	store         Store
-	delivery      Delivery
-	now           func() time.Time
-	newID         func() string
-	wake          chan struct{}
-	deliveryMu    sync.Mutex
-	retries       map[string]answerRetry
+	capabilities          CapabilityValidator
+	notifications         AttentionNotifications
+	store                 Store
+	delivery              Delivery
+	now                   func() time.Time
+	newID                 func() string
+	wake                  chan struct{}
+	deliveryMu            sync.Mutex
+	retries               map[string]answerRetry
+	notificationMu        sync.Mutex
+	notificationRevisions map[domain.ProjectID]int64
 }
 
 type answerRetry struct {
@@ -75,11 +86,25 @@ func New(deps Deps) *Service {
 	if deps.NewID == nil {
 		deps.NewID = func() string { return "ask_" + uuid.NewString() }
 	}
-	return &Service{notifications: deps.Notifications, store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1), retries: make(map[string]answerRetry)}
+	return &Service{capabilities: deps.Capabilities, notifications: deps.Notifications, store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1), retries: make(map[string]answerRetry)}
 }
 
 // Create creates or finds a question using its source-scoped retry key.
 func (s *Service) Create(ctx context.Context, input domain.AttentionQuestionCreate) (domain.AttentionQuestionRecord, bool, error) {
+	input.ActorVerifier = ""
+	if input.SourceReportID != "" {
+		actor, found, err := s.store.GetSession(ctx, input.OriginSessionID)
+		if err != nil {
+			return domain.AttentionQuestionRecord{}, false, err
+		}
+		if !found || actor.IsTerminated || s.capabilities == nil || !s.capabilities.Valid(actor.ID, input.ActorCapability, actor.Metadata.BrowserCapabilityVerifier) {
+			return domain.AttentionQuestionRecord{}, false, domain.ErrAttentionQuestionForbidden
+		}
+		// Recheck this authenticated snapshot under the report-link transaction,
+		// following the same verifier fence used by managed project documents.
+		input.ActorVerifier = actor.Metadata.BrowserCapabilityVerifier
+	}
+	input.ActorCapability = ""
 	input.ID = s.newID()
 	return s.store.CreateAttentionQuestion(ctx, input, s.now().UTC())
 }
@@ -138,14 +163,8 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	due, err := s.store.AttentionQuestionExpirationSessions(ctx, s.now().UTC())
-	if err != nil {
+	if err := s.expireDue(ctx); err != nil {
 		return err
-	}
-	for _, session := range due {
-		if err := s.store.ExpireAttentionQuestions(ctx, session, s.now().UTC()); err != nil {
-			return err
-		}
 	}
 	if s.delivery == nil {
 		return nil
@@ -215,29 +234,52 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 	return nil
 }
 
-// Start restores persisted work immediately, then wakes for new answers or
-// retry deadlines. The caller cancels ctx and joins done during daemon shutdown.
+func (s *Service) expireDue(ctx context.Context) error {
+	due, err := s.store.AttentionQuestionExpirationSessions(ctx, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	for _, session := range due {
+		if err := s.store.ExpireAttentionQuestions(ctx, session, s.now().UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Start restores persisted work immediately. Notification scans run independently
+// so neither their cost nor failures can delay answer wakes or retry deadlines.
+// The caller cancels ctx and joins both workers via done during daemon shutdown.
 func (s *Service) Start(ctx context.Context, onError func(error)) <-chan struct{} {
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			if err := s.RefreshNotifications(ctx); err != nil && onError != nil {
-				onError(fmt.Errorf("attention notifications: %w", err))
+	var workers sync.WaitGroup
+	for _, task := range []struct {
+		name string
+		run  func(context.Context) error
+		wake <-chan struct{}
+	}{
+		{"deliver question answers", s.DeliverPending, s.wake},
+		{"attention notifications", s.RefreshNotifications, nil},
+	} {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				if err := task.run(ctx); err != nil && !errors.Is(err, context.Canceled) && onError != nil {
+					onError(fmt.Errorf("%s: %w", task.name, err))
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-task.wake:
+				case <-ticker.C:
+				}
 			}
-			if err := s.DeliverPending(ctx); err != nil && !errors.Is(err, context.Canceled) && onError != nil {
-				onError(fmt.Errorf("deliver question answers: %w", err))
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.wake:
-			case <-ticker.C:
-			}
-		}
-	}()
+		}()
+	}
+	go func() { workers.Wait(); close(done) }()
 	return done
 }
 
@@ -257,32 +299,36 @@ func (s *Service) RefreshNotifications(ctx context.Context) error {
 	if s.notifications == nil {
 		return nil
 	}
-	projects, ok := s.store.(interface {
-		ListProjects(context.Context) ([]domain.ProjectRecord, error)
-	})
-	if !ok {
-		return errors.New("project reader unavailable")
+	s.notificationMu.Lock()
+	defer s.notificationMu.Unlock()
+	// Deadlines advance without a new provider event, including while an answer
+	// delivery is waiting on a harness. Expiry itself emits the source revision.
+	if err := s.expireDue(ctx); err != nil {
+		return err
 	}
-	rows, err := projects.ListProjects(ctx)
+	revisions, err := s.store.AttentionSourceRevisions(ctx)
 	if err != nil {
 		return err
 	}
-	for _, project := range rows {
-		query := domain.ProjectAttentionQuery{Audience: "user", Limit: 100}
-		items := []domain.ProjectAttentionItem{}
-		for {
-			page, err := s.store.ProjectAttention(ctx, domain.ProjectID(project.ID), query, s.now().UTC())
-			if err != nil {
-				return err
-			}
-			items = append(items, page.Items...)
-			if page.NextCursor == "" {
-				break
-			}
-			query.Cursor = page.NextCursor
+	if s.notificationRevisions == nil {
+		s.notificationRevisions = make(map[domain.ProjectID]int64)
+	}
+	for project, revision := range revisions {
+		if previous, found := s.notificationRevisions[project]; found && previous == revision {
+			continue
 		}
-		if err := s.notifications.ReconcileAttention(ctx, domain.ProjectID(project.ID), items); err != nil {
+		items, err := s.store.AttentionNotificationSources(ctx, project, s.now().UTC())
+		if err != nil {
 			return err
+		}
+		if err := s.notifications.ReconcileAttention(ctx, project, items); err != nil {
+			return err
+		}
+		s.notificationRevisions[project] = revision
+	}
+	for project := range s.notificationRevisions {
+		if _, found := revisions[project]; !found {
+			delete(s.notificationRevisions, project)
 		}
 	}
 	return nil

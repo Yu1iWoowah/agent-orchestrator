@@ -3864,7 +3864,7 @@ export interface paths {
         /** List structured questions with complete open, unread and history counts */
         get: operations["listSessionQuestions"];
         put?: never;
-        /** Create an idempotent user question and its readable compatibility record */
+        /** Create an idempotent user question; sourceReportId requires the active orchestrator session capability */
         post: operations["createSessionQuestion"];
         delete?: never;
         options?: never;
@@ -24379,7 +24379,10 @@ export interface operations {
     createSessionQuestion: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Opaque browser capability injected into the owning AO worker. */
+                "X-AO-Browser-Capability"?: string;
+            };
             path: {
                 /** @description Session identifier, e.g. project-1. */
                 sessionId: string;

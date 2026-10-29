@@ -72,3 +72,19 @@ it("rejects malformed counts instead of presenting them as operational truth", a
 	const { result } = setup();
 	await waitFor(() => expect(result.current.isError).toBe(true));
 });
+it("treats a remote daemon 404 as unsupported instead of an unknown count", async () => {
+	get.mockResolvedValue({
+		error: { error: { code: "NOT_FOUND", message: "Not found" } },
+		response: { status: 404 },
+	});
+	const { result } = setup("project", "old-host");
+	await waitFor(() => expect(result.current.isSuccess).toBe(true));
+	expect(result.current.data?.pages[0]).toEqual({
+		items: [], open: 0, unread: 0, unsupported: true,
+	});
+});
+it("keeps a local missing project 404 as an error", async () => {
+	get.mockResolvedValue({ error: {}, response: { status: 404 } });
+	const { result } = setup();
+	await waitFor(() => expect(result.current.isError).toBe(true));
+});

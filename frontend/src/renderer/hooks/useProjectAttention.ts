@@ -5,7 +5,9 @@ import { clientForSessionHost } from "../lib/host-clients";
 
 export type ProjectAttentionItem =
 	components["schemas"]["ProjectAttentionItem"];
-type Page = components["schemas"]["ProjectAttentionPage"];
+type Page = components["schemas"]["ProjectAttentionPage"] & {
+	unsupported?: boolean;
+};
 export type AttentionAudience = "user" | "orchestrator";
 export const projectAttentionQueryKey = (projectId: string, hostId?: string) =>
 	hostId
@@ -87,10 +89,12 @@ export function useProjectAttention(
 				cursor: pageParam || undefined,
 				limit: 20,
 			} satisfies paths["/api/v1/projects/{id}/attention"]["get"]["parameters"]["query"];
-			const { data, error } = await clientForSessionHost(hostId).GET(
+			const { data, error, response } = await clientForSessionHost(hostId).GET(
 				"/api/v1/projects/{id}/attention",
 				{ params: { path: { id: projectId }, query }, signal },
 			);
+			if (hostId && response.status === 404)
+				return { items: [], open: 0, unread: 0, unsupported: true } satisfies Page;
 			if (error || !data)
 				throw new Error(
 					apiErrorMessage(error, "Could not load project attention."),

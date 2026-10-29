@@ -66,7 +66,7 @@ func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.Atte
 		forwardedBy := command.OriginSessionID
 		if command.SourceReportID != "" {
 			var err error
-			command.OriginSessionID, err = attentionReportOwner(ctx, q, forwardedBy, command.SourceReportID)
+			command.OriginSessionID, err = attentionReportOwner(ctx, q, forwardedBy, command.ActorVerifier, command.SourceReportID)
 			if err != nil {
 				return err
 			}
@@ -517,7 +517,7 @@ func (s *Store) RecordAttentionAnswerDelivery(ctx context.Context, id, state, la
 }
 
 // Validate every handoff inside the same writer transaction as its unique link.
-func attentionReportOwner(ctx context.Context, q *gen.Queries, caller domain.SessionID, id string) (domain.SessionID, error) {
+func attentionReportOwner(ctx context.Context, q *gen.Queries, caller domain.SessionID, verifier, id string) (domain.SessionID, error) {
 	report, err := q.GetReport(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", domain.ErrAttentionQuestionNotFound
@@ -532,6 +532,13 @@ func attentionReportOwner(ctx context.Context, q *gen.Queries, caller domain.Ses
 	}
 	if err != nil {
 		return "", err
+	}
+	actor, err := q.GetSession(ctx, caller)
+	if err != nil {
+		return "", err
+	}
+	if verifier == "" || actor.BrowserCapabilityVerifier != verifier {
+		return "", domain.ErrAttentionQuestionForbidden
 	}
 	worker, err := q.GetSession(ctx, domain.SessionID(report.SessionID))
 	if err != nil {

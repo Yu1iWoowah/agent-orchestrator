@@ -14,6 +14,10 @@ var (
 
 // AttentionQuestionCreate carries caller input; source ownership is derived from the session.
 type AttentionQuestionCreate struct {
+	// ActorCapability is transient request proof; ActorVerifier is set only by
+	// the service after validation and fenced again inside the store transaction.
+	ActorCapability string `json:"-"`
+	ActorVerifier   string `json:"-"`
 	ID              string
 	SourceReportID  string
 	OriginSessionID SessionID

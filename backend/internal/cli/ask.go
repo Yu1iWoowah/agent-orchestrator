@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -123,8 +124,17 @@ func newAskCreateCommand(ctx *commandContext, options *askOptions) *cobra.Comman
 		if err := validateAskEnvelope(body); err != nil {
 			return err
 		}
+		var headers map[string]string
+		if sourceReport != "" {
+			actor := strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
+			capability := strings.TrimSpace(os.Getenv("AO_BROWSER_CAPABILITY"))
+			if actor == "" || capability == "" || options.session != "" && strings.TrimSpace(options.session) != actor {
+				return usageError{errors.New("report forwarding requires the owning AO_SESSION_ID and AO_BROWSER_CAPABILITY; --session cannot impersonate another session")}
+			}
+			headers = map[string]string{browserCapabilityHeader: capability}
+		}
 		var response json.RawMessage
-		if err := ctx.postJSON(cmd.Context(), path, body, &response); err != nil {
+		if err := ctx.doJSONPathWithHeaders(cmd.Context(), http.MethodPost, "/api/v1/"+path, body, &response, headers); err != nil {
 			return err
 		}
 		return printAskResponse(cmd, options, response, "create")

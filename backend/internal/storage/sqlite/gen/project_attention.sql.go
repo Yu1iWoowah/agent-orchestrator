@@ -184,9 +184,12 @@ func (q *Queries) ProjectAttentionQuestionSources(ctx context.Context, arg Proje
 
 const projectAttentionReportSources = `-- name: ProjectAttentionReportSources :many
 SELECT r.id, r.session_id, r.project_id, r.state, r.note, r.message, r.created_at, r.delivery_state, r.available_at, r.settlement_deadline, r.repeat_count, r.claim_token, r.claimed_at, r.delivery_attempts, r.acknowledged_at, r.last_error, r.delivery_batch_id,CAST(seen.report_id IS NOT NULL AS INTEGER) AS is_read,COALESCE(link.question_id,'') AS question_id
-FROM reports r LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
+FROM reports r JOIN sessions s ON s.id=r.session_id
+LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
 LEFT JOIN attention_report_questions link ON link.report_id=r.id
-WHERE r.project_id=? AND r.state IN ('needs_input','stuck')
+WHERE r.project_id=? AND r.state IN ('needs_input','stuck') AND s.is_terminated=0
+AND NOT EXISTS(SELECT 1 FROM reports newer WHERE newer.session_id=r.session_id
+ AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.id>r.id)))
 `
 
 type ProjectAttentionReportSourcesRow struct {
@@ -254,13 +257,62 @@ func (q *Queries) ProjectAttentionReportSources(ctx context.Context, projectID s
 	return items, nil
 }
 
-const readAttentionNotification = `-- name: ReadAttentionNotification :exec
-UPDATE notifications SET status='read' WHERE id=? AND status='unread'
+const projectAttentionRevisions = `-- name: ProjectAttentionRevisions :many
+SELECT p.id,CAST(COALESCE(r.revision,0) AS INTEGER) AS revision
+FROM projects p LEFT JOIN project_attention_revisions r ON r.project_id=p.id
+WHERE p.archived_at IS NULL
 `
 
-func (q *Queries) ReadAttentionNotification(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, readAttentionNotification, id)
-	return err
+type ProjectAttentionRevisionsRow struct {
+	ID       domain.ProjectID
+	Revision int64
+}
+
+func (q *Queries) ProjectAttentionRevisions(ctx context.Context) ([]ProjectAttentionRevisionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, projectAttentionRevisions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectAttentionRevisionsRow{}
+	for rows.Next() {
+		var i ProjectAttentionRevisionsRow
+		if err := rows.Scan(&i.ID, &i.Revision); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const readAttentionNotification = `-- name: ReadAttentionNotification :one
+UPDATE notifications SET status='read' WHERE id=? AND status='unread' RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key
+`
+
+func (q *Queries) ReadAttentionNotification(ctx context.Context, id string) (Notification, error) {
+	row := q.db.QueryRowContext(ctx, readAttentionNotification, id)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.ProjectID,
+		&i.PRURL,
+		&i.Type,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+		&i.DismissedAt,
+		&i.SourceKey,
+	)
+	return i, err
 }
 
 const readAttentionReport = `-- name: ReadAttentionReport :exec

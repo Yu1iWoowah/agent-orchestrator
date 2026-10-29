@@ -12,9 +12,12 @@ SELECT id,origin_session_id,version,seen_version,CAST(json_extract(payload_json,
 WHERE project_id=sqlc.arg(project_id) AND audience='user' AND state='open' AND (expires_at IS NULL OR expires_at>sqlc.arg(at));
 -- name: ProjectAttentionReportSources :many
 SELECT r.*,CAST(seen.report_id IS NOT NULL AS INTEGER) AS is_read,COALESCE(link.question_id,'') AS question_id
-FROM reports r LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
+FROM reports r JOIN sessions s ON s.id=r.session_id
+LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
 LEFT JOIN attention_report_questions link ON link.report_id=r.id
-WHERE r.project_id=? AND r.state IN ('needs_input','stuck');
+WHERE r.project_id=? AND r.state IN ('needs_input','stuck') AND s.is_terminated=0
+AND NOT EXISTS(SELECT 1 FROM reports newer WHERE newer.session_id=r.session_id
+ AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.id>r.id)));
 -- name: ReadAttentionReport :exec
 INSERT INTO attention_report_reads(report_id,seen_at) VALUES(?,?) ON CONFLICT(report_id) DO NOTHING;
 
@@ -26,5 +29,10 @@ INSERT INTO attention_notification_receipts(source_key,project_id) VALUES(?,?);
 SELECT * FROM notifications WHERE project_id=? AND source_key LIKE 'attention:%' AND resolved_at IS NULL;
 -- name: ResolveAttentionNotification :one
 UPDATE notifications SET resolved_at=? WHERE id=? RETURNING *;
--- name: ReadAttentionNotification :exec
-UPDATE notifications SET status='read' WHERE id=? AND status='unread';
+-- name: ReadAttentionNotification :one
+UPDATE notifications SET status='read' WHERE id=? AND status='unread' RETURNING *;
+
+-- name: ProjectAttentionRevisions :many
+SELECT p.id,CAST(COALESCE(r.revision,0) AS INTEGER) AS revision
+FROM projects p LEFT JOIN project_attention_revisions r ON r.project_id=p.id
+WHERE p.archived_at IS NULL;

@@ -128,9 +128,14 @@ ao ask create --key report-decision --audience user --kind question \
   --source-report <report-id> --payload-file question.json --json
 ```
 
-Keep the caller session as the orchestrator (`AO_SESSION_ID` or `--session`).
-The daemon validates the managed relationship and derives the original worker;
-it does not trust a supplied role or origin. A report can have only one canonical
+Keep `AO_SESSION_ID` as the orchestrator; `--session` may repeat that same ID.
+The daemon validates the managed relationship and derives the original worker.
+Forwarding also requires the owning orchestrator's existing session capability
+(`AO_SESSION_ID` and `AO_BROWSER_CAPABILITY`). The CLI sends that proof in
+`X-AO-Browser-Capability`; `--session` cannot select a different actor for a
+forward. Missing, wrong, rotated, cross-project or superseded actor proof is
+rejected. Raw credentials are not stored in the question or its retry key.
+It does not trust a supplied role or origin. A report can have only one canonical
 question. Retrying the handoff returns that question; changing its content uses
 an explicit versioned revision. The question retains `sourceReportId`, stays in
 the original worker session after orchestrator replacement, and delivers saved

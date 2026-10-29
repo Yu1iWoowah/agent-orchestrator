@@ -107,7 +107,7 @@ func (c *QuestionsController) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, _ := questionScope(r)
-	question, created, err := c.Svc.Create(r.Context(), domain.AttentionQuestionCreate{OriginSessionID: session, ClientKey: body.ClientKey, Audience: body.Audience, Kind: body.Kind, Payload: body.Payload, ExpiresAt: body.ExpiresAt, SupersedesID: body.SupersedesID, SourceReportID: body.SourceReportID})
+	question, created, err := c.Svc.Create(r.Context(), domain.AttentionQuestionCreate{ActorCapability: r.Header.Get(browserCapabilityHeader), OriginSessionID: session, ClientKey: body.ClientKey, Audience: body.Audience, Kind: body.Kind, Payload: body.Payload, ExpiresAt: body.ExpiresAt, SupersedesID: body.SupersedesID, SourceReportID: body.SourceReportID})
 	if err != nil {
 		writeQuestionError(w, r, err)
 		return

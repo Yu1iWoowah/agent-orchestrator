@@ -12015,6 +12015,12 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+      - description: Opaque browser capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Browser-Capability
+        schema:
+          description: Opaque browser capability injected into the owning AO worker.
+          type: string
       requestBody:
         content:
           application/json:
@@ -12070,7 +12076,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Create an idempotent user question and its readable compatibility record
+      summary: Create an idempotent user question; sourceReportId requires the active
+        orchestrator session capability
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/questions/{questionId}:

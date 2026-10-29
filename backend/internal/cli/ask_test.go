@@ -73,6 +73,45 @@ func TestAskCLICommandsUseOnlyDaemonRoutes(t *testing.T) {
 	}
 }
 
+func TestAskReportForwardUsesOnlyItsOwningCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name, actor, capability, target string
+		allowed                         bool
+	}{
+		{"owner", "owner", "owner-proof", "owner", true},
+		{"forged session", "worker", "worker-proof", "owner", false},
+		{"missing capability", "owner", "", "owner", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			t.Setenv("AO_SESSION_ID", tc.actor)
+			t.Setenv("AO_BROWSER_CAPABILITY", tc.capability)
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/internal/telemetry/cli-invoked" {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				calls++
+				if r.Header.Get(browserCapabilityHeader) != "owner-proof" {
+					t.Error("forwarding omitted the owning capability")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"question","version":1}`)
+			}))
+			defer server.Close()
+			writeRunFileFor(t, cfg, server)
+			stdout, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "ask", "create", "--session", tc.target, "--source-report", "report", "--key", "forward", "--payload-file", askCLIFile(t, askCLIPayload), "--json")
+			if tc.allowed && (err != nil || calls != 1) || !tc.allowed && (err == nil || calls != 0) {
+				t.Fatalf("allowed=%v calls=%d err=%v", tc.allowed, calls, err)
+			}
+			if strings.Contains(stdout, tc.capability) && tc.capability != "" {
+				t.Fatal("capability leaked to stdout")
+			}
+		})
+	}
+}
+
 func TestAskCLIRejectsInvalidInputBeforeDaemon(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "worker-1")
 	good := askCLIFile(t, askCLIPayload)

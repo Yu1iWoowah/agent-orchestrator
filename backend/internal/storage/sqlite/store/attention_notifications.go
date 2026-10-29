@@ -128,7 +128,7 @@ func (s *Store) attentionNotificationCurrent(ctx context.Context, q *gen.Queries
 
 // ReconcileAttentionNotifications updates only canonical source facts; it never
 // closes a question or changes U1 report delivery. No lock/write on an unchanged snapshot.
-func (s *Store) ReconcileAttentionNotifications(ctx context.Context, project domain.ProjectID, items []domain.ProjectAttentionItem, at time.Time) ([]domain.NotificationRecord, error) {
+func (s *Store) ReconcileAttentionNotifications(ctx context.Context, project domain.ProjectID, items []domain.ProjectAttentionItem, at time.Time) ([]domain.NotificationEvent, error) {
 	rows, err := s.qr.ListProjectAttentionNotifications(ctx, optionalProjectID(project))
 	if err != nil {
 		return nil, err
@@ -151,13 +151,18 @@ func (s *Store) ReconcileAttentionNotifications(ctx context.Context, project dom
 		return nil, err
 	}
 	defer s.writeMu.Unlock()
-	resolved := []domain.NotificationRecord{}
+	events := []domain.NotificationEvent{}
 	err = s.inTx(ctx, "reconcile attention notifications", func(q *gen.Queries) error {
 		for _, row := range changes {
 			if _, exists := active[row.SourceKey]; exists {
-				if err := q.ReadAttentionNotification(ctx, row.ID); err != nil {
+				updated, err := q.ReadAttentionNotification(ctx, row.ID)
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				if err != nil {
 					return err
 				}
+				events = append(events, domain.NotificationEvent{Kind: domain.NotificationReadEvent, Record: notificationFromGen(updated)})
 				continue
 			}
 			updated, err := q.ResolveAttentionNotification(ctx, gen.ResolveAttentionNotificationParams{ResolvedAt: nullTime(at), ID: row.ID})
@@ -165,10 +170,10 @@ func (s *Store) ReconcileAttentionNotifications(ctx context.Context, project dom
 				return err
 			}
 			if !updated.DismissedAt.Valid {
-				resolved = append(resolved, notificationFromGen(updated))
+				events = append(events, domain.NotificationEvent{Kind: domain.NotificationResolved, Record: notificationFromGen(updated)})
 			}
 		}
 		return nil
 	})
-	return resolved, err
+	return events, err
 }

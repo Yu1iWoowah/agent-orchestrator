@@ -40,72 +40,9 @@ func (s *Store) ProjectAttention(ctx context.Context, project domain.ProjectID, 
 			return page, &domain.AttentionValidationError{Field: "cursor", Message: "invalid cursor"}
 		}
 	}
-	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	all, err := s.projectAttentionSources(ctx, project, query.Audience, at)
 	if err != nil {
 		return page, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
-	if _, err = q.GetProject(ctx, project); errors.Is(err, sql.ErrNoRows) {
-		return page, domain.ErrAttentionQuestionNotFound
-	} else if err != nil {
-		return page, err
-	}
-	sessions, err := q.ListSessionsByProject(ctx, &project)
-	if err != nil {
-		return page, err
-	}
-	harnesses := map[domain.SessionID]string{}
-	names := map[domain.SessionID]string{}
-	for _, session := range sessions {
-		names[session.ID] = session.DisplayName
-		harnesses[session.ID] = string(session.Harness)
-	}
-	all := []domain.ProjectAttentionItem{}
-	if query.Audience == "orchestrator" {
-		rows, err := q.ProjectAttentionReportSources(ctx, string(project))
-		if err != nil {
-			return page, err
-		}
-		for _, row := range rows {
-			all = append(all, domain.ProjectAttentionItem{ID: "report:" + row.ID, Kind: "worker_report", SessionID: domain.SessionID(row.SessionID), SessionName: names[domain.SessionID(row.SessionID)], Title: row.Note, Revision: 1, CreatedAt: row.CreatedAt, Read: row.IsRead != 0, OriginHarness: harnesses[domain.SessionID(row.SessionID)], ReportID: row.ID, ReportState: row.State, DeliveryState: row.DeliveryState, AnswerState: "unknown", QuestionID: row.QuestionID})
-		}
-	} else {
-		rows, err := q.ProjectAttentionQuestionSources(ctx, gen.ProjectAttentionQuestionSourcesParams{ProjectID: sql.NullString{String: string(project), Valid: true}, At: sql.NullTime{Time: at.UTC(), Valid: true}})
-		if err != nil {
-			return page, err
-		}
-		for _, row := range rows {
-			all = append(all, domain.ProjectAttentionItem{ID: "question:" + row.ID, Kind: "agent_question", SessionID: domain.SessionID(row.OriginSessionID), SessionName: names[domain.SessionID(row.OriginSessionID)], Title: row.Title, Revision: row.Version, CreatedAt: row.CreatedAt, Read: row.SeenVersion >= row.Version, QuestionID: row.ID})
-		}
-		for _, session := range sessions {
-			conversation, err := q.SelectConversationBySession(ctx, &session.ID)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return page, err
-			}
-			// Iterate the bounded provider index without assuming its first page is the total.
-			before := int64(0)
-			for {
-				sources, err := s.conversationAttentionQueries(ctx, q, session.ID, conversation.ID, domain.ConversationAttentionQuery{State: "open", BeforeSequence: before, Limit: 100})
-				if err != nil {
-					return page, err
-				}
-				for _, source := range sources.Items {
-					kind := "provider_input"
-					if source.Activity.Kind == domain.ActivityKindApproval {
-						kind = "provider_approval"
-					}
-					all = append(all, domain.ProjectAttentionItem{ID: "provider:" + source.Activity.ID, Kind: kind, SessionID: session.ID, SessionName: session.DisplayName, Title: source.Activity.Summary, Revision: source.Activity.Revision, CreatedAt: source.Activity.CreatedAt, Read: source.Read, ConversationID: conversation.ID, ActivityID: source.Activity.ID, BranchID: sources.ActiveBranchID, SourceBranchID: source.BranchID, RequestID: source.Activity.RequestID})
-				}
-				if !sources.HasMoreBefore {
-					break
-				}
-				before = sources.NextBeforeSequence
-			}
-		}
 	}
 	page.Open = int64(len(all))
 	for _, item := range all {
@@ -131,7 +68,101 @@ func (s *Store) ProjectAttention(ctx context.Context, project domain.ProjectID, 
 		}
 		page.Items = append(page.Items, item)
 	}
-	return page, tx.Commit()
+	return page, nil
+}
+
+// AttentionNotificationSources reads a complete user-source snapshot once,
+// independently of the UI's cursor/page size.
+func (s *Store) AttentionNotificationSources(ctx context.Context, project domain.ProjectID, at time.Time) ([]domain.ProjectAttentionItem, error) {
+	return s.projectAttentionSources(ctx, project, "user", at)
+}
+
+// AttentionSourceRevisions reads only one durable counter per project. CDC
+// retention and unrelated streaming events cannot force or hide a rescan.
+func (s *Store) AttentionSourceRevisions(ctx context.Context) (map[domain.ProjectID]int64, error) {
+	rows, err := s.qr.ProjectAttentionRevisions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	revisions := make(map[domain.ProjectID]int64, len(rows))
+	for _, row := range rows {
+		revisions[row.ID] = row.Revision
+	}
+	return revisions, nil
+}
+
+func (s *Store) projectAttentionSources(ctx context.Context, project domain.ProjectID, audience string, at time.Time) ([]domain.ProjectAttentionItem, error) {
+	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := gen.New(tx)
+	if _, err = q.GetProject(ctx, project); errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrAttentionQuestionNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	sessions, err := q.ListSessionsByProject(ctx, &project)
+	if err != nil {
+		return nil, err
+	}
+	harnesses := map[domain.SessionID]string{}
+	names := map[domain.SessionID]string{}
+	for _, session := range sessions {
+		names[session.ID] = session.DisplayName
+		harnesses[session.ID] = string(session.Harness)
+	}
+	all := []domain.ProjectAttentionItem{}
+	if audience == "orchestrator" {
+		rows, err := q.ProjectAttentionReportSources(ctx, string(project))
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			all = append(all, domain.ProjectAttentionItem{ID: "report:" + row.ID, Kind: "worker_report", SessionID: domain.SessionID(row.SessionID), SessionName: names[domain.SessionID(row.SessionID)], Title: row.Note, Revision: 1, CreatedAt: row.CreatedAt, Read: row.IsRead != 0, OriginHarness: harnesses[domain.SessionID(row.SessionID)], ReportID: row.ID, ReportState: row.State, DeliveryState: row.DeliveryState, AnswerState: "unknown", QuestionID: row.QuestionID})
+		}
+	} else {
+		rows, err := q.ProjectAttentionQuestionSources(ctx, gen.ProjectAttentionQuestionSourcesParams{ProjectID: sql.NullString{String: string(project), Valid: true}, At: sql.NullTime{Time: at.UTC(), Valid: true}})
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			all = append(all, domain.ProjectAttentionItem{ID: "question:" + row.ID, Kind: "agent_question", SessionID: domain.SessionID(row.OriginSessionID), SessionName: names[domain.SessionID(row.OriginSessionID)], Title: row.Title, Revision: row.Version, CreatedAt: row.CreatedAt, Read: row.SeenVersion >= row.Version, QuestionID: row.ID})
+		}
+		for _, session := range sessions {
+			if session.IsTerminated {
+				continue
+			}
+			conversation, err := q.SelectConversationBySession(ctx, &session.ID)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			// Iterate the bounded provider index without assuming its first page is the total.
+			before := int64(0)
+			for {
+				sources, err := s.conversationAttentionQueries(ctx, q, session.ID, conversation.ID, domain.ConversationAttentionQuery{State: "open", BeforeSequence: before, Limit: 100})
+				if err != nil {
+					return nil, err
+				}
+				for _, source := range sources.Items {
+					kind := "provider_input"
+					if source.Activity.Kind == domain.ActivityKindApproval {
+						kind = "provider_approval"
+					}
+					all = append(all, domain.ProjectAttentionItem{ID: "provider:" + source.Activity.ID, Kind: kind, SessionID: session.ID, SessionName: session.DisplayName, Title: source.Activity.Summary, Revision: source.Activity.Revision, CreatedAt: source.Activity.CreatedAt, Read: source.Read, ConversationID: conversation.ID, ActivityID: source.Activity.ID, BranchID: sources.ActiveBranchID, SourceBranchID: source.BranchID, RequestID: source.Activity.RequestID})
+				}
+				if !sources.HasMoreBefore {
+					break
+				}
+				before = sources.NextBeforeSequence
+			}
+		}
+	}
+	return all, tx.Commit()
 }
 
 // ReadProjectAttentionReport records inspection, independently of U1 delivery and any answer.
