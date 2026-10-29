@@ -59,6 +59,7 @@ import {
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
+import { isCatalogIncomplete } from "../lib/artifact-catalog";
 import { useArtifactCatalogs } from "../hooks/useArtifactCatalogs";
 import { legacyGalleryGroups } from "../lib/gallery-artifacts";
 import { parseNightlyVersion } from "../lib/build-channel";
@@ -668,7 +669,7 @@ export function Sidebar({
 	const artifactWorkspaces = useMemo(() => cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"), [cloudArtifacts, workspaces]);
 	const artifactCatalog = useArtifactCatalogs(artifactWorkspaces, false);
 	const artifactTotal = useMemo(
-		() => artifactCatalog.data?.every((project) => !project.loading && !project.incomplete && !project.error)
+		() => artifactCatalog.data?.every((project) => !isCatalogIncomplete(project))
 			? artifactCatalog.data.reduce((total, project) => total + project.items.length, 0) + legacyGalleryGroups(artifactWorkspaces, artifactCatalog.connection).reduce((total, group) => total + group.rows.length, 0)
 			: 0,
 		[artifactCatalog.data, artifactCatalog.connection, artifactWorkspaces],

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "../../api/schema";
 import type { WorkspaceSummary } from "../types/workspace";
-import { catalogArtifactGroup, filterGalleryGroups, galleryArtifactKey, migrateLegacyPins } from "./gallery-artifacts";
+import {
+	catalogArtifactGroup,
+	filterGalleryGroups,
+	galleryArtifactKey,
+	migrateLegacyPins,
+	migratableGalleryRows,
+} from "./gallery-artifacts";
 
 const connection = { kind: "local", identity: "daemon-a" } as const;
 const workspace: WorkspaceSummary = { id: "next.js", name: "Next project", path: "/registered", sessions: [] };
@@ -77,4 +83,39 @@ describe("managed gallery rows", () => {
 		const legacy = JSON.stringify(["worker-1", "same.md"]);
 		expect(migrateLegacyPins([legacy], [...first, ...second])).toEqual({ pins: [legacy], aliases: {} });
 	});
+});
+
+it.each(["loading", "request", "changed", "owner", "unknown"])(
+	"does not migrate an incomplete candidate: %s",
+	(state) => {
+		const rows = catalogArtifactGroup(workspace, connection, [artifact("worker")]).rows;
+		const catalog = {
+			projectId: workspace.id,
+			items: [artifact("worker")],
+			errors:
+				state === "owner"
+					? [{ source: "worker" as const, sessionId: "worker-1", code: "DOCUMENT_SOURCE_UNAVAILABLE" }]
+					: [],
+			loading: state === "loading",
+			incomplete: state === "unknown" || state === "owner",
+			error: state === "request" || state === "changed" ? new Error(state) : undefined,
+		};
+		expect(migratableGalleryRows(rows, [catalog])).toEqual([]);
+	},
+);
+it("keeps an ambiguous legacy key unmigrated even if only one project is healthy", () => {
+	const rows = [
+		...catalogArtifactGroup(workspace, connection, [artifact("worker")]).rows,
+		...catalogArtifactGroup({ ...workspace, id: "other" }, connection, [
+			{
+				...artifact("worker"),
+				target: { kind: "artifact", projectId: "other", sessionId: "worker-1", path: "same.md" },
+			},
+		]).rows,
+	];
+	expect(
+		migratableGalleryRows(rows, [
+			{ projectId: workspace.id, items: [artifact("worker")], errors: [], loading: false, incomplete: false },
+		]),
+	).toEqual([]);
 });

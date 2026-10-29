@@ -52,7 +52,7 @@ export function ArtifactActionsMenu({
 	className,
 	children,
 }: {
-	artifact: Pick<SessionArtifact, "name" | "path" | "rawUrl" | "updatedAt">;
+	artifact: Pick<SessionArtifact, "name" | "path" | "rawUrl"> & Partial<Pick<SessionArtifact, "updatedAt">>;
 	pinId?: string;
 	downloadUrl?: string;
 	hostId?: string;
@@ -64,7 +64,7 @@ export function ArtifactActionsMenu({
 	pinned?: boolean;
 	onTogglePin?: () => void;
 	onOpenInSession?: () => void;
-	onDeleted?: () => void;
+	onDeleted?: () => void | Promise<void>;
 	errorClassName?: string;
 	className?: string;
 	children?: ReactNode;
@@ -92,7 +92,7 @@ export function ArtifactActionsMenu({
 		onSuccess: async () => {
 			setConfirmingDelete(false);
 			if (!hostId) useArtifactsViewStore.getState().unpinArtifact(pinId ?? artifactKey({ sessionId: session.id, path: artifact.path }));
-			onDeleted?.();
+			await onDeleted?.();
 			await queryClient.invalidateQueries({ queryKey: session.cloud ? cloudSessionsQueryKey : workspaceQueryKeyForHost(hostId) });
 		},
 	});

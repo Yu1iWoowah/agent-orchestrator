@@ -15,8 +15,9 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import { ScrollArea } from "radix-ui";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { isCatalogIncomplete, isUninitializedSharedSource } from "../lib/artifact-catalog";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentReadError } from "../lib/document-read";
 import { useCloudOffering } from "../hooks/useCloudOffering";
@@ -31,6 +32,7 @@ import {
 	isCatalogArtifact,
 	legacyGalleryGroups,
 	newestGalleryFirst,
+	migratableGalleryRows,
 	type GalleryRow,
 } from "../lib/gallery-artifacts";
 import { useArtifactCatalogs } from "../hooks/useArtifactCatalogs";
@@ -104,6 +106,22 @@ function ArtifactsGallery() {
 		}),
 	);
 	const setPreferences = useArtifactsViewStore((state) => state.setGalleryPreferences);
+	const pendingScroll = useRef<{ key: string; top: number } | null>(null);
+	const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const flushScroll = useCallback(() => {
+		clearTimeout(scrollTimer.current);
+		scrollTimer.current = undefined;
+		const pending = pendingScroll.current;
+		pendingScroll.current = null;
+		if (pending) setPreferences(pending.key, { scrollTop: pending.top });
+	}, [setPreferences]);
+	useEffect(() => {
+		window.addEventListener("pagehide", flushScroll);
+		return () => {
+			window.removeEventListener("pagehide", flushScroll);
+			flushScroll();
+		};
+	}, [catalog.contextKey, flushScroll]);
 	const view = useArtifactsViewStore((state) => state.view),
 		setView = useArtifactsViewStore((state) => state.setView);
 	const pins = useArtifactsViewStore((state) => state.pinnedArtifactIds);
@@ -135,28 +153,15 @@ function ArtifactsGallery() {
 	);
 	const allRows = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
 	const complete = catalog.data !== undefined && catalog.data.every((entry) => !entry.loading);
-	const incomplete = !complete || Boolean(catalog.data?.some((entry) => entry.incomplete || entry.error));
-	const migrateSafe =
-		complete &&
-		!catalog.data?.some(
-			(entry) =>
-				entry.error ||
-				(entry.incomplete &&
-					(entry.errors.length === 0 ||
-						entry.errors.some((error) => error.source !== "shared" || error.code !== "DOCUMENT_SOURCE_MISSING"))),
-		);
+	const incomplete = !complete || Boolean(catalog.data?.some(isCatalogIncomplete));
+	const migrationRows = useMemo(() => migratableGalleryRows(allRows, catalog.data), [allRows, catalog.data]);
 	useEffect(() => {
-		if (migrateSafe) useArtifactsViewStore.getState().migratePins(allRows);
-	}, [migrateSafe, allRows]);
-	const legacyPins = useMemo(() => {
-		const mapping = new Map<string, string | null>();
-		if (migrateSafe)
-			for (const row of allRows) {
-				const legacy = galleryLegacyKey(row);
-				if (legacy) mapping.set(legacy, mapping.has(legacy) ? null : galleryArtifactKey(row));
-			}
-		return mapping;
-	}, [allRows, migrateSafe]);
+		useArtifactsViewStore.getState().migratePins(migrationRows);
+	}, [migrationRows]);
+	const legacyPins = useMemo(
+		() => new Map(migrationRows.map((row) => [galleryLegacyKey(row), galleryArtifactKey(row)])),
+		[migrationRows],
+	);
 	const scratchpadName = t("standalone.workspaceName");
 	const visibleGroups = useMemo(
 		() => filterGalleryGroups(groups, { query, projectId, source, archive }, scratchpadName),
@@ -211,6 +216,7 @@ function ArtifactsGallery() {
 		);
 	};
 	const changeFilters = (change: Partial<GalleryPreferences>) => {
+		flushScroll();
 		restored.current = catalog.contextKey;
 		setPreferences(catalog.contextKey, { ...change, scrollTop: 0, visibleCount: 200 });
 		if (viewport.current) viewport.current.scrollTop = 0;
@@ -251,7 +257,7 @@ function ArtifactsGallery() {
 								sessionId: undefined,
 							},
 						]
-					: entry.errors),
+					: entry.errors.filter((error) => !isUninitializedSharedSource(error))),
 			].map((error) => ({ ...error, projectId: entry.projectId })),
 		) ?? [];
 	return (
@@ -281,7 +287,9 @@ function ArtifactsGallery() {
 							<TopbarButton variant="secondary" aria-label={t("artifacts.projectFilter")} className="max-w-44">
 								<Folder aria-hidden="true" className="size-icon-sm" />
 								<span className="truncate">
-									{groups.find((group) => group.id === projectId)?.isScratchpad ? scratchpadName : groups.find((group) => group.id === projectId)?.name ?? t("artifacts.allProjects")}
+									{groups.find((group) => group.id === projectId)?.isScratchpad
+										? scratchpadName
+										: (groups.find((group) => group.id === projectId)?.name ?? t("artifacts.allProjects"))}
 								</span>
 								<ChevronDown className="size-icon-xs" />
 							</TopbarButton>
@@ -382,10 +390,11 @@ function ArtifactsGallery() {
 					{t("artifacts.refresh")}
 				</Button>
 				<span role="status" className="text-xs text-muted-foreground">
-					{incomplete && allRows.length === 0
-						? t("artifacts.totalUnknown")
-						: t("artifacts.filesLoaded", { count: allRows.length })}
+					{incomplete ? t("artifacts.totalUnknown") : t("artifacts.filesLoaded", { count: allRows.length })}
 				</span>
+				{incomplete && allRows.length > 0 ? (
+					<span className="text-xs text-muted-foreground">{t("artifacts.filesLoaded", { count: allRows.length })}</span>
+				) : null}
 				<DocumentSheet surfaceRef={surface} />
 			</div>
 			<ScrollArea.Root asChild type="hover" scrollHideDelay={500}>
@@ -397,8 +406,10 @@ function ArtifactsGallery() {
 							restored.current = catalog.contextKey;
 						}}
 						onScroll={(event) => {
-							if (restored.current === catalog.contextKey)
-								setPreferences(catalog.contextKey, { scrollTop: event.currentTarget.scrollTop });
+							if (restored.current === catalog.contextKey) {
+								pendingScroll.current = { key: catalog.contextKey, top: event.currentTarget.scrollTop };
+								if (scrollTimer.current === undefined) scrollTimer.current = setTimeout(flushScroll, 150);
+							}
 						}}
 					>
 						<div className="px-4 pb-4">
@@ -412,25 +423,26 @@ function ArtifactsGallery() {
 									{workspaceQuery.error.message}
 								</p>
 							) : null}
+							{source === "shared" &&
+							catalog.data?.some((project) => project.errors.some(isUninitializedSharedSource)) ? (
+								<p role="status" className="py-2 text-sm text-muted-foreground">
+									{t("documents.sheet.notCreated")}
+								</p>
+							) : null}
 							{sourceProblems.length > 0 ? (
 								<div className="py-2 text-sm">
 									<p>{t("artifacts.sourcesIncomplete")}</p>
 									<ul>
 										{sourceProblems.map((error, index) => (
-											<li
-												key={`${error.projectId}:${error.source}:${error.sessionId}:${index}`}
-												role={error.code === "DOCUMENT_SOURCE_MISSING" ? "status" : "alert"}
-											>
+											<li key={`${error.projectId}:${error.source}:${error.sessionId}:${index}`} role="alert">
 												{catalog.projects.find((project) => project.id === error.projectId)?.name ?? error.projectId} ·{" "}
 												{error.source === "worker" || error.source === "orchestrator" || error.source === "shared"
 													? sourceNames[error.source]
 													: sourceNames.all}{" "}
 												{error.sessionId ?? ""}:{" "}
-												{error.code === "DOCUMENT_SOURCE_MISSING"
-													? t("documents.sheet.notCreated")
-													: error.code === "DOCUMENT_CATALOG_CHANGED"
-														? t("artifacts.catalogChanged")
-														: t("documents.sheet.unavailable")}
+												{error.code === "DOCUMENT_CATALOG_CHANGED"
+													? t("artifacts.catalogChanged")
+													: t("documents.sheet.unavailable")}
 											</li>
 										))}
 									</ul>

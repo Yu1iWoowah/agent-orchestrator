@@ -9,6 +9,19 @@ export type ProjectCatalogResult = {
 	loading: boolean;
 	error?: unknown;
 };
+export function isUninitializedSharedSource(error: components["schemas"]["DocumentSourceError"]): boolean {
+	return error.source === "shared" && error.code === "DOCUMENT_SOURCE_MISSING";
+}
+/** A never-created shared root has a known count of zero; other gaps remain unknown. */
+export function isCatalogIncomplete(project: ProjectCatalogResult): boolean {
+	return (
+		project.loading ||
+		Boolean(project.error) ||
+		project.errors.some((error) => !isUninitializedSharedSource(error)) ||
+		(project.incomplete && project.errors.length === 0)
+	);
+}
+
 const pendingProject = (projectId: string): ProjectCatalogResult => ({
 	projectId,
 	items: [],

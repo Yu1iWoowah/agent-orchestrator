@@ -1,4 +1,6 @@
-import { Copy, File, FileText, MoreHorizontal, Pin, ArrowUpRight } from "lucide-react";
+import { Copy, File, FileText, MoreHorizontal, Pin } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ArtifactActionsMenu } from "./ArtifactActionsMenu";
 import { useTranslation } from "react-i18next";
 import type { CatalogArtifactRow } from "../lib/gallery-artifacts";
 import { galleryArtifactKey } from "../lib/gallery-artifacts";
@@ -26,6 +28,7 @@ export function CatalogArtifactCard({
 }) {
 	const { t } = useTranslation();
 	const navigate = useNavigateToSession();
+	const client = useQueryClient();
 	const id = galleryArtifactKey(row);
 	const pinned = useArtifactsViewStore((state) => state.pinnedArtifactIds.includes(id));
 	const togglePin = () => useArtifactsViewStore.getState().togglePinnedArtifact(id, legacyPin);
@@ -52,39 +55,62 @@ export function CatalogArtifactCard({
 			useUiStore.getState().showGlobalToast(t("documents.sheet.copyError"), undefined, { tone: "error" });
 		}
 	};
-	const actions = (
-		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="icon-sm" aria-label={`${t("files.moreFileActions")}: ${row.name}`}>
-					<MoreHorizontal className="size-4" />
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end">
-				<DropdownMenuItem onSelect={togglePin}>
-					<Pin className="size-4" />
-					{t(pinned ? "artifacts.unpin" : "artifacts.pin")}
-				</DropdownMenuItem>
-				<DropdownMenuItem onSelect={() => void copy("link")}>
-					<Copy className="size-4" />
-					{t("documents.sheet.copyLink")}
-				</DropdownMenuItem>
-				<DropdownMenuItem onSelect={() => void copy("path")}>
-					<Copy className="size-4" />
-					{t("documents.sheet.copyPath")}
-				</DropdownMenuItem>
-				{row.target.kind === "artifact" ? (
-					<DropdownMenuItem
-						onSelect={() => {
-							if (row.target.kind === "artifact") navigate(row.target.projectId, row.target.sessionId);
-						}}
-					>
-						<ArrowUpRight className="size-4" />
-						{t("documents.sheet.goSource")}
-					</DropdownMenuItem>
-				) : null}
-			</DropdownMenuContent>
-		</DropdownMenu>
+	const copyActions = (
+		<>
+			<DropdownMenuItem onSelect={() => void copy("link")}>
+				<Copy className="size-4" />
+				{t("documents.sheet.copyLink")}
+			</DropdownMenuItem>
+			<DropdownMenuItem onSelect={() => void copy("path")}>
+				<Copy className="size-4" />
+				{t("documents.sheet.copyPath")}
+			</DropdownMenuItem>
+		</>
 	);
+	const target = row.target;
+	const actions =
+		target.kind === "artifact" && row.connection.kind === "local" ? (
+			<ArtifactActionsMenu
+				artifact={{
+					name: row.name,
+					path: target.path,
+					updatedAt: row.updatedAt ?? undefined,
+					rawUrl: row.connection.identity
+						? `${row.connection.identity}/api/v1/sessions/${encodeURIComponent(target.sessionId)}/artifact-files/${target.path.split("/").map(encodeURIComponent).join("/")}?source=1`
+						: undefined,
+				}}
+				session={{ id: target.sessionId }}
+				pinId={id}
+				iconOnly
+				pinInMenu
+				pinned={pinned}
+				onTogglePin={togglePin}
+				onOpenInSession={() => {
+					useUiStore.getState().requestWorkspaceFileOpen(target.sessionId, target.path, undefined, "artifact");
+					navigate(target.projectId, target.sessionId);
+				}}
+				onDeleted={() =>
+					client.invalidateQueries({ queryKey: ["artifact-catalogs", row.connection.kind, row.connection.identity] })
+				}
+			>
+				{copyActions}
+			</ArtifactActionsMenu>
+		) : (
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<Button variant="ghost" size="icon-sm" aria-label={`${t("files.moreFileActions")}: ${row.name}`}>
+						<MoreHorizontal className="size-4" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem onSelect={togglePin}>
+						<Pin className="size-4" />
+						{t(pinned ? "artifacts.unpin" : "artifacts.pin")}
+					</DropdownMenuItem>
+					{copyActions}
+				</DropdownMenuContent>
+			</DropdownMenu>
+		);
 	const kind = /\.html?$/i.test(row.path) ? "html" : /\.(md|markdown)$/i.test(row.path) ? "markdown" : "file";
 	const Icon = kind === "markdown" ? FileText : File;
 	if (view === "gallery")

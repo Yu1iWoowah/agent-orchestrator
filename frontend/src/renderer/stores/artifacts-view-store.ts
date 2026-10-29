@@ -41,9 +41,9 @@ function readContext(value: unknown): GalleryPreferences {
 				: 200,
 	};
 }
-function readPreferences(storage: Storage): ArtifactViewPreferences {
+function readPreferences(storage: Storage | undefined): ArtifactViewPreferences {
 	try {
-		const saved: unknown = JSON.parse(storage.getItem(STORAGE_KEY) ?? "null");
+		const saved: unknown = JSON.parse(storage?.getItem(STORAGE_KEY) ?? "null");
 		if (record(saved))
 			return {
 				view: saved.view === "list" ? "list" : "gallery",
@@ -68,10 +68,10 @@ function readPreferences(storage: Storage): ArtifactViewPreferences {
 	}
 	return { view: "gallery", collapsedSections: [], pinnedArtifactIds: [], pinAliases: {}, galleryPreferences: {} };
 }
-function savePreferences(storage: Storage, preferences: ArtifactViewPreferences) {
+function savePreferences(storage: Storage | undefined, preferences: ArtifactViewPreferences) {
 	try {
 		const { view, collapsedSections, pinnedArtifactIds, pinAliases, galleryPreferences } = preferences;
-		storage.setItem(
+		storage?.setItem(
 			STORAGE_KEY,
 			JSON.stringify({ pinVersion: 2, view, collapsedSections, pinnedArtifactIds, pinAliases, galleryPreferences }),
 		);
@@ -91,11 +91,19 @@ function pinFamily(id: string, aliases: Readonly<Record<string, string>>) {
 	const canonical = aliases[id] ?? id;
 	return [...new Set([id, canonical, ...Object.keys(aliases).filter((key) => aliases[key] === canonical)])];
 }
-export function createArtifactsViewStore(storage: Storage) {
+function availableStorage(): Storage | undefined {
+	try {
+		return window.localStorage;
+	} catch {
+		return undefined;
+	}
+}
+export function createArtifactsViewStore(storage = availableStorage()) {
 	return create<ArtifactsViewState>((set) => {
 		const change = (update: (state: ArtifactsViewState) => Partial<ArtifactViewPreferences>) =>
 			set((state) => {
 				const patch = update(state);
+				if (Object.keys(patch).length === 0) return state;
 				savePreferences(storage, { ...state, ...patch });
 				return patch;
 			});
@@ -144,4 +152,4 @@ export function createArtifactsViewStore(storage: Storage) {
 		};
 	});
 }
-export const useArtifactsViewStore = createArtifactsViewStore(window.localStorage);
+export const useArtifactsViewStore = createArtifactsViewStore();

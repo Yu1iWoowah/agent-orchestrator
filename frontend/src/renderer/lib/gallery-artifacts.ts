@@ -1,3 +1,4 @@
+import type { ProjectCatalogResult } from "./artifact-catalog";
 import type { components } from "../../api/schema";
 import type { DocumentConnection } from "./document-read";
 import { artifactKey, groupArtifactsByProject, type ArtifactGroup, type ArtifactRow } from "./artifacts";
@@ -126,6 +127,35 @@ export function filterGalleryGroups(
 		}))
 		.filter((group) => group.rows.length > 0);
 }
+/** Session IDs are globally unique locally; only the candidate's project/session can block migration. */
+export function migratableGalleryRows(
+	rows: readonly GalleryRow[],
+	catalogs: readonly ProjectCatalogResult[] | undefined,
+): GalleryRow[] {
+	const candidates = new Map<string, Set<string>>();
+	for (const row of rows) {
+		const legacy = galleryLegacyKey(row);
+		if (!legacy) continue;
+		const matches = candidates.get(legacy) ?? new Set<string>();
+		matches.add(galleryArtifactKey(row));
+		candidates.set(legacy, matches);
+	}
+	const projects = new Map(catalogs?.map((project) => [project.projectId, project]));
+	return rows.filter((row) => {
+		const legacy = galleryLegacyKey(row);
+		if (!legacy || candidates.get(legacy)?.size !== 1) return false;
+		if (!isCatalogArtifact(row)) return true;
+		const target = row.target;
+		if (target.kind !== "artifact") return false;
+		const project = projects.get(target.projectId);
+		if (!project || project.loading || project.error || (project.incomplete && project.errors.length === 0))
+			return false;
+		return !project.errors.some(
+			(error) => error.source === row.source && (!error.sessionId || error.sessionId === target.sessionId),
+		);
+	});
+}
+
 /** Keep v1 keys for rollback; never guess ambiguous owners or remap a pin to a new connection. */
 export function migrateLegacyPins(
 	pins: readonly string[],

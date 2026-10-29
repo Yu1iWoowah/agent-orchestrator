@@ -721,6 +721,12 @@ describe("Sidebar", () => {
 		expect(screen.getByRole("button", { name: "Artifacts" }).textContent).toBe(incomplete ? "Artifacts" : "Artifacts3");
 	});
 
+	it("counts healthy rows when Shared has never been initialized", () => {
+		const file: components["schemas"]["DocumentCatalogItem"] = { name: "guide.md", path: "guide.md", source: "worker", archived: false, size: 1, fingerprint: "f", target: { kind: "artifact", projectId: workspace.id, sessionId: "worker", path: "guide.md" } };
+		renderSidebar({ seed: cache => cache.setQueryData(["artifact-catalogs", "local", getApiBaseUrl(), [workspace.id]], [{ projectId: workspace.id, items: [file], errors: [{ source: "shared", code: "DOCUMENT_SOURCE_MISSING" }], loading: false, incomplete: true }]) });
+		expect(screen.getByRole("button", { name: "Artifacts" }).textContent).toBe("Artifacts1");
+	});
+
 	it("omits the Artifacts count when there are none and marks the row active on its route", () => {
 		mockLocation.pathname = "/artifacts";
 		renderSidebar();
