@@ -93,6 +93,8 @@ type Projects interface {
 
 // Deps wires the engine.
 type Deps struct {
+	Accounts ports.ReviewerAccountBindings
+	Models   ReviewerModels
 	// HarnessUse, when set, is held across each reviewer launch.
 	HarnessUse HarnessUseGate
 	Store      Store
@@ -110,6 +112,8 @@ type Deps struct {
 
 // Engine is the core code-review engine.
 type Engine struct {
+	accounts   ports.ReviewerAccountBindings
+	models     ReviewerModels
 	harnessUse HarnessUseGate
 	store      Store
 	sessions   Sessions
@@ -141,6 +145,8 @@ func New(d Deps) *Engine {
 		newID = uuid.NewString
 	}
 	return &Engine{
+		accounts:     d.Accounts,
+		models:       d.Models,
 		store:        d.Store,
 		harnessUse:   d.HarnessUse,
 		sessions:     d.Sessions,
@@ -245,6 +251,9 @@ type RestoreReviewerResult struct {
 // TriggerOptions selects the reviewer, its surface, and the same-commit policy
 // for one trigger.
 type TriggerOptions struct {
+	// AgentAccountID applies only to a new reviewer execution. Existing rows
+	// reject a different identity instead of changing a live conversation.
+	AgentAccountID string
 	// Harness and Config override the resolved reviewer for this pass only.
 	Harness domain.ReviewerHarness
 	Config  domain.AgentConfig
@@ -389,6 +398,12 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	if err != nil {
 		return TriggerResult{}, err
 	}
+	if hasReview {
+		ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
+		if err != nil {
+			return TriggerResult{}, err
+		}
+	}
 	previousReview := reviewRow
 	selectedMode := mode
 	if selectedMode == "" && hasReview {
@@ -442,7 +457,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 				Created:          false,
 				Reviews:          reviews,
 				Runs:             runs,
-				ReviewerSurface:  reviewerSurface(reviewRow),
+				ReviewerSurface:  e.reviewerSurface(ctx, reviewRow),
 			}, nil
 		}
 	}
@@ -450,6 +465,14 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	now := e.clock()
 	reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID, domain.ActivityActive, now)
 	if err != nil {
+		return TriggerResult{}, err
+	}
+	ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
+	if err != nil {
+		return TriggerResult{}, err
+	}
+
+	if err := e.validateReviewerModels(ctx, harness, config); err != nil {
 		return TriggerResult{}, err
 	}
 
@@ -1044,6 +1067,12 @@ func (e *Engine) restoreRecoverableChatReviewer(ctx stdctx.Context, review domai
 }
 
 func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker domain.SessionRecord, review domain.Review, previousRuns []domain.ReviewRun) (RestoreReviewerResult, error) {
+	var err error
+	ctx, err = e.reviewerAccountContext(ctx, worker, review, "")
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
+
 	if review.ReviewerHandleID != "" {
 		alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
 		if err != nil {
@@ -1159,6 +1188,14 @@ func (e *Engine) restoreReviewerLocked(
 			return RestoreReviewerResult{}, err
 		}
 	}
+	ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, "")
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
+	if err := e.validateReviewerModels(ctx, harness, config); err != nil {
+		return RestoreReviewerResult{}, err
+	}
+
 	launchID := e.newID()
 	// A reviewer being relaunched is no longer "exited". Clear that before the
 	// launch so clients stop offering Restore for a reviewer that is back, while
@@ -1516,7 +1553,7 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 	}
 	active := []domain.ReviewerSurface{}
 	if reviewerRowActive(reviewRow, runs) {
-		active = append(active, reviewerSurface(reviewRow))
+		active = append(active, e.reviewerSurface(ctx, reviewRow))
 	}
 	for i := range reviewRows {
 		other := reviewRows[i]
@@ -1534,7 +1571,7 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 			}
 		}
 		if reviewerRowActive(other, runs) {
-			active = append(active, reviewerSurface(other))
+			active = append(active, e.reviewerSurface(ctx, other))
 		}
 	}
 	prs, err := e.prs.ListPRsBySession(ctx, workerID)
@@ -1547,7 +1584,7 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 		ReviewerActivityState: reviewRow.ReviewerActivityState,
 		Runs:                  runs,
 		Reviews:               Plan(prs, runs),
-		ReviewerSurface:       reviewerSurface(reviewRow),
+		ReviewerSurface:       e.reviewerSurface(ctx, reviewRow),
 		ActiveReviewers:       active,
 	}, nil
 }

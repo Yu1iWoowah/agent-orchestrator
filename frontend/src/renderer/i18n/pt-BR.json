@@ -3617,6 +3617,7 @@
 	"settings.agentAccounts.removeDescription": "O AO para os agentes que usam {{email}}, desconecta a conta e apaga a pasta dela. Uma sessão parada continua com a conta padrão quando você a abre. Depois, você pode movê-la para outra conta no Resumo dela.",
 	"settings.agentAccounts.loginTitle": "Entrar no {{provider}}",
 	"settings.agentAccounts.checkSignIn": "Verificar login",
+	"settings.agentAccounts.loginAlreadySaved": "O login foi concluído. Sua conta foi salva.",
 	"settings.agentAccounts.loginWaiting": "Ainda sem login. Conclua no terminal e verifique de novo.",
 	"settings.agentAccounts.loginDuplicate": "{{email}} já foi adicionada.",
 	"settings.agentAccounts.loginMismatch": "Esta conta é {{email}}. Entre de novo com esse login.",

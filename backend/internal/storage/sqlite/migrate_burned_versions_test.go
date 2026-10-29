@@ -236,6 +236,7 @@ var shippedMigrations = map[int64]string{
 	20261028193618172: "20261028193618172_conversation_attention_reads.sql",
 	20261028204037417: "20261028204037417_spawn_agent_settings_resolution.sql",
 	20261029011627701: "20261029011627701_agent_settings_journal.sql",
+	20261029104125598: "20261029104125598_agent_account_execution_bindings.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

@@ -26,12 +26,11 @@ export function credentialModelScope(credentialType: string): string {
 	return `${CREDENTIAL_SCOPE_PREFIX}${credentialType}`;
 }
 
-/** The model-catalog scope a picker reads. Model catalogs are device-wide: only
- * a cloud credential scope (credentialModelScope) caches separately, and
- * anything else, including a project id, is the one catalog per agent. Keep in
- * sync with modelCatalogScope in backend/internal/service/agent/service.go. */
+/** Preserve local project/account selectors in UI caches. The daemon resolves
+ * them to account-scoped catalogs; Cloud credential selectors stay unchanged. */
 export function modelCatalogScope(scope: string): string {
-	return scope.startsWith(CREDENTIAL_SCOPE_PREFIX) && scope.slice(CREDENTIAL_SCOPE_PREFIX.length).trim() !== "" ? scope : "";
+    if (scope.startsWith(CREDENTIAL_SCOPE_PREFIX) && scope.slice(CREDENTIAL_SCOPE_PREFIX.length).trim() === "") return "";
+    return scope;
 }
 
 /** The credential type stored on a valid cloud connection for one provider

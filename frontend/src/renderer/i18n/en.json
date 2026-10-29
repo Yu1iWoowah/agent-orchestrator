@@ -3532,6 +3532,7 @@
 	"settings.agentAccounts.removeDescription": "AO stops the agents that run on {{email}}, signs it out and deletes its folder. A stopped session continues on the default account when you open it. You can then move it to another account in its Summary.",
 	"settings.agentAccounts.loginTitle": "Sign in to {{provider}}",
 	"settings.agentAccounts.checkSignIn": "Check sign-in",
+	"settings.agentAccounts.loginAlreadySaved": "Sign-in completed. Your account was saved.",
 	"settings.agentAccounts.loginWaiting": "Not signed in yet. Finish in the terminal, then check again.",
 	"settings.agentAccounts.loginDuplicate": "{{email}} is already added.",
 	"settings.agentAccounts.loginMismatch": "This account is {{email}}. Sign in again with that login.",

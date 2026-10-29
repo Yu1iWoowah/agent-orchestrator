@@ -44,6 +44,9 @@ func (s *Service) SetSavedDefaultSignIn(signedIn func(ctx context.Context, harne
 
 func (s *Service) savedDefaultAuthentication(ctx context.Context, agentID string) (domain.AgentAuthenticationObservation, bool) {
 	harness := domain.AgentHarness(agentID)
+	if s.accountExecution != nil {
+		return s.configuredDefaultAuthentication(ctx, harness)
+	}
 	if _, ok := domain.AgentAccountProviderFor(harness); !ok || s.savedDefaultSignIn == nil {
 		return domain.AgentAuthenticationObservation{}, false
 	}

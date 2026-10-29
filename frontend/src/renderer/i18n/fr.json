@@ -3617,6 +3617,7 @@
 	"settings.agentAccounts.removeDescription": "AO arrête les agents qui utilisent {{email}}, le déconnecte et supprime son dossier. Une session arrêtée reprend avec le compte par défaut quand vous l'ouvrez. Vous pouvez ensuite la déplacer vers un autre compte dans son Résumé.",
 	"settings.agentAccounts.loginTitle": "Se connecter à {{provider}}",
 	"settings.agentAccounts.checkSignIn": "Vérifier la connexion",
+	"settings.agentAccounts.loginAlreadySaved": "La connexion est terminée. Votre compte a été enregistré.",
 	"settings.agentAccounts.loginWaiting": "Pas encore connecté. Terminez dans le terminal, puis vérifiez à nouveau.",
 	"settings.agentAccounts.loginDuplicate": "{{email}} est déjà ajouté.",
 	"settings.agentAccounts.loginMismatch": "Ce compte est {{email}}. Reconnectez-vous avec cet identifiant.",

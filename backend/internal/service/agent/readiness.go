@@ -84,6 +84,9 @@ func (s *Service) EnsureInstallationReadiness(ctx context.Context) (Readiness, e
 
 // EnsureAgentReadiness is the narrow service boundary used by launch paths.
 func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+		return s.EnsureAgentAccountReadiness(ctx, agentID, purpose, selected.AccountID)
+	}
 	result, err := s.EnsureReadiness(ctx, []string{agentID}, purpose)
 	if err != nil {
 		return domain.AgentReadinessSnapshot{}, err

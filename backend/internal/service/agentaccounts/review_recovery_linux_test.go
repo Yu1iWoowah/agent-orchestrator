@@ -45,7 +45,7 @@ func TestLegacyOrphanBindingRemainsTraceableAndProviderScoped(t *testing.T) {
 		t.Fatalf("active orphan launched: %v", e)
 	}
 }
-func TestDisabledDefaultFallsBackForNewSessionAndReadiness(t *testing.T) {
+func TestDisabledDefaultRefusesNewSessionAndReadiness(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "accounts")
 	now := time.Now()
@@ -57,11 +57,11 @@ func TestDisabledDefaultFallsBackForNewSessionAndReadiness(t *testing.T) {
 	}
 	st := &memStore{accounts: []domain.AgentAccount{{ID: "bad", Provider: domain.AgentAccountProviderClaude, Home: bad, DisabledAt: &now}, {ID: "good", Provider: domain.AgentAccountProviderClaude, Home: good, Email: "good@example.invalid"}}, defaults: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderClaude: "bad"}, bindings: map[domain.SessionID]string{}}
 	s := New(st, []ports.AgentAccountProviderCLI{&fakeClaude{signedInAs: map[string]string{good: "good@example.invalid"}}}, root, nil, nil)
-	if e := s.BindSession(ctx, "new", domain.HarnessClaudeCode, ""); e != nil || st.bindings["new"] != "good" {
-		t.Fatalf("disabled default did not fall back: %v %v", st.bindings, e)
+	if e := s.BindSession(ctx, "new", domain.HarnessClaudeCode, ""); !errors.Is(e, ports.ErrAgentAccountSignedOut) || st.bindings["new"] != "" {
+		t.Fatalf("disabled default escaped: %v %v", st.bindings, e)
 	}
 	id, handled := s.DefaultSignIn(ctx, domain.HarnessClaudeCode)
-	if !handled || !id.SignedIn || id.Email != "good@example.invalid" {
+	if !handled || id.SignedIn {
 		t.Fatalf("readiness disagrees with launch: %+v %t", id, handled)
 	}
 	if e := s.ValidateAccount(ctx, domain.HarnessClaudeCode, "bad"); !errors.Is(e, ports.ErrAgentAccountSignedOut) {

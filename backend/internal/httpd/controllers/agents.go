@@ -16,6 +16,8 @@ import (
 
 // AgentCatalog is the controller-facing contract for local agent inventory.
 type AgentCatalog interface {
+	AccountContext(context.Context, domain.AgentHarness, string, domain.AgentAccountRole, string) (context.Context, error)
+	EnsureAgentReadiness(context.Context, string, domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error)
 	CachedReadiness(ctx context.Context) (agentsvc.Readiness, error)
 	EnsureReadiness(ctx context.Context, agentIDs []string, purpose domain.AgentReadinessPurpose) (agentsvc.Readiness, error)
 	List(ctx context.Context) (agentsvc.Inventory, error)
@@ -65,6 +67,24 @@ func (c *AgentsController) ensureReadiness(w http.ResponseWriter, r *http.Reques
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
+	if request.AgentAccountID != "" || request.ProjectID != "" || request.Role != "" {
+		if len(request.AgentIDs) != 1 {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "ACCOUNT_AGENT_REQUIRED", "Select one agent for account preflight.", nil)
+			return
+		}
+		ctx, err := c.Catalog.AccountContext(r.Context(), domain.AgentHarness(request.AgentIDs[0]), string(request.ProjectID), request.Role, request.AgentAccountID)
+		if err != nil {
+			writeAgentAccountError(w, r, err)
+			return
+		}
+		item, err := c.Catalog.EnsureAgentReadiness(ctx, request.AgentIDs[0], request.Purpose)
+		if err != nil {
+			writeAgentAccountError(w, r, err)
+			return
+		}
+		envelope.WriteJSON(w, http.StatusOK, agentsvc.Readiness{Agents: []domain.AgentReadinessSnapshot{item}})
+		return
+	}
 	result, err := c.Catalog.EnsureReadiness(r.Context(), request.AgentIDs, request.Purpose)
 	if err != nil {
 		envelope.WriteError(w, r, err)
@@ -96,17 +116,22 @@ func (c *AgentsController) writeModels(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	ctx, scopeErr := c.Catalog.AccountContext(r.Context(), domain.AgentHarness(agentID), projectID, domain.AgentAccountRole(r.URL.Query().Get("role")), r.URL.Query().Get("agentAccountId"))
+	if scopeErr != nil {
+		writeAgentAccountError(w, r, scopeErr)
+		return
+	}
 	var catalog ports.AgentModelCatalog
 	var err error
 	if r.URL.Query().Get("catalogOnly") == "true" {
-		catalog, err = c.Catalog.ModelCatalog(r.Context(), agentID, projectID, refresh)
+		catalog, err = c.Catalog.ModelCatalog(ctx, agentID, projectID, refresh)
 	} else if revalidate {
-		catalog, err = c.Catalog.RevalidateModels(r.Context(), agentID, projectID)
+		catalog, err = c.Catalog.RevalidateModels(ctx, agentID, projectID)
 	} else {
-		catalog, err = c.Catalog.Models(r.Context(), agentID, projectID, refresh)
+		catalog, err = c.Catalog.Models(ctx, agentID, projectID, refresh)
 	}
 	if err != nil {
-		envelope.WriteError(w, r, err)
+		writeAgentAccountError(w, r, err)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, catalog)

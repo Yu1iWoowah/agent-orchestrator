@@ -95,7 +95,7 @@ func lanControlBlock(next http.Handler) http.Handler {
 			notFoundJSON(w, r)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(requestscope.WithLAN(r.Context())))
+		next.ServeHTTP(w, r.WithContext(ports.WithRemoteAccountRequest(requestscope.WithLAN(r.Context()))))
 	})
 }
 

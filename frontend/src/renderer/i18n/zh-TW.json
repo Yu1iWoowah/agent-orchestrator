@@ -3532,6 +3532,7 @@
 	"settings.agentAccounts.removeDescription": "AO 會停止使用 {{email}} 的 agent、登出該帳號並刪除其資料夾。再次開啟已停止的 session 時，會使用預設帳號繼續。之後你可以在摘要中將它移至其他帳號。",
 	"settings.agentAccounts.loginTitle": "登入 {{provider}}",
 	"settings.agentAccounts.checkSignIn": "檢查登入狀態",
+	"settings.agentAccounts.loginAlreadySaved": "登入已完成，帳號已保存。",
 	"settings.agentAccounts.loginWaiting": "尚未登入。請先在終端機完成登入，再重新檢查。",
 	"settings.agentAccounts.loginDuplicate": "{{email}} 已新增。",
 	"settings.agentAccounts.loginMismatch": "此帳號為 {{email}}。請使用該帳號重新登入。",

@@ -10,6 +10,7 @@ import (
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountLocalOnly                  = errors.New("account_local_only")
 	ErrAgentAccountUnavailableHomeOccupied    = errors.New("account_unavailable_home_occupied")
 	ErrAgentAccountCleanupUnconfirmed         = errors.New("account_cleanup_unconfirmed")
 	ErrAgentAccountOperationBusy              = errors.New("account_operation_busy")
@@ -65,6 +66,8 @@ type AgentAccountStore interface {
 	SetAgentAccountDefault(ctx context.Context, provider domain.AgentAccountProvider, accountID string) error
 	// BindSessionAgentAccount records that the session uses accountID for the
 	// provider from now on. Earlier bindings are kept for usage attribution.
+	BindSessionAgentAccountWithSource(context.Context, domain.SessionID, domain.ResolvedAgentAccount, time.Time) error
+	GetSessionAgentAccountBinding(context.Context, domain.SessionID, domain.AgentAccountProvider) (domain.ResolvedAgentAccount, bool, error)
 	BindSessionAgentAccount(ctx context.Context, sessionID domain.SessionID, provider domain.AgentAccountProvider, accountID string, at time.Time) error
 	GetSessionAgentAccount(ctx context.Context, sessionID domain.SessionID, provider domain.AgentAccountProvider) (string, bool, error)
 	// AgentAccountUsageSince sums each account's model usage since the time,
@@ -75,6 +78,8 @@ type AgentAccountStore interface {
 // AgentAccountLaunchEnv gives Session Manager the account environment of a
 // session's agent launch.
 type AgentAccountLaunchEnv interface {
+	AgentAccountResolver
+	BindResolvedSession(context.Context, domain.SessionID, domain.AgentHarness, domain.ResolvedAgentAccount) error
 	// SessionLaunchEnv returns the variables that run each provider's CLI under
 	// the session's account, binding the provider's default first when the
 	// session has none yet. Validation errors block only harness's provider;
@@ -106,4 +111,34 @@ type AgentAccountJournal interface {
 	GetAgentAccountOperation(context.Context, string) (domain.AgentAccountOperation, bool, error)
 	ListAgentAccountOperations(context.Context) ([]domain.AgentAccountOperation, error)
 	CommitAgentAccountLogin(context.Context, domain.AgentAccountOperation, domain.AgentAccount) error
+}
+
+// AgentAccountResolutionRequest carries a daemon-owned project snapshot. Only
+// AccountID is a caller override; callers cannot supply a resolved identity.
+type AgentAccountResolutionRequest struct {
+	Harness       domain.AgentHarness
+	Role          domain.AgentAccountRole
+	ProjectConfig domain.ProjectConfig
+	AccountID     string
+}
+
+// AgentAccountResolver is shared by session, automation and reviewer execution.
+// Resolution validates the exact selected account and never binds or falls back.
+type AgentAccountResolver interface {
+	ResolveAccount(context.Context, AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error)
+}
+
+// ReviewerAgentAccountStore keeps reviewer identities separate from worker
+// session bindings. First write wins for each provider/execution pair.
+type ReviewerAgentAccountStore interface {
+	BindReviewerAgentAccount(context.Context, string, domain.ResolvedAgentAccount, time.Time) error
+	GetReviewerAgentAccount(context.Context, string, domain.AgentAccountProvider) (domain.ResolvedAgentAccount, bool, error)
+}
+
+// ReviewerAccountBindings pins each reviewer execution separately from its
+// worker; changing defaults never changes a pass or restored conversation.
+type ReviewerAccountBindings interface {
+	AgentAccountExecution
+	ResolveReviewerAccount(context.Context, string, AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error)
+	ReviewerLaunchEnv(context.Context, string, domain.AgentHarness) (map[string]string, error)
 }

@@ -32,7 +32,7 @@ func (s *Service) ValidateSpawn(ctx context.Context, id domain.SessionID, settin
 	if s.catalogInputs == nil || snapshot.catalogFingerprint == "" {
 		return settings, fmt.Errorf("%w: catalog_inputs_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
-	current, err := s.catalogInputs.CatalogFingerprint(ctx, string(snapshot.Harness), "")
+	current, err := s.catalogInputs.CatalogFingerprint(ctx, string(snapshot.Harness), ports.AccountModelCatalogScope(snapshot.AccountID))
 	if err != nil || current == "" {
 		return settings, fmt.Errorf("%w: catalog_inputs_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}

@@ -19,11 +19,11 @@ import (
 func recoverUnavailableNamespace(root string) (bool, error) {
 	blocked := ports.ErrAgentAccountUnavailableHomeOccupied
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" {
-		return false, blocked
+		return false, ports.ErrAgentAccountStorageUnsafe
 	}
 	fd, e := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if e != nil {
-		return false, blocked
+		return false, accountProfileStorageError(e)
 	}
 	defer func() { _ = unix.Close(fd) }()
 	parts := strings.Split(strings.TrimPrefix(root, "/"), "/")
@@ -31,12 +31,12 @@ func recoverUnavailableNamespace(root string) (bool, error) {
 	for i := 0; ; i++ {
 		var st unix.Stat_t
 		if e := unix.Fstat(fd, &st); e != nil {
-			return false, blocked
+			return false, accountProfileStorageError(e)
 		}
 		owner := st.Uid == uint32(unix.Geteuid()) //nolint:gosec // Linux uid_t uses the same UID.
 		sticky := st.Uid == 0 && st.Mode&unix.S_ISVTX != 0
 		if st.Uid != 0 && !owner || st.Mode&0o022 != 0 && !sticky || current == root && (!owner || st.Mode&0o777 != 0o700) {
-			return false, blocked
+			return false, ports.ErrAgentAccountStorageUnsafe
 		}
 		if i == len(parts) {
 			break
@@ -46,7 +46,7 @@ func recoverUnavailableNamespace(root string) (bool, error) {
 			return false, nil
 		}
 		if e != nil {
-			return false, blocked
+			return false, accountProfileStorageError(e)
 		}
 		_ = unix.Close(fd)
 		fd = next

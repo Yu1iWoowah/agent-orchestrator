@@ -131,6 +131,7 @@ export function useAgentAccountActions() {
 		cancelLogin: async (operationId: string) => {
 			const { error } = await apiClient.POST("/api/v1/agents/accounts/login/{operationId}/cancel", { params: { path: { operationId } } });
 			if (error) throw new Error(agentAccountErrorMessage(error));
+			return unwrap(await apiClient.GET("/api/v1/agents/accounts/operations/{operationId}", { params: { path: { operationId } } }));
 		},
 		makeDefault: async (accountId: string) =>
 			setAccounts(unwrap(await apiClient.POST("/api/v1/agents/accounts/{accountId}/default", { params: { path: { accountId } } })).accounts),

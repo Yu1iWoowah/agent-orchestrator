@@ -278,6 +278,18 @@ paths:
         schema:
           description: Agent adapter identifier.
           type: string
+      - in: query
+        name: agentAccountId
+        schema:
+          type: string
+      - in: query
+        name: role
+        schema:
+          enum:
+          - worker
+          - orchestrator
+          - reviewer
+          type: string
       - description: Return catalog facts without reading session history for model
           recency. Cached catalogs are served while discovery refreshes in the background.
         in: query
@@ -341,6 +353,18 @@ paths:
         required: true
         schema:
           description: Agent adapter identifier.
+          type: string
+      - in: query
+        name: agentAccountId
+        schema:
+          type: string
+      - in: query
+        name: role
+        schema:
+          enum:
+          - worker
+          - orchestrator
+          - reviewer
           type: string
       - description: Refresh the Harness Settings browsing catalog without session-history
           enrichment; FX includes all connections in a separate cache.
@@ -14763,6 +14787,32 @@ components:
           - "null"
           - integer
       type: object
+    AgentAccountBindingView:
+      properties:
+        accountId:
+          type: string
+        available:
+          type: boolean
+        label:
+          type: string
+        provider:
+          type: string
+        source:
+          enum:
+          - explicit
+          - role
+          - project
+          - global
+          - device
+          - legacy
+          type: string
+      required:
+      - accountId
+      - provider
+      - label
+      - source
+      - available
+      type: object
     AgentAccountExtraUsage:
       properties:
         currency:
@@ -15339,6 +15389,8 @@ components:
       type: object
     AgentModelsResponse:
       properties:
+        accountBinding:
+          $ref: '#/components/schemas/ResolvedAgentAccount'
         agentId:
           type: string
         allowCustom:
@@ -15438,6 +15490,8 @@ components:
       type: object
     AgentReadinessSnapshot:
       properties:
+        accountBinding:
+          $ref: '#/components/schemas/ResolvedAgentAccount'
         authentication:
           $ref: '#/components/schemas/AgentAuthenticationObservation'
         effectiveReadiness:
@@ -16672,6 +16726,8 @@ components:
       type: object
     AutomationResponse:
       properties:
+        agentAccountId:
+          type: string
         createdAt:
           format: date-time
           type: string
@@ -19388,6 +19444,8 @@ components:
       type: object
     CreateAutomationRequest:
       properties:
+        agentAccountId:
+          type: string
         cron:
           type: string
         displayName:
@@ -19602,6 +19660,9 @@ components:
           - memcode
           - hermes
           - fake
+          type: string
+        agentAccountId:
+          maxLength: 200
           type: string
         approvalMode:
           enum:
@@ -19869,6 +19930,8 @@ components:
       type: object
     DomainReviewerConfig:
       properties:
+        agentAccountId:
+          type: string
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
         harness:
@@ -19878,6 +19941,8 @@ components:
       type: object
     DomainReviewerSurface:
       properties:
+        accountBinding:
+          $ref: '#/components/schemas/AgentAccountBindingView'
         controllerError:
           type: string
         handleId:
@@ -19979,14 +20044,24 @@ components:
       type: object
     EnsureAgentReadinessRequest:
       properties:
+        agentAccountId:
+          type: string
         agentIds:
           items:
             type: string
           type: array
+        projectId:
+          type: string
         purpose:
           enum:
           - display
           - launch
+          type: string
+        role:
+          enum:
+          - worker
+          - orchestrator
+          - reviewer
           type: string
       required:
       - purpose
@@ -21351,6 +21426,10 @@ components:
       type: object
     ProjectConfig:
       properties:
+        agentAccounts:
+          additionalProperties:
+            type: string
+          type: object
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
         agentRules:
@@ -22136,6 +22215,26 @@ components:
       required:
       - state
       type: object
+    ResolvedAgentAccount:
+      properties:
+        accountId:
+          type: string
+        provider:
+          type: string
+        source:
+          enum:
+          - explicit
+          - role
+          - project
+          - global
+          - device
+          - legacy
+          type: string
+      required:
+      - accountId
+      - provider
+      - source
+      type: object
     ResolvedDocument:
       properties:
         canonicalUri:
@@ -22329,6 +22428,8 @@ components:
       properties:
         agent:
           type: string
+        agentAccountId:
+          type: string
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
       type: object
@@ -22484,6 +22585,10 @@ components:
       type: object
     SessionAgentAccountsResponse:
       properties:
+        bindings:
+          additionalProperties:
+            $ref: '#/components/schemas/AgentAccountBindingView'
+          type: object
         claude:
           type: string
         codex:
@@ -24149,6 +24254,9 @@ components:
       type: object
     SpawnOrchestratorRequest:
       properties:
+        agentAccountId:
+          maxLength: 200
+          type: string
         approvalMode:
           enum:
           - default
@@ -24177,6 +24285,9 @@ components:
       type: object
     SpawnSessionRequest:
       properties:
+        agentAccountId:
+          maxLength: 200
+          type: string
         agentSettings:
           $ref: '#/components/schemas/AgentSettingsPatch'
         approvalMode:
@@ -24713,6 +24824,9 @@ components:
       type: object
     TriggerReviewRequest:
       properties:
+        agentAccountId:
+          maxLength: 200
+          type: string
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
         enableAutoInject:
@@ -24849,6 +24963,10 @@ components:
       type: object
     UpdateAutomationRequest:
       properties:
+        agentAccountId:
+          type:
+          - "null"
+          - string
         cron:
           type:
           - "null"

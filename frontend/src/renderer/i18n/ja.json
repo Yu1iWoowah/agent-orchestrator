@@ -3551,6 +3551,7 @@
 	"settings.agentAccounts.removeDescription": "AO は {{email}} で動いているエージェントを停止し、サインアウトしてフォルダーを削除します。停止したセッションは、開くと既定のアカウントで続きます。その後、サマリーで別のアカウントに移せます。",
 	"settings.agentAccounts.loginTitle": "{{provider}} にサインイン",
 	"settings.agentAccounts.checkSignIn": "サインインを確認",
+	"settings.agentAccounts.loginAlreadySaved": "ログインが完了し、アカウントが保存されました。",
 	"settings.agentAccounts.loginWaiting": "まだサインインしていません。ターミナルで完了してから、もう一度確認してください。",
 	"settings.agentAccounts.loginDuplicate": "{{email}} は追加済みです。",
 	"settings.agentAccounts.loginMismatch": "このアカウントは {{email}} です。そのログインでもう一度サインインしてください。",

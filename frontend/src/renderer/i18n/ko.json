@@ -3551,6 +3551,7 @@
 	"settings.agentAccounts.removeDescription": "AO가 {{email}}에서 실행 중인 에이전트를 중지하고, 로그아웃한 뒤 해당 폴더를 삭제합니다. 중지된 세션은 열면 기본 계정으로 계속됩니다. 그런 다음 요약에서 다른 계정으로 옮길 수 있습니다.",
 	"settings.agentAccounts.loginTitle": "{{provider}}에 로그인",
 	"settings.agentAccounts.checkSignIn": "로그인 확인",
+	"settings.agentAccounts.loginAlreadySaved": "로그인이 완료되어 계정이 저장되었습니다.",
 	"settings.agentAccounts.loginWaiting": "아직 로그인하지 않았습니다. 터미널에서 마친 후 다시 확인하세요.",
 	"settings.agentAccounts.loginDuplicate": "{{email}}은(는) 이미 추가되어 있습니다.",
 	"settings.agentAccounts.loginMismatch": "이 계정은 {{email}}입니다. 해당 로그인으로 다시 로그인하세요.",

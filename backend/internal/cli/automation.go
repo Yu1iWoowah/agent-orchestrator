@@ -13,21 +13,22 @@ import (
 )
 
 type automationDTO struct {
-	ID          string                   `json:"id"`
-	ProjectID   string                   `json:"projectId"`
-	DisplayName string                   `json:"displayName"`
-	Prompt      string                   `json:"prompt"`
-	Kind        string                   `json:"kind"`
-	Harness     string                   `json:"harness,omitempty"`
-	Model       string                   `json:"model,omitempty"`
-	Mode        string                   `json:"mode,omitempty"`
-	Effort      string                   `json:"effort,omitempty"`
-	RRule       string                   `json:"rrule"`
-	Timezone    string                   `json:"timezone"`
-	Enabled     bool                     `json:"enabled"`
-	NextRunAt   time.Time                `json:"nextRunAt"`
-	LastRunAt   *time.Time               `json:"lastRunAt,omitempty"`
-	LatestRun   *automationRunSummaryDTO `json:"latestRun,omitempty"`
+	AgentAccountID string                   `json:"agentAccountId,omitempty"`
+	ID             string                   `json:"id"`
+	ProjectID      string                   `json:"projectId"`
+	DisplayName    string                   `json:"displayName"`
+	Prompt         string                   `json:"prompt"`
+	Kind           string                   `json:"kind"`
+	Harness        string                   `json:"harness,omitempty"`
+	Model          string                   `json:"model,omitempty"`
+	Mode           string                   `json:"mode,omitempty"`
+	Effort         string                   `json:"effort,omitempty"`
+	RRule          string                   `json:"rrule"`
+	Timezone       string                   `json:"timezone"`
+	Enabled        bool                     `json:"enabled"`
+	NextRunAt      time.Time                `json:"nextRunAt"`
+	LastRunAt      *time.Time               `json:"lastRunAt,omitempty"`
+	LatestRun      *automationRunSummaryDTO `json:"latestRun,omitempty"`
 }
 type automationRunSummaryDTO struct {
 	ID           string    `json:"id"`

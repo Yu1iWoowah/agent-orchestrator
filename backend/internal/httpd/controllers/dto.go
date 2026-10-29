@@ -535,6 +535,7 @@ type SessionArchiveSummary struct {
 
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
+	AgentAccountID      string                     `json:"agentAccountId,omitempty" maxLength:"200"`
 	AgentSettings       *domain.AgentSettingsPatch `json:"agentSettings,omitempty"`
 	legacyModelPresent  bool
 	legacyEffortPresent bool
@@ -1314,6 +1315,7 @@ type SendSessionMessageResponse struct {
 // DelegateTaskRequest is the body of POST /api/v1/orchestrators/delegate.
 // An omitted agent tells the orchestrator to use the project's worker default.
 type DelegateTaskRequest struct {
+	AgentAccountID  string              `json:"agentAccountId,omitempty" maxLength:"200"`
 	ClientRequestID string              `json:"clientRequestId,omitempty" maxLength:"128"`
 	ProjectID       domain.ProjectID    `json:"projectId"`
 	Brief           string              `json:"brief" maxLength:"16384"`
@@ -1696,8 +1698,9 @@ type ReviewIDParam struct {
 
 // SpawnOrchestratorRequest is the body of POST /api/v1/orchestrators.
 type SpawnOrchestratorRequest struct {
-	ProjectID domain.ProjectID `json:"projectId"`
-	Clean     bool             `json:"clean,omitempty"`
+	AgentAccountID string           `json:"agentAccountId,omitempty" maxLength:"200"`
+	ProjectID      domain.ProjectID `json:"projectId"`
+	Clean          bool             `json:"clean,omitempty"`
 	// Mode applies only when this request creates a project orchestrator. An
 	// idempotent ensure returns the existing orchestrator unchanged, and a clean
 	// replacement inherits the existing orchestrator's currently committed mode.
@@ -1734,8 +1737,11 @@ type AgentReadinessResponse = agentsvc.Readiness
 // EnsureAgentReadinessRequest selects harnesses and the daemon freshness policy.
 // An omitted or empty agentIds list selects all supported harnesses.
 type EnsureAgentReadinessRequest struct {
-	AgentIDs []string                     `json:"agentIds,omitempty"`
-	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,launch"`
+	AgentAccountID string                       `json:"agentAccountId,omitempty"`
+	ProjectID      domain.ProjectID             `json:"projectId,omitempty"`
+	Role           domain.AgentAccountRole      `json:"role,omitempty" enum:"worker,orchestrator,reviewer"`
+	AgentIDs       []string                     `json:"agentIds,omitempty"`
+	Purpose        domain.AgentReadinessPurpose `json:"purpose" enum:"display,launch"`
 }
 
 // CodexAccountsResponse is the controller-owned, redacted cached account view.
@@ -1942,16 +1948,20 @@ type AgentAuthenticationObservation = domain.AgentAuthenticationObservation
 // ID is accepted for compatibility and ignored; only a cloud credential scope
 // caches separately.
 type AgentModelsQuery struct {
-	CatalogOnly bool   `query:"catalogOnly,omitempty" description:"Return catalog facts without reading session history for model recency. Cached catalogs are served while discovery refreshes in the background."`
-	ProjectID   string `query:"projectId,omitempty" description:"Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project."`
+	AgentAccountID string                  `query:"agentAccountId"`
+	Role           domain.AgentAccountRole `query:"role" enum:"worker,orchestrator,reviewer"`
+	CatalogOnly    bool                    `query:"catalogOnly,omitempty" description:"Return catalog facts without reading session history for model recency. Cached catalogs are served while discovery refreshes in the background."`
+	ProjectID      string                  `query:"projectId,omitempty" description:"Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project."`
 }
 
 // AgentModelsRefreshQuery controls forced refresh versus cheap background
 // revalidation for a device-wide model catalog.
 type AgentModelsRefreshQuery struct {
-	CatalogOnly bool   `query:"catalogOnly,omitempty" description:"Refresh the Harness Settings browsing catalog without session-history enrichment; FX includes all connections in a separate cache."`
-	ProjectID   string `query:"projectId,omitempty" description:"Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project."`
-	Revalidate  bool   `query:"revalidate,omitempty" description:"When true, compare executable and config metadata before running discovery."`
+	AgentAccountID string                  `query:"agentAccountId"`
+	Role           domain.AgentAccountRole `query:"role" enum:"worker,orchestrator,reviewer"`
+	CatalogOnly    bool                    `query:"catalogOnly,omitempty" description:"Refresh the Harness Settings browsing catalog without session-history enrichment; FX includes all connections in a separate cache."`
+	ProjectID      string                  `query:"projectId,omitempty" description:"Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project."`
+	Revalidate     bool                    `query:"revalidate,omitempty" description:"When true, compare executable and config metadata before running discovery."`
 }
 
 // AgentModelsResponse is the normalized model picker for one agent.
@@ -2187,33 +2197,35 @@ type ListAutomationRunsQuery struct {
 
 // CreateAutomationRequest is the body accepted when creating an automation.
 type CreateAutomationRequest struct {
-	ProjectID   string `json:"projectId"`
-	DisplayName string `json:"displayName"`
-	Prompt      string `json:"prompt"`
-	Kind        string `json:"kind" enum:"worker,orchestrator"`
-	Harness     string `json:"harness,omitempty"`
-	RRule       string `json:"rrule,omitempty"`
-	Cron        string `json:"cron,omitempty"`
-	Timezone    string `json:"timezone"`
-	Enabled     *bool  `json:"enabled,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Effort      string `json:"effort,omitempty"`
+	AgentAccountID string `json:"agentAccountId,omitempty"`
+	ProjectID      string `json:"projectId"`
+	DisplayName    string `json:"displayName"`
+	Prompt         string `json:"prompt"`
+	Kind           string `json:"kind" enum:"worker,orchestrator"`
+	Harness        string `json:"harness,omitempty"`
+	RRule          string `json:"rrule,omitempty"`
+	Cron           string `json:"cron,omitempty"`
+	Timezone       string `json:"timezone"`
+	Enabled        *bool  `json:"enabled,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	Effort         string `json:"effort,omitempty"`
 }
 
 // UpdateAutomationRequest is the partial body accepted when updating an automation.
 type UpdateAutomationRequest struct {
-	DisplayName *string `json:"displayName,omitempty"`
-	Prompt      *string `json:"prompt,omitempty"`
-	Kind        *string `json:"kind,omitempty" enum:"worker,orchestrator"`
-	Harness     *string `json:"harness,omitempty"`
-	RRule       *string `json:"rrule,omitempty"`
-	Cron        *string `json:"cron,omitempty"`
-	Timezone    *string `json:"timezone,omitempty"`
-	Enabled     *bool   `json:"enabled,omitempty"`
-	Model       *string `json:"model,omitempty"`
-	Mode        *string `json:"mode,omitempty"`
-	Effort      *string `json:"effort,omitempty"`
+	AgentAccountID *string `json:"agentAccountId,omitempty"`
+	DisplayName    *string `json:"displayName,omitempty"`
+	Prompt         *string `json:"prompt,omitempty"`
+	Kind           *string `json:"kind,omitempty" enum:"worker,orchestrator"`
+	Harness        *string `json:"harness,omitempty"`
+	RRule          *string `json:"rrule,omitempty"`
+	Cron           *string `json:"cron,omitempty"`
+	Timezone       *string `json:"timezone,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	Model          *string `json:"model,omitempty"`
+	Mode           *string `json:"mode,omitempty"`
+	Effort         *string `json:"effort,omitempty"`
 }
 
 // AutomationRunSummaryResponse is the latest-run projection attached to a definition.
@@ -2229,23 +2241,24 @@ type AutomationRunSummaryResponse struct {
 
 // AutomationResponse is the API representation of an automation definition.
 type AutomationResponse struct {
-	ID          string                        `json:"id"`
-	ProjectID   string                        `json:"projectId"`
-	DisplayName string                        `json:"displayName"`
-	Prompt      string                        `json:"prompt"`
-	Kind        string                        `json:"kind" enum:"worker,orchestrator"`
-	Harness     string                        `json:"harness,omitempty"`
-	RRule       string                        `json:"rrule"`
-	Timezone    string                        `json:"timezone"`
-	Enabled     bool                          `json:"enabled"`
-	NextRunAt   time.Time                     `json:"nextRunAt"`
-	LastRunAt   *time.Time                    `json:"lastRunAt,omitempty"`
-	CreatedAt   time.Time                     `json:"createdAt"`
-	UpdatedAt   time.Time                     `json:"updatedAt"`
-	LatestRun   *AutomationRunSummaryResponse `json:"latestRun,omitempty"`
-	Model       string                        `json:"model,omitempty"`
-	Mode        string                        `json:"mode,omitempty"`
-	Effort      string                        `json:"effort,omitempty"`
+	AgentAccountID string                        `json:"agentAccountId,omitempty"`
+	ID             string                        `json:"id"`
+	ProjectID      string                        `json:"projectId"`
+	DisplayName    string                        `json:"displayName"`
+	Prompt         string                        `json:"prompt"`
+	Kind           string                        `json:"kind" enum:"worker,orchestrator"`
+	Harness        string                        `json:"harness,omitempty"`
+	RRule          string                        `json:"rrule"`
+	Timezone       string                        `json:"timezone"`
+	Enabled        bool                          `json:"enabled"`
+	NextRunAt      time.Time                     `json:"nextRunAt"`
+	LastRunAt      *time.Time                    `json:"lastRunAt,omitempty"`
+	CreatedAt      time.Time                     `json:"createdAt"`
+	UpdatedAt      time.Time                     `json:"updatedAt"`
+	LatestRun      *AutomationRunSummaryResponse `json:"latestRun,omitempty"`
+	Model          string                        `json:"model,omitempty"`
+	Mode           string                        `json:"mode,omitempty"`
+	Effort         string                        `json:"effort,omitempty"`
 }
 
 // AutomationEnvelope wraps one automation response.
@@ -3749,10 +3762,11 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // it for this pass only, without editing project config, so one session's choice
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
-	Harness       domain.ReviewerHarness       `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
-	AgentConfig   domain.AgentConfig           `json:"agentConfig,omitempty"`
-	InterfaceMode domain.ReviewerInterfaceMode `json:"interfaceMode,omitempty" enum:"chat,tui"`
-	PRURL         string                       `json:"prUrl,omitempty" description:"Restrict the pass to this pull request, attaching it to the session first if AO does not track it yet (never from another active session). Omit to review every eligible PR on the session."`
+	AgentAccountID string                       `json:"agentAccountId,omitempty" maxLength:"200"`
+	Harness        domain.ReviewerHarness       `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	AgentConfig    domain.AgentConfig           `json:"agentConfig,omitempty"`
+	InterfaceMode  domain.ReviewerInterfaceMode `json:"interfaceMode,omitempty" enum:"chat,tui"`
+	PRURL          string                       `json:"prUrl,omitempty" description:"Restrict the pass to this pull request, attaching it to the session first if AO does not track it yet (never from another active session). Omit to review every eligible PR on the session."`
 	// Source labels who asked for the pass. Omitted means a person (manual).
 	Source string `json:"source,omitempty" enum:"manual,agent" description:"Who requested the pass: manual (a person, the default) or agent (an AO session through the CLI)."`
 	// RejectReviewedHead is the CLI's same-commit policy. Omitting it keeps the
@@ -3997,8 +4011,9 @@ type AgentAccountUsageByModel struct {
 
 // SessionAgentAccountsResponse is the account a session uses per provider.
 type SessionAgentAccountsResponse struct {
-	Claude string `json:"claude,omitempty"`
-	Codex  string `json:"codex,omitempty"`
+	Bindings map[domain.AgentAccountProvider]domain.AgentAccountBindingView `json:"bindings,omitempty"`
+	Claude   string                                                         `json:"claude,omitempty"`
+	Codex    string                                                         `json:"codex,omitempty"`
 }
 
 // SwitchSessionAgentAccountRequest moves a session to another account.

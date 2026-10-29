@@ -21,9 +21,9 @@ INSERT INTO agent_account_defaults (provider, account_id) VALUES (?, ?)
 ON CONFLICT (provider) DO UPDATE SET account_id = excluded.account_id;
 
 -- name: BindSessionAgentAccount :exec
-INSERT INTO session_agent_accounts (session_id, provider, account_id, bound_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (session_id, provider, bound_at) DO UPDATE SET account_id = excluded.account_id;
+INSERT INTO session_agent_accounts (session_id, provider, account_id, bound_at, resolution_source)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (session_id, provider, bound_at) DO UPDATE SET account_id = excluded.account_id, resolution_source = excluded.resolution_source;
 
 -- name: GetSessionAgentAccount :one
 SELECT account_id FROM session_agent_accounts
@@ -114,3 +114,20 @@ INSERT INTO agent_accounts(id,provider,home,email,plan,created_at,profile_kind,d
 VALUES(?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET email=excluded.email,plan=excluded.plan,disabled_at=excluded.disabled_at,lifecycle_operation_id=excluded.lifecycle_operation_id
 WHERE agent_accounts.retired_at IS NULL;
+
+-- name: GetSessionAgentAccountBinding :one
+SELECT account_id,provider,resolution_source,bound_at FROM session_agent_accounts
+WHERE session_id=? AND provider=? ORDER BY bound_at DESC LIMIT 1;
+
+-- name: BindReviewerAgentAccount :exec
+INSERT INTO reviewer_agent_accounts(review_id,provider,account_id,resolution_source,bound_at)
+VALUES (?,?,?,?,?) ON CONFLICT(review_id,provider) DO NOTHING;
+
+-- name: GetReviewerAgentAccount :one
+SELECT account_id,provider,resolution_source FROM reviewer_agent_accounts WHERE review_id=? AND provider=?;
+
+-- name: HasOpenReviewerAccountUse :one
+SELECT EXISTS (
+ SELECT 1 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
+ WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
+);

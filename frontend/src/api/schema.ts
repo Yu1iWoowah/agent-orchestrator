@@ -4812,6 +4812,14 @@ export interface components {
             longestTurnSeconds?: null | number;
             peakDailyTokens?: null | number;
         };
+        AgentAccountBindingView: {
+            accountId: string;
+            available: boolean;
+            label: string;
+            provider: string;
+            /** @enum {string} */
+            source: "explicit" | "role" | "project" | "global" | "device" | "legacy";
+        };
         AgentAccountExtraUsage: {
             currency?: string;
             enabled: boolean;
@@ -5039,6 +5047,7 @@ export interface components {
             model: string;
         };
         AgentModelsResponse: {
+            accountBinding?: components["schemas"]["ResolvedAgentAccount"];
             agentId: string;
             allowCustom: boolean;
             binaryVersion?: string;
@@ -5076,6 +5085,7 @@ export interface components {
             agents: components["schemas"]["AgentReadinessSnapshot"][];
         };
         AgentReadinessSnapshot: {
+            accountBinding?: components["schemas"]["ResolvedAgentAccount"];
             authentication: components["schemas"]["AgentAuthenticationObservation"];
             /** @enum {string} */
             effectiveReadiness: "ready" | "not_ready" | "unknown";
@@ -5554,6 +5564,7 @@ export interface components {
             automation: components["schemas"]["AutomationResponse"];
         };
         AutomationResponse: {
+            agentAccountId?: string;
             /** Format: date-time */
             createdAt: string;
             displayName: string;
@@ -6549,6 +6560,7 @@ export interface components {
             totalTokens: number;
         };
         CreateAutomationRequest: {
+            agentAccountId?: string;
             cron?: string;
             displayName: string;
             effort?: string;
@@ -6619,6 +6631,7 @@ export interface components {
         DelegateTaskRequest: {
             /** @enum {string} */
             agent?: "claude-code" | "codex" | "aider" | "opencode" | "opencode-v2" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "gemini" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "muse" | "kiro" | "kilocode" | "vibe" | "pi" | "kimchi" | "omp" | "fx" | "prime-agent" | "autohand" | "unreal-agent" | "codewhale" | "mimo-code" | "deepseek-harness" | "openhands" | "command-code" | "memcode" | "hermes" | "fake";
+            agentAccountId?: string;
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             attachments?: components["schemas"]["AttachmentInput"][];
@@ -6716,10 +6729,12 @@ export interface components {
             state: string;
         };
         DomainReviewerConfig: {
+            agentAccountId?: string;
             agentConfig?: components["schemas"]["AgentConfig"];
             harness: string;
         };
         DomainReviewerSurface: {
+            accountBinding?: components["schemas"]["AgentAccountBindingView"];
             controllerError?: string;
             handleId?: string;
             harness: string;
@@ -6757,9 +6772,13 @@ export interface components {
             endpoints: components["schemas"]["MobileEndpoint"][];
         };
         EnsureAgentReadinessRequest: {
+            agentAccountId?: string;
             agentIds?: string[];
+            projectId?: string;
             /** @enum {string} */
             purpose: "display" | "launch";
+            /** @enum {string} */
+            role?: "worker" | "orchestrator" | "reviewer";
         };
         EnsureCodexAccountsRequest: {
             accountIds?: string[];
@@ -7277,6 +7296,9 @@ export interface components {
             preparationId: string;
         };
         ProjectConfig: {
+            agentAccounts?: {
+                [key: string]: string;
+            };
             agentConfig?: components["schemas"]["AgentConfig"];
             agentRules?: string;
             agentRulesFile?: string;
@@ -7601,6 +7623,12 @@ export interface components {
             /** @enum {string} */
             state: "unchanged" | "changed" | "unavailable" | "moved";
         };
+        ResolvedAgentAccount: {
+            accountId: string;
+            provider: string;
+            /** @enum {string} */
+            source: "explicit" | "role" | "project" | "global" | "device" | "legacy";
+        };
         ResolvedDocument: {
             canonicalUri: string;
             /** @description Metadata validator, not a content hash. */
@@ -7675,6 +7703,7 @@ export interface components {
         };
         RoleOverride: {
             agent?: string;
+            agentAccountId?: string;
             agentConfig?: components["schemas"]["AgentConfig"];
         };
         RollbackConversationResponse: {
@@ -7734,6 +7763,9 @@ export interface components {
             recent: components["schemas"]["SessionStepResponse"][];
         };
         SessionAgentAccountsResponse: {
+            bindings?: {
+                [key: string]: components["schemas"]["AgentAccountBindingView"];
+            };
             claude?: string;
             codex?: string;
         };
@@ -8402,6 +8434,7 @@ export interface components {
             agentSettingsVersion: number;
         };
         SpawnOrchestratorRequest: {
+            agentAccountId?: string;
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
             clean?: boolean;
@@ -8413,6 +8446,7 @@ export interface components {
             orchestrator: components["schemas"]["OrchestratorResponse"];
         };
         SpawnSessionRequest: {
+            agentAccountId?: string;
             agentSettings?: components["schemas"]["AgentSettingsPatch"];
             /** @enum {string} */
             approvalMode?: "default" | "accept-edits" | "auto" | "bypass-permissions";
@@ -8619,6 +8653,7 @@ export interface components {
             repo?: string;
         };
         TriggerReviewRequest: {
+            agentAccountId?: string;
             agentConfig?: components["schemas"]["AgentConfig"];
             /** @description Turn on the worker session's review auto-inject once a pass has started, so the reviewer's PR review comments reach the worker. */
             enableAutoInject?: boolean;
@@ -8668,6 +8703,7 @@ export interface components {
             path: string;
         };
         UpdateAutomationRequest: {
+            agentAccountId?: null | string;
             cron?: null | string;
             displayName?: null | string;
             effort?: null | string;
@@ -9376,6 +9412,8 @@ export interface operations {
     getAgentModels: {
         parameters: {
             query?: {
+                agentAccountId?: string;
+                role?: "worker" | "orchestrator" | "reviewer";
                 /** @description Return catalog facts without reading session history for model recency. Cached catalogs are served while discovery refreshes in the background. */
                 catalogOnly?: boolean;
                 /** @description Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project. */
@@ -9440,6 +9478,8 @@ export interface operations {
     refreshAgentModels: {
         parameters: {
             query?: {
+                agentAccountId?: string;
+                role?: "worker" | "orchestrator" | "reviewer";
                 /** @description Refresh the Harness Settings browsing catalog without session-history enrichment; FX includes all connections in a separate cache. */
                 catalogOnly?: boolean;
                 /** @description Optional cloud credential scope. Any other value, including a project identifier, is ignored: model catalogs are cached per device, not per project. */

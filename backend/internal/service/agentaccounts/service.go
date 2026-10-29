@@ -280,84 +280,46 @@ func (s *Service) find(ctx context.Context, id string) (domain.AgentAccount, err
 }
 
 // defaultID is the provider's account for new sessions; the computer's own
-// when none was picked or the picked one was removed.
+// only when none was picked. Invalid configured defaults never select device.
 func (s *Service) defaultID(ctx context.Context, p domain.AgentAccountProvider) (string, error) {
-	id, ok, err := s.store.GetAgentAccountDefault(ctx, p)
-	if err != nil || !ok {
-		return domain.DeviceAgentAccountID(p), err
-	}
-	switch _, err := s.find(ctx, id); {
-	case errors.Is(err, ports.ErrAgentAccountUnknown):
-		return domain.DeviceAgentAccountID(p), nil // the picked default was removed
-	case err != nil:
+	id, set, err := s.store.GetAgentAccountDefault(ctx, p)
+	if err != nil {
 		return "", err
+	}
+	if !set {
+		return domain.DeviceAgentAccountID(p), nil
+	}
+	if id == "" {
+		return "", ports.ErrAgentAccountUnknown
 	}
 	return id, nil
 }
 
-// DefaultSignIn reports the sign-in of the saved account new sessions of
-// harness start on, named by the email it was added with; handled is false when
-// they start on the computer's own login, whose readiness the CLI reports
-// itself. A reading older than the cache window is read again, so readiness
-// polling costs one CLI call per window.
+// DefaultSignIn describes the configured default, including an unusable one.
+// It must not delegate to device readiness when a saved choice cannot launch.
 func (s *Service) DefaultSignIn(ctx context.Context, harness domain.AgentHarness) (identity domain.AgentAccountIdentityCheck, handled bool) {
 	p, ok := domain.AgentAccountProviderFor(harness)
 	if !ok || s.providers[p] == nil {
 		return identity, false
 	}
-	def, err := s.defaultID(ctx, p)
-	if err != nil || def == domain.DeviceAgentAccountID(p) {
-		return identity, false
-	}
-	account, err := s.find(ctx, def)
+	id, err := s.defaultID(ctx, p)
 	if err != nil {
-		return identity, false
-	}
-	if accountAvailability(account) != nil {
-		next, err := s.newSessionAccount(ctx, p)
-		if err != nil {
-			return identity, true
-		}
-		if next.Device() {
-			return identity, false
-		}
-		account = next
-	}
-	s.mu.Lock()
-	r := s.readings[account.ID]
-	s.mu.Unlock()
-	if r == nil || s.now().Sub(r.at) > freshFor {
-		s.read(ctx, account)
-		s.mu.Lock()
-		r = s.readings[account.ID]
-		s.mu.Unlock()
-	}
-	if r != nil && r.identityErr == ports.ErrAgentAccountCredentialStoreUnsupported.Error() {
 		return identity, true
 	}
-	if r == nil || (r.identityErr != "" && !r.mismatch) {
-		return identity, false // not known: leave it to the CLI's own readiness
+	if id == domain.DeviceAgentAccountID(p) {
+		return identity, false
 	}
-	if !r.identity.SignedIn {
-		// New sessions start on another signed-in account instead, if there is one.
-		next, err := s.newSessionAccount(ctx, p)
-		switch {
-		case err == nil && next.Device():
-			return identity, false
-		case err == nil:
-			account = next
-			if r = s.cachedReading(next.ID); r == nil {
-				return identity, false
-			}
-		}
+	account, err := s.find(ctx, id)
+	if err != nil {
+		return identity, true
 	}
-	if r.identity.LoggedIn {
-		if err := s.checkCredentialStore(account.Provider, account.Home); err != nil {
-			return identity, true
-		}
+	identity.Email = account.Email
+	if _, err := s.pick(ctx, harness, id); err != nil {
+		return identity, true
 	}
-	identity = r.identity
-	// A mismatched folder names another login; the account is still its own.
+	if r := s.cachedReading(id); r != nil {
+		identity = r.identity
+	}
 	if account.Email != "" {
 		identity.Email = account.Email
 	}
@@ -399,48 +361,24 @@ func (s *Service) RunsOnComputerLogin(ctx context.Context, harness domain.AgentH
 	return accountID == domain.DeviceAgentAccountID(p)
 }
 
-// newSessionAccount is the account a new session of p starts on: the default,
-// or, when the default is known to be signed out or to hold another login, the
-// first other account that is signed in. The session's account shows which.
-// Only a bad default costs CLI calls; a good one is answered from the cache.
+// newSessionAccount reports only the configured default. An unavailable default
+// is an explicit choice that must be repaired; it never selects another login.
 func (s *Service) newSessionAccount(ctx context.Context, p domain.AgentAccountProvider) (domain.AgentAccount, error) {
-	def, err := s.defaultID(ctx, p)
+	id, err := s.defaultID(ctx, p)
 	if err != nil {
 		return domain.AgentAccount{}, err
 	}
-	account, err := s.find(ctx, def)
+	a, err := s.find(ctx, id)
 	if err != nil {
 		return domain.AgentAccount{}, err
 	}
-	if accountAvailability(account) == nil {
-		r := s.cachedReading(account.ID)
-		if !r.knownUnusable() {
-			return account, nil
-		}
-		// The user may have signed it in outside AO since an old reading.
-		if s.now().Sub(r.at) > freshFor {
-			if r = s.read(ctx, account); !r.knownUnusable() {
-				return account, nil
-			}
-		}
-	}
-	accounts, err := s.accounts(ctx)
-	if err != nil {
+	if err := accountAvailability(a); err != nil {
 		return domain.AgentAccount{}, err
 	}
-	for _, other := range accounts {
-		if other.Provider != p || other.ID == account.ID || other.DisabledAt != nil || other.RetiredAt != nil {
-			continue
-		}
-		r := s.cachedReading(other.ID)
-		if r == nil || r.identityErr != "" || s.now().Sub(r.at) > freshFor {
-			r = s.read(ctx, other)
-		}
-		if r != nil && r.identity.SignedIn {
-			return other, nil
-		}
+	if r := s.cachedReading(a.ID); r.knownUnusable() && s.now().Sub(r.at) <= freshFor {
+		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
-	return domain.AgentAccount{}, ports.ErrAgentAccountDefaultUnusable
+	return a, nil
 }
 
 func (s *Service) cachedReading(id string) *reading {
@@ -550,37 +488,11 @@ func (s *Service) ConsumeResetCredit(ctx context.Context, accountID, idempotency
 // BindSession pins a session to accountID for its harness's provider, or to the
 // provider's default when accountID is empty. Other harnesses have no accounts.
 func (s *Service) BindSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, accountID string) error {
-	p, ok := domain.AgentAccountProviderFor(harness)
-	if !ok || s.providers[p] == nil {
-		if accountID != "" {
-			return ports.ErrAgentAccountProviderMismatch
-		}
-		return nil
-	}
-	if accountID == "" {
-		// A default known to be signed out would start the task signed out, or as
-		// someone else: it starts on another signed-in account instead, and is
-		// refused only when there is none.
-		account, err := s.newSessionAccount(ctx, p)
-		if err != nil {
-			return err
-		}
-		if err := accountAvailability(account); err != nil {
-			return err
-		}
-		if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
-			return err
-		}
-		if err := s.checkLaunchCredentialStore(ctx, account); err != nil {
-			return err
-		}
-		return s.store.BindSessionAgentAccount(ctx, id, p, account.ID, s.now())
-	}
-	account, err := s.pick(ctx, harness, accountID)
+	selected, err := s.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: harness, AccountID: accountID})
 	if err != nil {
 		return err
 	}
-	return s.store.BindSessionAgentAccount(ctx, id, p, account.ID, s.now())
+	return s.BindResolvedSession(ctx, id, harness, selected)
 }
 
 // CommitSession records that the session now uses accountID, once its agent
@@ -642,16 +554,24 @@ func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, account
 		r = s.readings[account.ID]
 		s.mu.Unlock()
 	}
-	if r != nil && r.identityErr == ports.ErrAgentAccountCredentialStoreUnsupported.Error() {
-		return domain.AgentAccount{}, ports.ErrAgentAccountCredentialStoreUnsupported
+	if r == nil {
+		return domain.AgentAccount{}, ports.ErrAgentAccountStorageUnavailable
 	}
-	if r == nil || !r.identity.SignedIn {
+	if r.identityErr != "" && !r.mismatch {
+		for _, category := range []error{ports.ErrAgentAccountCredentialStoreUnsupported, ports.ErrAgentAccountStorageUnsafe, ports.ErrAgentAccountStorageUnsupported} {
+			if r.identityErr == category.Error() {
+				return domain.AgentAccount{}, category
+			}
+		}
+		return domain.AgentAccount{}, ports.ErrAgentAccountStorageUnavailable
+	}
+	if !r.identity.SignedIn && (!account.Device() || !r.identity.LoggedIn) {
 		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
 	if err := s.checkLaunchCredentialStore(ctx, account); err != nil {
 		return domain.AgentAccount{}, err
 	}
-	if current := s.cachedReading(account.ID); current != nil && !current.identity.SignedIn {
+	if current := s.cachedReading(account.ID); current != nil && !current.identity.SignedIn && (!account.Device() || !current.identity.LoggedIn) {
 		return domain.AgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
 	if err := s.prepare(s.providers[p], account.Home, account.ProfileKind); err != nil {
@@ -803,6 +723,10 @@ func (s *Service) SessionAccount(ctx context.Context, id domain.SessionID, p dom
 		return domain.AgentAccount{}, false, err
 	}
 	account, err := s.find(ctx, def)
+	if errors.Is(err, ports.ErrAgentAccountUnknown) {
+		retired := time.Unix(0, 0).UTC()
+		return domain.AgentAccount{ID: def, Provider: p, RetiredAt: &retired}, false, nil
+	}
 	return account, false, err
 }
 
@@ -826,7 +750,7 @@ func (s *Service) SessionAccounts(ctx context.Context, id domain.SessionID) (map
 // session's account. A session with no account for a provider yet is bound to
 // that provider's default here, so a later default change does not move it.
 func (s *Service) SessionLaunchEnv(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (map[string]string, error) {
-	return s.launchEnv(ctx, id, domain.AgentAccount{}, harness)
+	return s.launchEnv(ctx, id, domain.AgentAccount{}, harness, "")
 }
 
 // SessionLaunchEnvWith is SessionLaunchEnv with accountID in place of the
@@ -841,10 +765,10 @@ func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID,
 	if !ok || p != account.Provider {
 		return nil, ports.ErrAgentAccountProviderMismatch
 	}
-	return s.launchEnv(ctx, id, account, harness)
+	return s.launchEnv(ctx, id, account, harness, "")
 }
 
-func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness) (map[string]string, error) {
+func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness, reviewID string) (map[string]string, error) {
 	env := map[string]string{}
 	var errs []error
 	active, _ := domain.AgentAccountProviderFor(harness)
@@ -887,7 +811,11 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if override.Provider != p {
 			var bound bool
 			var err error
-			account, bound, err = s.SessionAccount(ctx, id, p)
+			if reviewID == "" {
+				account, bound, err = s.SessionAccount(ctx, id, p)
+			} else {
+				account, bound, err = s.reviewerAccount(ctx, reviewID, p)
+			}
 
 			if err != nil {
 				// Resolution failures leave no known home to pin. Unlike the
@@ -896,8 +824,15 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 				continue
 			}
 			if !bound {
-				if err := s.store.BindSessionAgentAccount(ctx, id, p, account.ID, s.now()); err != nil {
+				if err := s.bindExecutionAccount(ctx, id, reviewID, p, account); err != nil {
 					errs = append(errs, err)
+				}
+				if reviewID != "" {
+					account, _, err = s.reviewerAccount(ctx, reviewID, p)
+					if err != nil {
+						errs = append(errs, err)
+						continue
+					}
 				}
 			}
 		}

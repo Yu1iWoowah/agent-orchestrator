@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
 
@@ -107,7 +108,7 @@ func (c *ProjectsController) clone(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusCreated, ProjectResponse{Project: p})
+	envelope.WriteJSON(w, http.StatusCreated, ProjectResponse{Project: projectForAccountRequest(r, p)})
 }
 
 func (c *ProjectsController) list(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +142,7 @@ func (c *ProjectsController) add(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusCreated, ProjectResponse{Project: p})
+	envelope.WriteJSON(w, http.StatusCreated, ProjectResponse{Project: projectForAccountRequest(r, p)})
 }
 
 func (c *ProjectsController) initialize(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +195,7 @@ func (c *ProjectsController) updateSettings(w http.ResponseWriter, r *http.Reque
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: p})
+	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: projectForAccountRequest(r, p)})
 }
 
 func (c *ProjectsController) setConfig(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +213,7 @@ func (c *ProjectsController) setConfig(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: p})
+	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: projectForAccountRequest(r, p)})
 }
 
 func (c *ProjectsController) remove(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +261,7 @@ func (c *ProjectsController) setPermissions(w http.ResponseWriter, r *http.Reque
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: p})
+	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: projectForAccountRequest(r, p)})
 }
 
 func (c *ProjectsController) forgetPermissions(w http.ResponseWriter, r *http.Request) {
@@ -273,5 +274,13 @@ func (c *ProjectsController) forgetPermissions(w http.ResponseWriter, r *http.Re
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: p})
+	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: projectForAccountRequest(r, p)})
+}
+
+func projectForAccountRequest(r *http.Request, project projectsvc.Project) projectsvc.Project {
+	if ports.IsRemoteAccountRequest(r.Context()) && project.Config != nil {
+		config := project.Config.WithoutLocalAccounts()
+		project.Config = &config
+	}
+	return project
 }

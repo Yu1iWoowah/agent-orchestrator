@@ -546,3 +546,15 @@ func TestExitAgentsOnAccountRefusesWhileAResumeIsStarting(t *testing.T) {
 		t.Fatalf("an exited session with nothing starting: %v", err)
 	}
 }
+
+func (a *transitionAccounts) ResolveAccount(_ context.Context, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+	p, _ := domain.AgentAccountProviderFor(in.Harness)
+	id := in.AccountID
+	if id == "" {
+		id = domain.DeviceAgentAccountID(p)
+	}
+	return domain.ResolvedAgentAccount{AccountID: id, Provider: p, Source: domain.AgentAccountSourceExplicit}, nil
+}
+func (a *transitionAccounts) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
+	return a.BindSession(ctx, id, harness, selected.AccountID)
+}

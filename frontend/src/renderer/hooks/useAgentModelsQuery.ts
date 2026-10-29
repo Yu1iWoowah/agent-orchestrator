@@ -3,6 +3,7 @@ import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { foldClaudeAliasDefault } from "../lib/agent-model-choices";
 import { cacheAgentModels, clearCachedAgentModels, readCachedAgentModels, withCachedModelUsage } from "../lib/agent-model-cache";
+import { accountModelQuery } from "../lib/local-account-model-scope";
 import { modelCatalogScope } from "../lib/cloud-agents";
 import { clientForHost } from "../lib/host-clients";
 import { LOCAL_HOST } from "../lib/hosts";
@@ -20,9 +21,8 @@ export function isRefreshingCatalog(catalog: Pick<AgentModelCatalog, "refreshSta
 export const agentModelsQueryPrefix = (agentId: string) =>
 	["agent-models", agentId] as const;
 
-// Model catalogs are device-wide, so every project shares one query per host and
-// agent. `scope` only distinguishes a cloud credential scope (credentialModelScope);
-// any other value, including a project id, reads the device catalog.
+// Keep each local project/role/account selector separate until the daemon
+// returns its resolved account. Never borrow a device catalog for a private one.
 export const agentModelsQueryKey = (agentId: string, scope: string, hostId?: string) => {
 	const catalogScope = modelCatalogScope(scope);
 	return hostId ? ["agent-models", hostId, agentId, catalogScope] as const : [...agentModelsQueryPrefix(agentId), catalogScope] as const;
@@ -42,12 +42,12 @@ async function requestAgentModels(
 	const result =
 		mode === "cached"
 			? await client.GET("/api/v1/agents/{agent}/models", {
-					params: { path, query: { projectId: catalogScope || undefined, ...(catalogOnly ? { catalogOnly: true } : {}) } },
+					params: { path, query: { ...accountModelQuery(catalogScope), ...(catalogOnly ? { catalogOnly: true } : {}) } },
 				})
 			: await client.POST("/api/v1/agents/{agent}/models/refresh", {
 					params: {
 						path,
-						query: { projectId: catalogScope || undefined, revalidate: mode === "revalidate" || undefined, ...(catalogOnly ? { catalogOnly: true } : {}) },
+						query: { ...accountModelQuery(catalogScope), revalidate: mode === "revalidate" || undefined, ...(catalogOnly ? { catalogOnly: true } : {}) },
 					},
 				});
 	signal?.throwIfAborted();

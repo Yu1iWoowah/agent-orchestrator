@@ -3533,6 +3533,7 @@
 	"settings.agentAccounts.removeDescription": "AO 会停止使用 {{email}} 的智能体，退出该账户并删除其文件夹。已停止的会话在你打开时会使用默认账户继续。之后你可以在其摘要中把它移到其他账户。",
 	"settings.agentAccounts.loginTitle": "登录 {{provider}}",
 	"settings.agentAccounts.checkSignIn": "检查登录",
+	"settings.agentAccounts.loginAlreadySaved": "登录已完成，账号已保存。",
 	"settings.agentAccounts.loginWaiting": "尚未登录。请在终端中完成后再检查。",
 	"settings.agentAccounts.loginDuplicate": "{{email}} 已添加。",
 	"settings.agentAccounts.loginMismatch": "此账户是 {{email}}。请使用该登录重新登录。",

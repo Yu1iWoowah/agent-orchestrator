@@ -516,6 +516,9 @@ func (s *Service) Recover(ctx context.Context) error {
 		return ports.ErrAgentAccountStorageUnavailable
 	}
 	var errs []error
+	var savedAccounts map[string]bool
+	var catalogErr error
+	catalogLoaded := false
 	for _, o := range rows {
 		if s.retries[o.ID].next.After(s.now()) {
 			continue
@@ -526,10 +529,21 @@ func (s *Service) Recover(ctx context.Context) error {
 			}
 			// Older in-flight Prepare could recreate an already cancelled new
 			// profile. Repair only row-less new-login homes, never saved accounts.
-			if _, err := s.find(ctx, o.AccountID); err == nil {
-				continue
-			} else if !errors.Is(err, ports.ErrAgentAccountUnknown) {
-				errs = append(errs, err)
+			// One snapshot per sweep avoids rescanning the catalog for every
+			// completed cancellation. opMu excludes concurrent lifecycle writes.
+			if !catalogLoaded {
+				catalogLoaded = true
+				var accounts []domain.AgentAccount
+				accounts, catalogErr = s.store.ListAgentAccounts(ctx)
+				if catalogErr != nil {
+					errs = append(errs, ports.ErrAgentAccountStorageUnavailable)
+				}
+				savedAccounts = make(map[string]bool, len(accounts))
+				for _, account := range accounts {
+					savedAccounts[account.ID] = true
+				}
+			}
+			if catalogErr != nil || savedAccounts[o.AccountID] {
 				continue
 			}
 			home := filepath.Join(s.root, string(o.Provider), o.AccountID)
