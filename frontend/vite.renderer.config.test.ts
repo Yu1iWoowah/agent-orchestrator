@@ -25,3 +25,11 @@ describe("packaged renderer CSP", () => {
 		expect(connectSrc).toContain("wss://api.aoagents.dev");
 	});
 });
+
+it("allows reader-owned blob images and PDF byte reads without adding network origins",()=>{
+	for(const mode of ["serve","build"] as const){
+		const directives=contentSecurityPolicy(mode).split("; ");
+		expect(directives.find(value=>value.startsWith("img-src"))).toContain("blob:");
+		expect(directives.find(value=>value.startsWith("connect-src"))).toContain("blob:");
+	}
+});

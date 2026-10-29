@@ -426,3 +426,6 @@ export function matchesPreviousTabShortcut(chord: ShortcutChord, isMac: boolean)
 export function matchesNextTabShortcut(chord: ShortcutChord, isMac: boolean): boolean {
 	return matchesAppShortcut("next-tab", chord, isMac);
 }
+
+/** Shell-only Escape notification for opaque static document frames. */
+export const DOCUMENT_ESCAPE_CHANNEL = "app:document-escape";

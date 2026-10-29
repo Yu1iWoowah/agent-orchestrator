@@ -1,3 +1,4 @@
+import { isDialogOrMenuOpen } from "./dom-selectors";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { subscribeBrowserOverlaySync } from "./browser-overlay-sync";
 
@@ -8,7 +9,10 @@ describe("subscribeBrowserOverlaySync", () => {
 	beforeEach(() => {
 		original = window.ao;
 		setOverlayOpen = vi.fn();
-		window.ao = { ...(original ?? {}), browser: { ...(original?.browser ?? {}), setOverlayOpen } } as typeof window.ao;
+		window.ao = {
+			...(original ?? {}),
+			browser: { ...(original?.browser ?? {}), setOverlayOpen },
+		} as typeof window.ao;
 	});
 
 	afterEach(() => {
@@ -52,6 +56,24 @@ describe("subscribeBrowserOverlaySync", () => {
 		document.body.append(notice);
 		const unsubscribe = subscribeBrowserOverlaySync();
 		expect(setOverlayOpen).toHaveBeenCalledExactlyOnceWith(true);
+		unsubscribe();
+	});
+	it("keeps a non-modal document below Browser while provider dialogs still raise the shell", async () => {
+		const doc = document.createElement("div");
+		doc.setAttribute("role", "dialog");
+		doc.setAttribute("data-state", "open");
+		doc.setAttribute("data-conversation-nonmodal", "");
+		document.body.append(doc);
+		const unsubscribe = subscribeBrowserOverlaySync();
+		expect(setOverlayOpen).not.toHaveBeenCalledWith(true);
+		expect(isDialogOrMenuOpen()).toBe(false);
+		const provider = document.createElement("div");
+		provider.setAttribute("role", "dialog");
+		provider.setAttribute("data-state", "open");
+		document.body.append(provider);
+		await flush();
+		expect(setOverlayOpen).toHaveBeenLastCalledWith(true);
+		expect(isDialogOrMenuOpen()).toBe(true);
 		unsubscribe();
 	});
 });

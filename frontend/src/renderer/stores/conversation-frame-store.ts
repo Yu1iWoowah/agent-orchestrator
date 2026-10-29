@@ -51,7 +51,40 @@ function readPreferences(storage: Storage): Record<string, ConversationFramePref
 		return {};
 	}
 }
+function readDocumentSizes(
+	storage: Storage,
+): Record<string, { width: number; height: number }> {
+	try {
+		const saved: unknown = JSON.parse(
+			storage.getItem(conversationFrameStorageKey) ?? "null",
+		);
+		if (!isRecord(saved) || !isRecord(saved.documentSizes)) return {};
+		return Object.fromEntries(
+			Object.entries(saved.documentSizes).filter(
+				(entry): entry is [string, { width: number; height: number }] => {
+					const value = entry[1];
+					return (
+						isRecord(value) &&
+						typeof value.width === "number" &&
+						Number.isFinite(value.width) &&
+						value.width >= 280 &&
+						value.width <= 720 &&
+						typeof value.height === "number" &&
+						Number.isFinite(value.height) &&
+						value.height >= 160 &&
+						value.height <= 900
+					);
+				},
+			),
+		);
+	} catch {
+		return {};
+	}
+}
+
 interface ConversationFrameState {
+	documentSizes: Record<string, { width: number; height: number }>;
+	setDocumentSize: (key: string, size: { width?: number; height?: number }) => void;
 	sessions: Record<string, ConversationFramePreferences>;
 	setFrameOpen: (key: string, kind: ConversationFrameKind, open: boolean) => void;
 	setFrameSize: (
@@ -73,7 +106,7 @@ export function createConversationFrameStore(storage: Storage) {
 					[key]: change(state.sessions[key] ?? defaultConversationFramePreferences()),
 				};
 				try {
-					storage.setItem(conversationFrameStorageKey, JSON.stringify({ sessions }));
+					storage.setItem(conversationFrameStorageKey, JSON.stringify({ sessions, documentSizes: state.documentSizes }));
 				} catch {
 					/* Keep preferences usable when storage is unavailable. */
 				}
@@ -81,6 +114,34 @@ export function createConversationFrameStore(storage: Storage) {
 			});
 		return {
 			sessions: readPreferences(storage),
+			documentSizes: readDocumentSizes(storage),
+			setDocumentSize: (key, size) =>
+				set((state) => {
+					const previous = state.documentSizes[key] ?? {
+						width: 520,
+						height: 600,
+					};
+					const documentSizes = {
+						...state.documentSizes,
+						[key]: {
+							width: Number.isFinite(size.width)
+								? Math.min(720, Math.max(280, size.width!))
+								: previous.width,
+							height: Number.isFinite(size.height)
+								? Math.min(900, Math.max(160, size.height!))
+								: previous.height,
+						},
+					};
+					try {
+						storage.setItem(
+							conversationFrameStorageKey,
+							JSON.stringify({ sessions: state.sessions, documentSizes }),
+						);
+					} catch {
+						/* in-memory fallback */
+					}
+					return { documentSizes };
+				}),
 			setFrameOpen: (key, kind, userOpen) =>
 				update(key, (current) => ({ ...current, [kind]: { ...current[kind], userOpen } })),
 			setFrameSize: (key, kind, size) =>
