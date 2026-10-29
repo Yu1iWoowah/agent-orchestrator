@@ -365,7 +365,7 @@ func TestFailedCaptureCleanupBlocksDeliveryAndRetries(t *testing.T) {
 		t.Errorf("failed capture listed with same grant: %v", err)
 	}
 	var audit Audit
-	if err := s.store.read("audit", requestID, &audit); err != nil || audit.Outcome != "failed" || audit.ReasonCode != "APP_DIAGNOSTICS_CLEANUP_FAILED" {
+	if err := s.store.read("audit", requestID, &audit); err != nil || audit.Outcome != "failed" || audit.ReasonCode != "APP_SNAPSHOT_TIMEOUT" {
 		t.Errorf("cleanup failure not audited: %+v %v", audit, err)
 	}
 	if _, err := s.Status(context.Background(), g.Token); err != nil {

@@ -438,10 +438,17 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 		return Record{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	if err := s.authorizeDelivery(callCtx, g); err != nil {
-		if cleanupErr := s.store.discardSnapshot(record.ID, record.GrantID); cleanupErr != nil {
-			err = failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
+		cleanupErr := s.store.discardSnapshot(record.ID, record.GrantID)
+		// Keep the rejection cause in the audit even when cleanup is the error
+		// returned to the caller. An audit write failure still takes precedence.
+		deliveryErr := s.failDelivery(audit, err)
+		if cleanupErr != nil {
+			var auditErr *Error
+			if !errors.As(deliveryErr, &auditErr) || auditErr.Code != "APP_DIAGNOSTICS_AUDIT_FAILED" {
+				deliveryErr = failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
+			}
 		}
-		return Record{}, s.failDelivery(audit, err)
+		return Record{}, deliveryErr
 	}
 	return record, nil
 }
@@ -581,7 +588,7 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 	if err != nil {
 		return SnapshotList{}, err
 	}
-	if err := s.store.prune(s.now()); err != nil {
+	if err := s.store.pruneForGrant(s.now(), g.credential.ID); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	docs, err := documents[Record](s.store, "snapshots", validSnapshotRecord)
@@ -624,7 +631,7 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	return out, nil
 }
 func (s *Service) auditsForGrant(g *grantState, audit Audit) (AuditLog, error) {
-	if err := s.store.prune(s.now()); err != nil {
+	if err := s.store.pruneForGrant(s.now(), g.credential.ID); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	if err := s.store.audit(audit); err != nil {

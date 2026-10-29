@@ -475,9 +475,15 @@ func (s *diskStore) reset(now time.Time) error {
 	}
 	return s.prune(now)
 }
-func (s *diskStore) prune(now time.Time) (result error) {
+func (s *diskStore) prune(now time.Time) error {
+	return s.pruneForGrant(now, "")
+}
+
+// Background sweeps retry all rejected snapshots. Reads retry only their own
+// grant's cleanup, so an unrelated rejected file cannot block healthy data.
+func (s *diskStore) pruneForGrant(now time.Time, grantID string) (result error) {
 	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
-	result = s.retryDiscardedSnapshots("")
+	result = s.retryDiscardedSnapshots(grantID)
 	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
 	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
 		return readErr

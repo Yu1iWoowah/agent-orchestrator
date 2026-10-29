@@ -21,7 +21,9 @@ Capture **before** resizing, switching routes, reloading, changing selection/exp
 
 JSON is printed for every successful operation, including partial captures. `--json` is an optional compatibility flag; output is always JSON with or without it. Exit 0 means this evidence was obtained, not that the app is healthy. `--require-complete` prints partial evidence and exits 1 without retrying. Usage errors exit 2; daemon failures exit 1 and retain their API code/request id. Capture deadline is 5 seconds; HTTP deadline is 8 seconds. Cancellation propagates down the request. Busy/rate-limited requests are not automatically retried. An ambiguous window requires `--window`; the CLI does not select the focused window.
 
-Status, List and Audits also use `APP_SNAPSHOT_TIMEOUT` when cancellation prevents delivery; the code is shared with Capture and does not imply that a new snapshot was requested.
+Status, Read, List, Audits and Settings audit use `APP_SNAPSHOT_TIMEOUT` when cancellation is detected at the final delivery check; the code is shared with Capture and does not imply that a new snapshot was requested.
+
+If a rejected capture's snapshot cannot be deleted, that snapshot stays unavailable and Capture returns `APP_DIAGNOSTICS_CLEANUP_FAILED`; its failed audit keeps the original rejection reason, such as timeout or expiry. The affected grant's List, Audits and Settings audit may fail until cleanup succeeds. Other valid grants can still list their snapshots and read their audit; existing healthy snapshots remain readable. While this cleanup continues to fail, all new captures fail fast to prevent rejected files from accumulating. Background Sweep retries cleanup and reports failures without stopping other grants' healthy reads.
 
 Each grant can read only its own snapshots and audit. Snapshots expire after 24 hours, with global caps of 20 files / 20 MiB. Audit lasts 7 days / 10,000 records and marks dropped history. List/audit `partial` describes that response; `readErrorCount` is a cumulative storage diagnostic across restarts. Missing files, expired grants and changed app/session launches are not recovered by reusing old tokens.
 
