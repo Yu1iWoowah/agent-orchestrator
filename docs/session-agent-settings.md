@@ -89,6 +89,17 @@ terminated recovery without launching or repeatedly rebuilding its active
 fence. Only conclusive Kill shutdown records a verified termination; abandoning
 an unknown writer does not authorize a retry.
 
+`ao session cleanup` and project teardown skip a vetoed session before runtime
+or workspace cleanup and report `unconfirmed native writer; workspace retained`.
+A predecessor sharing that path also cannot reclaim it. Cleanup checks the
+active handoff before the veto so terminal intent cannot create a reclamation
+window before journal settlement. If writer status cannot be read, cleanup
+retains the workspace. Repeated Kill/RequestKill returns 409
+`AGENT_SETTINGS_WRITER_UNCONFIRMED` with an explicit still-vetoed message rather
+than silently acknowledging cleanup. An operator workflow to prove writer
+absence and settle the veto is a PR 5 follow-up consideration; this PR adds no
+such entry.
+
 ## Errors and authority
 
 - `AGENT_SETTINGS_REQUEST_CANCELLED` (409) and
@@ -123,3 +134,11 @@ preferences and runtime fences. Do not automatically retry a second process.
 The migration refuses downgrade while TUI settings handoff history exists.
 Keep the coordinator's startup fence support during backout; do not run an
 older coordinator against an unfinished handoff or delete its journal.
+
+## Known limitations
+
+Pinned restoration can replay a model that the current catalog has retired.
+The provider may reject the native resume; its error is not specialized to
+identify a retired model. AO does not substitute a model or a fresh thread.
+The Claude version gate accepts stable major.minor.patch output; prerelease
+suffixes remain unverified and are rejected.

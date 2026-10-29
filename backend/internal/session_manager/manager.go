@@ -2762,7 +2762,7 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	if abandoned, err := m.abandonedTUISettingsWriter(ctx, id); err != nil {
 		return KillResult{}, err
 	} else if abandoned {
-		return KillResult{}, nil
+		return KillResult{}, apierr.Conflict("AGENT_SETTINGS_WRITER_UNCONFIRMED", "The session is still vetoed by an unconfirmed native writer; its workspace is retained", nil)
 	}
 	preserveTUIWorkspace := false
 	if active, err := m.hasActiveInterfaceTransition(ctx, id); err != nil {
@@ -5674,6 +5674,10 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		if !rec.IsTerminated {
 			continue
 		}
+		if reason := m.workspaceRetentionReason(ctx, rec.ID); reason != "" {
+			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: reason})
+			continue
+		}
 		ws := workspaceInfo(rec)
 		if ws.Path == "" {
 			m.cleanupAgentWorkspace(ctx, rec, "")
@@ -5747,24 +5751,59 @@ func (m *Manager) cleanupWorkspaceUnderGate(ctx context.Context, rec domain.Sess
 	return reclaim, reason
 }
 
-// isWorkspaceInUse reports whether any non-terminated session in the project
-// references the given workspace path. Must be called under the project's
-// workspace gate; see cleanupWorkspaceUnderGate for the full invariant.
+// workspaceRetentionReason checks the handoff before the terminal veto. Kill
+// can persist terminal intent before settlement; settlement atomically retires
+// the handoff and writes the veto, so these ordered reads cannot miss both.
+func (m *Manager) workspaceRetentionReason(ctx context.Context, id domain.SessionID) string {
+	active, err := m.hasActiveInterfaceTransition(ctx, id)
+	if err != nil {
+		return unavailableTUIWriterWorkspaceReason
+	}
+	if active {
+		return "workspace in use by an interface transition"
+	}
+	abandoned, err := m.abandonedTUISettingsWriter(ctx, id)
+	if err != nil {
+		return unavailableTUIWriterWorkspaceReason
+	}
+	if abandoned {
+		return unconfirmedTUIWriterWorkspaceReason
+	}
+	return ""
+}
+
+// isWorkspaceInUse includes live sessions and terminated sessions whose native
+// writer was never confirmed absent. Must be called under the project's gate.
 func (m *Manager) isWorkspaceInUse(ctx context.Context, projectID domain.ProjectID, workspacePath string, except domain.SessionID) (bool, error) {
+	reason, err := m.workspaceUseReason(ctx, projectID, workspacePath, except)
+	return reason != "", err
+}
+
+// workspaceUseReason also protects an unvetoed predecessor sharing the preserved
+// path. Call before cleanup scripts and again under the gate before removal.
+func (m *Manager) workspaceUseReason(ctx context.Context, projectID domain.ProjectID, workspacePath string, except domain.SessionID) (string, error) {
 	if workspacePath == "" {
-		return false, nil
+		return "", nil
 	}
 	recs, err := m.cleanupRecords(ctx, projectID)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	for _, rec := range recs {
-		if rec.ID != except && !rec.IsTerminated && rec.Metadata.WorkspacePath != "" &&
-			normalizeWorkspacePath(rec.Metadata.WorkspacePath) == normalizeWorkspacePath(workspacePath) {
-			return true, nil
+		if rec.Metadata.WorkspacePath == "" || normalizeWorkspacePath(rec.Metadata.WorkspacePath) != normalizeWorkspacePath(workspacePath) {
+			continue
+		}
+		if !rec.IsTerminated {
+			if rec.ID != except {
+				return "workspace in use by a live session", nil
+			}
+			continue
+		}
+		if reason := m.workspaceRetentionReason(ctx, rec.ID); reason != "" {
+			return reason, nil
 		}
 	}
-	return false, nil
+	return "", nil
 }
 
 // cleanupOne reclaims one terminated session's workspace, gating shut any
@@ -5779,14 +5818,14 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 	{
 		release := m.acquireWorkspaceGate(rec.ProjectID)
 
-		inUse, err := m.isWorkspaceInUse(ctx, rec.ProjectID, ws.Path, "")
+		reason, err := m.workspaceUseReason(ctx, rec.ProjectID, ws.Path, "")
 		release()
 		if err != nil {
 			m.logger.Warn("cleanup: workspace ownership check failed", "sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)
 			return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
 		}
-		if inUse {
-			return ports.WorkspaceReclaimRemoved, "workspace in use by a live session"
+		if reason != "" {
+			return ports.WorkspaceReclaimRemoved, reason
 		}
 	}
 	release, closeErr := m.beginShellTerminalTeardown(ctx, rec.ID)
@@ -5809,11 +5848,11 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 	defer cancelWorkspace()
 	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
 	defer releaseWorkspaceGate()
-	if inUse, err := m.isWorkspaceInUse(ctx, rec.ProjectID, ws.Path, ""); err != nil {
+	if reason, err := m.workspaceUseReason(ctx, rec.ProjectID, ws.Path, ""); err != nil {
 		m.logger.Warn("cleanup: workspace ownership check failed", "sessionID", rec.ID, "error", err)
 		return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
-	} else if inUse {
-		return ports.WorkspaceReclaimRemoved, "workspace in use by a live session"
+	} else if reason != "" {
+		return ports.WorkspaceReclaimRemoved, reason
 	}
 
 	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {

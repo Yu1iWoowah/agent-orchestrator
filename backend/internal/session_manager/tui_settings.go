@@ -12,6 +12,11 @@ import (
 
 const agentOperationSettings agentOperationKind = "agent_settings"
 
+const (
+	unconfirmedTUIWriterWorkspaceReason = "unconfirmed native writer; workspace retained"
+	unavailableTUIWriterWorkspaceReason = "native writer status unavailable; workspace retained"
+)
+
 type tuiSettingsStore interface {
 	SetTUIAgentSettingsRuntimeUnknown(context.Context, domain.SessionID, string, bool) error
 	PinAgentSettingsExecution(context.Context, domain.SessionID, string, int64, domain.AgentSettingsExecution, time.Time) (domain.AgentSettingsOperation, error)

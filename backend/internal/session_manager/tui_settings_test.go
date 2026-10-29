@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -693,6 +694,17 @@ func TestTUISettingsCrashWithTargetNeverCreatesSecondWriter(t *testing.T) {
 				if err == nil || f.runtime.created != 0 || f.runtime.destroyed != 0 {
 					t.Fatalf("unknown target was guessed absent: %v created=%d destroyed=%d", err, f.runtime.created, f.runtime.destroyed)
 				}
+				// Reproduce audit76: Create happened before the daemon lost
+				// its receipt. Logical Kill must not let Cleanup reclaim the
+				// workspace while that unaddressable native writer is alive.
+				if _, err = f.m.Kill(t.Context(), f.rec.ID); err != nil {
+					t.Fatal(err)
+				}
+				ws := f.m.workspace.(*fakeWorkspace)
+				result, err := f.m.Cleanup(t.Context(), f.rec.ProjectID)
+				if err != nil || len(result.Cleaned) != 0 || len(result.Skipped) != 1 || ws.destroyed != 0 || !f.runtime.aliveByHandle["target-runtime"] || f.runtime.created != 0 {
+					t.Fatalf("audit76 live target lost its workspace: result=%+v err=%v Destroy=%d liveTarget=%v newCreate=%d", result, err, ws.destroyed, f.runtime.aliveByHandle["target-runtime"], f.runtime.created)
+				}
 			}
 		})
 	}
@@ -1046,9 +1058,15 @@ func TestTUISettingsKillSettlesRecoveryWithoutInventingWriterAbsence(t *testing.
 						t.Fatal("abandonment allowed another writer")
 					}
 				}
+				destroyed := f.runtime.destroyed
 				freed, err = f.m.Kill(t.Context(), f.rec.ID)
-				if err != nil || freed {
-					t.Fatalf("repeat kill destroyed unconfirmed workspace: %v %v", freed, err)
+				var veto *apierr.Error
+				if !errors.As(err, &veto) || veto.Code != "AGENT_SETTINGS_WRITER_UNCONFIRMED" || freed {
+					t.Fatalf("repeat Kill must report the retained writer veto: freed=%v err=%v", freed, err)
+				}
+				result, err := f.m.RequestKill(t.Context(), f.rec.ID)
+				if !errors.As(err, &veto) || veto.Code != "AGENT_SETTINGS_WRITER_UNCONFIRMED" || result.Freed || result.CleanupPending || f.runtime.destroyed != destroyed {
+					t.Fatalf("repeat RequestKill must report veto without effects: result=%+v err=%v", result, err)
 				}
 			}
 			if f.runtime.created != created {
@@ -1210,4 +1228,92 @@ func TestClaudeTUISettingsColdResumeUsesPinnedFastChoiceWhenProbeFails(t *testin
 			}
 		})
 	}
+}
+
+func TestTUISettingsCleanupPreservesAbandonedWriterWorkspace(t *testing.T) {
+	for _, scope := range []string{"project", "all", "shared", "read-error", "settling", "shared-settling"} {
+		t.Run(scope, func(t *testing.T) {
+			f := newTUISettingsFixture(t, domain.HarnessCodex)
+			f.runtime.createErr = errors.New("unknown native launch")
+			zero := int64(0)
+			high := domain.AgentEffortSelection("high")
+			op, err := f.control.Change(t.Context(), agentsettings.Caller{}, f.rec.ID, agentsettings.Change{ExpectedRevision: &zero, ApplyMode: domain.AgentSettingsRestart, Settings: domain.AgentSettingsPatch{Effort: &high}, IdempotencyKey: "cleanup-veto"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			op = f.wait(t, op.ID)
+			if op.Phase != domain.AgentSettingsRecoveryRequired || !op.TUI.UnconfirmedRuntime {
+				t.Fatalf("missing unconfirmed recovery: %+v", op)
+			}
+			settling := scope == "settling" || scope == "shared-settling"
+			if settling {
+				if err = f.lifecycle.MarkTerminated(t.Context(), f.rec.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err = f.m.Kill(t.Context(), f.rec.ID); err != nil {
+				t.Fatal(err)
+			}
+			if scope == "shared" || scope == "shared-settling" {
+				_, err = f.store.CreateSession(t.Context(), domain.SessionRecord{ProjectID: f.rec.ProjectID, Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI, IsTerminated: true, Metadata: domain.SessionMetadata{WorkspacePath: f.rec.Metadata.WorkspacePath}, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			marker := filepath.Join(f.rec.Metadata.WorkspacePath, "retained-work.txt")
+			if err = os.WriteFile(marker, []byte("unconfirmed writer's work"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ws := f.m.workspace.(*fakeWorkspace)
+			ws.destroyHook = func() {
+				if err := os.Remove(marker); err != nil {
+					t.Error(err)
+				}
+			}
+			if scope == "read-error" {
+				f.m.store = tuiVetoReadFailureStore{f.store}
+			}
+			project := f.rec.ProjectID
+			if scope == "all" {
+				project = ""
+			}
+			destroyed := f.runtime.destroyed
+			result, err := f.m.Cleanup(t.Context(), project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSkipped := 1
+			if scope == "shared" || scope == "shared-settling" {
+				wantSkipped = 2
+			}
+			if len(result.Cleaned) != 0 || len(result.AlreadyGone) != 0 || len(result.Skipped) != wantSkipped || ws.destroyed != 0 || f.runtime.destroyed != destroyed {
+				t.Fatalf("cleanup reclaimed a vetoed workspace: %+v workspaceDestroy=%d runtimeDestroy=%d", result, ws.destroyed, f.runtime.destroyed-destroyed)
+			}
+			for _, skipped := range result.Skipped {
+				want := "unconfirmed native writer; workspace retained"
+				if settling {
+					want = "workspace in use by an interface transition"
+				}
+				if scope == "read-error" {
+					want = "native writer status unavailable; workspace retained"
+				}
+				if skipped.Reason != want {
+					t.Fatalf("skip reason=%q want %q", skipped.Reason, want)
+				}
+			}
+			data, err := os.ReadFile(marker)
+			if err != nil || string(data) != "unconfirmed writer's work" {
+				t.Fatalf("cleanup lost workspace data: %q %v", data, err)
+			}
+			blocked, err := f.store.HasAbandonedTUISettingsWriter(t.Context(), f.rec.ID)
+			if err != nil || blocked == settling {
+				t.Fatalf("cleanup changed writer evidence: veto=%v settling=%v err=%v", blocked, settling, err)
+			}
+		})
+	}
+}
+
+type tuiVetoReadFailureStore struct{ *sqlite.Store }
+
+func (tuiVetoReadFailureStore) HasAbandonedTUISettingsWriter(context.Context, domain.SessionID) (bool, error) {
+	return false, errors.New("writer status lookup failed")
 }
