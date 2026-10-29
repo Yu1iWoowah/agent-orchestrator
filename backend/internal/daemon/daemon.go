@@ -801,6 +801,7 @@ func Run(buildVersion string) error {
 	agentAuthSvc := agentauth.NewWithAgentResolver(hostCommands, agentSvc, shellTermSvc, cfg.DataDir)
 	agentSvc.SetCodexAccountLoginTerminalOpener(shellTermSvc)
 	agentAccountSvc.SetTerminals(shellTermSvc)
+	agentAccountSvc.StartRecovery(ctx)
 	// Late-bound so Kill/Cleanup close a session's scoped shells before its
 	// worktree is torn down (shellTermSvc cannot exist before sessMgr does; see
 	// SetShellTerminalCloser).

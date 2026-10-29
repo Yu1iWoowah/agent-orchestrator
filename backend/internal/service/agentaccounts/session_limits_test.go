@@ -114,7 +114,8 @@ func TestSessionLimitsRefusesChangedBindingWithoutDefaultFallback(t *testing.T) 
 			case "removed":
 				store.accounts = store.accounts[:1]
 			case "removing":
-				svc.removing["b"] = true
+				at := time.Now()
+				store.accounts[1].DisabledAt = &at
 			case "provider":
 				store.accounts[1].Provider = domain.AgentAccountProviderCodex
 			case "during read":

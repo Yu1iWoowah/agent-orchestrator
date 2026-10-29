@@ -3532,6 +3532,8 @@
 	"settings.defaultSandbox.single": "Wo deine Cloud-Sitzungen laufen. Es ist nur eine Sandbox verfügbar.",
 	"settings.defaultSandbox.adminOnly": "Nur Organisationsadmins können das ändern.",
 	"settings.defaultSandbox.saveFailed": "Die Standard-Sandbox konnte nicht gespeichert werden. Versuche es erneut.",
+	"settings.agentAccounts.cleanupScheduled": "Dieses Konto ist deaktiviert und die Bereinigung ist vorgemerkt. AO versucht es erneut, sobald seine Agents beendet sind. Du kannst sie auch selbst beenden und die Bereinigung erneut versuchen.",
+	"settings.agentAccounts.unavailableHomeOccupied": "Das reservierte unavailable-Kontoverzeichnis von AO ist belegt oder kann nicht sicher geprüft werden. Beende zugehörige Unterprogramme, prüfe und verschiebe alle Daten aus .unavailable im AO-Kontospeicher und versuche es erneut. AO entfernt automatisch nur leere reservierte Ordner.",
 	"settings.agentAccounts.storageUnsafe": "Der Kontospeicher ist unsicher. Prüfe die Ordnerberechtigungen und symbolischen Links und versuche es erneut.",
 	"settings.agentAccounts.storageUnavailable": "Der Kontospeicher ist vorübergehend nicht verfügbar. Versuche es später erneut.",
 	"settings.agentAccounts.storageUnsupported": "Private Account-Profile werden derzeit nur unter Linux unterstützt.",

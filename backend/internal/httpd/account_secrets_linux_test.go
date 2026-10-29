@@ -38,9 +38,9 @@ func (executableAccountTerminal) OpenCommandTerminal(ctx context.Context, in she
 	}
 	c.Stdout = io.Discard
 	c.Stderr = io.Discard
-	return shellterm.ShellTerminal{HandleID: "fake-terminal"}, c.Run()
+	return shellterm.ShellTerminal{HandleID: in.HandleID}, c.Run()
 }
-func (executableAccountTerminal) CloseShellTerminal(context.Context, string) error { return nil }
+func (executableAccountTerminal) CloseCommandTerminal(context.Context, string) error { return nil }
 func TestProviderSettingSecretDoesNotReachSinks(t *testing.T) {
 	ctx := context.Background()
 	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
@@ -197,4 +197,8 @@ for line in sys.stdin:
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (executableAccountTerminal) CommandTerminalAlive(context.Context, string) (bool, error) {
+	return false, nil
 }

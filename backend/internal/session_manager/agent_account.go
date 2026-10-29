@@ -173,7 +173,7 @@ func (m *Manager) runtimeEnvOnAccount(rec domain.SessionRecord, projectEnv map[s
 
 // ExitAgentsOnAccount stops every running agent that uses accountID, before the
 // account is removed. Each session stays, its agent exited; opening it resumes
-// it on the default account, and a move takes it to another one.
+// it only after an explicit account choice; its historical binding remains.
 func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) error {
 	if m.agentAccounts == nil {
 		return nil

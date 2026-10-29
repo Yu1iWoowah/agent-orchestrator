@@ -130,8 +130,8 @@ func (q *Queries) CancelSessionTurnAutoResume(ctx context.Context, arg CancelSes
 }
 
 const createAgentAccount = `-- name: CreateAgentAccount :exec
-INSERT INTO agent_accounts (id, provider, home, email, plan, created_at, profile_kind)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agent_accounts (id, provider, home, email, plan, created_at, profile_kind,label,disabled_at,retired_at)
+VALUES (?, ?, ?, ?, ?, ?, ?,?,?,?)
 `
 
 type CreateAgentAccountParams struct {
@@ -142,6 +142,9 @@ type CreateAgentAccountParams struct {
 	Plan        string
 	CreatedAt   time.Time
 	ProfileKind string
+	Label       string
+	DisabledAt  sql.NullTime
+	RetiredAt   sql.NullTime
 }
 
 func (q *Queries) CreateAgentAccount(ctx context.Context, arg CreateAgentAccountParams) error {
@@ -153,12 +156,53 @@ func (q *Queries) CreateAgentAccount(ctx context.Context, arg CreateAgentAccount
 		arg.Plan,
 		arg.CreatedAt,
 		arg.ProfileKind,
+		arg.Label,
+		arg.DisabledAt,
+		arg.RetiredAt,
+	)
+	return err
+}
+
+const createAgentAccountOperation = `-- name: CreateAgentAccountOperation :exec
+INSERT INTO agent_account_operations(id,account_id,provider,action,phase,outcome,reason_code,terminal_id,result_account_id,was_disabled,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+`
+
+type CreateAgentAccountOperationParams struct {
+	ID              string
+	AccountID       string
+	Provider        string
+	Action          string
+	Phase           string
+	Outcome         string
+	ReasonCode      string
+	TerminalID      string
+	ResultAccountID string
+	WasDisabled     bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) CreateAgentAccountOperation(ctx context.Context, arg CreateAgentAccountOperationParams) error {
+	_, err := q.db.ExecContext(ctx, createAgentAccountOperation,
+		arg.ID,
+		arg.AccountID,
+		arg.Provider,
+		arg.Action,
+		arg.Phase,
+		arg.Outcome,
+		arg.ReasonCode,
+		arg.TerminalID,
+		arg.ResultAccountID,
+		arg.WasDisabled,
+		arg.CreatedAt,
+		arg.UpdatedAt,
 	)
 	return err
 }
 
 const deleteAgentAccount = `-- name: DeleteAgentAccount :exec
-DELETE FROM agent_accounts WHERE id = ?
+UPDATE agent_accounts SET retired_at = CURRENT_TIMESTAMP, disabled_at = CURRENT_TIMESTAMP WHERE id = ? AND retired_at IS NULL
 `
 
 func (q *Queries) DeleteAgentAccount(ctx context.Context, id string) error {
@@ -175,6 +219,30 @@ func (q *Queries) DeleteAgentAccountDefaultFor(ctx context.Context, accountID st
 	return err
 }
 
+const disableAgentAccount = `-- name: DisableAgentAccount :exec
+UPDATE agent_accounts SET disabled_at=?,lifecycle_operation_id=? WHERE id=?
+`
+
+type DisableAgentAccountParams struct {
+	DisabledAt           sql.NullTime
+	LifecycleOperationID string
+	ID                   string
+}
+
+func (q *Queries) DisableAgentAccount(ctx context.Context, arg DisableAgentAccountParams) error {
+	_, err := q.db.ExecContext(ctx, disableAgentAccount, arg.DisabledAt, arg.LifecycleOperationID, arg.ID)
+	return err
+}
+
+const enableAgentAccount = `-- name: EnableAgentAccount :exec
+UPDATE agent_accounts SET disabled_at=NULL WHERE id=? AND retired_at IS NULL
+`
+
+func (q *Queries) EnableAgentAccount(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, enableAgentAccount, id)
+	return err
+}
+
 const getAgentAccountDefault = `-- name: GetAgentAccountDefault :one
 SELECT account_id FROM agent_account_defaults WHERE provider = ?
 `
@@ -184,6 +252,30 @@ func (q *Queries) GetAgentAccountDefault(ctx context.Context, provider string) (
 	var account_id string
 	err := row.Scan(&account_id)
 	return account_id, err
+}
+
+const getAgentAccountOperation = `-- name: GetAgentAccountOperation :one
+SELECT id, account_id, provider, "action", phase, outcome, reason_code, terminal_id, result_account_id, was_disabled, created_at, updated_at FROM agent_account_operations WHERE id=?
+`
+
+func (q *Queries) GetAgentAccountOperation(ctx context.Context, id string) (AgentAccountOperation, error) {
+	row := q.db.QueryRowContext(ctx, getAgentAccountOperation, id)
+	var i AgentAccountOperation
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.Provider,
+		&i.Action,
+		&i.Phase,
+		&i.Outcome,
+		&i.ReasonCode,
+		&i.TerminalID,
+		&i.ResultAccountID,
+		&i.WasDisabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getSessionAgentAccount = `-- name: GetSessionAgentAccount :one
@@ -205,9 +297,49 @@ func (q *Queries) GetSessionAgentAccount(ctx context.Context, arg GetSessionAgen
 	return account_id, err
 }
 
+const listAgentAccountOperations = `-- name: ListAgentAccountOperations :many
+SELECT id, account_id, provider, "action", phase, outcome, reason_code, terminal_id, result_account_id, was_disabled, created_at, updated_at FROM agent_account_operations ORDER BY created_at,id
+`
+
+func (q *Queries) ListAgentAccountOperations(ctx context.Context) ([]AgentAccountOperation, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentAccountOperations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentAccountOperation{}
+	for rows.Next() {
+		var i AgentAccountOperation
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.Provider,
+			&i.Action,
+			&i.Phase,
+			&i.Outcome,
+			&i.ReasonCode,
+			&i.TerminalID,
+			&i.ResultAccountID,
+			&i.WasDisabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAgentAccounts = `-- name: ListAgentAccounts :many
 
-SELECT id, provider, home, email, "plan", created_at, profile_kind FROM agent_accounts ORDER BY provider, created_at, id
+SELECT id, provider, home, email, "plan", created_at, profile_kind, label, lifecycle_operation_id, disabled_at, retired_at FROM agent_accounts ORDER BY provider, created_at, id
 `
 
 // Subscription accounts AO launches Claude Code and Codex with.
@@ -228,6 +360,10 @@ func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error)
 			&i.Plan,
 			&i.CreatedAt,
 			&i.ProfileKind,
+			&i.Label,
+			&i.LifecycleOperationID,
+			&i.DisabledAt,
+			&i.RetiredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -286,5 +422,64 @@ type SetAgentAccountDefaultParams struct {
 
 func (q *Queries) SetAgentAccountDefault(ctx context.Context, arg SetAgentAccountDefaultParams) error {
 	_, err := q.db.ExecContext(ctx, setAgentAccountDefault, arg.Provider, arg.AccountID)
+	return err
+}
+
+const updateAgentAccountOperation = `-- name: UpdateAgentAccountOperation :exec
+UPDATE agent_account_operations SET phase=?,outcome=?,reason_code=?,result_account_id=?,updated_at=? WHERE id=?
+`
+
+type UpdateAgentAccountOperationParams struct {
+	Phase           string
+	Outcome         string
+	ReasonCode      string
+	ResultAccountID string
+	UpdatedAt       time.Time
+	ID              string
+}
+
+func (q *Queries) UpdateAgentAccountOperation(ctx context.Context, arg UpdateAgentAccountOperationParams) error {
+	_, err := q.db.ExecContext(ctx, updateAgentAccountOperation,
+		arg.Phase,
+		arg.Outcome,
+		arg.ReasonCode,
+		arg.ResultAccountID,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	return err
+}
+
+const upsertAgentAccountLogin = `-- name: UpsertAgentAccountLogin :exec
+INSERT INTO agent_accounts(id,provider,home,email,plan,created_at,profile_kind,disabled_at,lifecycle_operation_id)
+VALUES(?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET email=excluded.email,plan=excluded.plan,disabled_at=excluded.disabled_at,lifecycle_operation_id=excluded.lifecycle_operation_id
+WHERE agent_accounts.retired_at IS NULL
+`
+
+type UpsertAgentAccountLoginParams struct {
+	ID                   string
+	Provider             string
+	Home                 string
+	Email                string
+	Plan                 string
+	CreatedAt            time.Time
+	ProfileKind          string
+	DisabledAt           sql.NullTime
+	LifecycleOperationID string
+}
+
+func (q *Queries) UpsertAgentAccountLogin(ctx context.Context, arg UpsertAgentAccountLoginParams) error {
+	_, err := q.db.ExecContext(ctx, upsertAgentAccountLogin,
+		arg.ID,
+		arg.Provider,
+		arg.Home,
+		arg.Email,
+		arg.Plan,
+		arg.CreatedAt,
+		arg.ProfileKind,
+		arg.DisabledAt,
+		arg.LifecycleOperationID,
+	)
 	return err
 }

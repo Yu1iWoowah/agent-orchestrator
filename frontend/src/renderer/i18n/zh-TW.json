@@ -3513,6 +3513,8 @@
 	"settings.defaultSandbox.single": "你的雲端 session 執行的位置。目前只有一個可用的沙盒。",
 	"settings.defaultSandbox.adminOnly": "只有組織管理員可變更此設定。",
 	"settings.defaultSandbox.saveFailed": "無法儲存預設沙盒。請再試一次。",
+	"settings.agentAccounts.cleanupScheduled": "此帳號已停用，清理已排定。使用此帳號的 agent 停止後，AO 會自動重試。你也可以先停止 agent 再重試，提早完成清理。",
+	"settings.agentAccounts.unavailableHomeOccupied": "AO 保留的 unavailable 帳號目錄已被佔用，或無法安全檢查。請停止相關子工具，檢查並移出 AO 帳號儲存空間中 .unavailable 內的資料後重試。AO 只會自動移除空的保留資料夾。",
 	"settings.agentAccounts.storageUnsafe": "帳號儲存空間不安全。請檢查資料夾權限與符號連結後重試。",
 	"settings.agentAccounts.storageUnavailable": "帳號儲存空間暫時無法使用。請稍後重試。",
 	"settings.agentAccounts.storageUnsupported": "私有帳號 profile 目前僅支援 Linux。",
