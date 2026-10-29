@@ -980,3 +980,21 @@ func TestOldAccountRecoveryNeverStopsASuccessorExecution(t *testing.T) {
 		t.Fatal("superseded legacy owner never converged")
 	}
 }
+
+func TestOldAccountRecoveryKeepsFenceWithoutSuccessorCommitEvidence(t *testing.T) {
+	ctx := context.Background()
+	m, st, rt, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+	m.runtime = &sessionStoppingTransitionRuntime{transitionRuntime: rt}
+	now := time.Now()
+	old := domain.SessionInterfaceTransition{ID: "old-receipt", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-b", Phase: domain.SessionInterfaceTransitionRecovery, TargetRuntimeState: domain.AccountTransitionRuntimeStarted, TargetRuntimeHandleID: "runtime-1", TargetRuntimeLaunchID: "old-generation", CreatedAt: now}
+	st.transitions[old.ID] = old
+	st.transitions["successor"] = domain.SessionInterfaceTransition{ID: "successor", SessionID: old.SessionID, SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "acct-b", TargetAccountID: "acct-c", Phase: domain.SessionInterfaceTransitionRecovery, CreatedAt: now.Add(time.Second)}
+	accounts.bound[old.SessionID] = "device-claude"
+	if _, err := m.recoverInterfaceTransitions(ctx, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := st.GetSessionInterfaceTransition(ctx, old.ID)
+	if len(*log) != 0 || got.TargetRuntimeState != old.TargetRuntimeState || !m.SessionMutationInProgress(old.SessionID) {
+		t.Fatalf("unproven successor lost its fence or runtime: receipt=%+v log=%v", got, *log)
+	}
+}

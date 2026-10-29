@@ -1756,5 +1756,9 @@ func (r *Runtime) StopSessionRuntimes(ctx context.Context, id domain.SessionID) 
 	if id == "" {
 		return ports.ErrRuntimeProbeInconclusive
 	}
-	return r.Destroy(ctx, ports.RuntimeHandle{ID: string(id)})
+	name, err := tmuxSessionName(id)
+	if err != nil {
+		return err
+	}
+	return r.Destroy(ctx, ports.RuntimeHandle{ID: name})
 }

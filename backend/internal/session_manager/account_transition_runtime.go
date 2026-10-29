@@ -122,8 +122,9 @@ func (m *Manager) recoverTerminalAccountTransition(ctx context.Context, t domain
 	if !found {
 		return ErrNotFound
 	}
+	var bound string
 	if !rec.IsTerminated && m.agentAccounts != nil {
-		bound, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+		bound, err = m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
 		if err != nil {
 			return err
 		}
@@ -137,10 +138,17 @@ func (m *Manager) recoverTerminalAccountTransition(ctx context.Context, t domain
 		if err != nil {
 			return err
 		}
-		if found && latest.ID != t.ID && latest.Phase == domain.SessionInterfaceTransitionCompleted {
-			// A later completed handoff has already stopped the preceding
-			// controller under this session's gate. Retire only the old receipt;
-			// its adapter namespace now belongs to that successful successor.
+		if found && latest.ID != t.ID {
+			// A binding commit makes the successor legitimate even if the daemon
+			// never persisted completed. Runtime handles (notably tmux names)
+			// can be reused, so stopping an old generation would kill its current
+			// owner. A completed handoff also proves the old controller stopped.
+			committed := latest.AccountMove() && bound != "" && bound == latest.TargetAccountID
+			if latest.Phase != domain.SessionInterfaceTransitionCompleted && !committed {
+				// Without evidence that the later handoff replaced this receipt,
+				// keep the fence; never use the old handle to stop a newer writer.
+				return nil
+			}
 			writeCtx := context.WithValue(ctx, accountTransitionRuntimeContextKey{}, t.ID)
 			if err := m.recordAccountRuntime(writeCtx, domain.AccountTransitionRuntimeStopped, t.TargetRuntimeLaunchID, t.TargetRuntimeHandleID); err != nil {
 				return err
