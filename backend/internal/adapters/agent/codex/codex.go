@@ -202,6 +202,8 @@ func appendAccountCredentialStore(args *[]string, env map[string]string) {
 // tier's id in Codex's own model list and session records.
 func appendFastTierFlag(args *[]string, launch domain.AgentLaunchOptions) {
 	switch {
+	case launch.NativeServiceTier != "":
+		*args = append(*args, "-c", "service_tier="+codexTOMLConfigString(launch.NativeServiceTier))
 	case launch.FastMode:
 		*args = append(*args, "-c", "service_tier="+codexTOMLConfigString("priority"))
 	case launch.FastModeOff:

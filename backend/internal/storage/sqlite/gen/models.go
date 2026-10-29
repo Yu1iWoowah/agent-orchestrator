@@ -1008,6 +1008,7 @@ type SessionInterfaceTransition struct {
 	HistoryPolicy        domain.SessionInterfaceTransitionHistoryPolicy
 	SourceAccountID      string
 	TargetAccountID      string
+	SettingsOperationID  string
 }
 
 type SessionInterfaceTransitionMessage struct {

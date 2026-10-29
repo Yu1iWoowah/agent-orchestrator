@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -69,5 +70,20 @@ func TestAgentSettingsMutationRoutesKeepPendingAndRequestIdentity(t *testing.T) 
 	}
 	if control.caller.SessionID != "orch" || control.caller.Grant != "private-bearer" || control.input.IdempotencyKey != "key" || control.input.RequestID != "request" {
 		t.Fatalf("lost request identity: %+v", control.input)
+	}
+}
+
+func TestTUISettingsHTTPPreservesRestartAndStopTurnConsent(t *testing.T) {
+	control := &settingsControls{}
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	(&AgentSettingsController{Svc: settingsReader{}, Control: control}).Register(r)
+	req := httptest.NewRequest(http.MethodPatch, "/sessions/worker/agent-settings", strings.NewReader(`{"expectedRevision":0,"applyMode":"restart","stopTurn":true,"settings":{"effort":"high"}}`))
+	req.Header.Set("Idempotency-Key", "restart-consent")
+	req.Header.Set("X-Request-ID", "restart-request")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 202 || control.input.ApplyMode != domain.AgentSettingsRestart || !control.input.StopTurn || control.input.IdempotencyKey != "restart-consent" || control.input.RequestID != "restart-request" {
+		t.Fatalf("lost restart consent: status=%d input=%+v body=%s", w.Code, control.input, w.Body.String())
 	}
 }

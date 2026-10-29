@@ -49,6 +49,7 @@ type Capabilities struct {
 
 // Snapshot combines durable preferences with independently qualified evidence.
 type Snapshot struct {
+	RestartRequired bool `json:"restartRequired,omitempty"`
 	domain.SessionAgentSettings
 	Capabilities       Capabilities                      `json:"capabilities"`
 	Pending            *domain.AgentSettingsOperation    `json:"pending,omitempty"`
@@ -102,7 +103,7 @@ func (s *Service) readCapabilities(ctx context.Context, id domain.SessionID) (Sn
 	if err != nil {
 		return Snapshot{}, err
 	}
-	result := Snapshot{SessionAgentSettings: settings, Capabilities: Capabilities{State: CapabilityUnknown, Reason: "catalog_unavailable", ControllerGeneration: settings.OwnerGeneration, AccountID: settings.AccountID, Models: []ModelCapabilities{}}}
+	result := Snapshot{RestartRequired: settings.Mode == domain.SessionModeTUI, SessionAgentSettings: settings, Capabilities: Capabilities{State: CapabilityUnknown, Reason: "catalog_unavailable", ControllerGeneration: settings.OwnerGeneration, AccountID: settings.AccountID, Models: []ModelCapabilities{}}}
 	if !settings.Harness.IsKnown() {
 		result.Capabilities.Reason = "harness_unknown"
 		return result, nil

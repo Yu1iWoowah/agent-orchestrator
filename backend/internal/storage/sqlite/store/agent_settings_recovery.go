@@ -59,8 +59,13 @@ func (s *Store) AdvanceAgentSettingsRecovery(ctx context.Context, id domain.Sess
 		if err != nil {
 			return settingsStoreError(err)
 		}
-		if !settingsRecoveryMatches(current, expected) {
+		if !settingsOperationRecoveryMatches(current, op, expected) {
 			return ports.ErrAgentSettingsConflict
+		}
+		if op.TUI != nil {
+			if expected.Plan == nil || expected.Qualification == nil || expected.Qualification.InputFingerprint == "" || expected.Qualification.PolicyVersion == "" || expected.Plan.Source != expected.Settings || expected.Plan.Target != expected.Settings || expected.Plan.ProviderConversationID != op.ProviderConversationID || expected.Plan.Before.Model == "" || expected.Plan.After.Model == "" {
+				return ports.ErrAgentSettingsInvalid
+			}
 		}
 		if checkpoint == domain.AgentSettingsRestored {
 			if op.Phase != domain.AgentSettingsRecoveryRequired || op.Checkpoint != domain.AgentSettingsRollingBack || op.Recovery == nil || op.Recovery.Owner != expected.Owner || op.Recovery.Revision != expected.Revision || op.Recovery.Settings != expected.Settings {
@@ -70,7 +75,7 @@ func (s *Store) AdvanceAgentSettingsRecovery(ctx context.Context, id domain.Sess
 		} else {
 			expected.ClaimedAt, expected.PreviousCheckpoint = at, op.Checkpoint
 		}
-		raw, err := json.Marshal(expected)
+		raw, err := json.Marshal(settingsRecoveryRecord{AgentSettingsRecovery: expected, Plan: expected.Plan, Qualification: expected.Qualification})
 		if err != nil {
 			return err
 		}
@@ -96,4 +101,21 @@ func (s *Store) AdvanceAgentSettingsRecovery(ctx context.Context, id domain.Sess
 		return nil
 	})
 	return result, err
+}
+
+// Provider wire evidence is persisted privately, never serialized in API GETs.
+type settingsRecoveryRecord struct {
+	domain.AgentSettingsRecovery
+	Plan          *domain.AgentSettingsProviderPlan  `json:"plan,omitempty"`
+	Qualification *domain.AgentSettingsQualification `json:"qualification,omitempty"`
+}
+
+func decodeSettingsRecovery(raw string) (*domain.AgentSettingsRecovery, error) {
+	var record settingsRecoveryRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return nil, err
+	}
+	record.AgentSettingsRecovery.Plan = record.Plan
+	record.AgentSettingsRecovery.Qualification = record.Qualification
+	return &record.AgentSettingsRecovery, nil
 }

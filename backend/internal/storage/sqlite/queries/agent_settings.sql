@@ -1,7 +1,8 @@
 -- name: GetSessionAgentSettings :one
 -- Match SelectConversationBySession's primary project-conversation ownership.
 SELECT s.id,s.model,s.effort,s.agent_fast_mode,s.agent_settings_revision,s.harness,s.session_mode,
- s.controller_generation,s.runtime_launch_id,s.is_terminated,s.provider_conversation_id,
+ s.controller_generation,s.runtime_launch_id,s.is_terminated,
+ CAST(CASE WHEN s.session_mode='tui' THEN s.agent_session_id ELSE s.provider_conversation_id END AS TEXT) AS provider_conversation_id,
  CAST(COALESCE((SELECT active_branch_id FROM conversations c WHERE c.current_session_id=s.id ORDER BY c.scope='project' DESC,c.created_at DESC,c.id DESC LIMIT 1),'') AS TEXT) AS branch_id,
  CAST(COALESCE((SELECT account_id FROM session_agent_accounts a WHERE a.session_id=s.id
  AND a.provider=CASE s.harness WHEN 'codex' THEN 'codex' WHEN 'claude-code' THEN 'claude' ELSE '' END
@@ -86,3 +87,18 @@ WHERE id=sqlc.arg(id) AND agent_settings_revision=sqlc.arg(expected_revision) AN
 UPDATE conversations SET model=NULLIF(sqlc.arg(model),''),reasoning_effort=NULLIF(sqlc.arg(effort),''),
  agent_fast_mode=sqlc.arg(fast_mode),updated_at=sqlc.arg(updated_at)
 WHERE current_session_id=sqlc.arg(session_id);
+
+-- name: RecordTUISettingsRuntime :execrows
+-- Private process ownership evidence, never a caller-controlled settings patch.
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,sqlc.arg(slot),sqlc.arg(handle),'$.tui.unconfirmedRuntime',json('false'))
+WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id)
+ AND phase IN ('pending','recovery_required') AND started_at IS NOT NULL
+ AND json_extract(request_json,'$.tui.targetGeneration')=sqlc.arg(target_generation)
+ AND ((sqlc.arg(slot)='$.tui.rollbackRuntimeHandle' AND phase='recovery_required' AND checkpoint='rolling_back') OR json_extract(request_json,sqlc.arg(slot)) IS NULL OR json_extract(request_json,sqlc.arg(slot))=sqlc.arg(handle));
+
+-- name: SetTUISettingsRuntimeUnknown :execrows
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,'$.tui.unconfirmedRuntime',json(sqlc.arg(value)))
+WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id) AND phase IN ('pending','recovery_required')
+ AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL AND started_at IS NOT NULL;

@@ -2577,7 +2577,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Queue a revision-checked settings operation; accepted is not completion */
+        /** Queue revision-checked settings; TUI requires applyMode restart, stopTurn explicitly permits interruption; accepted is not completion */
         patch: operations["changeSessionAgentSettings"];
         trace?: never;
     };
@@ -5326,6 +5326,7 @@ export interface components {
             source: components["schemas"]["AgentSettings"];
             /** Format: date-time */
             startedAt?: null | string;
+            stopTurn?: boolean;
             target: components["schemas"]["AgentSettings"];
             /** Format: date-time */
             updatedAt: string;
@@ -6057,6 +6058,7 @@ export interface components {
             applyMode?: "after-turn" | "restart";
             expectedRevision: number;
             settings: components["schemas"]["AgentSettingsPatch"];
+            stopTurn?: boolean;
         };
         ChatAgentPermissionModes: {
             agent: string;
@@ -8198,6 +8200,7 @@ export interface components {
             currentTurn?: components["schemas"]["AgentSettingsTurnSnapshot"];
             effective: components["schemas"]["AgentSettingsEffective"];
             pending?: components["schemas"]["AgentSettingsOperation"];
+            restartRequired?: boolean;
             /** Format: int64 */
             revision: number;
             sessionId: string;

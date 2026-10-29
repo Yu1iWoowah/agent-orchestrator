@@ -4,6 +4,7 @@ import "time"
 
 // SessionAgentSettings is the durable preference and its settings-only revision.
 type SessionAgentSettings struct {
+	Mode                   SessionMode   `json:"-"`
 	Harness                AgentHarness  `json:"-"`
 	AccountID              string        `json:"-"`
 	OwnerGeneration        string        `json:"-"`
@@ -45,6 +46,7 @@ type AgentSettingsActor struct {
 
 // AgentSettingsOperation contains no credentials or provider error text.
 type AgentSettingsOperation struct {
+	TUI                    *AgentSettingsTUIHandoff   `json:"-"`
 	ID                     string                     `json:"id"`
 	SessionID              SessionID                  `json:"sessionId"`
 	IdempotencyKey         string                     `json:"-"`
@@ -58,6 +60,7 @@ type AgentSettingsOperation struct {
 	CreatedAt              time.Time                  `json:"createdAt"`
 	UpdatedAt              time.Time                  `json:"updatedAt"`
 	ApplyMode              AgentSettingsApplyMode     `json:"applyMode" enum:"after-turn,restart"`
+	StopTurn               bool                       `json:"stopTurn,omitempty"`
 	Checkpoint             AgentSettingsCheckpoint    `json:"checkpoint" enum:"queued,applying_model,applying_effort,applying_fast,verifying,verified,rolling_back,restored"`
 	Version                int64                      `json:"version"`
 	ErrorCategory          AgentSettingsErrorCategory `json:"errorCategory,omitempty" enum:"conflict,cancelled,provider,storage,validation,recovery_required"`
@@ -76,11 +79,13 @@ type AgentSettingsOperation struct {
 // AgentSettingsRecovery pins a replacement executor and its durable restoration
 // target. It does not replace the original operation's source, target or actor.
 type AgentSettingsRecovery struct {
-	Owner              AgentSettingsOwner      `json:"owner"`
-	Revision           int64                   `json:"revision"`
-	Settings           AgentSettings           `json:"settings"`
-	ClaimedAt          time.Time               `json:"claimedAt"`
-	PreviousCheckpoint AgentSettingsCheckpoint `json:"previousCheckpoint"`
+	Plan               *AgentSettingsProviderPlan  `json:"-"`
+	Qualification      *AgentSettingsQualification `json:"-"`
+	Owner              AgentSettingsOwner          `json:"owner"`
+	Revision           int64                       `json:"revision"`
+	Settings           AgentSettings               `json:"settings"`
+	ClaimedAt          time.Time                   `json:"claimedAt"`
+	PreviousCheckpoint AgentSettingsCheckpoint     `json:"previousCheckpoint"`
 }
 
 // CanSupersedeLocally limits menu coalescing to unstarted, unverified-local
@@ -89,4 +94,14 @@ func (op AgentSettingsOperation) CanSupersedeLocally() bool {
 	return op.Actor.Kind == AgentSettingsActorLocal && op.Actor.SessionID == "" &&
 		op.Authority == (AgentSettingsAuthority{}) && op.Phase == AgentSettingsPending &&
 		op.Checkpoint == AgentSettingsQueued && op.StartedAt == nil && op.Recovery == nil
+}
+
+// AgentSettingsTUIHandoff is private physical-writer evidence, fixed on admission.
+// It cannot authorize another account, native conversation or fresh launch.
+type AgentSettingsTUIHandoff struct {
+	UnconfirmedRuntime    bool   `json:"unconfirmedRuntime,omitempty"`
+	SourceRuntimeHandle   string `json:"sourceRuntimeHandle"`
+	TargetRuntimeHandle   string `json:"targetRuntimeHandle,omitempty"`
+	RollbackRuntimeHandle string `json:"rollbackRuntimeHandle,omitempty"`
+	TargetGeneration      string `json:"targetGeneration"`
 }

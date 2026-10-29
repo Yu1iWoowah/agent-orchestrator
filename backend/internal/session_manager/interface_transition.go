@@ -314,6 +314,21 @@ func (m *Manager) CancelInterfaceTransition(ctx context.Context, id domain.Sessi
 	if !found {
 		return ErrInterfaceTransitionNotFound
 	}
+	if transition.SettingsOperationID != "" {
+		settings, ok := m.store.(tuiSettingsStore)
+		if !ok {
+			return ErrInterfaceTransitionNotCancellable
+		}
+		op, err := settings.AgentSettingsOperation(ctx, id, transition.SettingsOperationID)
+		if err != nil {
+			return err
+		}
+		_, err = m.CancelTUIAgentSettings(ctx, id, op.ID, op.Version)
+		if errors.Is(err, ports.ErrAgentSettingsConflict) {
+			return ErrInterfaceTransitionNotCancellable
+		}
+		return err
+	}
 	switch transition.Phase {
 	case domain.SessionInterfaceTransitionRequested,
 		domain.SessionInterfaceTransitionPreflighting,
@@ -963,6 +978,7 @@ func (m *Manager) preflightTerminalLaunch(
 	}
 	config := restoredAgentConfig(rec, project.Config)
 	config.Launch = m.sessionLaunchOptions(ctx, rec.ID)
+	applyTUISettingsLaunch(ctx, &config)
 	var cmd []string
 	if nativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
@@ -1468,6 +1484,9 @@ func (m *Manager) deliverTransitionMessages(
 	ctx context.Context,
 	transition domain.SessionInterfaceTransition,
 ) error {
+	if transition.SettingsOperationID != "" && transition.Active() {
+		return ErrInterfaceTransitionInProgress
+	}
 	m.transitionDeliveryAttemptMu.Lock()
 	defer m.transitionDeliveryAttemptMu.Unlock()
 	store, ok := m.store.(interfaceTransitionStore)
@@ -1601,7 +1620,7 @@ func (m *Manager) settleTransitionMessages(transition domain.SessionInterfaceTra
 		m.wakeTransitionMessageDispatcher()
 		return
 	}
-	if !ok || !current.Phase.Terminal() {
+	if !ok || current.Active() {
 		m.wakeTransitionMessageDispatcher()
 		return
 	}
@@ -1760,6 +1779,17 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
+		}
+		if transition.SettingsOperationID != "" {
+			if err := m.recoverTUISettingsStartup(ctx, *transition); err != nil {
+				return nil, err
+			}
+			if latest, found, err := store.GetSessionInterfaceTransition(ctx, transition.ID); err != nil {
+				return nil, err
+			} else if found {
+				*transition = latest
+			}
+			continue
 		}
 		detail := "The daemon restarted during the interface switch; AO recovered the session from its last committed mode."
 		if transition.AccountMove() {

@@ -430,6 +430,8 @@ type Manager struct {
 	agentBrowserToken           string
 	agentAccounts               ports.AgentAccountLaunchEnv
 	agentSettings               ports.AgentSettingsPreflight
+	tuiSettingsValidator        ports.ChatAgentSettingsValidator
+	tuiSettingsFences           map[domain.SessionID]string
 	settingsGrants              ports.AgentSettingsGrantEnvironment
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
@@ -3374,7 +3376,7 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 		if rec.HibernatedAt == nil && m.chat != nil && m.chat.HasLiveChatController(id) {
 			return nil
 		}
-		_, err = m.ResumeAgentWithMode(ctx, id)
+		_, err = m.resumeAgentWithMode(ctx, id, false)
 		if errors.Is(err, ErrResumeInProgress) {
 			m.agentOpMu.Lock()
 			operation = m.agentOperations[id]
@@ -3392,7 +3394,7 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 // identity and never changes the durable terminated flag as an intermediate
 // step.
 func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (result RestoreResult, err error) {
-	return m.resumeAgentWithMode(ctx, id, false)
+	return m.resumeAgentWithMode(context.WithValue(ctx, explicitTUISettingsRecoveryKey{}, true), id, false)
 }
 
 // resumeAgentWithMode preserves strict native-history intent for automatic
@@ -3411,6 +3413,17 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 	if active, err := m.hasActiveInterfaceTransition(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: interface transition: %w", id, err)
 	} else if active {
+		if explicit, _ := ctx.Value(explicitTUISettingsRecoveryKey{}).(bool); explicit {
+			if store, ok := m.store.(tuiSettingsStore); ok {
+				tr, found, err := store.GetActiveSessionInterfaceTransition(ctx, id)
+				if err != nil {
+					return RestoreResult{}, err
+				}
+				if found && tr.SettingsOperationID != "" && tr.Phase == domain.SessionInterfaceTransitionRecovery {
+					return m.resumeTUISettingsRecovery(ctx, store, tr)
+				}
+			}
+		}
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrInterfaceTransitionInProgress)
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)
@@ -3669,6 +3682,20 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 
 	agentConfig := restoredAgentConfig(rec, project.Config)
 	agentConfig.Launch = m.sessionLaunchOptions(ctx, rec.ID)
+	applyTUISettingsLaunch(ctx, &agentConfig)
+	if launch, _ := ctx.Value(tuiSettingsLaunchKey{}).(*tuiSettingsLaunch); launch == nil && !forceFresh {
+		plan, err := m.committedTUISettings(ctx, rec)
+		if err != nil {
+			return RestoreResult{}, relaunchFailed("settings evidence", err)
+		}
+		if plan != nil {
+			agentConfig.Model, agentConfig.Effort = plan.After.Model, plan.After.Effort
+			if plan.Protocol == "codex-native-resume" {
+				agentConfig.Launch.NativeServiceTier = plan.After.Fast
+			}
+			requireNativeHistory = true
+		}
+	}
 	// Only a provider switch passes its own prompt; it rolls back a failed start itself.
 	switching := promptOverride != nil
 	// A switch target that has not started yet: its note goes in place of the task.
@@ -3827,10 +3854,37 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		Env:           env,
 	}
 	var handle ports.RuntimeHandle
+	launchState, _ := ctx.Value(tuiSettingsLaunchKey{}).(*tuiSettingsLaunch)
+	if launchState != nil {
+		settingsStore, ok := m.store.(tuiSettingsStore)
+		if !ok {
+			return RestoreResult{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+		}
+		if err := settingsStore.SetTUIAgentSettingsRuntimeUnknown(ctx, rec.ID, launchState.operationID, true); err != nil {
+			return RestoreResult{}, relaunchFailed("runtime launch fence", err)
+		}
+		launchState.attempted = true
+	}
 	if restartHandle == nil {
 		handle, err = m.runtime.Create(ctx, runtimeCfg)
 	} else {
 		handle, err = m.restartRuntime(ctx, *restartHandle, runtimeCfg)
+	}
+	if launchState != nil {
+		launchState.capture(handle, err)
+		if launchState.noEffects {
+			if settingsStore, ok := m.store.(tuiSettingsStore); ok {
+				_ = settingsStore.SetTUIAgentSettingsRuntimeUnknown(context.WithoutCancel(ctx), rec.ID, launchState.operationID, false)
+			}
+		}
+		if launchState.handle.ID != "" {
+			if settingsStore, ok := m.store.(tuiSettingsStore); ok {
+				receiptErr := settingsStore.RecordTUIAgentSettingsRuntime(ctx, rec.ID, launchState.operationID, launchState.targetGeneration, launchState.handle.ID, launchState.rollback)
+				if err == nil && receiptErr != nil {
+					return RestoreResult{}, relaunchFailed("runtime receipt", receiptErr)
+				}
+			}
+		}
 	}
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
@@ -3841,7 +3895,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	// resumed child is observable. A failed native resume remains recoverable.
 	if requireNativeHistory && !forceFresh {
 		var startErr error
-		if rec.StaleBinary != nil {
+		if rec.StaleBinary != nil || launchState != nil {
 			startErr = m.verifyRefreshedTerminal(ctx, handle, rec.ID, launchID)
 		} else {
 			alive, err := m.waitForExactLaunch(ctx, handle, rec.ID, launchID)
@@ -6508,7 +6562,11 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 }
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness) (map[string]string, string, error) {
-	env, err := m.runtimeEnv(id, project, issue, projectEnv, harness)
+	return m.launchRuntimeEnvOnAccount(id, project, issue, projectEnv, harness, m.accountOverride(id))
+}
+
+func (m *Manager) launchRuntimeEnvOnAccount(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness, accountID string) (map[string]string, string, error) {
+	env, err := m.runtimeEnvChecked(id, project, issue, projectEnv, accountID, harness)
 	if err != nil {
 		return nil, "", err
 	}
@@ -6534,7 +6592,11 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	rec domain.SessionRecord,
 	projectEnv map[string]string,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
+	accountID := m.accountOverride(rec.ID)
+	if state, _ := ctx.Value(tuiSettingsLaunchKey{}).(*tuiSettingsLaunch); state != nil {
+		accountID = state.accountID
+	}
+	env, verifier, err := m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, accountID)
 	if err != nil {
 		return rec, nil, err
 	}

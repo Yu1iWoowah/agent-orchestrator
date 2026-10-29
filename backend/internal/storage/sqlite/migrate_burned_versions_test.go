@@ -20,6 +20,7 @@ import (
 // session list). Renaming, renumbering, or deleting a shipped migration
 // produces exactly that class of failure, so this list is append-only.
 var shippedMigrations = map[int64]string{
+	20261029193014190: "20261029193014190_tui_agent_settings_handoff.sql",
 	20261029135418896: "20261029135418896_project_attention.sql",
 	20261029041946955: "20261029041946955_attention_questions.sql",
 	20261029033801026: "20261029033801026_agent_account_lifecycle.sql",

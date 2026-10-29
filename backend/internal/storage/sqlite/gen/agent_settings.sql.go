@@ -262,7 +262,8 @@ func (q *Queries) GetPendingAgentSettingsOperation(ctx context.Context, sessionI
 
 const getSessionAgentSettings = `-- name: GetSessionAgentSettings :one
 SELECT s.id,s.model,s.effort,s.agent_fast_mode,s.agent_settings_revision,s.harness,s.session_mode,
- s.controller_generation,s.runtime_launch_id,s.is_terminated,s.provider_conversation_id,
+ s.controller_generation,s.runtime_launch_id,s.is_terminated,
+ CAST(CASE WHEN s.session_mode='tui' THEN s.agent_session_id ELSE s.provider_conversation_id END AS TEXT) AS provider_conversation_id,
  CAST(COALESCE((SELECT active_branch_id FROM conversations c WHERE c.current_session_id=s.id ORDER BY c.scope='project' DESC,c.created_at DESC,c.id DESC LIMIT 1),'') AS TEXT) AS branch_id,
  CAST(COALESCE((SELECT account_id FROM session_agent_accounts a WHERE a.session_id=s.id
  AND a.provider=CASE s.harness WHEN 'codex' THEN 'codex' WHEN 'claude-code' THEN 'claude' ELSE '' END
@@ -430,6 +431,38 @@ func (q *Queries) ProjectConversationAgentSettings(ctx context.Context, arg Proj
 	return err
 }
 
+const recordTUISettingsRuntime = `-- name: RecordTUISettingsRuntime :execrows
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,?1,?2,'$.tui.unconfirmedRuntime',json('false'))
+WHERE session_id=?3 AND id=?4
+ AND phase IN ('pending','recovery_required') AND started_at IS NOT NULL
+ AND json_extract(request_json,'$.tui.targetGeneration')=?5
+ AND ((?1='$.tui.rollbackRuntimeHandle' AND phase='recovery_required' AND checkpoint='rolling_back') OR json_extract(request_json,?1) IS NULL OR json_extract(request_json,?1)=?2)
+`
+
+type RecordTUISettingsRuntimeParams struct {
+	Slot             interface{}
+	Handle           interface{}
+	SessionID        string
+	ID               string
+	TargetGeneration string
+}
+
+// Private process ownership evidence, never a caller-controlled settings patch.
+func (q *Queries) RecordTUISettingsRuntime(ctx context.Context, arg RecordTUISettingsRuntimeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordTUISettingsRuntime,
+		arg.Slot,
+		arg.Handle,
+		arg.SessionID,
+		arg.ID,
+		arg.TargetGeneration,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const saveSpawnAgentSettings = `-- name: SaveSpawnAgentSettings :execrows
 UPDATE sessions SET model=?1,effort=?2,
  agent_fast_mode=?3,spawn_agent_settings_json=?4,
@@ -500,6 +533,27 @@ func (q *Queries) SetAgentSettingsOperationPhase(ctx context.Context, arg SetAge
 		arg.ID,
 		arg.ExpectedVersion,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setTUISettingsRuntimeUnknown = `-- name: SetTUISettingsRuntimeUnknown :execrows
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,'$.tui.unconfirmedRuntime',json(?1))
+WHERE session_id=?2 AND id=?3 AND phase IN ('pending','recovery_required')
+ AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL AND started_at IS NOT NULL
+`
+
+type SetTUISettingsRuntimeUnknownParams struct {
+	Value     interface{}
+	SessionID string
+	ID        string
+}
+
+func (q *Queries) SetTUISettingsRuntimeUnknown(ctx context.Context, arg SetTUISettingsRuntimeUnknownParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTUISettingsRuntimeUnknown, arg.Value, arg.SessionID, arg.ID)
 	if err != nil {
 		return 0, err
 	}

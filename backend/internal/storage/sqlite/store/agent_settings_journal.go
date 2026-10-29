@@ -43,6 +43,11 @@ func (s *Store) LatestAppliedAgentSettingsOperation(ctx context.Context, id doma
 
 // setSettingsOutcome is called only inside the caller's write transaction.
 func setSettingsOutcome(ctx context.Context, q *gen.Queries, op domain.AgentSettingsOperation, phase domain.AgentSettingsPhase, category domain.AgentSettingsErrorCategory, at time.Time) (domain.AgentSettingsOperation, error) {
+	if op.TUI != nil {
+		if err := settleTUISettingsHandoff(ctx, q, op, phase, at); err != nil {
+			return domain.AgentSettingsOperation{}, err
+		}
+	}
 	changed, err := q.SetAgentSettingsOperationPhase(ctx, gen.SetAgentSettingsOperationPhaseParams{SessionID: string(op.SessionID), ID: op.ID, ExpectedVersion: op.Version, Phase: string(phase), ErrorCategory: string(category), ErrorCode: op.ErrorCode, At: at, FinishedAt: sql.NullTime{Time: at, Valid: phase != domain.AgentSettingsRecoveryRequired}})
 	if err != nil {
 		return domain.AgentSettingsOperation{}, err
@@ -121,7 +126,7 @@ func (s *Store) FinishAgentSettingsOperationWithCode(ctx context.Context, id dom
 				if err != nil {
 					return settingsStoreError(err)
 				}
-				if op.Recovery == nil || !settingsRecoveryMatches(current, *op.Recovery) {
+				if op.Recovery == nil || !settingsOperationRecoveryMatches(current, op, *op.Recovery) {
 					return ports.ErrAgentSettingsConflict
 				}
 			}
@@ -133,7 +138,7 @@ func (s *Store) FinishAgentSettingsOperationWithCode(ctx context.Context, id dom
 			if err != nil {
 				return settingsStoreError(err)
 			}
-			if !settingsOwnerCanRecover(current) {
+			if !settingsOperationCanRecover(current, op) {
 				return errSettingsOwnerUnrecoverable
 			}
 		default:
@@ -179,7 +184,10 @@ func (s *Store) AdvanceAgentSettingsOperation(ctx context.Context, id domain.Ses
 		if !settingsOwnerMatches(current, op) {
 			return ports.ErrAgentSettingsConflict
 		}
-		if op.StartedAt == nil && !settingsOwnerCanRecover(current) {
+		if op.TUI != nil && op.Execution == nil {
+			return errSettingsOwnerUnrecoverable
+		}
+		if op.StartedAt == nil && !settingsOperationCanRecover(current, op) {
 			return errSettingsOwnerUnrecoverable
 		}
 		changed, err := q.AdvanceAgentSettingsCheckpoint(ctx, gen.AdvanceAgentSettingsCheckpointParams{SessionID: string(id), ID: operationID, ExpectedVersion: expectedVersion, Checkpoint: string(checkpoint), At: at})
