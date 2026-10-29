@@ -98,3 +98,17 @@ it("shows verified paths on keyboard focus and copies exact backend values after
 	expect(mocks.resolve.mock.calls.length).toBeGreaterThanOrEqual(3);
 	cache.clear();
 });
+it("dismisses the passive preview on Escape and before opening the document", async () => {
+	const { cache } = setup();
+	const link = screen.getByRole("link", { name: "Document" });
+	fireEvent.focus(link);
+	await screen.findByRole("tooltip");
+	fireEvent.keyDown(document, { key: "Escape" });
+	await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+	fireEvent.blur(link);
+	fireEvent.focus(link);
+	await screen.findByRole("tooltip");
+	fireEvent.click(link);
+	await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+	cache.clear();
+});

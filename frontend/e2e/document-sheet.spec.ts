@@ -224,7 +224,7 @@ test("opaque static HTML loads only verified local raster and styles without ena
 		.poll(() =>
 			frame
 				.getByRole("img", { name: "Managed raster" })
-				.evaluate((el) => el.naturalWidth),
+				.evaluate((el) => (el as HTMLImageElement).naturalWidth),
 		)
 		.toBe(1);
 	await expect(
@@ -247,10 +247,10 @@ test("document Markdown follows the selected app theme independently of OS prefe
 }) => {
 	await setup(page);
 	await page.emulateMedia({ colorScheme: "light" });
-	await page.evaluate(async () => {
-		const { useUiStore } = await import("/src/renderer/stores/ui-store.ts");
+	await page.evaluate(async (path) => {
+		const { useUiStore } = await import(path);
 		useUiStore.getState().setThemePreference("dark");
-	});
+	}, "/src/renderer/stores/ui-store.ts");
 	await page.getByRole("link", { name: "Worker guide", exact: true }).click();
 	const body = page.locator("[data-document-scroll] .markdown-body");
 	await expect(body).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");

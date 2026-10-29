@@ -48,7 +48,7 @@ export function DocumentLink({
 		}
 	};
 	return (
-		<Tooltip open={hover && !menu}>
+		<Tooltip open={hover && !menu} onOpenChange={setHover}>
 			<ContextMenu onOpenChange={setMenu}>
 				<ContextMenuTrigger asChild>
 					<TooltipTrigger asChild>
@@ -60,6 +60,7 @@ export function DocumentLink({
 							onBlur={() => setHover(false)}
 							onClick={(event) => {
 								event.preventDefault();
+								setHover(false);
 								openReadingDocument(reader, input);
 							}}
 						/>
