@@ -1,3 +1,4 @@
+import { diagnosticRegions, setDiagnosticRecording } from "../lib/app-diagnostics-registry";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -161,6 +162,17 @@ beforeEach(() => {
 });
 
 describe("SessionsBoard", () => {
+ it("publishes committed board worker/column inputs independently from cache", () => {
+  workspaceQueryMock.mockReturnValue({data:[workspaceWithSessions([boardSession({id:"worker-1",title:"canary-secret",status:"working"})])],isSuccess:true,isError:false});
+  renderBoard("p1");
+  try {
+   act(()=>setDiagnosticRecording(true));
+   const board=diagnosticRegions().regions.find((region)=>region.value.kind==="board")?.value;
+   expect(board?.workerIds).toContain("worker-1");
+   expect(JSON.stringify(board)).not.toContain("canary-secret");
+  } finally { act(()=>setDiagnosticRecording(false)); }
+ });
+
 	it("shows the Cloud loader instead of Chat while a cloud orchestrator is starting", () => {
 		workspaceQueryMock.mockReturnValue({ data: [{ id: "p1", name: "Cloud project", kind: "cloud", path: "", sessions: [] }], isSuccess: true });
 		useUiStore.getState().setProjectProvisioning("p1", true);

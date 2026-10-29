@@ -15712,6 +15712,8 @@ components:
           type:
           - "null"
           - string
+        partial:
+          type: boolean
         readErrorCount:
           minimum: 0
           type: integer
@@ -15723,9 +15725,53 @@ components:
           minimum: 0
           type: integer
       required:
+      - partial
       - records
       - oldestRetainedAt
       - droppedCount
+      type: object
+    AppDiagnosticsBox:
+      properties:
+        height:
+          format: double
+          type: number
+        width:
+          format: double
+          type: number
+        x:
+          format: double
+          type: number
+        "y":
+          format: double
+          type: number
+      required:
+      - x
+      - "y"
+      - width
+      - height
+      type: object
+    AppDiagnosticsCache:
+      properties:
+        availability:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        queries:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsQuery'
+          type: array
+        revision:
+          minimum: 0
+          type: integer
+      required:
+      - availability
+      - observedAt
+      - revision
+      - omittedCount
+      - queries
       type: object
     AppDiagnosticsCaptureRequest:
       properties:
@@ -15733,6 +15779,303 @@ components:
           type: string
         windowId:
           type: string
+      type: object
+    AppDiagnosticsCollector:
+      properties:
+        cache:
+          $ref: '#/components/schemas/AppDiagnosticsCache'
+        captureFinishedAt:
+          format: date-time
+          type: string
+        captureStartedAt:
+          format: date-time
+          type: string
+        components:
+          $ref: '#/components/schemas/AppDiagnosticsComponents'
+        consistency:
+          type: string
+        errors:
+          $ref: '#/components/schemas/AppDiagnosticsErrors'
+        geometry:
+          $ref: '#/components/schemas/AppDiagnosticsGeometry'
+        redactionSchemaVersion:
+          type: integer
+        route:
+          $ref: '#/components/schemas/AppDiagnosticsRoute'
+        shell:
+          $ref: '#/components/schemas/AppDiagnosticsShell'
+      required:
+      - redactionSchemaVersion
+      - captureStartedAt
+      - captureFinishedAt
+      - consistency
+      - route
+      - shell
+      - cache
+      - components
+      - geometry
+      - errors
+      type: object
+    AppDiagnosticsComponent:
+      properties:
+        expanded:
+          type: boolean
+        hiddenCount:
+          type: integer
+        hostId:
+          type: string
+        kind:
+          type: string
+        listedIds:
+          items:
+            type: string
+          type: array
+        liveIds:
+          items:
+            type: string
+          type: array
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        orderedIds:
+          items:
+            type: string
+          type: array
+        projectId:
+          type: string
+        revision:
+          minimum: 0
+          type: integer
+        sessionCount:
+          type: integer
+        shared:
+          type: boolean
+        showAll:
+          type: boolean
+        source:
+          type: string
+        workerIds:
+          items:
+            type: string
+          type: array
+        workspaces:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsWorkspace'
+          type: array
+      required:
+      - omittedCount
+      - kind
+      - revision
+      - observedAt
+      - projectId
+      - hostId
+      - source
+      - expanded
+      - shared
+      - showAll
+      - sessionCount
+      - hiddenCount
+      - liveIds
+      - workerIds
+      - orderedIds
+      - listedIds
+      - workspaces
+      type: object
+    AppDiagnosticsComponents:
+      properties:
+        availability:
+          type: string
+        entries:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsComponent'
+          type: array
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        revision:
+          minimum: 0
+          type: integer
+      required:
+      - availability
+      - observedAt
+      - revision
+      - omittedCount
+      - entries
+      type: object
+    AppDiagnosticsErrorSummary:
+      properties:
+        at:
+          format: date-time
+          type: string
+        count:
+          type: integer
+        message:
+          type: string
+        name:
+          type: string
+        source:
+          type: string
+      required:
+      - at
+      - source
+      - name
+      - message
+      - count
+      type: object
+    AppDiagnosticsErrors:
+      properties:
+        availability:
+          type: string
+        enabledAt:
+          format: date-time
+          type: string
+        notRecordedBeforeEnable:
+          type: boolean
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        records:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsErrorSummary'
+          type: array
+        revision:
+          minimum: 0
+          type: integer
+      required:
+      - availability
+      - observedAt
+      - revision
+      - omittedCount
+      - enabledAt
+      - notRecordedBeforeEnable
+      - records
+      type: object
+    AppDiagnosticsGeometry:
+      properties:
+        ancestorTruncatedCount:
+          type: integer
+        availability:
+          type: string
+        nodes:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsNode'
+          type: array
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        revision:
+          minimum: 0
+          type: integer
+      required:
+      - availability
+      - observedAt
+      - revision
+      - omittedCount
+      - ancestorTruncatedCount
+      - nodes
+      type: object
+    AppDiagnosticsIdentity:
+      properties:
+        appVersion:
+          type: string
+        buildCommit:
+          type: string
+        daemonVersion:
+          type: string
+        os:
+          type: string
+      required:
+      - appVersion
+      - daemonVersion
+      - buildCommit
+      - os
+      type: object
+    AppDiagnosticsNode:
+      properties:
+        ancestors:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsStyle'
+          type: array
+        availability:
+          type: string
+        hit:
+          type: string
+        hostId:
+          type: string
+        id:
+          type: string
+        intersectsViewport:
+          type: boolean
+        projectId:
+          type: string
+        role:
+          type: string
+        sessionId:
+          type: string
+        source:
+          type: string
+        style:
+          $ref: '#/components/schemas/AppDiagnosticsStyle'
+      required:
+      - source
+      - hostId
+      - id
+      - role
+      - projectId
+      - sessionId
+      - availability
+      - ancestors
+      - intersectsViewport
+      - hit
+      type: object
+    AppDiagnosticsQuery:
+      properties:
+        count:
+          type: integer
+        dataUpdatedAt:
+          format: double
+          type: number
+        errorUpdatedAt:
+          format: double
+          type: number
+        failureCount:
+          type: integer
+        fetchStatus:
+          type: string
+        hostId:
+          type: string
+        invalidated:
+          type: boolean
+        kind:
+          type: string
+        observerCount:
+          type: integer
+        status:
+          type: string
+        workspaces:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsWorkspace'
+          type: array
+      required:
+      - kind
+      - hostId
+      - status
+      - fetchStatus
+      - invalidated
+      - dataUpdatedAt
+      - errorUpdatedAt
+      - observerCount
+      - failureCount
+      - count
+      - workspaces
       type: object
     AppDiagnosticsRecord:
       properties:
@@ -15756,10 +16099,46 @@ components:
       type: object
     AppDiagnosticsRevokeResponse:
       properties:
+        cleanup:
+          type: string
         revoked:
           type: boolean
       required:
+      - cleanup
       - revoked
+      type: object
+    AppDiagnosticsRoute:
+      properties:
+        availability:
+          type: string
+        hostId:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        projectId:
+          type: string
+        revision:
+          minimum: 0
+          type: integer
+        routeId:
+          type: string
+        sessionId:
+          type: string
+        source:
+          type: string
+      required:
+      - availability
+      - observedAt
+      - revision
+      - omittedCount
+      - routeId
+      - source
+      - projectId
+      - sessionId
+      - hostId
       type: object
     AppDiagnosticsRuntimeState:
       properties:
@@ -15779,13 +16158,79 @@ components:
       - ready
       - windows
       type: object
+    AppDiagnosticsSession:
+      properties:
+        activity:
+          type: string
+        column:
+          type: string
+        id:
+          type: string
+        kind:
+          type: string
+        status:
+          type: string
+        terminated:
+          type: boolean
+      required:
+      - id
+      - kind
+      - terminated
+      - status
+      - activity
+      - column
+      type: object
+    AppDiagnosticsShell:
+      properties:
+        availability:
+          type: string
+        devicePixelRatio:
+          format: double
+          type: number
+        height:
+          format: double
+          type: number
+        inspectorOpen:
+          type: boolean
+        observedAt:
+          format: date-time
+          type: string
+        omittedCount:
+          type: integer
+        revision:
+          minimum: 0
+          type: integer
+        sidebarCollapsed:
+          type: boolean
+        sidebarWidth:
+          format: double
+          type: number
+        width:
+          format: double
+          type: number
+      required:
+      - availability
+      - observedAt
+      - revision
+      - omittedCount
+      - width
+      - height
+      - devicePixelRatio
+      - sidebarCollapsed
+      - sidebarWidth
+      - inspectorOpen
+      type: object
     AppDiagnosticsSnapshot:
       properties:
         capturedAt:
           format: date-time
           type: string
+        collector:
+          $ref: '#/components/schemas/AppDiagnosticsCollector'
         completeness:
           type: string
+        identity:
+          $ref: '#/components/schemas/AppDiagnosticsIdentity'
         instanceId:
           type: string
         rendererGeneration:
@@ -15805,6 +16250,8 @@ components:
       type: object
     AppDiagnosticsSnapshotList:
       properties:
+        partial:
+          type: boolean
         readErrorCount:
           minimum: 0
           type: integer
@@ -15813,7 +16260,50 @@ components:
             $ref: '#/components/schemas/AppDiagnosticsRecord'
           type: array
       required:
+      - partial
       - records
+      type: object
+    AppDiagnosticsStyle:
+      properties:
+        box:
+          $ref: '#/components/schemas/AppDiagnosticsBox'
+        clip:
+          type: string
+        display:
+          type: string
+        gridRows:
+          items:
+            format: double
+            type: number
+          type: array
+        opacity:
+          format: double
+          type: number
+        overflowX:
+          type: string
+        overflowY:
+          type: string
+        transform:
+          items:
+            format: double
+            type: number
+          type: array
+        visibility:
+          type: string
+        zIndex:
+          format: double
+          type: number
+      required:
+      - box
+      - display
+      - visibility
+      - opacity
+      - overflowX
+      - overflowY
+      - clip
+      - gridRows
+      - transform
+      - zIndex
       type: object
     AppDiagnosticsWindow:
       properties:
@@ -15825,6 +16315,39 @@ components:
       required:
       - id
       - generation
+      type: object
+    AppDiagnosticsWorkspace:
+      properties:
+        folderMissing:
+          type: boolean
+        hostId:
+          type: string
+        omittedCount:
+          type: integer
+        projectId:
+          type: string
+        scope:
+          type: string
+        sessionCount:
+          type: integer
+        sessions:
+          items:
+            $ref: '#/components/schemas/AppDiagnosticsSession'
+          type: array
+        shared:
+          type: boolean
+        source:
+          type: string
+      required:
+      - scope
+      - projectId
+      - hostId
+      - source
+      - shared
+      - folderMissing
+      - sessionCount
+      - sessions
+      - omittedCount
       type: object
     AppMemoryResponse:
       properties:
