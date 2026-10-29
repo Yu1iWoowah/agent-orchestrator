@@ -107,11 +107,13 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 	if in.Path == doc {
 		receipt = &domain.ProjectDocumentWriteReceipt{ID: uuid.NewString(), Path: in.Path, Hash: hash([]byte(in.Content)), PreviousHash: in.ExpectedHash, SourceSessionID: rec.ID, Owner: rec.ControllerOwner(), CapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier, LeaseEpoch: in.Lease.Epoch, CreatedAt: time.Now().UTC()}
 	}
+	published := false
 	if err := atomicWrite(ctx, r, in.Path, in.ExpectedHash, []byte(in.Content), func(rename func() error) error {
 		return s.publish(ctx, id, in.Actor, in.Lease, func(reserved context.Context) error {
 			if err := rename(); err != nil {
 				return err
 			}
+			published = true
 			if receipt == nil {
 				return nil
 			}
@@ -133,6 +135,9 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 			return nil
 		})
 	}); err != nil {
+		if published && receipt != nil {
+			return File{}, errors.Join(apierr.Unavailable("PROJECT_DOCUMENT_WRITE_RECEIPT_UNCONFIRMED", "Handoff bytes were published but the managed receipt is unconfirmed; re-read the current hash and repeat the managed write with a current lease"), err)
+		}
 		return File{}, err
 	}
 	file := fileView(in.Path, []byte(in.Content))
