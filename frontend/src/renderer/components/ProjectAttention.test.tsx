@@ -90,6 +90,9 @@ it("separates reports from user questions and marks only an inspected report rea
 		}),
 	);
 	show();
+	expect(
+		screen.getByRole("button", { name: "Open project attention" }),
+	).toHaveClass("topbar-control");
 	await waitFor(() =>
 		expect(
 			screen.getByRole("button", { name: "Open project attention" }),
@@ -111,6 +114,9 @@ it("separates reports from user questions and marks only an inspected report rea
 		),
 	).toBeVisible();
 	expect(post).not.toHaveBeenCalled();
+	const panel = screen.getByRole("tabpanel");
+	panel.scrollTop = 124;
+	fireEvent.scroll(panel);
 	fireEvent.click(
 		screen.getByRole("button", { name: /Need orchestrator guidance/ }),
 	);
@@ -122,6 +128,13 @@ it("separates reports from user questions and marks only an inspected report rea
 		"/api/v1/projects/{id}/attention/reports/{reportId}/read",
 	);
 	expect(navigate).not.toHaveBeenCalled();
+	fireEvent.click(screen.getByRole("button", { name: "Close decision" }));
+	await waitFor(() => expect(screen.getByRole("tabpanel").scrollTop).toBe(124));
+	await waitFor(() =>
+		expect(
+			screen.getByRole("button", { name: /Need orchestrator guidance/ }),
+		).toHaveFocus(),
+	);
 });
 it("navigates provider requests to their source session without resolving approval", async () => {
 	get.mockResolvedValue({

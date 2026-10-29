@@ -40,6 +40,20 @@ test("project user decisions stay separate from coordination reports and answer 
 	await expect(
 		page.getByRole("button", { name: "Submit all answers" }),
 	).toHaveCount(0);
+	await page.keyboard.press("Escape");
+	await expect(
+		page.locator('[data-slot="dialog-overlay"][data-state="open"]'),
+	).toHaveCount(1);
+	await page.getByRole("tab", { name: /Awaiting you/ }).click();
+	await page.getByRole("button", { name: /Allow workspace command/ }).click();
+	await expect(
+		page.getByRole("button", { name: "Go to original request" }),
+	).toBeVisible();
+	await page.keyboard.press("Escape");
+	await page.getByRole("tab", { name: "Orchestrator reports" }).click();
+	await expect(
+		page.getByText("Answer state unknown · report delivery: acknowledged"),
+	).toBeVisible();
 });
 test("provider summary navigates to the original session without manufacturing consent @T0", async ({
 	page,
