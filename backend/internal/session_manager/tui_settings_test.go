@@ -451,6 +451,53 @@ func TestTUISettingsFailureRollsBackWithAtMostOneWriter(t *testing.T) {
 	}
 }
 
+func TestTUISettingsRollbackLaunchFailureRetainsRecovery(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprint(unknown), func(t *testing.T) {
+			f := newTUISettingsFixture(t, domain.HarnessCodex)
+			rt := &tuiExclusiveRuntime{fakeRuntime: f.runtime, store: f.store, id: f.rec.ID}
+			f.m.runtime = rt
+			rollbackError := error(tuiNoEffectError{errors.New("rollback definitively did not launch")})
+			if unknown {
+				rollbackError = errors.New("rollback launch outcome unknown")
+			}
+			f.runtime.createErrSequence = []error{tuiNoEffectError{errors.New("target did not launch")}, rollbackError}
+			zero := int64(0)
+			high := domain.AgentEffortSelection("high")
+			op, err := f.control.Change(t.Context(), agentsettings.Caller{}, f.rec.ID, agentsettings.Change{ExpectedRevision: &zero, ApplyMode: domain.AgentSettingsRestart, Settings: domain.AgentSettingsPatch{Effort: &high}, IdempotencyKey: "rollback-failed"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			op = f.wait(t, op.ID)
+			if op.Phase != domain.AgentSettingsRecoveryRequired || op.Checkpoint != domain.AgentSettingsRollingBack || op.TUI.UnconfirmedRuntime != unknown || f.runtime.created != 0 {
+				t.Fatalf("rollback failure lost its obligation: %+v creates=%d", op, f.runtime.created)
+			}
+			current, err := f.store.SessionAgentSettings(t.Context(), f.rec.ID)
+			if err != nil || current.Revision != 0 || current.Settings != op.Source {
+				t.Fatalf("rollback failure changed source preference: %+v %v", current, err)
+			}
+			if release, admitted := f.m.AcquireSessionInput(f.rec.ID); admitted {
+				release()
+				t.Fatal("failed rollback released input")
+			}
+			if _, err := f.m.recoverInterruptedInterfaceTransitions(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.m.ResumeAgentWithMode(t.Context(), f.rec.ID)
+			if unknown {
+				if err == nil || f.runtime.created != 0 {
+					t.Fatalf("ambiguous rollback was retried: %v creates=%d", err, f.runtime.created)
+				}
+			} else if err != nil || f.runtime.created != 1 {
+				t.Fatalf("proven no-effect rollback could not recover: %v creates=%d", err, f.runtime.created)
+			}
+			if rt.overlap || rt.unfenced {
+				t.Fatalf("unsafe restoration: overlap=%v unfenced=%v", rt.overlap, rt.unfenced)
+			}
+		})
+	}
+}
+
 func TestTUISettingsUnavailableHistoryFailsBeforeStopWithoutFreshFallback(t *testing.T) {
 	f := newTUISettingsFixture(t, domain.HarnessCodex)
 	f.agent.history = false
