@@ -87,6 +87,8 @@ func (s *Service) Repair(ctx context.Context, in domain.ReplacementRepairRequest
 			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_UNVERIFIED", "Snapshot is not the latest trusted record; retain the fence", nil)
 		case errors.Is(err, domain.ErrReplacementRepairUnsafe):
 			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_UNSAFE", "Repair cannot discard unknown native or managed facts; retain the fence", nil)
+		case errors.Is(err, domain.ErrReplacementRepairCapacity):
+			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY", "Repair evidence reached its storage limit; retain the fence for operator recovery", nil)
 		case err != nil:
 			return err
 		case !applied && result.ID == "":

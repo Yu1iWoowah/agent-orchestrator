@@ -147,6 +147,24 @@ func (q *Queries) GetReplacementRepairSnapshot(ctx context.Context, arg GetRepla
 	return i, err
 }
 
+const getReplacementRepairSnapshotUsage = `-- name: GetReplacementRepairSnapshotUsage :one
+SELECT COUNT(*) AS snapshots,
+ CAST(COALESCE(SUM(length(payload)), 0) AS INTEGER) AS payload_bytes
+FROM orchestrator_replacement_repair_snapshots WHERE operation_id = ?
+`
+
+type GetReplacementRepairSnapshotUsageRow struct {
+	Snapshots    int64
+	PayloadBytes int64
+}
+
+func (q *Queries) GetReplacementRepairSnapshotUsage(ctx context.Context, operationID string) (GetReplacementRepairSnapshotUsageRow, error) {
+	row := q.db.QueryRowContext(ctx, getReplacementRepairSnapshotUsage, operationID)
+	var i GetReplacementRepairSnapshotUsageRow
+	err := row.Scan(&i.Snapshots, &i.PayloadBytes)
+	return i, err
+}
+
 const getRetiredOrchestratorReplacementBySource = `-- name: GetRetiredOrchestratorReplacementBySource :one
 SELECT id, project_id, source_session_id, operation_key, request_hash, phase, is_active, revision, intake_revision, state_json, created_at, updated_at FROM orchestrator_replacements
 WHERE source_session_id = ?1

@@ -160,6 +160,11 @@ WHERE operation_id = ? AND revision = ?;
 SELECT * FROM orchestrator_replacement_repair_snapshots
 WHERE operation_id = ? ORDER BY revision DESC LIMIT 1;
 
+-- name: GetReplacementRepairSnapshotUsage :one
+SELECT COUNT(*) AS snapshots,
+ CAST(COALESCE(SUM(length(payload)), 0) AS INTEGER) AS payload_bytes
+FROM orchestrator_replacement_repair_snapshots WHERE operation_id = ?;
+
 -- Only the operator repair path can restore a broken redundant envelope. It
 -- never updates sessions, leases, queue rows or publication receipts.
 -- name: RestoreReplacementFromRepairSnapshot :execrows

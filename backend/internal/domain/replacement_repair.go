@@ -12,6 +12,8 @@ var (
 	ErrReplacementRepairConflict = errors.New("replacement repair row changed")
 	// ErrReplacementRepairUnsafe retains uncertain native or managed facts.
 	ErrReplacementRepairUnsafe = errors.New("replacement repair would change protected facts")
+	// ErrReplacementRepairCapacity leaves the current row and immutable history intact.
+	ErrReplacementRepairCapacity = errors.New("replacement repair evidence capacity exceeded")
 )
 
 // ReplacementDiagnostic is a read-only view of an undecodable reserved row.

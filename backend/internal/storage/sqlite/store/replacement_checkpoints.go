@@ -15,7 +15,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
-const maxReplacementRepairBytes = 16 << 20
+const (
+	maxReplacementRepairBytes        = 16 << 20
+	maxReplacementRepairSnapshots    = 1024
+	maxReplacementRepairHistoryBytes = 512 << 20
+)
 
 // Gob preserves raw string bytes: JSON would replace invalid UTF-8 and could
 // give distinct damaged rows the same apparent CAS digest.
@@ -69,6 +73,19 @@ func (s *Store) saveReplacementCheckpoint(ctx context.Context, q *gen.Queries, i
 	payload, err := json.Marshal(row)
 	if err != nil {
 		return err
+	}
+	if len(payload) > maxReplacementRepairBytes {
+		return domain.ErrReplacementRepairCapacity
+	}
+	usage, err := q.GetReplacementRepairSnapshotUsage(ctx, id)
+	if err != nil {
+		return err
+	}
+	// Retain immutable capsules, including receipts needed for lost-response
+	// recovery. A bounded history refuses a new write atomically; it never prunes
+	// evidence or weakens the fence to recover capacity.
+	if usage.Snapshots >= maxReplacementRepairSnapshots || usage.PayloadBytes > maxReplacementRepairHistoryBytes-int64(len(payload)) {
+		return domain.ErrReplacementRepairCapacity
 	}
 	return q.InsertReplacementRepairSnapshot(ctx, gen.InsertReplacementRepairSnapshotParams{OperationID: id, Revision: row.Revision, Digest: repairPayloadDigest(payload), Payload: payload})
 }
