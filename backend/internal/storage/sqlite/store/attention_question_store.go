@@ -63,8 +63,27 @@ func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.Atte
 	var result domain.AttentionQuestionRecord
 	created := false
 	err = s.inTx(ctx, "create attention question", func(q *gen.Queries) error {
+		forwardedBy := command.OriginSessionID
+		if command.SourceReportID != "" {
+			var err error
+			command.OriginSessionID, err = attentionReportOwner(ctx, q, forwardedBy, command.ActorVerifier, command.SourceReportID)
+			if err != nil {
+				return err
+			}
+			hash := sha256.Sum256([]byte(command.SourceReportID))
+			command.ClientKey = "rpt_" + hex.EncodeToString(hash[:])[:60]
+		}
 		existing, err := q.FindAttentionQuestionKey(ctx, gen.FindAttentionQuestionKeyParams{OriginSessionID: string(command.OriginSessionID), ClientKey: command.ClientKey})
 		if err == nil {
+			if command.SourceReportID != "" {
+				linked, err := q.GetAttentionReportQuestion(ctx, command.SourceReportID)
+				if errors.Is(err, sql.ErrNoRows) || err == nil && linked != existing.ID {
+					return domain.ErrAttentionQuestionConflict
+				}
+				if err != nil {
+					return err
+				}
+			}
 			if existing.CreateFingerprint != fingerprint {
 				return domain.ErrAttentionQuestionConflict
 			}
@@ -104,6 +123,11 @@ func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.Atte
 		if err != nil {
 			return err
 		}
+		if command.SourceReportID != "" {
+			if err := q.InsertAttentionReportQuestion(ctx, gen.InsertAttentionReportQuestionParams{ReportID: command.SourceReportID, QuestionID: row.ID, ForwardedBy: string(forwardedBy), CreatedAt: at.UTC()}); err != nil {
+				return err
+			}
+		}
 		result, err = questionRecord(ctx, q, row)
 		if err != nil {
 			return err
@@ -141,6 +165,11 @@ func questionRow(ctx context.Context, q *gen.Queries, session domain.SessionID, 
 
 func questionRecord(ctx context.Context, q *gen.Queries, row gen.AttentionQuestion) (domain.AttentionQuestionRecord, error) {
 	result := domain.AttentionQuestionRecord{ID: row.ID, ProjectID: domain.ProjectID(row.ProjectID.String), OriginSessionID: domain.SessionID(row.OriginSessionID), OriginHarness: row.OriginHarness, Audience: row.Audience, Kind: domain.AttentionQuestionKind(row.Kind), ClientKey: row.ClientKey, State: row.State, Version: row.Version, Sequence: row.Sequence, SupersedesID: row.SupersedesID.String, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ExpiresAt: questionTime(row.ExpiresAt), ClosedAt: questionTime(row.ClosedAt), ClosedBy: row.ClosedBy, CloseReason: row.CloseReason, Read: row.SeenVersion >= row.Version}
+	sourceReport, err := q.GetQuestionSourceReport(ctx, row.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	result.SourceReportID = sourceReport
 	if err := json.Unmarshal([]byte(row.PayloadJson), &result.Payload); err != nil {
 		return result, fmt.Errorf("decode question %s: %w", row.ID, err)
 	}
@@ -485,4 +514,38 @@ func (s *Store) RecordAttentionAnswerDelivery(ctx context.Context, id, state, la
 		}
 		return nil
 	})
+}
+
+// Validate every handoff inside the same writer transaction as its unique link.
+func attentionReportOwner(ctx context.Context, q *gen.Queries, caller domain.SessionID, verifier, id string) (domain.SessionID, error) {
+	report, err := q.GetReport(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", domain.ErrAttentionQuestionNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	project := domain.ProjectID(report.ProjectID)
+	active, err := q.ActiveAttentionOrchestrator(ctx, &project)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && active != caller {
+		return "", domain.ErrAttentionQuestionForbidden
+	}
+	if err != nil {
+		return "", err
+	}
+	actor, err := q.GetSession(ctx, caller)
+	if err != nil {
+		return "", err
+	}
+	if verifier == "" || actor.BrowserCapabilityVerifier != verifier {
+		return "", domain.ErrAttentionQuestionForbidden
+	}
+	worker, err := q.GetSession(ctx, domain.SessionID(report.SessionID))
+	if err != nil {
+		return "", err
+	}
+	if worker.Kind != domain.KindWorker || worker.ProjectID == nil || string(*worker.ProjectID) != report.ProjectID || worker.IsTerminated || (report.State != "needs_input" && report.State != "stuck") {
+		return "", domain.ErrAttentionQuestionForbidden
+	}
+	return domain.SessionID(report.SessionID), nil
 }

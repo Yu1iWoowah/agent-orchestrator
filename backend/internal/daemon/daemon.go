@@ -698,7 +698,7 @@ func Run(buildVersion string) error {
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
 	questionSessions, _ := sessMgr.(questionSemanticSession)
-	questionSvc := questionsvc.New(questionsvc.Deps{Store: store, Delivery: questionSemanticDelivery{sessions: questionSessions, now: time.Now}})
+	questionSvc := questionsvc.New(questionsvc.Deps{Capabilities: browserAuthority, Store: store, Notifications: notificationWriter, Delivery: questionSemanticDelivery{sessions: questionSessions, now: time.Now}})
 	questionDeliveryDone := questionSvc.Start(ctx, func(err error) { log.Error("question answer coordinator", "err", err) })
 	defer func() { stop(); <-questionDeliveryDone }()
 	reportDeliveryDone := reportCoordinator.Start(ctx)

@@ -5183,6 +5183,139 @@ paths:
       summary: Atomically replace a project's display name and config
       tags:
       - projects
+  /api/v1/projects/{id}/attention:
+    get:
+      operationId: listProjectAttention
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      - in: query
+        name: audience
+        schema:
+          enum:
+          - user
+          - orchestrator
+          type: string
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      - in: query
+        name: limit
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectAttentionPage'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read project human decisions or coordination reports with complete
+        counts
+      tags:
+      - projects
+  /api/v1/projects/{id}/attention/reports/{reportId}/read:
+    post:
+      operationId: readProjectAttentionReport
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      - in: path
+        name: reportId
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Mark an inspected report seen without changing delivery or answer state
+      tags:
+      - projects
   /api/v1/projects/{id}/config:
     put:
       operationId: setProjectConfig
@@ -11963,6 +12096,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -12000,6 +12139,12 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+      - description: Opaque browser capability injected into the owning AO worker.
+        in: header
+        name: X-AO-Browser-Capability
+        schema:
+          description: Opaque browser capability injected into the owning AO worker.
+          type: string
       requestBody:
         content:
           application/json:
@@ -12025,6 +12170,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -12049,7 +12200,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Create an idempotent user question and its readable compatibility record
+      summary: Create an idempotent user question; sourceReportId requires the active
+        orchestrator session capability
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/questions/{questionId}:
@@ -12081,6 +12233,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -12143,6 +12301,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -12206,6 +12370,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -12264,6 +12434,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -12326,6 +12502,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -17546,6 +17728,8 @@ components:
         sequence:
           format: int64
           type: integer
+        sourceReportId:
+          type: string
         state:
           enum:
           - open
@@ -22285,6 +22469,84 @@ components:
       - defaultBranch
       - folderMissing
       type: object
+    ProjectAttentionItem:
+      properties:
+        activityId:
+          type: string
+        answerState:
+          enum:
+          - unknown
+          type: string
+        branchId:
+          type: string
+        conversationId:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        deliveryState:
+          type: string
+        id:
+          type: string
+        kind:
+          enum:
+          - agent_question
+          - provider_approval
+          - provider_input
+          - worker_report
+          type: string
+        originHarness:
+          type: string
+        questionId:
+          type: string
+        read:
+          type: boolean
+        reportId:
+          type: string
+        reportState:
+          type: string
+        requestId:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        sessionName:
+          type: string
+        sourceBranchId:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - kind
+      - sessionId
+      - sessionName
+      - title
+      - revision
+      - createdAt
+      - read
+      type: object
+    ProjectAttentionPage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ProjectAttentionItem'
+          type: array
+        nextCursor:
+          type: string
+        open:
+          format: int64
+          type: integer
+        unread:
+          format: int64
+          type: integer
+      required:
+      - items
+      - open
+      - unread
+      type: object
     ProjectClonePreparationCleanupInput:
       properties:
         keepCheckout:
@@ -22801,6 +23063,8 @@ components:
           type: string
         payload:
           $ref: '#/components/schemas/AttentionQuestionPayload'
+        sourceReportId:
+          type: string
         supersedesId:
           type: string
       required:
@@ -22894,6 +23158,8 @@ components:
         sequence:
           format: int64
           type: integer
+        sourceReportId:
+          type: string
         state:
           enum:
           - open

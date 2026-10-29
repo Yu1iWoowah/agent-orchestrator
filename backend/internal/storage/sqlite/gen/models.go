@@ -208,6 +208,11 @@ type AttentionAnswer struct {
 	DeliveryAttempts int64
 }
 
+type AttentionNotificationReceipt struct {
+	SourceKey string
+	ProjectID string
+}
+
 type AttentionQuestion struct {
 	Sequence          int64
 	ID                string
@@ -238,6 +243,18 @@ type AttentionRead struct {
 	ActivityID       string
 	LastSeenRevision int64
 	SeenAt           time.Time
+}
+
+type AttentionReportQuestion struct {
+	ReportID    string
+	QuestionID  string
+	ForwardedBy string
+	CreatedAt   time.Time
+}
+
+type AttentionReportRead struct {
+	ReportID string
+	SeenAt   time.Time
 }
 
 type Automation struct {
@@ -721,6 +738,11 @@ type Project struct {
 	ArchivedAt    sql.NullTime
 	Config        sql.NullString
 	Kind          string
+}
+
+type ProjectAttentionRevision struct {
+	ProjectID string
+	Revision  int64
 }
 
 type ProjectDocumentState struct {

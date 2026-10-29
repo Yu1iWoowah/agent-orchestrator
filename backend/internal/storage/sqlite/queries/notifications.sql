@@ -81,6 +81,7 @@ UPDATE notifications
 SET resolved_at = sqlc.arg(resolved_at)
 WHERE session_id = sqlc.arg(session_id)
   AND type = sqlc.arg(type)
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
 RETURNING *;
@@ -91,6 +92,7 @@ RETURNING *;
 DELETE FROM notifications
 WHERE session_id = sqlc.arg(session_id)
   AND type = sqlc.arg(type)
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NOT NULL;
 
@@ -127,6 +129,7 @@ WHERE type = 'ready_to_merge'
 UPDATE notifications
 SET resolved_at = sqlc.arg(resolved_at)
 WHERE type = 'needs_input'
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
   AND session_id IN (
@@ -139,6 +142,7 @@ RETURNING *;
 -- name: DeleteStaleDismissedNeedsInputNotifications :execrows
 DELETE FROM notifications
 WHERE type = 'needs_input'
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NOT NULL
   AND session_id IN (

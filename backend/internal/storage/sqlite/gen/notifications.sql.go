@@ -133,6 +133,7 @@ const deleteDismissedSessionNotificationsByType = `-- name: DeleteDismissedSessi
 DELETE FROM notifications
 WHERE session_id = ?1
   AND type = ?2
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NOT NULL
 `
@@ -172,6 +173,7 @@ func (q *Queries) DeleteResolvedDismissedNotifications(ctx context.Context) (int
 const deleteStaleDismissedNeedsInputNotifications = `-- name: DeleteStaleDismissedNeedsInputNotifications :execrows
 DELETE FROM notifications
 WHERE type = 'needs_input'
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NOT NULL
   AND session_id IN (
@@ -613,6 +615,7 @@ UPDATE notifications
 SET resolved_at = ?1
 WHERE session_id = ?2
   AND type = ?3
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
 RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key
@@ -664,6 +667,7 @@ const resolveStaleNeedsInputNotifications = `-- name: ResolveStaleNeedsInputNoti
 UPDATE notifications
 SET resolved_at = ?1
 WHERE type = 'needs_input'
+  AND source_key NOT LIKE 'attention:%'
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
   AND session_id IN (

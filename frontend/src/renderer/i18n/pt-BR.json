@@ -1,4 +1,13 @@
 {
+	"decision.sourceReport": "Source report: {{id}}",
+	"projectAttention.count": "Awaiting you: {{count}}",
+	"projectAttention.open": "Open project attention",
+	"projectAttention.title": "Project attention",
+	"projectAttention.description": "Human decisions and orchestrator coordination stay separate. Open the original session for provider requests.",
+	"projectAttention.coordination": "Orchestrator reports",
+	"projectAttention.totals": "{{open}} items · {{unread}} unread",
+	"projectAttention.offline": "The project count is unknown. Check the host connection and retry.",
+	"projectAttention.reportStatus": "Answer state unknown · report delivery: {{delivery}}",
 	"documents.catalog.localOnly": "O catálogo de documentos só está disponível neste computador.",
 	"documents.connection.localOnly": "A consulta de caminhos de documentos só está disponível neste computador.",
 	"documents.read.error": "Não foi possível carregar os documentos.",
