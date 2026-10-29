@@ -13,8 +13,8 @@ test("attention fixture preserves counts through history, collapse and composer 
 	await frame.getByRole("tab", { name: "History", exact: true }).click();
 	await expect(frame.getByText("Previously answered fixture")).toBeVisible();
 	await expect(
-		frame.getByRole("button", { name: /^Go to original request:/ }),
-	).toHaveCount(0);
+		frame.getByRole("button", { name: /^Open decision:/ }),
+	).toHaveCount(1);
 	await frame
 		.getByRole("button", { name: "Collapse Awaiting you", exact: true })
 		.click();
@@ -122,7 +122,9 @@ for (const resolution of ["local", "external"] as const) {
 		await page.route(`**/api/v1/sessions/${sessionId}/**`, async (route) => {
 			const url = new URL(route.request().url()),
 				path = url.pathname;
-			if (path.endsWith("/attention")) {
+			if (path.endsWith("/questions")) {
+				await route.fulfill({ json: { items: [], open: 0, unread: 0, history: 0, hasMoreBefore: false, nextBeforeSequence: 0 } });
+			} else if (path.endsWith("/attention")) {
 				const all = items();
 				const history = url.searchParams.get("state") === "history";
 				await route.fulfill({
@@ -235,10 +237,11 @@ for (const resolution of ["local", "external"] as const) {
 		await expect(frame.getByRole("textbox")).toHaveCount(0);
 		await frame
 			.getByRole("button", {
-				name: "Go to original request: Question outside the loaded transcript",
+				name: "Open decision: Question outside the loaded transcript",
 				exact: true,
 			})
 			.click();
+		await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 		const form = page.getByTestId("elicitation-dock");
 		await expect(form).toHaveCount(1);
 		const input = form.getByRole("textbox", { name: "Target" });
@@ -248,17 +251,19 @@ for (const resolution of ["local", "external"] as const) {
 		expect(answers).toHaveLength(0);
 		await frame
 			.getByRole("button", {
-				name: "Go to original request: A second original request",
+				name: "Open decision: A second original request",
 				exact: true,
 			})
 			.click();
+		await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 		await expect(form.getByRole("textbox", { name: "Target" })).toHaveValue("");
 		await frame
 			.getByRole("button", {
-				name: "Go to original request: Question outside the loaded transcript",
+				name: "Open decision: Question outside the loaded transcript",
 				exact: true,
 			})
 			.click();
+		await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 		await expect(form.getByRole("textbox", { name: "Target" })).toHaveValue(
 			"staging",
 		);
@@ -302,10 +307,11 @@ for (const resolution of ["local", "external"] as const) {
 		await frame.getByRole("tab", { name: "Pending", exact: true }).click();
 		await frame
 			.getByRole("button", {
-				name: "Go to original request: New approval after the located question",
+				name: "Open decision: New approval after the located question",
 				exact: true,
 			})
 			.click();
+		await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 		await allow.click();
 		await expect.poll(() => approved).toBe(true);
 		await page.evaluate(

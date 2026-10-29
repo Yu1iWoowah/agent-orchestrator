@@ -199,6 +199,44 @@ type AppSetting struct {
 	ReplyLanguage      string
 }
 
+type AttentionAnswer struct {
+	QuestionID       string
+	ClientAnswerID   string
+	QuestionVersion  int64
+	AnswersJson      string
+	Fingerprint      string
+	Message          string
+	SavedAt          time.Time
+	DeliveryState    string
+	DeliveredAt      sql.NullTime
+	LastError        string
+	DeliveryAttempts int64
+}
+
+type AttentionQuestion struct {
+	Sequence          int64
+	ID                string
+	ProjectID         sql.NullString
+	OriginSessionID   string
+	OriginHarness     string
+	ClientKey         string
+	Audience          string
+	Kind              string
+	PayloadJson       string
+	CreateFingerprint string
+	State             string
+	Version           int64
+	SupersedesID      sql.NullString
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	ExpiresAt         sql.NullTime
+	ClosedAt          sql.NullTime
+	ClosedBy          string
+	CloseReason       string
+	SeenVersion       int64
+	SeenAt            sql.NullTime
+}
+
 type AttentionRead struct {
 	OperatorScope    string
 	ConversationID   string

@@ -160,6 +160,22 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"ControllersQuestionCreateRequest":                     "QuestionCreateRequest",
+	"ControllersQuestionReviseRequest":                     "QuestionReviseRequest",
+	"ControllersQuestionReadRequest":                       "QuestionReadRequest",
+	"ControllersQuestionCancelRequest":                     "QuestionCancelRequest",
+	"ControllersQuestionResponse":                          "QuestionResponse",
+	"ControllersQuestionPageResponse":                      "QuestionPageResponse",
+	"ControllersQuestionAnswerResponse":                    "QuestionAnswerResponse",
+	"DomainAttentionQuestionRecord":                        "AttentionQuestionRecord",
+	"DomainAttentionQuestionPayload":                       "AttentionQuestionPayload",
+	"DomainAttentionPrompt":                                "AttentionPrompt",
+	"DomainAttentionQuestionOption":                        "AttentionQuestionOption",
+	"DomainAttentionPreview":                               "AttentionPreview",
+	"DomainAttentionAuthorization":                         "AttentionAuthorization",
+	"DomainAttentionQuestionAnswer":                        "AttentionQuestionAnswer",
+	"DomainAttentionAnswerSubmission":                      "AttentionAnswerSubmission",
+	"DomainAttentionAnswerReceipt":                         "AttentionAnswerReceipt",
 	"DomainAppDiagnosticsIdentity":                         "AppDiagnosticsIdentity",
 	"DomainAppDiagnosticsProvenance":                       "AppDiagnosticsProvenance",
 	"DomainAppDiagnosticsCollector":                        "AppDiagnosticsCollector",
@@ -832,6 +848,7 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
+	ops = append(ops, questionOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)

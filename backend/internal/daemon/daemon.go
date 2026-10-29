@@ -74,6 +74,7 @@ import (
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	projectdocssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
+	questionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/questions"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
@@ -690,6 +691,10 @@ func Run(buildVersion string) error {
 		Delivery: reportSemanticDelivery{chat: chatSvc, sessions: reportSessions, store: store},
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
+	questionSessions, _ := sessMgr.(questionSemanticSession)
+	questionSvc := questionsvc.New(questionsvc.Deps{Store: store, Delivery: questionSemanticDelivery{sessions: questionSessions, now: time.Now}})
+	questionDeliveryDone := questionSvc.Start(ctx, func(err error) { log.Error("question answer coordinator", "err", err) })
+	defer func() { stop(); <-questionDeliveryDone }()
 	reportDeliveryDone := reportCoordinator.Start(ctx)
 	defer func() {
 		stop()
@@ -1093,6 +1098,7 @@ func Run(buildVersion string) error {
 		TelemetryIdentity:    telemetryIdentity,
 		Mobile:               mc,
 		BrowserLive:          browserLive,
+		Questions:            questionSvc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
 			Store:         store,
 			TargetDataDir: cfg.DataDir,
