@@ -24,6 +24,13 @@ func replacementIntent(t *testing.T, f fixture) domain.OrchestratorReplacement {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, phase := range []domain.ReplacementPhase{domain.ReplacementPreflight, domain.ReplacementWaitingSourceIdle} {
+		op.Phase = phase
+		if ok, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		op.Revision++
+	}
 	op.Phase = domain.ReplacementAdoptingSharedFiles
 	op.Preparation = &domain.ReplacementPreparation{AttemptID: "33333333-3333-4333-8333-333333333333", Nonce: strings.Repeat("b", 64), ControlClientID: "replacement/" + op.ID + "/prepare/1", StartedAt: now, DeadlineAt: now.Add(10 * time.Minute), ExpectedSessions: []domain.SessionID{}}
 	if ok, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
@@ -54,10 +61,11 @@ func TestReplacementHandoffFreezeRequiresCurrentVerifiedAuthorReceipt(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			op.Phase = domain.ReplacementFreezingSharedWrites
+			op.Phase = domain.ReplacementHandoffVerified
 			op.Preparation.SubmittedHash, op.Preparation.SubmittedPath, op.Preparation.WriteReceiptID = file.Hash, file.Path, file.WriteReceiptID
 			now := time.Now().UTC()
-			op.Preparation.VerifiedAt = &now
+			op.Preparation.VerifiedAt, op.Preparation.SubmittedAt = &now, &now
+			op.Preparation.ControlTurnID = "prepared-control"
 			switch which {
 			case "receipt mismatch":
 				op.Preparation.WriteReceiptID = "another-write"
@@ -67,6 +75,7 @@ func TestReplacementHandoffFreezeRequiresCurrentVerifiedAuthorReceipt(t *testing
 				}
 			case "unverified":
 				op.Preparation.VerifiedAt = nil
+				op.Phase = domain.ReplacementPreparingHandoff
 			case "source rotated":
 				f.owner.Metadata.BrowserCapabilityVerifier = "another-verifier"
 				if err := f.db.UpdateSession(ctx, f.owner); err != nil {
@@ -76,6 +85,14 @@ func TestReplacementHandoffFreezeRequiresCurrentVerifiedAuthorReceipt(t *testing
 			if ok, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
 				t.Fatal(ok, err)
 			}
+			if which != "unverified" {
+				op.Revision++
+				op.Phase = domain.ReplacementFreezingSharedWrites
+				if saved, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !saved {
+					t.Fatal(saved, err)
+				}
+			}
+
 			op, _, err = f.db.GetOrchestratorReplacement(ctx, op.ID)
 			if err != nil {
 				t.Fatal(err)

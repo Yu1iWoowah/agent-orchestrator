@@ -101,14 +101,22 @@ func (s *Service) publishEvidence(ctx context.Context, id domain.ProjectID, in E
 	if state.Adoption != nil && !state.Adoption.Complete {
 		return zero, conflict("PROJECT_DOCUMENT_ADOPTION_PENDING", "Living file adoption is incomplete")
 	}
-	root, err := s.openRoot(shared)
-	if err != nil {
-		return zero, err
-	}
-	handoff, err := readFile(root, doc)
-	_ = root.Close()
-	if err != nil {
-		return zero, err
+	var handoff []byte
+	if operation != nil {
+		if operation.Transcript == nil {
+			return zero, conflict("HANDOFF_EVIDENCE_UNVERIFIED", "Frozen handoff snapshot is missing")
+		}
+		handoff = append([]byte(nil), operation.Transcript.FrozenHandoff...)
+	} else {
+		root, err := s.openRoot(shared)
+		if err != nil {
+			return zero, err
+		}
+		handoff, err = readFile(root, doc)
+		_ = root.Close()
+		if err != nil {
+			return zero, err
+		}
 	}
 	if hash(handoff) != in.HandoffHash {
 		return zero, conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "The frozen handoff hash changed")
@@ -203,18 +211,21 @@ func (s *Service) publishEvidence(ctx context.Context, id domain.ProjectID, in E
 				return e
 			}
 		}
-		// Recheck shared bytes inside the reservation, immediately before rename.
-		sr, e := s.openRoot(shared)
-		if e != nil {
-			return e
-		}
-		b, e := readFile(sr, doc)
-		_ = sr.Close()
-		if e != nil {
-			return e
-		}
-		if hash(b) != in.HandoffHash {
-			return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Frozen handoff changed")
+		// Generic exports use the live frozen lease; replacement exports use the
+		// verified bytes durably captured by their freeze transaction.
+		if operation == nil {
+			sr, e := s.openRoot(shared)
+			if e != nil {
+				return e
+			}
+			b, e := readFile(sr, doc)
+			_ = sr.Close()
+			if e != nil {
+				return e
+			}
+			if hash(b) != in.HandoffHash {
+				return conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Frozen handoff changed")
+			}
 		}
 		if e := native.Check(reserved); e != nil {
 			return e
@@ -251,7 +262,7 @@ func (s *Service) publishEvidence(ctx context.Context, id domain.ProjectID, in E
 			}
 		} else {
 			current.Evidence[key] = receipt
-			ok, e := s.store.SaveProjectDocumentState(reserved, id, current)
+			ok, e := s.store.SaveProjectDocumentEvidence(reserved, id, current)
 			if e != nil {
 				return e
 			}
@@ -264,7 +275,7 @@ func (s *Service) publishEvidence(ctx context.Context, id domain.ProjectID, in E
 			operation.Transcript.Receipt = &receipt
 			operation.Transcript.TranscriptHash = hash(transcript)
 			operation.UpdatedAt = time.Now().UTC()
-			ok, e := operationStore.SaveOrchestratorReplacement(reserved, *operation)
+			ok, e := operationStore.SaveReplacementEvidence(reserved, *operation)
 			if e != nil {
 				return e
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func replacementOperation(t *testing.T, st *sqlite.Store) domain.OrchestratorReplacement {
@@ -78,14 +79,14 @@ func TestReplacementStoreCASAndCrashRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := op
-	op.Phase = domain.ReplacementPreparingHandoff
+	op.Phase = domain.ReplacementPreflight
 	op.SpawnRequestID = "replacement/" + op.ID
 	op.Error = &domain.ReplacementFailure{Code: "PREPARATION_PENDING", Message: "waiting for owned turn", Retryable: true}
 	op.ResumeEvidence = &domain.ReplacementResumeEvidence{BeforeNativeID: "native-successor"}
 	if changed, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !changed {
 		t.Fatalf("advance: changed=%t err=%v", changed, err)
 	}
-	stale.Phase = domain.ReplacementRetiring
+	stale.Phase = domain.ReplacementPreflight
 	if changed, err := st.SaveOrchestratorReplacement(ctx, stale); err != nil || changed {
 		t.Fatalf("stale revision overwrote progress: changed=%t err=%v", changed, err)
 	}
@@ -337,9 +338,7 @@ func TestReplacementStoreFencesGenericOrchestratorAdmission(t *testing.T) {
 	op.Phase, op.SpawnRequestID, op.SpawnRequestHash = domain.ReplacementStarting, "replacement/"+op.ID, strings.Repeat("c", 64)
 	now := time.Now().UTC()
 	op.SourceRetiredAt = &now
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	source, _, err := st.GetSession(ctx, op.SourceSessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -367,9 +366,7 @@ func TestReplacementStoreFencesGenericOrchestratorAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	current.Phase = domain.ReplacementCompleted
-	if ok, err := st.SaveOrchestratorReplacement(ctx, current); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	current = fixturestore.SeedReplacementTestFacts(t, st, current)
 	source.IsTerminated = false
 	if err := st.UpdateSession(ctx, source); err == nil {
 		t.Error("completed replacement allowed retired source revival")
@@ -386,9 +383,7 @@ func TestReplacementStoreIncompleteSpawnBindingFailsClosed(t *testing.T) {
 	op.Phase, op.SpawnRequestID = domain.ReplacementStarting, "reserved-key"
 	now := time.Now().UTC()
 	op.SourceRetiredAt = &now
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	source, _, err := st.GetSession(ctx, op.SourceSessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -423,9 +418,7 @@ func TestReplacementRetiredSourceFenceSurvivesCompletedReservation(t *testing.T)
 	now := time.Now().UTC()
 	op.SourceRetiredAt = &now
 	op.Phase = domain.ReplacementCompleted
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	if _, found, err := st.GetActiveOrchestratorReplacement(ctx, op.ProjectID); err != nil || found {
 		t.Fatal("completion retained active admission", found, err)
 	}

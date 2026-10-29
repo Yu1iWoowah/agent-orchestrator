@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestReplacementWakeFenceCannotBeReleasedByUnverifiedMarker(t *testing.T) {
@@ -30,9 +31,7 @@ func TestReplacementWakeFenceCannotBeReleasedByUnverifiedMarker(t *testing.T) {
 	}
 	assertFenced(worker.ID, false)
 	op.Phase = domain.ReplacementNotifying
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	assertFenced(op.SourceSessionID, true)
 	op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
 	if err != nil {
@@ -73,9 +72,7 @@ func TestReplacementTUIReleaseIntentChecksOperationAndSessionAtomically(t *testi
 			if which == "missing intent" {
 				op.SourceStopIntentAt = nil
 			}
-			if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-				t.Fatal(ok, err)
-			}
+			op = fixturestore.SeedReplacementTestFacts(t, st, op)
 			op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
 			if err != nil {
 				t.Fatal(err)

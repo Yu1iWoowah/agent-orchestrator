@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
 func replacementHash(value string) bool {
@@ -24,6 +27,9 @@ func validateReplacementEvidence(op domain.OrchestratorReplacement) error {
 		return invalid
 	}
 	if op.SourceStopIntentAt != nil && (op.FrozenAt == nil || op.Transcript == nil || op.SourceStopIntentAt.IsZero()) {
+		return invalid
+	}
+	if op.FrozenAt != nil && (op.Transcript == nil || len(op.Transcript.FrozenHandoff) == 0 || len(op.Transcript.FrozenHandoff) > domain.MaxReplacementHandoffBytes || op.Preparation == nil || frozenHandoffHash(op) != op.Preparation.SubmittedHash) {
 		return invalid
 	}
 	if stop := op.SourceStop; stop != nil {
@@ -78,8 +84,14 @@ func replacementTimesEqual(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
-func preserveReplacementEvidence(before, after domain.OrchestratorReplacement) error {
+func preserveReplacementEvidence(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
 	invalid := fmt.Errorf("%w: captured evidence facts are immutable", domain.ErrReplacementStateInvalid)
+	if before.FrozenAt == nil && after.FrozenAt != nil && ctx.Value(replacementFreezeKey{}) != q {
+		return invalid
+	}
+	if after.Transcript != nil && after.Transcript.Receipt != nil && (before.Transcript == nil || before.Transcript.Receipt == nil) && ctx.Value(handoffEvidencePublicationKey{}) != q {
+		return invalid
+	}
 	if p := before.Preparation; p != nil && p.PromptHash != "" {
 		next := after.Preparation
 		if next == nil || p.PromptHash != next.PromptHash || p.AttemptID != next.AttemptID || p.Nonce != next.Nonce || p.ControlClientID != next.ControlClientID || !replacementTimesEqual(p.PromptIntentAt, next.PromptIntentAt) || p.ControlTurnID != "" && p.ControlTurnID != next.ControlTurnID {
@@ -87,7 +99,9 @@ func preserveReplacementEvidence(before, after domain.OrchestratorReplacement) e
 		}
 	}
 	if before.SourceStopIntentAt != nil && !replacementTimesEqual(before.SourceStopIntentAt, after.SourceStopIntentAt) {
-		return invalid
+		if ctx.Value(replacementUnattemptedStopKey{}) != q || after.SourceStopIntentAt != nil || before.SourceStop != nil || after.SourceStop != nil {
+			return invalid
+		}
 	}
 	if before.FrozenAt != nil && !replacementTimesEqual(before.FrozenAt, after.FrozenAt) {
 		return invalid
@@ -103,6 +117,9 @@ func preserveReplacementEvidence(before, after domain.OrchestratorReplacement) e
 		return nil
 	}
 	if next == nil {
+		return invalid
+	}
+	if !bytes.Equal(t.FrozenHandoff, next.FrozenHandoff) {
 		return invalid
 	}
 	if t.ExportedAt != nil && !replacementTimesEqual(t.ExportedAt, next.ExportedAt) {

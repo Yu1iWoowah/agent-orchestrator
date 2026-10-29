@@ -123,7 +123,14 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 				return err
 			}
 			current.LastHandoffWrite = receipt
-			return s.save(reserved, id, &current)
+			saved, err := s.store.SaveProjectDocumentWrite(reserved, id, current)
+			if err != nil {
+				return err
+			}
+			if !saved {
+				return conflict("PROJECT_DOCUMENT_STATE_CHANGED", "Managed write receipt reservation changed")
+			}
+			return nil
 		})
 	}); err != nil {
 		return File{}, err

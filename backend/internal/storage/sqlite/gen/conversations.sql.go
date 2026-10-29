@@ -125,7 +125,7 @@ INSERT OR IGNORE INTO conversation_turns (
     controller_generation, state, requested_at, started_at, intake_sequence
 ) VALUES (?1, ?2, ?3, ?4,
     ?5, 'running', ?6, ?7,
-    (SELECT latest_sequence FROM conversations WHERE id = ?2))
+    (SELECT latest_sequence + 1 FROM conversations WHERE id = ?2))
 `
 
 type AdoptProviderConversationTurnParams struct {
@@ -163,7 +163,7 @@ INSERT OR IGNORE INTO conversation_turns (
     provider_turn_id, controller_generation, state, requested_at, started_at, intake_sequence
 ) VALUES (?1, ?2, ?3, ?4,
     ?5, ?6, 'running', ?7, ?8,
-    (SELECT latest_sequence FROM conversations WHERE id = ?2))
+    (SELECT latest_sequence + 1 FROM conversations WHERE id = ?2))
 `
 
 type AdoptReviewProviderConversationTurnParams struct {

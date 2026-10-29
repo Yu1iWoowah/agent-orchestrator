@@ -41,6 +41,13 @@ func TestReplacementPreparedValidatesActualManagedDocument(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := time.Now().UTC()
+			for _, phase := range []domain.ReplacementPhase{domain.ReplacementPreflight, domain.ReplacementWaitingSourceIdle} {
+				op.Phase = phase
+				if saved, err := f.store.SaveOrchestratorReplacement(ctx, op); err != nil || !saved {
+					t.Fatal(saved, err)
+				}
+				op.Revision++
+			}
 			op.Phase = domain.ReplacementAdoptingSharedFiles
 			op.Preparation = &domain.ReplacementPreparation{AttemptID: "22222222-2222-4222-8222-222222222222", Nonce: strings.Repeat("c", 64), ControlClientID: "prepare/" + op.ID, StartedAt: now, DeadlineAt: now.Add(time.Minute), ExpectedSessions: []domain.SessionID{"demo-2", "demo-3"}}
 			if ok, err := f.store.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {

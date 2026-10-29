@@ -14,6 +14,7 @@ import (
 
 // Store retains operation facts independently of the request or coordinator.
 type Store interface {
+	ClearReplacementStopIntent(context.Context, string, int64, ports.ReplacementSourceObservation, time.Time) (domain.OrchestratorReplacement, bool, error)
 	ResetReplacementBeforeStop(context.Context, string, int64, bool, time.Time, time.Time) (domain.OrchestratorReplacement, bool, error)
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestReplacementDocumentPublicationIsAtomicAndFenced(t *testing.T) {
@@ -16,9 +17,7 @@ func TestReplacementDocumentPublicationIsAtomicAndFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	op.Phase = domain.ReplacementPreparingHandoff
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +54,7 @@ func TestReplacementDocumentPublicationIsAtomicAndFenced(t *testing.T) {
 		} else if !found {
 			return errors.New("operation disappeared")
 		}
-		before.Phase = domain.ReplacementHandoffVerified
+		before.Error = &domain.ReplacementFailure{Code: "TEST_UPDATED", Message: "committed together"}
 		if ok, err := st.SaveOrchestratorReplacement(reserved, before); err != nil {
 			return err
 		} else if !ok {

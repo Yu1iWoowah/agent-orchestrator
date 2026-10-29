@@ -77,7 +77,7 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 			if !ok || !previous.IsTerminated {
 				return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_HELD", "Project lease is held by session "+string(lease.SessionID))
 			}
-		} else if lease.Owner == rec.ControllerOwner() {
+		} else if lease.Owner == rec.ControllerOwner() && (lease.TokenHash != "" || lease.ClaimVerifier != "") {
 			grant := grantFor(id, a, lease.Epoch)
 			if lease.ClaimVerifier != "" {
 				if lease.ClaimVerifier != rec.Metadata.BrowserCapabilityVerifier || lease.TokenHash != "" || lease.ReplacementID == "" {

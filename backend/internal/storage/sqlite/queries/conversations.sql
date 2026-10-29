@@ -706,7 +706,7 @@ INSERT OR IGNORE INTO conversation_turns (
     controller_generation, state, requested_at, started_at, intake_sequence
 ) VALUES (sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(handled_by_session_id), sqlc.arg(provider_turn_id),
     sqlc.arg(controller_generation), 'running', sqlc.arg(requested_at), sqlc.narg(started_at),
-    (SELECT latest_sequence FROM conversations WHERE id = sqlc.arg(conversation_id)));
+    (SELECT latest_sequence + 1 FROM conversations WHERE id = sqlc.arg(conversation_id)));
 
 -- name: AdoptReviewProviderConversationTurn :exec
 INSERT OR IGNORE INTO conversation_turns (
@@ -714,7 +714,7 @@ INSERT OR IGNORE INTO conversation_turns (
     provider_turn_id, controller_generation, state, requested_at, started_at, intake_sequence
 ) VALUES (sqlc.arg(id), sqlc.arg(conversation_id), sqlc.arg(handled_by_session_id), sqlc.narg(handled_by_review_id),
     sqlc.arg(provider_turn_id), sqlc.arg(controller_generation), 'running', sqlc.arg(requested_at), sqlc.narg(started_at),
-    (SELECT latest_sequence FROM conversations WHERE id = sqlc.arg(conversation_id)));
+    (SELECT latest_sequence + 1 FROM conversations WHERE id = sqlc.arg(conversation_id)));
 
 -- Correlating a provider notification back to its turn happens on every streamed
 -- event, so it is a keyed lookup rather than a scan.

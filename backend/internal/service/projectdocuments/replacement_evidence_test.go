@@ -35,11 +35,18 @@ func replacementEvidence(t *testing.T, f fixture, confirmed bool) (domain.Orches
 	}
 	now := time.Now().UTC()
 	op.Preparation.SubmittedHash, op.Preparation.SubmittedPath, op.Preparation.WriteReceiptID = file.Hash, file.Path, file.WriteReceiptID
-	op.Preparation.VerifiedAt = &now
-	op.Phase = domain.ReplacementFreezingSharedWrites
+	op.Preparation.VerifiedAt, op.Preparation.SubmittedAt = &now, &now
+	op.Preparation.ControlTurnID = "prepared-control"
+	op.Phase = domain.ReplacementHandoffVerified
 	if ok, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
+	op.Revision++
+	op.Phase = domain.ReplacementFreezingSharedWrites
+	if saved, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !saved {
+		t.Fatal(saved, err)
+	}
+
 	op, _, err = f.db.GetOrchestratorReplacement(ctx, op.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -125,11 +132,11 @@ type failedReplacementEvidenceStore struct {
 	fail bool
 }
 
-func (s *failedReplacementEvidenceStore) SaveOrchestratorReplacement(ctx context.Context, op domain.OrchestratorReplacement) (bool, error) {
+func (s *failedReplacementEvidenceStore) SaveReplacementEvidence(ctx context.Context, op domain.OrchestratorReplacement) (bool, error) {
 	if s.fail && op.Phase == domain.ReplacementTranscriptVerified {
 		return false, syscall.ENOSPC
 	}
-	return s.Store.SaveOrchestratorReplacement(ctx, op)
+	return s.Store.SaveReplacementEvidence(ctx, op)
 }
 
 func TestReplacementEvidencePublicationRecoversBundleAfterFinalSaveFailure(t *testing.T) {

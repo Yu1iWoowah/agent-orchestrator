@@ -130,7 +130,8 @@ func TestQueuedExcerptValidationFailureContinuesDrain(t *testing.T) {
 				ProviderTurnID: active.ProviderTurnID, TurnState: domain.TurnStateCompleted})
 			snapshot = h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 				states := turnStateByText(t, s)
-				return states["stale excerpt"] == domain.TurnStateFailed && states["next valid"] == domain.TurnStateRunning
+				follower, err := h.st.TurnByID(ctx, last.ID)
+				return states["stale excerpt"] == domain.TurnStateFailed && states["next valid"] == domain.TurnStateRunning && err == nil && follower.State == domain.TurnStateCompleted
 			})
 			lastTurn, err := h.st.TurnByID(ctx, last.ID)
 			if err != nil || lastTurn.State != domain.TurnStateCompleted {

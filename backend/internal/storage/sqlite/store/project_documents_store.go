@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
+	"reflect"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -19,8 +21,8 @@ func (s *Store) GetProjectDocumentState(ctx context.Context, id domain.ProjectID
 	if err != nil {
 		return domain.ProjectDocumentState{}, err
 	}
-	var state domain.ProjectDocumentState
-	if err := json.Unmarshal([]byte(row.StateJson), &state); err != nil {
+	state, err := decodeDocumentState(row.StateJson)
+	if err != nil {
 		return state, err
 	}
 	state.Revision = row.Revision
@@ -38,6 +40,33 @@ func (s *Store) SaveProjectDocumentState(ctx context.Context, id domain.ProjectI
 		return false, err
 	}
 	defer unlock()
+	var before domain.ProjectDocumentState
+	row, readErr := q.GetProjectDocumentState(ctx, string(id))
+	if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+		return false, readErr
+	}
+	if readErr == nil {
+		if row.Revision != state.Revision {
+			return false, nil
+		}
+		before, err = decodeDocumentState(row.StateJson)
+		if err != nil {
+			return false, err
+		}
+	} else if state.Revision != 0 {
+		return false, nil
+	}
+	if !reflect.DeepEqual(before.LastHandoffWrite, state.LastHandoffWrite) && ctx.Value(managedWriteReceiptKey{}) != q {
+		return false, domain.ErrReplacementStateInvalid
+	}
+	if !maps.Equal(before.Evidence, state.Evidence) && ctx.Value(handoffEvidencePublicationKey{}) != q {
+		return false, domain.ErrReplacementStateInvalid
+	}
+	for key, receipt := range before.Evidence {
+		if current, ok := state.Evidence[key]; !ok || current != receipt {
+			return false, domain.ErrReplacementStateInvalid
+		}
+	}
 	var count int64
 	if state.Revision == 0 {
 		count, err = q.CreateProjectDocumentState(ctx, gen.CreateProjectDocumentStateParams{ProjectID: string(id), StateJson: string(b)})

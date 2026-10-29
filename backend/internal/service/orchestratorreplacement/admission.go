@@ -79,6 +79,9 @@ func (s *Service) accept(ctx context.Context, request Request) (domain.Orchestra
 	if source.Harness != domain.HarnessClaudeCode {
 		return s.reject(ctx, op, "ORCHESTRATOR_HANDOFF_SOURCE_UNSUPPORTED", "Phase 1 requires a Claude Code source orchestrator")
 	}
+	if strings.TrimSpace(source.Metadata.BrowserCapabilityVerifier) == "" || strings.TrimSpace(sourceNativeID(source.ControllerOwner())) == "" {
+		return s.reject(ctx, op, "ORCHESTRATOR_HANDOFF_SOURCE_UNVERIFIED", "Source capability and native controller identity must be available")
+	}
 	if project.Config.Orchestrator.Harness != domain.HarnessClaudeCode {
 		return s.reject(ctx, op, "ORCHESTRATOR_HANDOFF_TARGET_UNSUPPORTED", "Project orchestrator configuration must select Claude Code Chat")
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"time"
@@ -28,6 +29,9 @@ func validateReplacement(op domain.OrchestratorReplacement) error {
 	_, hashErr := hex.DecodeString(op.RequestHash)
 	if op.SchemaVersion != 1 || !replacementUUID(op.ID) || !replacementUUID(op.OperationKey) || len(op.RequestHash) != 64 || hashErr != nil || op.ProjectID == "" || op.SourceSessionID == "" || !op.Phase.Valid() || op.CreatedAt.IsZero() || op.UpdatedAt.IsZero() || !op.DeadlineAt.After(op.CreatedAt) {
 		return domain.ErrReplacementStateInvalid
+	}
+	if err := validateReplacementStage(op); err != nil {
+		return err
 	}
 	if op.Transcript != nil {
 		if op.FrozenAt == nil || !replacementUUID(op.Transcript.AttemptID) || op.Transcript.AO.ConversationCutoffs == nil {
@@ -134,6 +138,9 @@ func (s *Store) replacementTx(ctx context.Context, fn func(context.Context, *gen
 // CreateOrchestratorReplacement atomically accepts one project replacement.
 // A same-key replay wins before rechecking live facts that may already have moved.
 func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.OrchestratorReplacement) (domain.OrchestratorReplacement, bool, error) {
+	if op.Phase != domain.ReplacementAccepted && op.Phase != domain.ReplacementRejected {
+		return op, false, domain.ErrReplacementStateInvalid
+	}
 	var result domain.OrchestratorReplacement
 	created := false
 	if err := validateReplacement(op); err != nil {
@@ -277,7 +284,8 @@ func (s *Store) ListActiveOrchestratorReplacements(ctx context.Context) ([]domai
 	for _, row := range rows {
 		op, err := decodeReplacement(row)
 		if err != nil {
-			return nil, err
+			slog.ErrorContext(ctx, "Skipping malformed replacement operation", "operation_id", row.ID, "project_id", row.ProjectID, "error", err)
+			continue
 		}
 		result = append(result, op)
 	}
@@ -304,6 +312,9 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		}
 		if before.Revision != op.Revision {
 			return nil
+		}
+		if err := validateReplacementTransition(tx, q, before, op); err != nil {
+			return err
 		}
 		if before.ProjectID != op.ProjectID || before.SourceSessionID != op.SourceSessionID || before.OperationKey != op.OperationKey || before.RequestHash != op.RequestHash || !before.CreatedAt.Equal(op.CreatedAt) || before.SourceOwner != op.SourceOwner || before.SourceCapabilityVerifier != op.SourceCapabilityVerifier {
 			return fmt.Errorf("%w: request identity is immutable", domain.ErrReplacementStateInvalid)
@@ -352,7 +363,7 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 			return fmt.Errorf("%w: captured AO cutoff is immutable", domain.ErrReplacementStateInvalid)
 		}
 		if !reset {
-			if err := preserveReplacementEvidence(before, op); err != nil {
+			if err := preserveReplacementEvidence(tx, q, before, op); err != nil {
 				return err
 			}
 		}

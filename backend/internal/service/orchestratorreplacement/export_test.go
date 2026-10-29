@@ -92,7 +92,7 @@ func (x *preparedExport) advanceUntil(t *testing.T, done func(domain.Orchestrato
 	t.Fatal("export boundary did not converge", x.operation.Phase)
 }
 
-func preparedExportFixture(t *testing.T) *preparedExport {
+func preparingExportFixture(t *testing.T) *preparedExport {
 	t.Helper()
 	f := setup(t)
 	ctx := context.Background()
@@ -190,6 +190,14 @@ func preparedExportFixture(t *testing.T) *preparedExport {
 			t.Fatal(err, op.Error)
 		}
 	}
+	return &preparedExport{f: f, source: source, worker: worker, conversation: conv, nativePath: nativePath, documents: documents, documentDataDir: documentDataDir, reader: reader, operation: op, actualStops: &actualStops}
+}
+
+func preparedExportFixture(t *testing.T) *preparedExport {
+	t.Helper()
+	x := preparingExportFixture(t)
+	ctx := context.Background()
+	source, documents, op := x.source, x.documents, x.operation
 	actor := projectdocuments.Actor{SessionID: source.ID, Capability: "author-secret"}
 	grant, err := documents.Acquire(ctx, source.ProjectID, actor)
 	if err != nil {
@@ -199,11 +207,12 @@ func preparedExportFixture(t *testing.T) *preparedExport {
 	if err != nil {
 		t.Fatal(err)
 	}
-	op, err = makeService().Prepared(ctx, op.ID, projectdocuments.ReplacementPreparationInput{Actor: actor, AttemptID: op.Preparation.AttemptID, Nonce: op.Preparation.Nonce, Path: op.DocumentPath, Hash: file.Hash, WriteReceiptID: file.WriteReceiptID})
+	op, err = x.service().Prepared(ctx, op.ID, projectdocuments.ReplacementPreparationInput{Actor: actor, AttemptID: op.Preparation.AttemptID, Nonce: op.Preparation.Nonce, Path: op.DocumentPath, Hash: file.Hash, WriteReceiptID: file.WriteReceiptID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &preparedExport{f: f, source: source, worker: worker, conversation: conv, nativePath: nativePath, documents: documents, documentDataDir: documentDataDir, reader: reader, operation: op, actualStops: &actualStops}
+	x.operation = op
+	return x
 }
 
 func TestReplacementExportPersistsBoundariesAcrossCoordinatorRestartWithoutRetiring(t *testing.T) {
@@ -274,6 +283,7 @@ func TestReplacementExportFailsClosedWithoutRetirement(t *testing.T) {
 				svc = replacement.New(replacement.Deps{Store: x.f.store.Store, Runtime: x.f.runtime, Documents: x.documents, NativeTranscripts: x.reader, Now: func() time.Time { return expired }})
 				wantPhase, wantCode = domain.ReplacementAwaitingSource, "ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT"
 			case "changed native prefix", "changed AO outcome":
+                wantPhase = domain.ReplacementRecoveryRequired
 				x.advanceUntil(t, func(op domain.OrchestratorReplacement) bool { return op.Transcript.CapturedAt != nil })
 				if which == "changed native prefix" {
 					data, err := os.ReadFile(x.nativePath)

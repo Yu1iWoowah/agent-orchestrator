@@ -52,21 +52,21 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 				return err
 			}
 		}
-		source, found, err := s.deps.Store.GetSession(locked, op.SourceSessionID)
-		if err != nil {
-			return err
-		}
-		if !found || source.ProjectID != op.ProjectID || source.IsTerminated || source.ControllerOwner() != op.SourceOwner || source.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier {
-			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED", "Source owner changed before reset", nil)
-		}
-		observed, err := s.deps.Runtime.ObserveReplacementSource(locked, op)
-		if err != nil {
-			return err
-		}
-		if observed.Owner != op.SourceOwner || observed.NativeID != sourceNativeID(op.SourceOwner) || observed.Provenance != domain.NativeThreadMain || observed.ObservedAt.IsZero() || (observed.State != ports.ChatControllerReady && observed.State != ports.ChatControllerBusy) {
-			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_UNVERIFIED", "Source controller cannot be positively confirmed", nil)
-		}
 		if !cancel {
+			source, found, err := s.deps.Store.GetSession(locked, op.SourceSessionID)
+			if err != nil {
+				return err
+			}
+			if !found || source.ProjectID != op.ProjectID || source.IsTerminated || source.ControllerOwner() != op.SourceOwner || source.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier {
+				return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED", "Source owner changed before reset", nil)
+			}
+			observed, err := s.deps.Runtime.ObserveReplacementSource(locked, op)
+			if err != nil {
+				return err
+			}
+			if observed.Owner != op.SourceOwner || observed.NativeID != sourceNativeID(op.SourceOwner) || observed.Provenance != domain.NativeThreadMain || observed.ObservedAt.IsZero() || (observed.State != ports.ChatControllerReady && observed.State != ports.ChatControllerBusy) {
+				return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_UNVERIFIED", "Source controller cannot be positively confirmed", nil)
+			}
 			if err := positiveIdle(op, observed); err != nil {
 				return err
 			}
@@ -79,7 +79,7 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 			return err
 		}
 		op = current
-		expectedPhase := domain.ReplacementWaitingSourceIdle
+		expectedPhase := domain.ReplacementPreflight
 		if cancel {
 			expectedPhase = domain.ReplacementCancelled
 		}

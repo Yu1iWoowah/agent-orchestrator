@@ -16,6 +16,8 @@ import (
 )
 
 type replacementStore interface {
+	SaveReplacementFreeze(context.Context, domain.OrchestratorReplacement) (bool, error)
+	SaveReplacementEvidence(context.Context, domain.OrchestratorReplacement) (bool, error)
 	CaptureTranscriptSourceCutoff(context.Context, domain.SessionID) (domain.TranscriptSourceCutoff, error)
 	GetOrchestratorReplacement(context.Context, string) (domain.OrchestratorReplacement, bool, error)
 	SaveOrchestratorReplacement(context.Context, domain.OrchestratorReplacement) (bool, error)
@@ -180,17 +182,17 @@ func (s *Service) FreezeReplacementHandoff(ctx context.Context, id string, revis
 	if !found {
 		return zero, conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED", "Source no longer exists")
 	}
-	checkFile := func() error {
+	checkFile := func() (File, error) {
 		file, err := s.replacementHandoffFile(root, doc)
 		if err != nil {
-			return err
+			return File{}, err
 		}
 		if file.Hash != p.SubmittedHash {
-			return conflict("ORCHESTRATOR_HANDOFF_SOURCE_CHANGED", "Verified handoff bytes changed")
+			return File{}, conflict("ORCHESTRATOR_HANDOFF_SOURCE_CHANGED", "Verified handoff bytes changed")
 		}
-		return nil
+		return file, nil
 	}
-	if err := checkFile(); err != nil {
+	if _, err := checkFile(); err != nil {
 		return zero, err
 	}
 	now := time.Now().UTC()
@@ -212,19 +214,20 @@ func (s *Service) FreezeReplacementHandoff(ctx context.Context, id string, revis
 				return conflict("ORCHESTRATOR_HANDOFF_SESSION_MAP_CHANGED", "A new worker requires an updated section B before freeze")
 			}
 		}
-		if err := checkFile(); err != nil {
+		file, err := checkFile()
+		if err != nil {
 			return err
 		}
 		cut, err := store.CaptureTranscriptSourceCutoff(reserved, op.SourceSessionID)
 		if err != nil {
 			return err
 		}
-		op.Transcript = &domain.ReplacementTranscript{AttemptID: uuid.NewString(), AO: cut}
+		op.Transcript = &domain.ReplacementTranscript{AttemptID: uuid.NewString(), AO: cut, FrozenHandoff: []byte(file.Content)}
 		state.Lease.Frozen = true
 		if err := s.save(reserved, op.ProjectID, &state); err != nil {
 			return err
 		}
-		ok, err := store.SaveOrchestratorReplacement(reserved, op)
+		ok, err := store.SaveReplacementFreeze(reserved, op)
 		if err != nil {
 			return err
 		}

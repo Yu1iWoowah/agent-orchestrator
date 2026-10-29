@@ -22,8 +22,8 @@ func (c OrchestratorHandoffConfig) Validate() error {
 		}
 	}
 	first := strings.ToLower(strings.TrimRight(strings.Split(c.SharedDir, "/")[0], ". "))
-	if first == "handoffs" || first == "adoptions" {
-		return fmt.Errorf("orchestratorHandoff.sharedDir overlaps immutable evidence")
+	if first == "handoffs" || first == "adoptions" || first == "preparations" {
+		return fmt.Errorf("orchestratorHandoff.sharedDir overlaps AO evidence or preparation storage")
 	}
 	return nil
 }

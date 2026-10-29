@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestReplacementPinnedAOCutoffExcludesLateQueueButDetectsChangedIncludedFacts(t *testing.T) {
@@ -52,9 +53,7 @@ func TestReplacementPinnedAOCutoffExcludesLateQueueButDetectsChangedIncludedFact
 	op.FrozenAt = &now
 	op.Phase = domain.ReplacementExportingTranscript
 	op.Transcript = &domain.ReplacementTranscript{AttemptID: "33333333-3333-4333-8333-333333333333", AO: cut}
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	before, err := st.LoadTranscriptSourceSnapshot(ctx, op.SourceSessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -111,9 +110,7 @@ func TestReplacementPinnedEmptyAOCutoffIgnoresNewLateConversation(t *testing.T) 
 	op.FrozenAt = &now
 	op.Phase = domain.ReplacementExportingTranscript
 	op.Transcript = &domain.ReplacementTranscript{AttemptID: "33333333-3333-4333-8333-333333333333", AO: cut}
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	before, err := st.LoadTranscriptSourceSnapshot(ctx, op.SourceSessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +142,7 @@ func TestReplacementCutoffIsValidatedAndImmutable(t *testing.T) {
 			}
 			now := time.Now().UTC()
 			op.FrozenAt = &now
+			op.Phase = domain.ReplacementExportingTranscript
 			op.Transcript = &domain.ReplacementTranscript{AttemptID: "33333333-3333-4333-8333-333333333333", AO: domain.TranscriptSourceCutoff{ConversationCutoffs: map[string]int64{"c": 1}}}
 			switch variant {
 			case "missing freeze":
@@ -156,9 +154,7 @@ func TestReplacementCutoffIsValidatedAndImmutable(t *testing.T) {
 			case "invalid attempt":
 				op.Transcript.AttemptID = "invalid"
 			default:
-				if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-					t.Fatal(ok, err)
-				}
+				op = fixturestore.SeedReplacementTestFacts(t, st, op)
 				op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
 				if err != nil {
 					t.Fatal(err)
@@ -191,9 +187,7 @@ func TestReplacementCapturedEvidenceFactsCannotBeRewritten(t *testing.T) {
 			op.SourceStopIntentAt = &now
 			op.SourceStop = &domain.ReplacementControllerStop{Owner: op.SourceOwner, CapabilityVerifier: op.SourceCapabilityVerifier, NativeID: "native-source", Method: "chat-hibernate", ConfirmedAt: now}
 			op.Transcript = &domain.ReplacementTranscript{AttemptID: "33333333-3333-4333-8333-333333333333", AO: domain.TranscriptSourceCutoff{ConversationCutoffs: map[string]int64{}}, CapturedAt: &now, ExportedAt: &now, SnapshotFingerprint: strings.Repeat("a", 64), NativeCutoffs: []domain.TranscriptEpochCutoff{{SHA256: strings.Repeat("a", 64), NativeID: "native-source", Schema: "fixture/1", Bytes: 10, LeafID: "leaf"}}, Receipt: &domain.HandoffEvidenceReceipt{Directory: "/tmp/evidence", ManifestHash: strings.Repeat("b", 64), InputHash: strings.Repeat("c", 64)}, TranscriptHash: strings.Repeat("d", 64)}
-			if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-				t.Fatal(ok, err)
-			}
+			op = fixturestore.SeedReplacementTestFacts(t, st, op)
 			op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
 			if err != nil {
 				t.Fatal(err)

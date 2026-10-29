@@ -28,6 +28,8 @@ type Store interface {
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
 	GetProjectDocumentState(context.Context, domain.ProjectID) (domain.ProjectDocumentState, error)
 	SaveProjectDocumentState(context.Context, domain.ProjectID, domain.ProjectDocumentState) (bool, error)
+	SaveProjectDocumentWrite(context.Context, domain.ProjectID, domain.ProjectDocumentState) (bool, error)
+	SaveProjectDocumentEvidence(context.Context, domain.ProjectID, domain.ProjectDocumentState) (bool, error)
 	WithProjectDocumentPublication(context.Context, domain.ProjectID, domain.SessionRecord, int64, func(context.Context) error) (bool, error)
 }
 

@@ -310,6 +310,25 @@ BEGIN
 END;
 -- +goose StatementEnd
 
+-- Queue settlement changes the pending instruction set even when message bytes
+-- remain unchanged. The daemon's owned preparation turn is control, not intake.
+-- +goose StatementBegin
+CREATE TRIGGER replacement_intake_turn_settled
+AFTER UPDATE OF state ON conversation_turns
+WHEN OLD.state = 'queued' AND NEW.state <> 'queued'
+BEGIN
+ UPDATE orchestrator_replacements SET intake_revision = intake_revision + 1
+ WHERE is_active = 1 AND json_type(state_json, '$.frozenAt') IS NULL
+ AND EXISTS (SELECT 1 FROM conversations c JOIN conversation_messages m
+  ON m.conversation_id = c.id AND m.turn_id = NEW.id
+  WHERE c.id = NEW.conversation_id
+   AND c.project_id = orchestrator_replacements.project_id
+   AND (c.scope = 'project' OR (c.scope = 'session' AND c.session_id = orchestrator_replacements.source_session_id))
+   AND m.role = 'user' AND m.origin IN ('human','automation','daemon')
+   AND (m.client_message_id = '' OR m.client_message_id <> COALESCE(json_extract(state_json, '$.preparation.controlClientId'), '')));
+END;
+-- +goose StatementEnd
+
 -- Pending worker reports remain in their durable outbox while preparation is
 -- fenced. Their content is new intake even before native delivery; delivery
 -- claims/ACKs do not change what section B must retain.
@@ -353,6 +372,7 @@ END;
 DROP TRIGGER replacement_report_intake_delete;
 DROP TRIGGER replacement_report_intake_update;
 DROP TRIGGER replacement_report_intake_insert;
+DROP TRIGGER replacement_intake_turn_settled;
 DROP TRIGGER replacement_intake_delete;
 DROP TRIGGER replacement_intake_update;
 DROP TRIGGER replacement_intake_insert;

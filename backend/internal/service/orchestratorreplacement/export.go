@@ -10,6 +10,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/transcriptexport"
 )
 
+var errNoStopClearPending = errors.New("no-stop intent clearance pending")
+
 // export advances one durable boundary at a time. Captured facts survive a new
 // coordinator; an operation phase alone never proves that a provider stopped.
 func (s *Service) export(ctx context.Context, op domain.OrchestratorReplacement) (domain.OrchestratorReplacement, error) {
@@ -21,20 +23,28 @@ func (s *Service) export(ctx context.Context, op domain.OrchestratorReplacement)
 		return op, apierr.Conflict("ORCHESTRATOR_HANDOFF_UNVERIFIED", "Frozen verified preparation is required before export", nil)
 	}
 	if op.SourceStop == nil {
-		if !s.deps.Now().Before(op.DeadlineAt) {
-			return s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT", "Source did not become quiescent before the deadline", nil))
-		}
 		if op.SourceStopIntentAt == nil {
+			if !s.deps.Now().Before(op.DeadlineAt) {
+				return s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT", "Source did not become quiescent before the deadline", nil))
+			}
 			now := s.deps.Now().UTC()
 			op.SourceStopIntentAt = &now
 			return s.save(ctx, op)
 		}
 		stop, err := s.deps.Runtime.QuiesceReplacementSource(ctx, op)
 		if errors.Is(err, domain.ErrReplacementSourceBusy) {
-			if !s.deps.Now().Before(op.DeadlineAt) {
-				return s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT", "Source did not become quiescent before the deadline", nil))
+			observed, observeErr := s.deps.Runtime.ObserveReplacementSource(ctx, op)
+			if observeErr != nil || observed.Owner != op.SourceOwner || observed.NativeID != sourceNativeID(op.SourceOwner) || observed.Provenance != domain.NativeThreadMain || observed.ObservedAt.IsZero() || (observed.State != ports.ChatControllerReady && observed.State != ports.ChatControllerBusy) {
+				return op, stopUncertain()
 			}
-			return s.wait(ctx, op, domain.ReplacementExportingTranscript, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_BUSY", "Source has work or approvals; no stop was attempted", nil))
+			next, cleared, clearErr := s.deps.Store.ClearReplacementStopIntent(ctx, op.ID, op.Revision, observed, s.deps.Now().UTC())
+			if clearErr != nil {
+				return op, errors.Join(errNoStopClearPending, clearErr)
+			}
+			if !cleared {
+				return op, errRevisionChanged
+			}
+			return next, nil
 		}
 		if err != nil {
 			return op, stopUncertain()

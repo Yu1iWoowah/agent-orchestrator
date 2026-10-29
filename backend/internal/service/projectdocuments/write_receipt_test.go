@@ -64,11 +64,11 @@ type receiptFailStore struct {
 	fail bool
 }
 
-func (s *receiptFailStore) SaveProjectDocumentState(ctx context.Context, id domain.ProjectID, state domain.ProjectDocumentState) (bool, error) {
+func (s *receiptFailStore) SaveProjectDocumentWrite(ctx context.Context, id domain.ProjectID, state domain.ProjectDocumentState) (bool, error) {
 	if s.fail && state.LastHandoffWrite != nil {
 		return false, errors.New("injected receipt save failure")
 	}
-	return s.Store.SaveProjectDocumentState(ctx, id, state)
+	return s.Store.SaveProjectDocumentWrite(ctx, id, state)
 }
 func TestHandoffWriteDoesNotClaimSuccessAfterReceiptFailure(t *testing.T) {
 	f := setup(t)

@@ -43,7 +43,7 @@ func preserveReplacementAttempts(ctx context.Context, q *gen.Queries, before, af
 		}
 		return false, nil
 	}
-	if before.SourceRetiredAt != nil || before.SourceStopIntentAt != nil || before.SourceStop != nil || before.SuccessorSessionID != "" || after.Preparation != nil || after.Transcript != nil || after.FrozenAt != nil || (after.Phase != domain.ReplacementWaitingSourceIdle && after.Phase != domain.ReplacementCancelled) || len(after.Attempts) != len(before.Attempts)+1 {
+	if before.SourceRetiredAt != nil || before.SourceStopIntentAt != nil || before.SourceStop != nil || before.SuccessorSessionID != "" || after.Preparation != nil || after.Transcript != nil || after.FrozenAt != nil || (after.Phase != domain.ReplacementPreflight && after.Phase != domain.ReplacementCancelled) || len(after.Attempts) != len(before.Attempts)+1 {
 		return false, domain.ErrReplacementStateInvalid
 	}
 	if !reflect.DeepEqual(before.Attempts, after.Attempts[:len(before.Attempts)]) && len(before.Attempts) != 0 {
@@ -88,23 +88,26 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 			return nil
 		}
 		sourceRow, err := q.GetSession(tx, op.SourceSessionID)
-		if err != nil {
+		if err != nil && (!cancel || !errors.Is(err, sql.ErrNoRows)) {
 			return err
 		}
 		source := rowToRecord(sourceRow)
-		if source.ProjectID != op.ProjectID || source.ControllerOwner() != op.SourceOwner || source.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier || source.HibernatedAt != nil || source.Activity.State == domain.ActivityExited {
-			return nil
-		}
-		project, err := q.GetProject(tx, op.ProjectID)
-		if err != nil {
-			return err
-		}
-		fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
-		if err != nil {
-			return err
-		}
-		if !cancel && fingerprint != op.ProjectFingerprint {
-			return nil
+		currentSource := source.ID == op.SourceSessionID && source.ProjectID == op.ProjectID && source.ControllerOwner() == op.SourceOwner && source.Metadata.BrowserCapabilityVerifier == op.SourceCapabilityVerifier && source.HibernatedAt == nil && source.Activity.State != domain.ActivityExited
+		if !cancel {
+			if !currentSource {
+				return nil
+			}
+			project, err := q.GetProject(tx, op.ProjectID)
+			if err != nil {
+				return err
+			}
+			fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
+			if err != nil {
+				return err
+			}
+			if fingerprint != op.ProjectFingerprint {
+				return nil
+			}
 		}
 		document, err := q.GetProjectDocumentState(tx, string(op.ProjectID))
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -116,19 +119,23 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 				return err
 			}
 			lease := state.Lease
-			if op.Preparation != nil && op.Preparation.LeaseEpoch > 0 && (lease == nil || lease.ReplacementID != op.ID || lease.SessionID != source.ID || lease.Owner != op.SourceOwner || lease.Epoch != op.Preparation.LeaseEpoch) {
+			if !cancel && op.Preparation != nil && op.Preparation.LeaseEpoch > 0 && (lease == nil || lease.ReplacementID != op.ID || lease.SessionID != source.ID || lease.Owner != op.SourceOwner || lease.Epoch != op.Preparation.LeaseEpoch) {
 				return nil
 			}
-			if lease != nil && lease.Frozen && lease.ReplacementID != op.ID {
+			if !cancel && lease != nil && lease.Frozen && lease.ReplacementID != op.ID {
 				return nil
 			}
 			if lease != nil && lease.ReplacementID == op.ID {
-				if lease.SessionID != source.ID || lease.Owner != op.SourceOwner {
+				if !cancel && (lease.SessionID != source.ID || lease.Owner != op.SourceOwner) {
 					return nil
 				}
 				lease.Frozen = false
 				if cancel {
-					lease.ReplacementID = ""
+					lease.ReplacementID, lease.ClaimVerifier = "", ""
+					if !currentSource || lease.Owner != op.SourceOwner || op.Preparation != nil && lease.Epoch != op.Preparation.LeaseEpoch {
+						// Revoke the operation's stale writer; never grant to a rotated owner.
+						lease.TokenHash = ""
+					}
 				}
 				state.Revision = document.Revision
 				saved, err := s.SaveProjectDocumentState(context.WithValue(tx, projectDocumentPublicationKey{}, q), op.ProjectID, state)
@@ -139,7 +146,7 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 					return domain.ErrReplacementStateInvalid
 				}
 			}
-		} else if op.FrozenAt != nil || op.Preparation != nil && op.Preparation.LeaseEpoch > 0 {
+		} else if !cancel && (op.FrozenAt != nil || op.Preparation != nil && op.Preparation.LeaseEpoch > 0) {
 			return nil
 		}
 		if err := settleSupersededPreparation(tx, q, op, cancel, at); err != nil {
@@ -153,7 +160,7 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		op.Attempts = append(op.Attempts, domain.ReplacementAttempt{ID: attemptID, Phase: op.Phase, Preparation: op.Preparation, Transcript: op.Transcript, FrozenAt: op.FrozenAt, Error: op.Error, EndedAt: now, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt})
 		op.Preparation, op.Transcript, op.FrozenAt = nil, nil, nil
 		op.SourceIntakeReleasedAt = nil
-		op.Phase, op.ResumePhase, op.Error = domain.ReplacementWaitingSourceIdle, "", nil
+		op.Phase, op.ResumePhase, op.Error = domain.ReplacementPreflight, "", nil
 		op.UpdatedAt = now
 		if cancel {
 			op.Phase = domain.ReplacementCancelled
@@ -217,6 +224,9 @@ func settleSupersededPreparation(ctx context.Context, q *gen.Queries, op domain.
 		return domain.ErrReplacementSourceBusy
 	}
 	if turn.ProviderTurnID != "" || turn.PromotionStartedAt.Valid {
+		if cancel {
+			return nil // Preserve uncertain delivery; cancellation is not a provider action.
+		}
 		return domain.ErrReplacementSourceBusy
 	}
 	count, err := q.CancelQueuedConversationTurnByID(ctx, gen.CancelQueuedConversationTurnByIDParams{CompletedAt: timeToNullTime(at.UTC()), ID: turn.ID, ConversationID: conversation.ID})

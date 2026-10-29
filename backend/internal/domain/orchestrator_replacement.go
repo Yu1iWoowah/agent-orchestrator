@@ -191,6 +191,7 @@ type ReplacementControllerStop struct {
 
 // ReplacementTranscript retains verified cutoffs and immutable publication facts.
 type ReplacementTranscript struct {
+	FrozenHandoff       []byte                  `json:"frozenHandoff"`
 	ExportedAt          *time.Time              `json:"exportedAt,omitempty"`
 	CapturedAt          *time.Time              `json:"capturedAt,omitempty"`
 	NativeCutoffs       []TranscriptEpochCutoff `json:"nativeCutoffs,omitempty"`

@@ -41,6 +41,7 @@ func TestReplacementPreStopRetryCancelArchiveAndFence(t *testing.T) {
 				if change == "stop intent" {
 					now := time.Now().UTC()
 					op.SourceStopIntentAt = &now
+					op.Phase = domain.ReplacementRecoveryRequired
 				}
 				if saved, err := x.f.store.SaveOrchestratorReplacement(ctx, op); err != nil || !saved {
 					t.Fatal(saved, err)
@@ -113,7 +114,7 @@ func TestReplacementPreStopRetryCancelArchiveAndFence(t *testing.T) {
 				if readErr != nil || !reflect.DeepEqual(beforeWorker, afterWorker) {
 					t.Fatal("action changed worker", readErr)
 				}
-				allowed := change == "current" || action == "cancel" && change == "project config"
+				allowed := change == "current" || action == "cancel" && change != "stop intent"
 				if !allowed {
 					if err == nil || current.Revision != op.Revision || !reflect.DeepEqual(beforeState, state) {
 						t.Fatal("unsafe action changed operation/lease", change, err)
@@ -152,7 +153,7 @@ func TestReplacementPreStopRetryCancelArchiveAndFence(t *testing.T) {
 						t.Fatal("cancel replay changed receipt", err)
 					}
 				} else {
-					if result.Phase != domain.ReplacementWaitingSourceIdle || result.Error != nil {
+					if result.Phase != domain.ReplacementPreflight || result.Error != nil {
 						t.Fatal(result.Phase, result.Error)
 					}
 					again, err := actions.Retry(ctx, op.ID)
@@ -160,6 +161,10 @@ func TestReplacementPreStopRetryCancelArchiveAndFence(t *testing.T) {
 						t.Fatal("retry replay restarted in-flight work", err)
 					}
 					next, err := x.service().Advance(ctx, op.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					next, err = x.service().Advance(ctx, op.ID)
 					if err != nil || next.Preparation == nil || next.Preparation.AttemptID == priorPreparation.AttemptID || next.Preparation.Nonce == priorPreparation.Nonce {
 						t.Fatal("retry reused old prompt/attempt", next.Phase, err)
 					}

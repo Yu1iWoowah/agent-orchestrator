@@ -9,6 +9,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestReplacementPendingWorkerReportsInvalidatePreparationButDeliveryBookkeepingDoesNot(t *testing.T) {
@@ -75,9 +76,8 @@ func TestReplacementPendingWorkerReportsInvalidatePreparationButDeliveryBookkeep
 	}
 	assertRevision(4)
 	op.FrozenAt = &now
-	if ok, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	op.Phase = domain.ReplacementExportingTranscript
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
 	if err != nil {
 		t.Fatal(err)

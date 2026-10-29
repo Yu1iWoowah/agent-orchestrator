@@ -38,7 +38,16 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 				return err
 			}
 		}
-		op, err = s.advance(ctx, op)
+		next, stepErr := s.advance(ctx, op)
+		err = stepErr
+		if err == nil {
+			op = next
+		}
+		if errors.Is(err, errNoStopClearPending) {
+			// Quiesce positively reported no stop attempt. Keep the durable
+			// export intent reconcilable if its clearance could not commit.
+			return err
+		}
 		if errors.Is(err, errRevisionChanged) {
 			op, err = s.Get(ctx, id)
 			return err
@@ -130,6 +139,22 @@ func (s *Service) save(ctx context.Context, op domain.OrchestratorReplacement) (
 }
 
 func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, phase, resume domain.ReplacementPhase, cause error) (domain.OrchestratorReplacement, error) {
+	// advance may have mutated facts before a failed save. Only committed facts
+	// may enter a wait/recovery receipt; never persist that uncommitted copy.
+	current, err := s.Get(ctx, op.ID)
+	if err != nil {
+		return op, err
+	}
+	if current.Revision != op.Revision {
+		return current, errRevisionChanged
+	}
+	op = current
+	if op.SourceStopIntentAt != nil || op.SourceStop != nil || op.SourceRetiredAt != nil {
+		switch phase {
+		case domain.ReplacementAwaitingSource, domain.ReplacementAwaitingHandoff, domain.ReplacementAwaitingTranscript:
+			phase = domain.ReplacementRecoveryRequired
+		}
+	}
 	failure := domain.ReplacementFailure{Code: "ORCHESTRATOR_REPLACEMENT_STEP_FAILED", Message: "Replacement step could not be verified", Retryable: true}
 	var api *apierr.Error
 	var native *ports.NativeTranscriptError
@@ -157,7 +182,7 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 		return op, nil
 	}
 	op.Phase, op.ResumePhase, op.Error = phase, resume, &failure
-	op, err := s.save(ctx, op)
+	op, err = s.save(ctx, op)
 	if err != nil {
 		return op, err
 	}
