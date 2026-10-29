@@ -3,12 +3,73 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 )
+
+type spawnAccountExecution struct{ ports.AgentAccountExecution }
+
+func (spawnAccountExecution) ResolveAccount(_ context.Context, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+	id, source := in.AccountID, domain.AgentAccountSourceExplicit
+	if id == "" {
+		id, source = "global-A", domain.AgentAccountSourceGlobal
+	}
+	return domain.ResolvedAgentAccount{AccountID: id, Provider: domain.AgentAccountProviderCodex, Source: source}, nil
+}
+
+func (spawnAccountExecution) AccountIdentity(_ context.Context, _ domain.AgentHarness, id string) (domain.AgentAccountIdentityCheck, error) {
+	if id == "global-A" {
+		return domain.AgentAccountIdentityCheck{}, ports.ErrAgentAccountSignedOut
+	}
+	return domain.AgentAccountIdentityCheck{LoggedIn: true, SignedIn: true, Email: id + "@example.test"}, nil
+}
+
+func TestSpawnSelectedAccountOverridesSignedOutGlobalReadiness(t *testing.T) {
+	for _, id := range []string{"device-codex", "managed-B", ""} {
+		t.Run("account="+id, func(t *testing.T) {
+			bin := filepath.Join(t.TempDir(), "codex")
+			if err := os.WriteFile(bin, []byte("#!/bin/sh\ncase \"$*\" in\n--version) echo 'codex-cli 0.165.0';;\n'login status') echo 'Logged in using ChatGPT';;\n*) exit 1;;\nesac\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			accounts := spawnAccountExecution{}
+			// Use the production constructor and its real authentication callback.
+			readiness := agentsvc.NewWithDeps(agentsvc.Deps{Context: ctx})
+			readiness.SetAccountExecution(accounts, nil)
+			global, err := readiness.EnsureAgentReadiness(ctx, "codex", domain.AgentReadinessPurposeLaunch)
+			if err != nil || global.Authentication.State != domain.AgentAuthenticationUnauthorized {
+				t.Fatalf("signed-out global prerequisite: %+v %v", global, err)
+			}
+			st := newFakeStore()
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+			manager := &fakeCommander{}
+			// The real manager checks managed readiness after binding. Retain
+			// that check here while recording whether Spawn reached execution.
+			manager.spawnHook = func(ctx context.Context) {
+				_, manager.spawnErr = readiness.EnsureAgentReadiness(ctx, "codex", domain.AgentReadinessPurposeLaunch)
+			}
+			svc := NewWithDeps(Deps{Store: st, Manager: manager, AgentReadiness: readiness})
+			svc.SetAccountResolver(accounts)
+			_, _, _, err = svc.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AgentAccountID: id})
+			if id == "" {
+				var apiError *apierr.Error
+				if !errors.As(err, &apiError) || apiError.Code != "AGENT_ACCOUNT_SIGNED_OUT" || manager.spawned {
+					t.Fatalf("inherited signed-out account was not rejected: %v spawned=%v", err, manager.spawned)
+				}
+			} else if err != nil || !manager.spawned || manager.spawnedCfg.AgentAccountID != id {
+				t.Fatalf("explicit %s replaced by global: %v spawned=%v", id, err, manager.spawned)
+			}
+		})
+	}
+}
 
 func TestResolvedDeviceSpawnKeepsLegacyReadinessGate(t *testing.T) {
 	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessCodex} {

@@ -56,6 +56,9 @@ type modelCatalogCall struct {
 type Service struct {
 	agents    []agentregistry.HarnessAgent
 	readiness *readinessCoordinator
+	// Device auth has its own TTL/coalescing: a saved managed default's
+	// observation must never authorize or reject an explicit computer login.
+	deviceReadiness *readinessCoordinator
 	// savedDefaultSignIn reports the sign-in of the saved account new sessions
 	// of a harness start on; handled is false when they start on this computer.
 	savedDefaultSignIn func(ctx context.Context, harness domain.AgentHarness) (domain.AgentAccountIdentityCheck, bool)
@@ -131,7 +134,7 @@ func NewWithDeps(deps Deps) *Service {
 			svc.codexAccounts.now = deps.Clock
 		}
 	}
-	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
+	svc.setReadinessCoordinators(readinessCoordinatorConfig{
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
 		AuthenticationCheck: svc.authenticationWithAccount,
 		// A catalog built while the agent was signed out carries that failure
@@ -141,7 +144,7 @@ func NewWithDeps(deps Deps) *Service {
 	})
 	if svc.codexAccounts != nil {
 		svc.codexAccounts.onAuthenticationChanged = func() {
-			svc.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+			svc.invalidateReadiness(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 		}
 	}
 	if svc.codexAccounts != nil && deps.CodexAccountSwitches != nil && deps.CodexOperationGate != nil {
@@ -163,9 +166,7 @@ func NewWithDeps(deps Deps) *Service {
 // NewWithAgents returns an agent service over a caller-provided adapter slice.
 // It is used by focused tests.
 func NewWithAgents(agents []agentregistry.HarnessAgent) *Service {
-	svc := newService(agents, nil, nil)
-	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents})
-	return svc
+	return newService(agents, nil, nil)
 }
 
 func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatalogCache, discoverer ports.AgentModelDiscoverer) *Service {
@@ -173,7 +174,18 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 	for _, item := range agents {
 		resolverMu[string(item.Harness)] = &sync.Mutex{}
 	}
-	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, modelGeneration: map[string]int64{}, discoverySlots: make(chan struct{}, 2), ctx: context.Background(), now: time.Now, logger: slog.Default()}
+	svc := &Service{agents: agents, cache: cache, discoverer: discoverer, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, modelGeneration: map[string]int64{}, discoverySlots: make(chan struct{}, 2), ctx: context.Background(), now: time.Now, logger: slog.Default()}
+	svc.setReadinessCoordinators(readinessCoordinatorConfig{Agents: agents})
+	return svc
+}
+
+func (s *Service) setReadinessCoordinators(cfg readinessCoordinatorConfig) {
+	s.readiness = newReadinessCoordinator(cfg)
+	// Keep the existing structured/native device checks, without resolving a
+	// saved managed default. Coordinator work outlives the request context, so
+	// merely inspecting that context in the shared callback is insufficient.
+	cfg.AuthenticationCheck = s.codexAuthenticationWithAccount
+	s.deviceReadiness = newReadinessCoordinator(cfg)
 }
 
 // WarmModelCatalogs starts the bounded cache scheduler. Readiness is never held

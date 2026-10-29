@@ -84,8 +84,21 @@ func (s *Service) EnsureInstallationReadiness(ctx context.Context) (Readiness, e
 
 // EnsureAgentReadiness is the narrow service boundary used by launch paths.
 func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
-	if selected, ok := ports.AgentAccountFromContext(ctx); ok && selected.Managed() {
-		return s.EnsureAgentAccountReadiness(ctx, agentID, purpose, selected.AccountID)
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+		provider, supported := domain.AgentAccountProviderFor(domain.AgentHarness(agentID))
+		if !supported || selected.Provider != provider {
+			return domain.AgentReadinessSnapshot{}, ports.ErrAgentAccountProviderMismatch
+		}
+		if selected.Managed() {
+			return s.EnsureAgentAccountReadiness(ctx, agentID, purpose, selected.AccountID)
+		}
+		items, err := s.deviceReadiness.Ensure(ctx, []string{agentID}, purpose)
+		if err != nil {
+			return domain.AgentReadinessSnapshot{}, err
+		}
+		got := items[0]
+		got.AccountBinding = &selected
+		return got, nil
 	}
 	result, err := s.EnsureReadiness(ctx, []string{agentID}, purpose)
 	if err != nil {
@@ -96,7 +109,7 @@ func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purp
 
 // InvalidateAgentInstallation marks an agent's installation observation stale.
 func (s *Service) InvalidateAgentInstallation(agentID string) {
-	s.readiness.Invalidate(agentID, readinessInvalidateInstallation)
+	s.invalidateReadiness(agentID, readinessInvalidateInstallation)
 	if item, ok := s.agent(agentID); ok {
 		if invalidator, ok := item.Agent.(ports.AgentBinaryResolutionInvalidator); ok {
 			invalidator.InvalidateBinaryResolution()
@@ -107,12 +120,19 @@ func (s *Service) InvalidateAgentInstallation(agentID string) {
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.
 func (s *Service) InvalidateAgentAuthentication(agentID string) {
-	s.readiness.Invalidate(agentID, readinessInvalidateAuthentication)
+	s.invalidateReadiness(agentID, readinessInvalidateAuthentication)
 	s.InvalidateModelCatalogs(agentID)
 	if agentID == string(domain.HarnessCodex) && s.codexAccounts != nil {
 		if accountID := s.codexAccounts.activeAccountID(); accountID != "" {
 			s.codexAccounts.invalidate(accountID)
 		}
+	}
+}
+
+func (s *Service) invalidateReadiness(agentID string, what readinessInvalidation) {
+	s.readiness.Invalidate(agentID, what)
+	if s.deviceReadiness != nil {
+		s.deviceReadiness.Invalidate(agentID, what)
 	}
 }
 
@@ -185,6 +205,11 @@ func (s *Service) List(ctx context.Context) (Inventory, error) {
 
 // Refresh is the legacy projection of an explicit forced display refresh.
 func (s *Service) Refresh(ctx context.Context) (Inventory, error) {
+	for _, item := range s.agents {
+		if s.deviceReadiness != nil {
+			s.deviceReadiness.Invalidate(string(item.Harness), readinessInvalidateAll)
+		}
+	}
 	items, err := s.readiness.Force(ctx, nil, domain.AgentReadinessPurposeDisplay)
 	if err != nil {
 		return Inventory{}, err

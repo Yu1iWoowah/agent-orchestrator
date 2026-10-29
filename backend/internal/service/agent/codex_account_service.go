@@ -373,7 +373,7 @@ func (s *Service) LogoutCodexAccount(ctx context.Context, accountID string) (Cod
 	if err := s.codexAccounts.logout(ctx, accountID); err != nil {
 		return CodexAccounts{}, err
 	}
-	s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+	s.invalidateReadiness(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 	return s.CachedCodexAccounts(ctx)
 }
 
@@ -412,7 +412,7 @@ func (s *Service) VerifyCodexAccountLogin(ctx context.Context, operationID strin
 	result, err := s.codexAccounts.verifyLogin(ctx, strings.TrimSpace(operationID))
 	if err == nil && result.Status == domain.CodexAccountLoginCompleted && result.Account != nil {
 		if result.Account.Active && s.readiness != nil {
-			s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+			s.invalidateReadiness(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 		}
 		// Credential commit is complete. Provider-backed authentication, capacity,
 		// and usage warming happens independently and cannot roll the login back.
@@ -453,7 +453,7 @@ func (s *Service) InvalidateCodexAccountAuthentication() {
 	if id != "" {
 		s.codexAccounts.invalidate(id)
 	}
-	s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+	s.invalidateReadiness(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 	go func() { _ = s.codexAccounts.reconcileGlobal(s.codexAccounts.ctx) }()
 }
 
@@ -787,7 +787,7 @@ func (s *Service) ActivatePreparedCodexAccountSwitch(ctx context.Context, source
 	}
 	err := s.codexAccounts.activateFromCredentialLocked(ctx, strings.TrimSpace(targetID), filepath.Join(stagingDir, "target-auth.json"), expectedGlobal)
 	if err == nil {
-		s.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+		s.invalidateReadiness(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 	}
 	return err
 }

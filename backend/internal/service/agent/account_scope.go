@@ -137,7 +137,15 @@ func (s *Service) configuredDefaultAuthentication(ctx context.Context, harness d
 	if !supported {
 		return domain.AgentAuthenticationObservation{}, false
 	}
-	selected, err := s.accountExecution.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: harness})
+	selected, scoped := ports.AgentAccountFromContext(ctx)
+	var err error
+	if scoped {
+		if selected.Provider != provider {
+			err = ports.ErrAgentAccountProviderMismatch
+		}
+	} else {
+		selected, err = s.accountExecution.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: harness})
+	}
 	if err == nil && selected.AccountID == domain.DeviceAgentAccountID(provider) {
 		return domain.AgentAuthenticationObservation{}, false
 	}
