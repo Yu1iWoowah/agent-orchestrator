@@ -372,6 +372,7 @@ type AgentModelInfo struct {
 
 // AgentModelCatalog is AO's normalized model-picker response.
 type AgentModelCatalog struct {
+	AccountBinding *domain.ResolvedAgentAccount `json:"accountBinding,omitempty"`
 	// Providers includes reported provider IDs even when they currently have no models.
 	Providers []string `json:"providers,omitempty"`
 	// ConfiguredProviders names providers with credential configuration observed

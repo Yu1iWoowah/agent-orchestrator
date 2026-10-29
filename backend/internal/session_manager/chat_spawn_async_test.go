@@ -34,6 +34,87 @@ func asyncChatSpawnConfig(prompt string) ports.SpawnConfig {
 	}
 }
 
+func TestAsyncChatPublishesResolvedModelBeforeProvisioning(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	m.dataDir = t.TempDir()
+	deferredBackground(m)
+	project := st.projects["mer"]
+	project.Config.Worker.Harness = domain.HarnessCodex
+	project.Config.Worker.AgentConfig = domain.AgentConfig{Model: "gpt-5.4", Effort: "high"}
+	st.projects["mer"] = project
+	m.modelCatalog = pendingChatCatalog{t: t, store: st}
+	cfg := asyncChatSpawnConfig("fake task")
+	cfg.AgentConfig = ports.AgentConfig{Model: "gpt-5.4", Effort: "high"}
+	rec, _, _, err := m.Spawn(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := st.sessions[rec.ID]
+	if rec.Metadata.Model != "gpt-5.4" || rec.Metadata.Effort != "high" || stored.Metadata.Model != rec.Metadata.Model || stored.Metadata.Effort != rec.Metadata.Effort {
+		t.Fatalf("provisioning published unresolved settings: response=%+v stored=%+v", rec.Metadata, stored.Metadata)
+	}
+}
+
+type pendingChatCatalog struct {
+	t     *testing.T
+	store *fakeStore
+}
+
+type boundRetryCatalog struct{ unscoped int }
+
+func (c *boundRetryCatalog) Models(ctx context.Context, _, _ string, _ bool) (ports.AgentModelCatalog, error) {
+	selected, ok := ports.AgentAccountFromContext(ctx)
+	if !ok || selected.AccountID != "account-A" {
+		c.unscoped++
+		return ports.AgentModelCatalog{}, errors.New("device catalog unavailable; account A is available")
+	}
+	return ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "gpt-test", IsDefault: true, Efforts: []string{"high"}}}}, nil
+}
+
+func TestFailedChatRetryPreservesBoundAccountModelScope(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	m.dataDir = t.TempDir()
+	m.browserCapabilities = browsersvc.NewAuthority()
+	log := []string{}
+	m.SetAgentAccounts(newTransitionAccounts(&log))
+	catalog := &boundRetryCatalog{}
+	m.modelCatalog = catalog
+	deferred := deferredBackground(m)
+	workspace := m.workspace.(*fakeWorkspace)
+	workspace.createErr = errors.New("temporary fake workspace failure")
+	cfg := asyncChatSpawnConfig("fake task")
+	cfg.AgentAccountID = "account-A"
+	cfg.AgentConfig = ports.AgentConfig{Model: "gpt-test", Effort: "high"}
+	cfg.EffortOverride = true
+	rec, _, _, err := m.Spawn(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*deferred)[0]()
+	if st.sessions[rec.ID].ProvisionState != domain.SessionProvisionFailed {
+		t.Fatal("fixture did not fail before provider launch")
+	}
+	project := st.projects["mer"]
+	project.Config.Worker.AgentAccountID = "new-default-D"
+	st.projects["mer"] = project
+	workspace.createErr = nil
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Errorf("retry of account A failed: %v", err)
+	}
+	if catalog.unscoped != 0 {
+		t.Errorf("retry queried device/default catalog %d times", catalog.unscoped)
+	}
+}
+
+func (c pendingChatCatalog) Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
+	for _, rec := range c.store.sessions {
+		if rec.Metadata.Model != "" || rec.Metadata.Effort != "" {
+			c.t.Error("CDC seed exposed unvalidated model/effort")
+		}
+	}
+	return ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "gpt-5.4", Efforts: []string{"high"}}}}, nil
+}
+
 type blockingWorkspacePublishStore struct {
 	*fakeStore
 	entered chan context.Context

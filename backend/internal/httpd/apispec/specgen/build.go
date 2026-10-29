@@ -587,6 +587,8 @@ var schemaNames = map[string]string{
 	"AgentProbeResult":                                    "ProbeAgentResponse",
 	"AgentReadiness":                                      "AgentReadinessResponse",
 	"ControllersEnsureAgentReadinessRequest":              "EnsureAgentReadinessRequest",
+	"DomainAgentAccountBindingView":                       "AgentAccountBindingView",
+	"DomainResolvedAgentAccount":                          "ResolvedAgentAccount",
 	"DomainAgentReadinessSnapshot":                        "AgentReadinessSnapshot",
 	"DomainAgentInstallationObservation":                  "AgentInstallationObservation",
 	"DomainAgentAuthDiagnostic":                           "AgentAuthDiagnostic",

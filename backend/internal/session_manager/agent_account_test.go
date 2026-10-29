@@ -83,6 +83,18 @@ func (a *transitionAccounts) SessionAccountID(_ context.Context, id domain.Sessi
 	return a.bound[id], nil
 }
 
+func (a *transitionAccounts) SessionAccountBinding(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (domain.ResolvedAgentAccount, error) {
+	accountID, err := a.SessionAccountID(ctx, id, harness)
+	if err != nil {
+		return domain.ResolvedAgentAccount{}, err
+	}
+	if accountID == "" {
+		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountUnknown
+	}
+	provider, _ := domain.AgentAccountProviderFor(harness)
+	return domain.ResolvedAgentAccount{AccountID: accountID, Provider: provider, Source: domain.AgentAccountSourceLegacy}, nil
+}
+
 func (a *transitionAccounts) ValidateAccount(context.Context, domain.AgentHarness, string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -545,4 +557,16 @@ func TestExitAgentsOnAccountRefusesWhileAResumeIsStarting(t *testing.T) {
 	if err := m.ExitAgentsOnAccount(ctx, "acct-b"); err != nil {
 		t.Fatalf("an exited session with nothing starting: %v", err)
 	}
+}
+
+func (a *transitionAccounts) ResolveAccount(_ context.Context, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+	p, _ := domain.AgentAccountProviderFor(in.Harness)
+	id := in.AccountID
+	if id == "" {
+		id = domain.DeviceAgentAccountID(p)
+	}
+	return domain.ResolvedAgentAccount{AccountID: id, Provider: p, Source: domain.AgentAccountSourceExplicit}, nil
+}
+func (a *transitionAccounts) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
+	return a.BindSession(ctx, id, harness, selected.AccountID)
 }

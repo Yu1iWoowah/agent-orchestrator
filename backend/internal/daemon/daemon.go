@@ -531,7 +531,9 @@ func Run(buildVersion string) error {
 		}, log),
 		CodexOperationGate: codexOperationGate,
 	}
+	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	agentSvc = agentsvc.NewWithDeps(agentDeps)
+	agentSvc.SetAccountExecution(agentAccountSvc, store)
 	agentSvc.WarmModelCatalogs(ctx)
 
 	persistentHostsReconciled := make(chan struct{})
@@ -548,7 +550,7 @@ func Run(buildVersion string) error {
 	// The review service starts before the SCM observer it asks for review
 	// refreshes, so it holds a late-bound handle.
 	reviewRefresher := &scmReviewRefresher{}
-	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, log)
+	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, log)
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -584,7 +586,6 @@ func Run(buildVersion string) error {
 	if switcher, ok := wiredSessMgr.(chatsvc.TerminalProviderSwitcher); ok {
 		chatSvc.SetTerminalProviderSwitcher(switcher)
 	}
-	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
 	agentSettingsSvc := agentsettings.New(store, time.Now)
 	agentSettingsSvc.SetCatalogFingerprintSource(agentSvc)
@@ -602,8 +603,21 @@ func Run(buildVersion string) error {
 	if stopper, ok := sessMgr.(interface {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {
-		agentAccountSvc.SetAgentStopper(stopper.ExitAgentsOnAccount)
+		agentAccountSvc.SetAgentStopper(func(ctx context.Context, id string) error {
+			// Reviewer bindings are independent of worker sessions. Keep the
+			// profile until its reviewer is explicitly stopped/archived; PR 4
+			// adds the complete usage-owner and handoff workflow.
+			use, err := store.GetOpenReviewerAccountUse(ctx, id)
+			if err != nil {
+				return ports.ErrAgentAccountStorageUnavailable
+			}
+			if use != nil {
+				return use
+			}
+			return stopper.ExitAgentsOnAccount(ctx, id)
+		})
 	}
+	sessionSvc.SetAccountResolver(agentAccountSvc)
 	sessionSvc.SetComputerLoginCheck(agentAccountSvc.RunsOnComputerLogin)
 	if agentSvc != nil {
 		agentSvc.SetSavedDefaultSignIn(agentAccountSvc.DefaultSignIn)
@@ -921,7 +935,7 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("reconcile sessions on boot: %w", reconcileErr)
 	}
 	agentSvc.WarmCodexAccounts()
-	automationSvc, automationDone := startAutomations(ctx, store, sessionSvc, log)
+	automationSvc, automationDone := startAutomations(ctx, store, sessionSvc, agentAccountSvc, log)
 	lcStack.automationDone = automationDone
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
 	lcStack.autoReviewDone = autoReview.Start(ctx)

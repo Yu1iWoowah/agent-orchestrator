@@ -1,3 +1,4 @@
+import { localAccountModelScope } from "../lib/local-account-model-scope";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef } from "react";
@@ -231,6 +232,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 						? [
 								{
 									harness: values.reviewerHarness,
+									agentAccountId: existingReviewer?.harness === values.reviewerHarness ? existingReviewer.agentAccountId : undefined,
 									agentConfig: buildRoleAgentConfig(
 										existingReviewerAgentConfig,
 										values.reviewerModel,
@@ -324,7 +326,11 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 		capabilities={{ workflow: !isScratchProject, sessionPrefix: !isScratchProject, intake: intakeVisible, reviewer: !isScratchProject, requiredAgents: true, workersRequestReview: !isScratchProject }}
 		details={[{ label: t("settings.project.path"), value: project.path, href: hostId ? undefined : `file://${encodeURI(project.path)}` }, { label: t("settings.project.repo"), value: project.repo || "—", href: project.repo ? repositoryHref(project.repo) : undefined }]}
 		workspaceRepos={project.kind === "workspace" ? project.workspaceRepos ?? [] : undefined} repository={project.repo}
-		modelScope={() => ""} defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
+		modelScope={(agent, role) => {
+			const provider = agent === "codex" ? "codex" : agent === "claude-code" ? "claude" : undefined;
+			const roleAccount = role === "reviewer" ? config.reviewers?.find((reviewer) => reviewer.harness === agent)?.agentAccountId : config[role]?.agentAccountId;
+			return localAccountModelScope(projectId, role, roleAccount || (provider ? config.agentAccounts?.[provider] : undefined));
+		}} defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
 		reviewerWarning={reviewerTrustWarning} save={save} saveUnchanged onSaveState={onSaveState}
 		modelHostId={hostId}
 		renderAgent={(props) => <LocalAgentPicker {...props} projectId={projectId} hostId={hostId} agentsQuery={agentsQuery} />} />;

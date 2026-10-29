@@ -180,3 +180,7 @@ func TestSpawnSettingsIntegrationRejectsUnqualifiedEvidenceBeforeLaunch(t *testi
 		})
 	}
 }
+
+func (a *spawnBoundAccounts) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
+	return a.BindSession(ctx, id, harness, selected.AccountID)
+}

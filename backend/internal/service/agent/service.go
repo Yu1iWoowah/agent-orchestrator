@@ -56,9 +56,14 @@ type modelCatalogCall struct {
 type Service struct {
 	agents    []agentregistry.HarnessAgent
 	readiness *readinessCoordinator
+	// Device auth has its own TTL/coalescing: a saved managed default's
+	// observation must never authorize or reject an explicit computer login.
+	deviceReadiness *readinessCoordinator
 	// savedDefaultSignIn reports the sign-in of the saved account new sessions
 	// of a harness start on; handled is false when they start on this computer.
 	savedDefaultSignIn func(ctx context.Context, harness domain.AgentHarness) (domain.AgentAccountIdentityCheck, bool)
+	accountExecution   ports.AgentAccountExecution
+	accountProjects    ports.AgentAccountProjects
 	cache              ports.AgentModelCatalogCache
 	discoverer         ports.AgentModelDiscoverer
 	modelDiscoveryDir  string
@@ -129,7 +134,7 @@ func NewWithDeps(deps Deps) *Service {
 			svc.codexAccounts.now = deps.Clock
 		}
 	}
-	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
+	svc.setReadinessCoordinators(readinessCoordinatorConfig{
 		Agents: agents, Factory: agentregistry.Harnessed, Context: deps.Context, Logger: deps.Logger,
 		AuthenticationCheck: svc.authenticationWithAccount,
 		// A catalog built while the agent was signed out carries that failure
@@ -139,7 +144,7 @@ func NewWithDeps(deps Deps) *Service {
 	})
 	if svc.codexAccounts != nil {
 		svc.codexAccounts.onAuthenticationChanged = func() {
-			svc.readiness.Invalidate(string(domain.HarnessCodex), readinessInvalidateAuthentication)
+			svc.invalidateReadiness(string(domain.HarnessCodex), readinessInvalidateAuthentication)
 		}
 	}
 	if svc.codexAccounts != nil && deps.CodexAccountSwitches != nil && deps.CodexOperationGate != nil {
@@ -161,9 +166,7 @@ func NewWithDeps(deps Deps) *Service {
 // NewWithAgents returns an agent service over a caller-provided adapter slice.
 // It is used by focused tests.
 func NewWithAgents(agents []agentregistry.HarnessAgent) *Service {
-	svc := newService(agents, nil, nil)
-	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents})
-	return svc
+	return newService(agents, nil, nil)
 }
 
 func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatalogCache, discoverer ports.AgentModelDiscoverer) *Service {
@@ -171,7 +174,18 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 	for _, item := range agents {
 		resolverMu[string(item.Harness)] = &sync.Mutex{}
 	}
-	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, modelGeneration: map[string]int64{}, discoverySlots: make(chan struct{}, 2), ctx: context.Background(), now: time.Now, logger: slog.Default()}
+	svc := &Service{agents: agents, cache: cache, discoverer: discoverer, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, modelGeneration: map[string]int64{}, discoverySlots: make(chan struct{}, 2), ctx: context.Background(), now: time.Now, logger: slog.Default()}
+	svc.setReadinessCoordinators(readinessCoordinatorConfig{Agents: agents})
+	return svc
+}
+
+func (s *Service) setReadinessCoordinators(cfg readinessCoordinatorConfig) {
+	s.readiness = newReadinessCoordinator(cfg)
+	// Keep the existing structured/native device checks, without resolving a
+	// saved managed default. Coordinator work outlives the request context, so
+	// merely inspecting that context in the shared callback is insufficient.
+	cfg.AuthenticationCheck = s.codexAuthenticationWithAccount
+	s.deviceReadiness = newReadinessCoordinator(cfg)
 }
 
 // WarmModelCatalogs starts the bounded cache scheduler. Readiness is never held
@@ -215,10 +229,25 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 			installed[item.ID] = struct{}{}
 		}
 	}
+	defaultScopes := make(map[string]string, len(installed))
+	for id := range installed {
+		scope := ""
+		if s.accountExecution != nil {
+			selected, err := s.accountExecution.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: domain.AgentHarness(id)})
+			if err != nil {
+				continue
+			} // A broken configured choice never warms device auth.
+			scope = ports.AccountModelCatalogScope(selected.AccountID)
+		}
+		defaultScopes[id] = scope
+	}
 	// Retain the newest row for every device and credential scope and seed one
 	// device job for installed adapters that have never been discovered.
 	latest := make(map[string]ports.CachedAgentModelCatalog, len(records)+len(installed))
 	for _, record := range records {
+		if scope, ok := defaultScopes[record.AgentID]; record.ProjectID == "" && (!ok || scope != "") {
+			continue
+		}
 		// Older builds persisted per-project and Settings catalogs. They are no
 		// longer read.
 		if !activeModelCatalogScope(record.ProjectID) {
@@ -231,10 +260,10 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 		}
 	}
 	records = records[:0]
-	for agentID := range installed {
-		key := agentID + "\x00"
+	for agentID, scope := range defaultScopes {
+		key := agentID + "\x00" + scope
 		if _, exists := latest[key]; !exists {
-			latest[key] = ports.CachedAgentModelCatalog{AgentID: agentID}
+			latest[key] = ports.CachedAgentModelCatalog{AgentID: agentID, ProjectID: scope}
 		}
 	}
 	for _, record := range latest {
@@ -295,20 +324,15 @@ func (s *Service) monitorModelCatalogFreshness(ctx context.Context) {
 	}
 }
 
-// Models returns one normalized model catalog, stamped with when this user last
-// ran each model. Catalogs are device-wide: a project ID is accepted for API
-// compatibility and ignored, so every project shares one catalog per agent and
-// a picker opened in a new project never waits on discovery. Only a cloud
-// credential scope (credentialScopePrefix) caches separately. Cached values
-// survive daemon restarts; refresh forces a new documented CLI discovery
-// attempt. Discovery failures degrade to the last cached catalog or a custom
-// model input.
+// Models returns the catalog for the context's fixed account, with task recency.
+// Managed scopes persist independently of device and Cloud credential catalogs.
+// Project selectors are resolved at the request boundary, before discovery.
 func (s *Service) Models(ctx context.Context, agentID, scope string, refresh bool) (ports.AgentModelCatalog, error) {
 	catalog, err := s.modelCatalog(ctx, agentID, scope, refresh)
 	if err != nil {
 		return catalog, err
 	}
-	return s.withModelUsage(ctx, agentID, catalog), nil
+	return s.withModelUsage(ctx, agentID, withAccountCatalogBinding(ctx, catalog)), nil
 }
 
 // ModelCatalog returns the persisted catalog without session-history enrichment.
@@ -317,10 +341,16 @@ func (s *Service) Models(ctx context.Context, agentID, scope string, refresh boo
 // checks, which run in the background. A scope with no persisted catalog still
 // needs its first discovery.
 func (s *Service) ModelCatalog(ctx context.Context, agentID, projectID string, refresh bool) (ports.AgentModelCatalog, error) {
-	return s.modelCatalog(ctx, agentID, projectID, refresh)
+	catalog, err := s.modelCatalog(ctx, agentID, projectID, refresh)
+	return withAccountCatalogBinding(ctx, catalog), err
 }
 
 func (s *Service) modelCatalog(ctx context.Context, agentID, scope string, refresh bool) (ports.AgentModelCatalog, error) {
+	var scopeErr error
+	scope, scopeErr = accountCatalogScope(ctx, agentID, scope)
+	if scopeErr != nil {
+		return ports.AgentModelCatalog{}, scopeErr
+	}
 	if s.discoverer == nil {
 		return ports.AgentModelCatalog{}, apierr.Internal("MODEL_DISCOVERY_UNAVAILABLE", "Model discovery is unavailable")
 	}
@@ -499,6 +529,11 @@ func (s *Service) modelCatalogInputsChanged(ctx context.Context, agentID, projec
 // CatalogFingerprint computes current discovery inputs without refreshing the
 // catalog. Strict spawn validation shares this path with background revalidation.
 func (s *Service) CatalogFingerprint(ctx context.Context, agentID, projectID string) (string, error) {
+	var scopeErr error
+	projectID, scopeErr = accountCatalogScope(ctx, agentID, projectID)
+	if scopeErr != nil {
+		return "", scopeErr
+	}
 	if s.discoverer == nil {
 		return "", apierr.Internal("MODEL_DISCOVERY_UNAVAILABLE", "Model discovery is unavailable")
 	}
@@ -517,7 +552,7 @@ func (s *Service) CatalogFingerprint(ctx context.Context, agentID, projectID str
 		}
 		binary = resolved
 	}
-	request, err := s.modelDiscoveryRequest(agentID, projectID, binary)
+	request, err := s.modelDiscoveryRequest(ctx, agentID, projectID, binary)
 	if err != nil {
 		return "", err
 	}
@@ -545,6 +580,9 @@ func credentialTypeFromScope(scope string) (string, bool) {
 // has no backing project and caches under its own key; anything else, including
 // a project ID, is the single device scope.
 func modelCatalogScope(scope string) string {
+	if _, ok := ports.ParseAccountModelCatalogScope(scope); ok {
+		return scope
+	}
 	if _, ok := credentialTypeFromScope(scope); ok {
 		return scope
 	}
@@ -557,8 +595,20 @@ func activeModelCatalogScope(scope string) bool {
 	return modelCatalogScope(scope) == scope
 }
 
-func (s *Service) modelDiscoveryRequest(agentID, projectID, binary string) (ports.AgentModelDiscoveryRequest, error) {
+func (s *Service) modelDiscoveryRequest(ctx context.Context, agentID, projectID, binary string) (ports.AgentModelDiscoveryRequest, error) {
 	request := ports.AgentModelDiscoveryRequest{AgentID: agentID, Binary: binary}
+	if id, ok := ports.ParseAccountModelCatalogScope(projectID); ok {
+		if s.accountExecution == nil {
+			return ports.AgentModelDiscoveryRequest{}, ports.ErrAgentAccountStorageUnavailable
+		}
+		env, err := s.accountExecution.AccountExecutionEnv(ctx, domain.AgentHarness(agentID), id)
+		if err != nil {
+			return ports.AgentModelDiscoveryRequest{}, err
+		}
+		request.Env = env
+		return s.globalModelDiscoveryRequest(request)
+	}
+
 	// Credential-scoped discovery reflects a cloud session's pushed credential,
 	// not a local project: leave WorkingDir/Env empty and let the adapter unlock
 	// that provider's models from the credential type alone.
@@ -590,7 +640,7 @@ func (s *Service) RevalidateModels(ctx context.Context, agentID, scope string) (
 	if err != nil {
 		return catalog, err
 	}
-	return s.withModelUsage(ctx, agentID, catalog), nil
+	return s.withModelUsage(ctx, agentID, withAccountCatalogBinding(ctx, catalog)), nil
 }
 
 // revalidateModels is the unstamped variant for background callers that discard
@@ -751,7 +801,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 			binary = resolved
 		}
 	}
-	request, err := s.modelDiscoveryRequest(agentID, projectID, binary)
+	request, err := s.modelDiscoveryRequest(ctx, agentID, projectID, binary)
 	if err != nil {
 		return ports.AgentModelCatalog{}, err
 	}
@@ -804,6 +854,11 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		_ = s.persistCatalogState(ctx, cached, hasCached, "refreshing", "", time.Time{}, generation)
 	}
 	discovered, discoverErr := s.discoverer.Discover(ctx, request)
+	if _, managed := ports.ParseAccountModelCatalogScope(projectID); managed && discoverErr != nil {
+		// Native RPC errors may echo credential/config contents. Preserve only
+		// the typed auth category before any warning, cache, API or log sink.
+		discoverErr = safeAccountModelError(discoverErr)
+	}
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	persistCtx := s.ctx
@@ -925,6 +980,15 @@ func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, 
 		catalog.Warning = appendCacheWarning(catalog.Warning)
 	}
 	return catalog
+}
+
+func safeAccountModelError(err error) error {
+	for _, category := range []error{ports.ErrAgentModelDiscoverySignInRequired, ports.ErrAgentModelDiscoveryCredentialRejected, ports.ErrAgentModelDiscoveryCredentialExpired} {
+		if errors.Is(err, category) {
+			return category
+		}
+	}
+	return errors.New("the selected account's model catalog could not be checked; retry in Settings")
 }
 
 // modelCatalogWarningCode classifies a discovery failure that clients can

@@ -149,7 +149,7 @@ func TestMissingFileEvidenceInvalidatesManagedAccountCache(t *testing.T) {
 	}
 }
 
-func TestSignedOutContainedCodexDefaultUsesSignedInFallback(t *testing.T) {
+func TestSignedOutContainedCodexDefaultCannotFallback(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "accounts")
 	signedOut, signedIn := filepath.Join(root, "codex", "out"), filepath.Join(root, "codex", "in")
@@ -172,13 +172,13 @@ func TestSignedOutContainedCodexDefaultUsesSignedInFallback(t *testing.T) {
 	}
 	svc := New(store, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, nil)
 	identity, handled := svc.DefaultSignIn(ctx, domain.HarnessCodex)
-	if !handled || !identity.SignedIn || identity.Email != "fallback@example.invalid" {
-		t.Fatalf("readiness did not select signed-in fallback: %+v, handled=%v", identity, handled)
+	if !handled || identity.SignedIn {
+		t.Fatalf("readiness escaped signed-out default: %+v, handled=%v", identity, handled)
 	}
 	if err := svc.ValidateAccount(ctx, domain.HarnessCodex, "out"); !errors.Is(err, ports.ErrAgentAccountSignedOut) {
 		t.Fatalf("signed-out account misclassified: %v", err)
 	}
-	if err := svc.BindSession(ctx, "new", domain.HarnessCodex, ""); err != nil || store.bindings["new"] != "in" {
+	if err := svc.BindSession(ctx, "new", domain.HarnessCodex, ""); !errors.Is(err, ports.ErrAgentAccountSignedOut) || store.bindings["new"] != "" {
 		t.Fatalf("binding disagrees with readiness: %q, %v", store.bindings["new"], err)
 	}
 }
