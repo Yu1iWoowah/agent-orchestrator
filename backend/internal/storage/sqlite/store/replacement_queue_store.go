@@ -28,6 +28,9 @@ func (s *Store) validateUndispatchedConversation(ctx context.Context, q *gen.Que
 	}
 	if !row.ProvisionState.IsProvisioning() && !row.HibernatedAt.Valid {
 		rec := rowToRecord(row)
+		if rec.Kind != domain.KindOrchestrator {
+			return domain.ErrSessionNotProvisioning
+		}
 		operation, err := q.GetActiveOrchestratorReplacement(ctx, string(rec.ProjectID))
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrSessionNotProvisioning
@@ -41,7 +44,7 @@ func (s *Store) validateUndispatchedConversation(ctx context.Context, q *gen.Que
 		}
 		source := op.SourceRetiredAt == nil && rec.ID == op.SourceSessionID && rec.ControllerOwner() == op.SourceOwner && op.SourceCapabilityVerifier != "" && rec.Metadata.BrowserCapabilityVerifier == op.SourceCapabilityVerifier
 		successor := op.SourceRetiredAt != nil && rec.Mode == domain.SessionModeChat && (rec.ID == op.SuccessorSessionID || op.SpawnRequestID != "" && op.SpawnRequestHash != "" && rec.ClientRequestID == op.SpawnRequestID && rec.ClientRequestHash == op.SpawnRequestHash)
-		if rec.Kind != domain.KindOrchestrator || rec.Harness != domain.HarnessClaudeCode || (!source && !successor) {
+		if rec.Harness != domain.HarnessClaudeCode || (!source && !successor) {
 			return domain.ErrReplacementSourceChanged
 		}
 	}

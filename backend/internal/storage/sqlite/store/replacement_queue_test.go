@@ -81,6 +81,61 @@ func TestReplacementQueueFenceDoesNotBlockWorkerConversation(t *testing.T) {
 	}
 }
 
+func TestReplacementWorkerReadyQueueAppendKeepsControllerFallback(t *testing.T) {
+	for _, before := range []string{"provisioning", "hibernated"} {
+		t.Run(before, func(t *testing.T) {
+			st := newTestStore(t)
+			ctx := context.Background()
+			op, _, err := st.CreateOrchestratorReplacement(ctx, replacementOperation(t, st))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			seed := sampleRecord(string(op.ProjectID))
+			seed.Mode = domain.SessionModeChat
+			seed.Metadata.ControllerGeneration = "worker-generation"
+			seed.Metadata.ProviderConversationID = "native-worker"
+			seed.ProvisionState = domain.SessionProvisionProvisioning
+			if before == "hibernated" {
+				seed.ProvisionState = domain.SessionProvisionReady
+				seed.HibernatedAt = &now
+			}
+			worker, err := st.CreateSession(ctx, seed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conv, err := st.CreateConversation(ctx, "worker-queue", domain.ConversationScopeSession, op.ProjectID, worker.ID, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The caller read the old state; startup/wake commits before append.
+			worker.ProvisionState, worker.HibernatedAt = domain.SessionProvisionReady, nil
+			if err := st.UpdateSession(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			if ready, err := st.SetSessionProvisionState(ctx, worker.ID, domain.SessionProvisionReady, "", now); err != nil || !ready {
+				t.Fatalf("finish worker startup: ready=%t err=%v", ready, err)
+			}
+			msg := domain.ConversationMessage{ID: "worker-message", ClientMessageID: "worker-client", Text: "source can still send to its worker", Origin: domain.MessageOriginAutomation, SenderSessionID: string(op.SourceSessionID), SenderProjectID: string(op.ProjectID)}
+			created, err := st.AppendUserMessage(ctx, conv.ID, worker.ID, "", msg, "worker-turn", now)
+			if created || !errors.Is(err, domain.ErrSessionNotProvisioning) {
+				t.Fatalf("stale worker append must fall back to its controller: created=%t err=%v", created, err)
+			}
+			snapshot, err := st.LoadConversationSnapshot(ctx, conv.ID)
+			if err != nil || len(snapshot.Messages) != 0 || len(snapshot.Turns) != 0 {
+				t.Fatalf("stale queue append left a partial receipt: %+v err=%v", snapshot, err)
+			}
+			if created, err := st.AppendUserMessage(ctx, conv.ID, worker.ID, worker.Metadata.ControllerGeneration, msg, "worker-turn", now); err != nil || !created {
+				t.Fatalf("live worker controller could not accept input: created=%t err=%v", created, err)
+			}
+			batch, err := st.ClaimQueuedBatch(ctx, conv.ID, true, 0, now)
+			if err != nil || len(batch) != 1 || batch[0].TurnID != "worker-turn" || batch[0].ClientMessageID != msg.ClientMessageID || batch[0].Text != msg.Text {
+				t.Fatalf("worker fallback changed or blocked canonical input: %+v err=%v", batch, err)
+			}
+		})
+	}
+}
+
 func TestReplacementCancelledPromotingControlDoesNotBlockLaterInput(t *testing.T) {
 	for _, lateRefusal := range []bool{false, true} {
 		t.Run(map[bool]string{false: "still reserved", true: "late provider refusal"}[lateRefusal], func(t *testing.T) {
