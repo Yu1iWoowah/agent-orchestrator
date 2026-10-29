@@ -74,3 +74,38 @@ func TestJournalledCodexResetRejectsUnverifiedBaseline(t *testing.T) {
 		t.Fatalf("unverified reset accepted: %v", err)
 	}
 }
+
+func TestCodexRecoveryBaselineDoesNotNeedTheFailedTargetsOldModel(t *testing.T) {
+	d, srv := newTestDriver(t)
+	c, err := d.Start(t.Context(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	srv.reply("config/read", `{"config":{"model":"new-baseline","model_reasoning_effort":"low","service_tier":"native-fast"}}`)
+	srv.reply("model/list", `{"data":[{"id":"new-baseline","isDefault":true,"defaultReasoningEffort":"low"}]}`)
+	provider, ok := c.(ports.ChatAgentSettingsRecoveryPreparer)
+	if !ok {
+		t.Fatal("Codex cannot prove fresh recovery wire")
+	}
+	current := domain.AgentSettings{FastMode: domain.AgentFastOff}
+	plan, err := provider.PrepareAgentSettingsRecovery(t.Context(), current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := c.(ports.ChatAgentSettingsController)
+	if err := staged.ApplyAgentSettingsStep(t.Context(), plan, domain.AgentSettingsRollingBack, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SendTurn(t.Context(), ports.ChatUserMessage{Text: "after input change", Settings: ports.ChatTurnSettings{FastMode: domain.AgentFastOff}}); err != nil {
+		t.Fatal(err)
+	}
+	f := srv.awaitFrame(func(f frame) bool { return f.Method == "turn/start" })
+	var params map[string]any
+	if err := json.Unmarshal(f.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["model"] != "new-baseline" || params["effort"] != "low" || params["serviceTier"] != "default" {
+		t.Fatalf("recovery used stale native input or enabled paid tier: %+v", params)
+	}
+}

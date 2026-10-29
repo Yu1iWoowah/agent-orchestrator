@@ -20,3 +20,10 @@ type ChatAgentSettingsController interface {
 type ChatAgentSettingsValidator interface {
 	ValidateAgentSettings(context.Context, domain.AgentSettingsOperation, domain.AgentSettingsOwner, bool) (domain.AgentSettingsQualification, error)
 }
+
+// ChatAgentSettingsRecoveryPreparer can prove fresh wire for the durable
+// preference when an old provider preimage no longer belongs to current inputs.
+// It supplies no new recovery owner and must not infer a sticky native value.
+type ChatAgentSettingsRecoveryPreparer interface {
+	PrepareAgentSettingsRecovery(context.Context, domain.AgentSettings) (domain.AgentSettingsProviderPlan, error)
+}

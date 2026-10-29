@@ -83,3 +83,42 @@ VALUES('message','conversation','turn',1,'user','preserve exactly','human',CURRE
 		t.Fatalf("invented historical settings: %q %v", snapshot, err)
 	}
 }
+
+func TestMigrateExecutionPreimagesPreservesExistingJournalAndSessionFacts(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 20261029043347587)
+	if _, err := db.Exec(`
+INSERT INTO projects(id,path,registered_at) VALUES('execution','/fake',CURRENT_TIMESTAMP);
+INSERT INTO sessions(id,project_id,num,harness,session_mode,activity_last_at,created_at,updated_at)
+VALUES('legacy','execution',1,'codex','chat',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+INSERT INTO session_agent_settings_operations(id,session_id,idempotency_key,request_json,phase,created_at,updated_at)
+VALUES('operation','legacy','key','{"baseRevision":0,"source":{"model":"","effort":"","fastMode":"default"},"target":{"model":"next","effort":"low","fastMode":"off"}}','pending',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at) VALUES('operation','pending',CURRENT_TIMESTAMP);
+`); err != nil {
+		t.Fatal(err)
+	}
+	tables := []string{"sessions", "session_agent_settings_operations", "session_agent_settings_audit", "change_log"}
+	before := make(map[string][]map[string]any)
+	for _, table := range tables {
+		before[table] = migrationTableFacts(t, db, table)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range tables {
+		after := migrationTableFacts(t, db, table)
+		if len(after) != len(before[table]) {
+			t.Fatalf("%s row count changed", table)
+		}
+		for i, row := range before[table] {
+			for col, value := range row {
+				if !reflect.DeepEqual(after[i][col], value) {
+					t.Errorf("migration rewrote %s[%d].%s", table, i, col)
+				}
+			}
+		}
+	}
+	var execution string
+	if err := db.QueryRow("SELECT execution_json FROM session_agent_settings_operations WHERE id='operation'").Scan(&execution); err != nil || execution != "" {
+		t.Fatalf("legacy journal received an invented provider preimage: %q %v", execution, err)
+	}
+}

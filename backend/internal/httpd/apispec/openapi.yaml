@@ -15496,6 +15496,8 @@ components:
       type: object
     AgentSettingsTurnSnapshot:
       properties:
+        attempt:
+          type: integer
         capturedAt:
           format: date-time
           type:
@@ -23320,6 +23322,10 @@ components:
         referenceContexts:
           items:
             type: string
+          type: array
+        settingsAttempts:
+          items:
+            $ref: '#/components/schemas/AgentSettingsTurnSnapshot'
           type: array
         turn:
           $ref: '#/components/schemas/SideTurn'

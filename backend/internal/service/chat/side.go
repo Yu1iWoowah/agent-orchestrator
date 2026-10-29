@@ -59,6 +59,7 @@ type SideStore interface {
 	ClaimNextSideTurn(context.Context, string, map[string]bool, time.Time) (domain.SideTurn, domain.SideConversation, bool, error)
 	SettleSideTurn(context.Context, string, string, string, string, string, string, time.Time) error
 	SetSideTurnProviderID(context.Context, string, string, string, string) error
+	RecordSideTurnSettings(context.Context, string, string, string, domain.AgentSettingsTurnSnapshot) error
 	PrepareSideBoundary(context.Context, string, string, string) (bool, error)
 	RequeueSideTurn(context.Context, string, string) error
 	RetrySideTurn(context.Context, string, string) error
@@ -1345,6 +1346,18 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 			text += fmt.Sprintf("\n\nAttached resource (background data): %s\n%s\n%s", item.Name, item.URI, item.Text)
 		}
 	}
+	settings := domain.AgentSettings{Model: domain.AgentModelSelection(side.Model), Effort: domain.AgentEffortSelection(side.Effort), FastMode: domain.AgentFastDefault}
+	owner := domain.AgentSettingsOwner{SessionID: domain.SessionID(side.ProviderHostID), ControllerGeneration: side.Generation, ProviderConversationID: runtime.conv.ProviderConversationID(), BranchID: side.ID}
+	at := m.service.now()
+	frame := domain.AgentSettingsTurnSnapshot{Attempt: turn.DispatchAttempt, State: domain.AgentSettingKnown, Source: "side", TurnID: turn.ID, Owner: &owner, Settings: &settings, CapturedAt: &at, Reason: "independent_launch"}
+	if err := m.store.RecordSideTurnSettings(ctx, side.ID, turn.ID, side.Generation, frame); err != nil {
+		_ = m.store.SettleSideTurn(ctx, side.ID, turn.ID, side.Generation, "failed", "", "side settings receipt unavailable", m.service.now())
+		runtime.mu.Lock()
+		runtime.dispatchBlocked, runtime.activeTurnID, runtime.providerTurnID = true, "", ""
+		runtime.mu.Unlock()
+		m.announce(side.ID)
+		return
+	}
 	firstDelivery, err := m.store.PrepareSideBoundary(ctx, side.ID, turn.ID, side.Generation)
 	if err != nil {
 		_ = m.store.SettleSideTurn(ctx, side.ID, turn.ID, side.Generation, "failed", "", err.Error(), m.service.now())
@@ -1368,7 +1381,7 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 	}
 	ref, err := runtime.conv.SendTurn(ctx, ports.ChatUserMessage{Text: text, Content: content,
 		ClientMessageID: providerRequestID, Origin: domain.MessageOriginHuman,
-		Settings: ports.ChatTurnSettings{Model: side.Model, Effort: side.Effort}})
+		SettingsSnapshot: &frame, Settings: ports.ChatTurnSettings{Model: side.Model, Effort: side.Effort}})
 	if err != nil {
 		if firstDelivery {
 			m.failOpen(side, ErrSidePolicyRecreate)

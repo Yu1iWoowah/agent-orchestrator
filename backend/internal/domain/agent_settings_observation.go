@@ -42,6 +42,7 @@ type AgentSettingsOwner struct {
 // AgentSettingsTurnSnapshot describes the preference on the dispatch wire.
 // Missing selection/revision is explicit unknown, never reconstructed history.
 type AgentSettingsTurnSnapshot struct {
+	Attempt        int                 `json:"attempt,omitempty"`
 	State          AgentSettingState   `json:"state" enum:"known,unknown"`
 	Source         string              `json:"source,omitempty" enum:"root,side,background"`
 	Owner          *AgentSettingsOwner `json:"owner,omitempty"`
@@ -51,6 +52,28 @@ type AgentSettingsTurnSnapshot struct {
 	Revision       *int64              `json:"revision,omitempty"`
 	CapturedAt     *time.Time          `json:"capturedAt,omitempty"`
 	Reason         string              `json:"reason,omitempty"`
+}
+
+// Clone detaches pointer fields so a receipt consumer cannot change the frozen
+// selection or owner retained by a controller or the side recovery store.
+func (s AgentSettingsTurnSnapshot) Clone() AgentSettingsTurnSnapshot {
+	if s.Owner != nil {
+		owner := *s.Owner
+		s.Owner = &owner
+	}
+	if s.Settings != nil {
+		settings := *s.Settings
+		s.Settings = &settings
+	}
+	if s.Revision != nil {
+		revision := *s.Revision
+		s.Revision = &revision
+	}
+	if s.CapturedAt != nil {
+		at := *s.CapturedAt
+		s.CapturedAt = &at
+	}
+	return s
 }
 
 // AgentSettingsObservation is internal: attribution comes from the live owner,

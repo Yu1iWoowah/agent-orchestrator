@@ -9,9 +9,10 @@ import (
 	"sync"
 	"testing"
 
+	acpsdk "github.com/coder/acp-go-sdk"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	acpsdk "github.com/coder/acp-go-sdk"
 )
 
 type settingsAgent struct {
@@ -220,5 +221,27 @@ func TestJournalledACPSettingsResetAndRollbackUseProviderReceipts(t *testing.T) 
 				t.Fatalf("unproven restoration: %s/%s/%s/%s", a.model, a.effort, a.fast, a.permission)
 			}
 		})
+	}
+}
+
+func TestJournalledACPModelChangeKeepsUntouchedDefaultsImplicit(t *testing.T) {
+	a := &settingsAgent{fakeAgent: &fakeAgent{}, model: "old", effort: "high", fast: "on", permission: "auto"}
+	c := settingsConversation(t, a)
+	staged := c.(ports.ChatAgentSettingsController)
+	source := domain.AgentSettings{Model: "old", FastMode: domain.AgentFastDefault}
+	target := domain.AgentSettings{Model: "new", FastMode: domain.AgentFastDefault}
+	plan, err := staged.PrepareAgentSettings(t.Context(), source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []domain.AgentSettingsCheckpoint{domain.AgentSettingsApplyingModel, domain.AgentSettingsApplyingEffort, domain.AgentSettingsApplyingFast, domain.AgentSettingsVerifying} {
+		if err := staged.ApplyAgentSettingsStep(t.Context(), plan, step, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	if !reflect.DeepEqual(a.calls, []string{"model=new"}) {
+		t.Fatalf("untouched provider defaults became explicit choices: %v", a.calls)
 	}
 }

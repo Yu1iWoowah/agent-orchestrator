@@ -11,6 +11,7 @@ import (
 
 var _ ports.ChatAgentSettingsController = (*conversation)(nil)
 
+// PrepareAgentSettings resolves explicit reset wire from current provider inputs.
 func (c *conversation) PrepareAgentSettings(ctx context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
 	if source.Validate() != nil || target.Validate() != nil {
 		return domain.AgentSettingsProviderPlan{}, ports.ErrAgentSettingsInvalid
@@ -91,6 +92,12 @@ func (c *conversation) PrepareAgentSettings(ctx context.Context, source, target 
 		return domain.AgentSettingsProviderPlan{}, err
 	}
 	return domain.AgentSettingsProviderPlan{Protocol: "codex-app-server", ProviderConversationID: c.ProviderConversationID(), Source: source, Target: target, Before: before, After: after, Permission: string(c.launchMode)}, nil
+}
+
+// PrepareAgentSettingsRecovery proves current durable wire independently of the
+// failed target and old binary/account baseline. Codex applies it on turn/start.
+func (c *conversation) PrepareAgentSettingsRecovery(ctx context.Context, settings domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
+	return c.PrepareAgentSettings(ctx, settings, settings)
 }
 
 // Codex changes settings on turn/start. Staging does not send a turn or claim

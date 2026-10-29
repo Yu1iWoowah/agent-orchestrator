@@ -30,6 +30,7 @@ func (c *Controller) observationOwner(account string) domain.AgentSettingsOwner 
 func (s *Service) newObservedBranchController(id domain.SessionID, source *Controller, conversation domain.ConversationRecord, generation string, provider ports.ChatConversation, account string) *Controller {
 	c := newController(id, source.owner(), conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.reader)
 	c.settingsObservationOwner = c.observationOwner(account)
+	s.configureAgentSettingsController(c)
 	return c
 }
 

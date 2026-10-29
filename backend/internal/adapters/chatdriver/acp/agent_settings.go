@@ -79,6 +79,12 @@ func selectionValue(settings domain.AgentSettings, id string) string {
 // targetOption resolves only binding-defined semantics against the current
 // authoritative catalog. Unchanged default fields retain their proven preimage.
 func (c *conversation) targetOption(plan domain.AgentSettingsProviderPlan, id string, restoring bool, catalog []ports.ChatConfigOption) (string, error) {
+	// An untouched implicit dependent field is not a reset request. Let the
+	// new model's authoritative catalog supply it without making a native fast
+	// default into an explicit paid choice. Explicit -> default still needs proof.
+	if !restoring && id != "model" && selectionValue(plan.Source, id) == "" && selectionValue(plan.Target, id) == "" {
+		return "", nil
+	}
 	value := selectionValue(plan.Target, id)
 	if restoring {
 		value = settingsValue(plan.Before, id)
@@ -136,6 +142,7 @@ func (c *conversation) targetOption(plan domain.AgentSettingsProviderPlan, id st
 	return "", fmt.Errorf("%w: %s_value_not_offered", ports.ErrAgentSettingsUnsupported, id)
 }
 
+// PrepareAgentSettings captures authoritative native choices without setters.
 func (c *conversation) PrepareAgentSettings(ctx context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.AgentSettingsProviderPlan{}, err

@@ -818,6 +818,7 @@ type SessionAgentSettingsOperation struct {
 	StartedAt              sql.NullTime
 	FinishedAt             sql.NullTime
 	RecoveryJson           string
+	ExecutionJson          string
 }
 
 type SessionArtifactVersion struct {

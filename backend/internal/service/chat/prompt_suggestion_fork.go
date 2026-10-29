@@ -149,5 +149,5 @@ func (s *Service) RunPromptSuggestionTask(ctx context.Context, id domain.Session
 	if conversation.ProviderConversationID() != side.ProviderForkID {
 		return "", errors.New("suggestion fork ownership changed before generation")
 	}
-	return runBackgroundTurn(taskCtx, harness, conversation, prompt)
+	return runBackgroundTurn(taskCtx, harness, conversation, prompt, cfg)
 }

@@ -5107,6 +5107,7 @@ export interface components {
             model: string;
         };
         AgentSettingsTurnSnapshot: {
+            attempt?: number;
             /** Format: date-time */
             capturedAt?: null | string;
             owner?: components["schemas"]["AgentSettingsOwner"];
@@ -8109,6 +8110,7 @@ export interface components {
             dispatchAttempt?: number;
             providerTurnId?: string;
             referenceContexts: string[];
+            settingsAttempts?: components["schemas"]["AgentSettingsTurnSnapshot"][];
             turn: components["schemas"]["SideTurn"];
         };
         SideSettingsRequest: {

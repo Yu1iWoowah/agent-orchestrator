@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -49,18 +50,27 @@ func (s *Service) RunBackgroundTask(ctx context.Context, harness domain.AgentHar
 		input, _ := json.Marshal(prompt)
 		prompt = instructions + "\n\nInput data (JSON string):\n" + string(input)
 	}
-	return runBackgroundTurn(ctx, harness, conversation, prompt)
+	return runBackgroundTurn(ctx, harness, conversation, prompt, cfg)
 }
 
-func runBackgroundTurn(ctx context.Context, harness domain.AgentHarness, conversation ports.ChatConversation, prompt string) (string, error) {
-	settings, err := backgroundTaskSettings(ctx, conversation)
+func runBackgroundTurn(ctx context.Context, harness domain.AgentHarness, conversation ports.ChatConversation, prompt string, cfg ports.ChatStartConfig) (string, error) {
+	settings, effort, err := backgroundTaskSettings(ctx, conversation)
 	if err != nil {
 		return "", fmt.Errorf("configure background %s task: %w", harness, err)
 	}
+	fast := cfg.FastMode
+	if fast == "" {
+		fast = domain.AgentFastDefault
+	}
+	selection := domain.AgentSettings{Model: domain.AgentModelSelection(cfg.Model), Effort: domain.AgentEffortSelection(effort), FastMode: fast}
+	owner := domain.AgentSettingsOwner{SessionID: cfg.SessionID, ControllerGeneration: cfg.ProviderScopeID, ProviderConversationID: conversation.ProviderConversationID(), BranchID: cfg.ProviderScopeID}
+	at := time.Now().UTC()
+	frame := domain.AgentSettingsTurnSnapshot{State: domain.AgentSettingKnown, Source: "background", Owner: &owner, Settings: &selection, CapturedAt: &at, Reason: "independent_launch"}
 	turn, err := conversation.SendTurn(ctx, ports.ChatUserMessage{
-		Text:     prompt,
-		Origin:   domain.MessageOriginAutomation,
-		Settings: settings,
+		Text:             prompt,
+		Origin:           domain.MessageOriginAutomation,
+		Settings:         settings,
+		SettingsSnapshot: &frame,
 	})
 	if err != nil {
 		return "", fmt.Errorf("send background %s task: %w", harness, err)
@@ -110,12 +120,13 @@ func runBackgroundTurn(ctx context.Context, harness domain.AgentHarness, convers
 
 // The provider's live catalog keeps this text-only call from inheriting an
 // expensive reasoning setting or choosing a level its model cannot use.
-func backgroundTaskSettings(ctx context.Context, conversation ports.ChatConversation) (ports.ChatTurnSettings, error) {
+func backgroundTaskSettings(ctx context.Context, conversation ports.ChatConversation) (ports.ChatTurnSettings, string, error) {
+	var selectedEffort string
 	switch provider := conversation.(type) {
 	case ports.ChatConfigOptionController:
 		catalog, err := provider.ListConfigOptions(ctx)
 		if err != nil {
-			return ports.ChatTurnSettings{}, err
+			return ports.ChatTurnSettings{}, "", err
 		}
 		for _, option := range catalog {
 			if option.Category != "thought_level" || option.Type != ports.ChatConfigOptionSelect {
@@ -125,24 +136,28 @@ func backgroundTaskSettings(ctx context.Context, conversation ports.ChatConversa
 			for _, choice := range option.Choices {
 				values = append(values, choice.Value)
 			}
-			if effort := lowestBackgroundEffort(values); effort != "" && effort != option.Current.Select {
-				if _, err := provider.SetConfigOption(ctx, option.ID, ports.ChatConfigOptionValue{Select: effort}); err != nil {
-					return ports.ChatTurnSettings{}, err
+			if effort := lowestBackgroundEffort(values); effort != "" {
+				selectedEffort = effort
+				if effort != option.Current.Select {
+					if _, err := provider.SetConfigOption(ctx, option.ID, ports.ChatConfigOptionValue{Select: effort}); err != nil {
+						return ports.ChatTurnSettings{}, "", err
+					}
 				}
 			}
 		}
 	case ports.ChatModelLister:
 		catalog, err := provider.ListModels(ctx)
 		if err != nil {
-			return ports.ChatTurnSettings{}, err
+			return ports.ChatTurnSettings{}, "", err
 		}
 		for _, model := range catalog {
 			if model.Default {
-				return ports.ChatTurnSettings{Effort: lowestBackgroundEffort(model.Efforts)}, nil
+				effort := lowestBackgroundEffort(model.Efforts)
+				return ports.ChatTurnSettings{Effort: effort}, effort, nil
 			}
 		}
 	}
-	return ports.ChatTurnSettings{}, nil
+	return ports.ChatTurnSettings{}, selectedEffort, nil
 }
 
 func lowestBackgroundEffort(values []string) string {

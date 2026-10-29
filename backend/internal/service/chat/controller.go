@@ -208,13 +208,15 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 
 // Controller drives one Chat session.
 type Controller struct {
-	sessionID                domain.SessionID
-	reviewID                 string
-	conversation             domain.ConversationRecord
-	generation               string
-	harness                  domain.AgentHarness
-	settingsObservationOwner domain.AgentSettingsOwner
-	settingsDispatchSnapshot *domain.AgentSettingsTurnSnapshot
+	sessionID                   domain.SessionID
+	reviewID                    string
+	conversation                domain.ConversationRecord
+	generation                  string
+	harness                     domain.AgentHarness
+	settingsObservationOwner    domain.AgentSettingsOwner
+	settingsDispatchSnapshot    *domain.AgentSettingsTurnSnapshot
+	settingsValidator           ports.ChatAgentSettingsValidator // guarded by mu
+	settingsInitializationError error                            // guarded by sendMu; failed cold replay fences dispatch
 
 	conv                   ports.ChatConversation
 	store                  Store
@@ -1509,6 +1511,13 @@ func (c *Controller) sendLocked(
 	if handoff {
 		return domain.ConversationTurn{}, ErrControllerHandoff
 	}
+	settingsBlocked, settingsErr := c.reconcileAgentSettingsLocked(ctx)
+	if settingsErr != nil {
+		c.log.Warn("Chat settings keep dispatch fenced", "session", c.sessionID, "reason", "agent_settings_unavailable")
+	}
+	if settingsBlocked && !queueWhenBusy {
+		return domain.ConversationTurn{}, ports.ErrAgentSettingsConflict
+	}
 
 	// Bind retries to the client request before adding durable continuation context.
 	var err error
@@ -1527,7 +1536,7 @@ func (c *Controller) sendLocked(
 			return domain.ConversationTurn{}, err
 		}
 	}
-	shouldQueue := queueWhenBusy && (c.busy() || queuedAhead)
+	shouldQueue := queueWhenBusy && (c.busy() || queuedAhead || settingsBlocked)
 	markedSending := false
 	if !shouldQueue {
 		c.setSendingTurn(turnID)
@@ -1637,6 +1646,9 @@ func (c *Controller) RetryTurn(ctx context.Context, turnID string) (domain.Conve
 func (c *Controller) retryTurnLocked(ctx context.Context, turnID string, autoResume bool) (domain.ConversationTurn, error) {
 	if c.handoffActive() {
 		return domain.ConversationTurn{}, ErrControllerHandoff
+	}
+	if blocked, err := c.reconcileAgentSettingsLocked(ctx); err != nil || blocked {
+		return domain.ConversationTurn{}, errors.Join(ports.ErrAgentSettingsConflict, err)
 	}
 
 	source, err := c.store.TurnByID(ctx, turnID)
@@ -1813,6 +1825,15 @@ func (c *Controller) Settings() domain.ConversationSettings {
 // The row is written first: if that fails, the in-memory copy must not move, or a
 // restart would silently revert a choice the user watched take effect.
 func (c *Controller) SetSettings(ctx context.Context, settings domain.ConversationSettings) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if err := c.rejectPendingAgentSettings(ctx); err != nil {
+		return err
+	}
+	return c.setSettingsLocked(ctx, settings)
+}
+
+func (c *Controller) setSettingsLocked(ctx context.Context, settings domain.ConversationSettings) error {
 	previous := c.Settings()
 	if settings.FastMode {
 		settings.AgentFastMode = domain.AgentFastOn
@@ -1924,6 +1945,9 @@ func (c *Controller) dispatch(
 	claimed bool,
 	followers []string,
 ) (domain.ConversationTurn, error) {
+	if err := c.rejectPendingAgentSettings(ctx); err != nil {
+		return domain.ConversationTurn{}, err
+	}
 	// Every dispatch carries the conversation's choices, including one AO makes on
 	// the user's behalf: a queued message draining, or a relay from `ao send`. A
 	// setting that only applied when the user pressed send would silently stop
@@ -1933,6 +1957,8 @@ func (c *Controller) dispatch(
 	deferred, hasDeferredStart := c.conv.(ports.ChatDeferredTurnStarter)
 	settingsSnapshot := c.captureSettingsDispatch(ctx, turnID, msg.Settings)
 	if c.reviewID == "" {
+		frame := settingsSnapshot.Clone()
+		msg.SettingsSnapshot = &frame
 		ids := append([]string{turnID}, followers...)
 		if err := c.store.RecordTurnSettingsSnapshot(ctx, c.conversation.ID, c.generation, ids, *settingsSnapshot); err != nil {
 			reason := "dispatch settings could not be recorded"
@@ -2196,6 +2222,9 @@ func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch boo
 	if !allowDispatch {
 		return nil
 	}
+	if blocked, err := c.reconcileAgentSettingsLocked(ctx); err != nil || blocked {
+		return err
+	}
 
 	for {
 		preview, err := c.store.ListQueuedBatch(ctx, c.conversation.ID, limit)
@@ -2260,6 +2289,9 @@ func (c *Controller) ArmHandoff(
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.rejectPendingAgentSettings(ctx); err != nil {
 		return err
 	}
 
@@ -2376,6 +2408,9 @@ func (c *Controller) BeginHandoff(
 func (c *Controller) BeginIdleBranchHandoff(ctx context.Context) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if err := c.rejectPendingAgentSettings(ctx); err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
