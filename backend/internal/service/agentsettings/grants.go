@@ -66,7 +66,7 @@ func NewGrantAuthority(key []byte, now func() time.Time) (*GrantAuthority, error
 }
 
 func validGrantText(s string) bool {
-	return len(s) > 0 && len(s) <= 256 && utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl)
+	return s != "" && len(s) <= 256 && utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 func validGrantScope(actor domain.SessionID, s domain.AgentSettingsAuthority) bool {

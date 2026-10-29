@@ -116,15 +116,24 @@ func journalHarness(t *testing.T) (*harness, *journalConversation, *journalValid
 }
 
 func journalHarnessWithStore(t *testing.T, wrap func(*sqlite.Store) chatsvc.Store) (*harness, *journalConversation, *journalValidator, journalCommands) {
+	return journalHarnessWithStoreForHarness(t, wrap, domain.HarnessCodex)
+}
+
+func journalHarnessForHarness(t *testing.T, harness domain.AgentHarness) (*harness, *journalConversation, *journalValidator, journalCommands) {
+	return journalHarnessWithStoreForHarness(t, func(st *sqlite.Store) chatsvc.Store { return st }, harness)
+}
+
+func journalHarnessWithStoreForHarness(t *testing.T, wrap func(*sqlite.Store) chatsvc.Store, agentHarness domain.AgentHarness) (*harness, *journalConversation, *journalValidator, journalCommands) {
 	t.Helper()
 	conv := &journalConversation{fakeConversation: newFakeConversation()}
 	conv.quiet.Store(true)
-	h := newHarnessWithConversationAndStore(t, conv, func(st *sqlite.Store) chatsvc.Store {
-		if err := st.BindSessionAgentAccount(t.Context(), testSession, domain.AgentAccountProviderCodex, "device-codex", time.Now()); err != nil {
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *sqlite.Store) chatsvc.Store {
+		provider, _ := domain.AgentAccountProviderFor(agentHarness)
+		if err := st.BindSessionAgentAccount(t.Context(), testSession, provider, domain.DeviceAgentAccountID(provider), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		return wrap(st)
-	})
+	}, agentHarness)
 	record, _, err := h.st.GetSession(t.Context(), testSession)
 	if err != nil {
 		t.Fatal(err)

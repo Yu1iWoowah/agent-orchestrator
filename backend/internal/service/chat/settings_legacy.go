@@ -8,6 +8,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// SetAgentSettingsMutator routes supported legacy menus through the shared scheduler.
 func (s *Service) SetAgentSettingsMutator(mutator ports.ChatAgentSettingsMutator) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

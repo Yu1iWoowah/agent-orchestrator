@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
-	"github.com/google/uuid"
 )
 
 // Change preserves patch presence and the caller's CAS. Generated IDs,
@@ -26,6 +27,7 @@ type Change struct {
 	RequestID        string                        `json:"-"`
 }
 
+// ControlStore supplies durable ownership and settings operation evidence.
 type ControlStore interface {
 	AuthorityStore
 	SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error)
@@ -34,6 +36,7 @@ type ControlStore interface {
 	FinishAgentSettingsOperation(context.Context, domain.SessionID, string, int64, domain.AgentSettingsPhase, domain.AgentSettingsErrorCategory, time.Time) (domain.AgentSettingsOperation, error)
 }
 
+// SettingsRuntime admits intent to the session dispatch scheduler.
 type SettingsRuntime interface {
 	QueueAgentSettings(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
 }
@@ -48,6 +51,7 @@ type Control struct {
 	now        func() time.Time
 }
 
+// NewControl joins authorization, provider validation and journalled scheduling.
 func NewControl(core *Service, store ControlStore, authorizer *Authorizer, runtime SettingsRuntime, now func() time.Time) *Control {
 	if now == nil {
 		now = time.Now
@@ -78,6 +82,7 @@ func (c *Control) target(ctx context.Context, caller Caller, id domain.SessionID
 	return rec, accepted, err
 }
 
+// Change authorizes and validates a patch before admitting it with revision CAS.
 func (c *Control) Change(ctx context.Context, caller Caller, id domain.SessionID, in Change) (domain.AgentSettingsOperation, error) {
 	var empty domain.AgentSettingsOperation
 	if in.ApplyMode == "" {
@@ -166,6 +171,7 @@ func (c *Control) acceptedRetry(ctx context.Context, id domain.SessionID, key, f
 	return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsConflict)
 }
 
+// Operation reads durable progress after checking the current caller scope.
 func (c *Control) Operation(ctx context.Context, caller Caller, id domain.SessionID, operationID string) (domain.AgentSettingsOperation, error) {
 	if _, _, err := c.target(ctx, caller, id); err != nil {
 		return domain.AgentSettingsOperation{}, err
@@ -174,6 +180,7 @@ func (c *Control) Operation(ctx context.Context, caller Caller, id domain.Sessio
 	return op, settingsError(err)
 }
 
+// ReadForCaller qualifies access before reading preferences and observations.
 func (c *Control) ReadForCaller(ctx context.Context, caller Caller, id domain.SessionID) (Snapshot, error) {
 	if _, _, err := c.target(ctx, caller, id); err != nil {
 		return Snapshot{}, err
@@ -181,6 +188,7 @@ func (c *Control) ReadForCaller(ctx context.Context, caller Caller, id domain.Se
 	return c.core.Read(ctx, id)
 }
 
+// Cancel terminates an unstarted intent using the caller scope and version CAS.
 func (c *Control) Cancel(ctx context.Context, caller Caller, id domain.SessionID, operationID string, version int64) (domain.AgentSettingsOperation, error) {
 	if _, _, err := c.target(ctx, caller, id); err != nil {
 		return domain.AgentSettingsOperation{}, err

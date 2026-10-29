@@ -24,12 +24,18 @@ func (legacyCatalogInputs) CatalogFingerprint(context.Context, string, string) (
 }
 
 func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
-	for _, entry := range []string{"turn_settings", "config_options", "direct_settings"} {
+	for _, harness := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode} {
+		t.Run(string(harness), func(t *testing.T) { legacySettingsAndTypedControl(t, harness) })
+	}
+}
+
+func legacySettingsAndTypedControl(t *testing.T, agentHarness domain.AgentHarness) {
+	for _, entry := range []string{"turn_settings", "config_options", "direct_settings", "effort", "fast_on", "fast_off", "fast_off_after_on"} {
 		t.Run(entry, func(t *testing.T) {
-			h, conv, _, _ := journalHarness(t)
-			catalog := ports.AgentModelCatalog{AgentID: "codex", Models: []ports.AgentModelInfo{{ID: "new-model", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}
+			h, conv, _, _ := journalHarnessForHarness(t, agentHarness)
+			catalog := ports.AgentModelCatalog{AgentID: string(agentHarness), Models: []ports.AgentModelInfo{{ID: "new-model", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}
 			raw, _ := json.Marshal(catalog)
-			if err := h.st.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), InputFingerprint: "live-inputs", LastSuccessAt: h.now(), FetchedAt: h.now()}); err != nil {
+			if err := h.st.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: string(agentHarness), CatalogJSON: string(raw), InputFingerprint: "live-inputs", LastSuccessAt: h.now(), FetchedAt: h.now()}); err != nil {
 				t.Fatal(err)
 			}
 			reader := agentsettings.New(h.st, h.now)
@@ -37,6 +43,14 @@ func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 			control := agentsettings.NewControl(reader, h.st, agentsettings.NewAuthorizer(h.st, nil, h.now), h.svc, h.now)
 			h.svc.SetAgentSettingsMutator(control)
 			h.svc.SetAgentSettingsValidator(control)
+			if entry == "fast_off_after_on" {
+				on := true
+				if _, err := h.svc.SetConfigOption(t.Context(), testSession, "fast", ports.ChatConfigOptionValue{Boolean: &on}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stepsBefore := conv.stepCount()
+
 			first, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "first"})
 			if err != nil {
 				t.Fatal(err)
@@ -53,6 +67,11 @@ func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 				_, err = h.svc.SetTurnSettings(t.Context(), testSession, picked)
 			case "config_options":
 				_, err = h.svc.SetConfigOption(t.Context(), testSession, "model", ports.ChatConfigOptionValue{Select: "new-model"})
+			case "effort":
+				_, err = h.svc.SetConfigOption(t.Context(), testSession, "effort", ports.ChatConfigOptionValue{Select: "high"})
+			case "fast_on", "fast_off", "fast_off_after_on":
+				on := entry == "fast_on"
+				_, err = h.svc.SetConfigOption(t.Context(), testSession, "fast", ports.ChatConfigOptionValue{Boolean: &on})
 			default:
 				err = h.ctrl.SetSettings(t.Context(), picked)
 			}
@@ -60,7 +79,7 @@ func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			pending, found, err := h.st.PendingAgentSettingsOperation(t.Context(), testSession)
-			if err != nil || !found || conv.stepCount() != 0 {
+			if err != nil || !found || conv.stepCount() != stepsBefore {
 				t.Fatalf("busy bypass %+v %v", pending, err)
 			}
 			if _, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "next"}); err != nil {
@@ -72,15 +91,23 @@ func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 				return e == nil && op.Phase == domain.AgentSettingsApplied && len(conv.sentMessages()) == 2
 			})
 			wire := conv.sentMessages()[1].Settings
-			if wire.Model != "new-model" || conv.legacySetters.Load() != 0 {
+			if wire.Model != string(pending.Target.Model) || wire.Effort != string(pending.Target.Effort) || wire.FastMode != pending.Target.FastMode || wire.Fast != (pending.Target.FastMode == domain.AgentFastOn) || conv.legacySetters.Load() != 0 {
 				t.Fatalf("next wire %+v", wire)
 			}
 			saved, err = h.st.TurnByID(t.Context(), first.ID)
 			if err != nil || saved.AgentSettings == nil || *saved.AgentSettings.Settings != *original.Settings || *saved.AgentSettings.Revision != *original.Revision {
 				t.Fatal("current turn changed after pending acceptance")
 			}
+			durable, err := h.st.ConversationForSession(t.Context(), testSession)
+			durableFast := durable.Settings.AgentFastMode
+			if durableFast == "" {
+				durableFast = domain.AgentFastDefault
+			}
+			if err != nil || durableFast != pending.Target.FastMode || durable.Settings.FastMode != (pending.Target.FastMode == domain.AgentFastOn) {
+				t.Fatalf("durable fast diverged: %+v %v", durable.Settings, err)
+			}
 			current, err := h.st.SessionAgentSettings(t.Context(), testSession)
-			if err != nil || current.Revision != 1 || current.Settings.Model != "new-model" {
+			if err != nil || current.Revision != pending.BaseRevision+1 || current.Settings != pending.Target {
 				t.Fatalf("divergent revision %+v %v", current, err)
 			}
 		})

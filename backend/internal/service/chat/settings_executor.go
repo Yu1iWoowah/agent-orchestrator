@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"strings"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -26,8 +27,8 @@ type agentSettingsJournal interface {
 	AdvanceAgentSettingsRecovery(context.Context, domain.SessionID, string, int64, domain.AgentSettingsCheckpoint, domain.AgentSettingsRecovery, time.Time) (domain.AgentSettingsOperation, error)
 }
 
-// SetAgentSettingsValidator supplies the internal authorization/discovery
-// boundary. PR3B intentionally wires no public mutation to this executor.
+// SetAgentSettingsValidator supplies the authorization/discovery boundary
+// shared by public mutations and durable recovery.
 func (s *Service) SetAgentSettingsValidator(validator ports.ChatAgentSettingsValidator) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -15,10 +15,12 @@ type AgentSettingsCaller struct {
 
 type agentSettingsCallerKey struct{}
 
+// WithAgentSettingsCaller preserves transport identity for shared mutation services.
 func WithAgentSettingsCaller(ctx context.Context, caller AgentSettingsCaller) context.Context {
 	return context.WithValue(ctx, agentSettingsCallerKey{}, caller)
 }
 
+// AgentSettingsCallerFromContext reads transport claims without authorizing them.
 func AgentSettingsCallerFromContext(ctx context.Context) AgentSettingsCaller {
 	caller, _ := ctx.Value(agentSettingsCallerKey{}).(AgentSettingsCaller)
 	return caller
@@ -32,6 +34,7 @@ type ChatAgentSettingsMutator interface {
 // EnvAgentSettingsGrant is private launch state, never a response field.
 const EnvAgentSettingsGrant = "AO_AGENT_SETTINGS_GRANT"
 
+// AgentSettingsGrantEnvironment issues credentials only for private native launch state.
 type AgentSettingsGrantEnvironment interface {
 	AgentSettingsGrantEnv(context.Context, domain.SessionID, domain.AgentHarness, domain.SessionMode, string) (map[string]string, error)
 }

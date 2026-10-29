@@ -22,7 +22,7 @@ type AgentSettingsReader interface {
 	Read(context.Context, domain.SessionID) (agentsettings.Snapshot, error)
 }
 
-// AgentSettingsController exposes saved preferences and capabilities.
+// AgentSettingsControl is the authorized scheduler boundary for HTTP mutations.
 type AgentSettingsControl interface {
 	Change(context.Context, agentsettings.Caller, domain.SessionID, agentsettings.Change) (domain.AgentSettingsOperation, error)
 	Operation(context.Context, agentsettings.Caller, domain.SessionID, string) (domain.AgentSettingsOperation, error)
@@ -30,6 +30,7 @@ type AgentSettingsControl interface {
 	ReadForCaller(context.Context, agentsettings.Caller, domain.SessionID) (agentsettings.Snapshot, error)
 }
 
+// AgentSettingsController exposes preferences, capabilities and settings operations.
 type AgentSettingsController struct {
 	Svc     AgentSettingsReader
 	Control AgentSettingsControl

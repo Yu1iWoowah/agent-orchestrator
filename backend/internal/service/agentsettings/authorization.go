@@ -37,6 +37,7 @@ type Authorizer struct {
 	now    func() time.Time
 }
 
+// NewAuthorizer binds grant verification to actual session and project ownership.
 func NewAuthorizer(store AuthorityStore, grants *GrantAuthority, now func() time.Time) *Authorizer {
 	if now == nil {
 		now = time.Now

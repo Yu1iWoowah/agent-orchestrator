@@ -15,6 +15,7 @@ type GrantEnvironment struct {
 	now    func() time.Time
 }
 
+// NewGrantEnvironment creates the private native-launch credential issuer.
 func NewGrantEnvironment(store AuthorityStore, signer *GrantAuthority, now func() time.Time) *GrantEnvironment {
 	if now == nil {
 		now = time.Now
@@ -22,6 +23,7 @@ func NewGrantEnvironment(store AuthorityStore, signer *GrantAuthority, now func(
 	return &GrantEnvironment{store: store, signer: signer, now: now}
 }
 
+// AgentSettingsGrantEnv scopes a provisional credential to one orchestrator owner.
 func (g *GrantEnvironment) AgentSettingsGrantEnv(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, mode domain.SessionMode, generation string) (map[string]string, error) {
 	env := map[string]string{ports.EnvAgentSettingsGrant: ""}
 	rec, ok, err := g.store.GetSession(ctx, id)

@@ -1,13 +1,14 @@
 package cli
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
 func TestSettingsClientCarriesIdentityWithoutClaimingLocalHuman(t *testing.T) {
 	for _, tc := range []struct{ session, grant string }{{"", ""}, {"worker", ""}, {"orchestrator", "purpose-grant"}} {
-		r := httptest.NewRequest("PATCH", "http://127.0.0.1/api/v1/sessions/worker/agent-settings", nil)
+		r := httptest.NewRequest(http.MethodPatch, "http://127.0.0.1/api/v1/sessions/worker/agent-settings", nil)
 		applySettingsIdentity(r, func(key string) string {
 			if key == "AO_SESSION_ID" {
 				return tc.session

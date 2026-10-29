@@ -2,13 +2,15 @@ package chat
 
 import (
 	"context"
-	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// SetAgentSettingsGrantEnvironment installs the daemon-private launch credential issuer.
 func (s *Service) SetAgentSettingsGrantEnvironment(issuer ports.AgentSettingsGrantEnvironment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
