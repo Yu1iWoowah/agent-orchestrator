@@ -5016,6 +5016,7 @@ export interface components {
             /** @enum {string} */
             phase: "pending" | "applied" | "cancelled" | "failed" | "recovery_required";
             providerConversationId?: string;
+            recovery?: components["schemas"]["AgentSettingsRecovery"];
             requestId?: string;
             sessionId: string;
             source: components["schemas"]["AgentSettings"];
@@ -5039,6 +5040,15 @@ export interface components {
             /** @enum {string} */
             fastMode?: "default" | "on" | "off";
             model?: null | string;
+        };
+        AgentSettingsRecovery: {
+            /** Format: date-time */
+            claimedAt: string;
+            owner: components["schemas"]["AgentSettingsOwner"];
+            previousCheckpoint: string;
+            /** Format: int64 */
+            revision: number;
+            settings: components["schemas"]["AgentSettings"];
         };
         AgentSettingsSources: {
             effort: string;

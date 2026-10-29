@@ -66,4 +66,15 @@ type AgentSettingsOperation struct {
 	BranchID               string                     `json:"branchId,omitempty"`
 	StartedAt              *time.Time                 `json:"startedAt,omitempty"`
 	FinishedAt             *time.Time                 `json:"finishedAt,omitempty"`
+	Recovery               *AgentSettingsRecovery     `json:"recovery,omitempty"`
+}
+
+// AgentSettingsRecovery pins a replacement executor and its durable restoration
+// target. It does not replace the original operation's source, target or actor.
+type AgentSettingsRecovery struct {
+	Owner              AgentSettingsOwner      `json:"owner"`
+	Revision           int64                   `json:"revision"`
+	Settings           AgentSettings           `json:"settings"`
+	ClaimedAt          time.Time               `json:"claimedAt"`
+	PreviousCheckpoint AgentSettingsCheckpoint `json:"previousCheckpoint"`
 }

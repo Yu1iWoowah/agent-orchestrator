@@ -8,6 +8,7 @@ ALTER TABLE session_agent_settings_operations ADD COLUMN checkpoint TEXT NOT NUL
 ALTER TABLE session_agent_settings_operations ADD COLUMN operation_revision INTEGER NOT NULL DEFAULT 0 CHECK (operation_revision >= 0);
 ALTER TABLE session_agent_settings_operations ADD COLUMN started_at TIMESTAMP;
 ALTER TABLE session_agent_settings_operations ADD COLUMN finished_at TIMESTAMP;
+ALTER TABLE session_agent_settings_operations ADD COLUMN recovery_json TEXT NOT NULL DEFAULT '' CHECK (recovery_json='' OR json_valid(recovery_json));
 ALTER TABLE session_agent_settings_audit ADD COLUMN error_category TEXT NOT NULL DEFAULT '';
 ALTER TABLE session_agent_settings_audit ADD COLUMN request_id TEXT NOT NULL DEFAULT '';
 
@@ -25,6 +26,7 @@ END;
 
 -- +goose Down
 DROP TRIGGER session_agent_settings_checkpoint_cdc;
+ALTER TABLE session_agent_settings_operations DROP COLUMN recovery_json;
 ALTER TABLE session_agent_settings_audit DROP COLUMN request_id;
 ALTER TABLE session_agent_settings_audit DROP COLUMN error_category;
 ALTER TABLE session_agent_settings_operations DROP COLUMN finished_at;

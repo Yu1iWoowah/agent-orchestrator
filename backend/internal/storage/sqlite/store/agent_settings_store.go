@@ -68,6 +68,11 @@ func decodeSettingsOperation(row gen.SessionAgentSettingsOperation) (domain.Agen
 	if row.FinishedAt.Valid {
 		op.FinishedAt = &row.FinishedAt.Time
 	}
+	if row.RecoveryJson != "" {
+		if err := json.Unmarshal([]byte(row.RecoveryJson), &op.Recovery); err != nil {
+			return domain.AgentSettingsOperation{}, fmt.Errorf("decode settings recovery: %w", err)
+		}
+	}
 	return op, nil
 }
 
@@ -81,7 +86,7 @@ func (s *Store) AgentSettingsOperation(ctx context.Context, id domain.SessionID,
 }
 
 func validateSettingsOperation(op domain.AgentSettingsOperation) error {
-	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" {
+	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.Recovery != nil {
 		return fmt.Errorf("invalid initial agent settings journal")
 	}
 	for _, ref := range []string{op.RequestID, op.ProviderConversationID, op.BranchID} {

@@ -31,6 +31,10 @@ func (s *Service) readObservations(ctx context.Context, snapshot *Snapshot) erro
 		snapshot.Effective = domain.UnknownAgentSettingsEffective("session_terminated")
 		return nil
 	}
+	if snapshot.AccountID == "" {
+		snapshot.Effective = domain.UnknownAgentSettingsEffective("account_unbound")
+		return nil
+	}
 	if s.observations == nil {
 		return nil
 	}

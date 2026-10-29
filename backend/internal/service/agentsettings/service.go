@@ -86,14 +86,24 @@ func (s *Service) SetCatalogFingerprintSource(source CatalogFingerprintSource) {
 // Read only consumes saved facts. A managed-account catalog is deliberately
 // unknown until U3 supplies an account-scoped catalog contract.
 func (s *Service) Read(ctx context.Context, id domain.SessionID) (Snapshot, error) {
+	result, err := s.readCapabilities(ctx, id)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.readObservations(ctx, &result); err != nil {
+		return Snapshot{}, err
+	}
+	return result, nil
+}
+
+// readCapabilities is the saved-evidence path used by preflight. Journal and
+// runtime observations are independent and cannot veto a new spawn.
+func (s *Service) readCapabilities(ctx context.Context, id domain.SessionID) (Snapshot, error) {
 	settings, err := s.store.SessionAgentSettings(ctx, id)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	result := Snapshot{SessionAgentSettings: settings, Capabilities: Capabilities{State: CapabilityUnknown, Reason: "catalog_unavailable", ControllerGeneration: settings.OwnerGeneration, AccountID: settings.AccountID, Models: []ModelCapabilities{}}}
-	if err := s.readObservations(ctx, &result); err != nil {
-		return Snapshot{}, err
-	}
 	if !settings.Harness.IsKnown() {
 		result.Capabilities.Reason = "harness_unknown"
 		return result, nil

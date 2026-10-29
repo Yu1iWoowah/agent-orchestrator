@@ -49,6 +49,13 @@ WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id) AND operation_revision
 -- name: GetPendingAgentSettingsOperation :one
 SELECT * FROM session_agent_settings_operations WHERE session_id=? AND phase IN ('pending','recovery_required');
 
+-- name: AdvanceAgentSettingsRecovery :execrows
+UPDATE session_agent_settings_operations SET phase='recovery_required',checkpoint=sqlc.arg(checkpoint),
+ recovery_json=sqlc.arg(recovery_json),error_category=sqlc.arg(error_category),
+ operation_revision=operation_revision+1,updated_at=sqlc.arg(at),finished_at=NULL
+WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id) AND operation_revision=sqlc.arg(expected_version)
+ AND phase IN ('pending','recovery_required');
+
 -- name: InsertAgentSettingsAudit :exec
 INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id) VALUES(?,?,?,?,?);
 

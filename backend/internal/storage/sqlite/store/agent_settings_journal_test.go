@@ -150,6 +150,12 @@ func TestAgentSettingsCancelIsAtomicReplayAndReleasesSlot(t *testing.T) {
 func TestAgentSettingsStartedOutcomeRemainsFencedUntilRestored(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := settingsFixture(t)
+	if _, err := s.CreateConversation(ctx, "recovery-same-owner", domain.ConversationScopeSession, rec.ProjectID, rec.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE sessions SET provider_conversation_id='native-1' WHERE id=?", rec.ID); err != nil {
+		t.Fatal(err)
+	}
 	var beforeEvents int
 	if err := db.QueryRow("SELECT COUNT(*) FROM change_log WHERE session_id=? AND event_type='session_updated'", rec.ID).Scan(&beforeEvents); err != nil {
 		t.Fatal(err)
@@ -189,13 +195,18 @@ func TestAgentSettingsStartedOutcomeRemainsFencedUntilRestored(t *testing.T) {
 	if _, err := s.AdvanceAgentSettingsOperation(ctx, rec.ID, "op-1", 2, domain.AgentSettingsApplyingEffort, at); !errors.Is(err, ports.ErrAgentSettingsConflict) {
 		t.Fatalf("resumed applying uncertain operation: %v", err)
 	}
-	if _, err := s.AdvanceAgentSettingsOperation(ctx, rec.ID, "op-1", 2, domain.AgentSettingsRollingBack, at); err != nil {
+	current, err := s.SessionAgentSettings(ctx, rec.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AdvanceAgentSettingsOperation(ctx, rec.ID, "op-1", 3, domain.AgentSettingsRestored, at); err != nil {
+	owner := domain.AgentSettingsOwner{SessionID: rec.ID, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID}
+	if _, err := recoveryStep(ctx, s, rec.ID, "op-1", 2, domain.AgentSettingsRollingBack, owner); err != nil {
 		t.Fatal(err)
 	}
-	if ended, err := s.FinishAgentSettingsOperation(ctx, rec.ID, "op-1", 4, domain.AgentSettingsFailed, domain.AgentSettingsErrorProvider, at); err != nil || ended.Version != 5 {
+	if _, err := recoveryStep(ctx, s, rec.ID, "op-1", 3, domain.AgentSettingsRestored, owner); err != nil {
+		t.Fatal(err)
+	}
+	if ended, err := s.FinishAgentSettingsOperation(ctx, rec.ID, "op-1", 4, domain.AgentSettingsFailed, domain.AgentSettingsErrorProvider, time.Now()); err != nil || ended.Version != 5 {
 		t.Fatalf("restored outcome: %+v %v", ended, err)
 	}
 	if _, err := s.BeginAgentSettingsOperation(ctx, op); err != nil {

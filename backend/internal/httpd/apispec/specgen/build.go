@@ -167,6 +167,7 @@ var schemaNames = map[string]string{
 	"DomainAgentSettingsPatch":                             "AgentSettingsPatch",
 	"DomainAgentSettingsSources":                           "AgentSettingsSources",
 	"DomainAgentSettingsOperation":                         "AgentSettingsOperation",
+	"DomainAgentSettingsRecovery":                          "AgentSettingsRecovery",
 	"DomainAgentSettingsActor":                             "AgentSettingsActor",
 	"DomainAgentSettingsEffective":                         "AgentSettingsEffective",
 	"DomainAgentSettingObservation":                        "AgentSettingObservation",

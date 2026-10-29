@@ -75,7 +75,7 @@ func TestMigrateAgentSettingsJournalPreservesExistingFacts(t *testing.T) {
 		}
 	}
 	for _, row := range snapshot("session_agent_settings_operations") {
-		if row["apply_mode"] != "after-turn" || row["checkpoint"] != "queued" || row["operation_revision"] != int64(0) || row["error_category"] != "" || row["request_id"] != "" || row["started_at"] != nil || row["finished_at"] != nil {
+		if row["apply_mode"] != "after-turn" || row["checkpoint"] != "queued" || row["operation_revision"] != int64(0) || row["error_category"] != "" || row["request_id"] != "" || row["started_at"] != nil || row["finished_at"] != nil || row["recovery_json"] != "" {
 			t.Fatalf("invented legacy facts: %#v", row)
 		}
 	}

@@ -15198,6 +15198,8 @@ components:
           type: string
         providerConversationId:
           type: string
+        recovery:
+          $ref: '#/components/schemas/AgentSettingsRecovery'
         requestId:
           type: string
         sessionId:
@@ -15267,6 +15269,27 @@ components:
           type:
           - "null"
           - string
+      type: object
+    AgentSettingsRecovery:
+      properties:
+        claimedAt:
+          format: date-time
+          type: string
+        owner:
+          $ref: '#/components/schemas/AgentSettingsOwner'
+        previousCheckpoint:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        settings:
+          $ref: '#/components/schemas/AgentSettings'
+      required:
+      - owner
+      - revision
+      - settings
+      - claimedAt
+      - previousCheckpoint
       type: object
     AgentSettingsSources:
       properties:

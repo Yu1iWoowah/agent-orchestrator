@@ -83,6 +83,15 @@ func (s *Store) FinishAgentSettingsOperation(ctx context.Context, id domain.Sess
 			if !safe || category == domain.AgentSettingsErrorCancelled {
 				return ports.ErrAgentSettingsConflict
 			}
+			if op.Phase == domain.AgentSettingsRecoveryRequired {
+				current, err := q.GetSessionAgentSettings(ctx, id)
+				if err != nil {
+					return settingsStoreError(err)
+				}
+				if op.Recovery == nil || !settingsRecoveryMatches(current, *op.Recovery) {
+					return ports.ErrAgentSettingsConflict
+				}
+			}
 		case domain.AgentSettingsRecoveryRequired:
 			if safe || category == domain.AgentSettingsErrorCancelled || op.Phase == phase {
 				return ports.ErrAgentSettingsConflict
@@ -117,13 +126,10 @@ func (s *Store) AdvanceAgentSettingsOperation(ctx context.Context, id domain.Ses
 		if err != nil {
 			return err
 		}
-		if op.Phase != domain.AgentSettingsPending && op.Phase != domain.AgentSettingsRecoveryRequired {
+		if op.Phase != domain.AgentSettingsPending {
 			return ports.ErrAgentSettingsConflict
 		}
 		if op.Version != expectedVersion || !op.Checkpoint.CanAdvanceTo(checkpoint) {
-			return ports.ErrAgentSettingsConflict
-		}
-		if op.Phase == domain.AgentSettingsRecoveryRequired && checkpoint != domain.AgentSettingsRollingBack && checkpoint != domain.AgentSettingsRestored {
 			return ports.ErrAgentSettingsConflict
 		}
 		current, err := q.GetSessionAgentSettings(ctx, id)

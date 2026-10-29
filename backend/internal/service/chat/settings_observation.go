@@ -20,6 +20,19 @@ func (s *Service) settingsAccountBeforeLaunch(ctx context.Context, id domain.Ses
 	return "" // Missing launch identity makes receipts unknown, not device-owned.
 }
 
+func (c *Controller) observationOwner(account string) domain.AgentSettingsOwner {
+	return domain.AgentSettingsOwner{SessionID: c.sessionID, AccountID: account, ControllerGeneration: c.Generation(), ProviderConversationID: c.ProviderConversationID(), BranchID: c.conversation.ActiveBranchID}
+}
+
+// newObservedBranchController binds identity before private edited-prompt
+// dispatch as well as before publication. The account was captured before the
+// replacement provider started, never derived from a later binding.
+func (s *Service) newObservedBranchController(id domain.SessionID, source *Controller, conversation domain.ConversationRecord, generation string, provider ports.ChatConversation, account string) *Controller {
+	c := newController(id, source.owner(), conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.reader)
+	c.settingsObservationOwner = c.observationOwner(account)
+	return c
+}
+
 // ObserveAgentSettings reads an existing controller only. It never invokes the
 // workingController path, reattaches a provider, or changes any preference.
 func (s *Service) ObserveAgentSettings(ctx context.Context, id domain.SessionID) (domain.AgentSettingsObservation, error) {
