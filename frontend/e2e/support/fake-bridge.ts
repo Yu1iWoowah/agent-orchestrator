@@ -74,6 +74,13 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 			// resolves — an incomplete object would throw the moment the app touched
 			// a missing method.
 			const ao = {
+					appDiagnostics: {
+						getStatus: async () => ({ state: "disabled", reason: "consent_required" }),
+						register: async () => ({ documentId: "fixture-document", windowId: "fixture-window", generation: 1, enabled: false, expiresAt: 0 }),
+						submit: async () => false,
+						onRequest: () => () => undefined, onConfigure: () => () => undefined,
+						onStatus: () => () => undefined, onCancel: () => () => undefined,
+					},
 					app: {
 						getVersion: async () => version,
 						chooseDirectory: async () => null,
@@ -984,6 +991,13 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				...(error ? { error } : {}),
 			});
 			const ao = {
+					appDiagnostics: {
+						getStatus: async () => ({ state: "disabled", reason: "consent_required" }),
+						register: async () => ({ documentId: "fixture-document", windowId: "fixture-window", generation: 1, enabled: false, expiresAt: 0 }),
+						submit: async () => false,
+						onRequest: () => () => undefined, onConfigure: () => () => undefined,
+						onStatus: () => () => undefined, onCancel: () => () => undefined,
+					},
 					app: {
 						getVersion: async () => version,
 						chooseDirectory: async () => null,

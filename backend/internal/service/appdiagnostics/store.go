@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 type diskStore struct {
@@ -371,7 +373,7 @@ func validSnapshotRecord(id string, row Record) bool {
 }
 
 func validSnapshotV1(snapshot Snapshot) bool {
-	return snapshot.SchemaVersion == 1 && snapshot.InstanceID != "" && snapshot.WindowID != "" && snapshot.Generation > 0 && !snapshot.CapturedAt.IsZero() && snapshot.Completeness == "partial"
+	return domain.ValidAppDiagnosticsSnapshot(snapshot)
 }
 
 // reset never revives a credential or payload from another daemon epoch.
@@ -437,12 +439,18 @@ func (s *diskStore) reset(now time.Time) error {
 	}
 	return s.prune(now)
 }
-func (s *diskStore) prune(now time.Time) (result error) {
+func (s *diskStore) prune(now time.Time) error {
+	_, err := s.prunePartial(now)
+	return err
+}
+
+func (s *diskStore) prunePartial(now time.Time) (partial bool, result error) {
 	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
 	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
 	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
-		return readErr
+		return partial, readErr
 	}
+	partial = errors.Is(readErr, errReadUnavailable)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].value.CreatedAt.Before(rows[j].value.CreatedAt) })
 	var total int64
 	for _, row := range rows {
@@ -454,7 +462,7 @@ func (s *diskStore) prune(now time.Time) (result error) {
 			continue
 		}
 		if err := s.remove("snapshots", row.id); err != nil {
-			return err
+			return partial, err
 		}
 		count--
 		total -= row.size
@@ -464,8 +472,9 @@ func (s *diskStore) prune(now time.Time) (result error) {
 	}
 	audits, err := documents[Audit](s, "audit", nil)
 	if err != nil && !errors.Is(err, errReadUnavailable) {
-		return err
+		return partial, err
 	}
+	partial = partial || errors.Is(err, errReadUnavailable)
 	sort.Slice(audits, func(i, j int) bool { return audits[i].value.At.Before(audits[j].value.At) })
 	s.auditTimes = make(map[string]time.Time, len(audits))
 	for _, row := range audits {
@@ -481,14 +490,14 @@ func (s *diskStore) prune(now time.Time) (result error) {
 			continue
 		}
 		if err := s.remove("audit", row.id); err != nil {
-			return err
+			return partial, err
 		}
 		delete(s.auditTimes, row.id)
 		s.dropped++
 	}
 	// Unreadable documents remain on disk for the next sweep. Read failures are
 	// observable through the summary, while healthy records still get retention.
-	return nil
+	return partial, nil
 }
 func (s *diskStore) retentionSummary(now time.Time) error {
 	if s.dropped == 0 && s.skipped == 0 && s.readErrors == 0 && s.invalidSnapshotDeleted == 0 {

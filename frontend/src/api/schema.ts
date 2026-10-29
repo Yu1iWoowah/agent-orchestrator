@@ -5086,13 +5086,135 @@ export interface components {
             invalidSnapshotDeletedCount?: number;
             /** Format: date-time */
             oldestRetainedAt: null | string;
+            partial: boolean;
             readErrorCount?: number;
             records: components["schemas"]["AppDiagnosticsAudit"][];
             skippedCount?: number;
         };
+        AppDiagnosticsBox: {
+            /** Format: double */
+            height: number;
+            /** Format: double */
+            width: number;
+            /** Format: double */
+            x: number;
+            /** Format: double */
+            y: number;
+        };
+        AppDiagnosticsCache: {
+            availability: string;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            queries: components["schemas"]["AppDiagnosticsQuery"][];
+            revision: number;
+        };
         AppDiagnosticsCaptureRequest: {
             projectId?: string;
             windowId?: string;
+        };
+        AppDiagnosticsCollector: {
+            cache: components["schemas"]["AppDiagnosticsCache"];
+            /** Format: date-time */
+            captureFinishedAt: string;
+            /** Format: date-time */
+            captureStartedAt: string;
+            components: components["schemas"]["AppDiagnosticsComponents"];
+            consistency: string;
+            errors: components["schemas"]["AppDiagnosticsErrors"];
+            geometry: components["schemas"]["AppDiagnosticsGeometry"];
+            redactionSchemaVersion: number;
+            route: components["schemas"]["AppDiagnosticsRoute"];
+            shell: components["schemas"]["AppDiagnosticsShell"];
+        };
+        AppDiagnosticsComponent: {
+            expanded: boolean;
+            hiddenCount: number;
+            hostId: string;
+            kind: string;
+            listedIds: string[];
+            liveIds: string[];
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            orderedIds: string[];
+            projectId: string;
+            revision: number;
+            sessionCount: number;
+            shared: boolean;
+            showAll: boolean;
+            source: string;
+            workerIds: string[];
+            workspaces: components["schemas"]["AppDiagnosticsWorkspace"][];
+        };
+        AppDiagnosticsComponents: {
+            availability: string;
+            entries: components["schemas"]["AppDiagnosticsComponent"][];
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            revision: number;
+        };
+        AppDiagnosticsErrorSummary: {
+            /** Format: date-time */
+            at: string;
+            count: number;
+            message: string;
+            name: string;
+            source: string;
+        };
+        AppDiagnosticsErrors: {
+            availability: string;
+            /** Format: date-time */
+            enabledAt: string;
+            notRecordedBeforeEnable: boolean;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            records: components["schemas"]["AppDiagnosticsErrorSummary"][];
+            revision: number;
+        };
+        AppDiagnosticsGeometry: {
+            availability: string;
+            nodes: components["schemas"]["AppDiagnosticsNode"][];
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            revision: number;
+        };
+        AppDiagnosticsIdentity: {
+            appVersion: string;
+            buildCommit: string;
+            daemonVersion: string;
+            os: string;
+        };
+        AppDiagnosticsNode: {
+            ancestors: components["schemas"]["AppDiagnosticsStyle"][];
+            availability: string;
+            hit: string;
+            hostId: string;
+            id: string;
+            intersectsViewport: boolean;
+            projectId: string;
+            role: string;
+            sessionId: string;
+            source: string;
+            style?: components["schemas"]["AppDiagnosticsStyle"];
+        };
+        AppDiagnosticsQuery: {
+            count: number;
+            /** Format: double */
+            dataUpdatedAt: number;
+            /** Format: double */
+            errorUpdatedAt: number;
+            failureCount: number;
+            fetchStatus: string;
+            hostId: string;
+            invalidated: boolean;
+            kind: string;
+            observerCount: number;
+            status: string;
+            workspaces: components["schemas"]["AppDiagnosticsWorkspace"][];
         };
         AppDiagnosticsRecord: {
             /** Format: date-time */
@@ -5103,7 +5225,20 @@ export interface components {
             snapshot: components["schemas"]["AppDiagnosticsSnapshot"];
         };
         AppDiagnosticsRevokeResponse: {
+            cleanup: string;
             revoked: boolean;
+        };
+        AppDiagnosticsRoute: {
+            availability: string;
+            hostId: string;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            projectId: string;
+            revision: number;
+            routeId: string;
+            sessionId: string;
+            source: string;
         };
         AppDiagnosticsRuntimeState: {
             epoch: string;
@@ -5111,22 +5246,75 @@ export interface components {
             ready: boolean;
             windows: components["schemas"]["AppDiagnosticsWindow"][];
         };
+        AppDiagnosticsSession: {
+            activity: string;
+            column: string;
+            id: string;
+            kind: string;
+            status: string;
+            terminated: boolean;
+        };
+        AppDiagnosticsShell: {
+            availability: string;
+            /** Format: double */
+            devicePixelRatio: number;
+            /** Format: double */
+            height: number;
+            inspectorOpen: boolean;
+            /** Format: date-time */
+            observedAt: string;
+            omittedCount: number;
+            revision: number;
+            sidebarCollapsed: boolean;
+            /** Format: double */
+            sidebarWidth: number;
+            /** Format: double */
+            width: number;
+        };
         AppDiagnosticsSnapshot: {
             /** Format: date-time */
             capturedAt: string;
+            collector?: components["schemas"]["AppDiagnosticsCollector"];
             completeness: string;
+            identity?: components["schemas"]["AppDiagnosticsIdentity"];
             instanceId: string;
             rendererGeneration: number;
             schemaVersion: number;
             windowId: string;
         };
         AppDiagnosticsSnapshotList: {
+            partial: boolean;
             readErrorCount?: number;
             records: components["schemas"]["AppDiagnosticsRecord"][];
+        };
+        AppDiagnosticsStyle: {
+            box: components["schemas"]["AppDiagnosticsBox"];
+            clip: string;
+            display: string;
+            gridRows: number[];
+            /** Format: double */
+            opacity: number;
+            overflowX: string;
+            overflowY: string;
+            transform: number[];
+            visibility: string;
+            /** Format: double */
+            zIndex: number;
         };
         AppDiagnosticsWindow: {
             generation: number;
             id: string;
+        };
+        AppDiagnosticsWorkspace: {
+            folderMissing: boolean;
+            hostId: string;
+            omittedCount: number;
+            projectId: string;
+            scope: string;
+            sessionCount: number;
+            sessions: components["schemas"]["AppDiagnosticsSession"][];
+            shared: boolean;
+            source: string;
         };
         AppMemoryResponse: {
             /** @description False when there was no earlier sample to measure against: cpuPercent is unknown, not zero. */

@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "instanceId": "app-1",
+  "windowId": "window-1",
+  "rendererGeneration": 1,
+  "capturedAt": "2026-10-29T00:00:00.000Z",
+  "completeness": "partial",
+  "identity": {
+    "appVersion": "0.14.7",
+    "daemonVersion": "unknown",
+    "buildCommit": "unknown",
+    "os": "linux"
+  },
+  "collector": {
+    "redactionSchemaVersion": 1,
+    "captureStartedAt": "2026-10-29T00:00:00.000Z",
+    "captureFinishedAt": "2026-10-29T00:00:00.000Z",
+    "consistency": "stable",
+    "route": {
+      "availability": "available",
+      "observedAt": "2026-10-29T00:00:00.000Z",
+      "revision": 1,
+      "omittedCount": 0,
+      "routeId": "board",
+      "source": "local",
+      "projectId": "project-1",
+      "sessionId": "",
+      "hostId": ""
+    },
+    "shell": {
+      "availability": "available",
+      "observedAt": "2026-10-29T00:00:00.000Z",
+      "revision": 1,
+      "omittedCount": 0,
+      "width": 800,
+      "height": 600,
+      "devicePixelRatio": 1,
+      "sidebarCollapsed": false,
+      "sidebarWidth": 240,
+      "inspectorOpen": false
+    },
+    "cache": {
+      "availability": "available",
+      "observedAt": "2026-10-29T00:00:00.000Z",
+      "revision": 1,
+      "omittedCount": 0,
+      "queries": [
+        {
+          "kind": "workspaces",
+          "hostId": "",
+          "status": "success",
+          "fetchStatus": "idle",
+          "invalidated": false,
+          "dataUpdatedAt": 0,
+          "errorUpdatedAt": 0,
+          "observerCount": 1,
+          "failureCount": 0,
+          "count": 1,
+          "workspaces": [
+            {
+              "projectId": "project-1",
+              "hostId": "",
+              "source": "local",
+              "shared": false,
+              "folderMissing": false,
+              "sessionCount": 1,
+              "sessions": [
+                {
+                  "id": "worker-1",
+                  "kind": "worker",
+                  "terminated": false,
+                  "status": "working",
+                  "activity": "active",
+                  "column": "building"
+                }
+              ],
+              "omittedCount": 0,
+              "scope": "ids"
+            }
+          ]
+        }
+      ]
+    },
+    "components": {
+      "availability": "available",
+      "observedAt": "2026-10-29T00:00:00.000Z",
+      "revision": 1,
+      "omittedCount": 0,
+      "entries": [
+        {
+          "kind": "project",
+          "revision": 1,
+          "observedAt": "2026-10-29T00:00:00.000Z",
+          "projectId": "project-1",
+          "hostId": "",
+          "source": "local",
+          "expanded": true,
+          "shared": false,
+          "showAll": false,
+          "sessionCount": 1,
+          "hiddenCount": 0,
+          "liveIds": [
+            "worker-1"
+          ],
+          "workerIds": [
+            "worker-1"
+          ],
+          "orderedIds": [
+            "worker-1"
+          ],
+          "listedIds": [
+            "worker-1"
+          ],
+          "workspaces": [],
+          "omittedCount": 0
+        }
+      ]
+    },
+    "geometry": {
+      "availability": "not_mounted",
+      "observedAt": "2026-10-29T00:00:00.000Z",
+      "revision": 1,
+      "omittedCount": 0,
+      "nodes": []
+    },
+    "errors": {
+      "availability": "available",
+      "observedAt": "2026-10-29T00:00:00.000Z",
+      "revision": 1,
+      "omittedCount": 0,
+      "enabledAt": "2026-10-29T00:00:00.000Z",
+      "notRecordedBeforeEnable": true,
+      "records": []
+    }
+  }
+}

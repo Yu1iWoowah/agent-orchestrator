@@ -1,3 +1,5 @@
+import { AppDiagnosticsMain } from "./main/app-diagnostics";
+import { DIAGNOSTIC_CHANNEL } from "./shared/app-diagnostics";
 import { SideCloseRecovery } from "./main/side-close";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { syncMacWindowButtons } from "./main/window-chrome";
@@ -433,7 +435,7 @@ const quitConfirm = createQuitConfirmController({
 	},
 	quit: () => app.quit(),
 });
-let appDiagnosticsLink: (() => void) | null = null;
+let appDiagnosticsLink: ReturnType<typeof connectAppDiagnostics> | null = null;
 let appDiagnosticsLinkIdentity: string | undefined;
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
@@ -888,6 +890,14 @@ async function createWindowInternal(): Promise<void> {
 	if (!shellWebContents) throw new Error("AO shell WebContents was not created");
 	trustedShellWebContents.set(shellWebContents.id, shellWebContents);
 	relayScrollPhases(shellWebContents);
+
+	shellWebContents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
+		if (isMainFrame && !inPlace) appDiagnosticsMain.resetDocument();
+	});
+	shellWebContents.on("render-process-gone", () => appDiagnosticsMain.resetDocument("APP_RENDERER_UNAVAILABLE"));
+	shellWebContents.on("did-finish-load", () => {
+		if (daemonStatus.state === "ready") establishAppDiagnosticsLink();
+	});
 	shellWebContents.once("destroyed", () => {
 		trustedShellWebContents.delete(shellWebContents.id);
 		quitConfirm.reset();
@@ -1182,6 +1192,7 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		appDiagnosticsMain.resetDocument("APP_WINDOW_GONE");
 		disposeAppDiagnosticsLink();
 		chatDraftRisks = [];
 		chatDraftDialog = undefined;
@@ -1483,7 +1494,17 @@ if (process.platform !== "win32") {
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
 const appDiagnosticsToken = randomBytes(32).toString("base64url");
-
+const appDiagnosticsMain = new AppDiagnosticsMain({
+	instanceId: appRunId,
+	rendererURL: rendererUrl,
+	shell: () => (mainWindow && !mainWindow.isDestroyed() ? getShellWebContents() : null),
+	identity: () => ({ appVersion: app.getVersion(), daemonVersion: "unknown", buildCommit: "unknown", os: process.platform }),
+	changed: () => appDiagnosticsLink?.refresh(),
+	consentCleared: () => {
+		disposeAppDiagnosticsLink();
+		establishAppDiagnosticsLink();
+	},
+});
 // The browser runtime token identifies this app to the daemon's runtime broker.
 // It is derived from an owner-only key in the data dir so it survives an app
 // restart: a daemon kept alive by AO_KEEP_DAEMON (or adopted under a pinned
@@ -1694,12 +1715,25 @@ function reconnectBrowserRuntimeLink(): void {
 }
 
 function disposeAppDiagnosticsLink(): void {
-	appDiagnosticsLink?.();
+	const previous = appDiagnosticsLink;
 	appDiagnosticsLink = null;
 	appDiagnosticsLinkIdentity = undefined;
+	previous?.();
+	appDiagnosticsMain.setConnection({ connected: false });
 }
 
 function establishAppDiagnosticsLink(): void {
+	if (!mainWindow || mainWindow.isDestroyed() || !getShellWebContents()) {
+		disposeAppDiagnosticsLink();
+		return;
+	}
+	// Q15-A: an adopted daemon never received this launch's private diagnostic token.
+	// Do not persist credentials, replace the daemon or suggest re-consenting as a fix.
+	if (!daemonProcess) {
+		disposeAppDiagnosticsLink();
+		appDiagnosticsMain.setConnection({ connected: false, adopted: true });
+		return;
+	}
 	const rfp = runFilePath();
 	if (!rfp) return;
 	let info: ReturnType<typeof parseRunFile>;
@@ -1715,7 +1749,11 @@ function establishAppDiagnosticsLink(): void {
 	disposeAppDiagnosticsLink();
 	// This handle owns reconnect/backoff for the daemon identity until disposed.
 	// A rejected capability stops retries inside the handle until identity changes.
-	appDiagnosticsLink = connectAppDiagnostics({ path: address }, appDiagnosticsToken, appRunId);
+	appDiagnosticsLink = connectAppDiagnostics({ path: address }, appDiagnosticsToken, appRunId, {
+		windows: () => appDiagnosticsMain.windows(),
+		capture: (request, signal) => appDiagnosticsMain.capture(request, signal),
+		state: (state) => appDiagnosticsMain.setConnection({ connected: state === "connected" }),
+	});
 	appDiagnosticsLinkIdentity = identity;
 }
 
@@ -2696,6 +2734,9 @@ ipcMain.handle("editorHandoff:copyWorkspacePath", (event, sessionId: string) => 
 	if (event.sender !== getShellWebContents()) throw new Error("Untrusted editor handoff request.");
 	return editorHandoff.copyWorkspacePath(typeof sessionId === "string" ? sessionId : "");
 });
+ipcMain.handle(DIAGNOSTIC_CHANNEL.status, (event) => appDiagnosticsMain.readStatus(event));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.register, (event) => appDiagnosticsMain.register(event));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.submit, (event, value: unknown) => appDiagnosticsMain.submit(event, value));
 ipcMain.handle("app:getVersion", () => app.getVersion());
 ipcMain.handle("app:openExternal", async (_event, url: string) => {
 	await openAllowedAppExternalURL(url, shell);

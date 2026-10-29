@@ -263,8 +263,10 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 			if !ok {
 				return
 			}
-			if in.Snapshot == nil || in.Code != "" {
-				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_UNSUPPORTED", Status: 503}}
+			if in.Code != "" {
+				ch <- response{err: captureFailure(in.Code)}
+			} else if in.Snapshot == nil || !domain.ValidAppDiagnosticsSnapshot(*in.Snapshot) {
+				ch <- response{err: &domain.AppDiagnosticsError{Code: "APP_DIAGNOSTICS_INVALID_PAYLOAD", Status: 502}}
 			} else {
 				ch <- response{snapshot: *in.Snapshot}
 			}
@@ -308,4 +310,25 @@ func (b *Broker) Capture(ctx context.Context, in domain.AppDiagnosticsCaptureReq
 		_ = b.send(conn, frame{Type: "cancel", RequestID: id})
 		return domain.AppDiagnosticsSnapshot{}, ctx.Err()
 	}
+}
+
+// Only fixed collector failures cross the private runtime boundary.
+func captureFailure(code string) *domain.AppDiagnosticsError {
+	status := 503
+	switch code {
+	case "APP_DIAGNOSTICS_PAYLOAD_TOO_LARGE":
+		status = 413
+	case "APP_DIAGNOSTICS_INVALID_PAYLOAD":
+		status = 502
+	case "APP_WINDOW_GONE", "APP_RENDERER_CHANGED":
+		status = 409
+	case "APP_SNAPSHOT_TIMEOUT":
+		status = 504
+	case "APP_DIAGNOSTICS_BUSY":
+		status = 429
+	case "APP_DIAGNOSTICS_DISABLED", "APP_RENDERER_UNAVAILABLE", "APP_DIAGNOSTICS_UNSUPPORTED":
+	default:
+		code = "APP_RENDERER_UNAVAILABLE"
+	}
+	return &domain.AppDiagnosticsError{Code: code, Status: status}
 }

@@ -277,7 +277,7 @@ func TestListsAndAuditAreGrantScoped(t *testing.T) {
 			t.Fatal("cross-grant audit")
 		}
 	}
-	if err := s.RevokeID(context.Background(), second.Token, first.ID); err == nil {
+	if _, err := s.RevokeID(context.Background(), second.Token, first.ID); err == nil {
 		t.Fatal("wrong revoke path accepted")
 	}
 	*now = now.Add(2 * time.Second)

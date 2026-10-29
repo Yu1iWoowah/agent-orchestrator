@@ -205,6 +205,12 @@ if (typeof window !== "undefined") {
 			fetch: async () => new Uint8Array(),
 			onFrameNavigated: () => () => undefined,
 		},
+		appDiagnostics: {
+			getStatus: async () => ({state:"disabled",reason:"consent_required"}),
+			register: async () => ({documentId:"test-document",windowId:"window-1",generation:1,enabled:false,expiresAt:0}),
+			submit: async () => false, onRequest: () => () => undefined, onConfigure: () => () => undefined,
+			onStatus: () => () => undefined, onCancel: () => () => undefined,
+		},
 		daemon: {
 			getStatus: async () => ({ state: "stopped" }),
 			start: async () => ({ state: "starting" }),

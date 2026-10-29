@@ -3,6 +3,7 @@ package appdiagnostics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -197,5 +198,67 @@ func TestAuthenticatedRuntimeCannotGrantBeforeCollectorReady(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(dir, "diagnostics", "grants"))
 	if err != nil || len(entries) != 0 {
 		t.Fatal("credential published before collector ready")
+	}
+}
+
+func TestBrokerPreservesOnlyFixedCollectorFailures(t *testing.T) {
+	for _, tt := range []struct {
+		code   string
+		status int
+	}{{"APP_DIAGNOSTICS_PAYLOAD_TOO_LARGE", 413}, {"APP_DIAGNOSTICS_INVALID_PAYLOAD", 502}, {"APP_RENDERER_CHANGED", 409}, {"APP_SNAPSHOT_TIMEOUT", 504}, {"canary-secret /private/path", 503}} {
+		t.Run(tt.code, func(t *testing.T) {
+			b := New("diagnostics-token")
+			c, d, e := connect(t, b, "diagnostics-token")
+			defer c.Close()
+			var hello frame
+			if err := d.Decode(&hello); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Encode(frame{Type: "ready", Windows: []domain.AppDiagnosticsWindow{{ID: "window-1", Generation: 1}}}); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(time.Second)
+			for !b.State().Ready && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := b.Capture(context.Background(), domain.AppDiagnosticsCaptureRequest{WindowID: "window-1"})
+				done <- err
+			}()
+			var command frame
+			if err := d.Decode(&command); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Encode(frame{Type: "result", RequestID: command.RequestID, Code: tt.code}); err != nil {
+				t.Fatal(err)
+			}
+			err := <-done
+			var typed *domain.AppDiagnosticsError
+			if !errors.As(err, &typed) || typed.Status != tt.status || strings.Contains(err.Error(), "canary-secret") {
+				t.Fatalf("unsafe or collapsed failure: %v", err)
+			}
+		})
+	}
+}
+func TestBrokerRejectsUnknownCollectorContent(t *testing.T) {
+	raw, err := os.ReadFile("../../../test/fixtures/app-diagnostics-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	collector := snapshot["collector"].(map[string]any)
+	for _, section := range []string{"route", "shell", "cache", "components", "geometry", "errors"} {
+		data := collector[section].(map[string]any)
+		data["payload"] = "canary-secret /private/path"
+		frameBytes, _ := json.Marshal(map[string]any{"type": "result", "snapshot": snapshot})
+		var decoded frame
+		if decode(frameBytes, &decoded) == nil {
+			t.Fatalf("unknown content accepted in %s", section)
+		}
+		delete(data, "payload")
 	}
 }

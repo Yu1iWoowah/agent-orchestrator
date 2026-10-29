@@ -1,3 +1,5 @@
+import { useDiagnosticCommit } from "../lib/app-diagnostics-registry";
+import { componentObservation } from "../lib/app-diagnostics-projectors";
 import { OrchestratorStartingChat } from "./chat/OrchestratorStartingChat";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -136,6 +138,26 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 		session.status === "no_signal" || session.displayStatus === "No signal"
 			? { ...session, kanbanColumn: "building" as const }
 			: session,
+	);
+
+	useDiagnosticCommit(
+		`board:${hostId ?? "local"}:${projectId ?? "all"}`,
+		() =>
+			componentObservation("board", workspace, {
+				sessionCount: activeSessions.length,
+				live: liveSessions,
+				workers: activeSessions,
+				ordered: boardSessions,
+				listed: boardSessions,
+				workspaces: workspaces.map((row) => ({
+					id: row.id,
+					hostId: row.hostId,
+					kind: row.kind,
+					shared: row.shared,
+					sessions: boardSessions.filter((session) => session.workspaceId === row.id),
+				})),
+			}),
+		() => document.querySelector<HTMLElement>("main"),
 	);
 	const boardLabels = sessionsBoardLabels(t);
 	const presentation = useBoardPresentation({

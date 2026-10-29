@@ -3782,5 +3782,6 @@
 	"attention.cancelled": "Cancelled",
 	"attention.unavailable": "No longer waiting",
 	"attention.sourceChanged": "This request changed or is no longer waiting. Refresh the list and open it again.",
-	"attention.readError": "Could not save read status. The request is still pending."
+	"attention.readError": "Could not save read status. The request is still pending.",
+	"appDiagnostics.adoptedUnavailable": "App diagnostics unavailable: using an existing daemon. Giving consent again will not fix this connection."
 }
