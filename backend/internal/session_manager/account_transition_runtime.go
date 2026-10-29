@@ -18,6 +18,21 @@ type accountTransitionRecoveryStore interface {
 	ListUnsettledAccountTransitions(context.Context) ([]domain.SessionInterfaceTransition, error)
 }
 
+type accountTransitionRetirementStore interface {
+	RetireAccountTransitionRuntime(context.Context, string, time.Time) (bool, error)
+}
+
+func (m *Manager) retireAccountTransitionRuntime(ctx context.Context, id string) (bool, error) {
+	store, ok := m.store.(accountTransitionRetirementStore)
+	if !ok {
+		return false, nil
+	}
+	// The store rechecks all retirement proofs in the same statement as the
+	// receipt update. Neither a stale latest-row read nor a reused handle owns
+	// the current controller; lifecycle owners use this same SQL projection.
+	return store.RetireAccountTransitionRuntime(ctx, id, m.clock())
+}
+
 type accountTransitionRuntimeContextKey struct{}
 
 func (m *Manager) recordAccountRuntime(ctx context.Context, state domain.AccountTransitionRuntimeState, launchID, handleID string) error {
@@ -83,6 +98,12 @@ func (m *Manager) stopAccountTransitionRuntime(ctx context.Context, transition d
 	if latest.Phase == domain.SessionInterfaceTransitionSourceStopped || latest.TargetRuntimeState == domain.AccountTransitionRuntimeNotStarted || latest.TargetRuntimeState == domain.AccountTransitionRuntimeStopped {
 		return nil
 	}
+	if latest.Phase == domain.SessionInterfaceTransitionRecovery {
+		retired, err := m.retireAccountTransitionRuntime(ctx, latest.ID)
+		if err != nil || retired {
+			return err
+		}
+	}
 	if latest.TargetRuntimeState != domain.AccountTransitionRuntimeStarted || latest.TargetRuntimeHandleID == "" || latest.TargetRuntimeLaunchID == "" {
 		// A legacy/partial receipt cannot identify one opaque handle. Only the
 		// runtime adapter can conclusively close its whole session namespace.
@@ -122,40 +143,18 @@ func (m *Manager) recoverTerminalAccountTransition(ctx context.Context, t domain
 	if !found {
 		return ErrNotFound
 	}
-	var bound string
 	if !rec.IsTerminated && m.agentAccounts != nil {
-		bound, err = m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+		bound, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
 		if err != nil {
 			return err
 		}
 		if bound == t.TargetAccountID {
-			m.endAgentOperation(t.SessionID, agentOperationInterfaceRecovery)
 			return nil
 		}
 	}
-	if store, ok := m.store.(interfaceTransitionStore); ok {
-		latest, found, err := store.GetLatestSessionInterfaceTransition(ctx, t.SessionID)
-		if err != nil {
-			return err
-		}
-		if found && latest.ID != t.ID {
-			// A binding commit makes the successor legitimate even if the daemon
-			// never persisted completed. Runtime handles (notably tmux names)
-			// can be reused, so stopping an old generation would kill its current
-			// owner. A completed handoff also proves the old controller stopped.
-			committed := latest.AccountMove() && bound != "" && bound == latest.TargetAccountID
-			if latest.Phase != domain.SessionInterfaceTransitionCompleted && !committed {
-				// Without evidence that the later handoff replaced this receipt,
-				// keep the fence; never use the old handle to stop a newer writer.
-				return nil
-			}
-			writeCtx := context.WithValue(ctx, accountTransitionRuntimeContextKey{}, t.ID)
-			if err := m.recordAccountRuntime(writeCtx, domain.AccountTransitionRuntimeStopped, t.TargetRuntimeLaunchID, t.TargetRuntimeHandleID); err != nil {
-				return err
-			}
-			m.endAgentOperation(t.SessionID, agentOperationInterfaceRecovery)
-			return nil
-		}
+	retired, err := m.retireAccountTransitionRuntime(ctx, t.ID)
+	if err != nil || retired {
+		return err
 	}
 	if err := m.stopTransitionTargetConclusive(ctx, t); err != nil {
 		m.logger.Warn("account transition: recovery shutdown unconfirmed; stop the session runtime and retry recovery", "sessionID", t.SessionID, "transition", t.ID, "errorType", fmt.Sprintf("%T", err))
@@ -167,6 +166,27 @@ func (m *Manager) recoverTerminalAccountTransition(ctx context.Context, t domain
 			return err
 		}
 	}
-	m.endAgentOperation(t.SessionID, agentOperationInterfaceRecovery)
+	return nil
+}
+
+const accountRecoveryUnconfirmedDetail = "AO could not confirm the old account controller stopped. Stop this session's terminal runtime, then restart AO to retry recovery."
+
+// Persist a fixed classification for obligations which remain fenced. This
+// does not broaden the older provider-error paths or record their contents.
+func (m *Manager) markAccountRecoveryUnconfirmed(ctx context.Context, t domain.SessionInterfaceTransition) error {
+	if t.ErrorCode == "TARGET_STOP_UNCONFIRMED" && t.ErrorDetail == accountRecoveryUnconfirmedDetail {
+		return nil
+	}
+	store, ok := m.store.(interfaceTransitionStore)
+	if !ok {
+		return ErrInterfaceHandoffUnsupported
+	}
+	changed, err := store.AdvanceSessionInterfaceTransition(ctx, t.ID, t.Phase, t.Phase, t.NativeConversationID, "TARGET_STOP_UNCONFIRMED", accountRecoveryUnconfirmedDetail, m.clock())
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return ErrInterfaceTransitionInProgress
+	}
 	return nil
 }

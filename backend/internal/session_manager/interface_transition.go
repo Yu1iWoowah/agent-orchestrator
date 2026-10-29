@@ -142,6 +142,19 @@ func (m *Manager) InterfaceTransitionStatus(
 			status.Transition = &latest
 		}
 	}
+	if recoveryStore, ok := m.store.(interface {
+		HasUnconfirmedAccountTransition(context.Context, domain.SessionID) (bool, error)
+	}); ok {
+		unconfirmed, err := recoveryStore.HasUnconfirmedAccountTransition(ctx, id)
+		if err != nil {
+			return InterfaceTransitionStatus{}, err
+		}
+		if unconfirmed {
+			status.Supported = false
+			status.ReasonCode = "TARGET_STOP_UNCONFIRMED"
+			status.Reason = accountRecoveryUnconfirmedDetail
+		}
+	}
 	return status, nil
 }
 
@@ -1829,6 +1842,7 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 	if err != nil {
 		return nil, err
 	}
+	admitted := make(map[domain.SessionID]bool)
 	for i := range active {
 		transition := &active[i]
 		// Rebuild this session's input/reaper fence before serving or restoring
@@ -1845,6 +1859,7 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 			continue
 		}
 		m.agentOperations[transition.SessionID] = agentOperationInterfaceRecovery
+		admitted[transition.SessionID] = true
 		delete(m.deferredInterfaceRecovery, transition.SessionID)
 		drained := m.inputDrained[transition.SessionID]
 		m.agentOpMu.Unlock()
@@ -1967,7 +1982,6 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 					transition.Phase == domain.SessionInterfaceTransitionPreflighting ||
 					transition.Phase == domain.SessionInterfaceTransitionDraining) {
 				*transition = current
-				m.endAgentOperation(transition.SessionID, agentOperationInterfaceRecovery)
 				continue
 			}
 			return nil, fmt.Errorf("transition %s changed while recovering", transition.ID)
@@ -1977,7 +1991,53 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 		transition.ErrorDetail = detail
 		transition.UpdatedAt = m.clock()
 		transition.CompletedAt = transition.UpdatedAt
-		m.endAgentOperation(transition.SessionID, agentOperationInterfaceRecovery)
+	}
+	// The fence belongs to the session, not to an individual receipt. Recheck
+	// all remaining obligations before releasing it, including an exact deferred
+	// recovery's siblings. Safe historical retirement has no external side effect.
+	if recoveryStore, ok := m.store.(accountTransitionRecoveryStore); ok {
+		pending, err := recoveryStore.ListUnsettledAccountTransitions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, obligation := range pending {
+			if _, ours := admitted[obligation.SessionID]; !ours {
+				continue
+			}
+			rec, found, err := m.store.GetSession(ctx, obligation.SessionID)
+			if err != nil {
+				return nil, err
+			}
+			if found && !rec.IsTerminated && m.agentAccounts != nil {
+				bound, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+				if err != nil {
+					return nil, err
+				}
+				if bound == obligation.TargetAccountID {
+					continue
+				}
+			}
+			retired, err := m.retireAccountTransitionRuntime(ctx, obligation.ID)
+			if err != nil {
+				return nil, err
+			}
+			if retired {
+				continue
+			}
+			admitted[obligation.SessionID] = false
+			if err := m.markAccountRecoveryUnconfirmed(ctx, obligation); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for id, settled := range admitted {
+		pending, found, err := store.GetActiveSessionInterfaceTransition(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if settled && (!found || !pending.Active()) {
+			m.endAgentOperation(id, agentOperationInterfaceRecovery)
+		}
 	}
 	return active, nil
 }

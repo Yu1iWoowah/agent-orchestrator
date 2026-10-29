@@ -2,6 +2,7 @@ package sessionmanager
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -65,12 +66,23 @@ func privateRecoveryTmux(t *testing.T) (*tmuxruntime.Runtime, string) {
 }
 
 func TestSQLiteCommittedSuccessorKeepsItsTmuxWriter(t *testing.T) {
-	for _, phase := range []domain.SessionInterfaceTransitionPhase{
-		domain.SessionInterfaceTransitionTargetStarting,
-		domain.SessionInterfaceTransitionActivating,
-		domain.SessionInterfaceTransitionRecovery,
+	for _, tc := range []struct {
+		name               string
+		phase, tail        domain.SessionInterfaceTransitionPhase
+		legacy, terminated bool
+	}{
+		{name: "target_starting", phase: domain.SessionInterfaceTransitionTargetStarting},
+		{name: "activating", phase: domain.SessionInterfaceTransitionActivating},
+		{name: "recovery_required", phase: domain.SessionInterfaceTransitionRecovery},
+		{name: "completed then failed", phase: domain.SessionInterfaceTransitionCompleted, tail: domain.SessionInterfaceTransitionFailed},
+		{name: "completed then cancelled", phase: domain.SessionInterfaceTransitionCompleted, tail: domain.SessionInterfaceTransitionCancelled},
+		{name: "committed then failed", phase: domain.SessionInterfaceTransitionRecovery, tail: domain.SessionInterfaceTransitionFailed},
+		{name: "legacy resumed", legacy: true},
+		{name: "legacy then cancelled", legacy: true, tail: domain.SessionInterfaceTransitionCancelled},
+		{name: "started then resumed"},
+		{name: "terminated legacy", legacy: true, terminated: true},
 	} {
-		t.Run(string(phase), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			runtime, root := privateRecoveryTmux(t)
@@ -88,15 +100,28 @@ func TestSQLiteCommittedSuccessorKeepsItsTmuxWriter(t *testing.T) {
 				t.Fatal(err)
 			}
 			rec.Metadata.RuntimeHandleID, rec.Metadata.RuntimeLaunchID = handle.ID, "new-generation"
+			if tc.phase != "" {
+				// Force the SQL successor proof, independently of the resumed
+				// generation proof exercised by the no-successor cases below.
+				rec.Metadata.RuntimeLaunchID = ""
+			}
+			rec.IsTerminated = tc.terminated
 			if err := db.UpdateSession(ctx, rec); err != nil {
 				t.Fatal(err)
 			}
-			for i, account := range []string{"acct-a", "acct-b", "acct-c"} {
+			bindings := []string{"acct-a"}
+			if tc.phase != "" {
+				bindings = append(bindings, "acct-b", "acct-c")
+			}
+			for i, account := range bindings {
 				if err := db.BindSessionAgentAccount(ctx, rec.ID, domain.AgentAccountProviderClaude, account, now.Add(time.Duration(i)*time.Second)); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for i, id := range []string{"old-receipt", "new-committed"} {
+				if i == 1 && tc.phase == "" {
+					continue
+				}
 				at := now.Add(time.Duration(i) * time.Second)
 				accounts := []string{"acct-a", "acct-b", "acct-c"}
 				move := domain.SessionInterfaceTransition{ID: id, SessionID: rec.ID, SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict, SourceAccountID: accounts[i], TargetAccountID: accounts[i+1], Phase: domain.SessionInterfaceTransitionTargetStarting, CreatedAt: at, UpdatedAt: at}
@@ -118,12 +143,30 @@ func TestSQLiteCommittedSuccessorKeepsItsTmuxWriter(t *testing.T) {
 				}
 				targetPhase := domain.SessionInterfaceTransitionRecovery
 				if i == 1 {
-					targetPhase = phase
+					targetPhase = tc.phase
 				}
 				if targetPhase != move.Phase {
 					if changed, err := db.AdvanceSessionInterfaceTransition(ctx, id, move.Phase, targetPhase, "", "DAEMON_RESTARTED", "", at); err != nil || !changed {
 						t.Fatalf("advance: changed=%t err=%v", changed, err)
 					}
+				}
+			}
+
+			if tc.legacy {
+				raw, err := sql.Open("sqlite", "file:"+filepath.Join(root, "db", "ao.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = raw.ExecContext(ctx, "UPDATE session_interface_transitions SET target_runtime_state='',target_runtime_launch_id='',target_runtime_handle_id='' WHERE id='old-receipt'")
+				_ = raw.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.tail != "" {
+				_, created, err := db.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{ID: "later-unsuccessful", SessionID: rec.ID, SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict, SourceAccountID: bindings[len(bindings)-1], TargetAccountID: "acct-d", Phase: tc.tail, CreatedAt: now.Add(3 * time.Second), UpdatedAt: now.Add(3 * time.Second)})
+				if err != nil || !created {
+					t.Fatalf("create tail: %t %v", created, err)
 				}
 			}
 			manager, _, _, _, accounts, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
@@ -132,16 +175,26 @@ func TestSQLiteCommittedSuccessorKeepsItsTmuxWriter(t *testing.T) {
 			if _, err := manager.recoverInterruptedInterfaceTransitions(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if alive, err := runtime.IsAlive(ctx, handle); err != nil || !alive {
-				t.Fatalf("old receipt stopped the committed %s successor: alive=%t err=%v", phase, alive, err)
+			alive, err := runtime.IsAlive(ctx, handle)
+			if alive == tc.terminated || err != nil && !errors.Is(err, ports.ErrRuntimeUnavailable) {
+				t.Fatalf("recovery changed the wrong writer: alive=%t terminated=%t err=%v", alive, tc.terminated, err)
 			}
 			old, found, err := db.GetSessionInterfaceTransition(ctx, "old-receipt")
 			if err != nil || !found || old.TargetRuntimeState != domain.AccountTransitionRuntimeStopped {
 				t.Fatalf("superseded receipt did not retire: %+v found=%t err=%v", old, found, err)
 			}
 			bound, _, err := db.GetSessionAgentAccount(ctx, rec.ID, domain.AgentAccountProviderClaude)
-			if err != nil || bound != "acct-c" || manager.SessionMutationInProgress(rec.ID) {
+			if err != nil || bound != bindings[len(bindings)-1] || manager.SessionMutationInProgress(rec.ID) {
 				t.Fatalf("committed binding/fence changed: bound=%s err=%v", bound, err)
+			}
+			owners, err := db.ListAgentAccountUsageOwners(ctx, "acct-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, owner := range owners {
+				if owner.Blocking {
+					t.Fatalf("retired target still blocks lifecycle: %+v", owner)
+				}
 			}
 		})
 	}

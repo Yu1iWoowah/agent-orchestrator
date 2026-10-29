@@ -12,6 +12,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+type AccountTransitionRecoveryEvidence struct {
+	ID                string
+	RetireWithoutStop int64
+	CurrentTarget     int64
+}
+
 type AgentAccount struct {
 	ID                   string
 	Provider             string

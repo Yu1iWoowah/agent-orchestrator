@@ -3418,3 +3418,33 @@ func (s *transitionStore) ListUnsettledAccountTransitions(context.Context) ([]do
 	}
 	return out, nil
 }
+
+// The real SQL projection is exercised by the SQLite/tmux matrix. This narrow
+// fake supplies the same legacy/generation/completed evidence to unit tests.
+func (s *transitionStore) RetireAccountTransitionRuntime(_ context.Context, id string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.transitions[id]
+	if !ok {
+		return false, nil
+	}
+	if t.TargetRuntimeState == domain.AccountTransitionRuntimeStopped {
+		return true, nil
+	}
+	if t.Phase != domain.SessionInterfaceTransitionRecovery {
+		return false, nil
+	}
+	rec := s.sessions[t.SessionID]
+	retired := !rec.IsTerminated && (t.TargetRuntimeState == "" || t.TargetRuntimeState == domain.AccountTransitionRuntimeStarted && t.TargetRuntimeLaunchID != "" && rec.Metadata.RuntimeLaunchID != "" && rec.Metadata.RuntimeLaunchID != t.TargetRuntimeLaunchID)
+	for _, later := range s.transitions {
+		if later.SessionID == t.SessionID && later.CreatedAt.After(t.CreatedAt) && later.Phase == domain.SessionInterfaceTransitionCompleted {
+			retired = true
+		}
+	}
+	if retired {
+		t.TargetRuntimeState = domain.AccountTransitionRuntimeStopped
+		t.UpdatedAt = at
+		s.transitions[id] = t
+	}
+	return retired, nil
+}

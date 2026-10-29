@@ -64,3 +64,25 @@ func (s *Store) ListUnsettledAccountTransitions(ctx context.Context) ([]domain.S
 	}
 	return out, nil
 }
+
+// RetireAccountTransitionRuntime rechecks the shared recovery projection and
+// retires a historical receipt atomically, without touching a runtime namespace.
+func (s *Store) RetireAccountTransitionRuntime(ctx context.Context, id string, at time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	row, err := s.qw.GetSessionInterfaceTransition(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if row.TargetRuntimeState == string(domain.AccountTransitionRuntimeStopped) {
+		return true, nil
+	}
+	n, err := s.qw.RetireAccountTransitionRuntime(ctx, gen.RetireAccountTransitionRuntimeParams{ID: id, UpdatedAt: at})
+	return n > 0, err
+}
+
+// HasUnconfirmedAccountTransition reports a durable shutdown failure which
+// still needs recovery, rather than an already superseded historical notice.
+func (s *Store) HasUnconfirmedAccountTransition(ctx context.Context, id domain.SessionID) (bool, error) {
+	return s.qr.HasUnconfirmedAccountTransition(ctx, id)
+}

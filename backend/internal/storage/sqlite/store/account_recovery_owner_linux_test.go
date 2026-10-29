@@ -108,16 +108,24 @@ func TestRecoveredTransitionOwnersPermitAccountLifecycle(t *testing.T) {
 					}
 					owners, err := s.ListAgentAccountUsageOwners(ctx, target)
 					mustNoError(t, err)
-					if len(owners) != 1 || !owners[0].Blocking {
+					if scenario != "legacy" && (len(owners) != 1 || !owners[0].Blocking) {
 						t.Fatalf("unconfirmed target lost its owner: %+v", owners)
+					}
+					if scenario == "legacy" && len(owners) != 0 {
+						t.Fatalf("old daemon's confirmed stop still blocks lifecycle: %+v", owners)
 					}
 					pending, err := s.ListUnsettledAccountTransitions(ctx)
 					mustNoError(t, err)
 					if len(pending) != 1 || pending[0].ID != move.ID {
 						t.Fatalf("startup cannot rediscover historical obligation: %+v", pending)
 					}
-					// The manager's conclusive shutdown (tested separately) writes this CAS.
-					changed, err = s.RecordAccountTransitionRuntime(ctx, move.ID, domain.AccountTransitionRuntimeStopped, launch, handle, now)
+					if scenario == "legacy" {
+						// The shared view proves that the old daemon confirmed stop;
+						// retirement must not stop a subsequently resumed source.
+						changed, err = s.RetireAccountTransitionRuntime(ctx, move.ID, now)
+					} else {
+						changed, err = s.RecordAccountTransitionRuntime(ctx, move.ID, domain.AccountTransitionRuntimeStopped, launch, handle, now)
+					}
 					mustNoError(t, err)
 					if !changed {
 						t.Fatal("terminal/legacy shutdown receipt could not converge")

@@ -240,6 +240,21 @@ func (q *Queries) GetSessionInterfaceTransition(ctx context.Context, id string) 
 	return i, err
 }
 
+const hasUnconfirmedAccountTransition = `-- name: HasUnconfirmedAccountTransition :one
+SELECT EXISTS (
+ SELECT 1 FROM session_interface_transitions AS t
+ JOIN account_transition_recovery_evidence AS r ON r.id=t.id
+ WHERE t.session_id=? AND t.error_code='TARGET_STOP_UNCONFIRMED'
+   AND r.retire_without_stop=0 AND r.current_target=0)
+`
+
+func (q *Queries) HasUnconfirmedAccountTransition(ctx context.Context, sessionID domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasUnconfirmedAccountTransition, sessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertSessionInterfaceTransition = `-- name: InsertSessionInterfaceTransition :one
 INSERT INTO session_interface_transitions (
     id, session_id, source_mode, target_mode, policy, history_policy, phase,
@@ -471,14 +486,8 @@ func (q *Queries) ListPendingSessionInterfaceTransitionMessages(ctx context.Cont
 
 const listUnsettledAccountTransitions = `-- name: ListUnsettledAccountTransitions :many
 SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state FROM session_interface_transitions AS t
-JOIN sessions AS s ON s.id=t.session_id
-WHERE t.phase='recovery_required' AND t.target_account_id<>''
-  AND t.target_runtime_state NOT IN ('not_started','stopped')
-  AND (s.is_terminated=1 OR NOT EXISTS (
-    SELECT 1 FROM session_agent_accounts AS b
-    WHERE b.session_id=t.session_id AND b.account_id=t.target_account_id
-      AND b.bound_at=(SELECT MAX(c.bound_at) FROM session_agent_accounts AS c
-                      WHERE c.session_id=b.session_id AND c.provider=b.provider)))
+JOIN account_transition_recovery_evidence AS r ON r.id=t.id
+WHERE r.current_target=0
 ORDER BY t.created_at,t.id
 `
 
@@ -572,6 +581,27 @@ func (q *Queries) RecordAccountTransitionRuntime(ctx context.Context, arg Record
 		arg.ExpectedState,
 		arg.ExpectedLaunchID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const retireAccountTransitionRuntime = `-- name: RetireAccountTransitionRuntime :execrows
+UPDATE session_interface_transitions
+SET target_runtime_state='stopped', updated_at=?1
+WHERE session_interface_transitions.id=?2 AND session_interface_transitions.id IN (
+ SELECT r.id FROM account_transition_recovery_evidence AS r WHERE r.retire_without_stop=1)
+`
+
+type RetireAccountTransitionRuntimeParams struct {
+	UpdatedAt time.Time
+	ID        string
+}
+
+// Re-evaluate the proof and retire in one statement; no runtime is stopped.
+func (q *Queries) RetireAccountTransitionRuntime(ctx context.Context, arg RetireAccountTransitionRuntimeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retireAccountTransitionRuntime, arg.UpdatedAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}

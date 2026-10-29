@@ -111,12 +111,20 @@ WHERE id=sqlc.arg(id) AND target_account_id<>'' AND (phase='target_starting' OR 
 
 -- name: ListUnsettledAccountTransitions :many
 SELECT t.* FROM session_interface_transitions AS t
-JOIN sessions AS s ON s.id=t.session_id
-WHERE t.phase='recovery_required' AND t.target_account_id<>''
-  AND t.target_runtime_state NOT IN ('not_started','stopped')
-  AND (s.is_terminated=1 OR NOT EXISTS (
-    SELECT 1 FROM session_agent_accounts AS b
-    WHERE b.session_id=t.session_id AND b.account_id=t.target_account_id
-      AND b.bound_at=(SELECT MAX(c.bound_at) FROM session_agent_accounts AS c
-                      WHERE c.session_id=b.session_id AND c.provider=b.provider)))
+JOIN account_transition_recovery_evidence AS r ON r.id=t.id
+WHERE r.current_target=0
 ORDER BY t.created_at,t.id;
+
+-- Re-evaluate the proof and retire in one statement; no runtime is stopped.
+-- name: RetireAccountTransitionRuntime :execrows
+UPDATE session_interface_transitions
+SET target_runtime_state='stopped', updated_at=sqlc.arg(updated_at)
+WHERE session_interface_transitions.id=sqlc.arg(id) AND session_interface_transitions.id IN (
+ SELECT r.id FROM account_transition_recovery_evidence AS r WHERE r.retire_without_stop=1);
+
+-- name: HasUnconfirmedAccountTransition :one
+SELECT EXISTS (
+ SELECT 1 FROM session_interface_transitions AS t
+ JOIN account_transition_recovery_evidence AS r ON r.id=t.id
+ WHERE t.session_id=? AND t.error_code='TARGET_STOP_UNCONFIRMED'
+   AND r.retire_without_stop=0 AND r.current_target=0);
