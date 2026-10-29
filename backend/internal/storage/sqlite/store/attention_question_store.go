@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -398,8 +400,8 @@ func (s *Store) CancelAttentionQuestion(ctx context.Context, session domain.Sess
 	if actor != "user" && actor != "agent" {
 		return domain.AttentionQuestionRecord{}, &domain.AttentionValidationError{Field: "actor", Message: "must be user or agent"}
 	}
-	if reason == "" || len(reason) > 4000 {
-		return domain.AttentionQuestionRecord{}, &domain.AttentionValidationError{Field: "reason", Message: "must contain 1–4000 bytes"}
+	if strings.TrimSpace(reason) == "" || utf8.RuneCountInString(reason) > 4000 {
+		return domain.AttentionQuestionRecord{}, &domain.AttentionValidationError{Field: "reason", Message: "must contain 1–4000 Unicode code points"}
 	}
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return domain.AttentionQuestionRecord{}, err

@@ -442,3 +442,110 @@ func TestAttentionAnswerNativeAcceptanceSurvivesLostOutboxAcknowledgment(t *test
 		t.Fatalf("restart would redeliver accepted answer: %+v %v", pending, err)
 	}
 }
+
+func TestAttentionQuestionConcurrentTransitions(t *testing.T) {
+	for _, transition := range []string{"answer", "revise", "expire"} {
+		t.Run(transition, func(t *testing.T) {
+			s, session, _ := conversationFixture(t)
+			ctx := context.Background()
+			create := askCreate(session)
+			deadline := histClock.Add(time.Minute)
+			if transition == "expire" {
+				create.ExpiresAt = &deadline
+			}
+			q, _, err := s.CreateAttentionQuestion(ctx, create, histClock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := histClock
+			if transition == "expire" {
+				at = deadline
+			}
+			results := make(chan error, 2)
+			start := make(chan struct{})
+			var wait sync.WaitGroup
+			wait.Add(2)
+			go func() {
+				defer wait.Done()
+				<-start
+				_, err := s.AnswerAttentionQuestion(ctx, session, askAnswer(q.ID), at)
+				results <- err
+			}()
+			go func() {
+				defer wait.Done()
+				<-start
+				var err error
+				switch transition {
+				case "answer":
+					other := askAnswer(q.ID)
+					other.ClientAnswerID = "other-client"
+					_, err = s.AnswerAttentionQuestion(ctx, session, other, at)
+				case "revise":
+					_, err = s.ReviseAttentionQuestion(ctx, session, q.ID, 1, []byte(strings.Replace(askPayload, `"id":"staging"`, `"id":"preview"`, 1)), at)
+				case "expire":
+					err = s.ExpireAttentionQuestions(ctx, session, at)
+				}
+				results <- err
+			}()
+			close(start)
+			wait.Wait()
+			close(results)
+			success, conflicts := 0, 0
+			for err := range results {
+				if err == nil {
+					success++
+				} else if errors.Is(err, domain.ErrAttentionQuestionConflict) {
+					conflicts++
+				} else {
+					t.Fatal(err)
+				}
+			}
+			if success != 1 || conflicts != 1 {
+				t.Fatalf("success=%d conflicts=%d", success, conflicts)
+			}
+			got, err := s.GetAttentionQuestion(ctx, session, q.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			queued, err := s.PendingAttentionAnswers(ctx, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch got.State {
+			case "answered":
+				if transition == "expire" || got.Answer == nil || len(queued) != 1 || got.Version != 1 {
+					t.Fatalf("invalid winning answer: %+v %+v", got, queued)
+				}
+			case "open":
+				if transition != "revise" || got.Version != 2 || got.Answer != nil || len(queued) != 0 {
+					t.Fatalf("invalid revision: %+v %+v", got, queued)
+				}
+			case "expired":
+				if transition != "expire" || got.Answer != nil || len(queued) != 0 {
+					t.Fatalf("expired answer committed: %+v %+v", got, queued)
+				}
+			default:
+				t.Fatalf("unexpected state %q", got.State)
+			}
+		})
+	}
+}
+
+func TestAttentionQuestionCancelReasonUnicodeBoundary(t *testing.T) {
+	s, session, _ := conversationFixture(t)
+	ctx := context.Background()
+	q, _, err := s.CreateAttentionQuestion(ctx, askCreate(session), histClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reason := range []string{"", " \t", strings.Repeat("🚀", 4001)} {
+		if _, err = s.CancelAttentionQuestion(ctx, session, q.ID, 1, "agent", reason, histClock); err == nil {
+			t.Fatal("invalid reason accepted")
+		}
+	}
+	reason := strings.Repeat("🚀", 4000)
+	got, err := s.CancelAttentionQuestion(ctx, session, q.ID, 1, "agent", reason, histClock)
+	if err != nil || got.State != "cancelled" || got.CloseReason != reason {
+		t.Fatalf("Unicode reason boundary: state=%s error=%v", got.State, err)
+	}
+}

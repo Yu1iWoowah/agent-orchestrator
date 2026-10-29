@@ -371,3 +371,22 @@ func TestAttentionAnswerIdentityAndBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAttentionJSONMemberNamesAreCaseSensitive(t *testing.T) {
+	payload := testAttentionPayload()
+	payload.Questions[0].Options[0].Recommended = true
+	valid := string(attentionJSON(t, payload))
+	for _, raw := range []string{
+		strings.Replace(valid, `"schemaVersion"`, `"SchemaVersion"`, 1),
+		strings.Replace(valid, `"title":`, `"Title":`, 1),
+		strings.Replace(valid, `"recommended":true`, `"recommended":true,"Recommended":false`, 1),
+	} {
+		if _, err := ParseAttentionQuestionPayload([]byte(raw), AttentionQuestionKindQuestion); err == nil {
+			t.Fatalf("case alias accepted: %s", raw)
+		}
+	}
+	raw := []byte(`{"questionId":"question","ExpectedVersion":1,"clientAnswerId":"answer","answers":[{"questionKey":"target","selectedOptionIds":["staging"]}]}`)
+	if _, err := ParseAttentionAnswer(raw); err == nil {
+		t.Fatal("case alias accepted in answer envelope")
+	}
+}

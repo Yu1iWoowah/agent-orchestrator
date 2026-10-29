@@ -7,6 +7,7 @@ import (
 	"html"
 	"io"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -62,6 +63,61 @@ func decodeAttentionJSON(raw []byte, limit int, field string, target any) error 
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return attentionInvalid(field, err.Error())
+	}
+	var members any
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return attentionInvalid(field, err.Error())
+	}
+	return attentionExactMembers(members, reflect.TypeOf(target), field)
+}
+
+// encoding/json accepts case-insensitive aliases even with DisallowUnknownFields.
+// Match the declared tags exactly so an alias cannot override a decision field.
+func attentionExactMembers(value any, target reflect.Type, path string) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	if target == reflect.TypeFor[json.RawMessage]() {
+		return nil
+	}
+	switch data := value.(type) {
+	case map[string]any:
+		if target.Kind() != reflect.Struct {
+			return nil
+		}
+		fields := make(map[string]reflect.Type, target.NumField())
+		for i := 0; i < target.NumField(); i++ {
+			field := target.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field.Type
+		}
+		for name, member := range data {
+			typeOfMember, exists := fields[name]
+			if !exists {
+				return attentionInvalid(path+"."+name, "unknown JSON member")
+			}
+			if err := attentionExactMembers(member, typeOfMember, path+"."+name); err != nil {
+				return err
+			}
+		}
+	case []any:
+		if target.Kind() != reflect.Slice && target.Kind() != reflect.Array {
+			return nil
+		}
+		for i, member := range data {
+			if err := attentionExactMembers(member, target.Elem(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
