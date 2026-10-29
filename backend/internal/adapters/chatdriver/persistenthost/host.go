@@ -586,7 +586,7 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error 
 		select {
 		case <-waitCtx.Done():
 			if errors.Is(readErr, os.ErrPermission) {
-				return fmt.Errorf("wait for chat host shutdown: %w (descriptor: %v)", waitCtx.Err(), readErr)
+				return fmt.Errorf("wait for chat host shutdown: %w (descriptor: %w)", waitCtx.Err(), readErr)
 			}
 			return fmt.Errorf("wait for chat host shutdown: %w", waitCtx.Err())
 		case <-ticker.C:
