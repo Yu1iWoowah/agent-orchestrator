@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,48 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+func TestReplacementCheckpointPayloadKeepsPreStopCancelAvailable(t *testing.T) {
+	for _, headroom := range []int{8, 4096} {
+		t.Run(fmt.Sprint(headroom), func(t *testing.T) {
+			st, api, op, _ := repairFixture(t)
+			ctx := context.Background()
+			op.Phase = domain.ReplacementPreflight
+			op.Error = &domain.ReplacementFailure{Code: "LARGE", Message: ""}
+			if applied, err := st.SaveOrchestratorReplacement(ctx, op); err != nil || !applied {
+				t.Fatal(applied, err)
+			}
+			op, _, _ = st.GetOrchestratorReplacement(ctx, op.ID)
+			capsule, found, err := api.GetReplacementRepairSnapshot(ctx, op.ID)
+			if err != nil || !found {
+				t.Fatal(found, err)
+			}
+			op.Error.Message = strings.Repeat("x", (16<<20)-len(capsule.Payload)-headroom)
+			accepted, err := st.SaveOrchestratorReplacement(ctx, op)
+			if err != nil && !errors.Is(err, domain.ErrReplacementRepairCapacity) {
+				t.Fatal(err)
+			}
+			if headroom == 4096 && !accepted {
+				t.Fatal("ample cancellation framing was rejected", err)
+			}
+			op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancelled, applied, err := st.ResetReplacementBeforeStop(ctx, op.ID, op.Revision, true, time.Now(), time.Now().Add(time.Hour))
+			if err != nil || !applied || cancelled.Phase != domain.ReplacementCancelled {
+				t.Fatalf("accepted capsule trapped pre-stop Cancel: accepted=%t applied=%t err=%v", accepted, applied, err)
+			}
+			if fenced, err := st.ReplacementWakeFenced(ctx, op.SourceSessionID); err != nil || fenced {
+				t.Fatal("cancel did not release source", fenced, err)
+			}
+			last := cancelled.Attempts[len(cancelled.Attempts)-1]
+			if last.Error == nil || last.Error.Message != op.Error.Message {
+				t.Fatal("cancel discarded the accepted failure evidence")
+			}
+		})
+	}
+}
 
 func TestReplacementOversizedCheckpointRollsBackBeforePublication(t *testing.T) {
 	st, api, op, _ := repairFixture(t)

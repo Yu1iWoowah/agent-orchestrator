@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -77,6 +79,30 @@ func (s *Store) saveReplacementCheckpoint(ctx context.Context, q *gen.Queries, i
 	}
 	if len(payload) > maxReplacementRepairBytes {
 		return domain.ErrReplacementRepairCapacity
+	}
+	if operation.Phase != domain.ReplacementCancelled && operation.SourceStopIntentAt == nil && operation.SourceStop == nil && operation.SourceRetiredAt == nil {
+		// A bounded capsule must leave room for the attempt archive made by
+		// Cancel, not only for today's row. Use the same transformation as
+		// Reset and maximum-width timestamps/revisions; this projection is
+		// never published and grants no cancellation authority.
+		at := time.Date(9999, time.December, 31, 23, 59, 59, 999999999, time.UTC)
+		cancelled := archiveReplacementAttempt(operation, "00000000-0000-0000-0000-000000000000", at)
+		cancelled.Phase = domain.ReplacementCancelled
+		cancelled.Revision, cancelled.IntakeRevision = math.MaxInt64, math.MaxInt64
+		state, err := json.Marshal(cancelled)
+		if err != nil {
+			return err
+		}
+		projection := row
+		projection.StateJson, projection.Phase, projection.IsActive, projection.UpdatedAt = string(state), string(cancelled.Phase), false, at.Format(time.RFC3339Nano)
+		projection.Revision, projection.IntakeRevision = math.MaxInt64, math.MaxInt64
+		projected, err := json.Marshal(projection)
+		if err != nil {
+			return err
+		}
+		if len(projected) > maxReplacementRepairBytes {
+			return domain.ErrReplacementRepairCapacity
+		}
 	}
 	usage, err := q.GetReplacementRepairSnapshotUsage(ctx, id)
 	if err != nil {

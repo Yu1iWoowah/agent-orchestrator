@@ -151,16 +151,8 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		if err := settleSupersededPreparation(tx, q, op, cancel, at); err != nil {
 			return err
 		}
-		attemptID := uuid.NewString()
-		if op.Preparation != nil {
-			attemptID = op.Preparation.AttemptID
-		}
 		now := at.UTC()
-		op.Attempts = append(op.Attempts, domain.ReplacementAttempt{ID: attemptID, Phase: op.Phase, Preparation: op.Preparation, Transcript: op.Transcript, FrozenAt: op.FrozenAt, Error: op.Error, EndedAt: now, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt})
-		op.Preparation, op.Transcript, op.FrozenAt = nil, nil, nil
-		op.SourceIntakeReleasedAt = nil
-		op.Phase, op.ResumePhase, op.Error = domain.ReplacementPreflight, "", nil
-		op.UpdatedAt = now
+		op = archiveReplacementAttempt(op, uuid.NewString(), now)
 		if cancel {
 			op.Phase = domain.ReplacementCancelled
 		} else {
@@ -183,6 +175,22 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		return nil
 	})
 	return result, applied && err == nil, err
+}
+
+// archiveReplacementAttempt preserves the current attempt for Retry/Cancel and
+// for the checkpoint writer's cancellation-capacity projection. It does not
+// mutate the caller's retained history or grant authority to change state.
+func archiveReplacementAttempt(op domain.OrchestratorReplacement, fallbackID string, at time.Time) domain.OrchestratorReplacement {
+	attemptID := fallbackID
+	if op.Preparation != nil {
+		attemptID = op.Preparation.AttemptID
+	}
+	op.Attempts = append(append([]domain.ReplacementAttempt(nil), op.Attempts...), domain.ReplacementAttempt{ID: attemptID, Phase: op.Phase, Preparation: op.Preparation, Transcript: op.Transcript, FrozenAt: op.FrozenAt, Error: op.Error, EndedAt: at, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt})
+	op.Preparation, op.Transcript, op.FrozenAt = nil, nil, nil
+	op.SourceIntakeReleasedAt = nil
+	op.Phase, op.ResumePhase, op.Error = domain.ReplacementPreflight, "", nil
+	op.UpdatedAt = at
+	return op
 }
 
 // Only a proven never-dispatched control turn can be cancelled here. The SQL
