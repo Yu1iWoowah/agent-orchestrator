@@ -4,9 +4,10 @@ import { aoBridge } from "../../lib/bridge";
 import { cn } from "../../lib/utils";
 import type { ConversationActivity } from "../../types/conversation";
 import { ACCENT_ACTION_PILL, QUIET_ACTION_PILL } from "./action-pill";
+import { useProviderInputDraftStore, type ProviderInputValue } from "../../stores/provider-input-draft-store";
 
 type InputAction = "accept" | "decline" | "cancel";
-type InputValue = string | number | boolean | string[];
+type InputValue = ProviderInputValue;
 type PropertyEntry = [string, Record<string, unknown>];
 
 /**
@@ -16,8 +17,10 @@ type PropertyEntry = [string, Record<string, unknown>];
 export function ElicitationDock({
 	activity,
 	onResolve,
+	draftKey,
 }: {
 	activity: ConversationActivity;
+	draftKey?: string;
 	onResolve?: (
 		requestId: string,
 		action: InputAction,
@@ -35,6 +38,7 @@ export function ElicitationDock({
 		setError(undefined);
 		try {
 			await onResolve(requestId, action, content);
+			if (draftKey) useProviderInputDraftStore.getState().clear(draftKey);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : "The answer could not be sent.");
 		} finally {
@@ -52,7 +56,7 @@ export function ElicitationDock({
 			{activity.detail?.inputMode === "url" ? (
 				<URLRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} />
 			) : (
-				<FormRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} />
+				<FormRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} draftKey={draftKey} />
 			)}
 
 			{error ? (
@@ -300,20 +304,25 @@ function FormRequest({
 	activity,
 	disabled,
 	onResolve,
+	draftKey,
 }: {
 	activity: ConversationActivity;
 	disabled: boolean;
 	onResolve: (action: InputAction, content?: Record<string, unknown>) => Promise<void>;
+	draftKey?: string;
 }) {
 	const schema = activity.detail?.schema;
 	const properties = useMemo(() => Object.entries(schema?.properties ?? {}), [schema?.properties]);
 	const questionGroups = useMemo(() => claudeQuestionGroups(properties), [properties]);
 	const otherAnswers = useMemo(() => otherAnswerFields(properties), [properties]);
 	const required = useMemo(() => new Set(schema?.required ?? []), [schema?.required]);
-	const [values, setValues] = useState<Record<string, InputValue>>(() => initialValues(properties));
+	const [values, setValues] = useState<Record<string, InputValue>>(() => (draftKey ? useProviderInputDraftStore.getState().drafts[draftKey]?.values : undefined) ?? initialValues(properties));
 	const [missing, setMissing] = useState<Set<string>>(new Set());
-	const [activeQuestion, setActiveQuestion] = useState(0);
-	const [collapsed, setCollapsed] = useState(false);
+	const [activeQuestion, setActiveQuestion] = useState(() => (draftKey ? useProviderInputDraftStore.getState().drafts[draftKey]?.activeQuestion : undefined) ?? 0);
+	const [collapsed, setCollapsed] = useState(() => (draftKey ? useProviderInputDraftStore.getState().drafts[draftKey]?.collapsed : undefined) ?? false);
+	useEffect(() => {
+		if (draftKey) useProviderInputDraftStore.getState().save(draftKey, { values, activeQuestion, collapsed });
+	}, [draftKey, values, activeQuestion, collapsed]);
 	const visibleProperties = questionGroups?.[activeQuestion] ?? properties;
 	const hasPreviousQuestion = questionGroups !== undefined && activeQuestion > 0;
 	const hasNextQuestion = questionGroups !== undefined && activeQuestion < questionGroups.length - 1;

@@ -1,4 +1,5 @@
 import { sessionPlanQueryKey } from "../hooks/useSessionPlan";
+import { sessionAttentionQueryKey } from "../hooks/useSessionAttention";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { aoBridge } from "./bridge";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
@@ -67,6 +68,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let healthAttempt = 0;
 			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
+			const pendingAttentionSessions = new Set<string>();
+			let allAttentionInvalidationPending = false;
 			const pendingReviewerConversations = new Set<string>();
 			const pendingReviewSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
@@ -151,6 +154,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
 			};
 			const refreshRemote = (hostId: string, reconnect = false) => {
+				invalidate(["remote-session-attention", hostId]);
 				invalidate(["remote-session-plan", hostId]);
 				invalidate(["remote-workspaces", hostId]);
 				invalidate(["project", hostId]);
@@ -270,6 +274,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(sessionPlanQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
+				if (allAttentionInvalidationPending) invalidate(["session-attention"]);
+				else for (const sessionId of pendingAttentionSessions) invalidate(sessionAttentionQueryKey(sessionId));
+				pendingAttentionSessions.clear();
+				allAttentionInvalidationPending = false;
 				for (const sessionId of pendingReviewSessions) {
 					invalidate(sessionReviewsQueryKey(sessionId));
 				}
@@ -341,6 +349,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// the header reporting that clamp, so refresh every conversation instead of
 					// leaving an open chat frozen on its pre-gap snapshot.
 					allConversationsInvalidationPending = true;
+					allAttentionInvalidationPending = true;
 					allEditorHandoffsInvalidationPending = true;
 					allEventScopedCachesInvalidationPending = true;
 				}
@@ -431,9 +440,12 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							}
 							pendingEditorHandoffSessions.add(decoded.sessionId);
 						}
+						if (typeof decoded.sessionId === "string" && decoded.sessionId) pendingAttentionSessions.add(decoded.sessionId);
+						else allAttentionInvalidationPending = true;
 					} catch {
 						// A malformed CDC payload still invalidates workspaces; it simply
 						// cannot target a conversation cache precisely.
+						allAttentionInvalidationPending = true;
 					}
 				}
 				if (idOnlySessionUpdate) queueIdOnlyWorkspaceRefresh();

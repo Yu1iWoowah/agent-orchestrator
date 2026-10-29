@@ -97,6 +97,7 @@ for (const width of [390, 1440]) {
 		if (await closeInspector.isVisible()) await closeInspector.click();
 		const collapseSidebar = page.getByRole("button", { name: "Collapse sidebar", exact: true });
 		if (await collapseSidebar.isVisible()) await collapseSidebar.click();
+		await page.getByRole("button", { name: "Collapse Awaiting you", exact: true }).click();
 
 		const inline = page.getByTitle(title, { exact: true });
 		await expect(inline).toBeVisible();

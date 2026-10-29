@@ -472,6 +472,7 @@ export type FakeAgentController = {
 	createWorkerDuringNextSnapshot: (worker: FakeWorker) => void;
 	removeWorker: (id: string) => void;
 	setStatus: (id: string, status: string, activity?: string) => void;
+	conversationChanged: (sessionId: string, conversationId: string) => void;
 	setTerminalHandle: (id: string, handleId: string) => void;
 	/** Moves a session to another agent, as a provider switch does. */
 	setProvider: (id: string, provider: string) => void;
@@ -865,6 +866,9 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					if (activity) s.activity = { state: activity, lastActivityAt: new Date().toISOString() };
 					touch(s);
 					pushWorkspaces();
+				},
+				conversationChanged: (sessionId, conversationId) => {
+					emit("/api/v1/events", "session_updated", JSON.stringify({ type: "session_updated", sessionId, payload: { conversationId } }));
 				},
 				setTerminalHandle: (id, handleId) => {
 					const s = findSession(id);

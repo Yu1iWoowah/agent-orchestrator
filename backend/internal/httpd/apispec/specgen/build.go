@@ -317,6 +317,10 @@ var schemaNames = map[string]string{
 	"ControllersConversationRateLimitsPayload":             "ConversationRateLimitsPayload",
 	"ControllersConversationPlanResponse":                  "ConversationPlanResponse",
 	"ControllersConversationPlanStepResponse":              "ConversationPlanStepResponse",
+	"ControllersSessionAttentionResponse":                  "SessionAttentionResponse",
+	"ControllersAttentionItemResponse":                     "AttentionItemResponse",
+	"ControllersAttentionCountsResponse":                   "AttentionCountsResponse",
+	"ControllersAttentionReadRequest":                      "AttentionReadRequest",
 	"ControllersSessionPlanResponse":                       "SessionPlanResponse",
 	"ControllersConversationPlanVersionResponse":           "ConversationPlanVersionResponse",
 	"ControllersConversationPlanHistoryResponse":           "ConversationPlanHistoryResponse",
@@ -1056,6 +1060,12 @@ type conversationSnapshotQuery struct {
 	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"500" description:"Maximum messages to return; tool activity between them comes along without counting. Defaults to 200."`
 }
 
+type conversationAttentionQuery struct {
+	State          string `query:"state,omitempty" enum:"open,history" description:"Open requests (default) or read-only history."`
+	BeforeSequence *int64 `query:"beforeSequence,omitempty" minimum:"1"`
+	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"100"`
+}
+
 type conversationPlanHistoryQuery struct {
 	BeforeSequence *int64 `query:"beforeSequence,omitempty" minimum:"1" description:"Read plan snapshots older than this durable sequence."`
 	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"100" description:"Maximum saved plans to return. Defaults to 20."`
@@ -1197,6 +1207,24 @@ func shellTerminalOperations() []operation {
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/attention", id: "getSessionAttention", tag: "conversations",
+			summary: "Read pending provider requests with complete counts", pathParams: []any{controllers.SessionIDParam{}, conversationAttentionQuery{}},
+
+			resps: []respUnit{{http.StatusOK, controllers.SessionAttentionResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/attention/{activityId}", id: "getSessionAttentionSource", tag: "conversations",
+			summary: "Read a fresh visible provider request before navigating to its original form", pathParams: []any{controllers.SessionIDParam{}, controllers.AttentionActivityIDParam{}},
+
+			resps: []respUnit{{http.StatusOK, controllers.SessionAttentionResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/attention/{activityId}/read", id: "markSessionAttentionRead", tag: "conversations",
+			summary: "Mark an explicitly viewed request revision read without resolving it", pathParams: []any{controllers.SessionIDParam{}, controllers.AttentionActivityIDParam{}},
+			reqBody: controllers.AttentionReadRequest{},
+			resps:   []respUnit{{http.StatusNoContent, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/plan", id: "getSessionPlan", tag: "conversations",

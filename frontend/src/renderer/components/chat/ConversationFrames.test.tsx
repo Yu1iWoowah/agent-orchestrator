@@ -8,12 +8,25 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TooltipProvider } from "../ui/tooltip";
-import { ConversationFrames } from "./ConversationFrames";
+import { ConversationFrames, useConversationFrameNavigation } from "./ConversationFrames";
 import { useConversationFrameStore } from "../../stores/conversation-frame-store";
 
 const render = (view: React.ReactNode) => renderView(view, { wrapper: TooltipProvider });
 
 describe("conversation frames", () => {
+	it("closes only the compact Sheet when navigating to an original form and preserves its open preference", async () => {
+		const surface = document.createElement("section");document.body.append(surface);
+		const target = document.createElement("input");document.body.append(target);
+		function Source() { const navigate = useConversationFrameNavigation(); return <button onClick={() => navigate ? navigate(() => target.focus()) : target.focus()}>Go to original source</button>; }
+		const view = render(<ConversationFrames sessionId="navigate-compact" surface={surface} safeRect={{ left: 0, top: 40, width: 300, height: 150 }} frames={[{ kind: "attention", title: "Awaiting you", summary: "1", content: <Source /> }]} />);
+		fireEvent.click(screen.getByRole("button", { name: "Open Awaiting you" }));
+		expect(screen.getByRole("dialog", { name: "Awaiting you" })).toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "Go to original source" }));
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Awaiting you" })).not.toBeInTheDocument());
+		expect(target).toHaveFocus();
+		expect(useConversationFrameStore.getState().sessions[JSON.stringify(["local", "navigate-compact"])]?.attention.userOpen ?? true).toBe(true);
+		view.unmount();surface.remove();target.remove();
+	});
 	beforeEach(() => useConversationFrameStore.setState({ sessions: {} }));
 	afterEach(cleanup);
 	it("starts collapsed, stays explicitly open through updates and restores after remount", async () => {
