@@ -36,6 +36,7 @@ export function createDocumentResources(
 	const blobs = new Set<string>();
 	const blocked = new Set<string>();
 	let limited = false;
+	let stopped = false;
 	let embeddedCharacters = 0;
 	const readers = new Set<FileReader>();
 	const images = new Map<string, Promise<string | null>>();
@@ -60,6 +61,7 @@ export function createDocumentResources(
 	};
 	const stop = () => {
 		limited = true;
+		stopped = true;
 		abort.abort();
 		for (const reader of readers) reader.abort();
 		return new DocumentContentError("DOCUMENT_RESOURCE_LIMIT");
@@ -72,25 +74,31 @@ export function createDocumentResources(
 		if (saved) return saved;
 		const request = pending.then(async () => {
 			if (disposed) throw new DOMException("Aborted", "AbortError");
-			if (limited || ++count > RESOURCE_LIMIT || total >= TOTAL_BYTES)
+			if (stopped || ++count > RESOURCE_LIMIT || total >= TOTAL_BYTES)
 				throw stop();
 			const maxBytes = Math.min(RESOURCE_BYTES, TOTAL_BYTES - total);
+			let data: ArrayBuffer;
 			try {
-				const data = await load(target, { maxBytes, signal: abort.signal });
-				if (disposed) throw new DOMException("Aborted", "AbortError");
-				total += data.byteLength;
-				if (data.byteLength > maxBytes) throw stop();
-				return data;
+				data = await load(target, { maxBytes, signal: abort.signal });
 			} catch (error) {
 				if (
 					error &&
 					typeof error === "object" &&
 					"code" in error &&
-					error.code === "DOCUMENT_TOO_LARGE"
+					(error.code === "DOCUMENT_TOO_LARGE" ||
+						error.code === "DOCUMENT_RESOURCE_LIMIT")
 				)
-					throw stop();
+					limited = true;
 				throw error;
 			}
+			if (disposed) throw new DOMException("Aborted", "AbortError");
+			total += data.byteLength;
+			if (data.byteLength > maxBytes) {
+				limited = true;
+				if (total >= TOTAL_BYTES) throw stop();
+				throw new DocumentContentError("DOCUMENT_TOO_LARGE");
+			}
+			return data;
 		});
 		pending = request.then(
 			() => undefined,
@@ -252,8 +260,8 @@ export function createDocumentResources(
 			}
 			// A style element serializes raw text; never let CSS strings terminate it.
 			const result = (imported.join("\n") + css.generate(tree)).replace(
-				/</g,
-				"\\3c ",
+				/<\/style/gi,
+				(match) => "\\3c " + match.slice(1),
 			);
 			if (result.length > 28 * 1024 * 1024) {
 				throw stop();

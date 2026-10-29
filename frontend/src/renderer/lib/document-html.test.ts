@@ -6,6 +6,20 @@ const base = {
 	path: "dir/index.html",
 };
 describe("opaque static documents", () => {
+	it("preserves media and container range comparisons while escaping style end tags", async () => {
+		const resources = createDocumentResources(base, vi.fn());
+		const result = await staticDocumentHtml(
+			String.raw`<style>@media (width < 600px){h1{color:red}}@container (width < 500px){p{color:blue}}.x::after{content:"\3c/STYLE\3e\3c a href=http://127.0.0.1:3001/\3e x\3c/a\3e"}</style>`,
+			resources,
+		);
+		const parsed = new DOMParser().parseFromString(result.html, "text/html");
+		const stylesheet = parsed.querySelector("style")?.textContent;
+		expect(stylesheet).toContain("@media (width<600px)");
+		expect(stylesheet).toContain("@container (width<500px)");
+		expect(parsed.querySelector("a[href]")).toBeNull();
+		resources.dispose();
+	});
+
 	it.each(["inline", "linked"])(
 		"keeps %s CSS strings inside style after HTML serialization",
 		async (source) => {
@@ -172,7 +186,7 @@ it("shares identical image blobs and enforces per-resource, total and source-cou
 		png(10 * 1024 * 1024 + 1),
 	);
 	await expect(resources.image("big.png")).rejects.toMatchObject({
-		code: "DOCUMENT_RESOURCE_LIMIT",
+		code: "DOCUMENT_TOO_LARGE",
 	});
 	resources.dispose();
 	resources = createDocumentResources(base, async () => png(8 * 1024 * 1024));
@@ -209,12 +223,14 @@ it.each([false, true])(
 		const signals: AbortSignal[] = [];
 		const load = vi.fn(
 			async (
-				_target: unknown,
+				target: { path: string },
 				options: { maxBytes: number; signal: AbortSignal },
 			) => {
 				limits.push(options?.maxBytes);
 				signals.push(options?.signal);
-				const size = 8 * 1024 * 1024;
+				const size = /[45]\.png$/.test(target.path)
+					? 2 * 1024 * 1024
+					: 8 * 1024 * 1024;
 				if (options && size > options.maxBytes)
 					throw Object.assign(new Error("too large"), {
 						code: "DOCUMENT_TOO_LARGE",
@@ -229,8 +245,9 @@ it.each([false, true])(
 			await Promise.all(Array.from({ length: 8 }, (_, i) => read(i)));
 		else for (let i = 0; i < 8; i++) await read(i);
 		expect(bytes).toBeLessThanOrEqual(20 * 1024 * 1024);
-		expect(load).toHaveBeenCalledTimes(3);
-		expect(limits).toEqual([10, 10, 4].map((n) => n * 1024 * 1024));
+		expect(load).toHaveBeenCalledTimes(6);
+		expect(limits).toEqual([10, 10, 4, 4, 4, 2].map((n) => n * 1024 * 1024));
+		expect(bytes).toBe(20 * 1024 * 1024);
 		expect(signals.every((signal) => signal?.aborted)).toBe(true);
 		expect(resources.limited()).toBe(true);
 		resources.dispose();
@@ -263,3 +280,51 @@ it("cancels the active read and never starts queued reads when disposed", async 
 	);
 	expect(load).toHaveBeenCalledTimes(1);
 });
+
+it.each([false, true])(
+	"keeps loading small images after a single oversized resource (parallel=%s)",
+	async (parallel) => {
+		const create = vi
+			.spyOn(URL, "createObjectURL")
+			.mockReturnValue("blob:small");
+		const png = new Uint8Array(24);
+		png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+		new DataView(png.buffer).setUint32(16, 1);
+		new DataView(png.buffer).setUint32(20, 1);
+		let transferred = 0;
+		const load = vi.fn(
+			async (
+				target: { path: string },
+				{ signal }: { maxBytes: number; signal: AbortSignal },
+			) => {
+				if (target.path.endsWith("large.png"))
+					throw Object.assign(new Error("too large"), {
+						code: "DOCUMENT_TOO_LARGE",
+					});
+				expect(signal.aborted).toBe(false);
+				transferred += png.byteLength;
+				return png.buffer;
+			},
+		);
+		const resources = createDocumentResources(base, load);
+		if (parallel) {
+			const results = await Promise.allSettled([
+				resources.image("large.png"),
+				resources.image("small.png"),
+			]);
+			expect(results[0]).toMatchObject({
+				status: "rejected",
+				reason: { code: "DOCUMENT_TOO_LARGE" },
+			});
+			expect(results[1]).toEqual({ status: "fulfilled", value: "blob:small" });
+		} else {
+			await expect(resources.image("large.png")).rejects.toMatchObject({
+				code: "DOCUMENT_TOO_LARGE",
+			});
+			expect(await resources.image("small.png")).toBe("blob:small");
+		}
+		expect(transferred).toBe(png.byteLength);
+		resources.dispose();
+		create.mockRestore();
+	},
+);

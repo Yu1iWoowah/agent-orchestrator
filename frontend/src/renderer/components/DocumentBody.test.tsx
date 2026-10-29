@@ -33,6 +33,52 @@ beforeEach(() => {
 	mocks.resolve.mockReset();
 });
 describe("DocumentBody", () => {
+	it("explains one oversized Markdown image and still displays the next small image", async () => {
+		const png = new Uint8Array(24);
+		png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+		new DataView(png.buffer).setUint32(16, 1);
+		new DataView(png.buffer).setUint32(20, 1);
+		mocks.resolve.mockImplementation(async (_connection, target) => ({
+			...visit.document,
+			target,
+			size: target.path.endsWith("large.png")
+				? 11 * 1024 * 1024
+				: png.byteLength,
+		}));
+		mocks.read.mockImplementation(async (_connection, target) =>
+			target.path.endsWith("read.md")
+				? new TextEncoder().encode(
+						"![Large screenshot](large.png)\n\n![Small diagram](small.png)",
+					).buffer
+				: png.buffer,
+		);
+		const create = vi
+			.spyOn(URL, "createObjectURL")
+			.mockReturnValue("blob:small");
+		const cache = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const view = render(
+			<QueryClientProvider client={cache}>
+				<DocumentBody readerKey="chat" connection={connection} visit={visit} />
+			</QueryClientProvider>,
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("img", { name: "Small diagram" }),
+			).toHaveAttribute("src", "blob:small"),
+		);
+		expect(
+			screen.getByText(/Resource exceeds the 10 MiB per-file limit/),
+		).toBeVisible();
+		expect(
+			mocks.read.mock.calls.map(([, target]) => target.path),
+		).not.toContain("dir/large.png");
+		view.unmount();
+		cache.clear();
+		create.mockRestore();
+	});
+
 	it("reapplies a new fragment after a warm-cache reopen without a new content response", async () => {
 		mocks.read.mockResolvedValue(
 			new TextEncoder().encode("# First\n\n# Second").buffer,

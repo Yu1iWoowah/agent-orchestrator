@@ -350,6 +350,86 @@ test("opaque static HTML loads only verified local raster and styles without ena
 	);
 });
 
+test("HTML media and container ranges stay active after safe CSS serialization @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.route("**/api/v1/local-documents/content*", async (route) => {
+		if (route.request().postDataJSON().path === "static.html") {
+			await route.fulfill({
+				contentType: "application/octet-stream",
+				body: '<style>@media (width < 600px){h1{color:rgb(1,2,3)}}.container{container-type:inline-size;width:100px}@container (width < 200px){.probe{color:rgb(4,5,6)}}</style><h1>Media range</h1><div class="container"><p class="probe">Container range</p></div>',
+			});
+		} else await route.fallback();
+	});
+	await page.getByRole("link", { name: "Relative HTML", exact: true }).click();
+	const frame = page.frameLocator("iframe[data-document-static]");
+	await expect(frame.getByRole("heading", { name: "Media range" })).toHaveCSS(
+		"color",
+		"rgb(1, 2, 3)",
+	);
+	await expect(frame.getByText("Container range", { exact: true })).toHaveCSS(
+		"color",
+		"rgb(4, 5, 6)",
+	);
+});
+
+test("one oversized Markdown image shows its reason while the following small raster still loads @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	let largeReads = 0;
+	await page.route("**/api/v1/local-documents/**", async (route) => {
+		const input = route.request().postDataJSON();
+		if (
+			input.path === "large.png" &&
+			route.request().url().includes("/resolve")
+		) {
+			await route.fulfill({
+				json: {
+					document: {
+						target: input,
+						localPath: "/managed/large.png",
+						canonicalUri: root + input.path,
+						size: 11 * 1024 * 1024,
+						mediaType: "image/png",
+						fingerprint: "large",
+					},
+				},
+			});
+		} else if (
+			route.request().url().includes("/content") &&
+			input.path === "guide.md"
+		) {
+			await route.fulfill({
+				contentType: "application/octet-stream",
+				body: "# Resource probes\n\n![Oversized screenshot](large.png)\n\n![Small raster](image.png)",
+			});
+		} else if (input.path === "large.png") {
+			largeReads++;
+			await route.fulfill({
+				status: 400,
+				json: { code: "DOCUMENT_TOO_LARGE" },
+			});
+		} else await route.fallback();
+	});
+	await page.getByRole("link", { name: "Worker guide", exact: true }).click();
+	const sheet = page.getByRole("dialog", { name: "Document", exact: true });
+	await expect(
+		sheet.getByText(/Resource exceeds the 10 MiB per-file limit/),
+	).toBeVisible();
+	await expect
+		.poll(() =>
+			sheet
+				.getByRole("img", { name: "Small raster" })
+				.evaluate((el) =>
+					el instanceof HTMLImageElement ? el.naturalWidth : 0,
+				),
+		)
+		.toBe(1);
+	expect(largeReads).toBe(0);
+});
+
 test("document Markdown follows the selected app theme independently of OS preference @T0", async ({
 	page,
 }) => {

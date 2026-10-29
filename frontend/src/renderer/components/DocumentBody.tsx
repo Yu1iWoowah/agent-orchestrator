@@ -100,7 +100,11 @@ export function DocumentBody({
 				async (target, { maxBytes, signal }) => {
 					const meta = await resolveDocument(connection, target, signal);
 					if (meta.size > maxBytes)
-						throw new DocumentContentError("DOCUMENT_TOO_LARGE");
+						throw new DocumentContentError(
+							meta.size > 10 * 1024 * 1024
+								? "DOCUMENT_TOO_LARGE"
+								: "DOCUMENT_RESOURCE_LIMIT",
+						);
 					return readDocumentContent(
 						connection,
 						meta.target,
@@ -358,16 +362,28 @@ function DocumentImage({
 	resources: DocumentResources;
 }) {
 	const [src, setSrc] = useState<string | null>();
+	const [code, setCode] = useState<string | null>(null);
 	const { t } = useTranslation();
 	useEffect(() => {
 		let current = true;
 		setSrc(undefined);
+		setCode(null);
 		void resources.image(reference).then(
 			(value) => {
 				if (current) setSrc(value);
 			},
-			() => {
-				if (current) setSrc(null);
+			(error: unknown) => {
+				if (current) {
+					setSrc(null);
+					setCode(
+						error &&
+							typeof error === "object" &&
+							"code" in error &&
+							typeof error.code === "string"
+							? error.code
+							: null,
+					);
+				}
 			},
 		);
 		return () => {
@@ -393,7 +409,11 @@ function DocumentImage({
 					{t("documents.sheet.external")}
 				</Button>
 			) : null}
-			{resources.limited() ? t("documents.sheet.resourceLimit") : null}
+			{code === "DOCUMENT_TOO_LARGE"
+				? ` ${t("documents.sheet.resourceTooLarge")}`
+				: resources.limited() || code === "DOCUMENT_RESOURCE_LIMIT"
+					? ` ${t("documents.sheet.resourceLimit")}`
+					: null}
 		</span>
 	);
 }

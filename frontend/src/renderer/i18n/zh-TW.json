@@ -3731,5 +3731,6 @@
 	"documents.sheet.download": "下載",
 	"documents.sheet.downloadError": "下載失敗。請重新整理後再試一次。",
 	"documents.sheet.staticHtml": "此預覽不執行 script，也不自動載入遠端資源。你可明確開啟下方外部連結。",
+	"documents.sheet.resourceTooLarge": "此資源超過單檔 10 MiB 上限。",
 	"documents.sheet.resourceLimit": "已限制資源：最多 64 個、單檔 10 MiB、總量 20 MiB。"
 }

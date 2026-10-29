@@ -3732,5 +3732,6 @@
 	"documents.sheet.download": "Download",
 	"documents.sheet.downloadError": "Unable to download. Refresh and try again.",
 	"documents.sheet.staticHtml": "This preview does not execute scripts or load remote resources. Open an external link below explicitly.",
+	"documents.sheet.resourceTooLarge": "此资源超过单文件 10 MiB 上限。",
 	"documents.sheet.resourceLimit": "Resource limit: 64 sources, 10 MiB each, 20 MiB total."
 }
