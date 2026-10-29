@@ -3258,6 +3258,35 @@ type ConversationMessageResponse struct {
 }
 
 // AttentionItemResponse keeps provider state and read status separate.
+type QuestionCreateRequest struct {
+	ClientKey    string                          `json:"clientKey" minLength:"1" maxLength:"64"`
+	Audience     string                          `json:"audience" enum:"user"`
+	Kind         domain.AttentionQuestionKind    `json:"kind" enum:"question,authorization"`
+	Payload      domain.AttentionQuestionPayload `json:"payload"`
+	ExpiresAt    *time.Time                      `json:"expiresAt,omitempty"`
+	SupersedesID string                          `json:"supersedesId,omitempty"`
+}
+
+type QuestionReviseRequest struct {
+	ExpectedVersion int64                           `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
+	Payload         domain.AttentionQuestionPayload `json:"payload"`
+}
+
+type QuestionReadRequest struct {
+	ExpectedVersion int64 `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
+}
+type QuestionCancelRequest struct {
+	ExpectedVersion int64  `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
+	Actor           string `json:"actor" enum:"user,agent"`
+	Reason          string `json:"reason" minLength:"1" maxLength:"4000"`
+}
+type QuestionIDParam struct {
+	QuestionID string `path:"questionId"`
+}
+type QuestionResponse domain.AttentionQuestionRecord
+type QuestionPageResponse domain.AttentionQuestionPage
+type QuestionAnswerResponse domain.AttentionAnswerReceipt
+
 type AttentionItemResponse struct {
 	BranchID   string                       `json:"branchId"`
 	Activity   ConversationActivityResponse `json:"activity"`

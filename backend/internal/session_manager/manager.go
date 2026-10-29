@@ -5020,6 +5020,12 @@ func (m *Manager) SendWithOptions(ctx context.Context, id domain.SessionID, mess
 // boundary. Supported TUIs correlate the durable id through UserPromptSubmit;
 // a successful pane write alone never satisfies this method.
 func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message, clientMessageID string) error {
+	return m.SendSemanticWithOptions(ctx, id, message, clientMessageID, ports.MessageDeliveryOptions{})
+}
+
+// SendSemanticWithOptions keeps human answers on the same idempotent acceptance
+// boundary as internal delivery while retaining their user-authored provenance.
+func (m *Manager) SendSemanticWithOptions(ctx context.Context, id domain.SessionID, message, clientMessageID string, options ports.MessageDeliveryOptions) error {
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return err
@@ -5028,7 +5034,7 @@ func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message
 		return ErrNotFound
 	}
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		handled, sendErr := m.sendChat(ctx, id, message, clientMessageID, ports.MessageDeliveryOptions{})
+		handled, sendErr := m.sendChat(ctx, id, message, clientMessageID, options)
 		if !handled {
 			return ErrSemanticAcceptanceUnsupported
 		}
@@ -5041,7 +5047,7 @@ func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message
 		return nil
 	}
 	wrapped := domain.WrapReportDelivery(clientMessageID, message)
-	if err := m.send(ctx, id, wrapped, clientMessageID, ports.MessageDeliveryOptions{}); err != nil {
+	if err := m.send(ctx, id, wrapped, clientMessageID, options); err != nil {
 		// A pane write whose activity confirmation could not be observed is not
 		// fatal here: SendSemantic's own durable acceptance loop below is
 		// authoritative and correlates this exact message through its submission

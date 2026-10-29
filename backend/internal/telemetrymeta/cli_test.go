@@ -27,6 +27,7 @@ func TestIsRoutineInternalCLICommandNormalizesLegacyShapes(t *testing.T) {
 
 func TestCLIActorTypeKeepsKnownLegacyUserCommands(t *testing.T) {
 	for _, commandPath := range []string{
+		"ao ask", "ao ask create", "ao ask list", "ao ask get", "ao ask answer", "ao ask read", "ao ask cancel", "ao ask revise",
 		"ao agent ls",
 		"ao session claim-pr",
 		"ao dev import-projects",
