@@ -76,11 +76,14 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		if err != nil {
 			return err
 		}
-		op, err := decodeReplacement(row)
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}
 		result = op
+		if len(op.Repairs) > 0 && !op.Repairs[len(op.Repairs)-1].PreStopSnapshot {
+			return nil
+		}
 		if op.Revision != revision || op.Phase.Terminal() || op.SourceStopIntentAt != nil || op.SourceStop != nil || op.SourceRetiredAt != nil || op.SuccessorSessionID != "" {
 			return nil
 		}

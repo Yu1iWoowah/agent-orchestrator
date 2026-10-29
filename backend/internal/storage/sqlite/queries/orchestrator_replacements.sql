@@ -145,3 +145,27 @@ SELECT COUNT(*) FROM conversation_messages WHERE turn_id = ?;
 
 -- name: CountReplacementTurnActivities :one
 SELECT COUNT(*) FROM conversation_activities WHERE turn_id = ?;
+
+
+-- name: InsertReplacementRepairSnapshot :exec
+INSERT INTO orchestrator_replacement_repair_snapshots(operation_id, revision, digest, payload)
+VALUES (?, ?, ?, ?);
+
+-- name: GetReplacementRepairSnapshot :one
+SELECT * FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? AND revision = ?;
+
+-- name: GetLatestReplacementRepairSnapshot :one
+SELECT * FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? ORDER BY revision DESC LIMIT 1;
+
+-- Only the operator repair path can restore a broken redundant envelope. It
+-- never updates sessions, leases, queue rows or publication receipts.
+-- name: RestoreReplacementFromRepairSnapshot :execrows
+UPDATE orchestrator_replacements
+SET project_id = sqlc.arg(project_id), source_session_id = sqlc.arg(source_session_id),
+ operation_key = sqlc.arg(operation_key), request_hash = sqlc.arg(request_hash),
+ phase = 'recovery_required', is_active = 1, revision = sqlc.arg(new_revision),
+ intake_revision = sqlc.arg(intake_revision), state_json = sqlc.arg(state_json),
+ created_at = sqlc.arg(created_at), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);

@@ -60,6 +60,23 @@ func (q *Queries) GetActiveOrchestratorReplacement(ctx context.Context, projectI
 	return i, err
 }
 
+const getLatestReplacementRepairSnapshot = `-- name: GetLatestReplacementRepairSnapshot :one
+SELECT operation_id, revision, digest, payload FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? ORDER BY revision DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestReplacementRepairSnapshot(ctx context.Context, operationID string) (OrchestratorReplacementRepairSnapshot, error) {
+	row := q.db.QueryRowContext(ctx, getLatestReplacementRepairSnapshot, operationID)
+	var i OrchestratorReplacementRepairSnapshot
+	err := row.Scan(
+		&i.OperationID,
+		&i.Revision,
+		&i.Digest,
+		&i.Payload,
+	)
+	return i, err
+}
+
 const getOrchestratorReplacement = `-- name: GetOrchestratorReplacement :one
 SELECT id, project_id, source_session_id, operation_key, request_hash, phase, is_active, revision, intake_revision, state_json, created_at, updated_at FROM orchestrator_replacements WHERE id = ?
 `
@@ -104,6 +121,28 @@ func (q *Queries) GetOrchestratorReplacementByKey(ctx context.Context, operation
 		&i.StateJson,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getReplacementRepairSnapshot = `-- name: GetReplacementRepairSnapshot :one
+SELECT operation_id, revision, digest, payload FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? AND revision = ?
+`
+
+type GetReplacementRepairSnapshotParams struct {
+	OperationID string
+	Revision    int64
+}
+
+func (q *Queries) GetReplacementRepairSnapshot(ctx context.Context, arg GetReplacementRepairSnapshotParams) (OrchestratorReplacementRepairSnapshot, error) {
+	row := q.db.QueryRowContext(ctx, getReplacementRepairSnapshot, arg.OperationID, arg.Revision)
+	var i OrchestratorReplacementRepairSnapshot
+	err := row.Scan(
+		&i.OperationID,
+		&i.Revision,
+		&i.Digest,
+		&i.Payload,
 	)
 	return i, err
 }
@@ -167,6 +206,28 @@ func (q *Queries) InsertOrchestratorReplacement(ctx context.Context, arg InsertO
 		arg.StateJson,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+	)
+	return err
+}
+
+const insertReplacementRepairSnapshot = `-- name: InsertReplacementRepairSnapshot :exec
+INSERT INTO orchestrator_replacement_repair_snapshots(operation_id, revision, digest, payload)
+VALUES (?, ?, ?, ?)
+`
+
+type InsertReplacementRepairSnapshotParams struct {
+	OperationID string
+	Revision    int64
+	Digest      string
+	Payload     []byte
+}
+
+func (q *Queries) InsertReplacementRepairSnapshot(ctx context.Context, arg InsertReplacementRepairSnapshotParams) error {
+	_, err := q.db.ExecContext(ctx, insertReplacementRepairSnapshot,
+		arg.OperationID,
+		arg.Revision,
+		arg.Digest,
+		arg.Payload,
 	)
 	return err
 }
@@ -340,6 +401,52 @@ func (q *Queries) ReplacementWakeFenced(ctx context.Context, sessionID domain.Se
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const restoreReplacementFromRepairSnapshot = `-- name: RestoreReplacementFromRepairSnapshot :execrows
+UPDATE orchestrator_replacements
+SET project_id = ?1, source_session_id = ?2,
+ operation_key = ?3, request_hash = ?4,
+ phase = 'recovery_required', is_active = 1, revision = ?5,
+ intake_revision = ?6, state_json = ?7,
+ created_at = ?8, updated_at = ?9
+WHERE id = ?10 AND revision = ?11
+`
+
+type RestoreReplacementFromRepairSnapshotParams struct {
+	ProjectID        string
+	SourceSessionID  string
+	OperationKey     string
+	RequestHash      string
+	NewRevision      int64
+	IntakeRevision   int64
+	StateJson        string
+	CreatedAt        string
+	UpdatedAt        string
+	ID               string
+	ExpectedRevision int64
+}
+
+// Only the operator repair path can restore a broken redundant envelope. It
+// never updates sessions, leases, queue rows or publication receipts.
+func (q *Queries) RestoreReplacementFromRepairSnapshot(ctx context.Context, arg RestoreReplacementFromRepairSnapshotParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, restoreReplacementFromRepairSnapshot,
+		arg.ProjectID,
+		arg.SourceSessionID,
+		arg.OperationKey,
+		arg.RequestHash,
+		arg.NewRevision,
+		arg.IntakeRevision,
+		arg.StateJson,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const retireReplacementSession = `-- name: RetireReplacementSession :execrows

@@ -225,6 +225,7 @@ type ReplacementTarget struct {
 // OrchestratorReplacement contains durable saga facts. HTTP exposes a separate
 // read DTO, never a dump of internal configuration or control credentials.
 type OrchestratorReplacement struct {
+	Repairs                  []ReplacementRepairReceipt `json:"repairs,omitempty"`
 	SchemaVersion            int                        `json:"schemaVersion"`
 	ID                       string                     `json:"id"`
 	OperationKey             string                     `json:"operationKey"`

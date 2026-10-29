@@ -41,7 +41,7 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 		if !cancel && !waiting {
 			return nil
 		}
-		if op.SourceRetiredAt != nil || op.SourceStopIntentAt != nil || op.SourceStop != nil {
+		if op.SourceRetiredAt != nil || op.SourceStopIntentAt != nil || op.SourceStop != nil || len(op.Repairs) > 0 && !op.Repairs[len(op.Repairs)-1].PreStopSnapshot {
 			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_RECOVERY_REQUIRED", "Shutdown intent exists; retain this operation and verify the same native controller before recovery", nil)
 		}
 		if !cancel && op.Phase == domain.ReplacementRecoveryRequired {

@@ -30,6 +30,9 @@ func validateReplacement(op domain.OrchestratorReplacement) error {
 	if op.SchemaVersion != 1 || !replacementUUID(op.ID) || !replacementUUID(op.OperationKey) || len(op.RequestHash) != 64 || hashErr != nil || op.ProjectID == "" || op.SourceSessionID == "" || !op.Phase.Valid() || op.CreatedAt.IsZero() || op.UpdatedAt.IsZero() || !op.DeadlineAt.After(op.CreatedAt) {
 		return domain.ErrReplacementStateInvalid
 	}
+	if err := validateReplacementRepairs(op); err != nil {
+		return err
+	}
 	if err := validateReplacementStage(op); err != nil {
 		return err
 	}
@@ -49,7 +52,11 @@ func validateReplacement(op domain.OrchestratorReplacement) error {
 	if op.IntakeDrainRequestedAt != nil && (op.IntakeDrainRequestedAt.IsZero() || op.IntakeReleasedAt == nil) {
 		return domain.ErrReplacementStateInvalid
 	}
-	if op.SourceIntakeReleasedAt != nil && (op.SourceIntakeReleasedAt.IsZero() || !op.CanReleaseSourceIntake()) {
+	sourceReleaseAllowed := op.CanReleaseSourceIntake()
+	if op.Phase == domain.ReplacementRecoveryRequired && len(op.Repairs) > 0 && op.Repairs[len(op.Repairs)-1].PreStopSnapshot {
+		sourceReleaseAllowed = true
+	}
+	if op.SourceIntakeReleasedAt != nil && (op.SourceIntakeReleasedAt.IsZero() || !sourceReleaseAllowed) {
 		return domain.ErrReplacementStateInvalid
 	}
 	if transfer := op.IntakeTransfer; transfer != nil {
@@ -85,6 +92,9 @@ func validateReplacement(op domain.OrchestratorReplacement) error {
 
 func decodeReplacement(row gen.OrchestratorReplacement) (domain.OrchestratorReplacement, error) {
 	var op domain.OrchestratorReplacement
+	if !replacementJSONUnique([]byte(row.StateJson)) {
+		return op, domain.ErrReplacementStateInvalid
+	}
 	if err := json.Unmarshal([]byte(row.StateJson), &op); err != nil {
 		return op, err
 	}
@@ -92,6 +102,9 @@ func decodeReplacement(row gen.OrchestratorReplacement) (domain.OrchestratorRepl
 		return op, err
 	}
 	if op.ID != row.ID || string(op.ProjectID) != row.ProjectID || string(op.SourceSessionID) != row.SourceSessionID || op.OperationKey != row.OperationKey || op.RequestHash != row.RequestHash || string(op.Phase) != row.Phase || op.Phase.Terminal() == row.IsActive {
+		return op, domain.ErrReplacementStateInvalid
+	}
+	if len(op.Repairs) > 0 && op.Repairs[len(op.Repairs)-1].AfterRevision > row.Revision {
 		return op, domain.ErrReplacementStateInvalid
 	}
 	op.Revision = row.Revision
@@ -146,7 +159,7 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 		op.SuccessorSessionID != "" || op.SpawnRequestID != "" || op.SpawnRequestHash != "" || op.SpawnRetryGeneration != 0 || len(op.SpawnAttempts) != 0 ||
 		op.SuccessorController != nil || op.Bootstrap != nil || op.BootstrapClientID != "" || op.ResumeProbeClientID != "" || op.ResumeEvidence != nil ||
 		op.WriterActivation != nil || op.IntakeReleasedAt != nil || op.IntakeDrainRequestedAt != nil || op.SourceIntakeReleasedAt != nil || op.IntakeTransfer != nil ||
-		len(op.Notifications) != 0 || len(op.Attempts) != 0 || op.ResumePhase != "" {
+		len(op.Notifications) != 0 || len(op.Attempts) != 0 || len(op.Repairs) != 0 || op.ResumePhase != "" {
 		return result, false, domain.ErrReplacementStateInvalid
 	}
 	if err := validateReplacement(op); err != nil {
@@ -158,7 +171,7 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 	err := s.replacementTx(ctx, func(tx context.Context, q *gen.Queries) error {
 		existing, err := q.GetOrchestratorReplacementByKey(tx, op.OperationKey)
 		if err == nil {
-			result, err = decodeReplacement(existing)
+			result, err = s.decodeCheckpointedReplacement(tx, q, existing)
 			if err != nil {
 				return err
 			}
@@ -173,7 +186,7 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 		if !op.Phase.Terminal() {
 			active, err := q.GetActiveOrchestratorReplacement(tx, string(op.ProjectID))
 			if err == nil {
-				result, err = decodeReplacement(active)
+				result, err = s.decodeCheckpointedReplacement(tx, q, active)
 				if err != nil {
 					return err
 				}
@@ -235,6 +248,9 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 		}); err != nil {
 			return err
 		}
+		if err := s.saveReplacementCheckpoint(tx, q, op.ID); err != nil {
+			return err
+		}
 		result, created = op, true
 		return nil
 	})
@@ -243,59 +259,44 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 
 // GetOrchestratorReplacement reads an operation independently of caller lifetime.
 func (s *Store) GetOrchestratorReplacement(ctx context.Context, id string) (domain.OrchestratorReplacement, bool, error) {
-	row, err := s.replacementReader(ctx).GetOrchestratorReplacement(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.OrchestratorReplacement{}, false, nil
-	}
-	if err != nil {
-		return domain.OrchestratorReplacement{}, false, err
-	}
-	op, err := decodeReplacement(row)
-	return op, err == nil, err
+	return s.readReplacement(ctx, func(tx context.Context, q *gen.Queries) (gen.OrchestratorReplacement, error) {
+		return q.GetOrchestratorReplacement(tx, id)
+	})
 }
 
 // GetOrchestratorReplacementByKey replays the original durable request.
 func (s *Store) GetOrchestratorReplacementByKey(ctx context.Context, key string) (domain.OrchestratorReplacement, bool, error) {
-	row, err := s.replacementReader(ctx).GetOrchestratorReplacementByKey(ctx, key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.OrchestratorReplacement{}, false, nil
-	}
-	if err != nil {
-		return domain.OrchestratorReplacement{}, false, err
-	}
-	op, err := decodeReplacement(row)
-	return op, err == nil, err
+	return s.readReplacement(ctx, func(tx context.Context, q *gen.Queries) (gen.OrchestratorReplacement, error) {
+		return q.GetOrchestratorReplacementByKey(tx, key)
+	})
 }
 
 // GetActiveOrchestratorReplacement reads a project's admission reservation.
 func (s *Store) GetActiveOrchestratorReplacement(ctx context.Context, id domain.ProjectID) (domain.OrchestratorReplacement, bool, error) {
-	row, err := s.replacementReader(ctx).GetActiveOrchestratorReplacement(ctx, string(id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.OrchestratorReplacement{}, false, nil
-	}
-	if err != nil {
-		return domain.OrchestratorReplacement{}, false, err
-	}
-	op, err := decodeReplacement(row)
-	return op, err == nil, err
+	return s.readReplacement(ctx, func(tx context.Context, q *gen.Queries) (gen.OrchestratorReplacement, error) {
+		return q.GetActiveOrchestratorReplacement(tx, string(id))
+	})
 }
 
 // ListActiveOrchestratorReplacements discovers work after daemon restart.
 func (s *Store) ListActiveOrchestratorReplacements(ctx context.Context) ([]domain.OrchestratorReplacement, error) {
-	rows, err := s.replacementReader(ctx).ListActiveOrchestratorReplacements(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]domain.OrchestratorReplacement, 0, len(rows))
-	for _, row := range rows {
-		op, err := decodeReplacement(row)
+	result := []domain.OrchestratorReplacement{}
+	err := s.replacementRead(ctx, func(tx context.Context, q *gen.Queries) error {
+		rows, err := q.ListActiveOrchestratorReplacements(tx)
 		if err != nil {
-			slog.ErrorContext(ctx, "Skipping malformed replacement operation", "operation_id", row.ID, "project_id", row.ProjectID, "error", err)
-			continue
+			return err
 		}
-		result = append(result, op)
-	}
-	return result, nil
+		for _, row := range rows {
+			op, err := s.decodeCheckpointedReplacement(tx, q, row)
+			if err != nil {
+				slog.ErrorContext(tx, "Skipping malformed replacement operation", "operation_id", row.ID, "project_id", row.ProjectID, "error", err)
+				continue
+			}
+			result = append(result, op)
+		}
+		return nil
+	})
+	return result, err
 }
 
 // SaveOrchestratorReplacement changes facts only at the expected revision.
@@ -312,12 +313,15 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		if err != nil {
 			return err
 		}
-		before, err := decodeReplacement(row)
+		before, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}
 		if before.Revision != op.Revision {
 			return nil
+		}
+		if err := preserveReplacementRepairs(before, op); err != nil {
+			return err
 		}
 		if err := validateReplacementTransition(tx, q, before, op); err != nil {
 			return err
@@ -392,11 +396,24 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		if err != nil {
 			return err
 		}
+		if _, err := q.GetLatestReplacementRepairSnapshot(tx, op.ID); errors.Is(err, sql.ErrNoRows) {
+			if err := s.saveReplacementCheckpoint(tx, q, op.ID); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
 		count, err := q.UpdateOrchestratorReplacement(tx, gen.UpdateOrchestratorReplacementParams{
 			ID: op.ID, Revision: op.Revision, Phase: string(op.Phase), IsActive: !op.Phase.Terminal(), StateJson: string(state), UpdatedAt: op.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		})
+		if err != nil {
+			return err
+		}
 		changed = count == 1
-		return err
+		if changed {
+			return s.saveReplacementCheckpoint(tx, q, op.ID)
+		}
+		return nil
 	})
 	return changed && err == nil, err
 }
@@ -404,13 +421,7 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 // GetRetiredOrchestratorReplacementBySource retains the source fence after the
 // active project reservation has completed. Retired ownership cannot be revived.
 func (s *Store) GetRetiredOrchestratorReplacementBySource(ctx context.Context, id domain.SessionID) (domain.OrchestratorReplacement, bool, error) {
-	row, err := s.replacementReader(ctx).GetRetiredOrchestratorReplacementBySource(ctx, string(id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.OrchestratorReplacement{}, false, nil
-	}
-	if err != nil {
-		return domain.OrchestratorReplacement{}, false, err
-	}
-	op, err := decodeReplacement(row)
-	return op, err == nil, err
+	return s.readReplacement(ctx, func(tx context.Context, q *gen.Queries) (gen.OrchestratorReplacement, error) {
+		return q.GetRetiredOrchestratorReplacementBySource(tx, string(id))
+	})
 }

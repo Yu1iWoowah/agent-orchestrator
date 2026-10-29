@@ -569,6 +569,13 @@ type OrchestratorReplacementReleasedSession struct {
 	SessionID   string
 }
 
+type OrchestratorReplacementRepairSnapshot struct {
+	OperationID string
+	Revision    int64
+	Digest      string
+	Payload     []byte
+}
+
 type PR struct {
 	URL                      string
 	SessionID                domain.SessionID

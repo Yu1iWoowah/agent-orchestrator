@@ -93,7 +93,7 @@ func (s *Store) WithReplacementDocumentPublication(ctx context.Context, id strin
 		if err != nil {
 			return err
 		}
-		op, err := decodeReplacement(row)
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}

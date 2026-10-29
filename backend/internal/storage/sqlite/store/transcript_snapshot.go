@@ -49,7 +49,7 @@ func transcriptSourceCutoff(ctx context.Context, q *gen.Queries, id domain.Sessi
 	return cut, nil
 }
 
-func pinnedTranscriptCutoff(ctx context.Context, q *gen.Queries, source domain.SessionRecord) (*domain.TranscriptSourceCutoff, error) {
+func (s *Store) pinnedTranscriptCutoff(ctx context.Context, q *gen.Queries, source domain.SessionRecord) (*domain.TranscriptSourceCutoff, error) {
 	if source.Kind != domain.KindOrchestrator || source.ProjectID == "" {
 		return nil, nil
 	}
@@ -63,7 +63,7 @@ func pinnedTranscriptCutoff(ctx context.Context, q *gen.Queries, source domain.S
 	if row.SourceSessionID != string(source.ID) {
 		return nil, nil
 	}
-	op, err := decodeReplacement(row)
+	op, err := s.decodeCheckpointedReplacement(ctx, q, row)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 		return out, err
 	}
 	out.Session = rowToRecord(session)
-	pinned, err := pinnedTranscriptCutoff(ctx, q, out.Session)
+	pinned, err := s.pinnedTranscriptCutoff(ctx, q, out.Session)
 	if err != nil {
 		return out, err
 	}
