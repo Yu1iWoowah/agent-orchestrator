@@ -181,10 +181,6 @@ func (s *Service) VerifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	if e := s.checkCredentialStore(o.Provider, account.Home); e != nil {
 		return "", nil, e
 	}
-	views, e := s.List(ctx, false)
-	if e != nil {
-		return "", nil, e
-	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	o, e = s.operation(ctx, id)
@@ -193,6 +189,12 @@ func (s *Service) VerifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	}
 	if o.Phase != "pending" {
 		return s.loginResult(ctx, &o)
+	}
+	// Refresh the catalog inside the same boundary as acceptance. Two
+	// operations must not both commit the same identity from a stale list.
+	views, e := s.List(ctx, false)
+	if e != nil {
+		return "", nil, e
 	}
 	o.Outcome = "complete"
 	o.ResultAccountID = o.AccountID

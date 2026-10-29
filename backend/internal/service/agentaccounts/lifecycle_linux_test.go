@@ -533,3 +533,49 @@ func TestStartupRecoveryDoesNotBlockDaemonOnNativeLogout(t *testing.T) {
 	}
 
 }
+
+type duplicateRaceProvider struct{ *raceIdentityProvider }
+
+func (p *duplicateRaceProvider) Identity(ctx context.Context, home string) (domain.AgentAccountIdentityCheck, error) {
+	if home == "" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	return p.raceIdentityProvider.Identity(ctx, home)
+}
+func TestConcurrentLoginOperationsCannotSaveSameIdentityTwice(t *testing.T) {
+	ctx := context.Background()
+	db := sqlitetest.MustOpen(t)
+	root := filepath.Join(t.TempDir(), "accounts")
+	p := &duplicateRaceProvider{&raceIdentityProvider{fakeClaude: &fakeClaude{}}}
+	s := New(db, []ports.AgentAccountProviderCLI{p}, root, &lifecycleTerminals{alive: map[string]bool{}}, nil)
+	var starts []LoginStart
+	for range 2 {
+		start, e := s.StartLogin(ctx, domain.AgentAccountProviderClaude)
+		if e != nil {
+			t.Fatal(e)
+		}
+		starts = append(starts, start)
+	}
+	type result struct {
+		status LoginStatus
+		err    error
+	}
+	done := make(chan result, 2)
+	gate := make(chan struct{})
+	for _, start := range starts {
+		go func() { <-gate; status, _, e := s.VerifyLogin(ctx, start.OperationID); done <- result{status, e} }()
+	}
+	close(gate)
+	got := map[LoginStatus]int{}
+	for range 2 {
+		r := <-done
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		got[r.status]++
+	}
+	rows, e := db.ListAgentAccounts(ctx)
+	if e != nil || len(rows) != 1 || got[LoginComplete] != 1 || got[LoginDuplicate] != 1 {
+		t.Fatal("concurrent operations saved the same native identity twice")
+	}
+}
