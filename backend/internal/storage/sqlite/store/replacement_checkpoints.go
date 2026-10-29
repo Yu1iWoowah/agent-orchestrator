@@ -42,6 +42,11 @@ func replacementRecoveryProgress(before, after domain.OrchestratorReplacement) b
 	if after.Phase == domain.ReplacementCancelled {
 		return true
 	}
+	// One capacity pause must remain possible before stop. Once waiting,
+	// metadata/phase churn cannot reuse this exception; Retry is ordinary.
+	if !before.CanReleaseSourceIntake() && after.CanReleaseSourceIntake() && after.Error != nil && after.Error.Code == "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
+		return true
+	}
 	if before.SourceStopIntentAt == nil && before.SourceStop == nil && before.SourceRetiredAt == nil {
 		return false
 	}

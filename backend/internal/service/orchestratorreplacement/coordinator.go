@@ -38,6 +38,9 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 		if op.SourceRetiredAt == nil {
 			if err = s.checkSource(ctx, op); err != nil {
 				op, err = s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, err)
+				if errors.Is(err, domain.ErrReplacementRepairCapacity) {
+					op, err = s.pauseForCapacity(ctx, op, err)
+				}
 				return err
 			}
 		}
@@ -50,12 +53,9 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 			op = next
 		}
 		if errors.Is(err, domain.ErrReplacementRepairCapacity) {
-			// Do not spend another checkpoint recording a capacity refusal or
-			// return a speculative intent that the transaction rolled back.
-			op, err = s.Get(ctx, id)
-			if err == nil {
-				err = checkpointCapacityError(stepErr)
-			}
+			// A refused intent was never committed. Pause the unchanged live
+			// source using recovery capacity so ordinary input can continue.
+			op, err = s.pauseForCapacity(ctx, op, stepErr)
 			return err
 		}
 		if errors.Is(err, errNoStopClearPending) {
@@ -161,7 +161,22 @@ func checkpointCapacityError(err error) error {
 	if errors.As(err, &api) && api.Code == "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
 		return err
 	}
-	return errors.Join(err, apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY", "Replacement checkpoint capacity is exhausted; inspect the operation's committed recovery facts", nil))
+	return errors.Join(apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY", "Replacement checkpoint capacity is exhausted; inspect the operation's committed recovery facts", nil), err)
+}
+
+func (s *Service) pauseForCapacity(ctx context.Context, op domain.OrchestratorReplacement, cause error) (domain.OrchestratorReplacement, error) {
+	// Advance attempts this once, after an ordinary write was refused.
+	// Always read committed facts; wait itself never retries a write.
+	current, err := s.Get(ctx, op.ID)
+	if err != nil {
+		return op, err
+	}
+	paused := current
+	paused.Phase = domain.ReplacementAwaitingSource
+	if !paused.CanReleaseSourceIntake() {
+		return current, checkpointCapacityError(cause)
+	}
+	return s.wait(ctx, current, paused.Phase, current.Phase, checkpointCapacityError(cause))
 }
 
 func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, phase, resume domain.ReplacementPhase, cause error) (domain.OrchestratorReplacement, error) {
@@ -210,7 +225,7 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 	op.Phase, op.ResumePhase, op.Error = phase, resume, &failure
 	op, err = s.save(ctx, op)
 	if err != nil {
-		return op, err
+		return current, err
 	}
 	return s.releaseSourceIntake(ctx, op)
 }

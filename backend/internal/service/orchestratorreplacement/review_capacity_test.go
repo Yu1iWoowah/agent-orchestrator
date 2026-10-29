@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
 func busySource(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error) {
@@ -49,10 +48,9 @@ func TestReplacementCapacityRefusesNewStopIntentAndStillCancels(t *testing.T) {
 	exhaustOrdinaryRepairHistory(t, x)
 	before := x.f.runtime.quiescences
 	svc := x.service()
-	_, err := svc.Advance(context.Background(), x.operation.ID)
-	var api *apierr.Error
-	if !errors.As(err, &api) || api.Code != "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
-		t.Errorf("capacity admission was not a named refusal: %v", err)
+	op, err := svc.Advance(context.Background(), x.operation.ID)
+	if err != nil || op.Error == nil || op.Error.Code != "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
+		t.Errorf("capacity admission did not persist a named pause: %+v %v", op.Error, err)
 	}
 	stored, _, err := x.f.store.GetOrchestratorReplacement(context.Background(), x.operation.ID)
 	if err != nil || stored.SourceStopIntentAt != nil || stored.SourceStop != nil || x.f.runtime.quiescences != before {
