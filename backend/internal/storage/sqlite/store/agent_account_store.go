@@ -83,14 +83,19 @@ func (s *Store) SetAgentAccountDefault(ctx context.Context, p domain.AgentAccoun
 
 // BindSessionAgentAccount records the account a session uses from at on.
 func (s *Store) BindSessionAgentAccount(ctx context.Context, id domain.SessionID, p domain.AgentAccountProvider, accountID string, at time.Time) error {
-	return s.BindSessionAgentAccountWithSource(ctx, id, domain.ResolvedAgentAccount{AccountID: accountID, Provider: p, Source: domain.AgentAccountSourceExplicit}, at)
+	return s.bindSessionAgentAccount(ctx, id, domain.ResolvedAgentAccount{AccountID: accountID, Provider: p, Source: domain.AgentAccountSourceExplicit}, at, false)
 }
 
 // BindSessionAgentAccountWithSource preserves the initial resolution source and
-// makes repeated bindings idempotent. A changed identity gets a strictly newer
-// timestamp when the clock is equal, retaining deterministic history.
-// Backdated history remains historical and cannot change active-account consent.
+// makes repeated execution bindings idempotent. Changed choices are strictly
+// ordered even when the wall clock is frozen or moves backwards.
 func (s *Store) BindSessionAgentAccountWithSource(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time) error {
+	return s.bindSessionAgentAccount(ctx, id, selected, at, true)
+}
+
+// Historical receipts retain their source timestamps; live execution choices
+// must become the latest binding before any native probe or launch can run.
+func (s *Store) bindSessionAgentAccount(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time, live bool) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "bind session account", func(q *gen.Queries) error {
@@ -102,7 +107,7 @@ func (s *Store) BindSessionAgentAccountWithSource(ctx context.Context, id domain
 			if previous.AccountID == selected.AccountID {
 				return nil
 			}
-			if at.Equal(previous.BoundAt) {
+			if at.Equal(previous.BoundAt) || live && at.Before(previous.BoundAt) {
 				at = previous.BoundAt.Add(time.Nanosecond)
 			}
 		}

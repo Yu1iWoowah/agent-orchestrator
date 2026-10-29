@@ -513,7 +513,7 @@ func (s *Service) CommitSession(ctx context.Context, id domain.SessionID, harnes
 	if account.Provider != p {
 		return ports.ErrAgentAccountProviderMismatch
 	}
-	return s.store.BindSessionAgentAccount(ctx, id, p, account.ID, s.now())
+	return s.store.BindSessionAgentAccountWithSource(ctx, id, domain.ResolvedAgentAccount{AccountID: account.ID, Provider: p, Source: domain.AgentAccountSourceExplicit}, s.now())
 }
 
 // ValidateAccount checks that accountID can run harness now.

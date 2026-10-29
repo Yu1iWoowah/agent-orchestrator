@@ -72,3 +72,19 @@ func TestPendingReviewerBindingProtectsProfileUntilArchived(t *testing.T) {
 		t.Fatal("archived reviewer permanently blocks profile cleanup")
 	}
 }
+
+func TestResolvedBindingSerializesThreeChoicesAtTheSameInstant(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	worker := seedUsageSession(t, s, domain.HarnessCodex)
+	at := time.Now().UTC()
+	for _, id := range []string{"A", "B", "C"} {
+		binding := domain.ResolvedAgentAccount{AccountID: id, Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceExplicit}
+		mustNoError(t, s.BindSessionAgentAccountWithSource(ctx, worker.ID, binding, at))
+		got, found, err := s.GetSessionAgentAccountBinding(ctx, worker.ID, binding.Provider)
+		mustNoError(t, err)
+		if !found || got.AccountID != id {
+			t.Fatalf("same-instant choice %s was not pinned: %+v", id, got)
+		}
+	}
+}
