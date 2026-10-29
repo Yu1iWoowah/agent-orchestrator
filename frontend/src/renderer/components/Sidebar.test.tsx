@@ -33,6 +33,7 @@ import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 import { useUiStore } from "../stores/ui-store";
 import { aoBridge } from "../lib/bridge";
+import { getApiBaseUrl } from "../lib/api-client";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import type { RemoteHost } from "../hooks/useRemoteHosts";
@@ -187,7 +188,8 @@ vi.mock("../hooks/useSettings", () => ({
 	useSettings: () => ({ settings: { trackerIntakeEnabled: true }, isLoading: false, error: undefined }),
 }));
 
-vi.mock("../lib/api-client", () => ({
+vi.mock("../lib/api-client", async (original) => ({
+	...await original<typeof import("../lib/api-client")>(),
 	apiClient: { GET: getMock, POST: postMock },
 	hasTrustedApiBaseUrl: () => false,
 	apiErrorMessage: (error: unknown) => {
@@ -692,7 +694,7 @@ describe("Sidebar", () => {
 		expect(screen.getAllByLabelText("Sign in to cloud")).toHaveLength(2);
 	});
 
-	it("shows the Artifacts row under Automations with a count of live artifacts", async () => {
+	it("shows the Artifacts row under Automations without claiming a total from worker summaries", async () => {
 		const user = userEvent.setup();
 		const withArtifacts: WorkspaceSummary = {
 			...workspace,
@@ -719,11 +721,23 @@ describe("Sidebar", () => {
 		const automations = screen.getByRole("button", { name: "Automations" });
 		const artifacts = screen.getByRole("button", { name: "Artifacts" });
 		expect(automations.compareDocumentPosition(artifacts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-		expect(artifacts).toHaveTextContent("2");
+		expect(artifacts.textContent).toBe("Artifacts");
 		expect(artifacts).not.toHaveAttribute("aria-current");
 
 		await user.click(artifacts);
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/artifacts" });
+	});
+
+	it.each([false, true])("observes the gallery cache and hides an incomplete total: %s", (incomplete) => {
+		const file: components["schemas"]["DocumentCatalogItem"] = { name: "guide.md", path: "guide.md", source: "shared", archived: false, size: 1, fingerprint: "f", target: { kind: "shared", projectId: workspace.id, path: "guide.md" } };
+		renderSidebar({ seed: (cache) => cache.setQueryData(["artifact-catalogs", "local", getApiBaseUrl(), [workspace.id]], [{ projectId: workspace.id, items: [file, file, file], errors: [], loading: false, incomplete }]) });
+		expect(screen.getByRole("button", { name: "Artifacts" }).textContent).toBe(incomplete ? "Artifacts" : "Artifacts3");
+	});
+
+	it("counts healthy rows when Shared has never been initialized", () => {
+		const file: components["schemas"]["DocumentCatalogItem"] = { name: "guide.md", path: "guide.md", source: "worker", archived: false, size: 1, fingerprint: "f", target: { kind: "artifact", projectId: workspace.id, sessionId: "worker", path: "guide.md" } };
+		renderSidebar({ seed: cache => cache.setQueryData(["artifact-catalogs", "local", getApiBaseUrl(), [workspace.id]], [{ projectId: workspace.id, items: [file], errors: [{ source: "shared", code: "DOCUMENT_SOURCE_MISSING" }], loading: false, incomplete: true }]) });
+		expect(screen.getByRole("button", { name: "Artifacts" }).textContent).toBe("Artifacts1");
 	});
 
 	it("omits the Artifacts count when there are none and marks the row active on its route", () => {

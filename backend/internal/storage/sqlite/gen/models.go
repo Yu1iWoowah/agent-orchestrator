@@ -475,6 +475,7 @@ type ConversationTurn struct {
 	UsageLimitResumeError     string
 	BatchedInput              int64
 	ProviderInputText         string
+	IntakeSequence            int64
 	AgentSettingsSnapshotJson string
 }
 
@@ -531,6 +532,46 @@ type Notification struct {
 	ResolvedAt  sql.NullTime
 	DismissedAt sql.NullTime
 	SourceKey   string
+}
+
+type OrchestratorReplacement struct {
+	ID              string
+	ProjectID       string
+	SourceSessionID string
+	OperationKey    string
+	RequestHash     string
+	Phase           string
+	IsActive        bool
+	Revision        int64
+	IntakeRevision  int64
+	StateJson       string
+	CreatedAt       string
+	UpdatedAt       string
+}
+
+type OrchestratorReplacementHeldTurn struct {
+	OperationID string
+	TurnID      string
+}
+
+type OrchestratorReplacementIntakeTransfer struct {
+	OperationID                string
+	MessageID                  string
+	TurnID                     string
+	SourceConversationID       string
+	SourceSequence             int64
+	SourceSessionID            string
+	SourceControllerGeneration string
+	SourceBranchID             string
+	TargetConversationID       string
+	TargetSequence             int64
+	PayloadHash                string
+	TransferredAt              time.Time
+}
+
+type OrchestratorReplacementReleasedSession struct {
+	OperationID string
+	SessionID   string
 }
 
 type PR struct {

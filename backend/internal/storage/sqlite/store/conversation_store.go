@@ -1442,6 +1442,7 @@ func (s *Store) appendUserMessage(
 		}
 		if msg.Origin == domain.MessageOriginHuman || msg.AuthoredByUser {
 			if _, err := q.RecordSessionHumanMessage(ctx, gen.RecordSessionHumanMessageParams{
+				TurnID:             turnID,
 				ID:                 session,
 				LatestUserPrompt:   msg.Text,
 				LatestUserPromptAt: timeToNullTime(interactionAt),

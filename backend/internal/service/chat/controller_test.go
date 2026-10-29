@@ -4458,7 +4458,7 @@ func TestSendWhileBusyQueuesUntilTheTurnEnds(t *testing.T) {
 	})
 
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["second"] == domain.TurnStateRunning
+		return turnStateByText(t, s)["second"] == domain.TurnStateRunning && len(h.conv.sentTexts()) == 2
 	})
 	states := turnStateByText(t, snapshot)
 	if states["first"] != domain.TurnStateCompleted {
@@ -4547,7 +4547,7 @@ func TestNestedTurnCompletionDoesNotDrainQueueWhilePrimaryTurnRuns(t *testing.T)
 		ProviderConversationID: "thread-1", TurnState: domain.TurnStateCompleted,
 	})
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["queued automation"] == domain.TurnStateRunning
+		return turnStateByText(t, s)["queued automation"] == domain.TurnStateRunning && len(h.conv.sentTexts()) == 2
 	})
 	if got := h.conv.sentTexts(); len(got) != 2 || got[1] != "queued automation" {
 		t.Fatalf("provider received %v, want automation only after root completion", got)
@@ -5733,7 +5733,7 @@ func TestMessageTypedAfterStopIsStillDelivered(t *testing.T) {
 	})
 
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["after stop"] == domain.TurnStateRunning
+		return turnStateByText(t, s)["after stop"] == domain.TurnStateRunning && len(h.conv.sentTexts()) == 2
 	})
 	states := turnStateByText(t, snapshot)
 	if states["before stop"] != domain.TurnStateInterrupted {

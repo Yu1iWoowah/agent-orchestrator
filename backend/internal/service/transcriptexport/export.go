@@ -20,12 +20,7 @@ import (
 const Scope = "source-ao-session-main-line/all-required-claude-epochs"
 
 // EpochCutoff fixes a native byte boundary and a settled main-line leaf.
-type EpochCutoff struct {
-	NativeID string `json:"nativeId"`
-	Schema   string `json:"schema"`
-	Bytes    int64  `json:"bytes"`
-	LeafID   string `json:"leafId"`
-}
+type EpochCutoff = domain.TranscriptEpochCutoff
 
 // Manifest records coverage facts without repeating the transcript payload.
 type Manifest struct {
@@ -117,6 +112,9 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	for _, seg := range segments {
 		id := seg.NativeID
 		c := byCut[id]
+		if c.SHA256 != "" && c.SHA256 != seg.SHA256 {
+			return out, incomplete("TRANSCRIPT_SOURCE_CHANGED", "captured native content changed before export")
+		}
 		if seg.ByteCutoff != c.Bytes || seg.LeafID != c.LeafID || seg.SHA256 == "" || len(seg.MainRecordIDs) == 0 && seg.Counts.AncestorRecords == 0 {
 			return out, incomplete("TRANSCRIPT_COVERAGE_INCOMPLETE", "reader did not verify the fixed native boundary")
 		}

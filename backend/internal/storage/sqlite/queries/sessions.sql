@@ -188,14 +188,16 @@ WHERE id = sqlc.arg(id)
 -- Chat message insertion already owns controller/idempotency fencing. Compare
 -- against the dedicated fact timestamp here so unrelated lifecycle writes do
 -- not suppress a newer human message.
+-- Held replacement input is not provider history. Keep the verified checkpoint
+-- and its corresponding prompt/answer together until delivery is released.
 UPDATE sessions SET
-    latest_user_prompt = sqlc.arg(latest_user_prompt),
-    latest_user_prompt_at = sqlc.arg(latest_user_prompt_at),
-    latest_assistant_update = '',
-    conversation_checkpoint_state = 'legacy',
-    conversation_checkpoint_generation = '',
-    conversation_checkpoint_native_id = '',
-    conversation_checkpoint_turn_id = '',
+    latest_user_prompt = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN latest_user_prompt ELSE sqlc.arg(latest_user_prompt) END,
+    latest_user_prompt_at = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN latest_user_prompt_at ELSE sqlc.arg(latest_user_prompt_at) END,
+    latest_assistant_update = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN latest_assistant_update ELSE '' END,
+    conversation_checkpoint_state = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN conversation_checkpoint_state ELSE 'legacy' END,
+    conversation_checkpoint_generation = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN conversation_checkpoint_generation ELSE '' END,
+    conversation_checkpoint_native_id = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN conversation_checkpoint_native_id ELSE '' END,
+    conversation_checkpoint_turn_id = CASE WHEN EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = sqlc.arg(turn_id)) THEN conversation_checkpoint_turn_id ELSE '' END,
     updated_at = MAX(updated_at, sqlc.arg(latest_user_prompt_at))
 WHERE id = sqlc.arg(id)
   AND is_terminated = 0

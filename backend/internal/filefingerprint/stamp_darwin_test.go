@@ -1,4 +1,4 @@
-package claudecode
+package filefingerprint
 
 import (
 	"os"
@@ -13,22 +13,22 @@ type suppliedNativeStat struct {
 
 func (s suppliedNativeStat) Sys() any { return s.stat }
 
-func TestNativeChangeStampPreservesDeviceAndNanoseconds(t *testing.T) {
+func TestChangeStampPreservesDeviceAndNanoseconds(t *testing.T) {
 	stat := &syscall.Stat_t{Dev: 7}
-	stat.Ctim.Sec, stat.Ctim.Nsec = 42, 123
+	stat.Ctimespec.Sec, stat.Ctimespec.Nsec = 42, 123
 	info := suppliedNativeStat{stat: stat}
-	first, ok := nativeFileChangeStamp(info)
+	first, ok := changeStamp(info)
 	if !ok || first.device != 7 || first.ctimeSeconds != 42 || first.ctimeNanoseconds != 123 {
 		t.Fatalf("native stamp lost fields: %+v available=%t", first, ok)
 	}
-	stat.Ctim.Nsec++
-	next, ok := nativeFileChangeStamp(info)
+	stat.Ctimespec.Nsec++
+	next, ok := changeStamp(info)
 	if !ok || first == next {
 		t.Fatal("same-second change time was truncated")
 	}
-	stat.Ctim.Nsec--
+	stat.Ctimespec.Nsec--
 	stat.Dev++
-	next, ok = nativeFileChangeStamp(info)
+	next, ok = changeStamp(info)
 	if !ok || first == next {
 		t.Fatal("device identity was lost")
 	}

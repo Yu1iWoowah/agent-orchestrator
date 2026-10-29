@@ -32,6 +32,10 @@ func transcriptFailure(code, reason string) error {
 // ReadNativeTranscript reads one fixed provider boundary without starting a
 // controller, reconciling authentication, or modifying provider-owned files.
 func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeTranscriptRequest) (ports.NativeTranscriptSegment, error) {
+	return p.readNativeTranscript(ctx, request, false)
+}
+
+func (p *Plugin) readNativeTranscript(ctx context.Context, request ports.NativeTranscriptRequest, capture bool) (ports.NativeTranscriptSegment, error) {
 	var segment ports.NativeTranscriptSegment
 	if err := ctx.Err(); err != nil {
 		return segment, err
@@ -43,7 +47,7 @@ func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeT
 	if err != nil || !filepath.IsAbs(request.Source.ConfigDir) {
 		return segment, transcriptFailure("TRANSCRIPT_SOURCE_INVALID", "missing canonical native source")
 	}
-	if request.ByteCutoff <= 0 || request.LeafID == "" {
+	if !capture && (request.ByteCutoff <= 0 || request.LeafID == "") {
 		return segment, transcriptFailure("TRANSCRIPT_CUTOFF_INVALID", "a nonempty settled boundary is required")
 	}
 	maxBytes := request.MaxSourceBytes
@@ -120,6 +124,15 @@ func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeT
 	opened, err := file.Stat()
 	if err != nil {
 		return segment, err
+	}
+	if capture {
+		request.ByteCutoff = opened.Size()
+		if request.ByteCutoff <= 0 {
+			return segment, transcriptFailure("TRANSCRIPT_CUTOFF_INVALID", "native source is empty")
+		}
+		if request.ByteCutoff > maxBytes {
+			return segment, transcriptFailure("TRANSCRIPT_LIMIT_EXCEEDED", "source exceeds export capacity")
+		}
 	}
 	if !os.SameFile(before, opened) || opened.Size() != request.ByteCutoff {
 		return segment, transcriptFailure("TRANSCRIPT_CUTOFF_INVALID", "native file differs from the fixed byte boundary")
@@ -237,6 +250,13 @@ func (p *Plugin) ReadNativeTranscript(ctx context.Context, request ports.NativeT
 	}
 	if err := scanner.Err(); err != nil {
 		return ports.NativeTranscriptSegment{}, transcriptFailure("TRANSCRIPT_LIMIT_EXCEEDED", "native record exceeds readable capacity")
+	}
+	if capture {
+		request.LeafID, err = captureMainLeaf(nodes, native)
+		if err != nil {
+			return ports.NativeTranscriptSegment{}, err
+		}
+		segment.LeafID = request.LeafID
 	}
 	lineage := []string{}
 	visited := map[string]bool{}
