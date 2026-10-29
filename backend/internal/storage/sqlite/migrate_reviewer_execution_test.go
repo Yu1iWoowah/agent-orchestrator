@@ -2,9 +2,10 @@ package sqlite
 
 import (
 	"database/sql"
-	"github.com/pressly/goose/v3"
 	"reflect"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 )
 
 func TestReviewerExecutionHistoryPreservesOldBindingsAndRejectsUnsafeDowngrade(t *testing.T) {

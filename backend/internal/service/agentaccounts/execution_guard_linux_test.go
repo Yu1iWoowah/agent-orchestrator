@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agentaccount"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -181,5 +182,34 @@ func TestLegacyIdentityConflictNeverSavesSecondCredentialCopy(t *testing.T) {
 	}
 	if _, err = os.Lstat(home); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("new duplicate profile retained", err)
+	}
+}
+
+func TestOrphanLeaseFailureStillPinsUnavailableHome(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	svc := New(&orphanBindingStore{&memStore{}}, []ports.AgentAccountProviderCLI{&fakeClaude{}, &agentaccount.Codex{}}, root, nil, nil)
+	lock := svc.accountUseLock("deleted-codex")
+	lock.Lock()
+	defer lock.Unlock()
+	env, err := svc.SessionLaunchEnv(context.Background(), "old", domain.HarnessClaudeCode)
+	if err != nil || env["CODEX_HOME"] != filepath.Join(root, ".unavailable", "codex") || env["AO_CODEX_MANAGED_ACCOUNT"] != "1" {
+		t.Fatalf("lease failure exposed device login: %v %v", env, err)
+	}
+}
+func TestUnsafeReservedAncestorBlocksEvenNonHarnessLaunch(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "accounts")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(&orphanBindingStore{&memStore{}}, []ports.AgentAccountProviderCLI{&fakeClaude{}, &agentaccount.Codex{}}, root, nil, nil)
+	env, err := svc.SessionLaunchEnv(context.Background(), "old", domain.HarnessClaudeCode)
+	if !errors.Is(err, ports.ErrAgentAccountStorageUnsafe) || env["AO_CODEX_MANAGED_ACCOUNT"] != "1" {
+		t.Fatalf("unsafe reserved ancestor was ignored: %v %v", env, err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("unsafe namespace was modified", err)
 	}
 }

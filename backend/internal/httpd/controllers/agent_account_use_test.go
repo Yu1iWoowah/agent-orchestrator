@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/go-chi/chi/v5"
 )
 
 type rebuildReviewerService struct{ AgentAccountService }

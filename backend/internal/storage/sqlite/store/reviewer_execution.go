@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
+// CreateReviewerAccountExecution atomically installs one new owner and binding.
 func (s *Store) CreateReviewerAccountExecution(ctx context.Context, previousID, newID string, selected domain.ResolvedAgentAccount, at time.Time) (out domain.Review, created bool, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -34,7 +35,7 @@ func (s *Store) CreateReviewerAccountExecution(ctx context.Context, previousID, 
 		} else if e != nil {
 			return e
 		}
-		if e = q.BindReviewerAgentAccount(ctx, gen.BindReviewerAgentAccountParams{ReviewID: newID, Provider: string(selected.Provider), AccountID: selected.AccountID, ResolutionSource: string(selected.Source), BoundAt: at.UTC()}); e != nil {
+		if e := q.BindReviewerAgentAccount(ctx, gen.BindReviewerAgentAccountParams{ReviewID: newID, Provider: string(selected.Provider), AccountID: selected.AccountID, ResolutionSource: string(selected.Source), BoundAt: at.UTC()}); e != nil {
 			return e
 		}
 		row, e := q.GetReviewByID(ctx, newID)

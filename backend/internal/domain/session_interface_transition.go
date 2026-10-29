@@ -115,10 +115,12 @@ type SessionInterfaceTransition struct {
 	NoticeAcknowledgedAt  time.Time                     `json:"noticeAcknowledgedAt,omitempty"`
 }
 
+// AccountTransitionRuntimeState records evidence about a tentative native writer.
+// An empty legacy value means unknown, never proof that Create had no effect.
 type AccountTransitionRuntimeState string
 
+// Native runtime receipt states, from no effect to confirmed shutdown.
 const (
-	// Empty is an older journal without evidence; it is deliberately unknown.
 	AccountTransitionRuntimeNotStarted AccountTransitionRuntimeState = "not_started"
 	AccountTransitionRuntimeReserved   AccountTransitionRuntimeState = "reserved"
 	AccountTransitionRuntimeStarted    AccountTransitionRuntimeState = "started"

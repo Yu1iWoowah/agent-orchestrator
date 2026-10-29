@@ -15,6 +15,7 @@ func (s *Service) SetUsageOwners(owners func(context.Context, string) ([]domain.
 	s.usageOwners = owners
 }
 
+// UsageOwners includes durable users and in-flight launches for a local account.
 func (s *Service) UsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
 	if _, err := s.find(ctx, id); err != nil {
 		return nil, err

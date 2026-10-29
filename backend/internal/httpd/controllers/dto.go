@@ -4004,6 +4004,7 @@ type RebuildReviewerAccountRequest struct {
 	AccountID string `json:"accountId" minLength:"1" maxLength:"200" description:"Explicit account for a fresh reviewer execution. The previous conversation and binding remain historical; the next trigger starts a new native conversation."`
 }
 
+// RebuildReviewerAccountResponse identifies a new execution without exposing profiles.
 type RebuildReviewerAccountResponse struct {
 	ReviewID  string           `json:"reviewId"`
 	SessionID domain.SessionID `json:"sessionId"`

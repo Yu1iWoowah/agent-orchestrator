@@ -152,6 +152,7 @@ type AgentAccountUseGuard interface {
 	AcquireAccountUses(context.Context, ...string) (func(), error)
 }
 
+// AgentAccountUsageStore lists current and historical local account owners.
 type AgentAccountUsageStore interface {
 	ListAgentAccountUsageOwners(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
 }

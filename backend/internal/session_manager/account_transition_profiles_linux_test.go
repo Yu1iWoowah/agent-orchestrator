@@ -3,15 +3,16 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agentaccount"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 // Real profile boundaries and durable bindings are composed with fake native

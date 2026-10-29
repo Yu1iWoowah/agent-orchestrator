@@ -2,6 +2,7 @@ package agentaccounts
 
 import (
 	"context"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -13,6 +14,8 @@ func (s *Service) SetLegacyIdentityCheck(check func(context.Context, domain.Agen
 	defer s.mu.Unlock()
 	s.legacyIdentityCheck = check
 }
+
+// ValidateAccountHandoff refreshes the target and rejects implicit external history imports.
 func (s *Service) ValidateAccountHandoff(ctx context.Context, harness domain.AgentHarness, sourceID, targetID, nativeID string) error {
 	target, err := s.find(ctx, targetID)
 	if err != nil {

@@ -3288,7 +3288,7 @@ func TestRecoverInterruptedClaudeTUIToChatPreservesPoisonedCheckpointThroughResu
 type failingProbeTransitionAgent struct{ transitionAgent }
 
 func (failingProbeTransitionAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
-	return false, errors.New("transcript root unreadable")
+	return false, errors.New("transcript root unreadable: fake-credential-canary /fake/private/profile")
 }
 
 func TestInterfaceTransitionStatusReportsUnverifiedWhenInspectionFails(t *testing.T) {
@@ -3312,8 +3312,8 @@ func TestInterfaceTransitionStatusReportsUnverifiedWhenInspectionFails(t *testin
 	if _, err := manager.StartInterfaceTransition(
 		context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
 		domain.SessionInterfaceTransitionHistoryStrict,
-	); err == nil || !strings.Contains(err.Error(), "transcript root unreadable") {
-		t.Fatalf("StartInterfaceTransition error = %v, want inspection failure", err)
+	); !errors.Is(err, ErrNativeConversationUnverified) || strings.Contains(err.Error(), "canary") || strings.Contains(err.Error(), "/fake/") {
+		t.Fatalf("StartInterfaceTransition error = %v, want safe unverified-history classification", err)
 	}
 }
 

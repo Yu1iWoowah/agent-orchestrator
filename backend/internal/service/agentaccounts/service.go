@@ -791,6 +791,12 @@ func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID,
 
 func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness, reviewID string) (map[string]string, error) {
 	env := map[string]string{}
+	releases := make([]func(), 0, len(domain.AgentAccountProviders))
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
 	var errs []error
 	active, _ := domain.AgentAccountProviderFor(harness)
 	validationError := func(p domain.AgentAccountProvider, id string, err error) {
@@ -860,24 +866,17 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if account.Device() {
 			continue
 		}
-		release, err := s.acquireProfileRead(ctx, account.ID)
-		if err != nil {
-			// Keep the pinned env below even when a lifecycle mutator owns the
-			// profile; callers must never fall back to the device login.
-			for key, value := range provider.LaunchEnv(account.Home) {
-				env[key] = value
-			}
-			validationError(p, account.ID, err)
-			continue
-		}
-		defer release()
-		current, refreshErr := s.find(ctx, account.ID)
+		release, refreshErr := s.acquireProfileRead(ctx, account.ID)
 		if refreshErr == nil {
-			account = current
-		} else if errors.Is(refreshErr, ports.ErrAgentAccountUnknown) && account.RetiredAt != nil && account.Home == "" {
+			releases = append(releases, release)
+			current, err := s.find(ctx, account.ID)
+			if err == nil {
+				account = current
+			} else if !errors.Is(err, ports.ErrAgentAccountUnknown) || account.RetiredAt == nil || account.Home != "" {
+				refreshErr = err
+			}
 			// Pre-tombstone deleted rows deliberately remain synthetic retired
-			// owners; their env must still use the unavailable namespace.
-			refreshErr = nil
+			// owners. Every branch below still pins their unavailable namespace.
 		}
 		// Even a rejected environment stays isolated from the device login.
 		// Legacy deleted bindings have no known home: use a fixed reserved
@@ -901,12 +900,17 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		for key, value := range provider.LaunchEnv(home) {
 			env[key] = value
 		}
-		if refreshErr != nil {
-			validationError(p, account.ID, refreshErr)
-			continue
-		}
 		if namespaceErr != nil {
 			validationError(p, account.ID, namespaceErr)
+			if p != active && !errors.Is(namespaceErr, ports.ErrAgentAccountUnavailableHomeOccupied) {
+				// An occupied or unsafe reserved namespace is not a known private
+				// home. Refuse the whole launch, including non-harness children.
+				errs = append(errs, namespaceErr)
+			}
+			continue
+		}
+		if refreshErr != nil {
+			validationError(p, account.ID, refreshErr)
 			continue
 		}
 		if err := accountAvailability(account); err != nil {

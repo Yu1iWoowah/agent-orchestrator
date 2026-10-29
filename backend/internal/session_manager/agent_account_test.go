@@ -1,9 +1,12 @@
 package sessionmanager
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -822,6 +825,30 @@ func TestAccountMoveFailureDetailNeverContainsProviderPayload(t *testing.T) {
 		detail := transitionDetail(move, code, "fake-credential-canary /fake/private/profile")
 		if strings.Contains(detail, "canary") || strings.Contains(detail, "/fake/") {
 			t.Fatalf("provider content exposed: %s", detail)
+		}
+	}
+}
+
+func TestAccountHandoffRuntimeFailureKeepsProviderPayloadOutOfJournalAndLogs(t *testing.T) {
+	m, st, runtime, _, _, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+	var logs bytes.Buffer
+	m.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	runtime.createErrSequence = []error{noEffectAccountRuntimeError{errors.New("fake-private-credential-canary /fake/private/profile")}, nil}
+	transition, err := m.StartAccountTransition(context.Background(), "session-1", "acct-b", domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, st, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed {
+		t.Fatalf("expected confirmed rollback: %+v", settled)
+	}
+	wire, err := json.Marshal(settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sink := range []string{string(wire), logs.String()} {
+		if strings.Contains(sink, "fake-private-credential-canary") || strings.Contains(sink, "/fake/private/profile") {
+			t.Fatal("provider payload reached transition journal/API or log")
 		}
 	}
 }

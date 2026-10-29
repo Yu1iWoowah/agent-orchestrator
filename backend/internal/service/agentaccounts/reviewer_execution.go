@@ -4,9 +4,10 @@ import (
 	"context"
 	"runtime"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/google/uuid"
 )
 
 // currentReviewerExecution rejects a stale trigger after an explicit rebuild.

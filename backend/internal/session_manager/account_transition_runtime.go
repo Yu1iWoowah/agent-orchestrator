@@ -67,7 +67,11 @@ func (m *Manager) accountRuntimeCreated(ctx context.Context, launchID string, ha
 }
 
 func (m *Manager) stopAccountTransitionRuntime(ctx context.Context, transition domain.SessionInterfaceTransition) error {
-	latest, found, err := m.store.(interfaceTransitionStore).GetSessionInterfaceTransition(ctx, transition.ID)
+	store, ok := m.store.(interfaceTransitionStore)
+	if !ok {
+		return ErrInterfaceHandoffUnsupported
+	}
+	latest, found, err := store.GetSessionInterfaceTransition(ctx, transition.ID)
 	if err != nil || !found {
 		return ports.ErrAgentAccountStorageUnavailable
 	}

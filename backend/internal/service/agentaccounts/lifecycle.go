@@ -406,13 +406,17 @@ func (s *Service) resumeOperationLocked(ctx context.Context, o *domain.AgentAcco
 				if reviewer != nil {
 					if owners, err := s.UsageOwners(ctx, o.AccountID); err == nil {
 						for _, owner := range owners {
-							if owner.ReviewID == reviewer.ReviewID {
-								copy := *reviewer
-								copy.SessionName = owner.SessionName
-								copy.PRURL = owner.PRURL
-								reviewer = &copy
-								break
+							if owner.ReviewID != reviewer.ReviewID {
+								continue
 							}
+							named := *reviewer
+							named.SessionName = owner.SessionName
+							if named.SessionName == "" {
+								named.SessionName = string(owner.SessionID)
+							}
+							named.PRURL = owner.PRURL
+							reviewer = &named
+							break
 						}
 					}
 				}
