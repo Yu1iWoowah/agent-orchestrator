@@ -41,11 +41,20 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	if !found || op.Execution == nil {
 		return nil
 	} // Legacy operations did not install typed wire.
+	bindingChanged, err := c.settingsProviderBindingChanged(ctx, op)
+	if err != nil {
+		return err
+	}
+	if bindingChanged && !c.harness.SupportsFastMode() {
+		// The switched adapter owns its existing launch/turn settings contract.
+		// A historical Codex/Claude wire plan cannot fence another provider.
+		return nil
+	}
 	current, err := c.settingsContext(ctx, journal)
 	if err != nil {
 		return err
 	}
-	if current.Settings != op.Target || current.Revision != op.BaseRevision+1 {
+	if !bindingChanged && (current.Settings != op.Target || current.Revision != op.BaseRevision+1) {
 		return fmt.Errorf("%w: committed_settings_changed", ports.ErrAgentSettingsConflict)
 	}
 	quiet, err := c.settingsQuiescent(ctx)
@@ -79,17 +88,21 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	} else {
 		// Stateful setters still need the explicit/default transition markers to
 		// prove resets; the old native values are never a new-process baseline.
-		plan, err = provider.PrepareAgentSettings(ctx, op.Source, current.Settings)
+		source := op.Source
+		if bindingChanged {
+			source = current.Settings
+		}
+		plan, err = provider.PrepareAgentSettings(ctx, source, current.Settings)
 	}
 	if err != nil {
-		return err
+		return providerSettingsError(err)
 	}
 	for _, step := range []domain.AgentSettingsCheckpoint{domain.AgentSettingsApplyingModel, domain.AgentSettingsApplyingEffort, domain.AgentSettingsApplyingFast, domain.AgentSettingsVerifying} {
 		if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {
 			return err
 		}
 		if err := provider.ApplyAgentSettingsStep(ctx, plan, step, false); err != nil {
-			return err
+			return providerSettingsError(err)
 		}
 	}
 	if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {
@@ -97,6 +110,24 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	}
 	c.adoptAgentSettings(current.Settings)
 	return nil
+}
+
+// A provider switch commits a distinct durable binding. Ordinary edited or
+// activated siblings retain their binding, so they still need the original
+// reset transition evidence and cannot bypass committed-preference checks.
+func (c *Controller) settingsProviderBindingChanged(ctx context.Context, op domain.AgentSettingsOperation) (bool, error) {
+	if op.Execution == nil || op.Execution.Owner.BranchID == "" || c.settingsObservationOwner.BranchID == "" {
+		return false, nil
+	}
+	previous, err := c.store.ConversationBranch(ctx, c.conversation.ID, op.Execution.Owner.BranchID)
+	if err != nil {
+		return false, err
+	}
+	current, err := c.store.ConversationBranch(ctx, c.conversation.ID, c.settingsObservationOwner.BranchID)
+	if err != nil {
+		return false, err
+	}
+	return previous.ProviderBindingID != "" && current.ProviderBindingID != "" && previous.ProviderBindingID != current.ProviderBindingID, nil
 }
 
 func (c *Controller) coldSettingsStillQualified(ctx context.Context, journal agentSettingsJournal, replay domain.AgentSettingsOperation, expected domain.SessionAgentSettings, proof domain.AgentSettingsQualification) error {

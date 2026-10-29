@@ -47,13 +47,13 @@ type APIDeps struct {
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
 	Reports            controllers.ReportService
-	Questions          controllers.QuestionService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
 	Directories        controllers.DirectoryBrowserService
 	ShellTerminals     controllers.ShellTerminalService
 	Cues               controllers.CueService
+	Questions          controllers.QuestionService
 	// Conversations is nil until a Chat driver is wired; the controller then
 	// answers 501 rather than panicking, matching the other optional surfaces.
 	Conversations controllers.ConversationService
@@ -98,6 +98,8 @@ type APIDeps struct {
 	// DeviceRoster and DeviceLive back the desktop-only mobile device roster.
 	DeviceRoster controllers.DeviceRoster
 	DeviceLive   controllers.LiveSet
+
+	AgentSettingsControl controllers.AgentSettingsControl
 }
 
 // normalizeAPIDeps closes the Presence/DeviceLive duplication trap structurally.
@@ -181,7 +183,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 // errors, so their logs use the same configured handler as the rest of HTTP.
 func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 	return &API{
-		agentSettings: &controllers.AgentSettingsController{Svc: deps.AgentSettings},
+		agentSettings: &controllers.AgentSettingsController{Svc: deps.AgentSettings, Control: deps.AgentSettingsControl},
 		cfg:           cfg,
 		deps:          deps,
 		agents: &controllers.AgentsController{

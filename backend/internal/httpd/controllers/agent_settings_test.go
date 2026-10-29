@@ -48,13 +48,13 @@ func TestAgentSettingsReadKeepsRequestedAndEffectiveSeparate(t *testing.T) {
 		t.Fatalf("requested was reported as effective: %s", w.Body.String())
 	}
 }
-func TestAgentSettingsAPIIsReadOnly(t *testing.T) {
+func TestAgentSettingsReadAndUnwiredMutationStatus(t *testing.T) {
 	router := chi.NewRouter()
 	(&AgentSettingsController{Svc: settingsReader{}}).Register(router)
 	for _, tc := range []struct {
 		method, path string
 		want         int
-	}{{"GET", "/sessions/worker/agent-settings", 200}, {"GET", "/sessions/missing/agent-settings", 404}, {"PATCH", "/sessions/worker/agent-settings", 405}, {"POST", "/sessions/worker/agent-settings", 405}} {
+	}{{"GET", "/sessions/worker/agent-settings", 200}, {"GET", "/sessions/missing/agent-settings", 404}, {"PATCH", "/sessions/worker/agent-settings", 501}, {"POST", "/sessions/worker/agent-settings", 405}} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)

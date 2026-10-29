@@ -44,20 +44,23 @@ UPDATE sessions SET client_request_committed = 1 WHERE id = ? AND client_request
 -- The title has narrow writers only, and a renamed task's temporary branch is
 -- never written back, so a write from an older read cannot undo either.
 UPDATE sessions SET
-    issue_id = ?, kind = ?, harness = ?, reviewer_harness = ?, reviewer_agent_config = ?, auto_review_enabled = ?,
-    activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
-    branch = CASE WHEN temporary_branch <> '' AND temporary_branch = ? THEN branch ELSE ? END, workspace_path = ?, workspace_repo_path = ?, diff_base_sha = ?, diff_base_ref = ?, runtime_handle_id = ?,
-    runtime_launch_id = ?, agent_session_id = ?, agent_session_id_launch_id = ?, native_identity_observed_at = ?, prompt = ?,
-    latest_user_prompt = ?, latest_user_prompt_at = ?, latest_assistant_update = ?, latest_assistant_update_at = ?,
-    conversation_checkpoint_state = ?, conversation_checkpoint_generation = ?, conversation_checkpoint_native_id = ?,
-    conversation_checkpoint_unsettled = ?, conversation_checkpoint_turn_id = ?, native_checkpoint_evidence = ?,
-    native_transcript_path = ?,
-    preview_url = ?, preview_revision = ?, terminate_on_pr_merge = ?,
-    cleanup_generation = ?, browser_capability_verifier = ?,
-    provider_conversation_id = ?, controller_generation = ?, model = ?, effort = ?, updated_at = ?,
-    is_pinned = ?, pinned_at = ?, auto_inject_review = ?, auto_inject_ci = ?,
-    automation_launch_completed = ?
-WHERE id = ?;
+    issue_id = sqlc.arg(issue_id), kind = sqlc.arg(kind), harness = sqlc.arg(harness), reviewer_harness = sqlc.arg(reviewer_harness), reviewer_agent_config = sqlc.arg(reviewer_agent_config), auto_review_enabled = sqlc.arg(auto_review_enabled),
+    activity_state = sqlc.arg(activity_state), activity_last_at = sqlc.arg(activity_last_at), first_signal_at = sqlc.arg(first_signal_at), is_terminated = sqlc.arg(is_terminated),
+    branch = CASE WHEN temporary_branch <> '' AND temporary_branch = sqlc.arg(temporary_branch) THEN branch ELSE sqlc.arg(branch) END, workspace_path = sqlc.arg(workspace_path), workspace_repo_path = sqlc.arg(workspace_repo_path), diff_base_sha = sqlc.arg(diff_base_sha), diff_base_ref = sqlc.arg(diff_base_ref), runtime_handle_id = sqlc.arg(runtime_handle_id),
+    runtime_launch_id = sqlc.arg(runtime_launch_id), agent_session_id = sqlc.arg(agent_session_id), agent_session_id_launch_id = sqlc.arg(agent_session_id_launch_id), native_identity_observed_at = sqlc.arg(native_identity_observed_at), prompt = sqlc.arg(prompt),
+    latest_user_prompt = sqlc.arg(latest_user_prompt), latest_user_prompt_at = sqlc.arg(latest_user_prompt_at), latest_assistant_update = sqlc.arg(latest_assistant_update), latest_assistant_update_at = sqlc.arg(latest_assistant_update_at),
+    conversation_checkpoint_state = sqlc.arg(conversation_checkpoint_state), conversation_checkpoint_generation = sqlc.arg(conversation_checkpoint_generation), conversation_checkpoint_native_id = sqlc.arg(conversation_checkpoint_native_id),
+    conversation_checkpoint_unsettled = sqlc.arg(conversation_checkpoint_unsettled), conversation_checkpoint_turn_id = sqlc.arg(conversation_checkpoint_turn_id), native_checkpoint_evidence = sqlc.arg(native_checkpoint_evidence),
+    native_transcript_path = sqlc.arg(native_transcript_path),
+    preview_url = sqlc.arg(preview_url), preview_revision = sqlc.arg(preview_revision), terminate_on_pr_merge = sqlc.arg(terminate_on_pr_merge),
+    cleanup_generation = sqlc.arg(cleanup_generation), browser_capability_verifier = sqlc.arg(browser_capability_verifier),
+    provider_conversation_id = sqlc.arg(provider_conversation_id),
+    agent_settings_launch_id = CASE WHEN controller_generation <> sqlc.arg(controller_generation)
+      THEN sqlc.arg(controller_generation) ELSE agent_settings_launch_id END,
+    controller_generation = sqlc.arg(controller_generation), model = sqlc.arg(model), effort = sqlc.arg(effort), updated_at = sqlc.arg(updated_at),
+    is_pinned = sqlc.arg(is_pinned), pinned_at = sqlc.arg(pinned_at), auto_inject_review = sqlc.arg(auto_inject_review), auto_inject_ci = sqlc.arg(auto_inject_ci),
+    automation_launch_completed = sqlc.arg(automation_launch_completed)
+WHERE id = sqlc.arg(id);
 
 -- name: UpdateSessionModel :execrows
 UPDATE sessions
@@ -209,14 +212,18 @@ WHERE id = sqlc.arg(id)
 -- so an older controller cannot mutate a session after a replacement takes over.
 -- Ownership changes are not activity and must not advance the board's recency.
 UPDATE sessions
-SET controller_generation = ?
-WHERE id = ? AND session_mode = 'chat';
+SET agent_settings_launch_id = CASE WHEN sqlc.arg(live_reconnect)=1
+      THEN COALESCE(NULLIF(agent_settings_launch_id,''),controller_generation)
+      ELSE sqlc.arg(controller_generation) END,
+    controller_generation = sqlc.arg(controller_generation)
+WHERE id = sqlc.arg(id) AND session_mode = 'chat';
 
 -- name: ActivateConversationBranchSession :execrows
 -- The branch and its native-history checkpoint have the same owner. A fork or
 -- branch activation cannot retain the previous native conversation's hook facts.
 UPDATE sessions
 SET updated_at = sqlc.arg(updated_at),
+    agent_settings_launch_id = sqlc.arg(controller_generation),
     latest_user_prompt = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN latest_user_prompt ELSE '' END,
     latest_assistant_update = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN latest_assistant_update ELSE '' END,
     latest_assistant_update_at = CASE WHEN provider_conversation_id = sqlc.arg(provider_conversation_id) THEN latest_assistant_update_at ELSE NULL END,
@@ -247,6 +254,7 @@ SET session_mode = sqlc.arg(target_mode),
     agent_session_id_launch_id = '',
     provider_conversation_id = sqlc.arg(provider_conversation_id),
     controller_generation = '',
+    agent_settings_launch_id = '',
     latest_user_prompt = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE latest_user_prompt END,
     latest_assistant_update = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN '' ELSE latest_assistant_update END,
     conversation_checkpoint_state = CASE WHEN sqlc.arg(target_mode) = 'tui' THEN 'empty' ELSE conversation_checkpoint_state END,
@@ -272,6 +280,7 @@ SET session_mode = sqlc.arg(target_mode),
     agent_session_id_launch_id = '',
     provider_conversation_id = sqlc.arg(provider_conversation_id),
     controller_generation = '',
+    agent_settings_launch_id = '',
     activity_state = 'idle',
     activity_last_at = sqlc.arg(activity_last_at),
     updated_at = sqlc.arg(updated_at)
@@ -285,7 +294,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -307,7 +316,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -329,7 +338,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
@@ -351,7 +360,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     preview_revision, cleanup_generation, runtime_launch_id,
     workspace_repo_path, terminate_on_pr_merge, diff_base_sha, diff_base_ref,
     reviewer_harness, reviewer_agent_config, is_pinned, pinned_at,
-    session_mode, provider_conversation_id, controller_generation, browser_capability_verifier,
+    session_mode, provider_conversation_id, controller_generation, agent_settings_launch_id, browser_capability_verifier,
     artifact_dir, session_output_type,
     latest_user_prompt, latest_user_prompt_at, latest_interaction_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,

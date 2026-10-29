@@ -142,6 +142,10 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 			"Project repository is missing from disk", nil, reportingOwner)
 		return
 	}
+	if errors.Is(err, ports.ErrAgentSettingsConflict) {
+		writeAPIError(w, r, http.StatusConflict, "conflict", "AGENT_SETTINGS_CONFLICT", "Settings changed or another session operation is active", nil, reportingOwner)
+		return
+	}
 	writeAPIError(w, r, http.StatusInternalServerError, "internal", "INTERNAL_ERROR", "Internal server error", nil, reportingOwner)
 }
 

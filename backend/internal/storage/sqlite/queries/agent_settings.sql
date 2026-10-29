@@ -8,6 +8,12 @@ SELECT s.id,s.model,s.effort,s.agent_fast_mode,s.agent_settings_revision,s.harne
  ORDER BY bound_at DESC LIMIT 1), '') AS TEXT) AS account_id
 FROM sessions s WHERE s.id=?;
 
+-- name: InsertAgentSettingsSigningKey :exec
+INSERT INTO agent_settings_authority_keys(singleton,key_bytes) VALUES(1,?) ON CONFLICT(singleton) DO NOTHING;
+
+-- name: GetAgentSettingsSigningKey :one
+SELECT key_bytes FROM agent_settings_authority_keys WHERE singleton=1;
+
 -- name: SaveSpawnAgentSettings :execrows
 -- A spawn decision is write-once and belongs to the bound account. Later
 -- project changes or a concurrent account switch cannot reinterpret it.
@@ -35,7 +41,7 @@ VALUES(?,?,?,?,'pending',?,?,?,?,?,?);
 
 -- name: SetAgentSettingsOperationPhase :execrows
 UPDATE session_agent_settings_operations SET phase=sqlc.arg(phase),updated_at=sqlc.arg(at),
- error_category=sqlc.arg(error_category),operation_revision=operation_revision+1,
+ error_category=sqlc.arg(error_category),error_code=sqlc.arg(error_code),operation_revision=operation_revision+1,
  finished_at=sqlc.narg(finished_at)
 WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id) AND operation_revision=sqlc.arg(expected_version)
  AND phase IN ('pending','recovery_required');
@@ -61,7 +67,7 @@ WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id) AND operation_revision
  AND phase IN ('pending','recovery_required');
 
 -- name: InsertAgentSettingsAudit :exec
-INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id) VALUES(?,?,?,?,?);
+INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id,error_code) VALUES(?,?,?,?,?,?);
 
 -- name: PinAgentSettingsExecution :execrows
 UPDATE session_agent_settings_operations SET execution_json=sqlc.arg(execution_json),

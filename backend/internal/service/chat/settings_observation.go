@@ -11,9 +11,19 @@ type agentSettingsContextReader interface {
 	SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error)
 }
 
-func (s *Service) settingsAccountBeforeLaunch(ctx context.Context, id domain.SessionID) string {
+func (s *Service) settingsAccountBeforeLaunch(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) string {
+	if provider, known := domain.AgentAccountProviderFor(harness); known {
+		if bindings, ok := s.store.(interface {
+			GetSessionAgentAccount(context.Context, domain.SessionID, domain.AgentAccountProvider) (string, bool, error)
+		}); ok {
+			if account, found, err := bindings.GetSessionAgentAccount(ctx, id, provider); err == nil && found {
+				return account
+			}
+			return ""
+		}
+	}
 	if reader, ok := s.store.(agentSettingsContextReader); ok {
-		if settings, err := reader.SessionAgentSettings(ctx, id); err == nil {
+		if settings, err := reader.SessionAgentSettings(ctx, id); err == nil && settings.Harness == harness {
 			return settings.AccountID
 		}
 	}

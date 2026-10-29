@@ -115,7 +115,7 @@ func (q *Queries) CommitSessionAgentSettings(ctx context.Context, arg CommitSess
 }
 
 const getAgentSettingsOperation = `-- name: GetAgentSettingsOperation :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND id=?
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json, error_code FROM session_agent_settings_operations WHERE session_id=? AND id=?
 `
 
 type GetAgentSettingsOperationParams struct {
@@ -145,12 +145,13 @@ func (q *Queries) GetAgentSettingsOperation(ctx context.Context, arg GetAgentSet
 		&i.FinishedAt,
 		&i.RecoveryJson,
 		&i.ExecutionJson,
+		&i.ErrorCode,
 	)
 	return i, err
 }
 
 const getAgentSettingsOperationByKey = `-- name: GetAgentSettingsOperationByKey :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json, error_code FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?
 `
 
 type GetAgentSettingsOperationByKeyParams struct {
@@ -180,12 +181,24 @@ func (q *Queries) GetAgentSettingsOperationByKey(ctx context.Context, arg GetAge
 		&i.FinishedAt,
 		&i.RecoveryJson,
 		&i.ExecutionJson,
+		&i.ErrorCode,
 	)
 	return i, err
 }
 
+const getAgentSettingsSigningKey = `-- name: GetAgentSettingsSigningKey :one
+SELECT key_bytes FROM agent_settings_authority_keys WHERE singleton=1
+`
+
+func (q *Queries) GetAgentSettingsSigningKey(ctx context.Context) ([]byte, error) {
+	row := q.db.QueryRowContext(ctx, getAgentSettingsSigningKey)
+	var key_bytes []byte
+	err := row.Scan(&key_bytes)
+	return key_bytes, err
+}
+
 const getLatestAppliedAgentSettingsOperation = `-- name: GetLatestAppliedAgentSettingsOperation :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND phase='applied'
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json, error_code FROM session_agent_settings_operations WHERE session_id=? AND phase='applied'
 ORDER BY CAST(json_extract(request_json,'$.baseRevision') AS INTEGER) DESC LIMIT 1
 `
 
@@ -211,12 +224,13 @@ func (q *Queries) GetLatestAppliedAgentSettingsOperation(ctx context.Context, se
 		&i.FinishedAt,
 		&i.RecoveryJson,
 		&i.ExecutionJson,
+		&i.ErrorCode,
 	)
 	return i, err
 }
 
 const getPendingAgentSettingsOperation = `-- name: GetPendingAgentSettingsOperation :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json FROM session_agent_settings_operations WHERE session_id=? AND phase IN ('pending','recovery_required')
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json, error_code FROM session_agent_settings_operations WHERE session_id=? AND phase IN ('pending','recovery_required')
 `
 
 func (q *Queries) GetPendingAgentSettingsOperation(ctx context.Context, sessionID string) (SessionAgentSettingsOperation, error) {
@@ -241,6 +255,7 @@ func (q *Queries) GetPendingAgentSettingsOperation(ctx context.Context, sessionI
 		&i.FinishedAt,
 		&i.RecoveryJson,
 		&i.ExecutionJson,
+		&i.ErrorCode,
 	)
 	return i, err
 }
@@ -294,7 +309,7 @@ func (q *Queries) GetSessionAgentSettings(ctx context.Context, id domain.Session
 }
 
 const insertAgentSettingsAudit = `-- name: InsertAgentSettingsAudit :exec
-INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id) VALUES(?,?,?,?,?)
+INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id,error_code) VALUES(?,?,?,?,?,?)
 `
 
 type InsertAgentSettingsAuditParams struct {
@@ -303,6 +318,7 @@ type InsertAgentSettingsAuditParams struct {
 	RecordedAt    time.Time
 	ErrorCategory string
 	RequestID     string
+	ErrorCode     string
 }
 
 func (q *Queries) InsertAgentSettingsAudit(ctx context.Context, arg InsertAgentSettingsAuditParams) error {
@@ -312,6 +328,7 @@ func (q *Queries) InsertAgentSettingsAudit(ctx context.Context, arg InsertAgentS
 		arg.RecordedAt,
 		arg.ErrorCategory,
 		arg.RequestID,
+		arg.ErrorCode,
 	)
 	return err
 }
@@ -347,6 +364,15 @@ func (q *Queries) InsertAgentSettingsOperation(ctx context.Context, arg InsertAg
 		arg.ProviderConversationID,
 		arg.BranchID,
 	)
+	return err
+}
+
+const insertAgentSettingsSigningKey = `-- name: InsertAgentSettingsSigningKey :exec
+INSERT INTO agent_settings_authority_keys(singleton,key_bytes) VALUES(1,?) ON CONFLICT(singleton) DO NOTHING
+`
+
+func (q *Queries) InsertAgentSettingsSigningKey(ctx context.Context, keyBytes []byte) error {
+	_, err := q.db.ExecContext(ctx, insertAgentSettingsSigningKey, keyBytes)
 	return err
 }
 
@@ -446,9 +472,9 @@ func (q *Queries) SaveSpawnAgentSettings(ctx context.Context, arg SaveSpawnAgent
 
 const setAgentSettingsOperationPhase = `-- name: SetAgentSettingsOperationPhase :execrows
 UPDATE session_agent_settings_operations SET phase=?1,updated_at=?2,
- error_category=?3,operation_revision=operation_revision+1,
- finished_at=?4
-WHERE session_id=?5 AND id=?6 AND operation_revision=?7
+ error_category=?3,error_code=?4,operation_revision=operation_revision+1,
+ finished_at=?5
+WHERE session_id=?6 AND id=?7 AND operation_revision=?8
  AND phase IN ('pending','recovery_required')
 `
 
@@ -456,6 +482,7 @@ type SetAgentSettingsOperationPhaseParams struct {
 	Phase           string
 	At              time.Time
 	ErrorCategory   string
+	ErrorCode       string
 	FinishedAt      sql.NullTime
 	SessionID       string
 	ID              string
@@ -467,6 +494,7 @@ func (q *Queries) SetAgentSettingsOperationPhase(ctx context.Context, arg SetAge
 		arg.Phase,
 		arg.At,
 		arg.ErrorCategory,
+		arg.ErrorCode,
 		arg.FinishedAt,
 		arg.SessionID,
 		arg.ID,
