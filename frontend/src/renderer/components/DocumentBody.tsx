@@ -224,7 +224,7 @@ export function DocumentBody({
 				/>
 			) : (
 				<div
-					className="markdown-body min-w-0 break-words"
+					className="document-markdown markdown-body min-w-0 break-words"
 					style={{ fontSize: `${visit.position.zoom}em` }}
 				>
 					<Markdown

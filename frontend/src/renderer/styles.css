@@ -6476,3 +6476,17 @@ html[data-window-translucent="true"][data-browser-hole="true"]:has(.browser-pane
 [data-radix-popper-content-wrapper]:has(> [data-document-link-preview]) {
 	pointer-events: none !important;
 }
+
+/* Document typography follows the app theme, independently of the OS media query. */
+.document-markdown.markdown-body {
+	color-scheme: inherit;
+	--fgColor-default: var(--foreground);
+	--fgColor-muted: var(--muted-foreground);
+	--fgColor-accent: var(--color-text-markdown-link);
+	--bgColor-default: transparent;
+	--bgColor-muted: var(--muted);
+	--bgColor-neutral-muted: var(--muted);
+	--borderColor-default: var(--border);
+	--borderColor-muted: var(--border);
+	--borderColor-neutral-muted: var(--border);
+}

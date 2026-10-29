@@ -241,3 +241,26 @@ test("opaque static HTML loads only verified local raster and styles without ena
 		"",
 	);
 });
+
+test("document Markdown follows the selected app theme independently of OS preference @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.emulateMedia({ colorScheme: "light" });
+	await page.evaluate(async () => {
+		const { useUiStore } = await import("/src/renderer/stores/ui-store.ts");
+		useUiStore.getState().setThemePreference("dark");
+	});
+	await page.getByRole("link", { name: "Worker guide", exact: true }).click();
+	const body = page.locator("[data-document-scroll] .markdown-body");
+	await expect(body).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+	const colors = await body.evaluate((el) => {
+		const probe = document.createElement("span");
+		probe.style.color = "var(--foreground)";
+		el.append(probe);
+		const expected = getComputedStyle(probe).color;
+		probe.remove();
+		return { actual: getComputedStyle(el).color, expected };
+	});
+	expect(colors.actual).toBe(colors.expected);
+});
