@@ -49,22 +49,15 @@ func (s *Store) AppendRetiredReplacementIntake(ctx context.Context, sourceID dom
 		// Look for prior acceptance in both locations, including a turn that has
 		// already drained. A changed payload never reuses its delivery identity.
 		locations := []string{original.ID}
-		var target domain.SessionRecord
-		var destination gen.Conversation
 		if op.IntakeReleasedAt != nil {
-			target, destination, err = verifiedReplacementIntakeWriter(ctx, q, op)
+			destinations, err := q.ListReplacementIntakeDestinations(ctx, op.ID)
 			if err != nil {
 				return err
 			}
-			fenced, err := q.ReplacementWakeFenced(ctx, target.ID)
-			if err != nil {
-				return err
-			}
-			if fenced {
-				return domain.ErrReplacementIntakeFenced
-			}
-			if destination.ID != original.ID {
-				locations = append(locations, destination.ID)
+			for _, id := range destinations {
+				if id != original.ID {
+					locations = append(locations, id)
+				}
 			}
 		}
 		if message.ClientMessageID != "" {
@@ -94,6 +87,21 @@ func (s *Store) AppendRetiredReplacementIntake(ctx context.Context, sourceID dom
 		if !matched || op.Phase.Terminal() || at.IsZero() || message.ID == "" || turnID == "" || message.ClientPayloadHash == "" {
 			return domain.ErrReplacementIntakeFenced
 		}
+		var target domain.SessionRecord
+		var destination gen.Conversation
+		if op.IntakeReleasedAt != nil {
+			target, destination, err = verifiedReplacementIntakeWriter(ctx, q, op)
+			if err != nil {
+				return err
+			}
+			fenced, err := q.ReplacementWakeFenced(ctx, target.ID)
+			if err != nil {
+				return err
+			}
+			if fenced {
+				return domain.ErrReplacementIntakeFenced
+			}
+		}
 		sequence, err := q.NextConversationSequence(ctx, gen.NextConversationSequenceParams{ID: original.ID, UpdatedAt: at})
 		if err != nil {
 			return err
@@ -104,11 +112,12 @@ func (s *Store) AppendRetiredReplacementIntake(ctx context.Context, sourceID dom
 		if err := q.InsertConversationMessage(ctx, gen.InsertConversationMessageParams{ID: message.ID, ConversationID: original.ID, TurnID: sql.NullString{String: turnID, Valid: true}, Sequence: sequence, Role: domain.MessageRoleUser, Origin: message.Origin, Text: message.Text, ClientMessageID: message.ClientMessageID, ClientPayloadHash: sql.NullString{String: message.ClientPayloadHash, Valid: true}, DeliveryContentJson: message.DeliveryContentJSON, SenderSessionID: message.SenderSessionID, SenderProjectID: message.SenderProjectID, SenderDisplayName: message.SenderDisplayName, CreatedAt: at, UpdatedAt: at}); err != nil {
 			return err
 		}
-		if message.Origin == domain.MessageOriginHuman || message.AuthoredByUser {
-			interactionAt := message.InteractionAt
-			if interactionAt.IsZero() {
-				interactionAt = at
-			}
+		interactionAt := message.InteractionAt
+		if interactionAt.IsZero() {
+			interactionAt = at
+		}
+		human := message.Origin == domain.MessageOriginHuman || message.AuthoredByUser
+		if human {
 			if err := q.RecordReplacementHumanIntake(ctx, gen.RecordReplacementHumanIntakeParams{MessageID: message.ID, InteractionAt: interactionAt}); err != nil {
 				return err
 			}
@@ -119,8 +128,8 @@ func (s *Store) AppendRetiredReplacementIntake(ctx context.Context, sourceID dom
 				return err
 			}
 		}
-		if op.IntakeReleasedAt != nil {
-			if err := restoreReplacementHumanProjection(ctx, q, target.ID); err != nil {
+		if op.IntakeReleasedAt != nil && human {
+			if _, err := q.RecordSessionHumanMessage(ctx, gen.RecordSessionHumanMessageParams{ID: target.ID, TurnID: turnID, LatestUserPrompt: message.Text, LatestUserPromptAt: timeToNullTime(interactionAt)}); err != nil {
 				return err
 			}
 		}
@@ -145,6 +154,10 @@ func verifiedReplacementIntakeWriter(ctx context.Context, q *gen.Queries, op dom
 		return target, conversation, domain.ErrReplacementIntakeFenced
 	}
 	proof, ok := op.ExpectedSuccessorController()
+	if activation := op.WriterActivation; op.Phase == domain.ReplacementCompleted && activation != nil {
+		proof = domain.ReplacementSuccessorController{Owner: activation.Owner, CapabilityVerifier: activation.CapabilityVerifier, CommittedAt: activation.ActivatedAt}
+		ok = !activation.ActivatedAt.IsZero() && activation.CapabilityVerifier != "" && !activation.Owner.IsTerminated && activation.Owner.Harness == domain.HarnessClaudeCode && activation.Owner.Mode == domain.SessionModeChat && activation.Owner.ControllerGeneration != "" && activation.Owner.ProviderConversationID != ""
+	}
 	if !ok || op.WriterActivation == nil {
 		return fail()
 	}

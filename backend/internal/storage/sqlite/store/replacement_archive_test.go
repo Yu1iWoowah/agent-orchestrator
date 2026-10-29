@@ -91,10 +91,19 @@ func TestReplacementArchivedProjectRefusesFreshLateInput(t *testing.T) {
 					t.Fatal(applied, err)
 				}
 			}
+			svc := lateIntakeChat(f.st, f.st)
+			priorMessage := ports.ChatUserMessage{ClientMessageID: "before-archive", Text: "accepted input", Origin: domain.MessageOriginHuman}
+			prior, err := svc.Send(ctx, f.op.SourceSessionID, priorMessage)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if archived, err := f.st.ArchiveProject(ctx, string(f.op.ProjectID), time.Now()); err != nil || !archived {
 				t.Fatal(archived, err)
 			}
-			_, err := lateIntakeChat(f.st, f.st).Send(ctx, f.op.SourceSessionID, ports.ChatUserMessage{ClientMessageID: "after-archive", Text: "new input", Origin: domain.MessageOriginHuman})
+			if replay, err := svc.Send(ctx, f.op.SourceSessionID, priorMessage); err != nil || replay.ID != prior.ID {
+				t.Fatal("archive invalidated committed receipt", replay.ID, err)
+			}
+			_, err = svc.Send(ctx, f.op.SourceSessionID, ports.ChatUserMessage{ClientMessageID: "after-archive", Text: "new input", Origin: domain.MessageOriginHuman})
 			if !errors.Is(err, domain.ErrReplacementIntakeFenced) {
 				t.Fatalf("archived project accepted fresh late input: %v", err)
 			}

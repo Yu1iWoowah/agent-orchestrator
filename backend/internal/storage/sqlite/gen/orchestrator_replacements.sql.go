@@ -290,6 +290,38 @@ func (q *Queries) ListActiveOrchestratorReplacements(ctx context.Context) ([]Orc
 	return items, nil
 }
 
+const listReplacementIntakeDestinations = `-- name: ListReplacementIntakeDestinations :many
+SELECT DISTINCT c.id FROM orchestrator_replacement_intake_transfers receipt
+JOIN conversations c ON c.id = receipt.target_conversation_id
+JOIN orchestrator_replacements r ON r.id = receipt.operation_id
+WHERE receipt.operation_id = ? AND c.scope = 'project' AND c.project_id = r.project_id
+`
+
+// Accepted receipt lookup does not require the successor to remain the writer.
+// Retained transfer destinations stay restricted to this operation's project.
+func (q *Queries) ListReplacementIntakeDestinations(ctx context.Context, operationID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listReplacementIntakeDestinations, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const moveReplacementQueuedMessage = `-- name: MoveReplacementQueuedMessage :execrows
 UPDATE conversation_messages
 SET conversation_id = ?1,
@@ -367,7 +399,10 @@ const recordReplacementHumanIntake = `-- name: RecordReplacementHumanIntake :exe
 INSERT INTO replacement_human_intake_receipts(message_id, interaction_at)
 SELECT m.id, ?1 FROM conversation_messages m
 WHERE m.id = ?2 AND m.role = 'user'
- AND EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ AND (EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ OR EXISTS (SELECT 1 FROM conversation_turns t
+ JOIN orchestrator_replacements r ON r.source_session_id = t.handled_by_session_id
+ WHERE t.id = m.turn_id AND json_type(r.state_json, '$.sourceRetiredAt') IS 'text'))
 ON CONFLICT(message_id) DO NOTHING
 `
 

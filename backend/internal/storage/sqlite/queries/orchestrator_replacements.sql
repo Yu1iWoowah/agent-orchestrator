@@ -114,6 +114,14 @@ WHERE id = sqlc.arg(message_id) AND turn_id = sqlc.arg(turn_id)
 -- name: SelectReplacementQueuedEditReceipts :many
 SELECT * FROM conversation_queued_edit_deliveries WHERE conversation_id = ?;
 
+-- Accepted receipt lookup does not require the successor to remain the writer.
+-- Retained transfer destinations stay restricted to this operation's project.
+-- name: ListReplacementIntakeDestinations :many
+SELECT DISTINCT c.id FROM orchestrator_replacement_intake_transfers receipt
+JOIN conversations c ON c.id = receipt.target_conversation_id
+JOIN orchestrator_replacements r ON r.id = receipt.operation_id
+WHERE receipt.operation_id = ? AND c.scope = 'project' AND c.project_id = r.project_id;
+
 -- Check the current project controller and the exact canonical transferred
 -- payload in one read snapshot. This never grants a mutable filesystem read.
 -- name: SelectReplacementExcerptTransfer :one
@@ -181,7 +189,10 @@ WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);
 INSERT INTO replacement_human_intake_receipts(message_id, interaction_at)
 SELECT m.id, sqlc.arg(interaction_at) FROM conversation_messages m
 WHERE m.id = sqlc.arg(message_id) AND m.role = 'user'
- AND EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ AND (EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ OR EXISTS (SELECT 1 FROM conversation_turns t
+ JOIN orchestrator_replacements r ON r.source_session_id = t.handled_by_session_id
+ WHERE t.id = m.turn_id AND json_type(r.state_json, '$.sourceRetiredAt') IS 'text'))
 ON CONFLICT(message_id) DO NOTHING;
 
 -- Author/time receipts preserve AuthoredByUser automation. Legacy human-origin
