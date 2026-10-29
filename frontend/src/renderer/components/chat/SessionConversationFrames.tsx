@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { Check, Circle, LoaderCircle } from "lucide-react";
 import { useConversationFrameSafeRect } from "../../hooks/useConversationFrameSafeRect";
 import {
@@ -14,6 +14,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useSessionAttentionFrame } from "./SessionAttentionContent";
 import { useAttentionSelection } from "../../hooks/useSessionAttention";
 import type { ConversationActivity } from "../../types/conversation";
+import { DecisionDialog } from "./DecisionDialog";
+import { decisionTargetKey, type DecisionTarget } from "../../lib/decision-target";
+import { conversationFrameSessionKey } from "../../stores/conversation-frame-store";
 
 export interface AttentionSourceSelection {
 	scope: string;
@@ -28,6 +31,7 @@ export interface AttentionSourceSelection {
 export function SessionConversationFrames({
 	sessionId,
 	hostId,
+	sourceAgent,
 	surfaceRef,
 	composerRef,
 	activeBranchId,
@@ -37,6 +41,7 @@ export function SessionConversationFrames({
 }: {
 	sessionId: string;
 	hostId?: string;
+	sourceAgent?: string;
 	surfaceRef: RefObject<HTMLElement | null>;
 	composerRef: RefObject<HTMLElement | null>;
 	activeBranchId?: string;
@@ -53,14 +58,39 @@ export function SessionConversationFrames({
 		activeBranchId,
 		Boolean(onAttentionSourceChange),
 	);
+	const scope = JSON.stringify([hostId ?? null, sessionId, activeBranchId ?? null]);
+	const currentScope = useRef(scope); currentScope.current = scope;
+	const [decision, setDecision] = useState<{ scope: string; target: DecisionTarget }>();
+	const returnTo = useRef<{ scope: string; trigger: HTMLButtonElement; targetKey: string; resume?: () => void } | undefined>(undefined);
+	useEffect(() => { setDecision(undefined); returnTo.current = undefined; }, [scope]);
+	const openDecision = useCallback((target: DecisionTarget, trigger: HTMLButtonElement, resume?: () => void) => {
+		returnTo.current = { scope, trigger, targetKey: decisionTargetKey(target), resume };
+		setDecision({ scope, target });
+	}, [scope]);
+	const restoreFocus = useCallback((resumeSheet = true) => {
+		const saved = returnTo.current;
+		if (!saved || saved.scope !== currentScope.current) return;
+		if (resumeSheet) saved.resume?.();
+		requestAnimationFrame(() => {
+			if (saved.scope !== currentScope.current) return;
+			const visible = (node: HTMLElement) => node.isConnected && !node.closest("[hidden]") && !node.closest('[data-slot="sheet-content"][data-state="closed"]');
+			const row = visible(saved.trigger) ? saved.trigger : Array.from(document.querySelectorAll<HTMLButtonElement>("[data-decision-target]")).find((node) => node.dataset.decisionTarget === saved.targetKey && node.dataset.decisionScope === saved.scope && visible(node));
+			const frameKey = conversationFrameSessionKey(sessionId, hostId);
+			const entry = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-conversation-frame-entry="attention"]')).find((node) => node.dataset.conversationFrameScope === frameKey);
+			(row ?? entry)?.focus({ preventScroll: true });
+		});
+	}, [sessionId, hostId]);
+	const locateOriginal = useCallback((id: string) => {
+		if (scope !== currentScope.current) return;
+		returnTo.current = undefined;
+		onLocateAttention?.(id);
+		if (onAttentionSourceChange) selection.locate(id);
+	}, [scope, onLocateAttention, onAttentionSourceChange, selection.locate]);
 	const attention = useSessionAttentionFrame({
 		sessionId,
 		hostId,
 		branchId: activeBranchId,
-		onLocate: (id) => {
-			onLocateAttention?.(id);
-			if (onAttentionSourceChange) selection.locate(id);
-		},
+		onOpen: openDecision,
 		locatingId: selection.loading ? selection.selectedId : undefined,
 	});
 	const focusedSelection = useRef<number | undefined>(undefined);
@@ -202,7 +232,7 @@ export function SessionConversationFrames({
 			</TabsContent>
 		</Tabs>
 	);
-	return (
+	return <>
 		<ConversationFrames
 			key={`${hostId ?? ""}:${sessionId}`}
 			sessionId={sessionId}
@@ -214,7 +244,8 @@ export function SessionConversationFrames({
 				{ kind: "plan", title: t("plan.title"), summary, content },
 			]}
 		/>
-	);
+		<DecisionDialog target={decision?.scope === scope ? decision.target : undefined} sessionId={sessionId} hostId={hostId} sourceAgent={sourceAgent} bounds={bounds} onClose={() => setDecision(undefined)} onLocate={locateOriginal} onRestoreFocus={restoreFocus} />
+	</>;
 }
 
 function PlanVersion({ version }: { version: SessionPlanVersion }) {

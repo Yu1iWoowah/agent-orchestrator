@@ -20,7 +20,9 @@ const { get } = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../../lib/host-clients", () => ({
   clientForSessionHost: () => ({
     GET: (path: string, ...args: unknown[]) =>
-      path.includes("/attention")
+      path.includes("/questions")
+        ? Promise.resolve({ data: { items: [], open: 0, unread: 0, history: 0, hasMoreBefore: false, nextBeforeSequence: 0 }, response: { status: 200 } })
+        : path.includes("/attention")
         ? Promise.resolve({
             data: {
               conversationId: "conv",

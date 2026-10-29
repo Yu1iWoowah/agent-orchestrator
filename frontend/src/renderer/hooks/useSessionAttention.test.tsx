@@ -255,6 +255,33 @@ describe("unselected provider input drafts", () => {
 				.target,
 		).toBe("B-draft");
 	});
+
+	it.each([undefined,"remote"])("refreshes a selected drafted source once (host %s)",async(hostId)=>{
+		const hook=prepare(hostId);
+		await waitFor(()=>expect(hook.result.current.list.isSuccess).toBe(true));
+		act(()=>hook.result.current.selection.locate("B"));
+		await waitFor(()=>expect(hook.result.current.selection.activity?.id).toBe("B"));
+		get.mockClear();
+		await hook.refresh();
+		const sourceCalls=get.mock.calls.filter(([,path,request])=>path.endsWith("{activityId}") && request.params.path.activityId==="B");
+		expect(sourceCalls).toHaveLength(1);
+		expect(hook.result.current.selection.activity?.id).toBe("B");
+		expect(useProviderInputDraftStore.getState().drafts[hook.key("B")]?.values.target).toBe("B-draft");
+	});
+});
+
+it("does not expose a cached form while reopening or after a failed fresh lookup",async()=>{
+	get.mockResolvedValue({data:page,response:{status:200}});
+	const hook=renderHook(()=>useAttentionSelection("session",undefined,"root",true),{wrapper});
+	act(()=>hook.result.current.locate("source"));
+	await waitFor(()=>expect(hook.result.current.activity?.id).toBe("source"));
+	get.mockRejectedValue(new Error("offline"));
+	act(()=>hook.result.current.locate("source"));
+	expect(hook.result.current.loading).toBe(true);
+	expect(hook.result.current.activity).toBeUndefined();
+	await waitFor(()=>expect(hook.result.current.error).toBe(true));
+	expect(hook.result.current.activity).toBeUndefined();
+	expect(hook.result.current.selectedId).toBe("source");
 });
 
 describe("attention source identity", () => {

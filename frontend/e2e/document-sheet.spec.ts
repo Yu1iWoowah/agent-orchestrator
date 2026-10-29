@@ -66,7 +66,8 @@ async function setup(page: Page, attentionEnabled = false) {
 	});
 	await page.route(`**/api/v1/sessions/${sessionId}/**`, async (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path.endsWith("/attention")) await route.fulfill({ json: attention() });
+		if (path.endsWith("/questions")) await route.fulfill({ json: { items: [], open: 0, unread: 0, history: 0, hasMoreBefore: false, nextBeforeSequence: 0 } });
+		else if (path.endsWith("/attention")) await route.fulfill({ json: attention() });
 		else if (path.includes("/attention/") && path.endsWith("/read")) {
 			seen.add(path.split("/").at(-2)!);
 			await route.fulfill({ status: 204 });
@@ -478,10 +479,11 @@ test("compact documents keep readable body space above the composer @T0", async 
 	await page
 		.getByRole("region", { name: "Awaiting you", exact: true })
 		.getByRole("button", {
-			name: "Go to original request: Original provider request",
+			name: "Open decision: Original provider request",
 			exact: true,
 		})
 		.click();
+	await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 	await page
 		.getByTestId("elicitation-dock")
 		.getByRole("textbox", { name: /^Target/ })
@@ -578,10 +580,11 @@ test("documents preserve Plan and provider drafts while new attention stays reac
 	});
 	await attention
 		.getByRole("button", {
-			name: "Go to original request: Original provider request",
+			name: "Open decision: Original provider request",
 			exact: true,
 		})
 		.click();
+	await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 	const provider = page.getByTestId("elicitation-dock");
 	const answer = provider.getByRole("textbox", { name: /^Target/ });
 	await answer.fill("Preserve this provider draft");
@@ -639,18 +642,20 @@ test("documents preserve Plan and provider drafts while new attention stays reac
 	await expect(sheet).toBeHidden();
 	await attention
 		.getByRole("button", {
-			name: "Go to original request: New provider request",
+			name: "Open decision: New provider request",
 			exact: true,
 		})
 		.click();
+	await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 	await expect(answer).toBeFocused();
 	await expect(answer).toHaveValue("");
 	await attention
 		.getByRole("button", {
-			name: "Go to original request: Original provider request",
+			name: "Open decision: Original provider request",
 			exact: true,
 		})
 		.click();
+	await page.getByRole("dialog").getByRole("button", { name: "Go to original request", exact: true }).click();
 	await expect(answer).toHaveValue("Preserve this provider draft");
 	expect(fixture.answerCount()).toBe(0);
 	expect(await preferences()).toBe(before);

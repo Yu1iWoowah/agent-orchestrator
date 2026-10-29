@@ -11794,6 +11794,441 @@ paths:
       summary: Switch an idle Chat session to another provider
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/questions:
+    get:
+      operationId: listSessionQuestions
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: query
+        name: state
+        schema:
+          enum:
+          - open
+          - history
+          - all
+          type: string
+      - in: query
+        name: beforeSequence
+        schema:
+          format: int64
+          minimum: 1
+          type: integer
+      - in: query
+        name: limit
+        schema:
+          format: int64
+          maximum: 100
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionPageResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List structured questions with complete open, unread and history counts
+      tags:
+      - conversations
+    post:
+      operationId: createSessionQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionCreateRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Create an idempotent user question and its readable compatibility record
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/questions/{questionId}:
+    get:
+      operationId: getSessionQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: questionId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a fresh question version and any saved answer receipt
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/questions/{questionId}/answer:
+    post:
+      operationId: answerSessionQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: questionId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttentionAnswerSubmission'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionAnswerResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Atomically save all answers and queue durable delivery to the origin
+        agent
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/questions/{questionId}/cancel:
+    post:
+      operationId: cancelSessionQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: questionId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionCancelRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel an open question using compare-and-set
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/questions/{questionId}/read:
+    post:
+      operationId: readSessionQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: questionId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionReadRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Mark an exact question version seen without answering it
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/questions/{questionId}/revise:
+    post:
+      operationId: reviseSessionQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: questionId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionReviseRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Replace an open question payload and advance its version
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/renders:
     post:
       operationId: publishSessionRender
@@ -16628,6 +17063,93 @@ components:
       required:
       - data
       type: object
+    AttentionAnswerReceipt:
+      properties:
+        answers:
+          items:
+            $ref: '#/components/schemas/AttentionQuestionAnswer'
+          type: array
+        clientAnswerId:
+          type: string
+        deliveredAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        deliveryState:
+          enum:
+          - queued
+          - delivered
+          - failed
+          type: string
+        lastError:
+          type: string
+        questionVersion:
+          format: int64
+          type: integer
+        savedAt:
+          format: date-time
+          type: string
+      required:
+      - clientAnswerId
+      - questionVersion
+      - answers
+      - savedAt
+      - deliveryState
+      type: object
+    AttentionAnswerSubmission:
+      properties:
+        answers:
+          items:
+            $ref: '#/components/schemas/AttentionQuestionAnswer'
+          maxItems: 4
+          minItems: 1
+          type: array
+        clientAnswerId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        expectedVersion:
+          format: int64
+          maximum: 9.007199254740991e+15
+          minimum: 1
+          type: integer
+        questionId:
+          maxLength: 128
+          minLength: 1
+          type: string
+      required:
+      - questionId
+      - expectedVersion
+      - clientAnswerId
+      - answers
+      type: object
+    AttentionAuthorization:
+      properties:
+        action:
+          maxLength: 1000
+          minLength: 1
+          type: string
+        evidence:
+          items:
+            type: string
+          maxItems: 4
+          minItems: 1
+          type: array
+        limits:
+          maxLength: 2000
+          minLength: 1
+          type: string
+        scope:
+          maxLength: 2000
+          minLength: 1
+          type: string
+      required:
+      - action
+      - scope
+      - limits
+      - evidence
+      type: object
     AttentionCountsResponse:
       properties:
         history:
@@ -16658,6 +17180,207 @@ components:
       - branchId
       - activity
       - actionable
+      - read
+      type: object
+    AttentionPreview:
+      properties:
+        content:
+          maxLength: 8192
+          minLength: 1
+          type: string
+        format:
+          enum:
+          - text
+          - markdown
+          type: string
+      required:
+      - format
+      - content
+      type: object
+    AttentionPrompt:
+      properties:
+        explanation:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
+        header:
+          maxLength: 24
+          minLength: 1
+          type: string
+        key:
+          maxLength: 64
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]*$
+          type: string
+        multiSelect:
+          type: boolean
+        options:
+          items:
+            $ref: '#/components/schemas/AttentionQuestionOption'
+          maxItems: 4
+          minItems: 2
+          type: array
+        question:
+          maxLength: 2000
+          minLength: 1
+          type: string
+      required:
+      - key
+      - header
+      - question
+      - options
+      type: object
+    AttentionQuestionAnswer:
+      properties:
+        otherText:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
+        questionKey:
+          maxLength: 64
+          minLength: 1
+          type: string
+        selectedOptionIds:
+          items:
+            type: string
+          maxItems: 4
+          type: array
+      required:
+      - questionKey
+      - selectedOptionIds
+      type: object
+    AttentionQuestionOption:
+      properties:
+        description:
+          maxLength: 1000
+          minLength: 1
+          type: string
+        id:
+          maxLength: 64
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]*$
+          type: string
+        label:
+          maxLength: 80
+          minLength: 1
+          type: string
+        preview:
+          $ref: '#/components/schemas/AttentionPreview'
+        recommended:
+          type: boolean
+      required:
+      - id
+      - label
+      - description
+      type: object
+    AttentionQuestionPayload:
+      properties:
+        authorization:
+          $ref: '#/components/schemas/AttentionAuthorization'
+        explanation:
+          maxLength: 8000
+          minLength: 1
+          type: string
+        questions:
+          items:
+            $ref: '#/components/schemas/AttentionPrompt'
+          maxItems: 4
+          minItems: 1
+          type: array
+        schemaVersion:
+          maximum: 1
+          minimum: 1
+          type: integer
+        title:
+          maxLength: 120
+          minLength: 1
+          type: string
+      required:
+      - schemaVersion
+      - title
+      - explanation
+      - questions
+      type: object
+    AttentionQuestionRecord:
+      properties:
+        answer:
+          $ref: '#/components/schemas/AttentionAnswerReceipt'
+        audience:
+          enum:
+          - user
+          type: string
+        clientKey:
+          type: string
+        closeReason:
+          type: string
+        closedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        closedBy:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        expiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        kind:
+          enum:
+          - question
+          - authorization
+          type: string
+        originHarness:
+          type: string
+        originSessionId:
+          type: string
+        payload:
+          $ref: '#/components/schemas/AttentionQuestionPayload'
+        projectId:
+          type: string
+        read:
+          type: boolean
+        sequence:
+          format: int64
+          type: integer
+        state:
+          enum:
+          - open
+          - answered
+          - cancelled
+          - expired
+          type: string
+        supersedesId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+        version:
+          format: int64
+          type: integer
+      required:
+      - id
+      - projectId
+      - originSessionId
+      - originHarness
+      - audience
+      - kind
+      - clientKey
+      - payload
+      - state
+      - version
+      - sequence
+      - createdAt
+      - updatedAt
       - read
       type: object
     AttentionReadRequest:
@@ -21781,6 +22504,220 @@ components:
           type: integer
       required:
       - pat
+      type: object
+    QuestionAnswerResponse:
+      properties:
+        answers:
+          items:
+            $ref: '#/components/schemas/AttentionQuestionAnswer'
+          type: array
+        clientAnswerId:
+          type: string
+        deliveredAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        deliveryState:
+          enum:
+          - queued
+          - delivered
+          - failed
+          type: string
+        lastError:
+          type: string
+        questionVersion:
+          format: int64
+          type: integer
+        savedAt:
+          format: date-time
+          type: string
+      required:
+      - clientAnswerId
+      - questionVersion
+      - answers
+      - savedAt
+      - deliveryState
+      type: object
+    QuestionCancelRequest:
+      properties:
+        actor:
+          enum:
+          - user
+          - agent
+          type: string
+        expectedVersion:
+          format: int64
+          maximum: 9.007199254740991e+15
+          minimum: 1
+          type: integer
+        reason:
+          maxLength: 4000
+          minLength: 1
+          type: string
+      required:
+      - expectedVersion
+      - actor
+      - reason
+      type: object
+    QuestionCreateRequest:
+      properties:
+        audience:
+          enum:
+          - user
+          type: string
+        clientKey:
+          maxLength: 64
+          minLength: 1
+          type: string
+        expiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        kind:
+          enum:
+          - question
+          - authorization
+          type: string
+        payload:
+          $ref: '#/components/schemas/AttentionQuestionPayload'
+        supersedesId:
+          type: string
+      required:
+      - clientKey
+      - audience
+      - kind
+      - payload
+      type: object
+    QuestionPageResponse:
+      properties:
+        hasMoreBefore:
+          type: boolean
+        history:
+          format: int64
+          type: integer
+        items:
+          items:
+            $ref: '#/components/schemas/AttentionQuestionRecord'
+          type: array
+        nextBeforeSequence:
+          format: int64
+          type: integer
+        open:
+          format: int64
+          type: integer
+        unread:
+          format: int64
+          type: integer
+      required:
+      - items
+      - open
+      - unread
+      - history
+      - hasMoreBefore
+      - nextBeforeSequence
+      type: object
+    QuestionReadRequest:
+      properties:
+        expectedVersion:
+          format: int64
+          maximum: 9.007199254740991e+15
+          minimum: 1
+          type: integer
+      required:
+      - expectedVersion
+      type: object
+    QuestionResponse:
+      properties:
+        answer:
+          $ref: '#/components/schemas/AttentionAnswerReceipt'
+        audience:
+          enum:
+          - user
+          type: string
+        clientKey:
+          type: string
+        closeReason:
+          type: string
+        closedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        closedBy:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        expiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        kind:
+          enum:
+          - question
+          - authorization
+          type: string
+        originHarness:
+          type: string
+        originSessionId:
+          type: string
+        payload:
+          $ref: '#/components/schemas/AttentionQuestionPayload'
+        projectId:
+          type: string
+        read:
+          type: boolean
+        sequence:
+          format: int64
+          type: integer
+        state:
+          enum:
+          - open
+          - answered
+          - cancelled
+          - expired
+          type: string
+        supersedesId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+        version:
+          format: int64
+          type: integer
+      required:
+      - id
+      - projectId
+      - originSessionId
+      - originHarness
+      - audience
+      - kind
+      - clientKey
+      - payload
+      - state
+      - version
+      - sequence
+      - createdAt
+      - updatedAt
+      - read
+      type: object
+    QuestionReviseRequest:
+      properties:
+        expectedVersion:
+          format: int64
+          maximum: 9.007199254740991e+15
+          minimum: 1
+          type: integer
+        payload:
+          $ref: '#/components/schemas/AttentionQuestionPayload'
+      required:
+      - expectedVersion
+      - payload
       type: object
     RegisterPushDeviceRequest:
       properties:
