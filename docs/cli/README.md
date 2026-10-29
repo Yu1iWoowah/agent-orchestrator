@@ -63,6 +63,7 @@ addresses change on restart.
 | `ao agent ls --refresh`             | `POST /api/v1/agents/refresh` (forced checks) |
 | `ao automation create/list/get/update/delete/runs` | `POST/GET/PATCH/DELETE /api/v1/automations` |
 | `ao cue create/list`                | `POST/GET /api/v1/projects/{id}/cues`         |
+| `ao ask project --audience user / orchestrator` | `GET /api/v1/projects/{id}/attention` (counts and cursor) |
 | `ao ask create/list/get/answer/read/cancel/revise` | `POST/GET /api/v1/sessions/{id}/questions[/{questionId}/{action}]` |
 | `ao spawn`                          | Targeted launch ensure, then `POST /api/v1/sessions` |
 | `ao session ls`                     | `GET /api/v1/sessions` plus per-session PR summaries; shows branch, PR, CI, review, unresolved threads, activity, and age. |
