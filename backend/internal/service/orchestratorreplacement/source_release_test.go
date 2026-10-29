@@ -3,13 +3,14 @@ package orchestratorreplacement_test
 import (
 	"context"
 	"database/sql"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	replacement "github.com/aoagents/agent-orchestrator/backend/internal/service/orchestratorreplacement"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	replacement "github.com/aoagents/agent-orchestrator/backend/internal/service/orchestratorreplacement"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 )
 
 func TestReplacementIdleTimeoutReleasesSourceIntakeWithoutStopping(t *testing.T) {
