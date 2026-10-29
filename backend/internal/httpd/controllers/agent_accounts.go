@@ -28,6 +28,8 @@ type AgentAccountService interface {
 	Operation(context.Context, string) (domain.AgentAccountOperation, error)
 	SetDefault(context.Context, string) error
 	Remove(context.Context, string) error
+	UsageOwners(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
+	RebuildReviewer(context.Context, string, string) (domain.Review, error)
 	ConsumeResetCredit(context.Context, string, string) (domain.CodexResetCreditOutcome, error)
 	Usage(context.Context, int) ([]agentaccounts.AccountUsage, error)
 	SessionAccounts(context.Context, domain.SessionID) (map[domain.AgentAccountProvider]string, error)
@@ -49,6 +51,8 @@ type AgentAccountsController struct {
 func (c *AgentAccountsController) Register(r chi.Router) {
 	r.Get("/agents/accounts", c.list)
 	r.Get("/agents/accounts/usage", c.usage)
+	r.Get("/agents/accounts/{accountId}/usage-owners", c.usageOwners)
+	r.Post("/agents/accounts/reviewers/{reviewId}/rebuild", c.rebuildReviewer)
 	r.Get("/agents/accounts/operations/{operationId}", c.operation)
 	r.Post("/agents/accounts/{accountId}/logout", c.logout)
 	r.Post("/agents/accounts/login", c.startLogin)
@@ -60,6 +64,41 @@ func (c *AgentAccountsController) Register(r chi.Router) {
 	r.Post("/agents/accounts/{accountId}/default", c.setDefault)
 	r.Post("/agents/accounts/{accountId}/reset-credit", c.consumeResetCredit)
 	r.Delete("/agents/accounts/{accountId}", c.remove)
+}
+
+func (c *AgentAccountsController) rebuildReviewer(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/accounts/reviewers/{reviewId}/rebuild")
+		return
+	}
+	var in RebuildReviewerAccountRequest
+	if err := decodeJSONStrict(r, &in); err != nil || strings.TrimSpace(in.AccountID) == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "ACCOUNT_ID_REQUIRED", "Choose an account for the new reviewer execution.", nil)
+		return
+	}
+	id := strings.TrimSpace(in.AccountID)
+	review, err := c.Svc.RebuildReviewer(r.Context(), strings.TrimSpace(chi.URLParam(r, "reviewId")), id)
+	if err != nil {
+		writeAgentAccountError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, RebuildReviewerAccountResponse{ReviewID: review.ID, SessionID: review.SessionID, AccountID: id})
+}
+
+func (c *AgentAccountsController) usageOwners(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/agents/accounts/{accountId}/usage-owners")
+		return
+	}
+	owners, err := c.Svc.UsageOwners(r.Context(), chi.URLParam(r, "accountId"))
+	if err != nil {
+		writeAgentAccountError(w, r, err)
+		return
+	}
+	if owners == nil {
+		owners = []domain.AgentAccountUsageOwner{}
+	}
+	envelope.WriteJSON(w, http.StatusOK, AgentAccountUsageOwnersResponse{Owners: owners})
 }
 
 func (c *AgentAccountsController) list(w http.ResponseWriter, r *http.Request) {
@@ -289,6 +328,10 @@ const agentAccountUnsharedMessage = "AO cannot link this account's folder to thi
 
 func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrAgentAccountLegacyIdentityConflict):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT", "This identity is already saved in the legacy device account catalog. Choose which login to keep in Settings; AO has not changed the old login.", accountOperationErrorDetails(err, "account_legacy_identity_conflict"))
+	case errors.Is(err, ports.ErrAgentAccountChanged):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_CHANGED", "The execution changed or is still in use. Refresh, stop and archive its reviewer, then retry.", map[string]any{"reasonCode": "account_changed", "retryable": true})
 	case errors.Is(err, ports.ErrAgentAccountCleanupUnconfirmed):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_CLEANUP_UNCONFIRMED", "Account cleanup is not confirmed. Retry the operation.", accountOperationErrorDetails(err, "account_cleanup_unconfirmed"))
 	case errors.Is(err, ports.ErrAgentAccountOperationBusy):
@@ -316,7 +359,14 @@ func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ports.ErrAgentAccountUnshared):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_UNSHARED", agentAccountUnsharedMessage, nil)
 	case errors.Is(err, ports.ErrAgentAccountInUse):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_IN_USE", "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. Stop them and retry to finish sooner.", accountOperationErrorDetails(err, "account_operation_busy"))
+		details := accountOperationErrorDetails(err, "account_in_use")
+		message := "This account is in use. Stop or hand off the listed sessions and reviewers, then retry. The account has not been changed."
+		var op *agentaccounts.OperationError
+		if errors.As(err, &op) && op.OperationID != "" {
+			message = "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. Stop them and retry to finish sooner."
+			details["scheduled"] = true
+		}
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_IN_USE", message, details)
 	case errors.Is(err, ports.ErrAgentAccountDeviceFixed):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_DEVICE_FIXED", "This computer's own login is managed by its CLI, not AO", nil)
 	default:
@@ -354,6 +404,11 @@ func (c *AgentAccountsController) logout(w http.ResponseWriter, r *http.Request)
 
 func accountOperationErrorDetails(err error, reason string) map[string]any {
 	details := map[string]any{"reasonCode": reason, "retryable": true}
+	var use *ports.AgentAccountInUseError
+	if errors.As(err, &use) {
+		details["usageOwners"] = use.Owners
+		details["scheduled"] = false
+	}
 	var op *agentaccounts.OperationError
 	if errors.As(err, &op) {
 		details["operationId"] = op.OperationID
@@ -361,6 +416,8 @@ func accountOperationErrorDetails(err error, reason string) map[string]any {
 			details["reviewId"] = op.Reviewer.ReviewID
 			details["reviewerSessionId"] = op.Reviewer.SessionID
 			details["reviewerHarness"] = op.Reviewer.Harness
+			details["reviewerSessionName"] = op.Reviewer.SessionName
+			details["reviewerPRUrl"] = op.Reviewer.PRURL
 		}
 	}
 	return details

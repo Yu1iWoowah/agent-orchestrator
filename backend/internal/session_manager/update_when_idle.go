@@ -248,7 +248,7 @@ func (m *Manager) resumeAfterUpdate(ctx context.Context, id domain.SessionID) er
 		return err
 	}
 	defer m.endAgentOperation(id, agentOperationResume)
-	releaseHarness, err := m.beginHarnessUse(rec.Harness)
+	releaseHarness, err := m.beginBoundHarnessUse(ctx, rec)
 	if err != nil {
 		return err
 	}

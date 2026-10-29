@@ -534,6 +534,7 @@ func Run(buildVersion string) error {
 	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	agentSvc = agentsvc.NewWithDeps(agentDeps)
 	agentSvc.SetAccountExecution(agentAccountSvc, store)
+	agentAccountSvc.SetLegacyIdentityCheck(agentSvc.LegacyIdentityConflict)
 	agentSvc.WarmModelCatalogs(ctx)
 
 	persistentHostsReconciled := make(chan struct{})
@@ -599,6 +600,11 @@ func Run(buildVersion string) error {
 		SetAgentAccounts(ports.AgentAccountLaunchEnv)
 	}); ok {
 		wired.SetAgentAccounts(agentAccountSvc)
+	}
+	if owners, ok := sessMgr.(interface {
+		AccountUsageOwners(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
+	}); ok {
+		agentAccountSvc.SetUsageOwners(owners.AccountUsageOwners)
 	}
 	if stopper, ok := sessMgr.(interface {
 		ExitAgentsOnAccount(context.Context, string) error

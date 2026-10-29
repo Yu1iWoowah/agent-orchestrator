@@ -263,6 +263,10 @@ var schemaNames = map[string]string{
 	"ControllersConsumeAgentAccountResetCreditRequest":     "ConsumeAgentAccountResetCreditRequest",
 	"ControllersConsumeAgentAccountResetCreditResponse":    "ConsumeAgentAccountResetCreditResponse",
 	"ControllersAgentAccountUsageResponse":                 "AgentAccountUsageResponse",
+	"ControllersAgentAccountUsageOwnersResponse":           "AgentAccountUsageOwnersResponse",
+	"ControllersRebuildReviewerAccountRequest":             "RebuildReviewerAccountRequest",
+	"ControllersRebuildReviewerAccountResponse":            "RebuildReviewerAccountResponse",
+	"DomainAgentAccountUsageOwner":                         "AgentAccountUsageOwner",
 	"ControllersAgentAccountUsageRow":                      "AgentAccountUsageRow",
 	"ControllersAgentAccountUsageDay":                      "AgentAccountUsageDay",
 	"ControllersAgentAccountUsageByModel":                  "AgentAccountUsageByModel",
@@ -2173,6 +2177,16 @@ func agentOperations() []operation {
 			method: http.MethodGet, path: "/api/v1/agents/accounts/usage", id: "getAgentAccountUsage", tag: "agents",
 			summary: "Sum each account's model usage in AO sessions", pathParams: []any{controllers.AgentAccountUsageQuery{}},
 			resps: []respUnit{{http.StatusOK, controllers.AgentAccountUsageResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/agents/accounts/{accountId}/usage-owners", id: "getAgentAccountUsageOwners", tag: "agents",
+			summary: "List local sessions, reviewers and transitions affected by account removal", pathParams: []any{controllers.AgentAccountIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.AgentAccountUsageOwnersResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/agents/accounts/reviewers/{reviewId}/rebuild", id: "rebuildReviewerAccount", tag: "agents",
+			summary: "Create a fresh account-bound execution after explicitly archiving a reviewer", pathParams: []any{controllers.ReviewIDParam{}}, reqBody: controllers.RebuildReviewerAccountRequest{},
+			resps: []respUnit{{http.StatusCreated, controllers.RebuildReviewerAccountResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login", id: "startAgentAccountLogin", tag: "agents",

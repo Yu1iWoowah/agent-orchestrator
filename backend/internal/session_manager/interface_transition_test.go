@@ -182,8 +182,26 @@ func (s *transitionStore) createSessionInterfaceTransitionLocked(rec domain.Sess
 			return existing, false, nil
 		}
 	}
+	if rec.AccountMove() && rec.TargetRuntimeState == "" {
+		rec.TargetRuntimeState = domain.AccountTransitionRuntimeNotStarted
+	}
 	s.transitions[rec.ID] = rec
 	return rec, true, nil
+}
+
+func (s *transitionStore) RecordAccountTransitionRuntime(_ context.Context, id string, state domain.AccountTransitionRuntimeState, launchID, handleID string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.transitions[id]
+	if !ok || !rec.AccountMove() || rec.Phase != domain.SessionInterfaceTransitionTargetStarting {
+		return false, nil
+	}
+	rec.TargetRuntimeState = state
+	rec.TargetRuntimeLaunchID = launchID
+	rec.TargetRuntimeHandleID = handleID
+	rec.UpdatedAt = at
+	s.transitions[id] = rec
+	return true, nil
 }
 
 func (s *transitionStore) GetSessionInterfaceTransition(_ context.Context, id string) (domain.SessionInterfaceTransition, bool, error) {

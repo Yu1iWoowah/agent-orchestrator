@@ -3551,7 +3551,7 @@
 	"settings.defaultSandbox.adminOnly": "これを変更できるのは組織の管理者だけです。",
 	"settings.defaultSandbox.saveFailed": "デフォルトのサンドボックスを保存できませんでした。もう一度お試しください。",
 	"settings.agentAccounts.cleanupScheduled": "このアカウントは無効化され、クリーンアップが予約されています。使用中のエージェントが停止すると AO が再試行します。先にエージェントを停止して再試行することもできます。",
-	"settings.agentAccounts.cleanupScheduledReviewer": "クリーンアップは予約済みです。レビュアー {{reviewId}} がこのアカウントを使用中です。停止またはアーカイブしてから再試行してください。",
+	"settings.agentAccounts.cleanupScheduledReviewer": "クリーンアップを予約しました。{{name}} のレビュアーがまだこのアカウントを使用しています。停止またはアーカイブしてから再試行してください。",
 	"settings.agentAccounts.unavailableHomeOccupied": "AO が予約した unavailable アカウントディレクトリが使用中か、安全に確認できません。関連する子ツールを停止し、AO のアカウント保存先にある .unavailable 内のデータを確認して移動してから再試行してください。AO が自動削除するのは空の予約フォルダーだけです。",
 	"settings.agentAccounts.storageUnsafe": "アカウントの保存先が安全ではありません。フォルダーの権限とシンボリックリンクを確認してから再試行してください。",
 	"settings.agentAccounts.storageUnavailable": "アカウントの保存先を一時的に利用できません。後で再試行してください。",
@@ -3567,7 +3567,7 @@
 	"settings.agentAccounts.refresh": "制限を更新",
 	"settings.agentAccounts.signedOut": "サインアウト済み",
 	"settings.agentAccounts.remove": "アカウントを削除",
-	"settings.agentAccounts.removeDescription": "AO は {{email}} で動いているエージェントを停止し、サインアウトしてフォルダーを削除します。停止したセッションは、開くと既定のアカウントで続きます。その後、サマリーで別のアカウントに移せます。",
+	"settings.agentAccounts.removeDescription": "使用中の処理が停止した後、{{email}} をログアウトし、専用プロファイルを削除します。履歴とアカウントの紐付けは保持されます。古いセッションの再開にはアカウントの明示的な選択が必要です。既定のログインには切り替わりません。",
 	"settings.agentAccounts.loginTitle": "{{provider}} にサインイン",
 	"settings.agentAccounts.checkSignIn": "サインインを確認",
 	"settings.agentAccounts.loginAlreadySaved": "ログインが完了し、アカウントが保存されました。",
@@ -3834,5 +3834,9 @@
 	"decision.scopeLimits": "Limits",
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
-	"decision.older": "Load older questions"
+	"decision.older": "Load older questions",
+	"settings.agentAccounts.inUse": "このアカウントは使用中です。次のセッションとレビュアーを停止または引き継いでから再試行してください。アカウントは変更されていません。",
+	"settings.agentAccounts.reviewerOwner": "レビュアー",
+	"settings.agentAccounts.openPR": "PR を開く",
+	"settings.agentAccounts.legacyIdentityConflict": "この ID は従来のデバイスアカウント一覧に保存されています。設定で残すログインを選んでください。AO は従来のログインを変更していません。"
 }

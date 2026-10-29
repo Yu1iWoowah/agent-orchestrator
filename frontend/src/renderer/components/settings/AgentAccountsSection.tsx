@@ -1,8 +1,10 @@
 import { LoaderCircle, Plus, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { agentAccountErrorMessage, agentAccountName, agentAccountProviderNames, useAgentAccountActions, useAgentAccounts, useAgentAccountUsage, type AgentAccount, type AgentAccountLimitWindow, type AgentAccountLogin, type AgentAccountProvider } from "../../hooks/useAgentAccounts";
+import { agentAccountErrorMessage, useAgentAccountUsageOwners, agentAccountName, agentAccountProviderNames, useAgentAccountActions, useAgentAccounts, useAgentAccountUsage, type AgentAccount, type AgentAccountLimitWindow, type AgentAccountLogin, type AgentAccountProvider } from "../../hooks/useAgentAccounts";
 import type { TerminalSessionState } from "../../hooks/useTerminalSession";
+import { useNavigateToSession } from "../../lib/navigate-to-session";
+import { useUiStore } from "../../stores/ui-store";
 import { useShellMaybe } from "../../lib/shell-context";
 import { useResolvedTheme } from "../../stores/ui-store";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -33,6 +35,8 @@ export type CliLoginControls = {
  * login and the accounts added in AO, with their limits, default and sign-in. */
 export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAccountProvider; cliLogin?: CliLoginControls }) {
 	const { t } = useTranslation();
+	const navigateToSession=useNavigateToSession();
+	const closeSettings=useUiStore((state)=>state.closeSettings);
 	const accounts = useAgentAccounts();
 	const usage = useAgentAccountUsage();
 	const actions = useAgentAccountActions();
@@ -43,6 +47,7 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState("");
 	const [removing, setRemoving] = useState<AgentAccount | null>(null);
+	const owners = useAgentAccountUsageOwners(removing?.id);
 	const tokensByAccount = new Map((usage.data ?? []).map((row) => [row.accountId, row.inputTokens + row.outputTokens]));
 	const rows = (accounts.data ?? []).filter((account) => account.provider === provider);
 	const login = logins[provider];
@@ -133,7 +138,18 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 			error={error || undefined}
 			onConfirm={() => void run(`remove:${removing.id}`, async () => { await actions.remove(removing.id); setRemoving(null); })}
 			onOpenChange={(open) => { if (!open) setRemoving(null); }}
-		/> : null}
+		>
+			{owners.isLoading ? <p role="status">{t("settings.agentAccounts.loading")}</p> : null}
+			{owners.error ? <p role="alert">{agentAccountErrorMessage(owners.error)}</p> : null}
+			{owners.data?.some((owner) => owner.blocking) ? <div className="space-y-2 text-sm">
+				<p>{t("settings.agentAccounts.inUse")}</p>
+				<ul className="space-y-2">{owners.data.filter((owner) => owner.blocking).map((owner) => <li key={`${owner.kind}:${owner.sessionId}:${owner.reviewId ?? owner.transitionId ?? ""}`}>
+					<a className="underline" onClick={(event)=>{event.preventDefault();setRemoving(null);closeSettings();navigateToSession(owner.projectId,owner.sessionId);}} href={owner.projectId ? `ao://sessions/${encodeURIComponent(owner.projectId)}/${encodeURIComponent(owner.sessionId)}` : `/sessions/${encodeURIComponent(owner.sessionId)}`}>{owner.sessionName || owner.sessionId}</a>
+					{owner.kind === "reviewer" ? <> · {t("settings.agentAccounts.reviewerOwner")}</> : null}
+					{owner.prUrl && /^https?:\/\//.test(owner.prUrl) ? <> · <a className="underline" href={owner.prUrl} target="_blank" rel="noreferrer">{t("settings.agentAccounts.openPR")}</a></> : null}
+				</li>)}</ul>
+			</div> : null}
+		</ConfirmDialog> : null}
 	</>;
 }
 

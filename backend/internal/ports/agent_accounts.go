@@ -11,9 +11,11 @@ import (
 // AgentAccountReviewerInUseError identifies a local execution that must stop
 // before cleanup. It carries only opaque references, never provider output.
 type AgentAccountReviewerInUseError struct {
-	ReviewID  string
-	SessionID domain.SessionID
-	Harness   domain.ReviewerHarness
+	ReviewID    string
+	SessionName string
+	PRURL       string
+	SessionID   domain.SessionID
+	Harness     domain.ReviewerHarness
 }
 
 func (*AgentAccountReviewerInUseError) Error() string { return ErrAgentAccountInUse.Error() }
@@ -21,6 +23,7 @@ func (*AgentAccountReviewerInUseError) Unwrap() error { return ErrAgentAccountIn
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountLegacyIdentityConflict     = errors.New("account_legacy_identity_conflict")
 	ErrAgentAccountLocalOnly                  = errors.New("account_local_only")
 	ErrAgentAccountUnavailableHomeOccupied    = errors.New("account_unavailable_home_occupied")
 	ErrAgentAccountCleanupUnconfirmed         = errors.New("account_cleanup_unconfirmed")
@@ -142,6 +145,34 @@ type AgentAccountResolver interface {
 	ResolveAccount(context.Context, AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error)
 }
 
+// AgentAccountUseGuard fences profile mutation across native preflight, launch
+// and durable ownership recording. Release must run after ownership is saved or
+// conclusively stopped. Callers still validate the exact execution identity.
+type AgentAccountUseGuard interface {
+	AcquireAccountUses(context.Context, ...string) (func(), error)
+}
+
+type AgentAccountUsageStore interface {
+	ListAgentAccountUsageOwners(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
+}
+
+// ReviewerExecutionStore creates a fresh immutable owner only from the exact
+// latest archived reviewer, without moving its previous bindings or runs.
+type ReviewerExecutionStore interface {
+	GetReviewByID(context.Context, string) (domain.Review, bool, error)
+	GetReviewBySessionAndHarness(context.Context, domain.SessionID, domain.ReviewerHarness) (domain.Review, bool, error)
+	CreateReviewerAccountExecution(context.Context, string, string, domain.ResolvedAgentAccount, time.Time) (domain.Review, bool, error)
+}
+
+// AgentAccountInUseError describes a refused mutation. No operation has been
+// scheduled and no account was disabled; callers can show the affected owners.
+type AgentAccountInUseError struct {
+	Owners []domain.AgentAccountUsageOwner
+}
+
+func (*AgentAccountInUseError) Error() string { return ErrAgentAccountInUse.Error() }
+func (*AgentAccountInUseError) Unwrap() error { return ErrAgentAccountInUse }
+
 // ReviewerAgentAccountStore keeps reviewer identities separate from worker
 // session bindings. First write wins for each provider/execution pair.
 type ReviewerAgentAccountStore interface {
@@ -155,4 +186,10 @@ type ReviewerAccountBindings interface {
 	AgentAccountExecution
 	ResolveReviewerAccount(context.Context, string, AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error)
 	ReviewerLaunchEnv(context.Context, string, domain.AgentHarness) (map[string]string, error)
+}
+
+// AgentAccountHandoffValidator prevents implicit imports of device/external
+// history and refreshes managed target identity before the source is stopped.
+type AgentAccountHandoffValidator interface {
+	ValidateAccountHandoff(context.Context, domain.AgentHarness, string, string, string) error
 }

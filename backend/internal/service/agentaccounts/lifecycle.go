@@ -90,6 +90,22 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if account != nil {
+		release, err := s.acquireProfileMutation(account.ID)
+		if err != nil {
+			return LoginStart{}, err
+		}
+		defer release()
+		current, err := s.find(ctx, account.ID)
+		if err != nil {
+			return LoginStart{}, err
+		}
+		account = &current
+		ctx = context.WithValue(ctx, profileMutationContextKey{}, account.ID)
+		if err := s.refuseLiveOwners(ctx, account.ID); err != nil {
+			return LoginStart{}, err
+		}
+	}
 	provider := s.providers[p]
 	s.mu.Lock()
 	terminals := s.terminals
@@ -134,7 +150,11 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		o.Outcome = "cancelled"
 		o.Phase = "closing"
 		if s.saveOperation(context.WithoutCancel(ctx), &o) == nil {
-			_ = s.resumeOperation(context.WithoutCancel(ctx), &o)
+			if account != nil {
+				_ = s.resumeOperationLocked(context.WithoutCancel(ctx), &o)
+			} else {
+				_ = s.resumeOperation(context.WithoutCancel(ctx), &o)
+			}
 		}
 		return LoginStart{}, cause
 	}
@@ -216,6 +236,19 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 		o.Outcome = "mismatch"
 		o.ResultAccountID = account.ID
 	}
+	s.mu.Lock()
+	legacyCheck := s.legacyIdentityCheck
+	s.mu.Unlock()
+	if o.Outcome == "complete" && legacyCheck != nil {
+		conflict, err := legacyCheck(ctx, o.Provider, identity.Email)
+		if err != nil {
+			return "", nil, ports.ErrAgentAccountStorageUnavailable
+		}
+		if conflict {
+			o.Outcome = "legacy-conflict"
+			o.ResultAccountID = ""
+		}
+	}
 	if o.Outcome == "complete" {
 		account.Email, account.Plan = identity.Email, identity.Plan
 		o.Phase = "accepted"
@@ -237,6 +270,9 @@ func (s *Service) loginResult(ctx context.Context, o *domain.AgentAccountOperati
 		if e := s.resumeOperation(ctx, o); e != nil {
 			return "", nil, e
 		}
+	}
+	if o.Outcome == "legacy-conflict" {
+		return "", nil, &OperationError{OperationID: o.ID, category: ports.ErrAgentAccountLegacyIdentityConflict}
 	}
 	if o.Outcome == "cancelled" {
 		return "", nil, ports.ErrAgentAccountLoginUnknown
@@ -322,7 +358,18 @@ func (s *Service) deferOperationRetry(id string) {
 	s.retries[id] = retry
 }
 
-func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOperation) (err error) {
+func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOperation) error {
+	release, err := s.acquireProfileMutation(o.AccountID)
+	if err != nil {
+		return &OperationError{OperationID: o.ID, category: err}
+	}
+	defer release()
+	return s.resumeOperationLocked(ctx, o)
+}
+
+// Callers hold both opMu and the exclusive account profile lock.
+func (s *Service) resumeOperationLocked(ctx context.Context, o *domain.AgentAccountOperation) (err error) {
+	ctx = context.WithValue(ctx, profileMutationContextKey{}, o.AccountID)
 	defer func() {
 		if err != nil {
 			s.deferOperationRetry(o.ID)
@@ -356,6 +403,19 @@ func (s *Service) resumeOperation(ctx context.Context, o *domain.AgentAccountOpe
 				}
 				var reviewer *ports.AgentAccountReviewerInUseError
 				errors.As(e, &reviewer)
+				if reviewer != nil {
+					if owners, err := s.UsageOwners(ctx, o.AccountID); err == nil {
+						for _, owner := range owners {
+							if owner.ReviewID == reviewer.ReviewID {
+								copy := *reviewer
+								copy.SessionName = owner.SessionName
+								copy.PRURL = owner.PRURL
+								reviewer = &copy
+								break
+							}
+						}
+					}
+				}
 				return &OperationError{OperationID: o.ID, Reviewer: reviewer, category: ports.ErrAgentAccountInUse}
 			}
 		}
@@ -457,6 +517,11 @@ func (s *Service) mutateAccount(ctx context.Context, id, action string) error {
 	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	release, e := s.acquireProfileMutation(id)
+	if e != nil {
+		return e
+	}
+	defer release()
 	a, e := s.find(ctx, id)
 	if e != nil {
 		return e
@@ -470,10 +535,17 @@ func (s *Service) mutateAccount(ctx context.Context, id, action string) error {
 		if o.Action != action {
 			return &OperationError{OperationID: o.ID, category: ports.ErrAgentAccountOperationBusy}
 		}
-		return s.resumeOperation(ctx, &o)
+		return s.resumeOperationLocked(ctx, &o)
 	}
 	if a.RetiredAt != nil {
 		return nil
+	}
+	if action == "remove" {
+		// A new remove is refused before journal/disable/stop effects. Existing
+		// previously-confirmed operations above remain recoverable after upgrade.
+		if err := s.refuseLiveOwners(ctx, id); err != nil {
+			return err
+		}
 	}
 	if action == "logout" && a.DisabledAt != nil && a.LifecycleOperationID != "" {
 		prior, err := s.operation(ctx, a.LifecycleOperationID)
@@ -500,7 +572,7 @@ func (s *Service) mutateAccount(ctx context.Context, id, action string) error {
 	if e = j.CreateAgentAccountOperation(ctx, o); e != nil {
 		return ports.ErrAgentAccountStorageUnavailable
 	}
-	return s.resumeOperation(ctx, &o)
+	return s.resumeOperationLocked(ctx, &o)
 }
 
 // Recover runs in the background at startup and periodically thereafter.

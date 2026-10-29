@@ -35,7 +35,7 @@ func (m *Manager) ReconnectAwakeAgent(ctx context.Context, target domain.AwakeAg
 	if m.chat.HasLiveChatController(rec.ID) {
 		return nil
 	}
-	release, err := m.beginHarnessUse(rec.Harness)
+	release, err := m.beginBoundHarnessUse(ctx, rec)
 	if err != nil {
 		return err
 	}

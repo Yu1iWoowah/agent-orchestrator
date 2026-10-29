@@ -6,10 +6,12 @@ import { appI18n } from "../../i18n";
 import { TooltipProvider } from "../ui/tooltip";
 import { AgentAccountsPanel, type CliLoginControls } from "./AgentAccountsSection";
 
-const { getMock, postMock, terminalState } = vi.hoisted(() => ({
-	getMock: vi.fn(), postMock: vi.fn(),
+const { getMock, postMock, terminalState, navigateSession } = vi.hoisted(() => ({
+	getMock: vi.fn(), postMock: vi.fn(), navigateSession: vi.fn(),
 	terminalState: { value: undefined as ((state: "attached" | "exited" | "error") => void) | undefined },
 }));
+
+vi.mock("../../lib/navigate-to-session",()=>({useNavigateToSession:()=>navigateSession}));
 
 vi.mock("../../lib/api-client", () => ({
 	apiClient: { DELETE: vi.fn(), GET: getMock, POST: postMock },
@@ -41,7 +43,7 @@ const findCliLoginRow = () => waitFor(() => {
 
 beforeEach(() => {
 	getMock.mockReset().mockImplementation((path: string) => Promise.resolve({
-		data: path === "/api/v1/agents/accounts/usage" ? { days: 30, usage: [] } : { accounts: [device, saved] },
+		data: path.endsWith("usage-owners") ? { owners: [] } : path === "/api/v1/agents/accounts/usage" ? { days: 30, usage: [] } : { accounts: [device, saved] },
 	}));
 	postMock.mockReset().mockImplementation((path: string) => {
 		if (path === "/api/v1/agents/accounts/{accountId}/login") return Promise.resolve({ data: login });
@@ -190,4 +192,17 @@ it.each(["complete", "cancelled"])("explains saved login when close races verify
  } else {
   expect(screen.queryByText("Sign-in completed. Your account was saved.")).not.toBeInTheDocument();
  }
+});
+
+it("shows blocking session and reviewer links before removal without promising fallback", async () => {
+ getMock.mockImplementation((path: string) => Promise.resolve({data:path.endsWith("usage-owners")?{owners:[{kind:"reviewer",projectId:"fake-project",sessionId:"fake-session",sessionName:"Fake review worker",reviewId:"opaque-review",prUrl:"https://github.com/fake/repo/pull/4",harness:"claude-code",blocking:true}]}:path.endsWith("usage")?{usage:[]}:{accounts:[device,saved]}}));
+ const user=userEvent.setup();renderPanel();
+ await user.click(await screen.findByRole("button",{name:"Remove account"}));
+ const dialog=await screen.findByRole("dialog");
+ expect(await within(dialog).findByRole("link",{name:"Fake review worker"})).toHaveAttribute("href","ao://sessions/fake-project/fake-session");
+ expect(within(dialog).getByRole("link",{name:"Open PR"})).toHaveAttribute("href","https://github.com/fake/repo/pull/4");
+ expect(dialog).toHaveTextContent("will not use the default login");
+ expect(dialog).toHaveTextContent("The account has not been changed");
+ await user.click(within(dialog).getByRole("link",{name:"Fake review worker"}));
+ expect(navigateSession).toHaveBeenCalledWith("fake-project","fake-session");
 });

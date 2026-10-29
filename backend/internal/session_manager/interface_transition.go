@@ -69,8 +69,9 @@ type runtimeInterrupter interface {
 }
 
 type interfaceTransitionRun struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel          context.CancelFunc
+	done            chan struct{}
+	releaseAccounts func()
 }
 
 // InterfaceTransitionStatus is the controller-facing view used by desktop and
@@ -243,6 +244,21 @@ func (m *Manager) StartInterfaceTransition(
 // launchInterfaceTransition fences a Chat source and starts the handoff worker
 // for a freshly claimed transition.
 func (m *Manager) launchInterfaceTransition(ctx context.Context, transition domain.SessionInterfaceTransition) error {
+	releaseAccounts := func() {}
+	if transition.AccountMove() {
+		var err error
+		releaseAccounts, err = m.beginAccountUses(ctx, transition.SourceAccountID, transition.TargetAccountID)
+		if err != nil {
+			_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionFailed, "ACCOUNT_IN_USE", "An account operation is in progress. The source was left untouched.")
+			return err
+		}
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseAccounts()
+		}
+	}()
 	if transition.SourceMode == domain.SessionModeChat {
 		handoff, ok := m.chat.(chatHandoffLauncher)
 		if !ok {
@@ -265,10 +281,11 @@ func (m *Manager) launchInterfaceTransition(ctx context.Context, transition doma
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	run := &interfaceTransitionRun{cancel: cancel, done: make(chan struct{})}
+	run := &interfaceTransitionRun{cancel: cancel, done: make(chan struct{}), releaseAccounts: releaseAccounts}
 	m.transitionMu.Lock()
 	m.transitions[transition.SessionID] = run
 	m.transitionMu.Unlock()
+	handedOff = true
 	go m.runInterfaceTransition(runCtx, transition, run)
 	return nil
 }
@@ -394,6 +411,9 @@ func (m *Manager) runInterfaceTransition(
 ) {
 	defer m.settleTransitionMessages(transition)
 	defer close(run.done)
+	if run.releaseAccounts != nil {
+		defer run.releaseAccounts()
+	}
 	defer func() {
 		m.transitionMu.Lock()
 		if current := m.transitions[transition.SessionID]; current == run {
@@ -413,6 +433,9 @@ func (m *Manager) runInterfaceTransition(
 	accountStarting := false
 	var sourceRuntimeHandle ports.RuntimeHandle
 	fail := func(code string, cause error) {
+		if transition.AccountMove() && !errors.Is(cause, context.Canceled) {
+			cause = errors.New(transitionDetail(transition, code, ""))
+		}
 		if sourcePrepared && !sourceStopped {
 			m.abortSourceHandoff(transition)
 		}
@@ -514,7 +537,14 @@ func (m *Manager) runInterfaceTransition(
 			fail(interfaceTransitionErrorCode(recoveryErr), recoveryErr)
 			return
 		}
+		changedNativeID := transition.NativeConversationID != resolvedID
 		transition.NativeConversationID = resolvedID
+		if transition.AccountMove() && changedNativeID {
+			if err := m.preflightAccountTarget(ctx, current, transition); err != nil {
+				fail(interfaceTransitionErrorCode(err), err)
+				return
+			}
+		}
 	}
 	if err := m.moveInterfaceTransitionWithNativeID(
 		transition.ID,
@@ -595,13 +625,17 @@ func (m *Manager) runInterfaceTransition(
 	// Native-history replay is the TUI -> Chat barrier; an account move resumes
 	// the same controller kind, so ordinary context resume applies.
 	replayHistory := !transition.AccountMove()
+	targetCtx := ctx
+	if transition.AccountMove() && transition.TargetMode == domain.SessionModeTUI {
+		targetCtx = context.WithValue(ctx, accountTransitionRuntimeContextKey{}, transition.ID)
+	}
 	// As in rollback: without an epoch commit (an account move) a Chat still owns
 	// its provider id durably, so it resumes, replacing a never-messaged provider
 	// in place. A fresh start would present an owner the database does not hold.
 	fresh := transition.NativeConversationID == "" &&
 		(modeChanged || transition.SourceMode != domain.SessionModeChat ||
 			!m.chatHoldsProviderConversation(ctx, rec.ID))
-	err = m.startTransitionTarget(ctx, rec.ID, fresh, replayHistory, transition.HistoryPolicy)
+	err = m.startTransitionTarget(targetCtx, rec.ID, fresh, replayHistory, transition.HistoryPolicy)
 	if errors.Is(err, ports.ErrChatHistoryUnsettled) &&
 		!errors.Is(err, ports.ErrChatRecoveryInconclusive) &&
 		!errors.Is(err, ports.ErrChatHistoryLoadFailed) &&
@@ -618,7 +652,7 @@ func (m *Manager) runInterfaceTransition(
 			_ = m.retainUnconfirmedTransitionTarget(transition, errors.Join(err, stopErr))
 			return
 		}
-		err = m.startTransitionTarget(ctx, rec.ID, fresh, replayHistory, transition.HistoryPolicy)
+		err = m.startTransitionTarget(targetCtx, rec.ID, fresh, replayHistory, transition.HistoryPolicy)
 	}
 	if err != nil {
 		code := "TARGET_RESUME_FAILED"
@@ -879,7 +913,7 @@ func (m *Manager) persistedNativeConversationID(
 		},
 	}, id, env)
 	if err != nil {
-		return "", fmt.Errorf("inspect native conversation %s: %w", id, err)
+		return "", ErrNativeConversationUnverified
 	}
 	if !exists {
 		agent, registered := m.agents.Agent(rec.Harness)
@@ -937,8 +971,11 @@ func (m *Manager) preflightLaunchAuth(ctx context.Context, agent ports.Agent, re
 	}
 	status, authErr := validator.ValidateLaunchAuth(ctx, rec.Metadata.WorkspacePath, env)
 	if authErr != nil {
-		m.logger.Debug("interface transition: launch authentication probe inconclusive; continuing",
-			"sessionID", rec.ID, "harness", rec.Harness, "error", authErr)
+		if selected, scoped := ports.AgentAccountFromContext(ctx); scoped && selected.Managed() {
+			m.logger.Debug("account transition: authentication probe inconclusive", "sessionID", rec.ID, "harness", rec.Harness, "errorType", fmt.Sprintf("%T", authErr))
+		} else {
+			m.logger.Debug("interface transition: launch authentication probe inconclusive; continuing", "sessionID", rec.ID, "harness", rec.Harness, "error", authErr)
+		}
 		return nil
 	}
 	if status == ports.AgentAuthStatusUnauthorized {
@@ -1286,6 +1323,22 @@ func (m *Manager) startTransitionTarget(
 		return err
 	}
 	ws := workspaceInfo(rec)
+	if m.agentAccounts != nil {
+		id := m.accountOverride(rec.ID)
+		if id == "" {
+			binding, err := m.agentAccounts.SessionAccountBinding(ctx, rec.ID, rec.Harness)
+			if err != nil {
+				return err
+			}
+			ctx = ports.WithAgentAccount(ctx, binding)
+		} else {
+			selected, err := m.agentAccounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: rec.Harness, AccountID: id})
+			if err != nil {
+				return err
+			}
+			ctx = ports.WithAgentAccount(ctx, selected)
+		}
+	}
 	// A genuinely fresh target has nothing to replay. Every resumed TUI -> Chat
 	// handoff must import native history before activation; rollback and ordinary
 	// daemon restore deliberately use the normal context-resume policy.
@@ -1358,13 +1411,31 @@ func (m *Manager) rollbackInterfaceTransition(
 	fresh := transition.NativeConversationID == "" &&
 		(modeChanged || transition.SourceMode != domain.SessionModeChat ||
 			!m.chatHoldsProviderConversation(ctx, transition.SessionID))
+	sourceCtx := ctx
+	if transition.AccountMove() {
+		// Rollback can itself crash during Create. Reuse the tentative runtime
+		// receipt only after the previous target was conclusively stopped.
+		if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionTargetStarting, "SOURCE_RESTORE_STARTING", "AO is restoring the original account after the target failed."); err != nil {
+			_ = m.retainUnconfirmedTransitionTarget(transition, err)
+			return
+		}
+		if transition.SourceMode == domain.SessionModeTUI {
+			sourceCtx = context.WithValue(ctx, accountTransitionRuntimeContextKey{}, transition.ID)
+		}
+	}
 	if err := m.startTransitionTarget(
-		ctx,
+		sourceCtx,
 		transition.SessionID,
 		fresh,
 		false,
 		domain.SessionInterfaceTransitionHistoryStrict,
 	); err != nil {
+		if transition.AccountMove() {
+			if stopErr := m.stopTransitionTargetConclusive(ctx, transition); stopErr != nil {
+				_ = m.retainUnconfirmedTransitionTarget(transition, errors.Join(err, stopErr))
+				return
+			}
+		}
 		_ = m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionRecovery,
 			"RECOVERY_REQUIRED", cause.Error()+"; source restore: "+err.Error())
 		return
@@ -1386,6 +1457,9 @@ func (m *Manager) chatHoldsProviderConversation(ctx context.Context, id domain.S
 func (m *Manager) stopTransitionTargetConclusive(ctx context.Context, transition domain.SessionInterfaceTransition) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	if transition.AccountMove() && transition.TargetMode == domain.SessionModeTUI {
+		return m.stopAccountTransitionRuntime(ctx, transition)
+	}
 	current, found, err := m.store.GetSession(ctx, transition.SessionID)
 	if err != nil {
 		return fmt.Errorf("read failed target ownership: %w", err)
@@ -1400,6 +1474,19 @@ func (m *Manager) stopTransitionTargetConclusive(ctx context.Context, transition
 }
 
 func (m *Manager) retainUnconfirmedTransitionTarget(transition domain.SessionInterfaceTransition, cause error) error {
+	// The worker's transient map/input-drain entry will disappear on return.
+	// Preserve the in-memory input/reaper gate even when the database write
+	// fails; startup also reconstructs it from the still-active durable saga.
+	m.agentOpMu.Lock()
+	if current := m.agentOperations[transition.SessionID]; current == "" || current == agentOperationInterfaceRecovery {
+		m.agentOperations[transition.SessionID] = agentOperationInterfaceRecovery
+	} else {
+		if m.deferredInterfaceRecovery == nil {
+			m.deferredInterfaceRecovery = make(map[domain.SessionID]string)
+		}
+		m.deferredInterfaceRecovery[transition.SessionID] = transition.ID
+	}
+	m.agentOpMu.Unlock()
 	// Keep the durable input fence and startup-recovery record. Terminalizing the
 	// saga would let ordinary restore adopt a target that never passed admission.
 	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionTargetStarting,
@@ -1792,7 +1879,7 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 						if err := m.retainUnconfirmedTransitionTarget(*transition, stopErr); err != nil {
 							return nil, err
 						}
-						m.logger.Error("account transition: session quarantined after unconfirmed target shutdown", "sessionID", transition.SessionID, "transition", transition.ID, "error", stopErr)
+						m.logger.Error("account transition: session quarantined after unconfirmed target shutdown", "sessionID", transition.SessionID, "transition", transition.ID, "errorType", fmt.Sprintf("%T", stopErr))
 						continue
 					}
 					detail = "The daemon restarted during the account switch; AO stopped the agent and kept the session on its committed account. Resume it to continue."
@@ -1892,7 +1979,11 @@ func interfaceTransitionErrorCode(err error) string {
 		return "TARGET_UNAVAILABLE"
 	case errors.Is(err, ports.ErrChatDriverIncompatible):
 		return "TARGET_INCOMPATIBLE"
-	case errors.Is(err, ports.ErrChatAuthRequired), errors.Is(err, ports.ErrAgentAuthRequired):
+	case errors.Is(err, ports.ErrAgentAccountUnshared):
+		return "ACCOUNT_HISTORY_UNSHARED"
+	case errors.Is(err, ports.ErrModelCapabilitiesUnavailable):
+		return "TARGET_MODEL_UNAVAILABLE"
+	case errors.Is(err, ports.ErrAgentAccountSignedOut), errors.Is(err, ports.ErrChatAuthRequired), errors.Is(err, ports.ErrAgentAuthRequired):
 		return "TARGET_AUTH_REQUIRED"
 	case errors.Is(err, ErrInterfaceProviderHistoryRecoveryUnavailable):
 		return "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"
@@ -1921,6 +2012,16 @@ func transitionDetail(transition domain.SessionInterfaceTransition, code, detail
 		return "The account switch was cancelled. The agent stays on its current account."
 	case "SESSION_CHANGED":
 		return "The session changed before the account switch could start. Try again."
+	case "ACCOUNT_HISTORY_UNSHARED":
+		return "This conversation belongs to the device or an external profile and cannot be imported into a private managed account. Keep this conversation on its original account, or explicitly start a new managed conversation."
+	case "TARGET_MODEL_UNAVAILABLE":
+		return "AO could not confirm the saved model and effort on the target account. The current account was left unchanged. Check the target account model settings and retry."
+	case "TARGET_AUTH_REQUIRED":
+		return "The target account needs sign-in. The current account was left unchanged. Sign in again in Settings."
+	case "NATIVE_SESSION_MISSING", "NATIVE_SESSION_UNVERIFIED":
+		return "AO could not confirm that this conversation is available on the target account. The current account was left unchanged."
+	case "SOURCE_RESTORE_FAILED", "TARGET_STOP_UNCONFIRMED":
+		return "AO could not confirm the account switch recovery. Further launches are blocked until recovery is confirmed."
 	}
-	return detail
+	return "The account switch could not complete. The agent remains on its committed account. Retry after checking the account in Settings."
 }

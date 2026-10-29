@@ -199,7 +199,9 @@ func (q *Queries) GetReviewByID(ctx context.Context, id string) (GetReviewByIDRo
 
 const getReviewBySession = `-- name: GetReviewBySession :one
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1
+FROM review AS r WHERE r.session_id = ?
+ AND NOT EXISTS(SELECT 1 FROM review AS newer WHERE newer.session_id=r.session_id AND newer.harness=r.harness
+  AND (newer.is_archived<r.is_archived OR newer.is_archived=r.is_archived AND newer.rowid>r.rowid)) ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1
 `
 
 type GetReviewBySessionRow struct {
@@ -247,7 +249,7 @@ func (q *Queries) GetReviewBySession(ctx context.Context, sessionID domain.Sessi
 
 const getReviewBySessionAndHarness = `-- name: GetReviewBySessionAndHarness :one
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE session_id = ? AND harness = ?
+FROM review WHERE session_id = ? AND harness = ? ORDER BY is_archived ASC,rowid DESC LIMIT 1
 `
 
 type GetReviewBySessionAndHarnessParams struct {
@@ -440,6 +442,74 @@ func (q *Queries) InsertReviewRun(ctx context.Context, arg InsertReviewRunParams
 		arg.AutoInjectReview,
 	)
 	return err
+}
+
+const insertReviewerAccountExecution = `-- name: InsertReviewerAccountExecution :one
+INSERT INTO review(id,session_id,project_id,harness,pr_url,reviewer_handle_id,agent_session_id,
+ reviewer_activity_state,reviewer_launch_id,interface_mode,provider_conversation_id,
+ controller_generation,controller_error,is_archived,created_at,updated_at)
+SELECT ?1,r.session_id,r.project_id,r.harness,r.pr_url,'','',
+ 'exited','',r.interface_mode,'','','',0,?2,?2
+FROM review AS r
+WHERE r.id=?3 AND r.is_archived=1
+ AND r.reviewer_handle_id='' AND r.reviewer_launch_id='' AND r.controller_generation=''
+ AND r.rowid=(SELECT MAX(latest.rowid) FROM review AS latest WHERE latest.session_id=r.session_id AND latest.harness=r.harness)
+ AND NOT EXISTS(SELECT 1 FROM review AS current WHERE current.session_id=r.session_id AND current.harness=r.harness AND current.is_archived=0)
+ AND NOT EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.session_id=r.session_id AND pass.harness=r.harness AND pass.status='running')
+RETURNING id,session_id,project_id,harness,pr_url,reviewer_handle_id,agent_session_id,
+ reviewer_activity_state,reviewer_launch_id,interface_mode,provider_conversation_id,
+ controller_generation,controller_error,is_archived,created_at,updated_at
+`
+
+type InsertReviewerAccountExecutionParams struct {
+	NewID      string
+	CreatedAt  time.Time
+	PreviousID string
+}
+
+type InsertReviewerAccountExecutionRow struct {
+	ID                     string
+	SessionID              domain.SessionID
+	ProjectID              domain.ProjectID
+	Harness                domain.ReviewerHarness
+	PRURL                  string
+	ReviewerHandleID       string
+	AgentSessionID         string
+	ReviewerActivityState  string
+	ReviewerLaunchID       string
+	InterfaceMode          string
+	ProviderConversationID string
+	ControllerGeneration   string
+	ControllerError        string
+	IsArchived             bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// A rebuild is a new immutable execution, never a binding rewrite. The path's
+// old ID is the CAS predecessor; replay cannot create another fresh owner.
+func (q *Queries) InsertReviewerAccountExecution(ctx context.Context, arg InsertReviewerAccountExecutionParams) (InsertReviewerAccountExecutionRow, error) {
+	row := q.db.QueryRowContext(ctx, insertReviewerAccountExecution, arg.NewID, arg.CreatedAt, arg.PreviousID)
+	var i InsertReviewerAccountExecutionRow
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.ProjectID,
+		&i.Harness,
+		&i.PRURL,
+		&i.ReviewerHandleID,
+		&i.AgentSessionID,
+		&i.ReviewerActivityState,
+		&i.ReviewerLaunchID,
+		&i.InterfaceMode,
+		&i.ProviderConversationID,
+		&i.ControllerGeneration,
+		&i.ControllerError,
+		&i.IsArchived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const listCurrentHeadReviewRunsBySession = `-- name: ListCurrentHeadReviewRunsBySession :many
@@ -779,7 +849,9 @@ func (q *Queries) ListReviewRunsBySession(ctx context.Context, sessionID domain.
 
 const listReviewsBySession = `-- name: ListReviewsBySession :many
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC
+FROM review AS r WHERE r.session_id = ?
+ AND NOT EXISTS(SELECT 1 FROM review AS newer WHERE newer.session_id=r.session_id AND newer.harness=r.harness
+  AND (newer.is_archived<r.is_archived OR newer.is_archived=r.is_archived AND newer.rowid>r.rowid)) ORDER BY updated_at DESC, created_at DESC, id DESC
 `
 
 type ListReviewsBySessionRow struct {
@@ -1086,7 +1158,7 @@ func (q *Queries) UpdateReviewRunResult(ctx context.Context, arg UpdateReviewRun
 const upsertReview = `-- name: UpsertReview :exec
 INSERT INTO review (id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (session_id, harness) DO UPDATE SET
+ON CONFLICT DO UPDATE SET
     project_id = excluded.project_id,
     pr_url = excluded.pr_url,
     reviewer_handle_id = excluded.reviewer_handle_id,

@@ -434,6 +434,76 @@ func (q *Queries) ListAgentAccountOperations(ctx context.Context) ([]AgentAccoun
 	return items, nil
 }
 
+const listAgentAccountUsageOwners = `-- name: ListAgentAccountUsageOwners :many
+SELECT 'session' AS owner_kind, CAST(COALESCE(s.project_id,'') AS TEXT) AS project_id, s.id AS session_id, s.display_name AS session_name,
+       CAST('' AS TEXT) AS review_id, CAST('' AS TEXT) AS pr_url, s.harness,
+       CAST('' AS TEXT) AS transition_id,
+       CAST(s.is_terminated=0 AND (s.activity_state<>'exited' OR s.provision_state='provisioning') AS INTEGER) AS blocking
+FROM session_agent_accounts AS a JOIN sessions AS s ON s.id=a.session_id
+WHERE a.account_id=?1
+  AND a.bound_at=(SELECT MAX(b.bound_at) FROM session_agent_accounts AS b WHERE b.session_id=a.session_id AND b.provider=a.provider)
+UNION ALL
+SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, r.id, r.pr_url, r.harness, '',
+       CAST(r.is_archived=0 AND r.reviewer_activity_state<>'exited' AS INTEGER)
+FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id JOIN sessions AS s ON s.id=r.session_id
+WHERE a.account_id=?1
+UNION ALL
+SELECT 'transition', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, '', '', s.harness, t.id, 1
+FROM session_interface_transitions AS t JOIN sessions AS s ON s.id=t.session_id
+WHERE (t.source_account_id=?1 OR t.target_account_id=?1)
+  AND (t.phase NOT IN ('completed','failed','cancelled','recovery_required')
+       OR t.phase='recovery_required' AND t.target_runtime_state NOT IN ('not_started','stopped'))
+ORDER BY owner_kind, session_id, review_id, transition_id
+`
+
+type ListAgentAccountUsageOwnersRow struct {
+	OwnerKind    string
+	ProjectID    string
+	SessionID    domain.SessionID
+	SessionName  string
+	ReviewID     string
+	PRURL        string
+	Harness      domain.AgentHarness
+	TransitionID string
+	Blocking     int64
+}
+
+// Current bindings are owners; older receipts remain historical attribution.
+// Transition targets are owners before a binding is committed. No profile path
+// or provider output is part of this local-only projection.
+func (q *Queries) ListAgentAccountUsageOwners(ctx context.Context, accountID string) ([]ListAgentAccountUsageOwnersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentAccountUsageOwners, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentAccountUsageOwnersRow{}
+	for rows.Next() {
+		var i ListAgentAccountUsageOwnersRow
+		if err := rows.Scan(
+			&i.OwnerKind,
+			&i.ProjectID,
+			&i.SessionID,
+			&i.SessionName,
+			&i.ReviewID,
+			&i.PRURL,
+			&i.Harness,
+			&i.TransitionID,
+			&i.Blocking,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAgentAccounts = `-- name: ListAgentAccounts :many
 
 SELECT id, provider, home, email, "plan", created_at, profile_kind, label, lifecycle_operation_id, disabled_at, retired_at FROM agent_accounts ORDER BY provider, created_at, id

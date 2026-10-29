@@ -9,6 +9,69 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func (m *Manager) beginAccountUses(ctx context.Context, ids ...string) (func(), error) {
+	if guard, ok := m.agentAccounts.(ports.AgentAccountUseGuard); ok {
+		return guard.AcquireAccountUses(ctx, ids...)
+	}
+	return func() {}, nil
+}
+
+// Share ownership transfer with the existing harness guard, including async
+// Chat launches whose request returns before native startup has completed.
+func (m *Manager) beginHarnessAndAccountUse(ctx context.Context, harness domain.AgentHarness, accountID string) (func(), error) {
+	releaseHarness, err := m.beginHarnessUse(harness)
+	if err != nil {
+		return nil, err
+	}
+	releaseAccount, err := m.beginAccountUses(ctx, accountID)
+	if err != nil {
+		releaseHarness()
+		return nil, err
+	}
+	return func() { releaseAccount(); releaseHarness() }, nil
+}
+
+func (m *Manager) boundAccountForUse(ctx context.Context, rec domain.SessionRecord) (string, error) {
+	id := m.accountOverride(rec.ID)
+	if id == "" {
+		if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+			if p, supported := domain.AgentAccountProviderFor(rec.Harness); supported && selected.Provider == p {
+				id = selected.AccountID
+			}
+		}
+	}
+	if id == "" && m.agentAccounts != nil {
+		return m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+	}
+	return id, nil
+}
+func (m *Manager) beginBoundHarnessUse(ctx context.Context, rec domain.SessionRecord) (func(), error) {
+	id, err := m.boundAccountForUse(ctx, rec)
+	if err != nil {
+		return nil, err
+	}
+	return m.beginHarnessAndAccountUse(ctx, rec.Harness, id)
+}
+
+// AccountUsageOwners augments durable bindings with launches whose execution
+// has not yet reported activity. A failed probe is never evidence of no owner.
+func (m *Manager) AccountUsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
+	store, ok := m.store.(ports.AgentAccountUsageStore)
+	if !ok {
+		return nil, ports.ErrAgentAccountStorageUnavailable
+	}
+	owners, err := store.ListAgentAccountUsageOwners(ctx, id)
+	if err != nil {
+		return nil, ports.ErrAgentAccountStorageUnavailable
+	}
+	for i := range owners {
+		if owners[i].Kind == "session" && m.launchInFlight(owners[i].SessionID) {
+			owners[i].Blocking = true
+		}
+	}
+	return owners, nil
+}
+
 // StartAccountTransition moves the session's agent to accountID through the
 // same durable handoff as an interface switch, so a move either completes or
 // leaves the session on its old account:
@@ -98,9 +161,24 @@ func (m *Manager) preflightAccountTarget(
 	rec domain.SessionRecord,
 	transition domain.SessionInterfaceTransition,
 ) error {
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI {
+		if _, ok := m.store.(accountTransitionRuntimeStore); !ok {
+			return ErrInterfaceHandoffUnsupported
+		}
+	}
+	if validator, ok := m.agentAccounts.(ports.AgentAccountHandoffValidator); ok {
+		if err := validator.ValidateAccountHandoff(ctx, rec.Harness, transition.SourceAccountID, transition.TargetAccountID, transition.NativeConversationID); err != nil {
+			return err
+		}
+	}
 	if err := m.agentAccounts.ValidateAccount(ctx, rec.Harness, transition.TargetAccountID); err != nil {
 		return err
 	}
+	selected, err := m.agentAccounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: rec.Harness, AccountID: transition.TargetAccountID})
+	if err != nil {
+		return err
+	}
+	ctx = ports.WithAgentAccount(ctx, selected)
 	agent, ok := m.agents.Agent(rec.Harness)
 	if !ok {
 		return ErrUnknownHarness
@@ -114,21 +192,28 @@ func (m *Manager) preflightAccountTarget(
 		return err
 	}
 	config := restoredAgentConfig(rec, project.Config)
+	if err := m.preflightAccountModels(ctx, rec, config); err != nil {
+		return err
+	}
 	pinRuntimePermissionEnv(env, config.Permissions)
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.preflightLaunchAuth(ctx, agent, rec, env); err != nil {
 		return err
 	}
-	// Account folders link their history to the computer's own, so the target
-	// sees the conversation. Prove it rather than find out after the stop.
+	// Managed profiles share only AO-owned history. A device/external thread is
+	// not implicitly imported; require positive visibility before stopping it.
 	if transition.NativeConversationID != "" {
-		if probe, ok := agent.(ports.AgentInterfaceHandoffHistoryProbe); ok {
+		probe, ok := agent.(ports.AgentInterfaceHandoffHistoryProbe)
+		if !ok {
+			return ErrNativeConversationUnverified
+		}
+		{
 			exists, probeErr := probe.NativeConversationExists(ctx, ports.SessionRef{
 				ID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
 				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: transition.NativeConversationID},
 			}, transition.NativeConversationID, env)
 			if probeErr != nil {
-				return fmt.Errorf("%w: %w", ErrNativeConversationUnverified, probeErr)
+				return ErrNativeConversationUnverified
 			}
 			if !exists {
 				return fmt.Errorf("%w: the account's folder cannot see this conversation", ErrNativeConversationMissing)
@@ -142,6 +227,30 @@ func (m *Manager) preflightAccountTarget(
 		return m.chat.PreflightChat(ctx, rec.Harness, config.Permissions)
 	}
 	return m.preflightTerminalLaunch(ctx, agent, rec, project, transition.NativeConversationID, env)
+}
+
+func (m *Manager) preflightAccountModels(ctx context.Context, rec domain.SessionRecord, config ports.AgentConfig) error {
+	if m.modelCatalog == nil {
+		return ports.ErrModelCapabilitiesUnavailable
+	}
+	catalog, err := m.modelCatalog.Models(ctx, string(rec.Harness), string(rec.ProjectID), false)
+	if err != nil || !savedCatalogCovers(catalog, config.Model, config.Effort) {
+		catalog, err = m.modelCatalog.Models(ctx, string(rec.Harness), string(rec.ProjectID), true)
+	}
+	if err != nil || !savedCatalogCovers(catalog, config.Model, config.Effort) {
+		return ports.ErrModelCapabilitiesUnavailable
+	}
+	if config.FastMode == domain.AgentFastOn {
+		for _, model := range catalog.Models {
+			if model.ID == config.Model || config.Model == "" && model.IsDefault {
+				if !model.SupportsFast {
+					return ports.ErrAgentSettingsUnsupported
+				}
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // markAccountSwitch tells the conversation that a move which stopped the turn
@@ -177,6 +286,19 @@ func (m *Manager) runtimeEnvOnAccount(rec domain.SessionRecord, projectEnv map[s
 func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) error {
 	if m.agentAccounts == nil {
 		return nil
+	}
+	if store, ok := m.store.(interfaceTransitionStore); ok {
+		active, err := store.ListActiveSessionInterfaceTransitions(ctx)
+		if err != nil {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+		for _, transition := range active {
+			// Before commit the target has no session binding. Its durable
+			// intent is nevertheless an owner, including uncertain shutdown.
+			if transition.AccountMove() && (transition.SourceAccountID == accountID || transition.TargetAccountID == accountID) {
+				return ports.ErrAgentAccountInUse
+			}
+		}
 	}
 	recs, err := m.store.ListAllSessions(ctx)
 	if err != nil {

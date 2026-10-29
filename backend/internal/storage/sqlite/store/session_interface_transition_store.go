@@ -457,6 +457,7 @@ func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.Sess
 		Policy: row.Policy, HistoryPolicy: row.HistoryPolicy, Phase: row.Phase,
 		NativeConversationID: row.NativeConversationID,
 		SourceAccountID:      row.SourceAccountID, TargetAccountID: row.TargetAccountID,
+		TargetRuntimeLaunchID: row.TargetRuntimeLaunchID, TargetRuntimeHandleID: row.TargetRuntimeHandleID, TargetRuntimeState: domain.AccountTransitionRuntimeState(row.TargetRuntimeState),
 		ErrorCode: row.ErrorCode, ErrorDetail: row.ErrorDetail,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		CompletedAt:          nullTimeToTime(row.CompletedAt),

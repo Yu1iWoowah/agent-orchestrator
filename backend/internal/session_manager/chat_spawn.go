@@ -111,7 +111,7 @@ func (m *Manager) runBackgroundTask(ctx context.Context, id domain.SessionID, sy
 }
 
 func (m *Manager) runRecordBackgroundTask(ctx context.Context, rec domain.SessionRecord, systemPrompt, prompt string, run func(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)) (string, error) {
-	releaseHarness, err := m.beginHarnessUse(rec.Harness)
+	releaseHarness, err := m.beginBoundHarnessUse(ctx, rec)
 	if err != nil {
 		return "", err
 	}
