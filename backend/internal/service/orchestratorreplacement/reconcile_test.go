@@ -101,8 +101,15 @@ func TestReplacementReconcileDoesNotRetryWaitingOrTerminalOperations(t *testing.
 				t.Fatal(err)
 			}
 			got, err := f.svc.Get(ctx, op.ID)
-			if err != nil || got.Phase != phase || got.Revision != before.Revision || got.SourceIntakeReleasedAt != nil || f.runtime.observations != 0 || f.runtime.preparations != 0 || f.runtime.quiescences != 0 || f.runtime.successors != 0 {
+			if err != nil || got.Phase != phase || f.runtime.observations != 0 || f.runtime.preparations != 0 || f.runtime.quiescences != 0 || f.runtime.successors != 0 {
 				t.Fatal("waiting operation acted without explicit retry", err)
+			}
+			if before.CanReleaseSourceIntake() {
+				if got.Revision != before.Revision+1 || got.SourceIntakeReleasedAt == nil {
+					t.Fatal("paused pre-stop operation did not release source intake", got.Revision)
+				}
+			} else if got.Revision != before.Revision || got.SourceIntakeReleasedAt != nil {
+				t.Fatal("recovery or terminal operation released source intake", got.Revision)
 			}
 			if err := f.svc.Reconcile(ctx); err != nil {
 				t.Fatal(err)

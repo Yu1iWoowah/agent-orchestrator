@@ -29,7 +29,10 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 			return err
 		}
 		switch op.Phase {
-		case domain.ReplacementAwaitingSource, domain.ReplacementAwaitingHandoff, domain.ReplacementAwaitingTranscript, domain.ReplacementRecoveryRequired:
+		case domain.ReplacementAwaitingSource, domain.ReplacementAwaitingHandoff, domain.ReplacementAwaitingTranscript:
+			op, err = s.releaseSourceIntake(ctx, op)
+			return err
+		case domain.ReplacementRecoveryRequired:
 			return nil
 		}
 		if op.SourceRetiredAt == nil {
@@ -40,7 +43,10 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 		}
 		next, stepErr := s.advance(ctx, op)
 		err = stepErr
-		if err == nil {
+		// A step may commit release before a later receipt fails. Carry its
+		// returned revision into wait's committed-row/CAS revalidation; a
+		// failed save at the old revision still cannot persist mutated facts.
+		if err == nil || next.ID == op.ID && next.Revision > op.Revision {
 			op = next
 		}
 		if errors.Is(err, errNoStopClearPending) {
@@ -179,14 +185,14 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 		}
 	}
 	if op.Phase == phase && op.ResumePhase == resume && op.Error != nil && *op.Error == failure {
-		return op, nil
+		return s.releaseSourceIntake(ctx, op)
 	}
 	op.Phase, op.ResumePhase, op.Error = phase, resume, &failure
 	op, err = s.save(ctx, op)
 	if err != nil {
 		return op, err
 	}
-	return op, nil
+	return s.releaseSourceIntake(ctx, op)
 }
 
 func sourceStopRecoveryRequired(err error) bool {
@@ -259,6 +265,8 @@ func (s *Service) advance(ctx context.Context, op domain.OrchestratorReplacement
 		return s.save(ctx, op)
 	case domain.ReplacementExportingTranscript:
 		return s.export(ctx, op)
+	case domain.ReplacementNotifying:
+		return s.releaseIntake(ctx, op)
 	case domain.ReplacementTranscriptVerified:
 		// This stage ends at verified evidence. It is not operation completion;
 		// retirement and successor dispatch are introduced with the runtime stage.

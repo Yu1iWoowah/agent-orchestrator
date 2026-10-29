@@ -607,7 +607,8 @@ const selectReplacementPendingMessages = `-- name: SelectReplacementPendingMessa
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.client_message_id,
  m.text, m.delivery_content_json, m.origin,
  m.sender_session_id, m.sender_project_id, m.sender_display_name,
- t.requested_at, t.provider_turn_id, t.promotion_started_at
+ t.requested_at, t.provider_turn_id, t.promotion_started_at, t.provider_input_text,
+ t.started_at, t.completed_at, t.batched_input, t.promoted_to_turn_id
 FROM orchestrator_replacements r
 JOIN conversations c ON c.project_id = r.project_id
 JOIN conversation_turns t ON t.conversation_id = c.id
@@ -645,6 +646,11 @@ type SelectReplacementPendingMessagesRow struct {
 	RequestedAt         time.Time
 	ProviderTurnID      string
 	PromotionStartedAt  sql.NullTime
+	ProviderInputText   string
+	StartedAt           sql.NullTime
+	CompletedAt         sql.NullTime
+	BatchedInput        int64
+	PromotedToTurnID    sql.NullString
 }
 
 // Live pending intake, deliberately independent of frozen transcript cutoffs.
@@ -673,6 +679,11 @@ func (q *Queries) SelectReplacementPendingMessages(ctx context.Context, operatio
 			&i.RequestedAt,
 			&i.ProviderTurnID,
 			&i.PromotionStartedAt,
+			&i.ProviderInputText,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.BatchedInput,
+			&i.PromotedToTurnID,
 		); err != nil {
 			return nil, err
 		}

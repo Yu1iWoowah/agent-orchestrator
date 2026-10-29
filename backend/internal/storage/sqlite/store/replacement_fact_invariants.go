@@ -252,19 +252,6 @@ func preserveReplacementResume(before, after domain.OrchestratorReplacement) err
 	return nil
 }
 
-type replacementSourceReleaseKey struct{}
-
-func preserveReplacementSourceRelease(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
-	if before.SourceIntakeReleasedAt != nil {
-		if ctx.Value(replacementResetKey{}) != q && !replacementTimesEqual(before.SourceIntakeReleasedAt, after.SourceIntakeReleasedAt) {
-			return domain.ErrReplacementStateInvalid
-		}
-	} else if after.SourceIntakeReleasedAt != nil && ctx.Value(replacementSourceReleaseKey{}) != q {
-		return domain.ErrReplacementStateInvalid
-	}
-	return nil
-}
-
 type replacementSpawnAttemptKey struct{}
 
 func validateReplacementSpawnAttempts(op domain.OrchestratorReplacement) error {

@@ -45,6 +45,14 @@ type runtime struct {
 	prompts                    []string
 }
 
+// The source-only fixture never supplies invented successor evidence.
+func (*runtime) ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
+	return replacement.SourceObservation{}, ports.ErrChatUnsupported
+}
+func (*runtime) DrainReplacementIntake(context.Context, domain.OrchestratorReplacement) error {
+	return ports.ErrChatUnsupported
+}
+
 func (r *runtime) ObserveReplacementSource(context.Context, domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
 	r.observations++
 	return r.observation, r.observationErr

@@ -59,7 +59,8 @@ SELECT EXISTS (
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.client_message_id,
  m.text, m.delivery_content_json, m.origin,
  m.sender_session_id, m.sender_project_id, m.sender_display_name,
- t.requested_at, t.provider_turn_id, t.promotion_started_at
+ t.requested_at, t.provider_turn_id, t.promotion_started_at, t.provider_input_text,
+ t.started_at, t.completed_at, t.batched_input, t.promoted_to_turn_id
 FROM orchestrator_replacements r
 JOIN conversations c ON c.project_id = r.project_id
 JOIN conversation_turns t ON t.conversation_id = c.id
