@@ -467,3 +467,12 @@ describe("attachAppShortcuts", () => {
 		expect(target.send).not.toHaveBeenCalled();
 	});
 });
+
+it("forwards unmodified Escape from the shell without consuming the original event", async()=>{
+	const {attachDocumentEscape}=await import("./app-shortcuts");
+	const source=fakeSource();const target=fakeTarget();attachDocumentEscape(source,target);
+	expect(source.emit({key:"Escape"}).preventDefault).not.toHaveBeenCalled();
+	expect(target.send).toHaveBeenCalledExactlyOnceWith("app:document-escape");
+	source.emit({key:"Escape",control:true});source.emit({key:"Escape",type:"keyUp"});
+	expect(target.send).toHaveBeenCalledTimes(1);
+});

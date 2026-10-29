@@ -177,6 +177,7 @@ var schemaNames = map[string]string{
 	"DomainAppDiagnosticsGeometry":                         "AppDiagnosticsGeometry",
 	"DomainAppDiagnosticsErrorSummary":                     "AppDiagnosticsErrorSummary",
 	"DomainAppDiagnosticsErrors":                           "AppDiagnosticsErrors",
+	"ControllersDocumentContentQuery":                      "DocumentContentQuery",
 	"AgentsettingsSnapshot":                                "SessionAgentSettingsResponse",
 	"AgentsettingsCapabilities":                            "SessionAgentSettingsCapabilities",
 	"AgentsettingsModelCapabilities":                       "AgentModelSettingsCapabilities",
@@ -3933,6 +3934,7 @@ func awakeOperations() []operation {
 
 func projectDocumentOperations() []operation {
 	return []operation{
+		{method: http.MethodPost, path: "/api/v1/local-documents/content", id: "readLocalDocumentContent", tag: "projects", summary: "Read bounded raw bytes from a revalidated managed document", pathParams: []any{controllers.DocumentContentQuery{}}, reqBody: controllers.ResolveDocumentRequest{}, resps: []respUnit{{http.StatusOK, ""}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}, contentTypes: map[int]string{http.StatusOK: "application/octet-stream"}},
 		{method: http.MethodPost, path: "/api/v1/local-documents/resolve", id: "resolveLocalDocument", tag: "projects", summary: "Resolve a registered document location (desktop loopback only)", reqBody: controllers.ResolveDocumentRequest{}, resps: []respUnit{{http.StatusOK, controllers.ResolveDocumentResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{method: http.MethodGet, path: "/api/v1/projects/{id}/document-catalog", id: "getProjectDocumentCatalog", tag: "projects", summary: "Page through registered worker, orchestrator and shared document metadata", pathParams: []any{controllers.ProjectIDParam{}, controllers.DocumentCatalogQuery{}}, resps: []respUnit{{http.StatusOK, controllers.DocumentCatalogResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{method: http.MethodGet, path: "/api/v1/projects/{id}/documents", id: "getProjectDocuments", tag: "projects",
