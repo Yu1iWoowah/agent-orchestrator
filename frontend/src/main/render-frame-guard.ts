@@ -19,6 +19,8 @@ export function blocksRenderFrameNavigation(currentUrl: string, targetUrl: strin
 	} catch {
 		return false;
 	}
+	// Opaque document previews must never navigate themselves, even if markup sanitization fails.
+	if (currentParsed.protocol === "about:" && currentParsed.pathname === "srcdoc") return true;
 	const prefix = cloudArtifactPrefix(currentParsed);
 	if (prefix !== undefined) {
 		try {

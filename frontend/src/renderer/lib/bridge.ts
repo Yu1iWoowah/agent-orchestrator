@@ -35,6 +35,7 @@ export const aoBridge: AoBridge =
 			onNextSessionShortcut: () => () => undefined,
 			onPreviousTabShortcut: () => () => undefined,
 			onNextTabShortcut: () => () => undefined,
+			onDocumentEscape: () => () => undefined,
 			onShortcut: () => () => undefined,
 			onScrollPhase: () => () => undefined,
 		},

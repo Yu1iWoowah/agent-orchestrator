@@ -23,6 +23,58 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
+func TestDocumentContentAPIReadsBoundedRawBytesWithoutOwnershipMutation(t *testing.T) {
+	ctx := context.Background()
+	db := sqlitetest.MustOpenAt(t, t.TempDir())
+	data := t.TempDir()
+	if e := db.UpsertProject(ctx, domain.ProjectRecord{ID: "next.js", Path: t.TempDir(), RegisteredAt: time.Now()}); e != nil {
+		t.Fatal(e)
+	}
+	shared := projectdocuments.New(projectdocuments.Deps{Store: db, DataDir: data})
+	root, e := shared.ReadRoot(ctx, "next.js")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.MkdirAll(root, 0o700); e != nil {
+		t.Fatal(e)
+	}
+	raw := "<script>window.untrusted=true</script>raw source"
+	if e = os.WriteFile(filepath.Join(root, "page.html"), []byte(raw), 0o600); e != nil {
+		t.Fatal(e)
+	}
+	before, e := db.GetProjectDocumentState(ctx, "next.js")
+	if e != nil {
+		t.Fatal(e)
+	}
+	router := NewRouterWithControl(config.Config{DataDir: data}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, APIDeps{DocumentRead: documentread.New(documentread.Deps{Store: db, Shared: shared, DataDir: data})}, ControlDeps{})
+	body := `{"kind":"shared","projectId":"next.js","path":"page.html"}`
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{{"", 200}, {"?maxBytes=4", 400}, {"?maxBytes=0", 400}, {"?maxBytes=52428801", 400}, {"?fingerprint=outdated", 409}} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/local-documents/content"+tc.query, strings.NewReader(body)))
+		if w.Code != tc.want {
+			t.Fatalf("%s: %d %s", tc.query, w.Code, w.Body.String())
+		}
+		if tc.want == 200 && (w.Body.String() != raw || w.Header().Get("Content-Type") != "application/octet-stream" || w.Header().Get("Content-Disposition") != "attachment" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox")) {
+			t.Fatalf("unsafe byte response: %v %s", w.Header(), w.Body.String())
+		}
+		if w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("content response was cacheable")
+		}
+	}
+	after, e := db.GetProjectDocumentState(ctx, "next.js")
+	if e != nil {
+		t.Fatal(e)
+	}
+	a, _ := json.Marshal(before)
+	b, _ := json.Marshal(after)
+	if !bytes.Equal(a, b) {
+		t.Fatal("content read changed shared ownership")
+	}
+}
+
 func TestDocumentReadLocalPathsUseEncodedManagedProjectRoots(t *testing.T) {
 	ctx := context.Background()
 	db := sqlitetest.MustOpenAt(t, t.TempDir())
