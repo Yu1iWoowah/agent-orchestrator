@@ -46,6 +46,20 @@ it("native cancel does not enable collector or create a grant", async () => {
 	expect(h.grant).not.toHaveBeenCalled();
 	expect(h.actor.windows()).toEqual([]);
 });
+it("reading identity cannot register a collector or bypass the consent prerequisite", async () => {
+	const h = harness();
+	h.actor.resetDocument();
+	const identity = h.actor.readIdentity(h.event);
+	expect(identity.enabled).toBe(false);
+	const request = { ...h.request, documentId: identity.documentId, windowId: identity.windowId, generation: identity.generation };
+	await expect(h.actor.requestEnable(h.event, request)).rejects.toThrow("APP_DIAGNOSTICS_UNSUPPORTED");
+	expect(h.confirm).not.toHaveBeenCalled();
+	expect(h.grant).not.toHaveBeenCalled();
+	h.actor.register(h.event);
+	await expect(h.actor.requestEnable(h.event, { ...request, requestId: "registered-consent" })).resolves.toMatchObject({
+		outcome: "enabled",
+	});
+});
 it("rejects stale document and changed connection during native confirmation", async () => {
 	let finish!: (value: boolean) => void;
 	const h = harness(
@@ -115,4 +129,11 @@ it("clears native consent and recording when the daemon revokes the grant", asyn
 	h.actor.grantRevoked("grant-1");
 	expect(h.actor.readConsent(h.event)).toBeNull();
 	expect(h.actor.windows()).toEqual([]);
+});
+
+it.each(["APP_DIAGNOSTICS_GRANT_EXPIRED", "APP_DIAGNOSTICS_CLEANUP_FAILED"])("preserves safe consent failure %s", async (code) => {
+	const h = harness();
+	h.grant.mockRejectedValueOnce(new Error(code));
+	await expect(h.actor.requestEnable(h.event, h.request)).rejects.toThrow(new RegExp("^" + code + "$"));
+	expect(h.actor.readConsent(h.event)).toBeNull();
 });

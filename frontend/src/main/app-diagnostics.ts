@@ -131,6 +131,10 @@ export class AppDiagnosticsMain {
 		this.trust(event);
 		return this.status();
 	}
+	readIdentity(event: DiagnosticsEvent): DiagnosticDocument {
+		this.trust(event);
+		return this.document();
+	}
 	register(event: DiagnosticsEvent): DiagnosticDocument {
 		this.trust(event);
 		this.registered = true;
@@ -193,6 +197,8 @@ export class AppDiagnosticsMain {
 				"APP_DIAGNOSTICS_STORAGE_FAILED",
 				"APP_DIAGNOSTICS_AUDIT_FAILED",
 				"APP_DIAGNOSTICS_SESSION_UNAVAILABLE",
+				"APP_DIAGNOSTICS_GRANT_EXPIRED",
+				"APP_DIAGNOSTICS_CLEANUP_FAILED",
 			]);
 			throw new Error(error instanceof Error && codes.has(error.message) ? error.message : "APP_DIAGNOSTICS_UNSUPPORTED");
 		} finally {

@@ -403,6 +403,11 @@ const api = {
 		},
 	},
 	appDiagnostics: {
+		getIdentity: async (): Promise<DiagnosticDocument> => {
+			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.identity);
+			if (!isDiagnosticDocument(value)) throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+			return value;
+		},
 		audit: async (request: ConsentRequest): Promise<DiagnosticAudit> => {
 			if (!isConsentRequest(request)) throw new Error("APP_DIAGNOSTICS_INVALID_ARGUMENT");
 			const value: unknown = await ipcRenderer.invoke(DIAGNOSTIC_CHANNEL.audit, request);

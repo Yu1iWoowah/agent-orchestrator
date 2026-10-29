@@ -1806,7 +1806,7 @@ function establishAppDiagnosticsLink(): void {
 		windows: () => appDiagnosticsMain.windows(),
 		revoked: (grantId) => appDiagnosticsMain.grantRevoked(grantId),
 		capture: (request, signal) => appDiagnosticsMain.capture(request, signal),
-		state: (state) => appDiagnosticsMain.setConnection({ connected: state === "connected", unsupported: state === "unsupported" || state === "rejected" }),
+		state: (state) => appDiagnosticsMain.setConnection({ connected: state === "connected", unsupported: state === "unsupported" }),
 	});
 	appDiagnosticsLinkIdentity = identity;
 }
@@ -2789,6 +2789,7 @@ ipcMain.handle("editorHandoff:copyWorkspacePath", (event, sessionId: string) => 
 	return editorHandoff.copyWorkspacePath(typeof sessionId === "string" ? sessionId : "");
 });
 ipcMain.handle(DIAGNOSTIC_CHANNEL.status, (event) => appDiagnosticsMain.readStatus(event));
+ipcMain.handle(DIAGNOSTIC_CHANNEL.identity, (event) => appDiagnosticsMain.readIdentity(event));
 ipcMain.handle(DIAGNOSTIC_CHANNEL.register, (event) => appDiagnosticsMain.register(event));
 ipcMain.handle(DIAGNOSTIC_CHANNEL.audit, (event, value: unknown) => appDiagnosticsMain.readAudit(event, value));
 ipcMain.handle(DIAGNOSTIC_CHANNEL.consent, (event) => appDiagnosticsMain.readConsent(event));

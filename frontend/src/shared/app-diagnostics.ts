@@ -11,10 +11,11 @@ export type QueryObservation = Collector["cache"]["queries"][number];
 export const DIAGNOSTIC_MAX_BYTES = 1 << 20;
 export const DIAGNOSTIC_CHANNEL = {
 	status: "appDiagnostics:status",
- consent: "appDiagnostics:consent",
- audit: "appDiagnostics:audit",
- enable: "appDiagnostics:enable",
- revoke: "appDiagnostics:revoke",
+	identity: "appDiagnostics:identity",
+	consent: "appDiagnostics:consent",
+	audit: "appDiagnostics:audit",
+	enable: "appDiagnostics:enable",
+	revoke: "appDiagnostics:revoke",
 	register: "appDiagnostics:register",
 	configure: "appDiagnostics:configure",
 	request: "appDiagnostics:request",

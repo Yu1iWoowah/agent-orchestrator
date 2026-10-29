@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { SettingsSection } from "./SettingsSection";
 import { SettingsRow } from "./SettingsRow";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 
 export function AppDiagnosticsSettings() {
 	const { t } = useTranslation();
@@ -59,7 +60,7 @@ export function AppDiagnosticsSettings() {
 		};
 	}, [t]);
 	const identity = async () => {
-		const document = await aoBridge.appDiagnostics.register();
+		const document = await aoBridge.appDiagnostics.getIdentity();
 		return {
 			schemaVersion: 1 as const,
 			requestId: crypto.randomUUID(),
@@ -160,27 +161,27 @@ export function AppDiagnosticsSettings() {
 							{t("appDiagnostics.auditPartial", { count: audit.droppedCount })}
 						</p>
 					)}
-					<table className="w-full text-left">
-						<thead>
-							<tr>
-								<th>{t("appDiagnostics.time")}</th>
-								<th>{t("appDiagnostics.result")}</th>
-								<th>{t("appDiagnostics.bytes")}</th>
-							</tr>
-						</thead>
-						<tbody>
+					<Table>
+						<TableHeader>
+							<TableRow className="border-(--color-border)">
+								<TableHead className="h-auto px-0 py-2.5 pr-4 last:pr-0">{t("appDiagnostics.time")}</TableHead>
+								<TableHead className="h-auto px-0 py-2.5 pr-4 last:pr-0">{t("appDiagnostics.result")}</TableHead>
+								<TableHead className="h-auto px-0 py-2.5 pr-4 last:pr-0">{t("appDiagnostics.bytes")}</TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
 							{audit.records.map((row, index) => (
-								<tr key={index}>
-									<td>{new Date(row.at).toLocaleTimeString()}</td>
-									<td>
+								<TableRow key={index} className="border-(--color-border)">
+									<TableCell className="h-auto px-0 py-2.5 pr-4 last:pr-0">{new Date(row.at).toLocaleTimeString()}</TableCell>
+									<TableCell className="h-auto px-0 py-2.5 pr-4 last:pr-0">
 										{t(`appDiagnostics.outcomes.${row.outcome}`)}
 										{row.partial ? ` · ${t("appDiagnostics.partial")}` : ""}
-									</td>
-									<td>{row.bytes}</td>
-								</tr>
+									</TableCell>
+									<TableCell className="h-auto px-0 py-2.5 pr-4 last:pr-0">{row.bytes}</TableCell>
+								</TableRow>
 							))}
-						</tbody>
-					</table>
+						</TableBody>
+					</Table>
 				</div>
 			)}
 		</SettingsSection>

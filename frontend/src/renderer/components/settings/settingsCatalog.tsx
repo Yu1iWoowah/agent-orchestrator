@@ -161,13 +161,13 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		label: (t) => t("settings.help"),
 		render: (t, titleHidden) => (
 			<>
- <AppDiagnosticsSettings />
- <SettingsSection titleHidden={titleHidden} title={t("settings.reportProblem")} grouped>
-				<div className="settings-content-row">
-					<ReportProblemContent active />
-				</div>
-			</SettingsSection>
- </>
+				<AppDiagnosticsSettings />
+				<SettingsSection titleHidden={titleHidden} title={t("settings.reportProblem")} grouped>
+					<div className="settings-content-row">
+						<ReportProblemContent active />
+					</div>
+				</SettingsSection>
+			</>
 		),
 	},
 ];

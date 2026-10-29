@@ -31,7 +31,7 @@ Object.assign(aoBridge.appDiagnostics, {
 		listeners.add(fn);
 		return () => listeners.delete(fn);
 	},
-	register: async () => ({
+	getIdentity: async () => ({
 		documentId: "fixture",
 		windowId: "window-fixture",
 		generation: 1,
