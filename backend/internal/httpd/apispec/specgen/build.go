@@ -1624,7 +1624,7 @@ func shellTerminalOperations() []operation {
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/agent-settings", id: "getSessionAgentSettings", tag: "sessions",
 			summary:    "Read durable agent preferences and saved capability evidence without waking the provider",
 			pathParams: []any{controllers.SessionIDParam{}},
-			resps:      []respUnit{{http.StatusOK, controllers.SessionAgentSettingsResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps:      []respUnit{{http.StatusOK, controllers.SessionAgentSettingsResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 
 		{

@@ -302,7 +302,7 @@ func TestTUISettingsColdResumeReconstructsCurrentBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.m.relaunchSession(t.Context(), "cold resume", rec, project, workspaceInfo(rec), nil); err != nil {
+	if _, err := f.m.relaunchSession(t.Context(), "cold resume", rec, project, workspaceInfo(rec)); err != nil {
 		t.Fatal(err)
 	}
 	last := f.agent.restores[len(f.agent.restores)-1]
@@ -319,7 +319,7 @@ func TestTUISettingsColdResumeReconstructsCurrentBaseline(t *testing.T) {
 	}
 	f.runtime.aliveByHandle[rec.Metadata.RuntimeHandleID] = false
 	f.agent.history = false
-	if _, err := f.m.relaunchSession(t.Context(), "cold resume without history", rec, project, workspaceInfo(rec), nil); err == nil || f.runtime.created != created {
+	if _, err := f.m.relaunchSession(t.Context(), "cold resume without history", rec, project, workspaceInfo(rec)); err == nil || f.runtime.created != created {
 		t.Fatalf("cold reconstruction fell back to a fresh writer: %v creates=%d", err, f.runtime.created)
 	}
 	f.agent.history = true
@@ -327,7 +327,7 @@ func TestTUISettingsColdResumeReconstructsCurrentBaseline(t *testing.T) {
 	if err := f.store.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: "codex", CatalogJSON: string(raw), InputFingerprint: "current", LastSuccessAt: time.Now().Add(-24 * time.Hour), FetchedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.m.relaunchSession(t.Context(), "cold resume without evidence", rec, project, workspaceInfo(rec), nil); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) || f.runtime.created != created {
+	if _, err := f.m.relaunchSession(t.Context(), "cold resume without evidence", rec, project, workspaceInfo(rec)); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) || f.runtime.created != created {
 		t.Fatalf("cold reconstruction used stale catalog: %v creates=%d", err, f.runtime.created)
 	}
 }

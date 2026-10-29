@@ -3155,7 +3155,7 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (res
 }
 
 func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo) (RestoreResult, error) {
-	result, err := m.relaunchSession(ctx, "restore", rec, project, ws, nil)
+	result, err := m.relaunchSession(ctx, "restore", rec, project, ws)
 	if err != nil {
 		return RestoreResult{}, err
 	}
@@ -3621,14 +3621,14 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil)
 }
 
-func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
+func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo) (RestoreResult, error) {
 	return m.relaunchSessionWithPolicy(
 		ctx,
 		operation,
 		rec,
 		project,
 		ws,
-		restartHandle,
+		nil,
 		false,
 		false,
 		domain.SessionInterfaceTransitionHistoryStrict,
