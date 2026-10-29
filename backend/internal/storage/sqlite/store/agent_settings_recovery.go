@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -10,14 +11,22 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
+var errSettingsOwnerUnrecoverable = fmt.Errorf("%w: settings_owner_unrecoverable", ports.ErrAgentSettingsConflict)
+
+// Only fully identified Chat owners currently have a restoration protocol.
+// Gate the first provider action on the same eligibility used for recovery.
+func settingsOwnerCanRecover(row gen.GetSessionAgentSettingsRow) bool {
+	return !row.IsTerminated && row.SessionMode == domain.SessionModeChat &&
+		row.ControllerGeneration != "" && row.AccountID != "" && row.ProviderConversationID != "" && row.BranchID != ""
+}
+
 func settingsRecoveryMatches(row gen.GetSessionAgentSettingsRow, recovery domain.AgentSettingsRecovery) bool {
 	owner := domain.AgentSettingsOwner{
 		SessionID: row.ID, ControllerGeneration: row.ControllerGeneration,
 		AccountID: row.AccountID, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID,
 	}
 	settings := domain.AgentSettings{Model: domain.AgentModelSelection(row.Model), Effort: domain.AgentEffortSelection(row.Effort), FastMode: domain.AgentFastMode(row.AgentFastMode)}
-	return !row.IsTerminated && row.SessionMode == domain.SessionModeChat &&
-		owner.ControllerGeneration != "" && owner.AccountID != "" && owner.ProviderConversationID != "" && owner.BranchID != "" &&
+	return settingsOwnerCanRecover(row) &&
 		recovery.Owner == owner && recovery.Revision == row.AgentSettingsRevision && recovery.Settings == settings
 }
 

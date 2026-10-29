@@ -93,8 +93,15 @@ func (s *Store) FinishAgentSettingsOperation(ctx context.Context, id domain.Sess
 				}
 			}
 		case domain.AgentSettingsRecoveryRequired:
-			if safe || category == domain.AgentSettingsErrorCancelled || op.Phase == phase {
+			if safe || op.StartedAt == nil || category == domain.AgentSettingsErrorCancelled || op.Phase == phase {
 				return ports.ErrAgentSettingsConflict
+			}
+			current, err := q.GetSessionAgentSettings(ctx, id)
+			if err != nil {
+				return settingsStoreError(err)
+			}
+			if !settingsOwnerCanRecover(current) {
+				return errSettingsOwnerUnrecoverable
 			}
 		default:
 			return fmt.Errorf("invalid settings terminal phase")
@@ -138,6 +145,9 @@ func (s *Store) AdvanceAgentSettingsOperation(ctx context.Context, id domain.Ses
 		}
 		if !settingsOwnerMatches(current, op) {
 			return ports.ErrAgentSettingsConflict
+		}
+		if op.StartedAt == nil && !settingsOwnerCanRecover(current) {
+			return errSettingsOwnerUnrecoverable
 		}
 		changed, err := q.AdvanceAgentSettingsCheckpoint(ctx, gen.AdvanceAgentSettingsCheckpointParams{SessionID: string(id), ID: operationID, ExpectedVersion: expectedVersion, Checkpoint: string(checkpoint), At: at})
 		if err != nil {

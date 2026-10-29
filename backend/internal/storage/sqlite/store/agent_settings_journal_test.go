@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,7 +221,7 @@ func TestAgentSettingsStartedOutcomeRemainsFencedUntilRestored(t *testing.T) {
 
 func TestAgentSettingsStartedOwnerConflictRequiresRecovery(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := settingsFixture(t)
+	s, db, rec := settingsStartFixture(t, "")
 	op := settingsOperation(rec.ID)
 	if _, err := s.BeginAgentSettingsOperation(ctx, op); err != nil {
 		t.Fatal(err)
@@ -242,7 +243,7 @@ func TestAgentSettingsStartedOwnerConflictRequiresRecovery(t *testing.T) {
 
 func TestAgentSettingsCheckpointAndTerminalFaultsRollback(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := settingsFixture(t)
+	s, db, rec := settingsStartFixture(t, "")
 	op := settingsOperation(rec.ID)
 	if _, err := s.BeginAgentSettingsOperation(ctx, op); err != nil {
 		t.Fatal(err)
@@ -250,8 +251,8 @@ func TestAgentSettingsCheckpointAndTerminalFaultsRollback(t *testing.T) {
 	if _, err := db.Exec("CREATE TRIGGER checkpoint_fault BEFORE UPDATE OF checkpoint ON session_agent_settings_operations BEGIN SELECT RAISE(ABORT,'checkpoint-injected'); END"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AdvanceAgentSettingsOperation(ctx, rec.ID, op.ID, 0, domain.AgentSettingsApplyingFast, time.Now()); err == nil {
-		t.Fatal("checkpoint fault ignored")
+	if _, err := s.AdvanceAgentSettingsOperation(ctx, rec.ID, op.ID, 0, domain.AgentSettingsApplyingFast, time.Now()); err == nil || !strings.Contains(err.Error(), "checkpoint-injected") {
+		t.Fatalf("checkpoint fault not reached: %v", err)
 	}
 	got, err := s.AgentSettingsOperation(ctx, rec.ID, op.ID)
 	if err != nil || got.Version != 0 || got.StartedAt != nil || got.Checkpoint != domain.AgentSettingsQueued {
