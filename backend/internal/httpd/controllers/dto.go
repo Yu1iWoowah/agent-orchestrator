@@ -4114,3 +4114,9 @@ type AgentAccountOperationResponse struct {
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
+
+// DocumentContentQuery bounds a managed raw read and optionally pins metadata.
+type DocumentContentQuery struct {
+	MaxBytes    int64  `query:"maxBytes" minimum:"1" maximum:"52428800" default:"2097152"`
+	Fingerprint string `query:"fingerprint" maxLength:"256"`
+}

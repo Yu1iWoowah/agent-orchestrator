@@ -365,6 +365,7 @@ function MarkdownLink({ href, children, className }: { href?: string; children?:
 	return (
 		<AppLink
 			href={href}
+			documentDisabled={Boolean(remoteHost || sessionLinkSourceKind === "cloud" || (href && workspaceFilePath(href,workspacePaths)))}
 			onBrowserOpen={onLinkOpen}
 			inAppLink={href ? () => browserLink : undefined}
 			filePath={filePath && href ? workspaceFileOpenTarget(href, filePath) : filePath}

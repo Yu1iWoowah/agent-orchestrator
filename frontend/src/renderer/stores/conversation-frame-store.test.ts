@@ -15,14 +15,18 @@ describe("conversation frame preferences", () => {
 		first.getState().setFrameOpen(key, "attention", false);
 		first.getState().setFrameSize(key, "plan", { width: 520, height: 600 });
 		first.getState().swapFrameSlots(key);
-		const reloaded = createConversationFrameStore(localStorage).getState().sessions[key];
+		const reloaded =
+			createConversationFrameStore(localStorage).getState().sessions[key];
 		expect(reloaded.plan).toMatchObject({
 			userOpen: true,
 			preferredWidth: 520,
 			preferredHeight: 600,
 			slot: "top",
 		});
-		expect(reloaded.attention).toMatchObject({ userOpen: false, slot: "bottom" });
+		expect(reloaded.attention).toMatchObject({
+			userOpen: false,
+			slot: "bottom",
+		});
 	});
 
 	it("isolates local, remote and different sessions without delimiter collisions", () => {
@@ -39,7 +43,9 @@ describe("conversation frame preferences", () => {
 	it("ignores invalid saved state rather than mounting overlapping or unbounded frames", () => {
 		localStorage.setItem(
 			conversationFrameStorageKey,
-			JSON.stringify({ sessions: { invalid: { plan: { preferredWidth: "bad", slot: "top" } } } }),
+			JSON.stringify({
+				sessions: { invalid: { plan: { preferredWidth: "bad", slot: "top" } } },
+			}),
 		);
 		const store = createConversationFrameStore(localStorage);
 		expect(store.getState().sessions.invalid).toBeUndefined();
@@ -56,4 +62,16 @@ describe("conversation frame preferences", () => {
 			preferredHeight: 360,
 		});
 	});
+});
+
+it("persists only document dimensions in the shared frame preference namespace", () => {
+	const store = createConversationFrameStore(localStorage);
+	store.getState().setDocumentSize("chat", { width: 500, height: 450 });
+	store.getState().setFrameOpen("chat", "plan", true);
+	expect(
+		createConversationFrameStore(localStorage).getState().documentSizes.chat,
+	).toEqual({ width: 500, height: 450 });
+	expect(localStorage.getItem(conversationFrameStorageKey)).not.toContain(
+		"canonicalUri",
+	);
 });
