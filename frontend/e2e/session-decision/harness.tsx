@@ -29,6 +29,7 @@ window.fetch = async (input, init) => {
 		posts++;
 		document.documentElement.dataset.answerPosts = String(posts);
 		const submission = await request.json() as components["schemas"]["AttentionAnswerSubmission"];
+		if (answerMode === "rejected") return Response.json({ code: "QUESTION_INVALID", message: "Check the answers", details: { fieldErrors: { "answers.target": "Review the target before submitting." } } }, { status: 400 });
 		if (answerMode === "conflict") {
 			question = { ...question, version: 2, payload: { ...question.payload, explanation: "The deployment scope changed. Please confirm the new version." } };
 			return Response.json({ code: "QUESTION_CHANGED", message: "Changed" }, { status: 409 });

@@ -101,3 +101,17 @@ test("compact Sheet yields one focus trap at minimum usable R and keeps an entry
  await expect(page.getByRole("dialog")).toHaveCount(0);
  await expect(page.getByRole("button", { name: /Awaiting you 1/ })).toBeVisible();
 });
+
+test("server field errors scroll into view and receive focus without losing choices @T0", async ({ page }) => {
+ await page.setViewportSize({ width: 1100, height: 720 });
+ await openQuestion(page, "?answer=rejected");
+ await fillGrouped(page);
+ const dialog = page.getByRole("dialog");
+ await dialog.getByRole("button", { name: "Submit all answers" }).click();
+ const error = dialog.getByText("The answer was not accepted. Check the question errors and try again.", { exact: true });
+ await expect(error).toBeInViewport();
+ await expect(dialog.getByText("Review the target before submitting.")).toBeVisible();
+ expect(await error.evaluate((node) => document.activeElement?.contains(node))).toBe(true);
+ await expect(dialog.getByRole("radio", { name: /Staging/ })).toBeChecked();
+ await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+});

@@ -48,11 +48,11 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 		if (entry && previousVersion.current !== question.version) {
 			previousVersion.current = question.version;
 			setShowErrors(false);
-			notice.current?.focus({ preventScroll: true });
+			notice.current?.focus();
 		}
 	}, [entry, question.version]);
 	useEffect(() => {
-		if (entry?.phase.state === "editing" && (entry.phase.errorCode || entry.phase.message)) notice.current?.focus({ preventScroll: true });
+		if (entry?.phase.state === "editing" && (entry.phase.errorCode || entry.phase.message)) notice.current?.focus();
 	}, [entry?.phase]);
 	const fields = question.state === "open" ? entry?.fields ?? emptyQuestionFields(question.payload) : receiptFields(question);
 	const built = questionAnswers(question.payload, fields);
