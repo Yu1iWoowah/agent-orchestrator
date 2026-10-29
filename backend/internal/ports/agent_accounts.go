@@ -10,6 +10,8 @@ import (
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountCredentialStoreUnsupported = errors.New("account_credential_store_unsupported")
+
 	ErrAgentAccountStorageUnsafe      = errors.New("account_storage_unsafe")
 	ErrAgentAccountStorageUnavailable = errors.New("account_storage_unavailable")
 	ErrAgentAccountStorageUnsupported = errors.New("account_storage_unsupported")
@@ -39,9 +41,8 @@ type AgentAccountProviderCLI interface {
 	LoginArgv(ctx context.Context) ([]string, error)
 	// Logout signs home out through the CLI.
 	Logout(ctx context.Context, home string) error
-	// Prepare links home to the computer's own folder so a conversation started
-	// under one account resumes under another, and the user's skills, MCP servers
-	// and settings follow the account. It is safe to run before every launch.
+	// Prepare links new profiles only to AO-owned conversation history.
+	// Credentials, settings, caches and IPC remain private to the profile.
 	Prepare(home string) error
 	// LaunchEnv is the environment that makes the CLI use home.
 	LaunchEnv(home string) map[string]string
@@ -69,11 +70,12 @@ type AgentAccountStore interface {
 type AgentAccountLaunchEnv interface {
 	// SessionLaunchEnv returns the variables that run each provider's CLI under
 	// the session's account, binding the provider's default first when the
-	// session has none yet.
-	SessionLaunchEnv(ctx context.Context, sessionID domain.SessionID) (map[string]string, error)
+	// session has none yet. Validation errors block only harness's provider;
+	// other providers retain their pinned environments.
+	SessionLaunchEnv(ctx context.Context, sessionID domain.SessionID, harness domain.AgentHarness) (map[string]string, error)
 	// SessionLaunchEnvWith is SessionLaunchEnv with accountID in place of the
 	// session's account for its provider. It binds nothing.
-	SessionLaunchEnvWith(ctx context.Context, sessionID domain.SessionID, accountID string) (map[string]string, error)
+	SessionLaunchEnvWith(ctx context.Context, sessionID domain.SessionID, accountID string, harness domain.AgentHarness) (map[string]string, error)
 	// BindSession pins the session to accountID, or to the provider's default
 	// when accountID is empty.
 	BindSession(ctx context.Context, sessionID domain.SessionID, harness domain.AgentHarness, accountID string) error

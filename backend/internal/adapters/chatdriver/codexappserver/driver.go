@@ -274,7 +274,7 @@ func (v codexVersion) String() string {
 
 func installedCodexVersion(ctx context.Context, bin string) (string, error) {
 	cmd := aoprocess.CommandContext(ctx, bin, "--version")
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = codexProbeProcessEnv(ctx, bin)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
@@ -545,6 +545,9 @@ func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string
 
 // connect spawns app-server and completes the initialize handshake.
 func (d *Driver) connect(ctx context.Context, workdir string, env map[string]string, providerScopeID string) (*conversation, error) {
+	if err := agentlaunch.ValidateManagedCodexEnv(env); err != nil {
+		return nil, err
+	}
 	bin, err := d.plugin.ResolveBinary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
@@ -605,17 +608,20 @@ func (d *Driver) connectSession(
 		Env:           providerEnv,
 		Argv:          append([]string{bin}, accountAppServerArgs(providerEnv)...),
 	}
-	if prepareEnv != nil {
-		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
-			preparedEnv, prepareErr := prepareEnv(prepareCtx)
-			if prepareErr != nil {
-				return persistenthost.PreparedProvider{}, prepareErr
+	hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
+		preparedEnv := env
+		if prepareEnv != nil {
+			var err error
+			preparedEnv, err = prepareEnv(prepareCtx)
+			if err != nil {
+				return persistenthost.PreparedProvider{}, err
 			}
-			providerEnv := envSlice(preparedEnv)
-			return persistenthost.PreparedProvider{
-				Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...),
-			}, nil
 		}
+		if err := agentlaunch.ValidateManagedCodexEnv(preparedEnv); err != nil {
+			return persistenthost.PreparedProvider{}, err
+		}
+		providerEnv := envSlice(preparedEnv)
+		return persistenthost.PreparedProvider{Env: providerEnv, Argv: append([]string{bin}, accountAppServerArgs(providerEnv)...)}, nil
 	}
 	transport, err := d.connectHost(ctx, hostConfig)
 	if err != nil {
@@ -823,7 +829,18 @@ func envSlice(env map[string]string) []string {
 	for key, value := range env {
 		overlay[key] = value
 	}
+	if overlay[agentlaunch.ManagedCodexAccountEnv] == "1" {
+		agentlaunch.ClearCodexCredentialEnv(overlay)
+	}
 	return processenv.Merge(overlay)
+}
+
+// Version/help/schema probes are account-independent and need no credential.
+// They also run before a new managed account has a home or auth.json.
+func codexProbeProcessEnv(ctx context.Context, bin string) []string {
+	env := map[string]string{}
+	agentlaunch.ClearCodexCredentialEnv(env)
+	return codexProcessEnv(ctx, bin, env)
 }
 
 func accountAppServerArgs(env []string) []string {

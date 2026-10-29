@@ -34,16 +34,26 @@ func AgentAccountProviderFor(h AgentHarness) (AgentAccountProvider, bool) {
 // login the computer's own CLI uses, launched with its config folder untouched.
 func DeviceAgentAccountID(p AgentAccountProvider) string { return "device-" + string(p) }
 
+// AgentAccountProfileKind distinguishes legacy device links from AO-owned history.
+type AgentAccountProfileKind string
+
+// Supported managed profile storage layouts.
+const (
+	AgentAccountProfileExternal  AgentAccountProfileKind = "external-linked"
+	AgentAccountProfileContained AgentAccountProfileKind = "contained-v1"
+)
+
 // AgentAccount is one subscription login AO can launch a provider's CLI with.
 // Home is the CLI config folder (CLAUDE_CONFIG_DIR or CODEX_HOME); it is empty
 // for the device account, whose folder is the CLI's own default.
 type AgentAccount struct {
-	ID        string
-	Provider  AgentAccountProvider
-	Home      string
-	Email     string
-	Plan      string
-	CreatedAt time.Time
+	ID          string
+	Provider    AgentAccountProvider
+	Home        string
+	Email       string
+	Plan        string
+	CreatedAt   time.Time
+	ProfileKind AgentAccountProfileKind
 }
 
 // Device reports the "This computer" account.

@@ -166,7 +166,7 @@ function AccountRow({ account, aoTokens, busy, cliLogin, onMakeDefault, onUseRes
 					: <Tooltip><TooltipTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label={t("settings.agentAccounts.remove")} disabled={busy !== null} onClick={onRemove}><Trash2 aria-hidden="true" /></Button></TooltipTrigger><TooltipContent>{t("settings.agentAccounts.remove")}</TooltipContent></Tooltip>}
 			</div>
 		</div>
-		{account.problem ? <p className="mt-2 text-xs text-warning">{agentAccountErrorMessage(account.problem)}</p> : null}
+		{account.problem ? <p className="mt-2 text-xs text-warning">{agentAccountErrorMessage(account.problem, account.email)}</p> : null}
 		<AccountLimits account={account} />
 	</div>;
 }

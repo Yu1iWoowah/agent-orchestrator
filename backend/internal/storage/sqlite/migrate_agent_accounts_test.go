@@ -5,6 +5,28 @@ import (
 	"time"
 )
 
+func TestContainedProfileMigrationPreservesLegacyAccount(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 211)
+	created := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO agent_accounts (id, provider, home, email, created_at) VALUES ('legacy', 'codex', '/fake/legacy-profile', 'fake@example.invalid', ?)`, created); err != nil {
+		t.Fatal(err)
+	}
+	upTo(t, db, 20261028193324307)
+	var home, email, kind string
+	if err := db.QueryRow(`SELECT home, email, profile_kind FROM agent_accounts WHERE id = 'legacy'`).Scan(&home, &email, &kind); err != nil {
+		t.Fatal(err)
+	}
+	if home != "/fake/legacy-profile" || email != "fake@example.invalid" || kind != "external-linked" {
+		t.Fatalf("legacy metadata changed: home=%q email=%q kind=%q", home, email, kind)
+	}
+	if _, err := db.Exec(`INSERT INTO agent_accounts (id, provider, home, profile_kind, created_at) VALUES ('new', 'codex', '/fake/contained-profile', 'contained-v1', ?)`, created); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agent_accounts SET profile_kind = 'unknown' WHERE id = 'new'`); err == nil {
+		t.Fatal("unknown profile storage kind accepted")
+	}
+}
+
 // TestMigrationAgentAccountsKeepsExistingSessionsOnTheComputersLogin upgrades a
 // database from before accounts. Sessions that already existed ran on the
 // computer's own login, so they are bound to it rather than reading as whatever

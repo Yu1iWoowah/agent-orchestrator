@@ -24,7 +24,7 @@ func (s *Store) ListAgentAccounts(ctx context.Context) ([]domain.AgentAccount, e
 	for _, row := range rows {
 		out = append(out, domain.AgentAccount{
 			ID: row.ID, Provider: domain.AgentAccountProvider(row.Provider), Home: row.Home,
-			Email: row.Email, Plan: row.Plan, CreatedAt: row.CreatedAt,
+			Email: row.Email, Plan: row.Plan, CreatedAt: row.CreatedAt, ProfileKind: domain.AgentAccountProfileKind(row.ProfileKind),
 		})
 	}
 	return out, nil
@@ -34,8 +34,11 @@ func (s *Store) ListAgentAccounts(ctx context.Context) ([]domain.AgentAccount, e
 func (s *Store) CreateAgentAccount(ctx context.Context, a domain.AgentAccount) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if a.ProfileKind == "" {
+		a.ProfileKind = domain.AgentAccountProfileExternal
+	}
 	if err := s.qw.CreateAgentAccount(ctx, gen.CreateAgentAccountParams{
-		ID: a.ID, Provider: string(a.Provider), Home: a.Home, Email: a.Email, Plan: a.Plan, CreatedAt: a.CreatedAt.UTC(),
+		ID: a.ID, Provider: string(a.Provider), Home: a.Home, Email: a.Email, Plan: a.Plan, CreatedAt: a.CreatedAt.UTC(), ProfileKind: string(a.ProfileKind),
 	}); err != nil {
 		return fmt.Errorf("create agent account %s: %w", a.ID, err)
 	}

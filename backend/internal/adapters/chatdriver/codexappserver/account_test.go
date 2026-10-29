@@ -36,6 +36,9 @@ func TestAccountFactoryUsesManagedHomeAndFileCredentialStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	protectManagedHomeForTest(t, home)
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte("fake-credential"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: home, Managed: true})
 	if err != nil {
 		t.Fatal(err)

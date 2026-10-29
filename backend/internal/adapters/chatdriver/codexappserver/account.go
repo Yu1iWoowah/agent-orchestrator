@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -89,11 +91,18 @@ func (f *AccountFactory) Open(ctx context.Context, account ports.CodexAccountCon
 	if account.Managed {
 		args = []string{"-c", `cli_auth_credentials_store="file"`, "app-server"}
 	}
-	proc, err := f.spawn(ctx, bin, account.Home, envSlice(map[string]string{"CODEX_HOME": account.Home}), args)
+	env := map[string]string{"CODEX_HOME": account.Home}
+	if account.Managed {
+		env[agentlaunch.ManagedCodexAccountEnv] = "1"
+	}
+	proc, err := f.spawn(ctx, bin, account.Home, envSlice(env), args)
 	if err != nil {
 		return nil, fmt.Errorf("launch Codex account client: %w", err)
 	}
 	client := &accountClient{proc: proc, log: f.log, events: make(chan ports.CodexAccountEvent, 16), done: make(chan struct{})}
+	if account.Managed && runtime.GOOS == "linux" {
+		client.managedHome = account.Home
+	}
 	client.conn = newConn(proc.stdin, proc.stdout, f.log, func(context.Context, serverRequest) (any, error) {
 		return nil, errors.New("server request is not supported by the account client")
 	})
@@ -164,6 +173,7 @@ func (f *AccountFactory) detectCapabilities(ctx context.Context, bin string) dom
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	cmd := aoprocess.CommandContext(probeCtx, bin, "app-server", "generate-json-schema", "--experimental", "--out", dir)
+	cmd.Env = codexProbeProcessEnv(probeCtx, bin)
 	if err := cmd.Run(); err != nil {
 		return unknownCodexCapabilities("Codex capability detection did not complete.")
 	}
@@ -174,7 +184,7 @@ func (f *AccountFactory) detectCapabilities(ctx context.Context, bin string) dom
 
 func probeCodexCLISurface(ctx context.Context, bin string, args []string, supportedReason string) domain.CodexCapabilityObservation {
 	cmd := aoprocess.CommandContext(ctx, bin, args...)
-	cmd.Env = codexProcessEnv(ctx, bin, nil)
+	cmd.Env = codexProbeProcessEnv(ctx, bin)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
@@ -260,12 +270,13 @@ func unknownCodexCapabilities(reason string) domain.CodexAccountCapabilities {
 }
 
 type accountClient struct {
-	conn   *conn
-	proc   *process
-	log    *slog.Logger
-	events chan ports.CodexAccountEvent
-	done   chan struct{}
-	close  sync.Once
+	managedHome string
+	conn        *conn
+	proc        *process
+	log         *slog.Logger
+	events      chan ports.CodexAccountEvent
+	done        chan struct{}
+	close       sync.Once
 }
 
 var _ ports.CodexAccountClient = (*accountClient)(nil)
@@ -287,6 +298,11 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 		}
 		return ports.CodexAccountObservation{Authentication: state, Method: domain.CodexAuthMethodUnknown}, nil
 	}
+	if c.managedHome != "" {
+		if err := agentlaunch.ValidateCodexFileStore(c.managedHome); err != nil {
+			return ports.CodexAccountObservation{}, err
+		}
+	}
 	method := domain.CodexAuthMethodOther
 	switch response.Account.Type {
 	case codexproto.AccountTypeChatgpt:
@@ -301,6 +317,11 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 // revocation and credential-store cleanup. AO deliberately does not reproduce
 // that protocol by deleting auth.json itself.
 func (c *accountClient) Logout(ctx context.Context) error {
+	if c.managedHome != "" {
+		if err := agentlaunch.ValidateCodexFileStore(c.managedHome); err != nil {
+			return err
+		}
+	}
 	if err := c.conn.request(ctx, codexproto.MethodAccountLogout, nil, nil); err != nil {
 		var rpcErr *rpcError
 		if errors.As(err, &rpcErr) && rpcErr.Code == -32601 {

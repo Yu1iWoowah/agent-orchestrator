@@ -117,6 +117,9 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 // instructions, and the initial prompt (passed after `--` so a leading "-" is
 // not read as a flag).
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
+	if err := agentlaunch.ValidateManagedCodexEnv(cfg.Env); err != nil {
+		return nil, err
+	}
 	binary, err := p.codexBinary(ctx)
 	if err != nil {
 		return nil, err
@@ -157,6 +160,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		cfg.Session.Metadata,
 	); !ok {
 		return nil, false, nil
+	}
+	if err := agentlaunch.ValidateManagedCodexEnv(cfg.Env); err != nil {
+		return nil, false, err
 	}
 	binary, err := p.codexBinary(ctx)
 	if err != nil {

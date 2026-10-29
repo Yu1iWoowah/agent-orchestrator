@@ -1579,6 +1579,8 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
 		return apierr.Unavailable("AGENT_ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is temporarily unavailable. Retry later.")
+	case errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported):
+		return apierr.New(apierr.KindNotImplemented, "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "Codex did not provide a private file-backed login for this account.", map[string]any{"reasonCode": "account_credential_store_unsupported", "retryable": false})
 
 	case errors.Is(err, ports.ErrAgentAccountUnknown):
 		return apierr.NotFound("AGENT_ACCOUNT_NOT_FOUND", "Unknown agent account")

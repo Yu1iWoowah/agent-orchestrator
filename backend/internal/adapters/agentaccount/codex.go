@@ -40,10 +40,6 @@ var codexPrivate = map[string]bool{
 // fresh home; they guard shared state, so a local copy gives way to the link.
 var codexReplaceable = map[string]bool{"mcp-oauth-locks": true, ".sqlite-maintenance.lock": true}
 
-// codexCredentialEnv are variables that make Codex use something other than
-// the home's own login.
-var codexCredentialEnv = []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"}
-
 // Codex runs the `codex` CLI under an account home (CODEX_HOME). Identity,
 // limits and resets come from Codex's own app-server account methods.
 type Codex struct {
@@ -66,7 +62,7 @@ func (c *Codex) LaunchEnv(home string) map[string]string {
 	if managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
 		env[agentlaunch.ManagedCodexAccountEnv] = "1"
 	}
-	neutralize(env, codexCredentialEnv...)
+	agentlaunch.ClearCodexCredentialEnv(env)
 	return env
 }
 
@@ -98,6 +94,11 @@ func managedCodexAccount(platform, home, deviceHome string) bool {
 
 // Logout asks Codex to sign home out, revocation included.
 func (c *Codex) Logout(ctx context.Context, home string) error {
+	if managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
+		if err := agentlaunch.ValidateCodexFileStore(home); err != nil {
+			return err
+		}
+	}
 	client, err := c.open(ctx, home)
 	if err != nil {
 		return err
@@ -123,6 +124,11 @@ func (c *Codex) Identity(ctx context.Context, home string) (domain.AgentAccountI
 	}
 	if account.Email != nil {
 		out.Email = *account.Email
+	}
+	if out.LoggedIn && managedCodexAccount(runtime.GOOS, home, c.DeviceHome) {
+		if err := agentlaunch.ValidateCodexFileStore(home); err != nil {
+			return domain.AgentAccountIdentityCheck{}, err
+		}
 	}
 	if out.SignedIn {
 		if capacity, err := client.ReadCapacity(ctx); err == nil && capacity.Plan != nil {
@@ -209,10 +215,10 @@ func codexWindowLabel(minutes *int64) string {
 	}
 }
 
-// Prepare shares everything in the computer's own Codex home with home except
+// PrepareLegacy shares everything in the computer's own Codex home with home except
 // its private entries. Directory links keep the rollout files real, which
 // `codex resume` requires.
-func (c *Codex) Prepare(home string) error {
+func (c *Codex) PrepareLegacy(home string) error {
 	if home == "" {
 		return nil
 	}

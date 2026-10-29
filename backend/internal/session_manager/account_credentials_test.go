@@ -37,7 +37,7 @@ func TestAccountPolicyCannotComeFromProjectOrInheritedEnvironment(t *testing.T) 
 		if caseInsensitive {
 			env["ao_codex_managed_account"] = "1"
 		}
-		if err := manager.applyAgentAccountEnv("session-1", "", env, caseInsensitive); err != nil {
+		if err := manager.applyAgentAccountEnv("session-1", "", env, caseInsensitive, domain.HarnessCodex); err != nil {
 			t.Fatal(err)
 		}
 		if env[agentlaunch.ManagedCodexAccountEnv] != "" || (caseInsensitive && env["ao_codex_managed_account"] != "") {
@@ -48,12 +48,19 @@ func TestAccountPolicyCannotComeFromProjectOrInheritedEnvironment(t *testing.T) 
 
 type managedCodexPolicyAccounts struct{ *transitionAccounts }
 
-func (*managedCodexPolicyAccounts) SessionLaunchEnv(context.Context, domain.SessionID) (map[string]string, error) {
+func (*managedCodexPolicyAccounts) SessionLaunchEnv(context.Context, domain.SessionID, domain.AgentHarness) (map[string]string, error) {
 	return map[string]string{agentlaunch.ManagedCodexAccountEnv: "1", "CODEX_HOME": "/fake/account"}, nil
 }
 
 func TestSpawnPassesResolvedAccountPolicyToCommand(t *testing.T) {
-	manager, _, _, _ := newManager()
+	manager, store, runtime, _ := newManager()
+	project := store.projects["mer"]
+	project.Config.Env = map[string]string{}
+	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+		t.Setenv(key, "fake-ambient-credential")
+		project.Config.Env[key] = "fake-project-credential"
+	}
+	store.projects["mer"] = project
 	agent := &recordingAgent{}
 	manager.agents = singleAgent{agent: agent}
 	var log []string
@@ -63,6 +70,11 @@ func TestSpawnPassesResolvedAccountPolicyToCommand(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
+		if agent.lastLaunch.Env[key] != "" || runtime.lastCfg.Env[key] != "" {
+			t.Errorf("managed TUI launch received %s", key)
+		}
 	}
 	if agent.lastLaunch.Env[agentlaunch.ManagedCodexAccountEnv] != "1" {
 		t.Fatal("spawn command lost resolved managed file-store policy")

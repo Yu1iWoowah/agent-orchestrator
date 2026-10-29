@@ -275,6 +275,8 @@ const agentAccountUnsharedMessage = "AO cannot link this account's folder to thi
 
 func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported):
+		envelope.WriteAPIError(w, r, http.StatusNotImplemented, "not_implemented", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "Codex did not provide a private file-backed login for this account.", map[string]any{"reasonCode": "account_credential_store_unsupported", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
