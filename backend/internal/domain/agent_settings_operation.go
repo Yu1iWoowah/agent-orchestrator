@@ -99,6 +99,9 @@ func (op AgentSettingsOperation) CanSupersedeLocally() bool {
 // AgentSettingsTUIHandoff is private physical-writer evidence, fixed on admission.
 // It cannot authorize another account, native conversation or fresh launch.
 type AgentSettingsTUIHandoff struct {
+	// Logical termination settles the journal without proving an unknown
+	// process absent. Only conclusive shutdown may permit a later launch.
+	TerminationVerified   bool   `json:"terminationVerified,omitempty"`
 	UnconfirmedRuntime    bool   `json:"unconfirmedRuntime,omitempty"`
 	SourceRuntimeHandle   string `json:"sourceRuntimeHandle"`
 	TargetRuntimeHandle   string `json:"targetRuntimeHandle,omitempty"`

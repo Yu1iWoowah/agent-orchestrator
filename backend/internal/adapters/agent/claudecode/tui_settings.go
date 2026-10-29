@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -13,9 +14,9 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
-const minimumClaudeTUISettingsPatch = 205
+var minimumClaudeTUISettingsVersion = [3]int{2, 1, 205}
 
-var claudeSettingsVersion = regexp.MustCompile(`^2\.1\.(\d+)(?:\s|$)`)
+var claudeSettingsVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:\s|$)`)
 
 // PrepareTUIAgentSettings uses CLI flags/--settings only. They apply to this
 // process, not the account's saved configuration. The documented session-local
@@ -38,11 +39,18 @@ func (p *Plugin) PrepareTUIAgentSettings(ctx context.Context, cfg ports.RestoreC
 		cmd.Env = processenv.Merge(cfg.Env)
 		raw, err := cmd.Output()
 		match := claudeSettingsVersion.FindSubmatch(raw)
-		if err != nil || len(match) != 2 {
+		if err != nil || len(match) != 4 {
 			return domain.AgentSettingsProviderPlan{}, fmt.Errorf("%w: tui_settings_version_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
 		}
-		patch, err := strconv.Atoi(string(match[1]))
-		if err != nil || patch < minimumClaudeTUISettingsPatch {
+		var version [3]int
+		for i := range version {
+			value, parseErr := strconv.Atoi(string(match[i+1]))
+			if parseErr != nil {
+				return domain.AgentSettingsProviderPlan{}, fmt.Errorf("%w: tui_settings_version_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
+			}
+			version[i] = value
+		}
+		if slices.Compare(version[:], minimumClaudeTUISettingsVersion[:]) < 0 {
 			return domain.AgentSettingsProviderPlan{}, fmt.Errorf("%w: tui_settings_version_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
 		}
 	}

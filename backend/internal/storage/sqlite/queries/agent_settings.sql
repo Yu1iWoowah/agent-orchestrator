@@ -102,3 +102,15 @@ UPDATE session_agent_settings_operations
 SET request_json=json_set(request_json,'$.tui.unconfirmedRuntime',json(sqlc.arg(value)))
 WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id) AND phase IN ('pending','recovery_required')
  AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL AND started_at IS NOT NULL;
+
+-- name: SetTUISettingsTerminationProof :execrows
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,'$.tui.terminationVerified',json(sqlc.arg(verified)))
+WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id)
+ AND operation_revision=sqlc.arg(expected_version) AND phase IN ('pending','recovery_required')
+ AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL AND started_at IS NOT NULL;
+
+-- name: HasAbandonedTUISettingsWriter :one
+SELECT EXISTS(SELECT 1 FROM session_agent_settings_operations
+ WHERE session_id=? AND phase='cancelled' AND error_code='AGENT_SETTINGS_SESSION_TERMINATED'
+ AND COALESCE(json_extract(request_json,'$.tui.terminationVerified'),0)=0);

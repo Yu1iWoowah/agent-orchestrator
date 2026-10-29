@@ -370,7 +370,10 @@ func (c *Control) ValidateAgentSettings(ctx context.Context, op domain.AgentSett
 	if err != nil {
 		return domain.AgentSettingsQualification{}, err
 	}
-	if !ok || rec.IsTerminated {
+	// Ordinary Restore validates an already committed TUI preference while
+	// its row is still terminated. This never admits a new mutation.
+	restoringCommittedTUI := restoring && rec.Mode == domain.SessionModeTUI && op.Phase == domain.AgentSettingsApplied
+	if !ok || rec.IsTerminated && !restoringCommittedTUI {
 		return domain.AgentSettingsQualification{}, ports.ErrAgentSettingsConflict
 	}
 	current, err := c.store.SessionAgentSettings(ctx, op.SessionID)

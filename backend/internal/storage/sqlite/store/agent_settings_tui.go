@@ -81,7 +81,17 @@ func settleTUISettingsHandoff(ctx context.Context, q *gen.Queries, op domain.Age
 	case domain.AgentSettingsApplied:
 		next = domain.SessionInterfaceTransitionCompleted
 	case domain.AgentSettingsCancelled:
-		if tr.Phase != domain.SessionInterfaceTransitionRequested && tr.Phase != domain.SessionInterfaceTransitionPreflighting && tr.Phase != domain.SessionInterfaceTransitionDraining {
+		terminatedAbandon := op.ErrorCode == "AGENT_SETTINGS_SESSION_TERMINATED"
+		if terminatedAbandon {
+			current, err := q.GetSessionAgentSettings(ctx, op.SessionID)
+			if err != nil {
+				return settingsStoreError(err)
+			}
+			if !current.IsTerminated {
+				return ports.ErrAgentSettingsConflict
+			}
+		}
+		if !terminatedAbandon && tr.Phase != domain.SessionInterfaceTransitionRequested && tr.Phase != domain.SessionInterfaceTransitionPreflighting && tr.Phase != domain.SessionInterfaceTransitionDraining {
 			return ports.ErrAgentSettingsConflict
 		}
 	case domain.AgentSettingsFailed, domain.AgentSettingsRecoveryRequired:
@@ -142,4 +152,58 @@ func (s *Store) SetTUIAgentSettingsRuntimeUnknown(ctx context.Context, id domain
 		return ports.ErrAgentSettingsConflict
 	}
 	return nil
+}
+
+// AbandonTerminatedTUISettings settles a physically fenced intention only after
+// logical termination. It preserves unknown effects and a durable launch veto;
+// cancellation here is not a claim that rollback restored the provider.
+func (s *Store) AbandonTerminatedTUISettings(ctx context.Context, id domain.SessionID, operationID string, version int64, shutdownVerified bool, at time.Time) (domain.AgentSettingsOperation, error) {
+	if at.IsZero() {
+		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsInvalid
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return domain.AgentSettingsOperation{}, err
+	}
+	defer s.writeMu.Unlock()
+	var result domain.AgentSettingsOperation
+	err := s.inTx(ctx, "abandon terminated TUI settings", func(q *gen.Queries) error {
+		current, err := q.GetSessionAgentSettings(ctx, id)
+		if err != nil {
+			return settingsStoreError(err)
+		}
+		row, err := q.GetAgentSettingsOperation(ctx, gen.GetAgentSettingsOperationParams{SessionID: string(id), ID: operationID})
+		if err != nil {
+			return settingsStoreError(err)
+		}
+		op, err := decodeSettingsOperation(row)
+		if err != nil {
+			return err
+		}
+		if !current.IsTerminated || op.TUI == nil || op.StartedAt == nil || op.Version != version || (op.Phase != domain.AgentSettingsPending && op.Phase != domain.AgentSettingsRecoveryRequired) || shutdownVerified && op.TUI.UnconfirmedRuntime {
+			return ports.ErrAgentSettingsConflict
+		}
+		verified := "false"
+		if shutdownVerified {
+			verified = "true"
+		}
+		changed, err := q.SetTUISettingsTerminationProof(ctx, gen.SetTUISettingsTerminationProofParams{SessionID: string(id), ID: operationID, ExpectedVersion: version, Verified: verified})
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return ports.ErrAgentSettingsConflict
+		}
+		op.TUI.TerminationVerified = shutdownVerified
+		op.ErrorCode = "AGENT_SETTINGS_SESSION_TERMINATED"
+		result, err = setSettingsOutcome(ctx, q, op, domain.AgentSettingsCancelled, domain.AgentSettingsErrorCancelled, at)
+		return err
+	})
+	return result, err
+}
+
+// HasAbandonedTUISettingsWriter prevents a logical Kill from authorizing a
+// second writer when the terminated operation still has unresolved effects.
+func (s *Store) HasAbandonedTUISettingsWriter(ctx context.Context, id domain.SessionID) (bool, error) {
+	exists, err := s.qr.HasAbandonedTUISettingsWriter(ctx, string(id))
+	return exists, err
 }

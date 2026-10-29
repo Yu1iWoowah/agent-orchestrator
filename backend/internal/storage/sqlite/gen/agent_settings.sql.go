@@ -309,6 +309,19 @@ func (q *Queries) GetSessionAgentSettings(ctx context.Context, id domain.Session
 	return i, err
 }
 
+const hasAbandonedTUISettingsWriter = `-- name: HasAbandonedTUISettingsWriter :one
+SELECT EXISTS(SELECT 1 FROM session_agent_settings_operations
+ WHERE session_id=? AND phase='cancelled' AND error_code='AGENT_SETTINGS_SESSION_TERMINATED'
+ AND COALESCE(json_extract(request_json,'$.tui.terminationVerified'),0)=0)
+`
+
+func (q *Queries) HasAbandonedTUISettingsWriter(ctx context.Context, sessionID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasAbandonedTUISettingsWriter, sessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertAgentSettingsAudit = `-- name: InsertAgentSettingsAudit :exec
 INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id,error_code) VALUES(?,?,?,?,?,?)
 `
@@ -554,6 +567,34 @@ type SetTUISettingsRuntimeUnknownParams struct {
 
 func (q *Queries) SetTUISettingsRuntimeUnknown(ctx context.Context, arg SetTUISettingsRuntimeUnknownParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setTUISettingsRuntimeUnknown, arg.Value, arg.SessionID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setTUISettingsTerminationProof = `-- name: SetTUISettingsTerminationProof :execrows
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,'$.tui.terminationVerified',json(?1))
+WHERE session_id=?2 AND id=?3
+ AND operation_revision=?4 AND phase IN ('pending','recovery_required')
+ AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL AND started_at IS NOT NULL
+`
+
+type SetTUISettingsTerminationProofParams struct {
+	Verified        interface{}
+	SessionID       string
+	ID              string
+	ExpectedVersion int64
+}
+
+func (q *Queries) SetTUISettingsTerminationProof(ctx context.Context, arg SetTUISettingsTerminationProofParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTUISettingsTerminationProof,
+		arg.Verified,
+		arg.SessionID,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
 	if err != nil {
 		return 0, err
 	}

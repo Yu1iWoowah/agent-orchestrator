@@ -54,15 +54,19 @@ fresh account-scoped discovery and native history; proves the old writer
 stopped; then strictly resumes that same conversation. It does not switch
 provider, fall back to a fresh thread, or write profile settings. Codex reset
 wire comes from fresh `config/read` and `model/list` without opening a thread.
-Claude uses session-local flags/settings and conservatively verifies the
-2.1.205+ session-local fast/effort contract; other versions are unverified and
-refused before stopping, not assumed compatible. This is fake-protocol
+Claude uses session-local flags/settings and verifies a complete
+major.minor.patch version >= 2.1.205, including later minor/major releases.
+Older or unparseable versions are refused before stopping. This is fake-protocol
 coverage, not a claim of real-binary compatibility.
 
 Later cold resumes of a committed TUI operation re-prepare the current durable
-preference against a fresh baseline and require the same native history. They
-do not replay a completed operation's historical source or let legacy omitted
-flags revive an old thread override or tier.
+preference against a fresh baseline and require the same native history. When
+capability discovery or a provider probe is unavailable, they use the last
+applied operation's pinned native model/effort/tier instead. Recovery uses that
+same applied wire, or the qualified source preimage for an interrupted first
+operation. Neither path borrows another account/conversation's evidence or
+starts a fresh thread. Fresh discovery remains mandatory for new mutations;
+a cold resume never depends on a completed operation's historical source.
 
 A fully unstarted session can save its preference without launching a process.
 Started operations own an exclusive handoff shared with account moves,
@@ -75,6 +79,16 @@ Explicit Resume can restore the original preference when all owned handles
 are known and their liveness is conclusive. Missing launch receipts remain
 fenced for inspection. Do not clear the journal to force a retry.
 
+Kill can terminate a recovery session after stopping every recorded handle. It
+settles both journals as cancelled with `AGENT_SETTINGS_SESSION_TERMINATED`.
+If a launch receipt is missing, it preserves the workspace and the unknown
+outcome: logical termination does not prove physical shutdown. A durable launch
+veto then returns `AGENT_SETTINGS_WRITER_UNCONFIRMED` on any later relaunch,
+including a forced fresh launch. Daemon startup also settles an already
+terminated recovery without launching or repeatedly rebuilding its active
+fence. Only conclusive Kill shutdown records a verified termination; abandoning
+an unknown writer does not authorize a retry.
+
 ## Errors and authority
 
 - `AGENT_SETTINGS_REQUEST_CANCELLED` (409) and
@@ -83,8 +97,11 @@ fenced for inspection. Do not clear the journal to force a retry.
 - `AGENT_SETTINGS_NATIVE_HISTORY_UNAVAILABLE` (409) prohibits fresh fallback.
 - `AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE` (503) means current capability or
   reset evidence is unavailable; it is not proof of unsupported capability.
-- `AGENT_SETTINGS_RECOVERY_REQUIRED` (409 on explicit Resume) means no safe
-  restoration was proven. Preserve the journal and original preference.
+- `AGENT_SETTINGS_RECOVERY_REQUIRED` (409 on explicit Resume) means recovery
+  could not be confirmed. Inspect the operation before retrying; never clear
+  the journal or bypass an unresolved writer fence.
+- `AGENT_SETTINGS_WRITER_UNCONFIRMED` (409) preserves a terminated operation's
+  unresolved physical-writer obligation; logical termination permits no launch.
 
 Managed orchestrator grants follow project policy and the same-project worker
 scope, excluding self/orchestrator. Grants have a fixed 24-hour lifetime and

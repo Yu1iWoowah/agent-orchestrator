@@ -15,7 +15,7 @@ func TestClaudeTUISettingsPreflightUsesVersionAndSessionLocalOptions(t *testing.
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX fake executable")
 	}
-	for _, version := range []string{"2.1.204", "2.1.205", "unknown"} {
+	for _, version := range []string{"2.1.204", "2.1.205", "2.2.0", "3.0.0", "2.0.999", "unknown"} {
 		t.Run(version, func(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "claude")
@@ -37,7 +37,7 @@ func TestClaudeTUISettingsPreflightUsesVersionAndSessionLocalOptions(t *testing.
 			source := domain.AgentSettings{Model: "native", Effort: "low", FastMode: domain.AgentFastOff}
 			target := domain.AgentSettings{Model: "native", Effort: "high", FastMode: domain.AgentFastOn}
 			plan, err := preparer.PrepareTUIAgentSettings(t.Context(), ports.RestoreConfig{Session: ports.SessionRef{WorkspacePath: dir, Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "native-thread"}}, Env: map[string]string{"CLAUDE_CONFIG_DIR": dir}}, source, target)
-			if version == "2.1.205" {
+			if version == "2.1.205" || version == "2.2.0" || version == "3.0.0" {
 				if err != nil || plan.After.Fast != "on" || plan.Before.Fast != "off" || plan.After.Effort != "high" {
 					t.Fatalf("supported version preflight %+v %v", plan, err)
 				}

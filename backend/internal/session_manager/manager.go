@@ -24,6 +24,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
@@ -2697,6 +2698,9 @@ func (m *Manager) recordTermination(ctx context.Context, id domain.SessionID, dr
 	if err := m.lcm.MarkTerminated(ctx, id); err != nil {
 		return fmt.Errorf("kill %s: %w", id, errors.Join(err, markerErr))
 	}
+	if err := m.settleTerminatedTUISettings(ctx, id); err != nil {
+		return fmt.Errorf("kill %s: settle settings: %w", id, errors.Join(err, markerErr))
+	}
 	m.cleanupSystemPromptDir(id)
 	if markerErr != nil {
 		return fmt.Errorf("kill %s: clear restore marker: %w", id, markerErr)
@@ -2755,10 +2759,19 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 		}
 	}()
 
+	if abandoned, err := m.abandonedTUISettingsWriter(ctx, id); err != nil {
+		return KillResult{}, err
+	} else if abandoned {
+		return KillResult{}, nil
+	}
+	preserveTUIWorkspace := false
 	if active, err := m.hasActiveInterfaceTransition(ctx, id); err != nil {
 		return KillResult{}, fmt.Errorf("kill %s: interface transition: %w", id, err)
 	} else if active {
-		return KillResult{}, fmt.Errorf("kill %s: %w", id, ErrInterfaceTransitionInProgress)
+		ctx, preserveTUIWorkspace, err = m.prepareTUISettingsKill(ctx, id)
+		if err != nil {
+			return KillResult{}, fmt.Errorf("kill %s: %w", id, err)
+		}
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
@@ -2809,6 +2822,9 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	}
 	if err := m.terminateReviewer(ctx, id, "cancelled by worker session termination"); err != nil {
 		return KillResult{}, fmt.Errorf("kill %s: reviewer: %w", id, err)
+	}
+	if preserveTUIWorkspace {
+		return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, nil, true)
 	}
 	// Gate shut any shell terminal scoped to this session BEFORE the worktree
 	// goes away: an open shell whose cwd is that directory can otherwise
@@ -3649,6 +3665,11 @@ func (m *Manager) relaunchSessionWithPolicy(
 }
 
 func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy, promptOverride *string) (RestoreResult, error) {
+	if abandoned, err := m.abandonedTUISettingsWriter(ctx, rec.ID); err != nil {
+		return RestoreResult{}, err
+	} else if abandoned {
+		return RestoreResult{}, apierr.Conflict("AGENT_SETTINGS_WRITER_UNCONFIRMED", "A terminated settings operation still has an unconfirmed native writer; another launch is not safe", nil)
+	}
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.

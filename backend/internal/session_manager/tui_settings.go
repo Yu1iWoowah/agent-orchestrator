@@ -79,15 +79,20 @@ func settingsOwner(current domain.SessionAgentSettings) domain.AgentSettingsOwne
 }
 
 func (m *Manager) validateTUISettings(ctx context.Context, store tuiSettingsStore, op domain.AgentSettingsOperation, restoring bool) error {
-	if m.tuiSettingsValidator == nil {
-		return ports.ErrAgentSettingsCapabilitiesUnavailable
-	}
 	current, err := store.SessionAgentSettings(ctx, op.SessionID)
 	if err != nil {
 		return err
 	}
-	if current.IsTerminated || current.AccountID != op.AccountID || current.ProviderConversationID != op.ProviderConversationID || current.Revision != op.BaseRevision || current.Settings != op.Source {
+	if (current.IsTerminated && (!restoring || op.Phase != domain.AgentSettingsApplied)) || current.AccountID != op.AccountID || current.ProviderConversationID != op.ProviderConversationID || current.Revision != op.BaseRevision || current.Settings != op.Source {
 		return ports.ErrAgentSettingsConflict
+	}
+	// Restoring durable preferences is not a new capability choice. Discovery
+	// failure must not strand a native conversation with qualified saved wire.
+	if restoring {
+		return nil
+	}
+	if m.tuiSettingsValidator == nil {
+		return ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	qualification, err := m.tuiSettingsValidator.ValidateAgentSettings(ctx, op, settingsOwner(current), restoring)
 	if err == nil && !restoring && op.Execution != nil && qualification.InputFingerprint != op.Execution.Qualification.InputFingerprint {
@@ -358,7 +363,7 @@ func (m *Manager) rollbackTUISettings(store tuiSettingsStore, op domain.AgentSet
 	if err != nil || !found {
 		return
 	}
-	execution, err := m.prepareTUISettingsExecution(ctx, store, rec, op, true)
+	execution, err := m.prepareTUISettingsRestoration(ctx, store, rec, op)
 	if err != nil {
 		return
 	}
@@ -440,6 +445,13 @@ func (m *Manager) recoverTUISettingsStartup(ctx context.Context, tr domain.Sessi
 	if err != nil {
 		return err
 	}
+	current, err := store.SessionAgentSettings(ctx, op.SessionID)
+	if err != nil {
+		return err
+	}
+	if current.IsTerminated && op.StartedAt != nil {
+		return m.settleTerminatedTUISettings(ctx, op.SessionID)
+	}
 	if op.StartedAt == nil && op.Phase == domain.AgentSettingsPending {
 		if _, err := store.FinishAgentSettingsOperationWithCode(ctx, op.SessionID, op.ID, op.Version, domain.AgentSettingsFailed, domain.AgentSettingsErrorStorage, "AGENT_SETTINGS_DAEMON_RESTARTED", m.clock()); err != nil {
 			return err
@@ -457,6 +469,9 @@ func (m *Manager) recoverTUISettingsStartup(ctx context.Context, tr domain.Sessi
 
 func (m *Manager) prepareTUISettingsExecution(ctx context.Context, store tuiSettingsStore, rec domain.SessionRecord, op domain.AgentSettingsOperation, restoring bool) (domain.AgentSettingsExecution, error) {
 	var empty domain.AgentSettingsExecution
+	if m.tuiSettingsValidator == nil {
+		return empty, ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
 	current, err := store.SessionAgentSettings(ctx, op.SessionID)
 	if err != nil {
 		return empty, err
@@ -487,7 +502,11 @@ func (m *Manager) prepareTUISettingsExecution(ctx context.Context, store tuiSett
 	}
 	plan, err := preparer.PrepareTUIAgentSettings(ctx, ports.RestoreConfig{Env: env, Session: ports.SessionRef{ID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath, Metadata: map[string]string{ports.MetadataKeyAgentSessionID: op.ProviderConversationID}}, Permissions: rec.Metadata.Permissions, Config: restoredAgentConfig(rec, project.Config)}, op.Source, target)
 	if err != nil {
-		return empty, err
+		if ctx.Err() != nil {
+			return empty, ctx.Err()
+		}
+		// Provider probe diagnostics never cross the restoration boundary.
+		return empty, ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	again, err := m.tuiSettingsValidator.ValidateAgentSettings(ctx, op, settingsOwner(current), restoring)
 	if err != nil {
@@ -499,8 +518,82 @@ func (m *Manager) prepareTUISettingsExecution(ctx context.Context, store tuiSett
 	return domain.AgentSettingsExecution{Owner: settingsOwner(current), Revision: current.Revision, Qualification: qualification, Plan: plan}, nil
 }
 
-// committedTUISettings reconstructs wire, not historical execution. A default
-// reset must read today's baseline on later resumes as well as the handoff.
+// prepareTUISettingsRestoration prefers today's qualified baseline. If discovery
+// or a provider probe is unavailable, replay only the same conversation's pinned
+// native values. Native history and the physical writer barrier remain required.
+func (m *Manager) prepareTUISettingsRestoration(ctx context.Context, store tuiSettingsStore, rec domain.SessionRecord, op domain.AgentSettingsOperation) (domain.AgentSettingsExecution, error) {
+	var empty domain.AgentSettingsExecution
+	if err := m.validateTUISettings(ctx, store, op, true); err != nil {
+		return empty, err
+	}
+	current, err := store.SessionAgentSettings(ctx, op.SessionID)
+	if err != nil {
+		return empty, err
+	}
+	if current.Settings.Validate() != nil {
+		return empty, ports.ErrAgentSettingsInvalid
+	}
+	if current.Mode != domain.SessionModeTUI || current.Harness != rec.Harness || current.OwnerGeneration != rec.Metadata.RuntimeLaunchID || current.ProviderConversationID != rec.Metadata.AgentSessionID {
+		return empty, ports.ErrAgentSettingsConflict
+	}
+	execution, err := m.prepareTUISettingsExecution(ctx, store, rec, op, true)
+	if err == nil {
+		again, readErr := store.SessionAgentSettings(ctx, op.SessionID)
+		if readErr != nil {
+			return empty, readErr
+		}
+		if again != current {
+			return empty, ports.ErrAgentSettingsConflict
+		}
+		return execution, nil
+	}
+	if ctx.Err() != nil {
+		return empty, ctx.Err()
+	}
+	if !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) && !errors.Is(err, ports.ErrAgentSettingsUnsupported) && !errors.Is(err, ports.ErrAgentSettingsInvalid) {
+		return empty, err
+	}
+	applied, found, readErr := store.LatestAppliedAgentSettingsOperation(ctx, op.SessionID)
+	if readErr != nil {
+		return empty, readErr
+	}
+	pin := op.Execution
+	var values domain.AgentSettingsNativeValues
+	if found && applied.TUI != nil && applied.Target == current.Settings && applied.BaseRevision+1 == current.Revision && applied.AccountID == current.AccountID && applied.ProviderConversationID == current.ProviderConversationID {
+		pin = applied.Execution
+		if pin == nil || pin.Plan.Target != current.Settings || pin.Revision != applied.BaseRevision {
+			return empty, ports.ErrAgentSettingsCapabilitiesUnavailable
+		}
+		values = pin.Plan.After
+	} else {
+		// An interrupted first mutation still has its qualified source preimage.
+		if pin == nil || pin.Revision != current.Revision || pin.Plan.Source != current.Settings {
+			return empty, ports.ErrAgentSettingsCapabilitiesUnavailable
+		}
+		values = pin.Plan.Before
+	}
+	protocol := "codex-native-resume"
+	if rec.Harness == domain.HarnessClaudeCode {
+		protocol = "claude-native-resume"
+	}
+	if pin.Owner.AccountID != current.AccountID || pin.Owner.ProviderConversationID != current.ProviderConversationID || pin.Owner.SessionID != current.SessionID || pin.Plan.ProviderConversationID != current.ProviderConversationID || pin.Plan.Protocol != protocol || pin.Qualification.InputFingerprint == "" {
+		return empty, ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
+	again, err := store.SessionAgentSettings(ctx, op.SessionID)
+	if err != nil {
+		return empty, err
+	}
+	if again != current {
+		return empty, ports.ErrAgentSettingsConflict
+	}
+	plan := domain.AgentSettingsProviderPlan{Protocol: protocol, ProviderConversationID: current.ProviderConversationID, Source: current.Settings, Target: current.Settings, Before: values, After: values, Permission: string(rec.Metadata.Permissions)}
+	qualification := pin.Qualification
+	qualification.PolicyVersion = "pinned_restoration"
+	return domain.AgentSettingsExecution{Owner: settingsOwner(current), Revision: current.Revision, Plan: plan, Qualification: qualification}, nil
+}
+
+// committedTUISettings prefers today's baseline for the durable preference.
+// Qualified native wire remains available when discovery or probing cannot run.
 func (m *Manager) committedTUISettings(ctx context.Context, rec domain.SessionRecord) (*domain.AgentSettingsProviderPlan, error) {
 	store, ok := m.store.(tuiSettingsStore)
 	if !ok {
@@ -522,11 +615,9 @@ func (m *Manager) committedTUISettings(ctx context.Context, rec domain.SessionRe
 	if current.Settings != op.Target || current.Revision != op.BaseRevision+1 {
 		return nil, ports.ErrAgentSettingsConflict
 	}
-	if m.tuiSettingsValidator == nil {
-		return nil, ports.ErrAgentSettingsCapabilitiesUnavailable
-	}
 	op.Source, op.Target = current.Settings, current.Settings
-	execution, err := m.prepareTUISettingsExecution(ctx, store, rec, op, true)
+	op.BaseRevision = current.Revision
+	execution, err := m.prepareTUISettingsRestoration(ctx, store, rec, op)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -540,7 +631,7 @@ func (m *Manager) committedTUISettings(ctx context.Context, rec domain.SessionRe
 // exclusive operation lease. Automatic refresh/wake/restore never use it.
 func (m *Manager) resumeTUISettingsRecovery(ctx context.Context, store tuiSettingsStore, tr domain.SessionInterfaceTransition) (RestoreResult, error) {
 	recoveryError := func() (RestoreResult, error) {
-		return RestoreResult{}, apierr.Conflict("AGENT_SETTINGS_RECOVERY_REQUIRED", "The native writer could not be safely restored; keep this session stopped", nil)
+		return RestoreResult{}, apierr.Conflict("AGENT_SETTINGS_RECOVERY_REQUIRED", "Settings recovery could not be confirmed; inspect the operation before retrying", nil)
 	}
 	op, err := store.AgentSettingsOperation(ctx, tr.SessionID, tr.SettingsOperationID)
 	if err != nil || op.TUI == nil || op.Phase != domain.AgentSettingsRecoveryRequired || op.TUI.UnconfirmedRuntime {
@@ -591,4 +682,65 @@ func (m *Manager) resumeTUISettingsRecovery(ctx context.Context, store tuiSettin
 		return recoveryError()
 	}
 	return RestoreResult{Session: restored, Mode: RestoreModeNative}, nil
+}
+
+type tuiSettingsTerminationStore interface {
+	PendingAgentSettingsOperation(context.Context, domain.SessionID) (domain.AgentSettingsOperation, bool, error)
+	AbandonTerminatedTUISettings(context.Context, domain.SessionID, string, int64, bool, time.Time) (domain.AgentSettingsOperation, error)
+	HasAbandonedTUISettingsWriter(context.Context, domain.SessionID) (bool, error)
+}
+type tuiSettingsTerminationKey struct{}
+type tuiSettingsTerminationProof struct {
+	operationID string
+	verified    bool
+}
+
+// prepareTUISettingsKill runs under the exclusive Kill lease. Recovery may own
+// handles not yet published to sessions; stop all of them, never infer that a
+// missing launch receipt proves absence. Unknown writers retain their workspace.
+func (m *Manager) prepareTUISettingsKill(ctx context.Context, id domain.SessionID) (context.Context, bool, error) {
+	store, ok := m.store.(tuiSettingsTerminationStore)
+	if !ok {
+		return ctx, false, ErrInterfaceTransitionInProgress
+	}
+	op, found, err := store.PendingAgentSettingsOperation(ctx, id)
+	if err != nil {
+		return ctx, false, err
+	}
+	if !found || op.TUI == nil || op.Phase != domain.AgentSettingsRecoveryRequired {
+		return ctx, false, ErrInterfaceTransitionInProgress
+	}
+	for _, handle := range []string{op.TUI.SourceRuntimeHandle, op.TUI.TargetRuntimeHandle, op.TUI.RollbackRuntimeHandle} {
+		if handle != "" {
+			if err := m.stopSourceControllerConclusive(domain.SessionRecord{ID: id, Mode: domain.SessionModeTUI, Metadata: domain.SessionMetadata{RuntimeHandleID: handle}}); err != nil {
+				return ctx, false, err
+			}
+		}
+	}
+	proof := tuiSettingsTerminationProof{operationID: op.ID, verified: !op.TUI.UnconfirmedRuntime}
+	return context.WithValue(ctx, tuiSettingsTerminationKey{}, proof), op.TUI.UnconfirmedRuntime, nil
+}
+
+func (m *Manager) settleTerminatedTUISettings(ctx context.Context, id domain.SessionID) error {
+	store, ok := m.store.(tuiSettingsTerminationStore)
+	if !ok {
+		return nil
+	}
+	op, found, err := store.PendingAgentSettingsOperation(ctx, id)
+	if err != nil || !found || op.TUI == nil || op.StartedAt == nil {
+		return err
+	}
+	proof, _ := ctx.Value(tuiSettingsTerminationKey{}).(tuiSettingsTerminationProof)
+	_, err = store.AbandonTerminatedTUISettings(ctx, id, op.ID, op.Version, proof.operationID == op.ID && proof.verified, m.clock())
+	if err == nil {
+		m.clearTUISettingsFence(id, op.ID)
+	}
+	return err
+}
+
+func (m *Manager) abandonedTUISettingsWriter(ctx context.Context, id domain.SessionID) (bool, error) {
+	if store, ok := m.store.(tuiSettingsTerminationStore); ok {
+		return store.HasAbandonedTUISettingsWriter(ctx, id)
+	}
+	return false, nil
 }
