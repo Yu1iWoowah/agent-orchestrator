@@ -15,9 +15,19 @@ SELECT r.*,CAST(seen.report_id IS NOT NULL AS INTEGER) AS is_read,COALESCE(link.
 FROM reports r JOIN sessions s ON s.id=r.session_id
 LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
 LEFT JOIN attention_report_questions link ON link.report_id=r.id
-WHERE r.project_id=? AND r.state IN ('needs_input','stuck') AND s.is_terminated=0
-AND NOT EXISTS(SELECT 1 FROM reports newer WHERE newer.session_id=r.session_id
- AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.id>r.id)));
+LEFT JOIN attention_questions question ON question.id=link.question_id
+WHERE r.project_id=sqlc.arg(project_id) AND s.is_terminated=0
+AND (
+ -- A canonical user question owns its lifecycle, independently of later reports.
+ (link.question_id IS NOT NULL AND question.state='open'
+  AND (question.expires_at IS NULL OR question.expires_at>sqlc.arg(at)))
+ OR
+ -- Progress alone is not a replacement or a closing fact.
+ (link.question_id IS NULL AND r.state IN ('needs_input','stuck')
+  AND NOT EXISTS(SELECT 1 FROM reports newer WHERE newer.session_id=r.session_id
+   AND newer.state IN ('needs_input','stuck','done')
+   AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.id>r.id))))
+);
 -- name: ReadAttentionReport :exec
 INSERT INTO attention_report_reads(report_id,seen_at) VALUES(?,?) ON CONFLICT(report_id) DO NOTHING;
 

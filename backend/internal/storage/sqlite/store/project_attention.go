@@ -115,7 +115,9 @@ func (s *Store) projectAttentionSources(ctx context.Context, project domain.Proj
 	}
 	all := []domain.ProjectAttentionItem{}
 	if audience == "orchestrator" {
-		rows, err := q.ProjectAttentionReportSources(ctx, string(project))
+		rows, err := q.ProjectAttentionReportSources(ctx, gen.ProjectAttentionReportSourcesParams{
+			ProjectID: string(project), At: sql.NullTime{Time: at.UTC(), Valid: true},
+		})
 		if err != nil {
 			return nil, err
 		}

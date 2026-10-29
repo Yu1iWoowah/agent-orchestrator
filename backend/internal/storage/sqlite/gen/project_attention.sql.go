@@ -187,10 +187,25 @@ SELECT r.id, r.session_id, r.project_id, r.state, r.note, r.message, r.created_a
 FROM reports r JOIN sessions s ON s.id=r.session_id
 LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
 LEFT JOIN attention_report_questions link ON link.report_id=r.id
-WHERE r.project_id=? AND r.state IN ('needs_input','stuck') AND s.is_terminated=0
-AND NOT EXISTS(SELECT 1 FROM reports newer WHERE newer.session_id=r.session_id
- AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.id>r.id)))
+LEFT JOIN attention_questions question ON question.id=link.question_id
+WHERE r.project_id=?1 AND s.is_terminated=0
+AND (
+ -- A canonical user question owns its lifecycle, independently of later reports.
+ (link.question_id IS NOT NULL AND question.state='open'
+  AND (question.expires_at IS NULL OR question.expires_at>?2))
+ OR
+ -- Progress alone is not a replacement or a closing fact.
+ (link.question_id IS NULL AND r.state IN ('needs_input','stuck')
+  AND NOT EXISTS(SELECT 1 FROM reports newer WHERE newer.session_id=r.session_id
+   AND newer.state IN ('needs_input','stuck','done')
+   AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.id>r.id))))
+)
 `
+
+type ProjectAttentionReportSourcesParams struct {
+	ProjectID string
+	At        sql.NullTime
+}
 
 type ProjectAttentionReportSourcesRow struct {
 	ID                 string
@@ -214,8 +229,8 @@ type ProjectAttentionReportSourcesRow struct {
 	QuestionID         string
 }
 
-func (q *Queries) ProjectAttentionReportSources(ctx context.Context, projectID string) ([]ProjectAttentionReportSourcesRow, error) {
-	rows, err := q.db.QueryContext(ctx, projectAttentionReportSources, projectID)
+func (q *Queries) ProjectAttentionReportSources(ctx context.Context, arg ProjectAttentionReportSourcesParams) ([]ProjectAttentionReportSourcesRow, error) {
+	rows, err := q.db.QueryContext(ctx, projectAttentionReportSources, arg.ProjectID, arg.At)
 	if err != nil {
 		return nil, err
 	}
