@@ -4458,7 +4458,7 @@ func TestSendWhileBusyQueuesUntilTheTurnEnds(t *testing.T) {
 	})
 
 	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["second"] == domain.TurnStateRunning
+		return turnStateByText(t, s)["second"] == domain.TurnStateRunning && len(h.conv.sentTexts()) == 2
 	})
 	states := turnStateByText(t, snapshot)
 	if states["first"] != domain.TurnStateCompleted {
