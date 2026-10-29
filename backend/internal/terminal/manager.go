@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"regexp"
 	"sync"
@@ -129,14 +130,23 @@ func (m *Manager) SetSessionInputLease(lease sessionguard.InputLease) {
 	m.inputLeaseMu.Unlock()
 }
 
-func (m *Manager) acquireSessionInput(id string) (func(), bool) {
+func (m *Manager) acquireSessionInput(ctx context.Context, id string) (func(), error) {
 	m.inputLeaseMu.RLock()
 	lease := m.inputLease
 	m.inputLeaseMu.RUnlock()
 	if lease == nil {
-		return func() {}, true
+		return func() {}, nil
 	}
-	return lease.AcquireSessionInput(domain.SessionID(id))
+	if checked, ok := lease.(interface {
+		AcquireTerminalInput(context.Context, domain.SessionID) (func(), error)
+	}); ok {
+		return checked.AcquireTerminalInput(ctx, domain.SessionID(id))
+	}
+	release, ok := lease.AcquireSessionInput(domain.SessionID(id))
+	if !ok {
+		return nil, errors.New("session input is disabled while an exclusive session operation is in progress")
+	}
+	return release, nil
 }
 
 // NewManager builds a Manager. src opens attach Streams; events feeds the session
@@ -610,9 +620,9 @@ func (c *connState) handleTerminal(msg clientMsg) {
 		if err != nil {
 			return
 		}
-		release, ok := c.mgr.acquireSessionInput(msg.ID)
-		if !ok {
-			c.enqueue(serverMsg{Ch: chTerminal, ID: msg.ID, Type: msgError, Error: "session input is disabled while an exclusive session operation is in progress"})
+		release, err := c.mgr.acquireSessionInput(c.ctx, msg.ID)
+		if err != nil {
+			c.enqueue(serverMsg{Ch: chTerminal, ID: msg.ID, Type: msgError, Error: err.Error()})
 			return
 		}
 		// A drain refuses input received while it is held, even if the write

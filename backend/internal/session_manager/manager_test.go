@@ -11696,20 +11696,29 @@ func TestSend_NoNudgeWhenBlockedAppearsBeforeNudge(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{ID: "s1", Harness: "claude-code",
 		Activity: domain.Activity{State: domain.ActivityIdle}})
-	// blockAfterFirstReadStore flips the session to blocked on read #4. The
-	// deterministic read sequence (attemptDeadline 0 makes waitForActive do
-	// exactly one poll): #1 Deliver's pre-paste read, #2 Send's harness lookup,
-	// #3 waitForActive's poll (idle → timeout), #4 the JIT pre-nudge re-read —
-	// which is the first to see blocked, landing the flip in the exact
-	// post-final-poll / pre-nudge window this test exists to cover.
-	bst := &blockAfterFirstReadStore{fakeStore: st, id: "s1"}
-	msg := &fakeMessenger{}
+	initialSent, gapInjected, confirmationClockReads := false, false, 0
+	msg := &fakeMessenger{onSend: func(domain.SessionID, string) { initialSent = true }}
 	m := New(Deps{
 		Runtime: &fakeRuntime{}, Agents: singleAgent{signalingAgent{}}, Workspace: &fakeWorkspace{},
-		Store: bst, Messenger: msg, Lifecycle: &fakeLCM{store: st},
+		Store: st, Messenger: msg, Lifecycle: &fakeLCM{store: st},
 		LookPath: func(string) (string, error) { return "/bin/true", nil },
 	})
 	m.sendConfirm = sendConfirmConfig{pollInterval: time.Millisecond, attemptDeadline: 0, maxAttempts: 3}
+	now := time.Now()
+	m.clock = func() time.Time {
+		if initialSent {
+			confirmationClockReads++
+			// The second clock read ends waitForActive's final idle poll.
+			// Inject the permission decision before the pre-nudge guard.
+			if confirmationClockReads == 2 {
+				rec := st.sessions["s1"]
+				rec.Activity.State = domain.ActivityBlocked
+				st.sessions["s1"] = rec
+				gapInjected = true
+			}
+		}
+		return now
+	}
 
 	if err := m.Send(context.Background(), "s1", "run the migration", nil); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -11717,8 +11726,8 @@ func TestSend_NoNudgeWhenBlockedAppearsBeforeNudge(t *testing.T) {
 	if len(msg.msgs) != 1 {
 		t.Fatalf("Send calls = %d, want 1 (blocked appeared before nudge, JIT re-read caught it)", len(msg.msgs))
 	}
-	if bst.reads < 4 {
-		t.Fatalf("GetSession reads = %d, want >= 4 (the JIT pre-nudge re-read must have run)", bst.reads)
+	if !gapInjected {
+		t.Fatal("permission decision was not injected in the poll-to-nudge gap")
 	}
 }
 
@@ -11780,28 +11789,6 @@ func TestSwitchTargetsOnlyRetryEnterWhenActivitySignalsMakeItSafe(t *testing.T) 
 			}
 		})
 	}
-}
-
-// blockAfterFirstReadStore wraps fakeStore and flips the session to
-// ActivityBlocked on the FOURTH GetSession call, so with attemptDeadline 0 the
-// first read to observe blocked is confirmActive's just-in-time pre-nudge
-// re-read (reads #1-#3 are Deliver's pre-paste read, Send's harness lookup,
-// and waitForActive's single poll — see TestSend_NoNudgeWhenBlockedAppearsBeforeNudge).
-type blockAfterFirstReadStore struct {
-	*fakeStore
-	id    domain.SessionID
-	reads int
-}
-
-func (s *blockAfterFirstReadStore) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
-	s.reads++
-	if s.reads >= 4 {
-		if rec, ok := s.sessions[s.id]; ok {
-			rec.Activity.State = domain.ActivityBlocked
-			s.sessions[s.id] = rec
-		}
-	}
-	return s.fakeStore.GetSession(ctx, id)
 }
 
 // flipOnNudgeMessenger records sends like fakeMessenger and additionally flips a

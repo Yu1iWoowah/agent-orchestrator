@@ -682,9 +682,25 @@ func (s *Service) SpawnOrchestrator(
 	}
 	_, cancelBudget := ports.ExtendSpawnRequestBudget(ctx, budget)
 	defer cancelBudget()
-	unlock := s.lockOrchestratorProject(projectID)
-	defer unlock()
+	var result domain.Session
+	err = s.WithOrchestratorProjectGate(ctx, projectID, func(locked context.Context) error {
+		if reader, ok := s.store.(replacementAdmissionReader); ok {
+			op, found, err := reader.GetActiveOrchestratorReplacement(locked, projectID)
+			if err != nil {
+				return err
+			}
+			if found {
+				return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", map[string]any{"operationId": op.ID})
+			}
+		}
+		var err error
+		result, err = s.spawnOrchestrator(locked, project, projectID, clean, requestedMode, approval)
+		return err
+	})
+	return result, err
+}
 
+func (s *Service) spawnOrchestrator(ctx context.Context, project domain.ProjectRecord, projectID domain.ProjectID, clean bool, requestedMode domain.SessionMode, approval domain.PermissionMode) (domain.Session, error) {
 	mode := requestedMode
 	if clean {
 		existing, err := s.activeOrchestrators(ctx, projectID)
@@ -1569,6 +1585,11 @@ func toAPIError(err error) error {
 func mapSessionError(err error) error {
 	var relaunchErr *sessionmanager.RelaunchError
 	switch {
+	case errors.Is(err, domain.ErrReplacementInProgress):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", nil)
+	case errors.Is(err, domain.ErrReplacementSourceRetired):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED", "This source orchestrator was replaced and cannot be revived", nil)
+
 	case err == nil:
 		return nil
 	case errors.Is(err, sessionmanager.ErrNotFound):
