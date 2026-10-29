@@ -570,7 +570,10 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error 
 		if readErr == nil && current.Token != d.Token {
 			return nil // A new owner could only publish after the old lock released.
 		}
-		if errors.Is(readErr, os.ErrNotExist) {
+		// On Windows an open descriptor handle can leave host.json pending
+		// deletion after Remove succeeds. New reads then return Access denied.
+		// The released ownership lock, not that read error, proves shutdown.
+		if errors.Is(readErr, os.ErrNotExist) || errors.Is(readErr, os.ErrPermission) {
 			path, _ := lockPath(dataDir, sessionID)
 			if _, lockErr := os.Stat(path); errors.Is(lockErr, os.ErrNotExist) {
 				return nil
@@ -582,6 +585,9 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error 
 		}
 		select {
 		case <-waitCtx.Done():
+			if errors.Is(readErr, os.ErrPermission) {
+				return fmt.Errorf("wait for chat host shutdown: %w (descriptor: %v)", waitCtx.Err(), readErr)
+			}
 			return fmt.Errorf("wait for chat host shutdown: %w", waitCtx.Err())
 		case <-ticker.C:
 		}
