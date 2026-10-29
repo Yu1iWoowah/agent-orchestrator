@@ -707,3 +707,35 @@ func TestRetainedMetadataSnapshotRemainsReadable(t *testing.T) {
 		t.Fatalf("retained PR1 metadata unreadable: %v", err)
 	}
 }
+
+func TestLiveCaptureRetainsMissingJSONFieldSignal(t *testing.T) {
+	s, _, rt, _, dir := fixture(t)
+	g := grant(t, s)
+	raw, err := os.ReadFile("../../../../test/fixtures/app-diagnostics-complete-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	delete(value["collector"].(map[string]any)["route"].(map[string]any), "revision")
+	raw, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	rt.capture = func(context.Context, CaptureRequest) (Snapshot, error) { return snapshot, nil }
+	_, err = s.Capture(context.Background(), g.Token, CaptureRequest{})
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Code != "APP_DIAGNOSTICS_INVALID_PAYLOAD" {
+		t.Fatalf("JSON omission lost at runtime port: %v", err)
+	}
+	files, err := os.ReadDir(filepath.Join(dir, "diagnostics", "snapshots"))
+	if err != nil || len(files) != 0 {
+		t.Fatalf("invalid snapshot saved: %v", err)
+	}
+}

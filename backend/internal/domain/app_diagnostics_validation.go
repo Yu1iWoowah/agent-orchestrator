@@ -133,5 +133,5 @@ func ValidAppDiagnosticsSnapshot(s AppDiagnosticsSnapshot) bool {
 
 // ValidAppDiagnosticsCaptureSnapshot requires the full live contract; only stored PR1 records may omit it.
 func ValidAppDiagnosticsCaptureSnapshot(s AppDiagnosticsSnapshot) bool {
-	return s.Collector != nil && s.Identity != nil && ValidAppDiagnosticsSnapshot(s)
+	return !s.liveFieldsMissing && s.Collector != nil && s.Identity != nil && ValidAppDiagnosticsSnapshot(s)
 }

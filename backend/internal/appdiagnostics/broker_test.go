@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -332,6 +333,99 @@ func TestBrokerRequiresVersionedCollectorResults(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatalf("invalid %s live result accepted", kind)
+			}
+		})
+	}
+}
+
+func brokerSnapshotFieldPaths(value any, path []string) [][]string {
+	var out [][]string
+	switch value := value.(type) {
+	case map[string]any:
+		for key, item := range value {
+			next := append(append([]string{}, path...), key)
+			out = append(out, next)
+			out = append(out, brokerSnapshotFieldPaths(item, next)...)
+		}
+	case []any:
+		for i, item := range value {
+			out = append(out, brokerSnapshotFieldPaths(item, append(append([]string{}, path...), strconv.Itoa(i)))...)
+		}
+	}
+	return out
+}
+func TestBrokerRejectsEveryMissingSnapshotField(t *testing.T) {
+	raw, err := os.ReadFile("../../../test/fixtures/app-diagnostics-complete-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var good any
+	if err := json.Unmarshal(raw, &good); err != nil {
+		t.Fatal(err)
+	}
+	paths := append([][]string{nil}, brokerSnapshotFieldPaths(good, nil)...)
+	for _, path := range paths {
+		name := strings.Join(path, "/")
+		if len(path) == 0 {
+			name = "complete-with-zero-values"
+		}
+		t.Run(name, func(t *testing.T) {
+			var snapshot any
+			if err := json.Unmarshal(raw, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if len(path) > 0 {
+				parent := snapshot
+				for _, part := range path[:len(path)-1] {
+					switch value := parent.(type) {
+					case map[string]any:
+						parent = value[part]
+					case []any:
+						index, err := strconv.Atoi(part)
+						if err != nil {
+							t.Fatal(err)
+						}
+						parent = value[index]
+					}
+				}
+				delete(parent.(map[string]any), path[len(path)-1])
+			}
+			b := New("diagnostics-token")
+			c, d, e := connect(t, b, "diagnostics-token")
+			defer c.Close()
+			var hello frame
+			if err := d.Decode(&hello); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Encode(frame{Type: "ready", Windows: []diag.Window{{ID: "window-1", Generation: 1}}}); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(time.Second)
+			for !b.State().Ready && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			done := make(chan response, 1)
+			go func() {
+				snapshot, err := b.Capture(context.Background(), diag.CaptureRequest{WindowID: "window-1"})
+				done <- response{snapshot: snapshot, err: err}
+			}()
+			var command frame
+			if err := d.Decode(&command); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Encode(map[string]any{"type": "result", "schemaVersion": 1, "requestId": command.RequestID, "snapshot": snapshot}); err != nil {
+				t.Fatal(err)
+			}
+			result := <-done
+			if len(path) == 0 {
+				if result.err != nil || result.snapshot.Completeness != "complete" {
+					t.Fatalf("legal complete snapshot rejected: %v", result.err)
+				}
+			} else {
+				var typed *domain.AppDiagnosticsError
+				if !errors.As(result.err, &typed) || typed.Code != "APP_DIAGNOSTICS_INVALID_PAYLOAD" {
+					t.Fatalf("missing field not rejected as invalid payload: %v", result.err)
+				}
 			}
 		})
 	}

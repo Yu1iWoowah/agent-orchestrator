@@ -32,14 +32,15 @@ type AppDiagnosticsCaptureRequest struct {
 
 // AppDiagnosticsSnapshot contains only the explicitly versioned, content-free projection.
 type AppDiagnosticsSnapshot struct {
-	SchemaVersion int                      `json:"schemaVersion"`
-	InstanceID    string                   `json:"instanceId"`
-	WindowID      string                   `json:"windowId"`
-	Generation    uint64                   `json:"rendererGeneration"`
-	CapturedAt    time.Time                `json:"capturedAt"`
-	Completeness  string                   `json:"completeness"`
-	Collector     *AppDiagnosticsCollector `json:"collector,omitempty"`
-	Identity      *AppDiagnosticsIdentity  `json:"identity,omitempty"`
+	liveFieldsMissing bool                     `json:"-"`
+	SchemaVersion     int                      `json:"schemaVersion"`
+	InstanceID        string                   `json:"instanceId"`
+	WindowID          string                   `json:"windowId"`
+	Generation        uint64                   `json:"rendererGeneration"`
+	CapturedAt        time.Time                `json:"capturedAt"`
+	Completeness      string                   `json:"completeness"`
+	Collector         *AppDiagnosticsCollector `json:"collector,omitempty"`
+	Identity          *AppDiagnosticsIdentity  `json:"identity,omitempty"`
 }
 
 // AppDiagnosticsIdentity never includes executable paths, account names or environment.
