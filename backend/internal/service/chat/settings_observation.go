@@ -54,6 +54,10 @@ func (s *Service) ObserveAgentSettings(ctx context.Context, id domain.SessionID)
 		frame := c.settingsDispatchSnapshot
 		if frame != nil && (frame.ProviderTurnID == c.pendingTurnID && c.pendingTurnID != "" || frame.TurnID == c.dispatchingTurnID && c.dispatchingTurnID != "") {
 			frameSnapshot := *frame
+			if frame.Owner != nil {
+				owner := *frame.Owner
+				frameSnapshot.Owner = &owner
+			}
 			if frame.Settings != nil {
 				settings := *frame.Settings
 				frameSnapshot.Settings = &settings
@@ -99,11 +103,11 @@ func (c *Controller) captureSettingsDispatch(ctx context.Context, turnID string,
 	}
 	settings := domain.AgentSettings{Model: domain.AgentModelSelection(wire.Model), Effort: domain.AgentEffortSelection(wire.Effort), FastMode: fast}
 	at := c.now()
-	snapshot := &domain.AgentSettingsTurnSnapshot{State: domain.AgentSettingKnown, TurnID: turnID, Settings: &settings, CapturedAt: &at, Reason: "settings_revision_unavailable"}
+	owner := c.settingsObservationOwner
+	snapshot := &domain.AgentSettingsTurnSnapshot{State: domain.AgentSettingKnown, Source: "root", Owner: &owner, TurnID: turnID, Settings: &settings, CapturedAt: &at, Reason: "settings_revision_unavailable"}
 	if reader, ok := c.store.(agentSettingsContextReader); ok {
 		current, err := reader.SessionAgentSettings(ctx, c.sessionID)
-		owner := c.settingsObservationOwner
-		if err == nil && !current.IsTerminated && current.Settings == settings && current.AccountID == owner.AccountID && current.OwnerGeneration == c.generation && current.ProviderConversationID == owner.ProviderConversationID && current.BranchID == owner.BranchID {
+		if err == nil && !current.IsTerminated && owner.AccountID != "" && owner.ProviderConversationID != "" && owner.BranchID != "" && current.Settings == settings && current.AccountID == owner.AccountID && current.OwnerGeneration == c.generation && current.ProviderConversationID == owner.ProviderConversationID && current.BranchID == owner.BranchID {
 			revision := current.Revision
 			snapshot.Revision, snapshot.Reason = &revision, ""
 		}

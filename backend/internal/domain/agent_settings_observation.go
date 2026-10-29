@@ -42,13 +42,15 @@ type AgentSettingsOwner struct {
 // AgentSettingsTurnSnapshot describes the preference on the dispatch wire.
 // Missing selection/revision is explicit unknown, never reconstructed history.
 type AgentSettingsTurnSnapshot struct {
-	State          AgentSettingState `json:"state" enum:"known,unknown"`
-	TurnID         string            `json:"turnId,omitempty"`
-	ProviderTurnID string            `json:"providerTurnId,omitempty"`
-	Settings       *AgentSettings    `json:"settings,omitempty"`
-	Revision       *int64            `json:"revision,omitempty"`
-	CapturedAt     *time.Time        `json:"capturedAt,omitempty"`
-	Reason         string            `json:"reason,omitempty"`
+	State          AgentSettingState   `json:"state" enum:"known,unknown"`
+	Source         string              `json:"source,omitempty" enum:"root,side,background"`
+	Owner          *AgentSettingsOwner `json:"owner,omitempty"`
+	TurnID         string              `json:"turnId,omitempty"`
+	ProviderTurnID string              `json:"providerTurnId,omitempty"`
+	Settings       *AgentSettings      `json:"settings,omitempty"`
+	Revision       *int64              `json:"revision,omitempty"`
+	CapturedAt     *time.Time          `json:"capturedAt,omitempty"`
+	Reason         string              `json:"reason,omitempty"`
 }
 
 // AgentSettingsObservation is internal: attribution comes from the live owner,

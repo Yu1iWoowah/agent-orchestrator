@@ -130,7 +130,10 @@ func TestQueuedExcerptValidationFailureContinuesDrain(t *testing.T) {
 				ProviderTurnID: active.ProviderTurnID, TurnState: domain.TurnStateCompleted})
 			snapshot = h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 				states := turnStateByText(t, s)
-				return states["stale excerpt"] == domain.TurnStateFailed && states["next valid"] == domain.TurnStateRunning
+				// Claim marks the primary running before provider acceptance links
+				// the followers. Wait for the completed batch, not that intermediate state.
+				lastReceipt, err := h.st.TurnByID(ctx, last.ID)
+				return states["stale excerpt"] == domain.TurnStateFailed && states["next valid"] == domain.TurnStateRunning && err == nil && lastReceipt.State == domain.TurnStateCompleted
 			})
 			lastTurn, err := h.st.TurnByID(ctx, last.ID)
 			if err != nil || lastTurn.State != domain.TurnStateCompleted {

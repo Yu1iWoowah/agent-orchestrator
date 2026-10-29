@@ -79,6 +79,7 @@ type Store interface {
 	AppendReviewRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
 	MarkTurnDispatching(ctx context.Context, turnID string) error
 	RecordProviderInput(ctx context.Context, turnID, text string) error
+	RecordTurnSettingsSnapshot(context.Context, string, string, []string, domain.AgentSettingsTurnSnapshot) error
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
@@ -1930,6 +1931,21 @@ func (c *Controller) dispatch(
 	msg.Settings = c.turnSettings()
 	msg = excerptDeliveryMessage(msg)
 	deferred, hasDeferredStart := c.conv.(ports.ChatDeferredTurnStarter)
+	settingsSnapshot := c.captureSettingsDispatch(ctx, turnID, msg.Settings)
+	if c.reviewID == "" {
+		ids := append([]string{turnID}, followers...)
+		if err := c.store.RecordTurnSettingsSnapshot(ctx, c.conversation.ID, c.generation, ids, *settingsSnapshot); err != nil {
+			reason := "dispatch settings could not be recorded"
+			if len(followers) > 0 {
+				if failErr := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID, ids, reason, c.now()); failErr != nil {
+					return domain.ConversationTurn{}, errors.Join(err, failErr)
+				}
+			} else if failErr := c.store.SettleTurnByID(context.WithoutCancel(ctx), turnID, domain.TurnStateFailed, reason, c.now()); failErr != nil {
+				return domain.ConversationTurn{}, errors.Join(err, failErr)
+			}
+			return domain.ConversationTurn{}, fmt.Errorf("record dispatch settings: %w", err)
+		}
+	}
 	if err := c.store.RecordProviderInput(ctx, turnID, msg.Text); err != nil {
 		if len(followers) > 0 {
 			ids := append([]string{turnID}, followers...)
@@ -1961,7 +1977,6 @@ func (c *Controller) dispatch(
 		}
 	}
 
-	settingsSnapshot := c.captureSettingsDispatch(ctx, turnID, msg.Settings)
 	c.mu.Lock()
 	c.dispatchingTurnID = turnID
 	c.settingsDispatchSnapshot = settingsSnapshot

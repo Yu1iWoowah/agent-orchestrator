@@ -1385,6 +1385,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 	for _, turn := range s.Turns {
 		out.Turns = append(out.Turns, ConversationTurnResponse{
 			ID:                turn.ID,
+			AgentSettings:     turn.AgentSettings,
 			BatchInputTurnIDs: turn.BatchInputTurnIDs,
 			State:             string(turn.State),
 			ProviderTurnID:    turn.ProviderTurnID,

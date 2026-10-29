@@ -428,29 +428,30 @@ type ConversationSteerDelivery struct {
 }
 
 type ConversationTurn struct {
-	ID                    string
-	ConversationID        string
-	HandledBySessionID    domain.SessionID
-	ProviderTurnID        string
-	ControllerGeneration  string
-	State                 domain.TurnState
-	ErrorMessage          string
-	RequestedAt           time.Time
-	StartedAt             sql.NullTime
-	CompletedAt           sql.NullTime
-	DiffJson              string
-	RolledBackAt          sql.NullTime
-	PlanJson              string
-	BranchID              string
-	PromotionStartedAt    sql.NullTime
-	PromotedToTurnID      sql.NullString
-	RetryOfTurnID         sql.NullString
-	HandledByReviewID     sql.NullString
-	UsageLimitResetsAt    sql.NullTime
-	UsageLimitAutoResume  int64
-	UsageLimitResumeError string
-	BatchedInput          int64
-	ProviderInputText     string
+	ID                        string
+	ConversationID            string
+	HandledBySessionID        domain.SessionID
+	ProviderTurnID            string
+	ControllerGeneration      string
+	State                     domain.TurnState
+	ErrorMessage              string
+	RequestedAt               time.Time
+	StartedAt                 sql.NullTime
+	CompletedAt               sql.NullTime
+	DiffJson                  string
+	RolledBackAt              sql.NullTime
+	PlanJson                  string
+	BranchID                  string
+	PromotionStartedAt        sql.NullTime
+	PromotedToTurnID          sql.NullString
+	RetryOfTurnID             sql.NullString
+	HandledByReviewID         sql.NullString
+	UsageLimitResetsAt        sql.NullTime
+	UsageLimitAutoResume      int64
+	UsageLimitResumeError     string
+	BatchedInput              int64
+	ProviderInputText         string
+	AgentSettingsSnapshotJson string
 }
 
 type Cue struct {
