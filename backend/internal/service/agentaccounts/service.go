@@ -925,7 +925,18 @@ func (s *Service) checkLaunchCredentialStore(ctx context.Context, account domain
 	if r.knownUnusable() {
 		return ports.ErrAgentAccountSignedOut
 	}
-	if r != nil && r.identityErr == "" {
+	if r == nil {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	if r.identityErr != "" && r.identityErr != ports.ErrAgentAccountCredentialStoreUnsupported.Error() {
+		for _, category := range []error{ports.ErrAgentAccountStorageUnsafe, ports.ErrAgentAccountStorageUnsupported} {
+			if r.identityErr == category.Error() {
+				return category
+			}
+		}
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	if r.identityErr == "" {
 		return s.checkCredentialStore(account.Provider, account.Home)
 	}
 	return err

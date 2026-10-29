@@ -59,3 +59,21 @@ func (*diagnosticBindingStore) GetSessionAgentAccount(context.Context, domain.Se
 func (*diagnosticBindingStore) BindSessionAgentAccount(context.Context, domain.SessionID, domain.AgentAccountProvider, string, time.Time) error {
 	return nil
 }
+
+type unavailableEvidenceProvider struct{ *evidenceCodex }
+
+func (*unavailableEvidenceProvider) Identity(context.Context, string) (domain.AgentAccountIdentityCheck, error) {
+	return domain.AgentAccountIdentityCheck{}, errors.New("fake native probe failure")
+}
+func TestMissingEvidenceProbeFailureDoesNotAssertUnsupportedStore(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	home := filepath.Join(root, "codex", "saved")
+	if e := ensureAccountProfile(root, home); e != nil {
+		t.Fatal(e)
+	}
+	p := &unavailableEvidenceProvider{&evidenceCodex{fakeClaude: &fakeClaude{}}}
+	s := New(&memStore{}, []ports.AgentAccountProviderCLI{p}, root, nil, nil)
+	if e := s.checkLaunchCredentialStore(context.Background(), domain.AgentAccount{ID: "saved", Provider: domain.AgentAccountProviderCodex, Home: home}); !errors.Is(e, ports.ErrAgentAccountStorageUnavailable) {
+		t.Fatalf("failed probe asserted unsupported storage without identity evidence: %v", e)
+	}
+}
