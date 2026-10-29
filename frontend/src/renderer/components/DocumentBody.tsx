@@ -143,17 +143,21 @@ export function DocumentBody({
 						(item) => item.id === fragment,
 					)
 				: null;
-			root.scrollTop = heading
-				? root.scrollTop +
-					heading.getBoundingClientRect().top -
-					root.getBoundingClientRect().top
-				: fragment === ""
+			root.scrollTop =
+				content?.kind === "html" && visit.mode === "preview"
 					? 0
-					: visit.position.scrollTop;
+					: heading
+						? root.scrollTop +
+							heading.getBoundingClientRect().top -
+							root.getBoundingClientRect().top
+						: fragment === ""
+							? 0
+							: visit.position.scrollTop;
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [
 		query.data,
+		content?.kind,
 		visit.epoch,
 		visit.document.target.fragment,
 		visit.mode,

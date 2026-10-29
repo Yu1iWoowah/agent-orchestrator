@@ -197,3 +197,53 @@ it("never reuses local content bytes on a remote connection with the same identi
 	view.unmount();
 	cache.clear();
 });
+
+it.each([
+	["read.md", "preview", 350],
+	["read.html", "preview", 0],
+] as const)(
+	"restores %s %s history to its approved position",
+	async (path, mode, expected) => {
+		mocks.read.mockResolvedValue(
+			new TextEncoder().encode(
+				path.endsWith("html")
+					? "<h1>History document</h1>"
+					: "# History document",
+			).buffer,
+		);
+		const cache = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const current = {
+			...visit,
+			mode,
+			document: {
+				...visit.document,
+				target: { ...visit.document.target, path },
+			},
+		};
+		const tree = (epoch: number) => (
+			<QueryClientProvider client={cache}>
+				<DocumentBody
+					readerKey="chat"
+					connection={connection}
+					visit={{ ...current, epoch, position: { scrollTop: 350, zoom: 1 } }}
+				/>
+			</QueryClientProvider>
+		);
+		const view = render(tree(1));
+		await waitFor(() =>
+			expect(
+				view.container.querySelector("[data-document-scroll]"),
+			).not.toBeNull(),
+		);
+		const root = view.container.querySelector<HTMLElement>(
+			"[data-document-scroll]",
+		)!;
+		root.scrollTop = 350;
+		view.rerender(tree(2));
+		await waitFor(() => expect(root.scrollTop).toBe(expected));
+		view.unmount();
+		cache.clear();
+	},
+);

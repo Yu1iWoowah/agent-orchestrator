@@ -3,7 +3,57 @@ import { installFakeAgent } from "./support/fake-bridge";
 const sessionId = "document-reader-chat",
 	now = "2026-10-29T12:00:00Z";
 const root = "ao://sessions/other-project/worker/artifacts/";
-async function setup(page: Page) {
+async function setup(page: Page, attentionEnabled = false) {
+	let incoming = false;
+	const answers: unknown[] = [];
+	const seen = new Set<string>();
+	const input = (id: string, sequence: number) => ({
+		branchId: "root",
+		actionable: true,
+		read: seen.has(id),
+		activity: {
+			kind: "activity",
+			id,
+			turnId: "turn",
+			requestId: `native-${id}`,
+			activityKind: "user_input",
+			status: "pending",
+			sequence,
+			revision: 0,
+			summary:
+				id === "original"
+					? "Original provider request"
+					: "New provider request",
+			createdAt: now,
+			detail: {
+				inputMode: "form",
+				message:
+					id === "original"
+						? "Original provider request"
+						: "New provider request",
+				schema: {
+					type: "object",
+					required: ["target"],
+					properties: { target: { type: "string", title: "Target" } },
+				},
+			},
+		},
+	});
+	const items = () =>
+		attentionEnabled
+			? [input("original", 2), ...(incoming ? [input("new", 3)] : [])]
+			: [];
+	const attention = () => ({
+		conversationId: "document-conversation",
+		activeBranchId: "root",
+		items: items(),
+		counts: {
+			open: items().length,
+			unread: items().filter((i) => !i.read).length,
+			history: 0,
+		},
+		hasMoreBefore: false,
+	});
 	await page.setViewportSize({ width: 1440, height: 1000 });
 	await installFakeAgent(page, {
 		workers: [
@@ -16,19 +66,63 @@ async function setup(page: Page) {
 	});
 	await page.route(`**/api/v1/sessions/${sessionId}/**`, async (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path.endsWith("/conversation"))
+		if (path.endsWith("/attention")) await route.fulfill({ json: attention() });
+		else if (path.includes("/attention/") && path.endsWith("/read")) {
+			seen.add(path.split("/").at(-2)!);
+			await route.fulfill({ status: 204 });
+		} else if (path.includes("/attention/"))
+			await route.fulfill({
+				json: {
+					...attention(),
+					items: items().filter(
+						(i) => i.activity.id === path.split("/").at(-1),
+					),
+				},
+			});
+		else if (path.includes("/inputs/") && path.endsWith("/resolve")) {
+			answers.push(route.request().postDataJSON());
+			await route.fulfill({ status: 204 });
+		} else if (path.endsWith("/plan") && attentionEnabled)
+			await route.fulfill({
+				json: {
+					state: "present",
+					conversationId: "document-conversation",
+					activeBranchId: "root",
+					version: {
+						branchId: "root",
+						turnId: "turn",
+						sourceActivityId: "plan",
+						sequence: 1,
+						revision: 0,
+						updatedAt: now,
+						plan: {
+							steps: [
+								{ text: "Plan state stays intact", status: "in_progress" },
+							],
+						},
+					},
+				},
+			});
+		else if (path.endsWith("/conversation"))
 			await route.fulfill({
 				json: {
 					conversationId: "document-conversation",
+					activeBranchId: "root",
 					sessionId,
 					harness: "claude-code",
 					mode: "chat",
 					controller: "ready",
 					settings: {},
 					oldestSequence: 1,
-					latestSequence: 1,
+					latestSequence: attentionEnabled ? (incoming ? 3 : 2) : 1,
 					hasMoreBefore: false,
-					turns: [{ id: "turn", state: "completed", requestedAt: now }],
+					turns: [
+						{
+							id: "turn",
+							state: attentionEnabled ? "running" : "completed",
+							requestedAt: now,
+						},
+					],
 					messages: [
 						{
 							kind: "message",
@@ -43,7 +137,7 @@ async function setup(page: Page) {
 							createdAt: now,
 						},
 					],
-					activities: [],
+					activities: items().map((i) => i.activity),
 				},
 			});
 		else if (path.endsWith("/conversation/models"))
@@ -117,6 +211,20 @@ async function setup(page: Page) {
 		await route.fulfill({ contentType: "application/octet-stream", body });
 	});
 	await page.goto(`/#/projects/fake-proj/sessions/${sessionId}`);
+	return {
+		answerCount: () => answers.length,
+		addQuestion: async () => {
+			incoming = true;
+			await page.evaluate(
+				(id) =>
+					window.__aoFakeAgent!.conversationChanged(
+						id,
+						"document-conversation",
+					),
+				sessionId,
+			);
+		},
+	};
 }
 test("documents stay beside the current Chat and warm-cache fragments restore inside the viewer @T0", async ({
 	page,
@@ -275,8 +383,158 @@ test("opening the temporary document keeps its first frame inside the Chat safe 
 	const frame = sheet.getByRole("region");
 	await frame.waitFor({ state: "visible" });
 	const bounds = await frame.boundingBox();
-	const composer = await page.locator(".cursor-chat-composer-dock").boundingBox();
+	const composer = await page
+		.locator(".cursor-chat-composer-dock")
+		.boundingBox();
 	expect(bounds).not.toBeNull();
 	expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1440);
 	expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(composer!.y - 8);
+});
+
+test("HTML Preview history returns to the top while Markdown retains scroll @T0", async ({
+	page,
+}) => {
+	await setup(page);
+	await page.route("**/api/v1/local-documents/content*", async (route) => {
+		if (route.request().postDataJSON().path === "unsafe.html") {
+			await route.fulfill({
+				contentType: "application/octet-stream",
+				body: "<h1>HTML history</h1>" + "<p>History paragraph</p>".repeat(150),
+			});
+		} else await route.fallback();
+	});
+	await page.getByRole("link", { name: "Worker guide", exact: true }).click();
+	const sheet = page.getByRole("dialog", { name: "Document", exact: true });
+	await expect(
+		sheet.getByRole("heading", { name: "Guide", exact: true }),
+	).toBeVisible();
+	await sheet.locator("[data-document-scroll]").evaluate((el) => {
+		el.scrollTop = 350;
+	});
+	await sheet.getByRole("button", { name: /^Collapse / }).click();
+	await page.getByRole("link", { name: "Unsafe HTML", exact: true }).click();
+	const frame = page.frameLocator("iframe[data-document-static]");
+	await expect(
+		frame.getByRole("heading", { name: "HTML history" }),
+	).toBeVisible();
+	await frame.locator("body").evaluate(() => window.scrollTo(0, 600));
+	await expect
+		.poll(() => frame.locator("body").evaluate(() => window.scrollY))
+		.toBe(600);
+	await sheet.locator("[data-document-scroll]").evaluate((el) => {
+		el.scrollTop = 30;
+	});
+	await sheet.getByRole("button", { name: "Back", exact: true }).click();
+	await expect(
+		sheet.getByRole("heading", { name: "Guide", exact: true }),
+	).toBeVisible();
+	await expect
+		.poll(() =>
+			sheet.locator("[data-document-scroll]").evaluate((el) => el.scrollTop),
+		)
+		.toBe(350);
+	await sheet.getByRole("button", { name: "Forward", exact: true }).click();
+	await expect(
+		frame.getByRole("heading", { name: "HTML history" }),
+	).toBeVisible();
+	await expect
+		.poll(() => frame.locator("body").evaluate(() => window.scrollY))
+		.toBe(0);
+	await expect
+		.poll(() =>
+			sheet.locator("[data-document-scroll]").evaluate((el) => el.scrollTop),
+		)
+		.toBe(0);
+	await expect(page.locator("iframe[data-document-static]")).toHaveAttribute(
+		"sandbox",
+		"",
+	);
+});
+
+test("documents preserve Plan and provider drafts while new attention stays reachable without stealing focus @T0", async ({
+	page,
+}) => {
+	const fixture = await setup(page, true);
+	const attention = page.getByRole("region", {
+		name: "Awaiting you",
+		exact: true,
+	});
+	await attention
+		.getByRole("button", {
+			name: "Go to original request: Original provider request",
+			exact: true,
+		})
+		.click();
+	const provider = page.getByTestId("elicitation-dock");
+	const answer = provider.getByRole("textbox", { name: /^Target/ });
+	await answer.fill("Preserve this provider draft");
+	await page.getByRole("button", { name: "Open Plan", exact: true }).click();
+	await expect(
+		page.getByRole("region", { name: "Plan", exact: true }),
+	).toContainText("Plan state stays intact");
+	const preferences = () =>
+		page.evaluate(async (path) => {
+			const { useConversationFrameStore } = await import(path);
+			return JSON.stringify(useConversationFrameStore.getState().sessions);
+		}, "/src/renderer/stores/conversation-frame-store.ts");
+	const before = await preferences();
+	await page.getByRole("link", { name: "Worker guide", exact: true }).focus();
+	await page
+		.getByRole("link", { name: "Worker guide", exact: true })
+		.press("Enter");
+	const sheet = page.getByRole("dialog", { name: "Document", exact: true });
+	await expect(
+		sheet.getByRole("heading", { name: "Guide", exact: true }),
+	).toBeVisible();
+	await sheet.getByRole("region").focus();
+	await fixture.addQuestion();
+	await expect(attention).toContainText("New provider request");
+	await expect(sheet.getByRole("region")).toBeFocused();
+	await expect(answer).toHaveValue("Preserve this provider draft");
+	expect(await preferences()).toBe(before);
+	expect(fixture.answerCount()).toBe(0);
+	await expect(
+		page.getByRole("button", { name: "Open Awaiting you", exact: true }),
+	).toHaveAttribute("aria-expanded", "true");
+	const hit = await answer.evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		return el.contains(
+			document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2),
+		);
+	});
+	expect(hit).toBe(true);
+	await page.getByRole("button", { name: "Search", exact: true }).click();
+	const modal = page.getByRole("dialog").last();
+	await expect(modal).toBeVisible();
+	expect(
+		await modal.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			return el.contains(
+				document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2),
+			);
+		}),
+	).toBe(true);
+	await page.keyboard.press("Escape");
+	await expect(sheet).toBeVisible();
+	await page
+		.getByRole("button", { name: "Open Awaiting you", exact: true })
+		.click();
+	await expect(sheet).toBeHidden();
+	await attention
+		.getByRole("button", {
+			name: "Go to original request: New provider request",
+			exact: true,
+		})
+		.click();
+	await expect(answer).toBeFocused();
+	await expect(answer).toHaveValue("");
+	await attention
+		.getByRole("button", {
+			name: "Go to original request: Original provider request",
+			exact: true,
+		})
+		.click();
+	await expect(answer).toHaveValue("Preserve this provider draft");
+	expect(fixture.answerCount()).toBe(0);
+	expect(await preferences()).toBe(before);
 });
