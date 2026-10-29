@@ -1,3 +1,4 @@
+import { AppDiagnosticsSettings } from "./AppDiagnosticsSettings";
 import { BrowserIcon, type AppIcon } from "../icons";
 import { Activity, BadgeCheck, Bot, CircleHelp, CreditCard, Keyboard, RefreshCw, Server, Settings2, Smartphone } from "lucide-react";
 import { lazy, type ReactNode } from "react";
@@ -159,11 +160,14 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: CircleHelp,
 		label: (t) => t("settings.help"),
 		render: (t, titleHidden) => (
-			<SettingsSection titleHidden={titleHidden} title={t("settings.reportProblem")} grouped>
-				<div className="settings-content-row">
-					<ReportProblemContent active />
-				</div>
-			</SettingsSection>
+			<>
+				<AppDiagnosticsSettings />
+				<SettingsSection titleHidden={titleHidden} title={t("settings.reportProblem")} grouped>
+					<div className="settings-content-row">
+						<ReportProblemContent active />
+					</div>
+				</SettingsSection>
+			</>
 		),
 	},
 ];

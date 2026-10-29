@@ -20,11 +20,13 @@ import (
 type diskStore struct {
 	writeContent           func(*os.File, []byte) (int, error)
 	readContent            func(*os.File) ([]byte, error)
+	removeFile             func(string) error
 	root                   *os.Root
 	dropped                uint64
 	readErrors             uint64
 	invalidSnapshotDeleted uint64
 	pendingRevocations     map[string]bool
+	discardedSnapshots     map[string]string
 	skipped                uint64
 	invalid                map[string]bool
 	auditTimes             map[string]time.Time
@@ -39,7 +41,8 @@ func openStore(dataDir string) (*diskStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &diskStore{root: root, writeContent: (*os.File).Write, readContent: readDocumentContent, invalid: map[string]bool{}, auditTimes: map[string]time.Time{}, pendingRevocations: map[string]bool{}}
+	s := &diskStore{root: root, writeContent: (*os.File).Write, readContent: readDocumentContent, invalid: map[string]bool{}, auditTimes: map[string]time.Time{}, pendingRevocations: map[string]bool{}, discardedSnapshots: map[string]string{}}
+	s.removeFile = root.Remove
 	for _, dir := range []string{"grants", "snapshots", "audit"} {
 		if err := privateDir(filepath.Join(name, dir)); err != nil {
 			_ = root.Close()
@@ -123,6 +126,9 @@ func readDocumentContent(file *os.File) ([]byte, error) {
 }
 
 func (s *diskStore) read(dir, id string, value any) error {
+	if dir == "snapshots" && s.discardedSnapshots[id] != "" {
+		return os.ErrNotExist
+	}
 	name, err := s.name(dir, id)
 	if err != nil {
 		return err
@@ -177,10 +183,33 @@ func (s *diskStore) remove(dir, id string) error {
 	if err := s.checkDir(dir); err != nil {
 		return err
 	}
-	if err := s.root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.removeFile(name); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if dir == "snapshots" {
+		delete(s.discardedSnapshots, id)
+	}
 	return nil
+}
+
+// A rejected capture stays inaccessible until unlink succeeds. On restart,
+// reset removes every snapshot before the new service can accept credentials.
+func (s *diskStore) discardSnapshot(id, grantID string) error {
+	s.discardedSnapshots[id] = grantID
+	return s.remove("snapshots", id)
+}
+
+func (s *diskStore) retryDiscardedSnapshots(grantID string) error {
+	var failures []error
+	for id, owner := range s.discardedSnapshots {
+		if grantID != "" && owner != grantID {
+			continue
+		}
+		if err := s.remove("snapshots", id); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // removeEntry pins and verifies the managed directory before unlinking one
@@ -235,7 +264,11 @@ func (s *diskStore) entries(dir string) ([]os.DirEntry, error) {
 }
 func (s *diskStore) removeGrant(id string, now time.Time) (result error) {
 	s.pendingRevocations[id] = true
-	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
+	// Revocation already fenced the in-memory capability. Attempt credential and
+	// snapshot cleanup independently; Sweep retries either failed removal.
+	credentialErr := s.remove("grants", id)
+	discardErr := s.retryDiscardedSnapshots(id)
+	defer func() { result = errors.Join(result, credentialErr, discardErr, s.retentionSummary(now)) }()
 	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
 	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
 		return readErr
@@ -247,7 +280,7 @@ func (s *diskStore) removeGrant(id string, now time.Time) (result error) {
 			}
 		}
 	}
-	if readErr == nil {
+	if readErr == nil && credentialErr == nil && discardErr == nil {
 		delete(s.pendingRevocations, id)
 	}
 	return nil
@@ -304,6 +337,9 @@ func documents[T any](s *diskStore, dir string, validate func(string, T) bool) (
 			valid = err == nil
 		}
 		var value T
+		if dir == "snapshots" && s.discardedSnapshots[key] != "" {
+			continue
+		}
 		if valid {
 			err = s.read(dir, key, &value)
 			if err != nil && !errors.Is(err, errInvalidFile) {
@@ -439,8 +475,15 @@ func (s *diskStore) reset(now time.Time) error {
 	}
 	return s.prune(now)
 }
-func (s *diskStore) prune(now time.Time) (result error) {
+func (s *diskStore) prune(now time.Time) error {
+	return s.pruneForGrant(now, "")
+}
+
+// Background sweeps retry all rejected snapshots. Reads retry only their own
+// grant's cleanup, so an unrelated rejected file cannot block healthy data.
+func (s *diskStore) pruneForGrant(now time.Time, grantID string) (result error) {
 	defer func() { result = errors.Join(result, s.retentionSummary(now)) }()
+	result = s.retryDiscardedSnapshots(grantID)
 	rows, readErr := documents[Record](s, "snapshots", validSnapshotRecord)
 	if readErr != nil && !errors.Is(readErr, errReadUnavailable) {
 		return readErr
@@ -461,8 +504,12 @@ func (s *diskStore) prune(now time.Time) (result error) {
 		count--
 		total -= row.size
 	}
-	if readErr == nil {
-		clear(s.pendingRevocations)
+	for id := range s.pendingRevocations {
+		if err := s.remove("grants", id); err != nil {
+			result = errors.Join(result, err)
+		} else if readErr == nil {
+			delete(s.pendingRevocations, id)
+		}
 	}
 	audits, err := documents[Audit](s, "audit", nil)
 	if err != nil && !errors.Is(err, errReadUnavailable) {
@@ -490,7 +537,7 @@ func (s *diskStore) prune(now time.Time) (result error) {
 	}
 	// Unreadable documents remain on disk for the next sweep. Read failures are
 	// observable through the summary, while healthy records still get retention.
-	return nil
+	return result
 }
 func (s *diskStore) retentionSummary(now time.Time) error {
 	if s.dropped == 0 && s.skipped == 0 && s.readErrors == 0 && s.invalidSnapshotDeleted == 0 {
