@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,45 @@ func TestAskCLICommandsUseOnlyDaemonRoutes(t *testing.T) {
 	}
 }
 
+func TestAskReportForwardUsesOnlyItsOwningCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name, actor, capability, target string
+		allowed                         bool
+	}{
+		{"owner", "owner", "owner-proof", "owner", true},
+		{"forged session", "worker", "worker-proof", "owner", false},
+		{"missing capability", "owner", "", "owner", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			t.Setenv("AO_SESSION_ID", tc.actor)
+			t.Setenv("AO_BROWSER_CAPABILITY", tc.capability)
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/internal/telemetry/cli-invoked" {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				calls++
+				if r.Header.Get(browserCapabilityHeader) != "owner-proof" {
+					t.Error("forwarding omitted the owning capability")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"question","version":1}`)
+			}))
+			defer server.Close()
+			writeRunFileFor(t, cfg, server)
+			stdout, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "ask", "create", "--session", tc.target, "--source-report", "report", "--key", "forward", "--payload-file", askCLIFile(t, askCLIPayload), "--json")
+			if tc.allowed && (err != nil || calls != 1) || !tc.allowed && (err == nil || calls != 0) {
+				t.Fatalf("allowed=%v calls=%d err=%v", tc.allowed, calls, err)
+			}
+			if strings.Contains(stdout, tc.capability) && tc.capability != "" {
+				t.Fatal("capability leaked to stdout")
+			}
+		})
+	}
+}
+
 func TestAskCLIRejectsInvalidInputBeforeDaemon(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "worker-1")
 	good := askCLIFile(t, askCLIPayload)
@@ -109,5 +149,62 @@ func TestAskCLIConflictPreservesRequestIDAndUnknownSubmissionIsNotSuccess(t *tes
 	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "ask", "answer", "ask-1", "--payload-file", askCLIFile(t, askCLIAnswer))
 	if err == nil || ExitCode(err) != 1 || !strings.Contains(err.Error(), "QUESTION_CHANGED") || !strings.Contains(err.Error(), "req-question-7") || out != "" {
 		t.Fatalf("conflict err=%v out=%s", err, out)
+	}
+}
+
+func TestAskCLIRejectsOversizedEnvelopeBeforeDaemon(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "worker-1")
+	for _, action := range []string{"create", "revise"} {
+		t.Run(action, func(t *testing.T) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(askCLIPayload), &payload); err != nil {
+				t.Fatal(err)
+			}
+			prompts := make([]any, 4)
+			for i := range prompts {
+				options := make([]any, 4)
+				for j := range options {
+					options[j] = map[string]any{"id": fmt.Sprintf("o%d", j), "label": fmt.Sprintf("Choice %d", j), "description": "Reason", "preview": map[string]any{"format": "text", "content": strings.Repeat("p", 8192)}}
+				}
+				prompts[i] = map[string]any{"key": fmt.Sprintf("q%d", i), "header": "Target", "question": "Where?", "options": options}
+			}
+			payload["questions"] = prompts
+			raw, _ := json.Marshal(payload)
+			first := prompts[0].(map[string]any)["options"].([]any)[0].(map[string]any)["preview"].(map[string]any)
+			first["content"] = strings.Repeat("p", 8192-(len(raw)-(128*1024-1)))
+			raw, _ = json.Marshal(payload)
+			body := string(raw)
+			args := []string{"ask", action}
+			if action == "create" {
+				args = append(args, "--key", "deploy")
+			} else {
+				args = append(args, "ask-1", "--expected-version", "1")
+			}
+			args = append(args, "--payload-file", askCLIFile(t, body))
+			_, _, err := executeCLI(t, Deps{}, args...)
+			if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "envelope") {
+				t.Fatalf("must reject the whole envelope before connecting: %v", err)
+			}
+		})
+	}
+}
+
+func TestAskProjectCLIUsesExplicitAudienceAndCursor(t *testing.T) {
+	cfg := setConfigEnv(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/telemetry/cli-invoked" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.URL.RequestURI() != "/api/v1/projects/project/attention?audience=orchestrator&cursor=next&limit=2" {
+			t.Errorf("unexpected request: %s", r.URL.RequestURI())
+		}
+		_, _ = io.WriteString(w, `{"items":[],"open":5,"unread":3}`)
+	}))
+	defer server.Close()
+	writeRunFileFor(t, cfg, server)
+	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "ask", "project", "--project", "project", "--audience", "orchestrator", "--cursor", "next", "--limit", "2", "--json")
+	if err != nil || !strings.Contains(out, `"open": 5`) {
+		t.Fatalf("out=%s err=%v", out, err)
 	}
 }

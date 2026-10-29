@@ -43,10 +43,21 @@ export function useSessionAttentionFrame({ sessionId, hostId, branchId, onOpen, 
 		content: <Tabs value={tab} onValueChange={setTab}>
 			<TabsList className="mb-3 h-8"><TabsTrigger value="open">{t("attention.pending")}</TabsTrigger><TabsTrigger value="history">{t("attention.history")}</TabsTrigger></TabsList>
 			{(["open", "history"] as const).map((value) => <TabsContent key={value} value={value}>
-				{provider.isError ? <div role="alert" className="mb-3 text-xs text-muted-foreground"><p>{t(provider.error instanceof AttentionUnavailable ? "attention.unsupported" : "attention.offline")}</p>{!(provider.error instanceof AttentionUnavailable) ? <Button variant="ghost" size="sm" onClick={() => void provider.refetch()}>{t("attention.retry")}</Button> : null}</div> : null}
-				{questions.isError ? <div role="alert" className="mb-3 text-xs text-muted-foreground"><p>{t(questions.error instanceof QuestionsUnavailable ? "decision.unsupported" : questions.error instanceof InvalidQuestionResponse ? "decision.invalid" : "decision.loadError")}</p>{!(questions.error instanceof QuestionsUnavailable) ? <Button variant="ghost" size="sm" onClick={() => void questions.refetch()}>{t("decision.retry")}</Button> : null}</div> : null}
+				{provider.isError ? <div role="alert"
+					className="mb-3 text-xs text-muted-foreground">
+					<p>{t(provider.error instanceof AttentionUnavailable ? "attention.unsupported" : "attention.offline")}</p>{!(provider.error instanceof AttentionUnavailable) ? <Button variant="ghost" size="sm"
+					onClick={() => void provider.refetch()}>{t("attention.retry")}</Button> : null}</div> : null}
+				{questions.isError ? <div role="alert"
+					className="mb-3 text-xs text-muted-foreground">
+					<p>{t(questions.error instanceof QuestionsUnavailable ? "decision.unsupported" : questions.error instanceof InvalidQuestionResponse ? "decision.invalid" : "decision.loadError")}</p>{!(questions.error instanceof QuestionsUnavailable) ? <Button variant="ghost" size="sm"
+					onClick={() => void questions.refetch()}>{t("decision.retry")}</Button> : null}</div> : null}
 				{provider.isPending || questions.isPending ? <p role="status" className="mb-3 text-xs text-muted-foreground">{t("attention.loading")}</p> : null}
-				{ordered.length ? <ul className="divide-y divide-border">{ordered.map(([key, source]) => <AttentionRow key={key} source={source} sessionId={sessionId} hostId={hostId} scopeBranch={branchId} onOpen={onOpen} locating={source.kind === "provider" && locatingId === source.item.activity.id} />)}</ul> : provider.isSuccess && questions.isSuccess ? <p className="text-xs text-muted-foreground">{t(value === "open" ? "attention.empty" : "attention.noHistory")}</p> : null}
+				{ordered.length ? <ul
+					className="divide-y divide-border">{ordered.map(([key, source]) => <AttentionRow key={key} source={source}
+					sessionId={sessionId} hostId={hostId} scopeBranch={branchId}
+					onOpen={onOpen}
+					locating={source.kind === "provider" && locatingId === source.item.activity.id} />)}</ul> : provider.isSuccess && questions.isSuccess ? <p
+					className="text-xs text-muted-foreground">{t(value === "open" ? "attention.empty" : "attention.noHistory")}</p> : null}
 				{provider.hasNextPage ? <Button variant="ghost" size="sm" disabled={provider.isFetchingNextPage} onClick={() => void provider.fetchNextPage()}>{t("attention.older")}</Button> : null}
 				{questions.hasNextPage ? <Button variant="ghost" size="sm" disabled={questions.isFetchingNextPage} onClick={() => void questions.fetchNextPage()}>{t("decision.older")}</Button> : null}
 			</TabsContent>)}

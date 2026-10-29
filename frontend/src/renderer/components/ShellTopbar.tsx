@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { Archive, CalendarClock, File, Folder, LayoutDashboard, Plus } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { ProjectAttention } from "./ProjectAttention";
 import { NotificationCenter } from "./NotificationCenter";
 import { ProjectBoardActions } from "./ProjectBoardActions";
 import { useBoardPresentation } from "../hooks/useBoardPresentation";
@@ -225,6 +226,9 @@ export function ShellTopbar({
 				data-testid="workspace-topbar-actions"
 			>
 				{isProjectBoardRoute || isOrchestrator ? <ProjectTerminationFeedback projectId={projectId} hostId={hostId} /> : null}
+				{!boardActionsInPanel && isProjectBoardRoute && supportsProjectActions && projectId && project?.kind !== CLOUD_PROJECT_KIND ? (
+					<ProjectAttention key={`${hostId ?? "local"}:${projectId}`} projectId={projectId} hostId={hostId} />
+				) : null}
 				{!boardActionsInPanel && isProjectBoardRoute ? (
 					<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} cloud={project?.kind === CLOUD_PROJECT_KIND} style={noDragStyle} />
 				) : null}

@@ -1,4 +1,13 @@
 {
+	"decision.sourceReport": "Source report: {{id}}",
+	"projectAttention.count": "Awaiting you: {{count}}",
+	"projectAttention.open": "Open project attention",
+	"projectAttention.title": "Project attention",
+	"projectAttention.description": "Human decisions and orchestrator coordination stay separate. Open the original session for provider requests.",
+	"projectAttention.coordination": "Orchestrator reports",
+	"projectAttention.totals": "{{open}} items · {{unread}} unread",
+	"projectAttention.offline": "The project count is unknown. Check the host connection and retry.",
+	"projectAttention.reportStatus": "Answer state unknown · report delivery: {{delivery}}",
 	"documents.catalog.localOnly": "문서 목록은 이 컴퓨터에서만 사용할 수 있습니다.",
 	"documents.connection.localOnly": "문서 경로 조회는 이 컴퓨터에서만 사용할 수 있습니다.",
 	"documents.read.error": "문서를 불러올 수 없습니다.",

@@ -333,3 +333,33 @@ describe("versioned question drafts", () => {
 		expect(createQuestionDraftStore(localStorage).getState().entries[key]).toBeUndefined();
 	});
 });
+
+it("does not notify subscribers or inspect storage when a prune changes nothing", () => {
+	const store = createQuestionDraftStore(localStorage);
+	ready(store);
+	const previous = store.getState();
+	const listener = vi.fn();
+	const unsubscribe = store.subscribe(listener);
+	const read = vi.spyOn(localStorage, "getItem");
+	store.getState().prune();
+	expect(store.getState()).toBe(previous);
+	expect(listener).not.toHaveBeenCalled();
+	expect(read).not.toHaveBeenCalled();
+	unsubscribe(); read.mockRestore();
+});
+
+it("expires long-unconfirmed inactive edits while protecting an editor in another window", () => {
+	vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));
+	const first = createQuestionDraftStore(localStorage);
+	const hidden = ready(first, "removed-host");
+	const active = first.getState().ensure(sessionQuestionFixture({ id: "visible" }), "removed-host");
+	first.getState().setField(active, "target", { selectedOptionIds: [], otherSelected: true, otherText: "Still editing in another window" });
+	vi.setSystemTime(new Date("2026-11-02T00:00:00Z"));
+	const editor = createQuestionDraftStore(localStorage);
+	const release = editor.getState().retainVisible(active);
+	first.getState().prune();
+	expect(createQuestionDraftStore(localStorage).getState().entries[hidden]).toBeUndefined();
+	expect(createQuestionDraftStore(localStorage).getState().entries[active].fields.target.otherText).toBe("Still editing in another window");
+	release(); first.getState().prune();
+	expect(createQuestionDraftStore(localStorage).getState().entries[active]).toBeUndefined();
+});
