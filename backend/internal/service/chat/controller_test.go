@@ -94,6 +94,7 @@ type fakeConversation struct {
 	providerConversationID string
 
 	mu                 sync.Mutex
+	settingsReceipt    *domain.AgentSettingsEffective
 	sent               []ports.ChatUserMessage
 	caps               ports.ChatCapabilities
 	resolved           map[string]ports.ChatDecision
@@ -268,6 +269,15 @@ func newFakeConversation() *fakeConversation {
 }
 
 func (f *fakeConversation) ProviderConversationID() string { return f.providerConversationID }
+
+func (f *fakeConversation) AgentSettingsObservation() domain.AgentSettingsEffective {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.settingsReceipt == nil {
+		return domain.UnknownAgentSettingsEffective("provider_not_reported")
+	}
+	return *f.settingsReceipt
+}
 
 // SandboxAllowsNetwork is the agent sandbox's network, as Codex reports it;
 // noNetwork plays a Codex thread in accept-edits or auto.

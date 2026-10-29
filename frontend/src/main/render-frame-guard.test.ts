@@ -4,6 +4,15 @@ import { blocksRenderFrameNavigation } from "./render-frame-guard";
 const page = "http://127.0.0.1:3001/api/v1/sessions/p-1/renders/r1";
 
 describe("blocksRenderFrameNavigation", () => {
+	it("blocks document-initiated navigation from opaque srcdoc while allowing initial frame setup", () => {
+		for (const current of ["about:srcdoc", "about:srcdoc#section"]) {
+			for (const target of ["http://127.0.0.1:3001/", "http://ao-inline-artifact.x.localhost:3001/a.html", "https://example.com/", "about:blank", "data:text/html,unsafe"]) {
+				expect(blocksRenderFrameNavigation(current, target)).toBe(true);
+			}
+		}
+		expect(blocksRenderFrameNavigation("about:blank", "about:srcdoc")).toBe(false);
+	});
+
 	it("lets a frame load its render and move within it", () => {
 		expect(blocksRenderFrameNavigation("about:blank", `${page}#ao-theme=x`)).toBe(false);
 		expect(blocksRenderFrameNavigation(page, `${page}#section`)).toBe(false);

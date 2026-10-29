@@ -88,6 +88,7 @@ export function ConversationFrames({
 	const tooSmall = safeRect.width < 100 || safeRect.height < 40;
 	const open = (kind: ConversationFrameKind) => {
 		if (tooSmall) return;
+		surface.dispatchEvent(new CustomEvent("ao:frame-foreground"));
 		if (layout.compact) setFocusedFrame(kind);
 		else {
 			setOpen(key, kind, true);
@@ -270,32 +271,43 @@ export function ConversationFrames({
 	);
 }
 
-function FrameChrome({
+function FrameChrome(props: {
+	id:string; frame:ConversationFrameDescriptor;rect:FrameRect;safeRect:FrameRect;stateKey:string;onClose:()=>void;canSwap:boolean;maxHeight:number;onPreview:(axis:"x"|"y",value:number|null)=>void;
+}) {
+	const size=useConversationFrameStore(state=>state.setFrameSize);
+	const swap=useConversationFrameStore(state=>state.swapFrameSlots);
+	return <ResizableConversationFrame {...props} limits={frameLimits[props.frame.kind]} onSize={value=>size(props.stateKey,props.frame.kind,value)} onSwap={props.canSwap?()=>swap(props.stateKey):undefined}/>;
+}
+
+export function ResizableConversationFrame({
 	id,
 	frame,
 	rect,
 	safeRect,
-	stateKey,
+	limits,
+	onSize,
+	onSwap,
 	onClose,
-	canSwap,
 	maxHeight,
 	onPreview,
+	scrollContent = true,
+	compact = false,
 }: {
 	id: string;
-	frame: ConversationFrameDescriptor;
+	frame: Pick<ConversationFrameDescriptor, "title" | "summary" | "content">;
 	rect: FrameRect;
 	safeRect: FrameRect;
-	stateKey: string;
+	limits: typeof frameLimits.plan;
+	onSize: (size: {width?:number;height?:number}) => void;
+	onSwap?: () => void;
 	onClose: () => void;
-	canSwap: boolean;
 	maxHeight: number;
 	onPreview: (axis: "x" | "y", value: number | null) => void;
+	scrollContent?: boolean;
+	compact?: boolean;
 }) {
 	const { t } = useTranslation();
 	const ref = useRef<HTMLElement>(null);
-	const limits = frameLimits[frame.kind];
-	const size = useConversationFrameStore((state) => state.setFrameSize);
-	const swap = useConversationFrameStore((state) => state.swapFrameSlots);
 	const initial = useRef({ width: rect.width, height: rect.height });
 	const maxHeightPx = Math.min(
 		limits.maxHeight,
@@ -324,7 +336,7 @@ function FrameChrome({
 		min: limits.minWidth,
 		max: maxWidthValue,
 		edge: "left",
-		onCommit: (value) => size(stateKey, frame.kind, { width: value }),
+		onCommit: (value) => onSize({ width: value }),
 	});
 	const height = useResizable({
 		cssVar: "--frame-height",
@@ -338,7 +350,7 @@ function FrameChrome({
 		max: maxHeightValue,
 		edge: "right",
 		axis: "y",
-		onCommit: (value) => size(stateKey, frame.kind, { height: value }),
+		onCommit: (value) => onSize({ height: value }),
 	});
 	const style: CSSProperties = {
 		top: rect.top,
@@ -364,15 +376,15 @@ function FrameChrome({
 				}
 			}}
 		>
-			<div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+			<div className={compact ? "flex h-8 shrink-0 items-center gap-2 border-b px-2" : "flex h-10 shrink-0 items-center gap-2 border-b px-3"}>
 				<span className="min-w-0 flex-1 truncate text-sm font-medium">{frame.title}</span>
 				<span className="text-xs tabular-nums text-muted-foreground">{frame.summary}</span>
-				{canSwap ? (
+				{onSwap ? (
 					<Button
 						variant="ghost"
 						size="icon-sm"
 						aria-label={t("frames.swap")}
-						onClick={() => swap(stateKey)}
+						onClick={onSwap}
 					>
 						<ArrowUpDown className="size-3.5" />
 					</Button>
@@ -381,7 +393,7 @@ function FrameChrome({
 					variant="ghost"
 					size="icon-sm"
 					aria-label={t("frames.reset")}
-					onClick={() => size(stateKey, frame.kind, { width: limits.width, height: limits.height })}
+					onClick={() => onSize({ width: limits.width, height: limits.height })}
 				>
 					<RotateCcw className="size-3.5" />
 				</Button>
@@ -394,7 +406,7 @@ function FrameChrome({
 					<ChevronUp className="size-4" />
 				</Button>
 			</div>
-			<div className="min-h-0 flex-1 overflow-auto overscroll-contain p-3">{frame.content}</div>
+			<div className={scrollContent ? "min-h-0 flex-1 overflow-auto overscroll-contain p-3" : compact ? "flex min-h-0 flex-1 flex-col overflow-hidden p-1" : "flex min-h-0 flex-1 flex-col overflow-hidden p-3"}>{frame.content}</div>
 			<ResizeHandle
 				side="left"
 				tabIndex={0}

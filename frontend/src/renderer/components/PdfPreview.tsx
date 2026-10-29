@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask, TextLayer } from "pdfjs-dist";
 import { formatBytes } from "./ReadOnlyFileView";
@@ -34,7 +34,16 @@ function loadPdfjs(): Promise<Pdfjs> {
  * its text can be selected. Pages draw as they near the viewport and release
  * their drawing once they are far from it. A file over MAX_PDF_BYTES is not read.
  */
-export function PdfPreview({ firstPageOnly = false, onError, path, src }: { firstPageOnly?: boolean; onError: () => void; path: string; src: string }) {
+export function PdfPreview({ firstPageOnly = false, onError, path, src, safeDocument = false, documentZoom = 1, scrollPosition, onScrollPosition }: {
+	documentZoom?: number;
+	scrollPosition?: number;
+	onScrollPosition?: (top: number) => void;
+	safeDocument?: boolean;
+	firstPageOnly?: boolean;
+	onError: () => void;
+	path: string;
+	src: string;
+}) {
 	const { t } = useTranslation();
 	const [loaded, setLoaded] = useState<{ pdf: PDFDocumentProxy; pdfjs: Pdfjs; sizes: PageSize[] } | null>(null);
 	const [width, setWidth] = useState(0);
@@ -49,18 +58,19 @@ export function PdfPreview({ firstPageOnly = false, onError, path, src }: { firs
 		setLoaded(null);
 		setTooLarge(null);
 		void (async () => {
+			const limit = safeDocument ? 20 * 1024 * 1024 : MAX_PDF_BYTES;
 			const pdfjs = await loadPdfjs();
 			const response = await fetch(src);
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const declaredSize = Number(response.headers.get("content-length")) || 0;
-			if (declaredSize > MAX_PDF_BYTES) {
+			if (declaredSize > limit) {
 				void response.body?.cancel();
 				throw new PdfTooLargeError(declaredSize);
 			}
 			const data = new Uint8Array(await response.arrayBuffer());
-			if (data.byteLength > MAX_PDF_BYTES) throw new PdfTooLargeError(data.byteLength);
+			if (data.byteLength > limit) throw new PdfTooLargeError(data.byteLength);
 			if (cancelled) return;
-			loadingTask = pdfjs.getDocument({ data });
+			loadingTask = pdfjs.getDocument({ data, ...(safeDocument ? { isEvalSupported: false, useSystemFonts: false } : {}) });
 			const pdf = await loadingTask.promise;
 			const sizes = await Promise.all(Array.from({ length: firstPageOnly ? Math.min(pdf.numPages, 1) : pdf.numPages }, async (_, index) => {
 				const { width, height } = (await pdf.getPage(index + 1)).getViewport({ scale: 1 });
@@ -76,7 +86,7 @@ export function PdfPreview({ firstPageOnly = false, onError, path, src }: { firs
 			cancelled = true;
 			void loadingTask?.destroy();
 		};
-	}, [firstPageOnly, src]);
+	}, [firstPageOnly, src, safeDocument]);
 
 	useEffect(() => {
 		const element = scrollRef.current;
@@ -96,15 +106,21 @@ export function PdfPreview({ firstPageOnly = false, onError, path, src }: { firs
 		};
 	}, []);
 
+	useLayoutEffect(() => {
+		if (loaded && scrollRef.current && scrollPosition !== undefined && Math.abs(scrollRef.current.scrollTop - scrollPosition) > 1) {
+			scrollRef.current.scrollTop = scrollPosition;
+		}
+	}, [loaded, width, scrollPosition]);
+
 	if (tooLarge !== null) return <PanelMessage>{t("files.explorer.tooLarge", { size: formatBytes(tooLarge) })}</PanelMessage>;
 	return (
-		<div aria-label={path} className="board-scrollbar min-h-0 min-w-0 flex-1 overflow-auto bg-surface p-3" ref={scrollRef} role="document">
+		<div aria-label={path} className="board-scrollbar min-h-0 min-w-0 flex-1 overflow-auto bg-surface p-3" ref={scrollRef} onScroll={(event) => onScrollPosition?.(event.currentTarget.scrollTop)} role="document">
 			{!loaded ? (
 				<PanelMessage>{t("files.loading")}</PanelMessage>
 			) : width > 0 ? (
 				<div className="flex flex-col items-center" data-selection-feedback="" style={{ gap: PAGE_GAP }}>
 					{loaded.sizes.map((size, index) => (
-						<PdfPage key={index} pageNumber={index + 1} pdf={loaded.pdf} pdfjs={loaded.pdfjs} root={scrollRef} scale={Math.min(width / size.width, MAX_SCALE)} size={size} />
+						<PdfPage key={index} pageNumber={index + 1} pdf={loaded.pdf} pdfjs={loaded.pdfjs} root={scrollRef} scale={Math.min(width / size.width * documentZoom, MAX_SCALE * documentZoom)} size={size} />
 					))}
 				</div>
 			) : null}

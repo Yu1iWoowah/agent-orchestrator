@@ -11,16 +11,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 func settingsFixture(t *testing.T) (*sqlite.Store, *sql.DB, domain.SessionRecord) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := sqlite.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
+	s := sqlitetest.MustOpenAt(t, dir)
 	db, err := sql.Open("sqlite", filepath.Join(dir, "ao.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +153,7 @@ func TestAgentSettingsCommitRollsBackProjectionAndAuditFailure(t *testing.T) {
 }
 
 func TestAgentSettingsCommitRejectsStaleOwnerAndConcurrentEdit(t *testing.T) {
-	for _, field := range []string{"model", "controller_generation", "is_terminated", "account"} {
+	for _, field := range []string{"model", "controller_generation", "is_terminated", "account", "provider_conversation_id", "branch"} {
 		t.Run(field, func(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := settingsFixture(t)
@@ -168,7 +165,11 @@ func TestAgentSettingsCommitRejectsStaleOwnerAndConcurrentEdit(t *testing.T) {
 			if field == "is_terminated" {
 				value = 1
 			}
-			if field == "account" {
+			if field == "branch" {
+				if _, err := s.CreateConversation(ctx, "new-branch", domain.ConversationScopeSession, rec.ProjectID, rec.ID, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			} else if field == "account" {
 				if err := s.BindSessionAgentAccount(ctx, rec.ID, domain.AgentAccountProviderClaude, "managed", time.Now()); err != nil {
 					t.Fatal(err)
 				}

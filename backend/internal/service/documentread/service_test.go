@@ -442,3 +442,52 @@ func TestLocalPathsRejectEncodedSeparatorsAndEmptySegments(t *testing.T) {
 		}
 	}
 }
+
+func TestReadManagedContentRevalidatesSourceAndPreservesLiteralNames(t *testing.T) {
+	f := setup(t)
+	path := "mixed/%2e%2e%2fx%"
+	f.write(t, "artifacts/p-1/"+path, "literal content")
+	target := Input{value: ArtifactTarget{Kind: "artifact", ProjectID: "p", SessionID: "p-1", Path: path}}
+	metadata, e := f.s.Resolve(context.Background(), target)
+	if e != nil {
+		t.Fatal(e)
+	}
+	content, e := f.s.Read(context.Background(), target, 1024, metadata.Fingerprint)
+	if e != nil || string(content.Bytes) != "literal content" || content.Document.CanonicalURI != metadata.CanonicalURI {
+		t.Fatalf("read: %+v %v", content, e)
+	}
+	if _, e = f.s.Read(context.Background(), target, 3, metadata.Fingerprint); e == nil {
+		t.Fatal("read exceeded requested bound")
+	}
+	if _, e = f.s.Read(context.Background(), target, 1024, "outdated"); e == nil {
+		t.Fatal("accepted stale content fingerprint")
+	}
+	f.store.sessions[0].Metadata.ArtifactDir = filepath.Join(f.data, "keys")
+	if _, e = f.s.Read(context.Background(), target, 1024, metadata.Fingerprint); e == nil {
+		t.Fatal("content read trusted previous metadata after root registration changed")
+	}
+}
+
+func TestReadManagedContentRejectsReplacementAndCancellation(t *testing.T) {
+	f := setup(t)
+	target := Input{value: SharedTarget{Kind: "shared", ProjectID: "p", Path: "guide.md"}}
+	metadata, e := f.s.Resolve(context.Background(), target)
+	if e != nil {
+		t.Fatal(e)
+	}
+	f.write(t, "keys/private", "private")
+	if e = os.Remove(filepath.Join(f.shared, "guide.md")); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Symlink(filepath.Join(f.data, "keys/private"), filepath.Join(f.shared, "guide.md")); e != nil {
+		t.Skip(e)
+	}
+	if _, e = f.s.Read(context.Background(), target, 1024, metadata.Fingerprint); e == nil {
+		t.Fatal("content read followed replacement symlink")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, e = f.s.Read(ctx, target, 1024, ""); e == nil {
+		t.Fatal("ignored cancelled content request")
+	}
+}

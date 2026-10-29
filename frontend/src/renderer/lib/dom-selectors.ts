@@ -1,5 +1,5 @@
 export const OPEN_DIALOG_OR_MENU_SELECTOR =
-	'[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]';
+	'[role="dialog"][data-state="open"]:not([data-conversation-nonmodal]), [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]';
 
 // Native BrowserView pixels sit above the renderer, so only dialogs and
 // explicitly marked overlays (option menus, browser-panel tooltips, titlebar
@@ -8,7 +8,7 @@ export const OPEN_DIALOG_OR_MENU_SELECTOR =
 // cascade) or the page blanks out. Radix tooltips never use `data-state="open"`;
 // they report `delayed-open` or `instant-open`, so both states are matched.
 export const OPEN_BROWSER_OVERLAY_SELECTOR =
-	'[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [data-browser-native-overlay="true"][data-state="open"], [data-browser-native-overlay="true"][data-state="delayed-open"], [data-browser-native-overlay="true"][data-state="instant-open"]';
+	'[role="dialog"][data-state="open"]:not([data-conversation-nonmodal]), [role="alertdialog"][data-state="open"], [data-browser-native-overlay="true"][data-state="open"], [data-browser-native-overlay="true"][data-state="delayed-open"], [data-browser-native-overlay="true"][data-state="instant-open"]';
 
 export const BROWSER_OVERLAY_CANDIDATE_SELECTOR =
 	'[role="dialog"], [role="alertdialog"], [data-browser-native-overlay="true"]';
