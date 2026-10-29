@@ -8,6 +8,7 @@ for (const lang of ["en", "zh-TW"]) {
 		expect(await page.getByRole("switch").count()).toBe(0);
 		expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 		await page.goto(`/e2e/app-diagnostics/harness.html?lang=${lang}&state=disabled`);
-		await expect(page.getByRole("status")).toHaveCount(0);
+		await expect(page.getByRole("status")).not.toContainText(lang === "en" ? "unavailable" : "不可用");
+		await expect(page.getByRole("button", { name: lang === "en" ? "Allow for 15 minutes" : "允許 15 分鐘" })).toBeDisabled();
 	});
 }

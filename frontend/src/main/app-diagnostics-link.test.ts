@@ -17,7 +17,7 @@ describe("app diagnostics private link", () => {
 		const [socket] = await incoming;
 		try {
 			await once(socket, "data");
-			socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" }) + "\n");
+			socket.write(JSON.stringify({ type: "hello-ok", version: 1, schemaVersion: 1, epoch: "epoch" }) + "\n");
 			await vi.waitFor(() => expect(state).toHaveBeenCalledWith("connected"));
 			state.mockClear();
 			const closed = once(socket, "close");
@@ -57,7 +57,7 @@ describe("app diagnostics private link", () => {
 		});
 		await new Promise<void>((resolve) => socket.once("data", () => resolve()));
 		expect(frames).toEqual([{ type: "hello", version: 1, token: "app-token", instanceId: "app-instance" }]);
-		socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch-1" }) + "\n");
+		socket.write(JSON.stringify({ type: "hello-ok", version: 1, schemaVersion: 1, epoch: "epoch-1" }) + "\n");
 		socket.write(JSON.stringify({ type: "snapshot", schemaVersion: 1, requestId: "request-1", request: { windowId: "window-1" } }) + "\n");
 		await new Promise<void>((resolve) => socket.once("data", () => resolve()));
 		expect(frames[1]).toEqual({ type: "result", schemaVersion: 1, requestId: "request-1", code: "APP_DIAGNOSTICS_UNSUPPORTED" });
@@ -93,7 +93,7 @@ describe("app diagnostics private link", () => {
 		});
 		try {
 			await vi.waitFor(() => expect(frames.some((frame) => frame.type === "hello")).toBe(true));
-			socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" }) + "\n");
+			socket.write(JSON.stringify({ type: "hello-ok", version: 1, schemaVersion: 1, epoch: "epoch" }) + "\n");
 			await vi.waitFor(() => expect(frames.some((frame) => frame.type === "ready")).toBe(true));
 			socket.write(
 				JSON.stringify({ type: "snapshot", schemaVersion: 1, requestId: "request-1", request: { windowId: "window-1", projectId } }) + "\n",
@@ -122,10 +122,11 @@ describe("app diagnostics private link", () => {
 				});
 				socket.once("data", () => {
 					if (attempts === 1) {
-						if (reason === "disconnect") socket.end(`${JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" })}\n`);
+						if (reason === "disconnect")
+							socket.end(`${JSON.stringify({ type: "hello-ok", version: 1, schemaVersion: 1, epoch: "epoch" })}\n`);
 						else socket.end(JSON.stringify({ type: "hello-rejected", code: reason }) + "\n");
 					} else {
-						socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" }) + "\n");
+						socket.write(JSON.stringify({ type: "hello-ok", version: 1, schemaVersion: 1, epoch: "epoch" }) + "\n");
 						resolve();
 					}
 				});
@@ -170,4 +171,70 @@ describe("app diagnostics private link", () => {
 			server.close();
 		}
 	});
+});
+
+it("correlates native grant/revoke without exposing credentials", async () => {
+	const server = createServer();
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("missing address");
+	const incoming = once(server, "connection");
+	const state = vi.fn();
+	const link = connectAppDiagnostics({ port: address.port, host: "127.0.0.1" }, "private-token", "app-1", { state });
+	const [socket] = await incoming;
+	let buffer = "";
+	const frames: Array<{ type: string; requestId?: string; sessionId?: string; grantId?: string }> = [];
+	socket.on("data", (chunk: Buffer) => {
+		buffer += chunk.toString();
+		for (;;) {
+			const end = buffer.indexOf("\n");
+			if (end < 0) break;
+			frames.push(JSON.parse(buffer.slice(0, end)));
+			buffer = buffer.slice(end + 1);
+		}
+	});
+	try {
+		await vi.waitFor(() => expect(frames[0]?.type).toBe("hello"));
+		socket.write(JSON.stringify({ type: "hello-ok", version: 1, schemaVersion: 1, epoch: "epoch" }) + "\n");
+		await vi.waitFor(() => expect(state).toHaveBeenCalledWith("connected"));
+		const granting = link.grant("next.js-1");
+		await vi.waitFor(() => expect(frames.at(-1)?.type).toBe("grant"));
+		expect(frames.at(-1)?.sessionId).toBe("next.js-1");
+		expect(Reflect.get(frames.at(-1)!, "schemaVersion")).toBe(1);
+		socket.write(
+			JSON.stringify({ type: "grant-result", schemaVersion: 1, requestId: frames.at(-1)?.requestId, grantId: "grant-1" }) + "\n",
+		);
+		expect(await granting).toBe("grant-1");
+		const revoking = link.revoke("grant-1");
+		await vi.waitFor(() => expect(frames.at(-1)?.type).toBe("revoke"));
+		socket.write(JSON.stringify({ type: "revoke-result", schemaVersion: 1, requestId: frames.at(-1)?.requestId }) + "\n");
+		await revoking;
+	} finally {
+		link();
+		socket.destroy();
+		server.close();
+	}
+});
+
+it("marks an older daemon unsupported before sending new snapshot frames", async () => {
+	const server = createServer();
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("missing address");
+	const incoming = once(server, "connection");
+	const state = vi.fn();
+	const link = connectAppDiagnostics({ port: address.port, host: "127.0.0.1" }, "token", "app-1", { state });
+	const [socket] = await incoming;
+	try {
+		await once(socket, "data");
+		socket.write(JSON.stringify({ type: "hello-ok", version: 1, epoch: "epoch" }) + "\n");
+		await vi.waitFor(() => expect(state).toHaveBeenCalledWith("unsupported"));
+		await expect(link.grant("next.js-1")).rejects.toThrow("APP_NOT_CONNECTED");
+	} finally {
+		link();
+		socket.destroy();
+		server.close();
+	}
 });

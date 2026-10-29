@@ -47,6 +47,48 @@ function exposedBridge(): AoBridge {
 }
 
 describe("preload app diagnostic boundary", () => {
+	it("reads document identity on a readonly channel and validates it", async () => {
+		const api = exposedBridge().appDiagnostics;
+		const doc = { documentId: "doc-1", windowId: "window-1", generation: 1, enabled: false, expiresAt: 0 };
+		electronMocks.invoke.mockResolvedValueOnce(doc);
+		await expect(api.getIdentity()).resolves.toEqual(doc);
+		expect(electronMocks.invoke).toHaveBeenCalledWith(DIAGNOSTIC_CHANNEL.identity);
+		expect(electronMocks.invoke).not.toHaveBeenCalledWith(DIAGNOSTIC_CHANNEL.register);
+		electronMocks.invoke.mockResolvedValueOnce({ ...doc, token: "canary-secret" });
+		await expect(api.getIdentity()).rejects.toThrow("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+	});
+
+	it("requires exact native-consent request identity before IPC and validates metadata replies", async () => {
+		const api = exposedBridge().appDiagnostics;
+		const value = {
+			schemaVersion: 1 as const,
+			requestId: "consent-1",
+			documentId: "doc-1",
+			windowId: "window-1",
+			generation: 1,
+			sessionId: "next.js-1",
+		};
+		for (const changed of [
+			{ ...value, schemaVersion: 2 },
+			{ ...value, token: "canary-secret" },
+			{ ...value, generation: 0 },
+		]) {
+			electronMocks.invoke.mockClear();
+			// Runtime boundary is deliberately tested with malformed external data.
+			await expect(api.requestEnable(changed as typeof value)).rejects.toThrow();
+			expect(electronMocks.invoke).not.toHaveBeenCalled();
+		}
+		electronMocks.invoke.mockResolvedValueOnce({ ...value, outcome: "cancelled" });
+		await expect(api.requestEnable(value)).resolves.toEqual({ ...value, outcome: "cancelled" });
+		electronMocks.invoke.mockResolvedValueOnce({
+			outcome: "enabled",
+			grantId: "grant-1",
+			sessionId: "next.js-1",
+			expiresAt: Date.now() + 1000,
+			token: "canary-secret",
+		});
+		await expect(api.requestEnable(value)).rejects.toThrow("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+	});
 	it("forwards only v1 requests and both v1 success/failure replies", async () => {
 		const api = exposedBridge().appDiagnostics;
 		const identity = { requestId: "request-1", documentId: "document-1", windowId: "window-1", generation: 1 };
@@ -71,7 +113,7 @@ describe("preload app diagnostic boundary", () => {
 			expect(electronMocks.invoke).toHaveBeenCalledWith(DIAGNOSTIC_CHANNEL.submit, { ...reply, schemaVersion: 1 });
 		}
 	});
-	it("has no enable/grant/token API and rejects unsafe replies before IPC", async () => {
+	it("has no direct enable/grant/token API and rejects unsafe replies before IPC", async () => {
 		const api = exposedBridge().appDiagnostics;
 		expect(Object.keys(api)).not.toContain("enable");
 		expect(Object.keys(api)).not.toContain("grant");
@@ -476,4 +518,12 @@ describe("preload browser downloads bridge", () => {
 		dispose();
 		expect(electronMocks.off).toHaveBeenCalledWith("browser:downloadsChanged", wrapped);
 	});
+});
+
+describe("native diagnostic reply correlation",()=>{
+ it("rejects an enable reply without the request schema/document identity",async()=>{
+  const request={schemaVersion:1 as const,requestId:"native-1",documentId:"doc-1",windowId:"window-1",generation:1,sessionId:"next.js-1"};
+  electronMocks.invoke.mockResolvedValueOnce({outcome:"enabled",grantId:"grant-1",sessionId:"next.js-1",expiresAt:Date.now()+1000});
+  await expect(exposedBridge().appDiagnostics.requestEnable(request)).rejects.toThrow("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+ });
 });

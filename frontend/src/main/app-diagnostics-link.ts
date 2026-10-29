@@ -1,16 +1,27 @@
+import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { connect, type NetConnectOpts } from "node:net";
-import { diagnosticId, isAppSnapshot, type AppSnapshot } from "../shared/app-diagnostics";
+import { diagnosticId, isAppSnapshot, isDiagnosticAudit, type DiagnosticAudit, type AppSnapshot } from "../shared/app-diagnostics";
 
 /** Keep the legacy first line so an older daemon still authenticates Browser. */
 export function privateRuntimeHandoff(browserToken: string, appDiagnosticsToken: string): string {
 	return `${browserToken}\n${JSON.stringify({ version: 1, browserToken, appDiagnosticsToken })}\n`;
 }
 export type DiagnosticsLinkOptions = {
+	revoked?: (grantId: string) => void;
 	windows?: () => { id: string; generation: number }[];
 	capture?: (request: { windowId?: string; projectId?: string }, signal: AbortSignal) => Promise<AppSnapshot>;
-	state?: (state: "connected" | "disconnected" | "rejected") => void;
+	state?: (state: "connected" | "disconnected" | "rejected" | "unsupported") => void;
 };
+const managementCodes = new Set([
+	"APP_DIAGNOSTICS_CAPABILITY_INVALID",
+	"APP_DIAGNOSTICS_UNSUPPORTED",
+	"APP_DIAGNOSTICS_STORAGE_FAILED",
+	"APP_DIAGNOSTICS_AUDIT_FAILED",
+	"APP_DIAGNOSTICS_SESSION_UNAVAILABLE",
+	"APP_DIAGNOSTICS_CLEANUP_FAILED",
+	"APP_DIAGNOSTICS_GRANT_EXPIRED",
+]);
 const safeCodes = new Set([
 	"APP_DIAGNOSTICS_DISABLED",
 	"APP_DIAGNOSTICS_BUSY",
@@ -38,6 +49,44 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 	let socket: ReturnType<typeof connect> | undefined;
 	let refresh = () => undefined as void;
 	let backoff = 200;
+	let rpcSend: ((value: unknown) => void) | undefined;
+	const calls = new Map<string, { type: string; finish: (message?: object) => void }>();
+	const call = (type: "grant" | "revoke" | "audit", target: string): Promise<string | DiagnosticAudit> => {
+		if (disposed || !rpcSend) return Promise.reject(new Error("APP_NOT_CONNECTED"));
+		return new Promise((resolve, reject) => {
+			const requestId = randomUUID();
+			const timer = setTimeout(() => finish(), 5000);
+			const finish = (message?: object) => {
+				clearTimeout(timer);
+				calls.delete(requestId);
+				if (!message) {
+					reject(new Error("APP_NOT_CONNECTED"));
+					return;
+				}
+				if ("code" in message && message.code) {
+					reject(
+						new Error(typeof message.code === "string" && managementCodes.has(message.code) ? message.code : "APP_DIAGNOSTICS_UNSUPPORTED"),
+					);
+					return;
+				}
+				if (type === "grant") {
+					if (!("grantId" in message) || !diagnosticId(message.grantId) || typeof message.grantId !== "string") {
+						reject(new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD"));
+						return;
+					}
+					resolve(message.grantId);
+				} else if (type === "audit") {
+					if (!("audit" in message) || !isDiagnosticAudit(message.audit)) {
+						reject(new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD"));
+						return;
+					}
+					resolve(message.audit);
+				} else resolve("");
+			};
+			calls.set(requestId, { type: `${type}-result`, finish });
+			rpcSend?.({ type, schemaVersion: 1, requestId, ...(type === "grant" ? { sessionId: target } : { grantId: target }) });
+		});
+	};
 	const open = () => {
 		if (disposed) return;
 		const current = connect(address);
@@ -66,6 +115,7 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 		}, 5_000);
 		current.once("connect", () => send({ type: "hello", version: 1, token, instanceId }));
 		current.on("data", (chunk: Buffer) => {
+			if (disposed || socket !== current) return;
 			buffer += decoder.write(chunk);
 			if (Buffer.byteLength(buffer) > 1 << 20) {
 				current.destroy();
@@ -100,13 +150,54 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 					"epoch" in message &&
 					diagnosticId(message.epoch)
 				) {
+					if (!("schemaVersion" in message) || message.schemaVersion !== 1) {
+						terminal = true;
+						options.state?.("unsupported");
+						current.destroy();
+						return;
+					}
 					authenticated = true;
+					rpcSend = send;
 					backoff = 200;
 					options.state?.("connected");
 					refresh();
 					continue;
 				}
 				if (authenticated && message.type === "pong") continue;
+				if (
+					authenticated &&
+					message.type === "grant-revoked" &&
+					"schemaVersion" in message &&
+					message.schemaVersion === 1 &&
+					"grantId" in message &&
+					typeof message.grantId === "string" &&
+					diagnosticId(message.grantId) &&
+					Object.keys(message).every((key) => ["type", "schemaVersion", "grantId"].includes(key))
+				) {
+					options.revoked?.(message.grantId);
+					continue;
+				}
+
+				if (
+					authenticated &&
+					(message.type === "grant-result" || message.type === "revoke-result" || message.type === "audit-result") &&
+					"requestId" in message &&
+					typeof message.requestId === "string"
+				) {
+					const pending = calls.get(message.requestId);
+					if (
+						!("schemaVersion" in message) ||
+						message.schemaVersion !== 1 ||
+						!pending ||
+						pending.type !== message.type ||
+						!Object.keys(message).every((key) => ["type", "schemaVersion", "requestId", "grantId", "code", "audit"].includes(key))
+					) {
+						current.destroy();
+						return;
+					}
+					pending.finish(message);
+					continue;
+				}
 				if (authenticated && message.type === "cancel" && "requestId" in message && typeof message.requestId === "string") {
 					pending.get(message.requestId)?.abort();
 					continue;
@@ -167,6 +258,8 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 		current.on("error", () => current.destroy());
 		current.once("close", () => {
 			clearInterval(heartbeat);
+			rpcSend = undefined;
+			for (const pending of calls.values()) pending.finish();
 			for (const abort of pending.values()) abort.abort();
 			pending.clear();
 			if (!disposed && !terminal) options.state?.("disconnected");
@@ -178,9 +271,26 @@ export function connectAppDiagnostics(address: NetConnectOpts, token: string, in
 	open();
 	const dispose = () => {
 		disposed = true;
+		rpcSend = undefined;
+		for (const pending of calls.values()) pending.finish();
 		clearTimeout(retryTimer);
 		clearInterval(heartbeat);
 		socket?.destroy();
 	};
-	return Object.assign(dispose, { refresh: () => refresh() });
+	return Object.assign(dispose, {
+		refresh: () => refresh(),
+		grant: async (sessionId: string) => {
+			const value = await call("grant", sessionId);
+			if (typeof value !== "string") throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+			return value;
+		},
+		audit: async (grantId: string) => {
+			const value = await call("audit", grantId);
+			if (typeof value === "string") throw new Error("APP_DIAGNOSTICS_INVALID_PAYLOAD");
+			return value;
+		},
+		revoke: async (grantId: string) => {
+			await call("revoke", grantId);
+		},
+	});
 }

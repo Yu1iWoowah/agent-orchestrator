@@ -1,4 +1,3 @@
-import { AppDiagnosticsStatus } from "../AppDiagnosticsStatus";
 import { useTranslation } from "react-i18next";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
@@ -135,7 +134,6 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 				}
 			}}
 		>
-			<AppDiagnosticsStatus />
 			<div className="flex flex-col gap-1.5">
 				<label className="settings-field-label" htmlFor={titleId}>
 					{t("report.titleLabel")}

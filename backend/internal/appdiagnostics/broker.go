@@ -88,6 +88,7 @@ type frame struct {
 	Windows       []domain.AppDiagnosticsWindow        `json:"windows,omitempty"`
 	Request       *domain.AppDiagnosticsCaptureRequest `json:"request,omitempty"`
 	Snapshot      *domain.AppDiagnosticsSnapshot       `json:"snapshot,omitempty"`
+	Audit         json.RawMessage                      `json:"audit,omitempty"`
 	Code          string                               `json:"code,omitempty"`
 }
 type response struct {
@@ -193,9 +194,10 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 			_ = authority.Sweep(context.Background())
 		}
 	}()
-	if b.send(conn, frame{Type: "hello-ok", Version: 1, Epoch: epoch}) != nil {
+	if b.send(conn, frame{Type: "hello-ok", Version: 1, SchemaVersion: 1, Epoch: epoch}) != nil {
 		return
 	}
+	managementSeen := map[string]bool{}
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 		if !scan.Scan() {
@@ -204,6 +206,12 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 		var in frame
 		if decode(scan.Bytes(), &in) != nil {
 			return
+		}
+		if in.Type == "grant" || in.Type == "revoke" || in.Type == "audit" {
+			if in.SchemaVersion != 1 || !safeID(in.RequestID) || managementSeen[in.RequestID] || len(managementSeen) >= 1024 {
+				return
+			}
+			managementSeen[in.RequestID] = true
 		}
 		switch in.Type {
 		case "ping":
@@ -235,9 +243,9 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 			grantID, err := authority.GrantRuntime(ctx, in.SessionID, epoch)
 			code := ""
 			if err != nil {
-				code = "APP_DIAGNOSTICS_UNSUPPORTED"
+				code = managementFailure(err, "APP_DIAGNOSTICS_UNSUPPORTED")
 			}
-			if b.send(conn, frame{Type: "grant-result", RequestID: in.RequestID, GrantID: grantID, Code: code}) != nil {
+			if b.send(conn, frame{Type: "grant-result", SchemaVersion: 1, RequestID: in.RequestID, GrantID: grantID, Code: code}) != nil {
 				return
 			}
 		case "revoke":
@@ -249,9 +257,24 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 			}
 			code := ""
 			if err := authority.RevokeRuntime(ctx, epoch, in.GrantID); err != nil {
-				code = "APP_DIAGNOSTICS_CAPABILITY_INVALID"
+				code = managementFailure(err, "APP_DIAGNOSTICS_CAPABILITY_INVALID")
 			}
-			if b.send(conn, frame{Type: "revoke-result", RequestID: in.RequestID, Code: code}) != nil {
+			if b.send(conn, frame{Type: "revoke-result", SchemaVersion: 1, RequestID: in.RequestID, Code: code}) != nil {
+				return
+			}
+		case "audit":
+			authority, ok := b.authority.(interface {
+				AuditRuntime(context.Context, string, string) (json.RawMessage, error)
+			})
+			if !ok {
+				return
+			}
+			audit, err := authority.AuditRuntime(ctx, epoch, in.GrantID)
+			code := ""
+			if err != nil {
+				code = managementFailure(err, "APP_DIAGNOSTICS_UNSUPPORTED")
+			}
+			if b.send(conn, frame{Type: "audit-result", SchemaVersion: 1, RequestID: in.RequestID, Audit: audit, Code: code}) != nil {
 				return
 			}
 		case "result":
@@ -334,4 +357,30 @@ func captureFailure(code string) *domain.AppDiagnosticsError {
 		code = "APP_RENDERER_UNAVAILABLE"
 	}
 	return &domain.AppDiagnosticsError{Code: code, Status: status}
+}
+
+func managementFailure(err error, fallback string) string {
+	var failure *domain.AppDiagnosticsError
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "APP_DIAGNOSTICS_CAPABILITY_INVALID", "APP_DIAGNOSTICS_UNSUPPORTED", "APP_DIAGNOSTICS_STORAGE_FAILED", "APP_DIAGNOSTICS_AUDIT_FAILED", "APP_DIAGNOSTICS_SESSION_UNAVAILABLE", "APP_DIAGNOSTICS_GRANT_EXPIRED", "APP_DIAGNOSTICS_CLEANUP_FAILED":
+			return failure.Code
+		}
+	}
+	return fallback
+}
+
+// NotifyGrantRevoked clears the current native owner's collector even when a
+// grant is revoked through HTTP, expiry or session lifecycle rather than Settings.
+func (b *Broker) NotifyGrantRevoked(epoch, id string) {
+	b.mu.Lock()
+	conn := b.conn
+	current := b.state.Epoch
+	b.mu.Unlock()
+	if conn == nil || epoch != current {
+		return
+	}
+	if err := b.send(conn, frame{Type: "grant-revoked", SchemaVersion: 1, GrantID: id}); err != nil {
+		_ = conn.Close()
+	}
 }

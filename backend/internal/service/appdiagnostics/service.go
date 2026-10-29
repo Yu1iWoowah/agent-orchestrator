@@ -202,12 +202,16 @@ func (s *Service) authorize(ctx context.Context, token string) (*grantState, err
 	if found == nil {
 		return nil, failure("APP_DIAGNOSTICS_CAPABILITY_INVALID", 403)
 	}
+	return s.authorizeGrant(ctx, found)
+}
+func (s *Service) authorizeGrant(ctx context.Context, found *grantState) (*grantState, error) {
+	row, err := s.sessions.Get(ctx, found.credential.SessionID)
+	state := s.runtime.State()
+	// Querying the session can itself cross the deadline. Check time after I/O.
 	code := ""
 	if !s.now().Before(found.credential.ExpiresAt) {
 		code = "APP_DIAGNOSTICS_GRANT_EXPIRED"
 	}
-	state := s.runtime.State()
-	row, err := s.sessions.Get(ctx, found.credential.SessionID)
 	var lookup *apierr.Error
 	missing := errors.As(err, &lookup) && lookup.Code == "SESSION_NOT_FOUND"
 	if state.InstanceID != found.credential.InstanceID || state.Epoch != found.epoch {
@@ -226,14 +230,51 @@ func (s *Service) authorize(ctx context.Context, token string) (*grantState, err
 	return found, nil
 }
 
+// authorizeDelivery is the final, mutex-protected delivery decision after all
+// content/audit I/O. Reauthorization may perform I/O too, so authorizeGrant
+// checks expiry after its query. No further storage work follows a successful fence.
+func (s *Service) authorizeDelivery(ctx context.Context, g *grantState) error {
+	if s.closed || s.grants[g.credential.ID] != g {
+		return failure("APP_DIAGNOSTICS_CAPABILITY_INVALID", 403)
+	}
+	if ctx.Err() != nil {
+		return failure("APP_SNAPSHOT_TIMEOUT", 504)
+	}
+	if _, err := s.authorizeGrant(ctx, g); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return failure("APP_SNAPSHOT_TIMEOUT", 504)
+	}
+	return nil
+}
+
+func (s *Service) failDelivery(audit Audit, err error) error {
+	audit.Outcome = "failed"
+	audit.At = s.now()
+	var typed *Error
+	if errors.As(err, &typed) {
+		audit.ReasonCode = typed.Code
+	}
+	if s.store.audit(audit) != nil {
+		return failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+	}
+	return err
+}
+
 // Status never reveals state without a current session-scoped grant.
 func (s *Service) Status(ctx context.Context, token string) (RuntimeState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.authorize(ctx, token); err != nil {
+	g, err := s.authorize(ctx, token)
+	if err != nil {
 		return RuntimeState{}, err
 	}
-	return s.runtime.State(), nil
+	state := s.runtime.State()
+	if err := s.authorizeDelivery(ctx, g); err != nil {
+		return RuntimeState{}, err
+	}
+	return state, nil
 }
 
 // Capture does not retry or queue. A single runtime capture may be pending.
@@ -276,6 +317,11 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 	if s.busy {
 		s.mu.Unlock()
 		return Record{}, failure("APP_DIAGNOSTICS_BUSY", 429)
+	}
+	// Do not accumulate more captures while a rejected file awaits cleanup.
+	if err := s.store.retryDiscardedSnapshots(""); err != nil {
+		s.mu.Unlock()
+		return Record{}, failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
 	}
 	if !s.lastCapture.IsZero() && s.now().Sub(s.lastCapture) < 2*time.Second {
 		s.mu.Unlock()
@@ -380,16 +426,29 @@ func (s *Service) Capture(ctx context.Context, token string, in CaptureRequest) 
 	audit.Outcome = "completed"
 	audit.At = s.now()
 	if err := s.store.audit(audit); err != nil {
-		_ = s.store.remove("snapshots", record.ID)
+		_ = s.store.discardSnapshot(record.ID, record.GrantID)
 		return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	if err := s.store.prune(s.now()); err != nil {
-		_ = s.store.remove("snapshots", record.ID)
+		_ = s.store.discardSnapshot(record.ID, record.GrantID)
 		audit.Outcome = "storage_failed"
 		if err := s.store.audit(audit); err != nil {
 			return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 		}
 		return Record{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+	}
+	if err := s.authorizeDelivery(callCtx, g); err != nil {
+		cleanupErr := s.store.discardSnapshot(record.ID, record.GrantID)
+		// Keep the rejection cause in the audit even when cleanup is the error
+		// returned to the caller. An audit write failure still takes precedence.
+		deliveryErr := s.failDelivery(audit, err)
+		if cleanupErr != nil {
+			var auditErr *Error
+			if !errors.As(deliveryErr, &auditErr) || auditErr.Code != "APP_DIAGNOSTICS_AUDIT_FAILED" {
+				deliveryErr = failure("APP_DIAGNOSTICS_CLEANUP_FAILED", 500)
+			}
+		}
+		return Record{}, deliveryErr
 	}
 	return record, nil
 }
@@ -419,8 +478,12 @@ func (s *Service) Read(ctx context.Context, token, id string) (Record, error) {
 	if !validSnapshotRecord(id, out) || out.GrantID != g.credential.ID || !s.now().Before(out.CreatedAt.Add(24*time.Hour)) {
 		return Record{}, failure("APP_SNAPSHOT_NOT_FOUND", 404)
 	}
-	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "read"}); err != nil {
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "read"}
+	if err := s.store.audit(audit); err != nil {
 		return Record{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+	}
+	if err := s.authorizeDelivery(ctx, g); err != nil {
+		return Record{}, s.failDelivery(audit, err)
 	}
 	return out, nil
 }
@@ -447,9 +510,10 @@ func (s *Service) revokeResult(g *grantState) (RevokeResult, error) {
 		g.cancel()
 	}
 	delete(s.grants, g.credential.ID)
-	if err := s.store.remove("grants", g.credential.ID); err != nil {
-		return RevokeResult{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
+	if owner, ok := s.runtime.(interface{ NotifyGrantRevoked(string, string) }); ok {
+		owner.NotifyGrantRevoked(g.epoch, g.credential.ID)
 	}
+
 	out := RevokeResult{Revoked: true, Cleanup: "complete"}
 	cleanupErr := s.store.removeGrant(g.credential.ID, s.now())
 	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "revoked"}
@@ -490,7 +554,9 @@ func (s *Service) Sweep(ctx context.Context) error {
 			failures = append(failures, failure("APP_DIAGNOSTICS_SESSION_UNAVAILABLE", 503))
 		}
 	}
-	failures = append(failures, s.store.prune(s.now()))
+	if err := s.store.prune(s.now()); err != nil {
+		failures = append(failures, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500))
+	}
 	return errors.Join(failures...)
 }
 
@@ -522,7 +588,7 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 	if err != nil {
 		return SnapshotList{}, err
 	}
-	if err := s.store.prune(s.now()); err != nil {
+	if err := s.store.pruneForGrant(s.now(), g.credential.ID); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
 	docs, err := documents[Record](s.store, "snapshots", validSnapshotRecord)
@@ -536,8 +602,12 @@ func (s *Service) List(ctx context.Context, token string) (SnapshotList, error) 
 			out = append(out, row)
 		}
 	}
-	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}); err != nil {
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "list"}
+	if err := s.store.audit(audit); err != nil {
 		return SnapshotList{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
+	}
+	if err := s.authorizeDelivery(ctx, g); err != nil {
+		return SnapshotList{}, s.failDelivery(audit, err)
 	}
 	return SnapshotList{Partial: errors.Is(err, errReadUnavailable), Records: out, ReadErrorCount: s.store.readErrors}, nil
 }
@@ -550,10 +620,21 @@ func (s *Service) Audits(ctx context.Context, token string) (AuditLog, error) {
 	if err != nil {
 		return AuditLog{}, err
 	}
-	if err := s.store.prune(s.now()); err != nil {
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}
+	out, err := s.auditsForGrant(g, audit)
+	if err != nil {
+		return AuditLog{}, err
+	}
+	if err := s.authorizeDelivery(ctx, g); err != nil {
+		return AuditLog{}, s.failDelivery(audit, err)
+	}
+	return out, nil
+}
+func (s *Service) auditsForGrant(g *grantState, audit Audit) (AuditLog, error) {
+	if err := s.store.pruneForGrant(s.now(), g.credential.ID); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_STORAGE_FAILED", 500)
 	}
-	if err := s.store.audit(Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}); err != nil {
+	if err := s.store.audit(audit); err != nil {
 		return AuditLog{}, failure("APP_DIAGNOSTICS_AUDIT_FAILED", 500)
 	}
 	docs, err := documents[Audit](s.store, "audit", nil)
@@ -611,4 +692,58 @@ func (s *Service) RevokeRuntime(_ context.Context, epoch, id string) error {
 func (s *Service) GrantRuntime(ctx context.Context, id domain.SessionID, epoch string) (string, error) {
 	credential, err := s.issueGrant(ctx, id, epoch)
 	return credential.ID, err
+}
+
+// AuditRuntime serves the current native-consent owner without exporting a token.
+// The Settings projection is deliberately smaller than the CLI audit envelope.
+func (s *Service) AuditRuntime(ctx context.Context, epoch, id string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.grants[id]
+	if s.closed || !ok || g.epoch != epoch {
+		return nil, failure("APP_DIAGNOSTICS_CAPABILITY_INVALID", 403)
+	}
+	if _, err := s.authorizeGrant(ctx, g); err != nil {
+		return nil, err
+	}
+	audit := Audit{RequestID: uuid.NewString(), GrantID: g.credential.ID, SessionID: g.credential.SessionID, At: s.now(), Outcome: "audit_read"}
+	log, err := s.auditsForGrant(g, audit)
+	if err != nil {
+		return nil, err
+	}
+	type item struct {
+		At      time.Time `json:"at"`
+		Outcome string    `json:"outcome"`
+		Bytes   int       `json:"bytes"`
+		Partial bool      `json:"partial"`
+	}
+	records := []item{}
+	dropped := 0
+	if len(log.Records) > 100 {
+		dropped = len(log.Records) - 100
+		log.Records = log.Records[dropped:]
+	}
+	for _, row := range log.Records {
+		outcome := row.Outcome
+		switch outcome {
+		case "granted", "accepted", "completed", "failed", "interrupted", "revoked", "read", "list", "audit_read":
+		default:
+			outcome = "unknown"
+		}
+		partial := row.Partial != nil && *row.Partial
+		records = append(records, item{row.At.UTC(), outcome, row.Bytes, partial})
+	}
+	//nolint:gosec // dropped is a non-negative count bounded by the 10,000-record audit cap.
+	data, err := json.Marshal(struct {
+		Records      []item `json:"records"`
+		Partial      bool   `json:"partial"`
+		DroppedCount uint64 `json:"droppedCount"`
+	}{records, log.Partial || dropped > 0, log.DroppedCount + uint64(dropped)})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeDelivery(ctx, g); err != nil {
+		return nil, s.failDelivery(audit, err)
+	}
+	return data, nil
 }
