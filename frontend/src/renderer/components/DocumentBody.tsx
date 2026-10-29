@@ -65,6 +65,7 @@ export function DocumentBody({
 	const query = useQuery({
 		queryKey: [
 			"document-content",
+			connection.kind,
 			connection.identity,
 			documentFileKey(document.target),
 			document.fingerprint,

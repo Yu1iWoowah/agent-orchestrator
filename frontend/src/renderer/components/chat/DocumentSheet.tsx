@@ -164,6 +164,7 @@ function DocumentSheetReader({
 	const metadata = useQuery({
 		queryKey: [
 			"document-change",
+			reader.connection.kind,
 			reader.connection.identity,
 			visit ? documentFileKey(visit.document.target) : null,
 		],

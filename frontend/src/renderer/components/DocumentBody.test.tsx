@@ -164,3 +164,36 @@ it("restores history position without reapplying the document's retained heading
 	view.unmount();
 	cache.clear();
 });
+
+it("never reuses local content bytes on a remote connection with the same identity string", async () => {
+	mocks.read
+		.mockResolvedValueOnce(
+			new TextEncoder().encode("# Local fixture bytes").buffer,
+		)
+		.mockRejectedValue(
+			Object.assign(new Error("local only"), { code: "DOCUMENT_LOCAL_ONLY" }),
+		);
+	const cache = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	const tree = (kind: "local" | "remote") => (
+		<QueryClientProvider client={cache}>
+			<DocumentBody
+				readerKey="chat"
+				connection={{ kind, identity: "same-string" }}
+				visit={visit}
+			/>
+		</QueryClientProvider>
+	);
+	const view = render(tree("local"));
+	await screen.findByRole("heading", { name: "Local fixture bytes" });
+	view.rerender(tree("remote"));
+	await screen.findByText(
+		"Document preview is only available on this desktop connection.",
+	);
+	expect(
+		screen.queryByRole("heading", { name: "Local fixture bytes" }),
+	).toBeNull();
+	view.unmount();
+	cache.clear();
+});
