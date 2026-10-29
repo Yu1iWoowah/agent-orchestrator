@@ -62,6 +62,15 @@ const CDC_EVENT_TYPES = [
  * updates also refresh editor-handoff readiness. Invalidations are batched
  * because a single user action can emit a burst of CDC events.
  */
+// Ordinary token/message CDC must not rescan every project's source index.
+function attentionProjectEvent(event: { projectId?: unknown; type?: unknown; payload?: unknown }): string | true | undefined {
+	const payload = typeof event.payload === "object" && event.payload !== null ? event.payload : undefined;
+	const changed = payload && ("questionId" in payload || "reportId" in payload || "attentionChanged" in payload && payload.attentionChanged === true);
+	const removed = event.type === "session_deleted" || event.type === "project_deleted";
+	if (!changed && !removed && payload && typeof event.projectId === "string") return;
+	return typeof event.projectId === "string" && event.projectId ? event.projectId : true;
+}
+
 export function createEventTransport(queryClient: QueryClient): EventTransport {
 	return {
 		connect() {
@@ -69,6 +78,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const pendingConversationSessions = new Set<string>();
 			const pendingAttentionSessions = new Set<string>();
+			const pendingAttentionProjects = new Set<string>();
+			let allAttentionProjectsPending = false;
 			let allAttentionInvalidationPending = false;
 			const pendingReviewerConversations = new Set<string>();
 			const pendingReviewSessions = new Set<string>();
@@ -154,8 +165,9 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				};
 				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
 			};
-			const refreshRemote = (hostId: string, reconnect = false) => {
+			const refreshRemote = (hostId: string, reconnect = false, attention = true) => {
 				invalidate(["remote-session-attention", hostId]);
+				if (attention) invalidate(["remote-project-attention", hostId]);
 				invalidate(["remote-session-plan", hostId]);
 				invalidate(["remote-workspaces", hostId]);
 				invalidate(["project", hostId]);
@@ -187,10 +199,13 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					CDC_EVENT_TYPES,
 					(event) => {
 						if (disposed || remoteSources.get(hostId) !== connection) return;
-						refreshRemote(hostId);
-						if (!("data" in event)) return;
+						refreshRemote(hostId, false, false);
+						if (!("data" in event)) { invalidate(["remote-project-attention", hostId]); return; }
 						try {
-							const decoded = JSON.parse(String((event as MessageEvent).data)) as { sessionId?: unknown; payload?: { conversationId?: unknown; reviewId?: unknown } };
+							const decoded = JSON.parse(String((event as MessageEvent).data)) as { projectId?: unknown; type?: unknown; sessionId?: unknown; payload?: { conversationId?: unknown; reviewId?: unknown } };
+							const project = attentionProjectEvent(decoded);
+							if (project === true) invalidate(["remote-project-attention", hostId]);
+							else if (project) invalidate(["remote-project-attention", hostId, project]);
 							if (typeof decoded.sessionId === "string" && typeof decoded.payload?.conversationId === "string" && typeof decoded.payload.reviewId !== "string") {
 								refreshRemoteConversationOnce(hostId, decoded.sessionId);
 							}
@@ -199,6 +214,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							}
 						} catch {
 							// The host's project/session cache still refreshes after a malformed event.
+							invalidate(["remote-project-attention", hostId]);
 						}
 					},
 					() => {
@@ -275,6 +291,9 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(sessionPlanQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
+				if (allAttentionProjectsPending) invalidate(["project-attention"]);
+				else for (const project of pendingAttentionProjects) invalidate(["project-attention", project]);
+				pendingAttentionProjects.clear(); allAttentionProjectsPending = false;
 				if (allAttentionInvalidationPending) invalidate(["session-attention"]);
 				else for (const sessionId of pendingAttentionSessions) invalidate(sessionAttentionQueryKey(sessionId));
 				pendingAttentionSessions.clear();
@@ -353,6 +372,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// leaving an open chat frozen on its pre-gap snapshot.
 					allConversationsInvalidationPending = true;
 					allAttentionInvalidationPending = true;
+					allAttentionProjectsPending = true;
 					allEditorHandoffsInvalidationPending = true;
 					allEventScopedCachesInvalidationPending = true;
 				}
@@ -360,9 +380,13 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					try {
 						const decoded = JSON.parse(String((event as MessageEvent).data)) as {
 							sessionId?: unknown;
+							projectId?: unknown;
 							type?: unknown;
 							payload?: unknown;
 						};
+						const project = attentionProjectEvent(decoded);
+						if (project === true) allAttentionProjectsPending = true;
+						else if (project) pendingAttentionProjects.add(project);
 						// The SSE endpoint sends the complete durable CDC event. Routing
 						// fields such as sessionId live on that envelope, while trigger-built
 						// details such as conversationId live inside its payload. Do not
@@ -450,6 +474,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						// A malformed CDC payload still invalidates workspaces; it simply
 						// cannot target a conversation cache precisely.
 						allAttentionInvalidationPending = true;
+						allAttentionProjectsPending = true;
 					}
 				}
 				if (idOnlySessionUpdate) queueIdOnlyWorkspaceRefresh();

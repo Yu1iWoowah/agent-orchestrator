@@ -73,10 +73,48 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds,
 			{target && ready ? target.kind === "agent_question"
 				? <QuestionSourceBody sessionId={sessionId} hostId={hostId} questionId={target.questionId} compact={compact} onClose={close} onReload={() => load(target)} />
 				: target.kind === "worker_report"
-					? <div className="flex min-h-0 flex-1 flex-col"><div className="min-h-0 flex-1 space-y-3 overflow-auto break-words p-4"><h3 className="font-medium">{target.title}</h3><p className="text-xs text-muted-foreground">{t("decision.source", { session: target.originSessionId, agent: target.originHarness })}</p><p className="whitespace-pre-wrap text-sm">{target.explanation}</p><p className="text-sm text-muted-foreground">{t("decision.readOnlyReport")}</p></div><DecisionClose onClose={close} /></div>
-					: <ProviderSourceBody target={target} sessionId={sessionId} hostId={hostId} sourceAgent={sourceAgent} onClose={close} onReload={() => load(target)} onOriginal={() => { navigating.current = true; close(); requestAnimationFrame(() => onLocate(target.activityId)); }} />
+					? <div
+						className="flex min-h-0 flex-1 flex-col">
+						<div
+						className="min-h-0 flex-1 space-y-3 overflow-auto break-words p-4">
+						<h3
+						className="font-medium">{target.title}</h3>
+						<p
+						className="text-xs text-muted-foreground">{t("decision.source", { session: target.originSessionId, agent: target.originHarness })}</p>
+						<p
+						className="whitespace-pre-wrap text-sm">{target.explanation}</p>
+						<p
+						className="text-sm text-muted-foreground">{t("decision.readOnlyReport")}</p>
+						</div>
+						<DecisionClose
+						onClose={close} />
+						</div>
+					: <ProviderSourceBody target={target}
+						sessionId={sessionId} hostId={hostId}
+						sourceAgent={sourceAgent}
+						onClose={close}
+						onReload={() => load(target)}
+						onOriginal={() => { navigating.current = true; close(); requestAnimationFrame(() => onLocate(target.activityId)); }} />
 				: <div className="flex min-h-0 flex-1 flex-col"><div className="min-h-0 flex-1 space-y-3 overflow-auto break-words p-4">
-					{error ? <><p role="alert" className="text-sm">{t(error instanceof QuestionsUnavailable || error instanceof AttentionUnavailable ? "decision.unsupported" : error instanceof QuestionNotFound || error instanceof AttentionSourceUnavailable ? "decision.unavailable" : error instanceof InvalidQuestionResponse ? "decision.invalid" : "decision.loadError")}</p><Button variant="outline" onClick={() => { if (target) load(target); }}>{t("decision.retry")}</Button></> : <><p className="text-sm font-medium">{target?.title}</p><p role="status" className="text-sm text-muted-foreground">{t("decision.loading")}</p></>}
+					{error ? <>
+						<p role="alert"
+						className="text-sm">{t(error instanceof QuestionsUnavailable || error instanceof AttentionUnavailable
+							? "decision.unsupported"
+							: error instanceof QuestionNotFound || error instanceof AttentionSourceUnavailable
+							? "decision.unavailable"
+							: error instanceof InvalidQuestionResponse
+							? "decision.invalid"
+							: "decision.loadError")}</p>
+						<Button variant="outline"
+						onClick={() => { if (target) load(target); }}>
+					{t("decision.retry")}
+				</Button>
+						</> : <>
+						<p
+						className="text-sm font-medium">{target?.title}</p>
+						<p role="status"
+						className="text-sm text-muted-foreground">{t("decision.loading")}</p>
+						</>}
 				</div><DecisionClose onClose={close} /></div>}
 		</DialogContent>
 	</Dialog>;
@@ -101,7 +139,12 @@ function QuestionSourceBody({ sessionId, hostId, questionId, compact, onClose, o
 			.then(({ error }) => { if (error) setReadError(true); else { setReadError(false); void client.invalidateQueries({ queryKey: sessionQuestionQueryKey(sessionId, hostId) }, { cancelRefetch: false }); } }).catch(() => setReadError(true));
 	}, [question, query.isError, client, sessionId, hostId, questionId]);
 	if (!question) return <div className="p-4"><p role="alert">{t("decision.loadError")}</p><Button onClick={onReload}>{t("decision.retry")}</Button></div>;
-	return <>{readError ? <p role="status" className="px-4 pt-2 text-xs text-muted-foreground">{t("decision.readError")}</p> : null}<QuestionDecisionView question={question} hostId={hostId} compact={compact} submitAllowed={!query.isError} onClose={onClose} onReload={onReload} /></>;
+	return <>{readError ? <p role="status"
+		className="px-4 pt-2 text-xs text-muted-foreground">{t("decision.readError")}</p> : null}<QuestionDecisionView question={question} hostId={hostId} compact={compact}
+		submitAllowed={!query.isError}
+		onClose={onClose}
+		onReload={onReload} />
+		</>;
 }
 
 function ProviderSourceBody({ target, sessionId, hostId, sourceAgent, onClose, onReload, onOriginal }: {

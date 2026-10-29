@@ -14,6 +14,8 @@ import (
 
 // Store is the persistence boundary for question state and delivery receipts.
 type Store interface {
+	ProjectAttention(context.Context, domain.ProjectID, domain.ProjectAttentionQuery, time.Time) (domain.ProjectAttentionPage, error)
+	ReadProjectAttentionReport(context.Context, domain.ProjectID, string, time.Time) error
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	CreateAttentionQuestion(context.Context, domain.AttentionQuestionCreate, time.Time) (domain.AttentionQuestionRecord, bool, error)
 	GetAttentionQuestion(context.Context, domain.SessionID, string) (domain.AttentionQuestionRecord, error)
@@ -33,28 +35,36 @@ type Delivery interface {
 	Submit(context.Context, domain.SessionID, string, string) error
 }
 
+// AttentionNotifications produces stable user-source notifications through the existing channel.
+type AttentionNotifications interface {
+	ReconcileAttention(context.Context, domain.ProjectID, []domain.ProjectAttentionItem) error
+}
+
 // Deps supplies persistence, semantic delivery and deterministic identity sources.
 type Deps struct {
-	Store    Store
-	Delivery Delivery
-	Now      func() time.Time
-	NewID    func() string
+	Notifications AttentionNotifications
+	Store         Store
+	Delivery      Delivery
+	Now           func() time.Time
+	NewID         func() string
 }
 
 // Service coordinates durable questions, expiry and answer delivery retries.
 type Service struct {
-	store      Store
-	delivery   Delivery
-	now        func() time.Time
-	newID      func() string
-	wake       chan struct{}
-	deliveryMu sync.Mutex
-	retries    map[string]answerRetry
+	notifications AttentionNotifications
+	store         Store
+	delivery      Delivery
+	now           func() time.Time
+	newID         func() string
+	wake          chan struct{}
+	deliveryMu    sync.Mutex
+	retries       map[string]answerRetry
 }
 
 type answerRetry struct {
-	delay time.Duration
-	at    time.Time
+	session domain.SessionID
+	delay   time.Duration
+	at      time.Time
 }
 
 // New creates a question coordinator without starting background work.
@@ -65,7 +75,7 @@ func New(deps Deps) *Service {
 	if deps.NewID == nil {
 		deps.NewID = func() string { return "ask_" + uuid.NewString() }
 	}
-	return &Service{store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1), retries: make(map[string]answerRetry)}
+	return &Service{notifications: deps.Notifications, store: deps.Store, delivery: deps.Delivery, now: deps.Now, newID: deps.NewID, wake: make(chan struct{}, 1), retries: make(map[string]answerRetry)}
 }
 
 // Create creates or finds a question using its source-scoped retry key.
@@ -144,6 +154,16 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Native TUI acceptance can finish an outbox outside this coordinator.
+	// Inspect retained retries independently of the bounded queued page.
+	for id, retry := range s.retries {
+		question, err := s.store.GetAttentionQuestion(ctx, retry.session, id)
+		if errors.Is(err, domain.ErrAttentionQuestionNotFound) || err == nil && question.Answer != nil && question.Answer.DeliveryState != "queued" {
+			delete(s.retries, id)
+		} else if err != nil {
+			return err
+		}
+	}
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -189,7 +209,7 @@ func (s *Service) DeliverPending(ctx context.Context) error {
 			if delay > 5*time.Minute {
 				delay = 5 * time.Minute
 			}
-			s.retries[item.QuestionID] = answerRetry{delay: delay, at: s.now().UTC().Add(delay)}
+			s.retries[item.QuestionID] = answerRetry{session: item.OriginSessionID, delay: delay, at: s.now().UTC().Add(delay)}
 		}
 	}
 	return nil
@@ -204,6 +224,9 @@ func (s *Service) Start(ctx context.Context, onError func(error)) <-chan struct{
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
+			if err := s.RefreshNotifications(ctx); err != nil && onError != nil {
+				onError(fmt.Errorf("attention notifications: %w", err))
+			}
 			if err := s.DeliverPending(ctx); err != nil && !errors.Is(err, context.Canceled) && onError != nil {
 				onError(fmt.Errorf("deliver question answers: %w", err))
 			}
@@ -216,4 +239,51 @@ func (s *Service) Start(ctx context.Context, onError func(error)) <-chan struct{
 		}
 	}()
 	return done
+}
+
+// ProjectList never treats report delivery as an answer or a user question.
+func (s *Service) ProjectList(ctx context.Context, project domain.ProjectID, query domain.ProjectAttentionQuery) (domain.ProjectAttentionPage, error) {
+	return s.store.ProjectAttention(ctx, project, query, s.now().UTC())
+}
+
+// ReadReport marks an inspected report seen without closing it.
+func (s *Service) ReadReport(ctx context.Context, project domain.ProjectID, id string) error {
+	return s.store.ReadProjectAttentionReport(ctx, project, id, s.now().UTC())
+}
+
+// RefreshNotifications restores stable sources after restart; failed reads never
+// become an empty set that could resolve unseen pending decisions.
+func (s *Service) RefreshNotifications(ctx context.Context) error {
+	if s.notifications == nil {
+		return nil
+	}
+	projects, ok := s.store.(interface {
+		ListProjects(context.Context) ([]domain.ProjectRecord, error)
+	})
+	if !ok {
+		return errors.New("project reader unavailable")
+	}
+	rows, err := projects.ListProjects(ctx)
+	if err != nil {
+		return err
+	}
+	for _, project := range rows {
+		query := domain.ProjectAttentionQuery{Audience: "user", Limit: 100}
+		items := []domain.ProjectAttentionItem{}
+		for {
+			page, err := s.store.ProjectAttention(ctx, domain.ProjectID(project.ID), query, s.now().UTC())
+			if err != nil {
+				return err
+			}
+			items = append(items, page.Items...)
+			if page.NextCursor == "" {
+				break
+			}
+			query.Cursor = page.NextCursor
+		}
+		if err := s.notifications.ReconcileAttention(ctx, domain.ProjectID(project.ID), items); err != nil {
+			return err
+		}
+	}
+	return nil
 }

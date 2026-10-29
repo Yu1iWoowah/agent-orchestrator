@@ -148,3 +148,23 @@ func TestQuestionsAPIWholeCreateAndReviseByteLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectAttentionAPIValidatesAudienceAndProjectScope(t *testing.T) {
+	server, _ := questionAPIServer(t)
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{
+		{"/api/v1/projects/ask-api/attention?audience=user&limit=1", 200},
+		{"/api/v1/projects/ask-api/attention?audience=orchestrator", 200},
+		{"/api/v1/projects/ask-api/attention?audience=fake", 400},
+		{"/api/v1/projects/ask-api/attention?limit=101", 400},
+		{"/api/v1/projects/ask-api/attention?cursor=invalid", 400},
+		{"/api/v1/projects/other/attention", 404},
+	} {
+		body, status, _ := doRequest(t, server, "GET", tc.path, "")
+		if status != tc.status {
+			t.Fatalf("%s: %d %s", tc.path, status, body)
+		}
+	}
+}

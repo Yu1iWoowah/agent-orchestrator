@@ -165,6 +165,8 @@ var schemaNames = map[string]string{
 	"ControllersQuestionReadRequest":                       "QuestionReadRequest",
 	"ControllersQuestionCancelRequest":                     "QuestionCancelRequest",
 	"ControllersQuestionResponse":                          "QuestionResponse",
+	"DomainProjectAttentionPage":                           "ProjectAttentionPage",
+	"DomainProjectAttentionItem":                           "ProjectAttentionItem",
 	"ControllersQuestionPageResponse":                      "QuestionPageResponse",
 	"ControllersQuestionAnswerResponse":                    "QuestionAnswerResponse",
 	"DomainAttentionQuestionRecord":                        "AttentionQuestionRecord",

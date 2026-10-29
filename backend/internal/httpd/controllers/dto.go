@@ -3260,12 +3260,13 @@ type ConversationMessageResponse struct {
 
 // QuestionCreateRequest is the HTTP envelope for a session-owned structured question.
 type QuestionCreateRequest struct {
-	ClientKey    string                          `json:"clientKey" minLength:"1" maxLength:"64"`
-	Audience     string                          `json:"audience" enum:"user"`
-	Kind         domain.AttentionQuestionKind    `json:"kind" enum:"question,authorization"`
-	Payload      domain.AttentionQuestionPayload `json:"payload"`
-	ExpiresAt    *time.Time                      `json:"expiresAt,omitempty"`
-	SupersedesID string                          `json:"supersedesId,omitempty"`
+	ClientKey      string                          `json:"clientKey" minLength:"1" maxLength:"64"`
+	Audience       string                          `json:"audience" enum:"user"`
+	Kind           domain.AttentionQuestionKind    `json:"kind" enum:"question,authorization"`
+	Payload        domain.AttentionQuestionPayload `json:"payload"`
+	ExpiresAt      *time.Time                      `json:"expiresAt,omitempty"`
+	SourceReportID string                          `json:"sourceReportId,omitempty"`
+	SupersedesID   string                          `json:"supersedesId,omitempty"`
 }
 
 // QuestionReviseRequest replaces question content using version compare-and-swap.

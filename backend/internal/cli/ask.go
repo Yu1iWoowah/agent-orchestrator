@@ -19,12 +19,13 @@ import (
 // The CLI mirrors command envelopes and uses only daemon HTTP. Business state
 // and origin ownership are never inferred from local files or provider output.
 type askCreateDTO struct {
-	ClientKey    string          `json:"clientKey"`
-	Audience     string          `json:"audience"`
-	Kind         string          `json:"kind"`
-	Payload      json.RawMessage `json:"payload"`
-	ExpiresAt    *time.Time      `json:"expiresAt,omitempty"`
-	SupersedesID string          `json:"supersedesId,omitempty"`
+	ClientKey      string          `json:"clientKey"`
+	Audience       string          `json:"audience"`
+	Kind           string          `json:"kind"`
+	Payload        json.RawMessage `json:"payload"`
+	ExpiresAt      *time.Time      `json:"expiresAt,omitempty"`
+	SourceReportID string          `json:"sourceReportId,omitempty"`
+	SupersedesID   string          `json:"supersedesId,omitempty"`
 }
 type askRevisionDTO struct {
 	ExpectedVersion int64           `json:"expectedVersion"`
@@ -48,7 +49,7 @@ func newAskCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{Use: "ask", Short: "Create and answer durable structured questions for the user"}
 	cmd.PersistentFlags().StringVar(&options.session, "session", "", "Origin session ID (default: AO_SESSION_ID)")
 	cmd.PersistentFlags().BoolVar(&options.json, "json", false, "Print JSON including version and delivery receipt")
-	cmd.AddCommand(newAskCreateCommand(ctx, options), newAskListCommand(ctx, options))
+	cmd.AddCommand(newAskCreateCommand(ctx, options), newAskListCommand(ctx, options), newAskProjectCommand(ctx, options))
 	for _, action := range []string{"get", "answer", "read", "cancel", "revise"} {
 		cmd.AddCommand(newAskQuestionCommand(ctx, options, action))
 	}
@@ -92,7 +93,7 @@ func askPayloadFile(cmd *cobra.Command, path string, limit int) ([]byte, error) 
 }
 
 func newAskCreateCommand(ctx *commandContext, options *askOptions) *cobra.Command {
-	var key, audience, kind, file, expires, supersedes string
+	var key, audience, kind, file, expires, supersedes, sourceReport string
 	cmd := &cobra.Command{Use: "create", Short: "Create one user-facing question group", Args: usageArgs(cobra.NoArgs), RunE: func(cmd *cobra.Command, _ []string) error {
 		path, err := askSessionPath(options)
 		if err != nil {
@@ -111,13 +112,16 @@ func newAskCreateCommand(ctx *commandContext, options *askOptions) *cobra.Comman
 		if _, err = domain.ParseAttentionQuestionPayload(raw, domain.AttentionQuestionKind(kind)); err != nil {
 			return usageError{err}
 		}
-		body := askCreateDTO{ClientKey: key, Audience: audience, Kind: kind, Payload: raw, SupersedesID: supersedes}
+		body := askCreateDTO{ClientKey: key, Audience: audience, Kind: kind, Payload: raw, SupersedesID: supersedes, SourceReportID: sourceReport}
 		if expires != "" {
 			at, err := time.Parse(time.RFC3339, expires)
 			if err != nil {
 				return usageError{errors.New("--expires-at must be RFC3339")}
 			}
 			body.ExpiresAt = &at
+		}
+		if err := validateAskEnvelope(body); err != nil {
+			return err
 		}
 		var response json.RawMessage
 		if err := ctx.postJSON(cmd.Context(), path, body, &response); err != nil {
@@ -131,6 +135,7 @@ func newAskCreateCommand(ctx *commandContext, options *askOptions) *cobra.Comman
 	f.StringVar(&kind, "kind", "question", "question or authorization")
 	f.StringVar(&file, "payload-file", "", "UTF-8 question payload JSON file, or - for stdin")
 	f.StringVar(&expires, "expires-at", "", "Optional explicit RFC3339 deadline")
+	f.StringVar(&sourceReport, "source-report", "", "Forward a worker report; requires the active same-project orchestrator session")
 	f.StringVar(&supersedes, "supersedes-id", "", "Terminal question replaced by this new question")
 	return cmd
 }
@@ -233,6 +238,11 @@ func newAskQuestionCommand(ctx *commandContext, options *askOptions, action stri
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Marked question version read.")
 			return err
 		}
+		if action == "revise" {
+			if err := validateAskEnvelope(body); err != nil {
+				return err
+			}
+		}
 		if err := ctx.postJSON(cmd.Context(), path+"/"+action, body, &response); err != nil {
 			return err
 		}
@@ -292,4 +302,59 @@ func printAskResponse(cmd *cobra.Command, options *askOptions, raw json.RawMessa
 	// Keep the complete structured details readable, including option descriptions,
 	// authorization scope and any saved answer, even in older text-only clients.
 	return writeJSON(cmd.OutOrStdout(), question)
+}
+
+// Match the actual encoded HTTP envelope, including metadata outside payload.
+func validateAskEnvelope(body any) error {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return usageError{err}
+	}
+	if len(raw) > domain.MaxAttentionCreateBytes {
+		return usageError{fmt.Errorf("question envelope exceeds %d bytes", domain.MaxAttentionCreateBytes)}
+	}
+	return nil
+}
+
+func newAskProjectCommand(ctx *commandContext, options *askOptions) *cobra.Command {
+	var project, audience, cursor string
+	var limit int
+	cmd := &cobra.Command{Use: "project", Short: "List project human decisions or orchestrator coordination reports", Args: usageArgs(cobra.NoArgs), RunE: func(cmd *cobra.Command, _ []string) error {
+		id := strings.TrimSpace(project)
+		if id == "" {
+			id = strings.TrimSpace(os.Getenv("AO_PROJECT_ID"))
+		}
+		if id == "" || (audience != "user" && audience != "orchestrator") || limit < 1 || limit > 100 {
+			return usageError{errors.New("--project or AO_PROJECT_ID required; audience user or orchestrator; limit 1–100")}
+		}
+		query := url.Values{"audience": {audience}, "limit": {strconv.Itoa(limit)}}
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		var page domain.ProjectAttentionPage
+		if err := ctx.getJSON(cmd.Context(), "projects/"+url.PathEscape(id)+"/attention?"+query.Encode(), &page); err != nil {
+			return err
+		}
+		if options.json {
+			return writeJSON(cmd.OutOrStdout(), page)
+		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Audience: %s; items: %d; unread: %d\n", audience, page.Open, page.Unread); err != nil {
+			return err
+		}
+		for _, item := range page.Items {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", item.ID, item.SessionID, item.Title); err != nil {
+				return err
+			}
+		}
+		if page.NextCursor != "" {
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Next: --cursor %s\n", page.NextCursor)
+			return err
+		}
+		return nil
+	}}
+	cmd.Flags().StringVar(&project, "project", "", "Project ID (default: AO_PROJECT_ID)")
+	cmd.Flags().StringVar(&audience, "audience", "user", "user decisions or orchestrator reports")
+	cmd.Flags().StringVar(&cursor, "cursor", "", "Opaque nextCursor from the previous page")
+	cmd.Flags().IntVar(&limit, "limit", 20, "Page size (1–100)")
+	return cmd
 }

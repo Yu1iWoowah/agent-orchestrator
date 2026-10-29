@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/questions"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
@@ -268,5 +269,74 @@ func TestQuestionsCoordinatorShutdownCancelsDeliveryWithoutLosingSavedAnswer(t *
 	got, err := store.GetAttentionQuestion(context.Background(), session, q.ID)
 	if err != nil || got.State != "answered" || got.Answer == nil || got.Answer.DeliveryState != "queued" {
 		t.Fatalf("shutdown lost saved answer: %+v %v", got, err)
+	}
+}
+
+type attentionEvents struct{ events []domain.NotificationEvent }
+
+func (p *attentionEvents) Publish(_ context.Context, event domain.NotificationEvent) error {
+	p.events = append(p.events, event)
+	return nil
+}
+func TestAttentionNotificationsSeparateReportsAndReconcileReadRevisionsAfterRestart(t *testing.T) {
+	store, session := fixture(t)
+	ctx := context.Background()
+	events := &attentionEvents{}
+	writer := notify.New(notify.Deps{Store: store, Publisher: events, Clock: func() time.Time { return clock }})
+	service := func() *questions.Service {
+		return questions.New(questions.Deps{Store: store, Notifications: writer, Now: func() time.Time { return clock }, NewID: func() string { return "question-1" }})
+	}
+	svc := service()
+	q, _, err := svc.Create(ctx, domain.AttentionQuestionCreate{OriginSessionID: session, ClientKey: "notify", Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: []byte(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreateReport(ctx, domain.ReportRecord{ID: "report", SessionID: session, ProjectID: "questions", State: domain.ReportNeedsInput, Note: "Orchestrator only", CreatedAt: clock, AvailableAt: clock, RepeatCount: 1, DeliveryState: domain.ReportPending}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err = svc.RefreshNotifications(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(events.events) != 1 || events.events[0].Record.SourceKey != "attention:question:question-1:1" {
+		t.Fatalf("report leaked or source repeated: %+v", events.events)
+	}
+	if err = svc.Read(ctx, session, q.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if unread, err := store.CountUnreadNotifications(ctx); err != nil || unread != 0 {
+		t.Fatalf("read synchronization: %d %v", unread, err)
+	}
+	if _, err = svc.Revise(ctx, session, q.ID, 1, []byte(strings.Replace(payload, "Where?", "New scope?", 1))); err != nil {
+		t.Fatal(err)
+	}
+	svc = service()
+	if err = svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	created := 0
+	for _, event := range events.events {
+		if event.Kind == domain.NotificationCreated {
+			created++
+		}
+	}
+	if created != 2 {
+		t.Fatalf("revision/reconnect created %d notifications", created)
+	}
+	if _, err = svc.Cancel(ctx, session, q.ID, 2, "user", "No longer needed"); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.RefreshNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.CountUnresolvedNotifications(ctx); err != nil || pending != 0 {
+		t.Fatalf("cancel reconciliation: %d %v", pending, err)
 	}
 }
