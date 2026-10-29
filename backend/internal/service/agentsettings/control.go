@@ -289,7 +289,7 @@ func (c *Control) selectionProof(ctx context.Context, id domain.SessionID, setti
 	if snapshot.Capabilities.State != CapabilitySupported || c.core.catalogInputs == nil || snapshot.catalogFingerprint == "" {
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
-	current, err := c.core.catalogInputs.CatalogFingerprint(ctx, string(snapshot.Harness), "")
+	current, err := c.core.catalogInputs.CatalogFingerprint(ctx, string(snapshot.Harness), ports.AccountModelCatalogScope(snapshot.AccountID))
 	if err != nil || current == "" || current != snapshot.catalogFingerprint {
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}

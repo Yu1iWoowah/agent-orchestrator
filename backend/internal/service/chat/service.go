@@ -2529,10 +2529,9 @@ func listModels(ctx context.Context, controller *Controller) ([]ports.ChatModel,
 	return models, controller.Settings(), nil
 }
 
-// ConfigOptions reports the provider's live session controls. Unlike AO's
-// durable turn settings, these are provider-owned session state and are read from
-// the connected conversation so model entitlements and model-dependent choices
-// cannot go stale in an AO table.
+// ConfigOptions reads provider-owned choices and projects an unstarted local
+// selection for polling menus. Entitlements and dependent choices remain live;
+// current-turn and effective observations use unprojected provider state.
 func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]ports.ChatConfigOption, error) {
 	controller, record, release, err := s.readingController(ctx, id)
 	if err != nil {
@@ -2544,7 +2543,11 @@ func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]por
 		return nil, ErrConfigOptionsUnsupported
 	}
 	options, err := configurer.ListConfigOptions(ctx)
-	return permissionConfigOptions(record.Harness, options), err
+	options = permissionConfigOptions(record.Harness, options)
+	if err != nil {
+		return options, err
+	}
+	return controller.projectedLegacyOptions(ctx, options)
 }
 
 // SetConfigOption applies one provider-advertised value and returns the complete
