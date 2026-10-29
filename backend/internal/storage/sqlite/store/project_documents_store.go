@@ -115,18 +115,8 @@ func (s *Store) WithReplacementDocumentPublication(ctx context.Context, id strin
 				return err
 			}
 		}
-		if op.ProjectFingerprint != "" {
-			project, err := q.GetProject(tx, op.ProjectID)
-			if err != nil {
-				return err
-			}
-			fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
-			if err != nil {
-				return err
-			}
-			if fingerprint != op.ProjectFingerprint {
-				return nil
-			}
+		if matched, err := replacementProjectMatches(tx, q, op); err != nil || !matched {
+			return err
 		}
 		ok, err := projectDocumentWriterMatches(tx, q, op.ProjectID, expected, documentRevision, true)
 		if err != nil || !ok {

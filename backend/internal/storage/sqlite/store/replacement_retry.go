@@ -100,15 +100,11 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 			if !currentSource {
 				return nil
 			}
-			project, err := q.GetProject(tx, op.ProjectID)
+			matched, err := replacementProjectMatches(tx, q, op)
 			if err != nil {
 				return err
 			}
-			fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
-			if err != nil {
-				return err
-			}
-			if fingerprint != op.ProjectFingerprint {
+			if !matched {
 				return nil
 			}
 		}

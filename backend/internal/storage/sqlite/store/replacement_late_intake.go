@@ -87,7 +87,11 @@ func (s *Store) AppendRetiredReplacementIntake(ctx context.Context, sourceID dom
 				return nil
 			}
 		}
-		if op.Phase.Terminal() || at.IsZero() || message.ID == "" || turnID == "" || message.ClientPayloadHash == "" {
+		matched, err := replacementProjectMatches(ctx, q, op)
+		if err != nil {
+			return err
+		}
+		if !matched || op.Phase.Terminal() || at.IsZero() || message.ID == "" || turnID == "" || message.ClientPayloadHash == "" {
 			return domain.ErrReplacementIntakeFenced
 		}
 		sequence, err := q.NextConversationSequence(ctx, gen.NextConversationSequenceParams{ID: original.ID, UpdatedAt: at})
@@ -178,15 +182,11 @@ func verifiedReplacementIntakeWriter(ctx context.Context, q *gen.Queries, op dom
 	if conversation.Scope != domain.ConversationScopeProject || conversation.CurrentSessionID == nil || *conversation.CurrentSessionID != target.ID {
 		return fail()
 	}
-	project, err := q.GetProject(ctx, op.ProjectID)
+	matched, err = replacementProjectMatches(ctx, q, op)
 	if err != nil {
 		return target, conversation, err
 	}
-	fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
-	if err != nil {
-		return target, conversation, err
-	}
-	if fingerprint != op.ProjectFingerprint {
+	if !matched {
 		return fail()
 	}
 

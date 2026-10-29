@@ -211,21 +211,12 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 			return domain.ErrReplacementSourceChanged
 		}
 		if !op.Phase.Terminal() {
-			if op.ProjectFingerprint != "" {
-				project, err := q.GetProject(tx, op.ProjectID)
-				if errors.Is(err, sql.ErrNoRows) {
-					return domain.ErrReplacementConfigChanged
-				}
-				if err != nil {
-					return err
-				}
-				fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
-				if err != nil {
-					return err
-				}
-				if fingerprint != op.ProjectFingerprint {
-					return domain.ErrReplacementConfigChanged
-				}
+			matched, err := replacementProjectMatches(tx, q, op)
+			if err != nil {
+				return err
+			}
+			if !matched {
+				return domain.ErrReplacementConfigChanged
 			}
 			if rec.IsTerminated || rec.Kind != domain.KindOrchestrator || rec.Harness != domain.HarnessClaudeCode {
 				return domain.ErrReplacementSourceChanged
