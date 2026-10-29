@@ -175,6 +175,9 @@ type SessionOption struct {
 	Value string
 	// Optional settings are skipped when the session rejects them.
 	Optional bool
+	// IfAdvertised applies this preference only while the current session's
+	// catalog includes the option. Missing model-dependent controls stay dormant.
+	IfAdvertised bool
 	// Name finds the choice when the agent lists it under another value, such as
 	// Claude Code offering claude-opus-5-5 as "opus", named "Opus 5.5".
 	Name string

@@ -26,7 +26,7 @@ func TestSettingsFromConfigOptionsTracksExplicitFastChoice(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := domain.ConversationSettings{FastMode: tc.previous == domain.AgentFastOn, AgentFastMode: tc.previous}
-			got, changed := settingsFromConfigOptions(before, tc.options)
+			got, changed := settingsFromConfigOptions(before, tc.options, "fast")
 			if got.AgentFastMode != tc.want || got.FastMode != (tc.want == domain.AgentFastOn) || changed != (tc.previous != tc.want) {
 				t.Fatalf("settings=%+v changed=%v want=%s", got, changed, tc.want)
 			}
@@ -40,7 +40,7 @@ func TestSettingsFromConfigOptionsKeepsClaudeModelAndEffortAcrossRestart(t *test
 	}, []ports.ChatConfigOption{
 		{ID: "model", Category: "model", Current: ports.ChatConfigOptionValue{Select: "sonnet"}},
 		{ID: "effort", Category: "thought_level", Current: ports.ChatConfigOptionValue{Select: "high"}},
-	})
+	}, "model")
 	if !changed {
 		t.Fatal("settings should change")
 	}
@@ -59,7 +59,7 @@ func TestPermissionConfigOptions(t *testing.T) {
 		if got[0].Choices[0].PermissionMode != tc.want {
 			t.Fatalf("%s mapping = %q", tc.value, got[0].Choices[0].PermissionMode)
 		}
-		settings, _ := settingsFromConfigOptions(domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto}, got)
+		settings, _ := settingsFromConfigOptions(domain.ConversationSettings{ApprovalMode: domain.PermissionModeAuto}, got, "mode")
 		want := tc.want
 		if want == "" {
 			want = domain.PermissionModeAuto
@@ -112,7 +112,7 @@ func TestPermissionConfigOptionsMapsCommandCodeModes(t *testing.T) {
 		}
 	}
 	settings, _ := settingsFromConfigOptions(
-		domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions}, got)
+		domain.ConversationSettings{ApprovalMode: domain.PermissionModeBypassPermissions}, got, "mode")
 	if settings.ApprovalMode != domain.PermissionModeDefault {
 		t.Fatalf("selecting native default kept approval = %q, want %q",
 			settings.ApprovalMode, domain.PermissionModeDefault)
@@ -150,7 +150,7 @@ func TestPermissionConfigOptionsLabelsOpenCodeTiers(t *testing.T) {
 						tc.value, got[0].Choices[0].PermissionMode, got[0].Choices[0].Name, tc.mode, tc.label)
 				}
 				settings, _ := settingsFromConfigOptions(
-					domain.ConversationSettings{ApprovalMode: domain.PermissionModeDefault}, got)
+					domain.ConversationSettings{ApprovalMode: domain.PermissionModeDefault}, got, "mode")
 				want := tc.mode
 				if want == "" {
 					want = domain.PermissionModeDefault
@@ -403,7 +403,7 @@ func TestPermissionConfigOptionsMapsAgyModesOntoApprovalTiers(t *testing.T) {
 			t.Fatalf("choice %q = (%q, %q), want (%q, %q)", choice.Value, choice.PermissionMode, choice.Name, want[i].mode, want[i].name)
 		}
 	}
-	settings, _ := settingsFromConfigOptions(domain.ConversationSettings{}, got)
+	settings, _ := settingsFromConfigOptions(domain.ConversationSettings{}, got, "")
 	if settings.ApprovalMode != domain.PermissionModeAuto {
 		t.Fatalf("settings approval = %q, want auto for yolo", settings.ApprovalMode)
 	}

@@ -2568,7 +2568,7 @@ func (s *Service) SetConfigOption(
 		}
 	}
 	options = permissionConfigOptions(record.Harness, options)
-	settings, _ := settingsFromConfigOptions(previous, options)
+	settings, _ := settingsFromConfigOptions(previous, options, configID)
 	if record.Harness == domain.HarnessClaudeCode {
 		// Provider-owned defaults stay implicit so future Claude defaults still apply.
 		if settings.Model == "default" {
@@ -2623,6 +2623,7 @@ func restoreOpenCodeMode(ctx context.Context, conv ports.ChatConversation, mode 
 func settingsFromConfigOptions(
 	settings domain.ConversationSettings,
 	options []ports.ChatConfigOption,
+	changedConfigID string,
 ) (domain.ConversationSettings, bool) {
 	next := settings
 	hasEffort := false
@@ -2633,7 +2634,8 @@ func settingsFromConfigOptions(
 			}
 		}
 		switch {
-		case option.ID == "fast":
+		// A complete catalog also echoes provider defaults, not just user intent.
+		case option.ID == "fast" && changedConfigID == "fast":
 			mode := domain.AgentFastMode(option.Current.Select)
 			if option.Type == ports.ChatConfigOptionBoolean {
 				if option.Current.Boolean == nil {

@@ -23,5 +23,8 @@ func TestSpawnFastMapsToClaudeSessionOption(t *testing.T) {
 		if len(options) != 1 || options[0].ID != "fast" || options[0].Value != mode {
 			t.Fatalf("mode=%s options=%v", mode, options)
 		}
+		if !options[0].IfAdvertised {
+			t.Fatalf("fast %s is not guarded by the current catalog", mode)
+		}
 	}
 }

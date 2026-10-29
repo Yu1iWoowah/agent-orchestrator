@@ -19,19 +19,70 @@ type claudeFastConfigConversation struct {
 	*fakeConversation
 	configMu sync.Mutex
 	fast     bool
+	effort   string
 }
 
 func (c *claudeFastConfigConversation) ListConfigOptions(context.Context) ([]ports.ChatConfigOption, error) {
 	c.configMu.Lock()
 	defer c.configMu.Unlock()
-	return []ports.ChatConfigOption{{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(c.fast)}}}, nil
+	return []ports.ChatConfigOption{
+		{ID: "fast", Type: ports.ChatConfigOptionBoolean, Current: ports.ChatConfigOptionValue{Boolean: new(c.fast)}},
+		{ID: "effort", Category: "thought_level", Type: ports.ChatConfigOptionSelect, Current: ports.ChatConfigOptionValue{Select: c.effort}},
+	}, nil
 }
 
 func (c *claudeFastConfigConversation) SetConfigOption(ctx context.Context, id string, value ports.ChatConfigOptionValue) ([]ports.ChatConfigOption, error) {
 	c.configMu.Lock()
-	c.fast = *value.Boolean
+	switch id {
+	case "fast":
+		c.fast = *value.Boolean
+	case "effort":
+		c.effort = value.Select
+	}
 	c.configMu.Unlock()
 	return c.ListConfigOptions(ctx)
+}
+
+func TestClaudeEffortChoiceDoesNotCreateFastPreference(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		saved    domain.AgentFastMode
+		reported bool
+	}{
+		{"default/provider on", domain.AgentFastDefault, true},
+		{"default/provider off", domain.AgentFastDefault, false},
+		{"explicit off/provider on", domain.AgentFastOff, true},
+		{"explicit on/provider off", domain.AgentFastOn, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := openStore(t)
+			rec, err := st.CreateSession(ctx, domain.SessionRecord{ProjectID: testProject, Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conv := &claudeFastConfigConversation{fakeConversation: newFakeConversation(), fast: tc.reported}
+			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: conv}}, Log: slog.New(slog.DiscardHandler), NewID: uuid.NewString})
+			if _, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: rec.ID, ProjectID: testProject, Harness: domain.HarnessClaudeCode, WorkspacePath: t.TempDir(), FastMode: tc.saved}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = svc.Stop(ctx, rec.ID) })
+			if _, err := svc.SetConfigOption(ctx, rec.ID, "effort", ports.ChatConfigOptionValue{Select: "high"}); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := st.ConversationForSession(ctx, rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tc.saved
+			if want == domain.AgentFastDefault {
+				want = ""
+			}
+			if stored.Settings.ReasoningEffort != "high" || stored.Settings.AgentFastMode != want || stored.Settings.FastMode != (tc.saved == domain.AgentFastOn) {
+				t.Fatalf("effort choice changed fast intent: %+v want fast=%q", stored.Settings, want)
+			}
+		})
+	}
 }
 
 func TestClaudeConfigFastChoiceOverridesSpawnOnNextTurnAndRestart(t *testing.T) {
