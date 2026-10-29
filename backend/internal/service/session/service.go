@@ -353,32 +353,43 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	if cfg.Kind == domain.KindOrchestrator {
 		cfg.Async = true
-		unlock := s.lockOrchestratorProject(cfg.ProjectID)
-		defer unlock()
+		var result domain.Session
+		var promptBytes, systemPromptBytes int
+		err := s.WithOrchestratorProjectGate(ctx, cfg.ProjectID, func(locked context.Context) error {
+			var err error
+			result, promptBytes, systemPromptBytes, err = s.spawnOrchestratorFromConfig(locked, cfg)
+			return err
+		})
+		return result, promptBytes, systemPromptBytes, err
+	}
+	return s.spawn(ctx, cfg)
+}
 
-		existing, err := s.activeOrchestrators(ctx, cfg.ProjectID)
-		if err != nil {
-			return domain.Session{}, 0, 0, err
-		}
-		if len(existing) > 0 {
-			if cfg.AutomationRunID != nil {
-				for _, candidate := range existing {
-					if candidate.AutomationRunID != nil && *candidate.AutomationRunID == *cfg.AutomationRunID {
-						return candidate, 0, 0, nil
-					}
+// Both public orchestrator entrypoints check for an existing owner while
+// holding the same Manager project gate, including the eventual spawn.
+func (s *Service) spawnOrchestratorFromConfig(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
+	existing, err := s.activeOrchestrators(ctx, cfg.ProjectID)
+	if err != nil {
+		return domain.Session{}, 0, 0, err
+	}
+	if len(existing) > 0 {
+		if cfg.AutomationRunID != nil {
+			for _, candidate := range existing {
+				if candidate.AutomationRunID != nil && *candidate.AutomationRunID == *cfg.AutomationRunID {
+					return candidate, 0, 0, nil
 				}
-				return domain.Session{}, 0, 0, apierr.Conflict(
-					"ORCHESTRATOR_ALREADY_ACTIVE",
-					"Another orchestrator is already active for this project",
-					nil,
-				)
 			}
-			chosen := newestSession(existing)
-			if err := s.checkExistingAccount(ctx, chosen, cfg.AgentAccountID); err != nil {
-				return domain.Session{}, 0, 0, toSpawnAPIError(err)
-			}
-			return chosen, 0, 0, nil
+			return domain.Session{}, 0, 0, apierr.Conflict(
+				"ORCHESTRATOR_ALREADY_ACTIVE",
+				"Another orchestrator is already active for this project",
+				nil,
+			)
 		}
+		chosen := newestSession(existing)
+		if err := s.checkExistingAccount(ctx, chosen, cfg.AgentAccountID); err != nil {
+			return domain.Session{}, 0, 0, toSpawnAPIError(err)
+		}
+		return chosen, 0, 0, nil
 	}
 	return s.spawn(ctx, cfg)
 }
