@@ -7,10 +7,74 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+const advanceAgentSettingsCheckpoint = `-- name: AdvanceAgentSettingsCheckpoint :execrows
+UPDATE session_agent_settings_operations SET checkpoint=?1,operation_revision=operation_revision+1,
+ started_at=COALESCE(started_at,?2),updated_at=?2
+WHERE session_id=?3 AND id=?4 AND operation_revision=?5
+ AND phase IN ('pending','recovery_required')
+`
+
+type AdvanceAgentSettingsCheckpointParams struct {
+	Checkpoint      string
+	At              time.Time
+	SessionID       string
+	ID              string
+	ExpectedVersion int64
+}
+
+func (q *Queries) AdvanceAgentSettingsCheckpoint(ctx context.Context, arg AdvanceAgentSettingsCheckpointParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, advanceAgentSettingsCheckpoint,
+		arg.Checkpoint,
+		arg.At,
+		arg.SessionID,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const advanceAgentSettingsRecovery = `-- name: AdvanceAgentSettingsRecovery :execrows
+UPDATE session_agent_settings_operations SET phase='recovery_required',checkpoint=?1,
+ recovery_json=?2,error_category=?3,
+ operation_revision=operation_revision+1,updated_at=?4,finished_at=NULL
+WHERE session_id=?5 AND id=?6 AND operation_revision=?7
+ AND phase IN ('pending','recovery_required')
+`
+
+type AdvanceAgentSettingsRecoveryParams struct {
+	Checkpoint      string
+	RecoveryJson    string
+	ErrorCategory   string
+	At              time.Time
+	SessionID       string
+	ID              string
+	ExpectedVersion int64
+}
+
+func (q *Queries) AdvanceAgentSettingsRecovery(ctx context.Context, arg AdvanceAgentSettingsRecoveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, advanceAgentSettingsRecovery,
+		arg.Checkpoint,
+		arg.RecoveryJson,
+		arg.ErrorCategory,
+		arg.At,
+		arg.SessionID,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
 
 const commitSessionAgentSettings = `-- name: CommitSessionAgentSettings :execrows
 UPDATE sessions SET model=?1,effort=?2,agent_fast_mode=?3,
@@ -51,7 +115,7 @@ func (q *Queries) CommitSessionAgentSettings(ctx context.Context, arg CommitSess
 }
 
 const getAgentSettingsOperation = `-- name: GetAgentSettingsOperation :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at FROM session_agent_settings_operations WHERE session_id=? AND id=?
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json FROM session_agent_settings_operations WHERE session_id=? AND id=?
 `
 
 type GetAgentSettingsOperationParams struct {
@@ -70,12 +134,22 @@ func (q *Queries) GetAgentSettingsOperation(ctx context.Context, arg GetAgentSet
 		&i.Phase,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApplyMode,
+		&i.ErrorCategory,
+		&i.RequestID,
+		&i.ProviderConversationID,
+		&i.BranchID,
+		&i.Checkpoint,
+		&i.OperationRevision,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RecoveryJson,
 	)
 	return i, err
 }
 
 const getAgentSettingsOperationByKey = `-- name: GetAgentSettingsOperationByKey :one
-SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?
 `
 
 type GetAgentSettingsOperationByKeyParams struct {
@@ -94,33 +168,76 @@ func (q *Queries) GetAgentSettingsOperationByKey(ctx context.Context, arg GetAge
 		&i.Phase,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApplyMode,
+		&i.ErrorCategory,
+		&i.RequestID,
+		&i.ProviderConversationID,
+		&i.BranchID,
+		&i.Checkpoint,
+		&i.OperationRevision,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RecoveryJson,
+	)
+	return i, err
+}
+
+const getPendingAgentSettingsOperation = `-- name: GetPendingAgentSettingsOperation :one
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json FROM session_agent_settings_operations WHERE session_id=? AND phase IN ('pending','recovery_required')
+`
+
+func (q *Queries) GetPendingAgentSettingsOperation(ctx context.Context, sessionID string) (SessionAgentSettingsOperation, error) {
+	row := q.db.QueryRowContext(ctx, getPendingAgentSettingsOperation, sessionID)
+	var i SessionAgentSettingsOperation
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.IdempotencyKey,
+		&i.RequestJson,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ApplyMode,
+		&i.ErrorCategory,
+		&i.RequestID,
+		&i.ProviderConversationID,
+		&i.BranchID,
+		&i.Checkpoint,
+		&i.OperationRevision,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RecoveryJson,
 	)
 	return i, err
 }
 
 const getSessionAgentSettings = `-- name: GetSessionAgentSettings :one
-SELECT id,model,effort,agent_fast_mode,agent_settings_revision,harness,session_mode,
- controller_generation,runtime_launch_id,is_terminated,
+SELECT s.id,s.model,s.effort,s.agent_fast_mode,s.agent_settings_revision,s.harness,s.session_mode,
+ s.controller_generation,s.runtime_launch_id,s.is_terminated,s.provider_conversation_id,
+ CAST(COALESCE((SELECT active_branch_id FROM conversations c WHERE c.current_session_id=s.id ORDER BY c.scope='project' DESC,c.created_at DESC,c.id DESC LIMIT 1),'') AS TEXT) AS branch_id,
  CAST(COALESCE((SELECT account_id FROM session_agent_accounts a WHERE a.session_id=s.id
  AND a.provider=CASE s.harness WHEN 'codex' THEN 'codex' WHEN 'claude-code' THEN 'claude' ELSE '' END
  ORDER BY bound_at DESC LIMIT 1), '') AS TEXT) AS account_id
-FROM sessions s WHERE id=?
+FROM sessions s WHERE s.id=?
 `
 
 type GetSessionAgentSettingsRow struct {
-	ID                    domain.SessionID
-	Model                 string
-	Effort                string
-	AgentFastMode         string
-	AgentSettingsRevision int64
-	Harness               domain.AgentHarness
-	SessionMode           domain.SessionMode
-	ControllerGeneration  string
-	RuntimeLaunchID       string
-	IsTerminated          bool
-	AccountID             string
+	ID                     domain.SessionID
+	Model                  string
+	Effort                 string
+	AgentFastMode          string
+	AgentSettingsRevision  int64
+	Harness                domain.AgentHarness
+	SessionMode            domain.SessionMode
+	ControllerGeneration   string
+	RuntimeLaunchID        string
+	IsTerminated           bool
+	ProviderConversationID string
+	BranchID               string
+	AccountID              string
 }
 
+// Match SelectConversationBySession's primary project-conversation ownership.
 func (q *Queries) GetSessionAgentSettings(ctx context.Context, id domain.SessionID) (GetSessionAgentSettingsRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionAgentSettings, id)
 	var i GetSessionAgentSettingsRow
@@ -135,38 +252,52 @@ func (q *Queries) GetSessionAgentSettings(ctx context.Context, id domain.Session
 		&i.ControllerGeneration,
 		&i.RuntimeLaunchID,
 		&i.IsTerminated,
+		&i.ProviderConversationID,
+		&i.BranchID,
 		&i.AccountID,
 	)
 	return i, err
 }
 
 const insertAgentSettingsAudit = `-- name: InsertAgentSettingsAudit :exec
-INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at) VALUES(?,?,?)
+INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at,error_category,request_id) VALUES(?,?,?,?,?)
 `
 
 type InsertAgentSettingsAuditParams struct {
-	OperationID string
-	Phase       string
-	RecordedAt  time.Time
+	OperationID   string
+	Phase         string
+	RecordedAt    time.Time
+	ErrorCategory string
+	RequestID     string
 }
 
 func (q *Queries) InsertAgentSettingsAudit(ctx context.Context, arg InsertAgentSettingsAuditParams) error {
-	_, err := q.db.ExecContext(ctx, insertAgentSettingsAudit, arg.OperationID, arg.Phase, arg.RecordedAt)
+	_, err := q.db.ExecContext(ctx, insertAgentSettingsAudit,
+		arg.OperationID,
+		arg.Phase,
+		arg.RecordedAt,
+		arg.ErrorCategory,
+		arg.RequestID,
+	)
 	return err
 }
 
 const insertAgentSettingsOperation = `-- name: InsertAgentSettingsOperation :exec
-INSERT INTO session_agent_settings_operations(id,session_id,idempotency_key,request_json,phase,created_at,updated_at)
-VALUES(?,?,?,?,'pending',?,?)
+INSERT INTO session_agent_settings_operations(id,session_id,idempotency_key,request_json,phase,created_at,updated_at,apply_mode,request_id,provider_conversation_id,branch_id)
+VALUES(?,?,?,?,'pending',?,?,?,?,?,?)
 `
 
 type InsertAgentSettingsOperationParams struct {
-	ID             string
-	SessionID      string
-	IdempotencyKey string
-	RequestJson    string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                     string
+	SessionID              string
+	IdempotencyKey         string
+	RequestJson            string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ApplyMode              string
+	RequestID              string
+	ProviderConversationID string
+	BranchID               string
 }
 
 func (q *Queries) InsertAgentSettingsOperation(ctx context.Context, arg InsertAgentSettingsOperationParams) error {
@@ -177,6 +308,10 @@ func (q *Queries) InsertAgentSettingsOperation(ctx context.Context, arg InsertAg
 		arg.RequestJson,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.ApplyMode,
+		arg.RequestID,
+		arg.ProviderConversationID,
+		arg.BranchID,
 	)
 	return err
 }
@@ -247,22 +382,32 @@ func (q *Queries) SaveSpawnAgentSettings(ctx context.Context, arg SaveSpawnAgent
 }
 
 const setAgentSettingsOperationPhase = `-- name: SetAgentSettingsOperationPhase :execrows
-UPDATE session_agent_settings_operations SET phase=?,updated_at=? WHERE session_id=? AND id=? AND phase='pending'
+UPDATE session_agent_settings_operations SET phase=?1,updated_at=?2,
+ error_category=?3,operation_revision=operation_revision+1,
+ finished_at=?4
+WHERE session_id=?5 AND id=?6 AND operation_revision=?7
+ AND phase IN ('pending','recovery_required')
 `
 
 type SetAgentSettingsOperationPhaseParams struct {
-	Phase     string
-	UpdatedAt time.Time
-	SessionID string
-	ID        string
+	Phase           string
+	At              time.Time
+	ErrorCategory   string
+	FinishedAt      sql.NullTime
+	SessionID       string
+	ID              string
+	ExpectedVersion int64
 }
 
 func (q *Queries) SetAgentSettingsOperationPhase(ctx context.Context, arg SetAgentSettingsOperationPhaseParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setAgentSettingsOperationPhase,
 		arg.Phase,
-		arg.UpdatedAt,
+		arg.At,
+		arg.ErrorCategory,
+		arg.FinishedAt,
 		arg.SessionID,
 		arg.ID,
+		arg.ExpectedVersion,
 	)
 	if err != nil {
 		return 0, err
