@@ -576,7 +576,7 @@ WHERE id=sqlc.arg(id);
 -- name: UpdateConversationManualControls :exec
 UPDATE conversations
 SET approval_mode=sqlc.narg(approval_mode), opencode_mode=sqlc.arg(opencode_mode),
- auto_compact_window=sqlc.arg(auto_compact_window)
+ auto_compact_window=sqlc.arg(auto_compact_window), updated_at=sqlc.arg(updated_at)
 WHERE id=sqlc.arg(id);
 
 -- Token position for the conversation, latest wins.

@@ -16,6 +16,7 @@ import (
 type agentSettingsJournal interface {
 	agentSettingsContextReader
 	BeginAgentSettingsOperation(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
+	SupersedeQueuedAgentSettingsOperation(context.Context, string, int64, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
 	PendingAgentSettingsOperation(context.Context, domain.SessionID) (domain.AgentSettingsOperation, bool, error)
 	LatestAppliedAgentSettingsOperation(context.Context, domain.SessionID) (domain.AgentSettingsOperation, bool, error)
 	AgentSettingsOperation(context.Context, domain.SessionID, string) (domain.AgentSettingsOperation, error)
@@ -132,6 +133,15 @@ func (c *Controller) qualifySettings(ctx context.Context, op domain.AgentSetting
 // QueueAgentSettings is an internal command. Busy providers receive only the
 // durable intention; the terminal-event drain owns subsequent application.
 func (c *Controller) QueueAgentSettings(ctx context.Context, op domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
+	return c.queueAgentSettings(ctx, op, nil)
+}
+
+// SupersedeQueuedAgentSettings coalesces only an unstarted local menu intent.
+func (c *Controller) SupersedeQueuedAgentSettings(ctx context.Context, old, next domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
+	return c.queueAgentSettings(ctx, next, &old)
+}
+
+func (c *Controller) queueAgentSettings(ctx context.Context, op domain.AgentSettingsOperation, old *domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
 	journal, ok := c.store.(agentSettingsJournal)
 	if !ok || c.reviewID != "" || op.SessionID != c.sessionID {
 		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsUnsupported
@@ -155,7 +165,11 @@ func (c *Controller) QueueAgentSettings(ctx context.Context, op domain.AgentSett
 	if _, err := c.qualifySettings(ctx, op, ownerForSettings(current), false); err != nil {
 		return op, err
 	}
-	op, err = journal.BeginAgentSettingsOperation(ctx, op)
+	if old == nil {
+		op, err = journal.BeginAgentSettingsOperation(ctx, op)
+	} else {
+		op, err = journal.SupersedeQueuedAgentSettingsOperation(ctx, old.ID, old.Version, op)
+	}
 	if err != nil {
 		return op, err
 	}
@@ -163,6 +177,7 @@ func (c *Controller) QueueAgentSettings(ctx context.Context, op domain.AgentSett
 	// Only execution owns sendMu; the current wire was already captured before
 	// its provider call and the terminal drain observes this pending fence.
 	if !c.sendMu.TryLock() {
+		c.queueSettingsRecheck()
 		return op, nil
 	}
 	defer c.sendMu.Unlock()
@@ -202,10 +217,44 @@ func (c *Controller) CancelAgentSettings(ctx context.Context, id string, version
 		return op, err
 	}
 	if !c.sendMu.TryLock() {
+		c.queueSettingsRecheck()
 		return op, nil
 	}
 	defer c.sendMu.Unlock()
 	return op, c.drainLocked(ctx, true)
+}
+
+// The lock holder may be a queue edit, a prepare that just lost its CAS, or
+// another operation with no terminal-event drain. Do not depend on a new turn.
+func (c *Controller) queueSettingsRecheck() {
+	c.mu.Lock()
+	if c.settingsRecheckQueued {
+		c.mu.Unlock()
+		return
+	}
+	c.settingsRecheckQueued = true
+	c.mu.Unlock()
+	go func() {
+		c.sendMu.Lock()
+		defer c.sendMu.Unlock()
+		c.mu.Lock()
+		c.settingsRecheckQueued = false
+		stopped := c.state == ports.ChatControllerStopped
+		c.mu.Unlock()
+		if stopped {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), nativeEditHandoffLimit)
+		defer cancel()
+		blocked, err := c.reconcileAgentSettingsLocked(ctx)
+		if err == nil && !blocked {
+			err = c.drainLocked(ctx, true)
+		}
+		if err != nil {
+			// Stable outcome only: provider diagnostics can echo private launch env.
+			c.log.Warn("settings recheck retained dispatch fence", "session", c.sessionID, "code", settingsFailureCode(domain.AgentSettingsErrorProvider, []error{err}))
+		}
+	}()
 }
 
 func settingsSelection(wire ports.ChatTurnSettings) domain.AgentSettings {
@@ -241,7 +290,8 @@ func (c *Controller) settingsQuiescent(ctx context.Context) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("%w: provider_quiescence_unavailable", ports.ErrAgentSettingsUnsupported)
 	}
-	return provider.CanHibernate(ctx)
+	quiet, err := provider.CanHibernate(ctx)
+	return quiet, providerSettingsError(err)
 }
 
 func (c *Controller) adoptAgentSettings(settings domain.AgentSettings) {
@@ -316,7 +366,7 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 	}
 	plan, err := provider.PrepareAgentSettings(ctx, op.Source, op.Target)
 	if err != nil {
-		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, err)
+		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, providerSettingsError(err))
 	}
 	execution := domain.AgentSettingsExecution{Owner: ownerForSettings(current), Revision: current.Revision, Qualification: proof, Plan: plan}
 	op, err = journal.PinAgentSettingsExecution(ctx, c.sessionID, op.ID, op.Version, execution, c.now())
@@ -333,7 +383,7 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 		}
 		op = next
 		if err := provider.ApplyAgentSettingsStep(ctx, plan, step, false); err != nil {
-			return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorProvider, err)
+			return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorProvider, providerSettingsError(err))
 		}
 	}
 	verified, err := journal.AdvanceAgentSettingsOperation(ctx, c.sessionID, op.ID, op.Version, domain.AgentSettingsVerified, c.now())

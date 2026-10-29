@@ -218,6 +218,7 @@ type Controller struct {
 	settingsDispatchSnapshot    *domain.AgentSettingsTurnSnapshot
 	settingsValidator           ports.ChatAgentSettingsValidator // guarded by mu
 	settingsMutator             ports.ChatAgentSettingsMutator   // guarded by mu
+	settingsRecheckQueued       bool                             // guarded by mu; at most one waiting recheck
 	settingsInitializationError error                            // guarded by sendMu; failed cold replay fences dispatch
 
 	conv                   ports.ChatConversation

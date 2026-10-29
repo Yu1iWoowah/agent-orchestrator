@@ -8,11 +8,95 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 )
+
+type grantReconnectingDriver struct{ fakeDriver }
+
+func (d grantReconnectingDriver) Reconnect(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+	return d.Resume(ctx, cfg)
+}
+
+func TestSettingsGrantSurvivesLiveReconnectButNotProviderRelaunch(t *testing.T) {
+	for _, harness := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode} {
+		t.Run(string(harness), func(t *testing.T) {
+			st := openStore(t)
+			now := time.Now()
+			actor, _, err := st.GetSession(t.Context(), testSession)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actor.Kind, actor.Harness = domain.KindOrchestrator, harness
+			if err := st.UpdateSession(t.Context(), actor); err != nil {
+				t.Fatal(err)
+			}
+			target, err := st.CreateSession(t.Context(), domain.SessionRecord{ProjectID: testProject, Kind: domain.KindWorker, Harness: harness, Mode: domain.SessionModeChat, CreatedAt: now, UpdatedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			signer, err := agentsettings.NewStoredGrantAuthority(t.Context(), st, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := func(driver ports.ChatDriver) *chatsvc.Service {
+				s := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), PageReader: boundedSnapshotReader(st), Activity: &recordingActivity{}, Drivers: fakeRegistry{driver: driver}, Log: slog.New(slog.DiscardHandler), Now: time.Now, NewID: uuid.NewString})
+				s.SetAgentSettingsGrantEnvironment(agentsettings.NewGrantEnvironment(st, signer, time.Now))
+				t.Cleanup(func() { s.StopAll(context.Background()) })
+				return s
+			}
+			var launched ports.ChatStartConfig
+			firstProvider := newFakeConversation()
+			first := service(fakeDriver{conv: firstProvider, startCfg: &launched})
+			initial, err := first.Start(t.Context(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: harness, WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			grant := launched.Env[ports.EnvAgentSettingsGrant]
+			if grant == "" {
+				t.Fatal("native launch did not receive a settings grant")
+			}
+			first.StopAll(t.Context())
+			actor, _, err = st.GetSession(t.Context(), testSession)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actor.Metadata.ProviderConversationID = firstProvider.ProviderConversationID()
+			if err := st.UpdateSession(t.Context(), actor); err != nil {
+				t.Fatal(err)
+			}
+			live := &liveReconnectedConversation{nativeHistoryConversation: &nativeHistoryConversation{fakeConversation: newFakeConversation()}}
+			second := service(grantReconnectingDriver{fakeDriver{conv: live}})
+			reconnected, err := second.Start(t.Context(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: harness, ProviderConversationID: firstProvider.ProviderConversationID(), ReconnectOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reconnected.Generation() == initial.Generation() {
+				t.Fatal("live reconnect did not rotate the controller event/recovery fence")
+			}
+			authorizer := agentsettings.NewAuthorizer(st, signer, time.Now)
+			if _, err := authorizer.Authorize(t.Context(), agentsettings.Caller{SessionID: testSession, Grant: grant}, target); err != nil {
+				t.Fatalf("same native process lost its grant on live reconnect: %v", err)
+			}
+			second.StopAll(t.Context())
+			var relaunched ports.ChatResumeConfig
+			third := service(fakeDriver{conv: newFakeConversation(), resumeCfg: &relaunched})
+			if _, err := third.Start(t.Context(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: harness, ProviderConversationID: firstProvider.ProviderConversationID()}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := authorizer.Authorize(t.Context(), agentsettings.Caller{SessionID: testSession, Grant: grant}, target); err == nil {
+				t.Fatal("replaced process retained its old grant")
+			}
+			if _, err := authorizer.Authorize(t.Context(), agentsettings.Caller{SessionID: testSession, Grant: relaunched.Env[ports.EnvAgentSettingsGrant]}, target); err != nil {
+				t.Fatalf("fresh provider did not receive a usable replacement grant: %v", err)
+			}
+		})
+	}
+}
 
 func TestSettingsGrantIsRedactedFromChatLaunchErrors(t *testing.T) {
 	for _, resume := range []bool{false, true} {

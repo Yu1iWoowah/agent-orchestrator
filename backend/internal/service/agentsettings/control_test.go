@@ -25,6 +25,47 @@ func (r durableOnlyRuntime) CancelAgentSettings(ctx context.Context, id domain.S
 	return r.st.FinishAgentSettingsOperation(ctx, id, operationID, version, domain.AgentSettingsCancelled, domain.AgentSettingsErrorCancelled, time.Now())
 }
 
+func TestManagedSettingsCancelCannotCancelLocalIntent(t *testing.T) {
+	c, st, rec := controlFixture(t)
+	ctx := t.Context()
+	zero := int64(0)
+	high := domain.AgentEffortSelection("high")
+	local, err := c.Change(ctx, Caller{}, rec.ID, Change{ExpectedRevision: &zero, IdempotencyKey: "local-cancel-owner", Settings: domain.AgentSettingsPatch{Effort: &high}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, err := st.CreateSession(ctx, domain.SessionRecord{ProjectID: rec.ProjectID, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI, Metadata: domain.SessionMetadata{RuntimeLaunchID: "actor-launch"}, CreatedAt: c.now(), UpdatedAt: c.now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := NewStoredGrantAuthority(ctx, st, c.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := domain.AgentSettingsAuthority{ProjectID: rec.ProjectID, ActorHarness: actor.Harness, ActorMode: actor.Mode, ActorGeneration: "actor-launch", IssuedAt: c.now().Unix(), ExpiresAt: c.now().Add(time.Hour).Unix()}
+	grant, err := signer.Issue(actor.ID, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.authorizer = NewAuthorizer(st, signer, c.now)
+	caller := Caller{SessionID: actor.ID, Grant: grant}
+	if _, err := c.Cancel(ctx, caller, rec.ID, local.ID, local.Version); !hasCode(err, "AGENT_SETTINGS_CANCEL_DENIED") {
+		t.Fatalf("managed actor cancelled local user intent: %v", err)
+	}
+	if _, err := c.Cancel(ctx, Caller{}, rec.ID, local.ID, local.Version); err != nil {
+		t.Fatal("manual local cancellation lost its original scope", err)
+	}
+	own := local
+	own.ID, own.IdempotencyKey = "own-managed", "own-managed-key"
+	own.Actor, own.Authority = domain.AgentSettingsActor{Kind: domain.AgentSettingsActorOrchestrator, SessionID: actor.ID}, scope
+	if _, err := st.BeginAgentSettingsOperation(ctx, own); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Cancel(ctx, caller, rec.ID, own.ID, own.Version); err != nil {
+		t.Fatal("managed actor could not cancel its own intent", err)
+	}
+}
+
 func controlFixture(t *testing.T) (*Control, *sqlite.Store, domain.SessionRecord) {
 	t.Helper()
 	ctx := t.Context()

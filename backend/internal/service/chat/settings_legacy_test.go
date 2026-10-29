@@ -30,6 +30,129 @@ func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 	}
 }
 
+func TestLegacyBusyPickerProjectsAndCoalescesLocalChoices(t *testing.T) {
+	for _, agentHarness := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode} {
+		for _, check := range []string{"projection", "merge", "concurrent", "reset", "invalid"} {
+			t.Run(string(agentHarness)+"/"+check, func(t *testing.T) {
+				h, conv, _, _ := journalHarnessForHarness(t, agentHarness)
+				catalog := ports.AgentModelCatalog{AgentID: string(agentHarness), Models: []ports.AgentModelInfo{{ID: "new-model", IsDefault: true, SupportsFast: true, Efforts: []string{"low", "high"}}}}
+				raw, _ := json.Marshal(catalog)
+				if err := h.st.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: string(agentHarness), CatalogJSON: string(raw), InputFingerprint: "live-inputs", LastSuccessAt: h.now(), FetchedAt: h.now()}); err != nil {
+					t.Fatal(err)
+				}
+				reader := agentsettings.New(h.st, h.now)
+				reader.SetCatalogFingerprintSource(legacyCatalogInputs{})
+				control := agentsettings.NewControl(reader, h.st, agentsettings.NewAuthorizer(h.st, nil, h.now), h.svc, h.now)
+				h.svc.SetAgentSettingsMutator(control)
+				h.svc.SetAgentSettingsValidator(control)
+				first, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "current"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				picked := h.ctrl.Settings()
+				picked.Model = "new-model"
+				response, err := h.svc.SetTurnSettings(t.Context(), testSession, picked)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if check == "projection" {
+					if response.Model != picked.Model || h.ctrl.Settings().Model != "" || conv.stepCount() != 0 {
+						t.Fatalf("busy picker snapped back or changed active wire: response=%+v committed=%+v", response, h.ctrl.Settings())
+					}
+					for _, paged := range []bool{false, true} {
+						var snapshot chatsvc.Snapshot
+						if paged {
+							snapshot, err = h.svc.SnapshotPage(t.Context(), testSession, 0, 10)
+						} else {
+							snapshot, err = h.svc.Snapshot(t.Context(), testSession)
+						}
+						if err != nil || snapshot.Conversation.Settings.Model != picked.Model {
+							t.Fatalf("refetch lost pending picker projection: %+v %v", snapshot.Conversation.Settings, err)
+						}
+					}
+					return
+				}
+				original, found, err := h.st.PendingAgentSettingsOperation(t.Context(), testSession)
+				if err != nil || !found {
+					t.Fatal("missing original local intent", err)
+				}
+				if check == "invalid" {
+					if _, err := h.svc.SetConfigOption(t.Context(), testSession, "model", ports.ChatConfigOptionValue{Select: "missing-model"}); err == nil {
+						t.Fatal("invalid later selection was accepted")
+					}
+					pending, found, err := h.st.PendingAgentSettingsOperation(t.Context(), testSession)
+					if err != nil || !found || pending.ID != original.ID || pending.Target != original.Target {
+						t.Fatalf("invalid pick discarded the accepted selection: %+v %v", pending, err)
+					}
+					return
+				}
+				if check == "reset" {
+					picked.Model = ""
+					response, err := h.svc.SetTurnSettings(t.Context(), testSession, picked)
+					pending, found, readErr := h.st.PendingAgentSettingsOperation(t.Context(), testSession)
+					if err != nil || readErr != nil || !found || pending.Target.Model != "" || response.Model != "" {
+						t.Fatalf("reset was compared to committed rather than pending selection: %+v %+v %v %v", response, pending, err, readErr)
+					}
+					return
+				}
+				if check == "concurrent" {
+					start, results := make(chan struct{}), make(chan error, 2)
+					go func() {
+						<-start
+						_, err := h.svc.SetConfigOption(t.Context(), testSession, "effort", ports.ChatConfigOptionValue{Select: "high"})
+						results <- err
+					}()
+					go func() {
+						<-start
+						on := true
+						_, err := h.svc.SetConfigOption(t.Context(), testSession, "fast", ports.ChatConfigOptionValue{Boolean: &on})
+						results <- err
+					}()
+					close(start)
+					for range 2 {
+						if err := <-results; err != nil {
+							t.Fatal("overlapping local selections conflicted", err)
+						}
+					}
+					pending, found, err := h.st.PendingAgentSettingsOperation(t.Context(), testSession)
+					want := domain.AgentSettings{Model: "new-model", Effort: "high", FastMode: domain.AgentFastOn}
+					if err != nil || !found || pending.Target != want {
+						t.Fatalf("overlapping selections lost a field: %+v %v", pending, err)
+					}
+					return
+				}
+				if _, err := h.svc.SetConfigOption(t.Context(), testSession, "effort", ports.ChatConfigOptionValue{Select: "high"}); err != nil {
+					t.Fatalf("second busy pick conflicted instead of merging: %v", err)
+				}
+				for _, on := range []bool{true, false} {
+					if _, err := h.svc.SetConfigOption(t.Context(), testSession, "fast", ports.ChatConfigOptionValue{Boolean: &on}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				pending, found, err := h.st.PendingAgentSettingsOperation(t.Context(), testSession)
+				want := domain.AgentSettings{Model: "new-model", Effort: "high", FastMode: domain.AgentFastOff}
+				if err != nil || !found || pending.Target != want || conv.stepCount() != 0 {
+					t.Fatalf("merged intent: %+v %v", pending, err)
+				}
+				superseded, err := h.st.AgentSettingsOperation(t.Context(), testSession, original.ID)
+				if err != nil || superseded.Phase != domain.AgentSettingsCancelled {
+					t.Fatal("superseded intent was rewritten instead of ended", err)
+				}
+				if _, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "next"}); err != nil {
+					t.Fatal(err)
+				}
+				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: first.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(conv.sentMessages()) == 2 })
+				wire := conv.sentMessages()[1].Settings
+				current, err := h.st.SessionAgentSettings(t.Context(), testSession)
+				if err != nil || current.Settings != want || current.Revision != 1 || wire.Model != "new-model" || wire.Effort != "high" || wire.FastMode != domain.AgentFastOff {
+					t.Fatalf("next wire/revision diverged: %+v %+v %v", wire, current, err)
+				}
+			})
+		}
+	}
+}
+
 func TestSettingsControlCancelReleasesWaitingMessage(t *testing.T) {
 	h, conv, _, _ := journalHarness(t)
 	catalog := ports.AgentModelCatalog{AgentID: "codex", Models: []ports.AgentModelInfo{{ID: "next", IsDefault: true, Efforts: []string{"high"}}}}
@@ -176,7 +299,7 @@ func legacySettingsAndTypedControl(t *testing.T, agentHarness domain.AgentHarnes
 	}
 }
 
-func (m *recordingSettingsMutator) ChangeAgentSettings(_ context.Context, _ domain.SessionID, p domain.AgentSettingsPatch) (domain.AgentSettingsOperation, error) {
+func (m *recordingSettingsMutator) ChangeAgentSettings(_ context.Context, _ domain.SessionID, p domain.AgentSettingsPatch, _ ports.ChatAgentSettingsQueue) (domain.AgentSettingsOperation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.patches = append(m.patches, p)

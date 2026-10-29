@@ -82,3 +82,11 @@ type AgentSettingsRecovery struct {
 	ClaimedAt          time.Time               `json:"claimedAt"`
 	PreviousCheckpoint AgentSettingsCheckpoint `json:"previousCheckpoint"`
 }
+
+// CanSupersedeLocally limits menu coalescing to unstarted, unverified-local
+// intent. Read-only preparation is allowed; possible provider effects are not.
+func (op AgentSettingsOperation) CanSupersedeLocally() bool {
+	return op.Actor.Kind == AgentSettingsActorLocal && op.Actor.SessionID == "" &&
+		op.Authority == (AgentSettingsAuthority{}) && op.Phase == AgentSettingsPending &&
+		op.Checkpoint == AgentSettingsQueued && op.StartedAt == nil && op.Recovery == nil
+}

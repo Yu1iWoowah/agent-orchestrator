@@ -28,7 +28,14 @@ func AgentSettingsCallerFromContext(ctx context.Context) AgentSettingsCaller {
 
 // ChatAgentSettingsMutator is shared by legacy selection menus and typed HTTP.
 type ChatAgentSettingsMutator interface {
-	ChangeAgentSettings(context.Context, domain.SessionID, domain.AgentSettingsPatch) (domain.AgentSettingsOperation, error)
+	ChangeAgentSettings(context.Context, domain.SessionID, domain.AgentSettingsPatch, ChatAgentSettingsQueue) (domain.AgentSettingsOperation, error)
+}
+
+// ChatAgentSettingsQueue is a controller already admitted by the lifecycle
+// boundary. Internal menus must not acquire the same lifecycle gate again.
+type ChatAgentSettingsQueue interface {
+	QueueAgentSettings(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
+	SupersedeQueuedAgentSettings(context.Context, domain.AgentSettingsOperation, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
 }
 
 // EnvAgentSettingsGrant is private launch state, never a response field.

@@ -95,14 +95,14 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 		plan, err = provider.PrepareAgentSettings(ctx, source, current.Settings)
 	}
 	if err != nil {
-		return err
+		return providerSettingsError(err)
 	}
 	for _, step := range []domain.AgentSettingsCheckpoint{domain.AgentSettingsApplyingModel, domain.AgentSettingsApplyingEffort, domain.AgentSettingsApplyingFast, domain.AgentSettingsVerifying} {
 		if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {
 			return err
 		}
 		if err := provider.ApplyAgentSettingsStep(ctx, plan, step, false); err != nil {
-			return err
+			return providerSettingsError(err)
 		}
 	}
 	if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {

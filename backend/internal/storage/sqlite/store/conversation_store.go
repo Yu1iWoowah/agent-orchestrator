@@ -2031,12 +2031,12 @@ func (s *Store) SetConversationSettings(
 }
 
 // SetConversationManualControls never overwrites scheduler-owned selections.
-func (s *Store) SetConversationManualControls(ctx context.Context, id string, settings domain.ConversationSettings) error {
+func (s *Store) SetConversationManualControls(ctx context.Context, id string, settings domain.ConversationSettings, at time.Time) error {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err
 	}
 	defer s.writeMu.Unlock()
-	return s.qw.UpdateConversationManualControls(ctx, gen.UpdateConversationManualControlsParams{ID: id, ApprovalMode: nullableString(string(settings.ApprovalMode)), OpencodeMode: settings.OpenCodeMode, AutoCompactWindow: settings.AutoCompactWindow})
+	return s.qw.UpdateConversationManualControls(ctx, gen.UpdateConversationManualControlsParams{ID: id, ApprovalMode: nullableString(string(settings.ApprovalMode)), OpencodeMode: settings.OpenCodeMode, AutoCompactWindow: settings.AutoCompactWindow, UpdatedAt: at})
 }
 
 // MarkCompacted records that the conversation's history was summarized to reclaim

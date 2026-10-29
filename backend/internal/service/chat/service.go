@@ -829,7 +829,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	}
 	providerSystemPrompt := withHandoffNote(cfg.SystemPrompt, handoffNote)
 
-	settingsAccount := s.settingsAccountBeforeLaunch(ctx, cfg.SessionID)
+	settingsAccount := s.settingsAccountBeforeLaunch(ctx, cfg.SessionID, cfg.Harness)
 	var conv ports.ChatConversation
 	hostID := providerHostID(cfg)
 	freshIfMissing := cfg.FreshIfProviderConversationMissing
@@ -2050,6 +2050,10 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		// Overlay current controller choices; plan mode remains live-only.
 		live := controller.Settings()
 		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.AgentFastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.AgentFastMode, live.PlanMode
+		rows.Conversation.Settings, err = controller.projectedLegacySettings(ctx, rows.Conversation.Settings)
+		if err != nil {
+			return Snapshot{}, err
+		}
 	}
 
 	return Snapshot{
@@ -2158,6 +2162,10 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		// Overlay current controller choices; plan mode remains live-only.
 		live := controller.Settings()
 		rows.Conversation.Settings.FastMode, rows.Conversation.Settings.AgentFastMode, rows.Conversation.Settings.PlanMode = live.FastMode, live.AgentFastMode, live.PlanMode
+		rows.Conversation.Settings, err = controller.projectedLegacySettings(ctx, rows.Conversation.Settings)
+		if err != nil {
+			return Snapshot{}, err
+		}
 	}
 	return Snapshot{
 		Conversation:                     rows.Conversation,
@@ -2567,7 +2575,11 @@ func (s *Service) SetConfigOption(
 		if err != nil {
 			return nil, err
 		}
-		return configurer.ListConfigOptions(ctx)
+		options, err := configurer.ListConfigOptions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return controller.projectedLegacyOptions(ctx, options)
 	}
 	if record.Harness == domain.HarnessCopilot {
 		if err := copilotConfigOptionAllowed(configID, value); err != nil {
@@ -2812,7 +2824,7 @@ func (s *Service) setTurnSettings(ctx context.Context, controller *Controller, o
 	if owner.Kind == domain.ConversationOwnerSession && controller.agentSettingsMutator() == nil {
 		s.persistPickedModel(domain.SessionID(owner.ID), previous, settings)
 	}
-	return controller.Settings(), nil
+	return controller.projectedLegacySettings(ctx, controller.Settings())
 }
 
 // persistPickedModel keeps session metadata in sync with the Chat model choice,

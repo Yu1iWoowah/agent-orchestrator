@@ -1,6 +1,7 @@
 package agentsettings
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,38 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestSettingsGrantExpiryRequiresFreshNativeLaunch(t *testing.T) {
+	now := time.Now()
+	signer, err := NewGrantAuthority([]byte(strings.Repeat("e", 32)), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &authorityStore{actor: domain.SessionRecord{ID: "actor", ProjectID: "p", Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI, Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"}}}
+	issuer := NewGrantEnvironment(st, signer, func() time.Time { return now })
+	env, err := issuer.AgentSettingsGrantEnv(t.Context(), "actor", domain.HarnessCodex, domain.SessionModeTUI, "launch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := env[ports.EnvAgentSettingsGrant]
+	_, scope, err := signer.Verify(old)
+	if err != nil || scope.ExpiresAt-scope.IssuedAt != int64(SettingsGrantLifetime/time.Second) {
+		t.Fatal("native grant did not have the documented lifetime", err)
+	}
+	now = now.Add(SettingsGrantLifetime)
+	if _, _, err := signer.Verify(old); !errors.Is(err, ports.ErrAgentSettingsGrantExpired) {
+		t.Fatalf("long-running process silently renewed its grant: %v", err)
+	}
+	st.actor.Metadata.RuntimeLaunchID = "launch-2"
+	env, err = issuer.AgentSettingsGrantEnv(t.Context(), "actor", domain.HarnessCodex, domain.SessionModeTUI, "launch-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := domain.SessionRecord{ID: "worker", ProjectID: "p", Kind: domain.KindWorker}
+	if _, err := NewAuthorizer(st, signer, func() time.Time { return now }).Authorize(t.Context(), Caller{SessionID: "actor", Grant: env[ports.EnvAgentSettingsGrant]}, target); err != nil {
+		t.Fatal("fresh native launch did not receive renewed authority", err)
+	}
+}
 
 func TestSettingsGrantEnvironmentIsPurposeAndGenerationScoped(t *testing.T) {
 	now := time.Now()
@@ -33,6 +66,11 @@ func TestSettingsGrantEnvironmentIsPurposeAndGenerationScoped(t *testing.T) {
 	s.actor.Metadata.ControllerGeneration = "replacement"
 	if scope.Matches(s.actor) {
 		t.Fatal("stale launch kept authority")
+	}
+	s.actor.Metadata.AgentSettingsLaunchID = "next"
+	s.actor.Metadata.ControllerGeneration = ""
+	if scope.Matches(s.actor) {
+		t.Fatal("retired Chat controller kept its native grant")
 	}
 	s.actor.Kind = domain.KindWorker
 	env, err = issuer.AgentSettingsGrantEnv(t.Context(), "actor", domain.HarnessCodex, domain.SessionModeChat, "worker")

@@ -291,7 +291,7 @@ func (s *Service) EditMessage(
 	}
 	generation := s.newID()
 	cfg.ControllerGeneration = generation
-	settingsAccount := s.settingsAccountBeforeLaunch(ctx, id)
+	settingsAccount := s.settingsAccountBeforeLaunch(ctx, id, source.harness)
 	var providerConversationID string
 	var provider ports.ChatConversation
 	var replayContent ports.ChatContent
@@ -907,7 +907,7 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 	}
 	generation := s.newID()
 	cfg.ControllerGeneration = generation
-	settingsAccount := s.settingsAccountBeforeLaunch(ctx, id)
+	settingsAccount := s.settingsAccountBeforeLaunch(ctx, id, source.harness)
 	if branch.ProviderBindingID != activeBranch.ProviderBindingID {
 		// Provider scopes may differ between approximate siblings, but their
 		// durable binding epoch must match. Crossing it could hand an opaque
@@ -1058,7 +1058,7 @@ func (s *Service) restoreClosedSourceController(
 	// ones it was launched with: the user may have changed them since.
 	conversation := source.conversation
 	conversation.Settings = source.Settings()
-	settingsAccount := s.settingsAccountBeforeLaunch(recoveryCtx, id)
+	settingsAccount := s.settingsAccountBeforeLaunch(recoveryCtx, id, source.harness)
 	provider, err := driver.Resume(recoveryCtx, ports.ChatResumeConfig{
 		SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
 		// A branch whose agent never answered may have no native session to resume.

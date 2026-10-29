@@ -5136,14 +5136,15 @@ func (q *Queries) UpdateConversationBranchReplacement(ctx context.Context, arg U
 const updateConversationManualControls = `-- name: UpdateConversationManualControls :exec
 UPDATE conversations
 SET approval_mode=?1, opencode_mode=?2,
- auto_compact_window=?3
-WHERE id=?4
+ auto_compact_window=?3, updated_at=?4
+WHERE id=?5
 `
 
 type UpdateConversationManualControlsParams struct {
 	ApprovalMode      sql.NullString
 	OpencodeMode      string
 	AutoCompactWindow string
+	UpdatedAt         time.Time
 	ID                string
 }
 
@@ -5152,6 +5153,7 @@ func (q *Queries) UpdateConversationManualControls(ctx context.Context, arg Upda
 		arg.ApprovalMode,
 		arg.OpencodeMode,
 		arg.AutoCompactWindow,
+		arg.UpdatedAt,
 		arg.ID,
 	)
 	return err

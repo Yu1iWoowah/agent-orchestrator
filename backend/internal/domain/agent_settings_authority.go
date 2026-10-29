@@ -16,7 +16,15 @@ type AgentSettingsAuthority struct {
 func (a AgentSettingsAuthority) Matches(rec SessionRecord) bool {
 	generation := rec.Metadata.RuntimeLaunchID
 	if NormalizeSessionMode(rec.Mode) == SessionModeChat {
-		generation = rec.Metadata.ControllerGeneration
+		if rec.Metadata.ControllerGeneration == "" {
+			return false
+		}
+		generation = rec.Metadata.AgentSettingsLaunchID
+		if generation == "" {
+			// An existing launch predating the private launch column used its
+			// original controller generation; live claim carries that value.
+			generation = rec.Metadata.ControllerGeneration
+		}
 	}
 	return !rec.IsTerminated && a.ProjectID != "" && rec.ProjectID == a.ProjectID && rec.Harness == a.ActorHarness && NormalizeSessionMode(rec.Mode) == a.ActorMode && generation != "" && generation == a.ActorGeneration
 }

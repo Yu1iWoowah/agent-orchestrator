@@ -33,6 +33,7 @@ type ControlStore interface {
 	SessionAgentSettings(context.Context, domain.SessionID) (domain.SessionAgentSettings, error)
 	AgentSettingsOperationByKey(context.Context, domain.SessionID, string) (domain.AgentSettingsOperation, bool, error)
 	AgentSettingsOperation(context.Context, domain.SessionID, string) (domain.AgentSettingsOperation, error)
+	PendingAgentSettingsOperation(context.Context, domain.SessionID) (domain.AgentSettingsOperation, bool, error)
 }
 
 // SettingsRuntime admits intent to the session dispatch scheduler.
@@ -62,12 +63,38 @@ func NewControl(core *Service, store ControlStore, authorizer *Authorizer, runti
 // ChangeAgentSettings adapts pre-CAS manual menus into the same scheduler. It
 // never changes project defaults, writes session metadata separately or claims
 // that an identity-free local caller was a verified human.
-func (c *Control) ChangeAgentSettings(ctx context.Context, id domain.SessionID, patch domain.AgentSettingsPatch) (domain.AgentSettingsOperation, error) {
-	current, err := c.store.SessionAgentSettings(ctx, id)
-	if err != nil {
-		return domain.AgentSettingsOperation{}, settingsError(err)
+func (c *Control) ChangeAgentSettings(ctx context.Context, id domain.SessionID, patch domain.AgentSettingsPatch, queue ports.ChatAgentSettingsQueue) (domain.AgentSettingsOperation, error) {
+	caller := ports.AgentSettingsCallerFromContext(ctx)
+	key := uuid.NewString()
+	for attempt := 0; attempt < 8; attempt++ {
+		current, err := c.store.SessionAgentSettings(ctx, id)
+		if err != nil {
+			return domain.AgentSettingsOperation{}, settingsError(err)
+		}
+		var previous *domain.AgentSettingsOperation
+		enqueue := queue.QueueAgentSettings
+		if caller == (Caller{}) {
+			pending, found, err := c.store.PendingAgentSettingsOperation(ctx, id)
+			if err != nil {
+				return domain.AgentSettingsOperation{}, settingsError(err)
+			}
+			if found {
+				if !pending.CanSupersedeLocally() {
+					return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsConflict)
+				}
+				previous = &pending
+				enqueue = func(ctx context.Context, next domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
+					return queue.SupersedeQueuedAgentSettings(ctx, pending, next)
+				}
+			}
+		}
+		result, err := c.change(ctx, caller, id, Change{ExpectedRevision: &current.Revision, Settings: patch, IdempotencyKey: key, RequestID: reqid.FromContext(ctx)}, enqueue, previous)
+		var structured *apierr.Error
+		if caller != (Caller{}) || !errors.As(err, &structured) || structured.Code != "AGENT_SETTINGS_CONFLICT" {
+			return result, err
+		}
 	}
-	return c.Change(ctx, ports.AgentSettingsCallerFromContext(ctx), id, Change{ExpectedRevision: &current.Revision, Settings: patch, IdempotencyKey: uuid.NewString(), RequestID: reqid.FromContext(ctx)})
+	return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsConflict)
 }
 
 func (c *Control) target(ctx context.Context, caller Caller, id domain.SessionID) (domain.SessionRecord, Authorization, error) {
@@ -84,6 +111,14 @@ func (c *Control) target(ctx context.Context, caller Caller, id domain.SessionID
 
 // Change authorizes and validates a patch before admitting it with revision CAS.
 func (c *Control) Change(ctx context.Context, caller Caller, id domain.SessionID, in Change) (domain.AgentSettingsOperation, error) {
+	var enqueue func(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
+	if c.runtime != nil {
+		enqueue = c.runtime.QueueAgentSettings
+	}
+	return c.change(ctx, caller, id, in, enqueue, nil)
+}
+
+func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID, in Change, enqueue func(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error), previous *domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
 	var empty domain.AgentSettingsOperation
 	if in.ApplyMode == "" {
 		in.ApplyMode = domain.AgentSettingsAfterTurn
@@ -130,7 +165,14 @@ func (c *Control) Change(ctx context.Context, caller Caller, id domain.SessionID
 	if current.Revision != *in.ExpectedRevision {
 		return c.acceptedRetry(ctx, id, in.IdempotencyKey, fingerprint)
 	}
-	target, err := current.Settings.Apply(in.Settings)
+	base := current.Settings
+	if previous != nil {
+		if accepted.Actor.Kind != domain.AgentSettingsActorLocal || !previous.CanSupersedeLocally() || previous.BaseRevision != current.Revision || previous.Source != current.Settings {
+			return empty, settingsError(ports.ErrAgentSettingsConflict)
+		}
+		base = previous.Target
+	}
+	target, err := base.Apply(in.Settings)
 	if err != nil {
 		return empty, settingsError(ports.ErrAgentSettingsInvalid)
 	}
@@ -138,7 +180,7 @@ func (c *Control) Change(ctx context.Context, caller Caller, id domain.SessionID
 	if rec.Harness == domain.HarnessClaudeCode && in.Settings.FastMode == nil {
 		selection.FastMode = domain.AgentFastDefault
 	}
-	validated, err := c.core.ValidateSpawn(ctx, id, selection, in.Settings.Model != nil && in.Settings.Effort == nil && target.Model != current.Settings.Model)
+	validated, err := c.core.ValidateSpawn(ctx, id, selection, in.Settings.Model != nil && in.Settings.Effort == nil && target.Model != base.Model)
 	if err != nil {
 		return empty, settingsError(err)
 	}
@@ -150,10 +192,10 @@ func (c *Control) Change(ctx context.Context, caller Caller, id domain.SessionID
 		return empty, settingsError(err)
 	}
 	op := domain.AgentSettingsOperation{ID: uuid.NewString(), SessionID: id, IdempotencyKey: in.IdempotencyKey, BaseRevision: current.Revision, Source: current.Settings, Target: target, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID, Actor: accepted.Actor, Authority: accepted.Authority, RequestFingerprint: fingerprint, CreatedAt: c.now(), RequestID: in.RequestID, ApplyMode: in.ApplyMode}
-	if c.runtime == nil {
+	if enqueue == nil {
 		return empty, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
-	result, err := c.runtime.QueueAgentSettings(ctx, op)
+	result, err := enqueue(ctx, op)
 	if errors.Is(err, ports.ErrAgentSettingsConflict) {
 		return c.acceptedRetry(ctx, id, in.IdempotencyKey, fingerprint)
 	}
@@ -190,8 +232,18 @@ func (c *Control) ReadForCaller(ctx context.Context, caller Caller, id domain.Se
 
 // Cancel terminates an unstarted intent using the caller scope and version CAS.
 func (c *Control) Cancel(ctx context.Context, caller Caller, id domain.SessionID, operationID string, version int64) (domain.AgentSettingsOperation, error) {
-	if _, _, err := c.target(ctx, caller, id); err != nil {
+	_, accepted, err := c.target(ctx, caller, id)
+	if err != nil {
 		return domain.AgentSettingsOperation{}, err
+	}
+	if accepted.Actor.Kind == domain.AgentSettingsActorOrchestrator {
+		op, err := c.store.AgentSettingsOperation(ctx, id, operationID)
+		if err != nil {
+			return domain.AgentSettingsOperation{}, settingsError(err)
+		}
+		if op.Actor != accepted.Actor {
+			return domain.AgentSettingsOperation{}, apierr.Forbidden("AGENT_SETTINGS_CANCEL_DENIED", "Managed callers may only cancel their own settings operation")
+		}
 	}
 	if c.runtime == nil {
 		return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
@@ -206,7 +258,7 @@ func settingsError(err error) error {
 	}
 	var structured *apierr.Error
 	if errors.As(err, &structured) {
-		return err
+		return structured
 	}
 	switch {
 	case errors.Is(err, ports.ErrAgentSettingsConflict):
@@ -220,7 +272,9 @@ func settingsError(err error) error {
 	case errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable):
 		return apierr.Unavailable("AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", "Fresh settings capabilities are unavailable")
 	default:
-		return err
+		// Unknown storage/provider failures must not carry native diagnostics
+		// into the HTTP access log or capture pipeline.
+		return apierr.New(apierr.KindInternal, "AGENT_SETTINGS_FAILED", "Agent settings could not be applied", nil)
 	}
 }
 

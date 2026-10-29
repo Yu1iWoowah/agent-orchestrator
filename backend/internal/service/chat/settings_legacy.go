@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -79,12 +80,12 @@ func (c *Controller) setManualControls(ctx context.Context, settings domain.Conv
 		return apierr.Forbidden("AGENT_SETTINGS_PERMISSION_DENIED", "Settings grants cannot change manual permission or plan controls")
 	}
 	writer, ok := c.store.(interface {
-		SetConversationManualControls(context.Context, string, domain.ConversationSettings) error
+		SetConversationManualControls(context.Context, string, domain.ConversationSettings, time.Time) error
 	})
 	if !ok {
 		return ports.ErrAgentSettingsUnsupported
 	}
-	if err := writer.SetConversationManualControls(ctx, c.conversation.ID, settings); err != nil {
+	if err := writer.SetConversationManualControls(ctx, c.conversation.ID, settings, c.now()); err != nil {
 		return err
 	}
 	c.mu.Lock()
@@ -97,13 +98,16 @@ func (c *Controller) setManualControls(ctx context.Context, settings domain.Conv
 }
 
 func (c *Controller) scheduleLegacySettings(ctx context.Context, settings domain.ConversationSettings, mutator ports.ChatAgentSettingsMutator) error {
-	previous := c.Settings()
+	previous, err := c.projectedLegacySettings(ctx, c.Settings())
+	if err != nil {
+		return err
+	}
 	if settingsIdentityPresent(ctx) && (previous.ApprovalMode != settings.ApprovalMode || previous.PlanMode != settings.PlanMode || previous.OpenCodeMode != settings.OpenCodeMode) {
 		return apierr.Forbidden("AGENT_SETTINGS_PERMISSION_DENIED", "Settings grants cannot change manual permission or plan controls")
 	}
 	patch := selectionPatch(previous, settings)
 	if patch != (domain.AgentSettingsPatch{}) {
-		if _, err := mutator.ChangeAgentSettings(ctx, c.sessionID, patch); err != nil {
+		if _, err := mutator.ChangeAgentSettings(ctx, c.sessionID, patch, c); err != nil {
 			return err
 		}
 	}
@@ -167,6 +171,6 @@ func (c *Controller) scheduleLegacyConfigOption(ctx context.Context, id string, 
 		return false, nil
 	}
 	release()
-	_, err := mutator.ChangeAgentSettings(ctx, c.sessionID, p)
+	_, err := mutator.ChangeAgentSettings(ctx, c.sessionID, p, c)
 	return true, err
 }

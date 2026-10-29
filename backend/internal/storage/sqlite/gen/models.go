@@ -895,6 +895,7 @@ type Session struct {
 	AgentFastMode                    string
 	AgentSettingsRevision            int64
 	SpawnAgentSettingsJson           string
+	AgentSettingsLaunchID            string
 }
 
 type SessionAgentAccount struct {
