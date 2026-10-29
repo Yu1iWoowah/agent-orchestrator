@@ -1,0 +1,82 @@
+package orchestratorreplacement
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/transcriptexport"
+)
+
+// export advances one durable boundary at a time. Captured facts survive a new
+// coordinator; an operation phase alone never proves that a provider stopped.
+func (s *Service) export(ctx context.Context, op domain.OrchestratorReplacement) (domain.OrchestratorReplacement, error) {
+	reader := s.deps.NativeTranscripts
+	if _, ok := reader.(ports.NativeTranscriptCapturer); !ok {
+		return op, apierr.Unavailable("TRANSCRIPT_CAPTURE_UNAVAILABLE", "A native reader with cutoff capture is required")
+	}
+	if op.FrozenAt == nil || op.Preparation == nil || op.Preparation.VerifiedAt == nil || op.Transcript == nil {
+		return op, apierr.Conflict("ORCHESTRATOR_HANDOFF_UNVERIFIED", "Frozen verified preparation is required before export", nil)
+	}
+	if op.SourceStop == nil {
+		if !s.deps.Now().Before(op.DeadlineAt) {
+			return s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT", "Source did not become quiescent before the deadline", nil))
+		}
+		if op.SourceStopIntentAt == nil {
+			now := s.deps.Now().UTC()
+			op.SourceStopIntentAt = &now
+			return s.save(ctx, op)
+		}
+		stop, err := s.deps.Runtime.QuiesceReplacementSource(ctx, op)
+		if errors.Is(err, domain.ErrReplacementSourceBusy) {
+			if !s.deps.Now().Before(op.DeadlineAt) {
+				return s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT", "Source did not become quiescent before the deadline", nil))
+			}
+			return s.wait(ctx, op, domain.ReplacementExportingTranscript, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_BUSY", "Source has work or approvals; no stop was attempted", nil))
+		}
+		if err != nil {
+			return op, stopUncertain()
+		}
+		source, found, err := s.deps.Store.GetSession(ctx, op.SourceSessionID)
+		if err != nil {
+			return op, err
+		}
+		if !found || stop.Owner != op.SourceOwner || stop.CapabilityVerifier != op.SourceCapabilityVerifier || !stop.MatchesSource(source) {
+			return op, stopUncertain()
+		}
+		op.SourceStop = &stop
+		op.Error, op.ResumePhase = nil, ""
+		return s.save(ctx, op)
+	}
+	snapshot, err := s.deps.Store.LoadTranscriptSourceSnapshot(ctx, op.SourceSessionID)
+	if err != nil {
+		return op, err
+	}
+	if !op.SourceStop.MatchesSource(snapshot.Session) {
+		return op, stopUncertain()
+	}
+	if op.Transcript.CapturedAt == nil {
+		cuts, err := transcriptexport.CaptureBoundaries(ctx, snapshot, reader)
+		if err != nil {
+			return op, err
+		}
+		now := s.deps.Now().UTC()
+		op.Transcript.CapturedAt, op.Transcript.ExportedAt = &now, &now
+		op.Transcript.NativeCutoffs, op.Transcript.SnapshotFingerprint = cuts, snapshot.Fingerprint
+		return s.save(ctx, op)
+	}
+	if snapshot.Fingerprint != op.Transcript.SnapshotFingerprint {
+		return op, apierr.Conflict("HANDOFF_EVIDENCE_SOURCE_CHANGED", "Captured AO source facts changed before export", nil)
+	}
+	out, err := transcriptexport.Build(ctx, snapshot, op.Transcript.NativeCutoffs, reader)
+	if err != nil {
+		return op, err
+	}
+	return s.deps.Documents.PublishReplacementEvidence(ctx, op.ID, op.Revision, out)
+}
+
+func stopUncertain() error {
+	return apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_STOP_UNCERTAIN", "Source shutdown cannot be positively confirmed; recovery must verify the same owner", nil)
+}

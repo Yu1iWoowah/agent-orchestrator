@@ -7,7 +7,10 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -84,11 +87,12 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 	}
 	unlock := s.lock(id)
 	defer unlock()
-	state, root, _, err := s.state(ctx, id)
+	state, root, doc, err := s.state(ctx, id)
 	if err != nil {
 		return File{}, err
 	}
-	if _, err := s.validate(ctx, id, in.Actor, in.Lease, state, false); err != nil {
+	rec, err := s.validate(ctx, id, in.Actor, in.Lease, state, false)
+	if err != nil {
 		return File{}, err
 	}
 	if state.Adoption != nil && !state.Adoption.Complete {
@@ -99,12 +103,36 @@ func (s *Service) Write(ctx context.Context, id domain.ProjectID, in WriteInput)
 		return File{}, err
 	}
 	defer func() { _ = r.Close() }()
+	var receipt *domain.ProjectDocumentWriteReceipt
+	if in.Path == doc {
+		receipt = &domain.ProjectDocumentWriteReceipt{ID: uuid.NewString(), Path: in.Path, Hash: hash([]byte(in.Content)), PreviousHash: in.ExpectedHash, SourceSessionID: rec.ID, Owner: rec.ControllerOwner(), CapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier, LeaseEpoch: in.Lease.Epoch, CreatedAt: time.Now().UTC()}
+	}
 	if err := atomicWrite(ctx, r, in.Path, in.ExpectedHash, []byte(in.Content), func(rename func() error) error {
-		return s.publish(ctx, id, in.Actor, in.Lease, func(context.Context) error { return rename() })
+		return s.publish(ctx, id, in.Actor, in.Lease, func(reserved context.Context) error {
+			if err := rename(); err != nil {
+				return err
+			}
+			if receipt == nil {
+				return nil
+			}
+			if err := syncEvidenceDir(r, path.Dir(in.Path)); err != nil {
+				return err
+			}
+			current, _, _, err := s.state(reserved, id)
+			if err != nil {
+				return err
+			}
+			current.LastHandoffWrite = receipt
+			return s.save(reserved, id, &current)
+		})
 	}); err != nil {
 		return File{}, err
 	}
-	return fileView(in.Path, []byte(in.Content)), nil
+	file := fileView(in.Path, []byte(in.Content))
+	if receipt != nil {
+		file.WriteReceiptID = receipt.ID
+	}
+	return file, nil
 }
 func atomicWrite(ctx context.Context, r *os.Root, p, expected string, b []byte, publish func(func() error) error) error {
 	if expected == "" {

@@ -7096,6 +7096,7 @@ export interface components {
             path: string;
             /** Format: int64 */
             size: number;
+            writeReceiptId?: string;
         };
         ProjectDocumentFileResponse: {
             file: components["schemas"]["ProjectDocumentFile"];

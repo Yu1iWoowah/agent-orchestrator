@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -14,6 +15,67 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
+
+// CaptureTranscriptSourceCutoff reads projection membership under the caller's
+// publication reservation, or a standalone consistent read transaction.
+func (s *Store) CaptureTranscriptSourceCutoff(ctx context.Context, id domain.SessionID) (domain.TranscriptSourceCutoff, error) {
+	if q := s.replacementReader(ctx); q != s.qr {
+		return transcriptSourceCutoff(ctx, q, id)
+	}
+	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return domain.TranscriptSourceCutoff{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	cut, err := transcriptSourceCutoff(ctx, gen.New(tx), id)
+	if err != nil {
+		return cut, err
+	}
+	return cut, tx.Commit()
+}
+
+func transcriptSourceCutoff(ctx context.Context, q *gen.Queries, id domain.SessionID) (domain.TranscriptSourceCutoff, error) {
+	cut := domain.TranscriptSourceCutoff{ConversationCutoffs: map[string]int64{}}
+	if _, err := q.GetSession(ctx, id); err != nil {
+		return cut, err
+	}
+	rows, err := q.SelectTranscriptConversations(ctx, &id)
+	if err != nil {
+		return cut, err
+	}
+	for _, row := range rows {
+		cut.ConversationCutoffs[row.ID] = row.LatestSequence
+	}
+	return cut, nil
+}
+
+func pinnedTranscriptCutoff(ctx context.Context, q *gen.Queries, source domain.SessionRecord) (*domain.TranscriptSourceCutoff, error) {
+	if source.Kind != domain.KindOrchestrator || source.ProjectID == "" {
+		return nil, nil
+	}
+	row, err := q.GetActiveOrchestratorReplacement(ctx, string(source.ProjectID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.SourceSessionID != string(source.ID) {
+		return nil, nil
+	}
+	op, err := decodeReplacement(row)
+	if err != nil {
+		return nil, err
+	}
+	if op.FrozenAt == nil || op.Transcript == nil || op.SourceRetiredAt != nil {
+		return nil, nil
+	}
+	cut := op.Transcript.AO
+	if cut.ConversationCutoffs == nil || !replacementUUID(op.Transcript.AttemptID) {
+		return nil, domain.ErrReplacementStateInvalid
+	}
+	return &cut, nil
+}
 
 // LoadTranscriptSourceSnapshot never reconciles authentication or projects the
 // active UI lineage. Every query uses the same SQLite read transaction.
@@ -29,6 +91,10 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 		return out, err
 	}
 	out.Session = rowToRecord(session)
+	pinned, err := pinnedTranscriptCutoff(ctx, q, out.Session)
+	if err != nil {
+		return out, err
+	}
 	// Avoid volatile status/usage counters. Preserve all ownership/capability facts.
 	proof := []any{out.Session.ControllerOwner(), out.Session.ProjectID, out.Session.Kind, out.Session.Metadata.NativeTranscriptPath, out.Session.Metadata.BrowserCapabilityVerifier, out.Session.Metadata.NativeCheckpointEvidence, out.Session.Metadata.ConversationCheckpointState, out.Session.Metadata.ConversationCheckpointGeneration, out.Session.Metadata.ConversationCheckpointNativeID, out.Session.Metadata.ConversationCheckpointTurnID, out.Session.Metadata.ConversationCheckpointUnsettled}
 	conversations, err := q.SelectTranscriptConversations(ctx, &id)
@@ -37,6 +103,16 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 	}
 	out.ConversationCutoffs = map[string]int64{}
 	for _, c := range conversations {
+		if pinned != nil {
+			limit, found := pinned.ConversationCutoffs[c.ID]
+			if !found {
+				continue
+			}
+			if c.LatestSequence < limit {
+				return out, fmt.Errorf("%w: AO conversation cutoff no longer exists", domain.ErrReplacementSourceChanged)
+			}
+			c.LatestSequence = limit
+		}
 		out.ConversationCutoffs[c.ID] = c.LatestSequence
 		proof = append(proof, struct {
 			ID       string
@@ -70,14 +146,34 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 	if err != nil {
 		return out, err
 	}
+	if pinned != nil {
+		turns = slices.DeleteFunc(turns, func(r gen.ConversationTurn) bool {
+			limit, found := pinned.ConversationCutoffs[r.ConversationID]
+			return !found || r.IntakeSequence > limit
+		})
+	}
+	if len(turns) == 0 {
+		turns = nil
+	}
 	proof = append(proof, turns)
+	turnIDs := make(map[string]bool, len(turns))
 	for _, r := range turns {
+		turnIDs[r.ID] = true
 		out.Turns = append(out.Turns, turnToDomain(r))
 		out.Inputs = append(out.Inputs, domain.TranscriptTurnInput{TurnID: r.ID, ProviderInputText: r.ProviderInputText, PromotedToTurnID: r.PromotedToTurnID.String, BatchedInput: r.BatchedInput != 0, Reserved: r.PromotionStartedAt.Valid})
 	}
 	messages, err := q.SelectTranscriptMessages(ctx, id)
 	if err != nil {
 		return out, err
+	}
+	if pinned != nil {
+		messages = slices.DeleteFunc(messages, func(r gen.ConversationMessage) bool {
+			limit, found := pinned.ConversationCutoffs[r.ConversationID]
+			return !found || r.Sequence > limit || r.TurnID.Valid && !turnIDs[r.TurnID.String]
+		})
+	}
+	if len(messages) == 0 {
+		messages = nil
 	}
 	proof = append(proof, messages)
 	for _, r := range messages {
@@ -86,6 +182,15 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 	activities, err := q.SelectTranscriptActivities(ctx, id)
 	if err != nil {
 		return out, err
+	}
+	if pinned != nil {
+		activities = slices.DeleteFunc(activities, func(r gen.ConversationActivity) bool {
+			limit, found := pinned.ConversationCutoffs[r.ConversationID]
+			return !found || r.Sequence > limit || r.TurnID.Valid && !turnIDs[r.TurnID.String]
+		})
+	}
+	if len(activities) == 0 {
+		activities = nil
 	}
 	proof = append(proof, activities)
 	for _, r := range activities {

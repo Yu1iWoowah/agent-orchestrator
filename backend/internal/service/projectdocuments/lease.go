@@ -79,6 +79,22 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 			}
 		} else if lease.Owner == rec.ControllerOwner() {
 			grant := grantFor(id, a, lease.Epoch)
+			if lease.ClaimVerifier != "" {
+				if lease.ClaimVerifier != rec.Metadata.BrowserCapabilityVerifier || lease.TokenHash != "" || lease.ReplacementID == "" {
+					return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Pending writer claim is stale")
+				}
+				published, err := s.store.WithProjectDocumentPublication(ctx, id, rec, state.Revision, func(reserved context.Context) error {
+					state.Lease.TokenHash, state.Lease.ClaimVerifier = hash([]byte(grant.Token)), ""
+					return s.save(reserved, id, &state)
+				})
+				if err != nil {
+					return Grant{}, err
+				}
+				if !published {
+					return Grant{}, conflict("PROJECT_DOCUMENT_STATE_CHANGED", "Writer claim changed")
+				}
+				return grant, nil
+			}
 			if subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(grant.Token)))) != 1 {
 				return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Controller capability no longer matches the lease")
 			}

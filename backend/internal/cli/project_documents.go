@@ -37,11 +37,12 @@ type projectDocumentWriteRequest struct {
 	ExpectedHash string               `json:"expectedHash"`
 }
 type projectDocumentFile struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	Hash    string `json:"hash"`
-	Size    int64  `json:"size"`
-	Binary  bool   `json:"binary"`
+	WriteReceiptID string `json:"writeReceiptId,omitempty"`
+	Path           string `json:"path"`
+	Content        string `json:"content"`
+	Hash           string `json:"hash"`
+	Size           int64  `json:"size"`
+	Binary         bool   `json:"binary"`
 }
 type projectDocumentFileResponse struct {
 	File projectDocumentFile `json:"file"`
