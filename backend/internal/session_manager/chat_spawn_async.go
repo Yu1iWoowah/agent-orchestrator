@@ -79,6 +79,9 @@ func (m *Manager) beginAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) (d
 	in.record = rec
 	// Each Setup step has its own limit; the start budget leaves room for all of them.
 	bg, cancel := context.WithTimeout(m.backgroundContext, postCreateBudget(asyncChatSpawnBudget, in.project.Config.PostCreate))
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+		bg = ports.WithAgentAccount(bg, selected)
+	}
 	run := &asyncChatSpawnRun{cancel: cancel, done: make(chan struct{})}
 	m.asyncChatSpawnsMu.Lock()
 	m.asyncChatSpawns[id] = run
@@ -406,6 +409,13 @@ func (m *Manager) failAsyncChatSpawn(ctx context.Context, id domain.SessionID, c
 func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRecord, releaseHarness func()) (RestoreResult, bool, error) {
 	if (rec.Kind != domain.KindWorker && rec.Kind != domain.KindOrchestrator) || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || m.chat == nil {
 		return RestoreResult{}, false, fmt.Errorf("retry start %s: %w", rec.ID, ports.ErrChatUnsupported)
+	}
+	if m.agentAccounts != nil {
+		binding, err := m.agentAccounts.SessionAccountBinding(ctx, rec.ID, rec.Harness)
+		if err != nil {
+			return RestoreResult{}, false, err
+		}
+		ctx = ports.WithAgentAccount(ctx, binding)
 	}
 	if m.chat.HasLiveChatController(rec.ID) {
 		if _, err := m.setProvisionState(ctx, rec.ID, domain.SessionProvisionProvisioning, ""); err != nil {

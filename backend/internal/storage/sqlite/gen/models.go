@@ -246,22 +246,23 @@ type AttentionRead struct {
 }
 
 type Automation struct {
-	ID          domain.AutomationID
-	ProjectID   domain.ProjectID
-	DisplayName string
-	Prompt      string
-	Kind        domain.SessionKind
-	Harness     domain.AgentHarness
-	RruleText   string
-	Timezone    string
-	Enabled     bool
-	NextRunAt   time.Time
-	LastRunAt   sql.NullTime
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Model       string
-	Mode        string
-	Effort      string
+	ID             domain.AutomationID
+	ProjectID      domain.ProjectID
+	DisplayName    string
+	Prompt         string
+	Kind           domain.SessionKind
+	Harness        domain.AgentHarness
+	RruleText      string
+	Timezone       string
+	Enabled        bool
+	NextRunAt      time.Time
+	LastRunAt      sql.NullTime
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Model          string
+	Mode           string
+	Effort         string
+	AgentAccountID string
 }
 
 type AutomationRun struct {
@@ -803,6 +804,14 @@ type ReviewRun struct {
 	TriggerSource    domain.ReviewTriggerSource
 }
 
+type ReviewerAgentAccount struct {
+	ReviewID         string
+	Provider         string
+	AccountID        string
+	ResolutionSource string
+	BoundAt          time.Time
+}
+
 type Session struct {
 	ID                               domain.SessionID
 	ProjectID                        *domain.ProjectID
@@ -889,10 +898,11 @@ type Session struct {
 }
 
 type SessionAgentAccount struct {
-	SessionID string
-	Provider  string
-	AccountID string
-	BoundAt   time.Time
+	SessionID        string
+	Provider         string
+	AccountID        string
+	BoundAt          time.Time
+	ResolutionSource string
 }
 
 type SessionAgentSettingsAudit struct {

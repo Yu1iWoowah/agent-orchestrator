@@ -53,6 +53,10 @@ type ProjectConfig struct {
 	// orchestrator sessions.
 	OrchestratorRules string `json:"orchestratorRules,omitempty"`
 
+	// AgentAccounts contains local-only opaque provider account references.
+	// Cloud/sync/export projections must omit these installation-specific IDs.
+	AgentAccounts map[AgentAccountProvider]string `json:"agentAccounts,omitempty"`
+
 	// AgentConfig is the default agent config for the project.
 	AgentConfig AgentConfig `json:"agentConfig,omitempty"`
 	// Worker and Orchestrator are role-specific harness/agent-config overrides.
@@ -104,8 +108,9 @@ type ContainerReapConfig struct {
 // the reviewer vocabulary (ReviewerHarness), which is distinct from the worker
 // AgentHarness set.
 type ReviewerConfig struct {
-	Harness     ReviewerHarness `json:"harness"`
-	AgentConfig AgentConfig     `json:"agentConfig,omitempty"`
+	AgentAccountID string          `json:"agentAccountId,omitempty"`
+	Harness        ReviewerHarness `json:"harness"`
+	AgentConfig    AgentConfig     `json:"agentConfig,omitempty"`
 }
 
 // FallbackReviewerHarness is the reviewer used when a project configures none
@@ -165,8 +170,9 @@ func (c ProjectConfig) DefaultWorkerReviewer() (ReviewerHarness, AgentConfig) {
 
 // RoleOverride overrides the harness and/or agent config for a session role.
 type RoleOverride struct {
-	Harness     AgentHarness `json:"agent,omitempty"`
-	AgentConfig AgentConfig  `json:"agentConfig,omitempty"`
+	AgentAccountID string       `json:"agentAccountId,omitempty"`
+	Harness        AgentHarness `json:"agent,omitempty"`
+	AgentConfig    AgentConfig  `json:"agentConfig,omitempty"`
 }
 
 const (
@@ -222,6 +228,9 @@ func (c ProjectConfig) Validate() error {
 		if err := c.AgentSettingsPolicy.Validate(); err != nil {
 			return err
 		}
+	}
+	if err := c.ValidateAccountReferences(); err != nil {
+		return err
 	}
 	if err := c.OrchestratorHandoff.Validate(); err != nil {
 		return err

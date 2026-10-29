@@ -440,8 +440,9 @@ func (s *Service) ResolveReviewComment(ctx context.Context, workerID domain.Sess
 // TriggerRequest is a client-requested review pass with its same-commit and
 // feedback policy.
 type TriggerRequest struct {
-	Harness domain.ReviewerHarness
-	Config  domain.AgentConfig
+	AgentAccountID string
+	Harness        domain.ReviewerHarness
+	Config         domain.AgentConfig
 	// Source is manual (a person) or agent (an AO session through the CLI).
 	// Automatic passes come only from the daemon through TriggerAuto.
 	Source        domain.ReviewTriggerSource
@@ -482,6 +483,7 @@ func (s *Service) TriggerRequested(ctx context.Context, workerID domain.SessionI
 		return TriggerOutcome{}, err
 	}
 	result, err := s.triggerWithOptions(ctx, workerID, reviewcore.TriggerOptions{
+		AgentAccountID:     req.AgentAccountID,
 		Harness:            req.Harness,
 		Config:             req.Config,
 		Source:             source,

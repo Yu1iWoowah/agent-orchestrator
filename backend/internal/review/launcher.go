@@ -162,6 +162,7 @@ type agentLauncher struct {
 	dataDir       string
 	runFile       string
 	auth          agentAuthResolver
+	accounts      ports.ReviewerAccountBindings
 	executable    func() (string, error)
 	chat          ReviewerChatController
 }
@@ -185,6 +186,18 @@ type LauncherOption func(*agentLauncher)
 // adapters. A nil controller intentionally keeps every reviewer on TUI.
 func WithReviewerChat(chat ReviewerChatController) LauncherOption {
 	return func(l *agentLauncher) { l.chat = chat }
+}
+
+// WithAgentAccounts wires the reviewer's independent durable account owner.
+func WithAgentAccounts(accounts ports.ReviewerAccountBindings) LauncherOption {
+	return func(l *agentLauncher) { l.accounts = accounts }
+}
+
+func (l *agentLauncher) accountEnv(ctx context.Context, spec LaunchSpec) (map[string]string, error) {
+	if l.accounts == nil {
+		return nil, nil
+	}
+	return l.accounts.ReviewerLaunchEnv(ctx, spec.ReviewSessionID, domain.AgentHarness(spec.Harness))
 }
 
 // WithAgentAuth lets reviewer preflight reuse the agent auth catalog for the
@@ -238,10 +251,21 @@ func (l *agentLauncher) Preflight(ctx context.Context, harness domain.ReviewerHa
 	if !ok {
 		return fmt.Errorf("no reviewer adapter for harness %q", harness)
 	}
+	var accountEnv map[string]string
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok && selected.Managed() {
+		if l.accounts == nil {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+		var err error
+		accountEnv, err = l.accounts.AccountExecutionEnv(ctx, domain.AgentHarness(harness), selected.AccountID)
+		if err != nil {
+			return err
+		}
+	}
 	if profile, ok := reviewer.(ports.ReviewerChatProfile); ok && (len(mode) == 0 || mode[0] != domain.ReviewerInterfaceTUI) && l.reviewChatSupported(profile) {
 		return l.chat.PreflightReviewChat(ctx, profile.ReviewChatHarness())
 	}
-	cmd, err := reviewer.ReviewCommand(ctx, ports.ReviewInvocation{WorkspacePath: workspacePath})
+	cmd, err := reviewer.ReviewCommand(ctx, ports.ReviewInvocation{WorkspacePath: workspacePath, Env: accountEnv})
 	if err != nil {
 		return fmt.Errorf("reviewer command: %w", err)
 	}
@@ -299,6 +323,23 @@ func (l *agentLauncher) InterfaceMode(harness domain.ReviewerHarness) domain.Rev
 }
 
 func (l *agentLauncher) agentAuthStatus(ctx context.Context, harness domain.ReviewerHarness) (ports.AgentAuthStatus, bool, error) {
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok && selected.Managed() {
+		if l.accounts == nil {
+			return "", true, ports.ErrAgentAccountStorageUnavailable
+		}
+		identity, err := l.accounts.AccountIdentity(ctx, domain.AgentHarness(harness), selected.AccountID)
+		if err != nil {
+			return "", true, err
+		}
+		if identity.SignedIn {
+			return ports.AgentAuthStatusAuthorized, true, nil
+		}
+		if identity.LoggedIn {
+			return ports.AgentAuthStatusConfigured, true, nil
+		}
+		return ports.AgentAuthStatusUnauthorized, true, nil
+	}
+
 	if l.auth == nil {
 		return "", false, nil
 	}
@@ -369,6 +410,11 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec, 
 		}
 	}
 	inv := l.invocation(spec)
+	accountEnv, accountErr := l.accountEnv(ctx, spec)
+	if accountErr != nil {
+		return ports.ReviewInvocation{}, accountErr
+	}
+	inv.Env = accountEnv
 	if strings.TrimSpace(l.dataDir) == "" {
 		return ports.ReviewInvocation{}, fmt.Errorf("reviewer prompt data directory is required")
 	}
@@ -413,6 +459,10 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec, 
 }
 
 func (l *agentLauncher) prepareIdleInvocation(ctx context.Context, spec LaunchSpec) (ports.ReviewInvocation, error) {
+	accountEnv, accountErr := l.accountEnv(ctx, spec)
+	if accountErr != nil {
+		return ports.ReviewInvocation{}, accountErr
+	}
 	promptRoot := filepath.Join(l.dataDir, "prompts", string(spec.WorkerID), "reviewer")
 	systemPath := filepath.Join(promptRoot, "system.md")
 	systemPrompt := reviewSystemPrompt() + "\n\n" +
@@ -441,6 +491,7 @@ func (l *agentLauncher) prepareIdleInvocation(ctx context.Context, spec LaunchSp
 		WorkerSessionID:  spec.WorkerID,
 		AgentSessionID:   spec.AgentSessionID,
 		Config:           spec.AgentConfig,
+		Env:              accountEnv,
 		WorkspacePath:    spec.WorkspacePath,
 		DataDir:          l.dataDir,
 		RunFilePath:      l.runFile,
@@ -534,7 +585,11 @@ func (l *agentLauncher) startReviewerChat(ctx context.Context, spec LaunchSpec, 
 	if spec.DeferInitialMessage {
 		prompt = ""
 	}
-	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: l.runtimeEnv(ctx, spec, nil, nil), Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
+	env, envErr := l.runtimeEnv(ctx, spec, nil, nil)
+	if envErr != nil {
+		return LaunchResult{}, envErr
+	}
+	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: env, Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
 	if restore {
 		providerID, err = l.chat.RestoreReviewChat(ctx, start)
 	} else {
@@ -599,7 +654,10 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if workingDirectory == "" {
 		workingDirectory = spec.WorkspacePath
 	}
-	env := l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env)
+	env, envErr := l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env)
+	if envErr != nil {
+		return LaunchResult{}, envErr
+	}
 	argv := cmd.Argv
 	if strings.TrimSpace(spec.LaunchID) != "" {
 		executable, resolveErr := l.executable()
@@ -698,7 +756,7 @@ func outputContainsAny(output string, patterns []string) bool {
 	return false
 }
 
-func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []string, base map[string]string) map[string]string {
+func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []string, base map[string]string) (map[string]string, error) {
 	env := agentlaunch.MergeEnv(spec.ProjectEnv, base)
 	delete(env, sessionmanager.EnvSessionID)
 	env["AO_REVIEW_SESSION_ID"] = spec.ReviewSessionID
@@ -727,7 +785,11 @@ func (l *agentLauncher) runtimeEnv(ctx context.Context, spec LaunchSpec, argv []
 		env[EnvAOCommandWarning] = fmt.Sprintf("PATH pin failed: %v; AO shim fallback failed: %v", err, shimErr)
 	}
 	sessionmanager.AugmentRuntimePATHForLaunchBinary(ctx, env, argv, exec.LookPath, pinnedDir)
-	return env
+	accountEnv, err := l.accountEnv(ctx, spec)
+	for key, value := range accountEnv {
+		env[key] = value
+	}
+	return env, err
 }
 
 func (l *agentLauncher) ensureAOShimDir() (string, error) {

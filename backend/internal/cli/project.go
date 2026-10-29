@@ -84,8 +84,9 @@ type agentConfig struct {
 
 // roleOverride mirrors domain.RoleOverride.
 type roleOverride struct {
-	Agent       string      `json:"agent,omitempty"`
-	AgentConfig agentConfig `json:"agentConfig,omitempty"`
+	AgentAccountID string      `json:"agentAccountId,omitempty"`
+	Agent          string      `json:"agent,omitempty"`
+	AgentConfig    agentConfig `json:"agentConfig,omitempty"`
 }
 
 // trackerIntakeConfig mirrors domain.TrackerIntakeConfig.
@@ -98,8 +99,9 @@ type trackerIntakeConfig struct {
 
 // reviewerConfig mirrors domain.ReviewerConfig.
 type reviewerConfig struct {
-	Harness     string       `json:"harness"`
-	AgentConfig *agentConfig `json:"agentConfig,omitempty"`
+	AgentAccountID string       `json:"agentAccountId,omitempty"`
+	Harness        string       `json:"harness"`
+	AgentConfig    *agentConfig `json:"agentConfig,omitempty"`
 }
 
 type containerReapConfig struct {
@@ -116,6 +118,7 @@ type orchestratorHandoffConfig struct {
 
 type projectConfig struct {
 	AgentSettingsPolicy *agentSettingsPolicy      `json:"agentSettingsPolicy,omitempty"`
+	AgentAccounts       map[string]string         `json:"agentAccounts,omitempty"`
 	OrchestratorHandoff orchestratorHandoffConfig `json:"orchestratorHandoff,omitempty,omitzero"`
 
 	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`

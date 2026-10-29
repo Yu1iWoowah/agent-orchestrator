@@ -171,6 +171,11 @@ func (m *Service) cleanupPreparedCloneAfterFailure(ctx context.Context, prepared
 }
 
 func (m *Service) prepareClone(ctx context.Context, in CloneInput) (ClonePreparationResult, error) {
+	if in.Config != nil {
+		if _, err := accountConfigForMutation(ctx, domain.ProjectConfig{}, *in.Config); err != nil {
+			return ClonePreparationResult{}, err
+		}
+	}
 	remoteURL := normalizeCloneURL(in.RemoteURL)
 	repositoryName, err := cloneRepositoryName(remoteURL)
 	if err != nil {

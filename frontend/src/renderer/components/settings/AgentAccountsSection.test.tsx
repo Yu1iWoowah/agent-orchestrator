@@ -164,3 +164,30 @@ it.each([
 	expect(await screen.findByRole("alert")).toHaveTextContent(message);
 	expect(screen.getByRole("alert")).not.toHaveTextContent("raw provider error");
 });
+
+it.each(["complete", "cancelled"])("explains saved login when close races verify (%s)", async (outcome) => {
+ const user = userEvent.setup();
+ let finishVerify: (value: unknown) => void = () => undefined;
+ let finishCancel: (value: unknown) => void = () => undefined;
+ postMock.mockImplementation((path: string) => {
+  if (path.endsWith("/login")) return Promise.resolve({ data: login });
+  if (path.endsWith("/verify")) return new Promise((resolve) => { finishVerify = resolve; });
+  if (path.endsWith("/cancel")) return new Promise((resolve) => { finishCancel = resolve; });
+  return Promise.resolve({data:{}});
+ });
+ getMock.mockImplementation((path: string) => Promise.resolve({data:
+  path.includes("/operations/") ? {operationId:"login-1",phase:"complete",outcome,accountId:"acct-b"} :
+  path.endsWith("/usage") ? {days:30,usage:[]} : {accounts:[device,saved]}
+ }));
+ renderPanel();
+ await user.click(await screen.findByRole("button",{name:"Sign in again"}));
+ await user.click(screen.getByRole("button",{name:"Check sign-in"}));
+ await user.click(screen.getByRole("button",{name:"Close sign-in"}));
+ await act(async () => {finishVerify({data:{status:"complete",account:saved}});});
+ await act(async () => {finishCancel({data:{}});});
+ if (outcome === "complete") {
+  expect(await screen.findByRole("status")).toHaveTextContent("Sign-in completed. Your account was saved.");
+ } else {
+  expect(screen.queryByText("Sign-in completed. Your account was saved.")).not.toBeInTheDocument();
+ }
+});

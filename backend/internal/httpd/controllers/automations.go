@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	automationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/automation"
 )
 
@@ -49,7 +50,8 @@ func (c *AutomationsController) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec, err := c.Svc.Create(r.Context(), automationsvc.CreateInput{
-		ProjectID: domain.ProjectID(req.ProjectID), DisplayName: req.DisplayName, Prompt: req.Prompt,
+		AgentAccountID: req.AgentAccountID,
+		ProjectID:      domain.ProjectID(req.ProjectID), DisplayName: req.DisplayName, Prompt: req.Prompt,
 		Kind: domain.SessionKind(req.Kind), Harness: domain.AgentHarness(req.Harness), RRule: req.RRule,
 		Cron: req.Cron, Timezone: req.Timezone, Enabled: req.Enabled,
 		Model: req.Model, Mode: req.Mode, Effort: req.Effort,
@@ -58,7 +60,7 @@ func (c *AutomationsController) create(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusCreated, AutomationEnvelope{Automation: automationResponse(rec)})
+	envelope.WriteJSON(w, http.StatusCreated, AutomationEnvelope{Automation: automationResponseForRequest(r, rec)})
 }
 
 func (c *AutomationsController) get(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +74,7 @@ func (c *AutomationsController) get(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, AutomationEnvelope{Automation: automationResponse(rec)})
+	envelope.WriteJSON(w, http.StatusOK, AutomationEnvelope{Automation: automationResponseForRequest(r, rec)})
 }
 
 func (c *AutomationsController) list(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +107,7 @@ func (c *AutomationsController) list(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]AutomationResponse, 0, len(page.Items))
 	for _, rec := range page.Items {
-		items = append(items, automationResponse(rec))
+		items = append(items, automationResponseForRequest(r, rec))
 	}
 	next := ""
 	if offset+int64(len(items)) < page.Total {
@@ -124,7 +126,7 @@ func (c *AutomationsController) update(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	input := automationsvc.UpdateInput{Model: req.Model, Mode: req.Mode, Effort: req.Effort, DisplayName: req.DisplayName, Prompt: req.Prompt, RRule: req.RRule, Cron: req.Cron, Timezone: req.Timezone, Enabled: req.Enabled}
+	input := automationsvc.UpdateInput{AgentAccountID: req.AgentAccountID, Model: req.Model, Mode: req.Mode, Effort: req.Effort, DisplayName: req.DisplayName, Prompt: req.Prompt, RRule: req.RRule, Cron: req.Cron, Timezone: req.Timezone, Enabled: req.Enabled}
 	if req.Kind != nil {
 		value := domain.SessionKind(*req.Kind)
 		input.Kind = &value
@@ -138,7 +140,7 @@ func (c *AutomationsController) update(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, AutomationEnvelope{Automation: automationResponse(rec)})
+	envelope.WriteJSON(w, http.StatusOK, AutomationEnvelope{Automation: automationResponseForRequest(r, rec)})
 }
 
 func (c *AutomationsController) delete(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +187,7 @@ func automationResponse(rec domain.Automation) AutomationResponse {
 		response := automationRunSummaryResponse(*rec.LatestRun)
 		latest = &response
 	}
-	return AutomationResponse{ID: string(rec.ID), ProjectID: string(rec.ProjectID), DisplayName: rec.DisplayName, Prompt: rec.Prompt, Kind: string(rec.Kind), Harness: string(rec.Harness), Model: rec.Model, Mode: rec.Mode, Effort: rec.Effort, RRule: rec.RRuleText, Timezone: rec.Timezone, Enabled: rec.Enabled, NextRunAt: rec.NextRunAt, LastRunAt: rec.LastRunAt, CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, LatestRun: latest}
+	return AutomationResponse{AgentAccountID: rec.AgentAccountID, ID: string(rec.ID), ProjectID: string(rec.ProjectID), DisplayName: rec.DisplayName, Prompt: rec.Prompt, Kind: string(rec.Kind), Harness: string(rec.Harness), Model: rec.Model, Mode: rec.Mode, Effort: rec.Effort, RRule: rec.RRuleText, Timezone: rec.Timezone, Enabled: rec.Enabled, NextRunAt: rec.NextRunAt, LastRunAt: rec.LastRunAt, CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, LatestRun: latest}
 }
 func automationRunSummaryResponse(run domain.AutomationRun) AutomationRunSummaryResponse {
 	response := AutomationRunSummaryResponse{ID: string(run.ID), Status: string(run.Status), ScheduledFor: run.ScheduledFor, ErrorMessage: run.ErrorMessage, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt}
@@ -226,4 +228,11 @@ func automationPage(r *http.Request) (int64, int64, error) {
 }
 func encodeAutomationCursor(offset int64) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(offset, 10)))
+}
+
+func automationResponseForRequest(r *http.Request, rec domain.Automation) AutomationResponse {
+	if ports.IsRemoteAccountRequest(r.Context()) {
+		rec.AgentAccountID = ""
+	}
+	return automationResponse(rec)
 }

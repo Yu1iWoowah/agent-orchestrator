@@ -1033,6 +1033,17 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if cfg.Harness == "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: configure project %s.agent or pass --harness", ErrMissingHarness, roleConfigName(cfg.Kind))
 	}
+	if m.agentAccounts != nil {
+		if cfg.ResolvedAccount == nil {
+			selected, err := m.agentAccounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: cfg.Harness, Role: domain.AgentAccountRole(cfg.Kind), ProjectConfig: project.Config, AccountID: cfg.AgentAccountID})
+			if err != nil {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			}
+			cfg.ResolvedAccount = &selected
+		}
+		cfg.AgentAccountID = cfg.ResolvedAccount.AccountID
+		ctx = ports.WithAgentAccount(ctx, *cfg.ResolvedAccount)
+	}
 	releaseHarness, err := m.beginHarnessUse(cfg.Harness)
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
@@ -1061,9 +1072,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 
-	// Resolve the effective agent config (project base + role override + spawn
-	// override) and validate the model before any durable state is created. A
-	// model the harness cannot honor should not leave a seed row behind.
+	// Resolve declarative settings now. Native catalog validation follows the
+	// durable account binding so discovery cannot run against another identity.
 	explicitModel := cfg.AgentConfig.Model != "" || cfg.AgentSettings != nil && cfg.AgentSettings.Model != nil
 	agentConfig, settingsResolution, clearInheritedEffort, err := resolveSpawnSettings(cfg, project.Config)
 	if err != nil {
@@ -1108,24 +1118,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 				"harness", cfg.Harness, "error", err)
 			mode = domain.SessionModeTUI
 		}
-		if mode == domain.SessionModeChat && !strictSettings {
-			resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
-			if err != nil {
-				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
-			}
-			cfg.AgentConfig = resolved
-			cfg.AgentConfigResolved = true
-		}
+
 	}
-	if !strictSettings && mode == domain.SessionModeTUI && (cfg.Harness == domain.HarnessClaudeCode || cfg.Harness == domain.HarnessCodex || strings.TrimSpace(cfg.AgentConfig.Effort) != "") {
-		resolved, err := m.resolveTUIAgentConfig(ctx, cfg, project.Config, agentConfig)
-		if err != nil {
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
-		}
-		cfg.AgentConfig = resolved
-		cfg.AgentConfigResolved = true
-		agentConfig = resolved
-	}
+
 	cfg.RequestedMode = mode
 
 	// A chat session runs no agent inside a terminal runtime, so the terminal
@@ -1158,9 +1153,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		rec.Harness = cfg.Harness
 	} else {
 		seed := seedRecord(cfg, project.Config, m.clock())
-		if mode == domain.SessionModeChat {
-			seed.Metadata.Model = cfg.AgentConfig.Model
-			seed.Metadata.Effort = cfg.AgentConfig.Effort
+		if mode == domain.SessionModeChat && !strictSettings {
+			// No unvalidated tuning should appear through CDC while native
+			// catalog checks are pending. Publish both fields after validation.
+			seed.Metadata.Model = ""
+			seed.Metadata.Effort = ""
 		}
 		if cfg.ClientRequestID != "" {
 			var fresh bool
@@ -1191,7 +1188,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	id := rec.ID
 	if m.agentAccounts != nil {
-		if err := m.agentAccounts.BindSession(ctx, id, cfg.Harness, cfg.AgentAccountID); err != nil {
+		if err := m.agentAccounts.BindResolvedSession(ctx, id, cfg.Harness, *cfg.ResolvedAccount); err != nil {
 			if prep != nil {
 				cleanupCtx, cancel := spawnRollbackContext(ctx)
 				m.discardClaimedTaskPreparation(cleanupCtx, prep)
@@ -1201,6 +1198,40 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			}
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnAgentAccount, err)
 		}
+	}
+	rollbackAccountPreflight := func() {
+		if prep != nil {
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			m.discardClaimedTaskPreparation(cleanupCtx, prep)
+			cancel()
+		} else {
+			m.rollbackSpawnSeedRow(ctx, id)
+		}
+	}
+	if m.agentAccounts != nil && m.agentReadiness != nil && cfg.ResolvedAccount.Managed() {
+		if _, err := m.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch); err != nil {
+			rollbackAccountPreflight()
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn account readiness: %w", err)
+		}
+	}
+	if mode == domain.SessionModeChat && !strictSettings {
+		resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
+		if err != nil {
+			rollbackAccountPreflight()
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.AgentConfig = resolved
+		cfg.AgentConfigResolved = true
+	}
+	if !strictSettings && mode == domain.SessionModeTUI && (cfg.Harness == domain.HarnessClaudeCode || cfg.Harness == domain.HarnessCodex || strings.TrimSpace(cfg.AgentConfig.Effort) != "") {
+		resolved, err := m.resolveTUIAgentConfig(ctx, cfg, project.Config, agentConfig)
+		if err != nil {
+			rollbackAccountPreflight()
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.AgentConfig = resolved
+		cfg.AgentConfigResolved = true
+		agentConfig = resolved
 	}
 	if !strictSettings {
 		if cfg.AgentConfigResolved {

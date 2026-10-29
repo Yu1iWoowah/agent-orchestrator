@@ -248,8 +248,18 @@ func (c *AgentAccountsController) sessionAccounts(w http.ResponseWriter, r *http
 		writeAgentAccountError(w, r, err)
 		return
 	}
+	var bindings map[domain.AgentAccountProvider]domain.AgentAccountBindingView
+	if reader, ok := c.Svc.(interface {
+		SessionAccountBindings(context.Context, domain.SessionID) (map[domain.AgentAccountProvider]domain.AgentAccountBindingView, error)
+	}); ok {
+		bindings, err = reader.SessionAccountBindings(r.Context(), domain.SessionID(strings.TrimSpace(chi.URLParam(r, "sessionId"))))
+		if err != nil {
+			writeAgentAccountError(w, r, err)
+			return
+		}
+	}
 	envelope.WriteJSON(w, http.StatusOK, SessionAgentAccountsResponse{
-		Claude: accounts[domain.AgentAccountProviderClaude], Codex: accounts[domain.AgentAccountProviderCodex],
+		Claude: accounts[domain.AgentAccountProviderClaude], Codex: accounts[domain.AgentAccountProviderCodex], Bindings: bindings,
 	})
 }
 
@@ -289,6 +299,8 @@ func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusNotImplemented, "not_implemented", "AGENT_ACCOUNT_CREDENTIAL_STORE_UNSUPPORTED", "Codex did not provide a private file-backed login for this account.", map[string]any{"reasonCode": "account_credential_store_unsupported", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED", ports.AgentAccountUnavailableHomeOccupiedMessage, map[string]any{"reasonCode": "account_unavailable_home_occupied", "retryable": true})
+	case errors.Is(err, ports.ErrAgentAccountLocalOnly):
+		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "AGENT_ACCOUNT_LOCAL_ONLY", "Local accounts can only be selected from this computer.", map[string]any{"reasonCode": "account_local_only", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_STORAGE_UNSAFE", "Account storage is unsafe. Fix its permissions, then retry.", map[string]any{"reasonCode": "account_storage_unsafe", "retryable": false})
 	case errors.Is(err, ports.ErrAgentAccountStorageUnavailable):
@@ -345,6 +357,11 @@ func accountOperationErrorDetails(err error, reason string) map[string]any {
 	var op *agentaccounts.OperationError
 	if errors.As(err, &op) {
 		details["operationId"] = op.OperationID
+		if op.Reviewer != nil {
+			details["reviewId"] = op.Reviewer.ReviewID
+			details["reviewerSessionId"] = op.Reviewer.SessionID
+			details["reviewerHarness"] = op.Reviewer.Harness
+		}
 	}
 	return details
 }

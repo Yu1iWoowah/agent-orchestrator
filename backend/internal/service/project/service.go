@@ -280,6 +280,9 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 
 	var projectConfig domain.ProjectConfig
 	if in.Config != nil {
+		if _, err := accountConfigForMutation(ctx, domain.ProjectConfig{}, *in.Config); err != nil {
+			return Project{}, err
+		}
 		if err := in.Config.Validate(); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 		}
@@ -717,6 +720,14 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if !ok || !row.ArchivedAt.IsZero() {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
+	in.Config, err = accountConfigForMutation(ctx, row.Config, in.Config)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := in.Config.Validate(); err != nil {
+		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+	}
+
 	if utf8.RuneCountInString(inDisplayName) > maxDisplayNameLen && inDisplayName != strings.TrimSpace(projectDisplayName(row)) {
 		return Project{}, apierr.Invalid("DISPLAY_NAME_TOO_LONG", fmt.Sprintf("Display name must be %d characters or fewer", maxDisplayNameLen), nil)
 	}
@@ -760,6 +771,14 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if (caller.SessionID != "" || caller.Grant != "") && !reflect.DeepEqual(row.Config.AgentSettingsPolicy, in.Config.AgentSettingsPolicy) {
 		return Project{}, apierr.Forbidden("AGENT_SETTINGS_POLICY_DENIED", "Agent identities cannot change settings authorization policy")
 	}
+	in.Config, err = accountConfigForMutation(ctx, row.Config, in.Config)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := in.Config.Validate(); err != nil {
+		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+	}
+
 	if row.Kind.WithDefault() == domain.ProjectKindScratch {
 		if err := validateScratchProjectConfig(in.Config); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)

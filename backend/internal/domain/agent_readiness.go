@@ -267,6 +267,7 @@ func displayAccountField(value string) string {
 // AgentReadinessSnapshot is the daemon-owned readiness view for one harness.
 // EffectiveReadiness is always derived when a snapshot is read.
 type AgentReadinessSnapshot struct {
+	AccountBinding     *ResolvedAgentAccount          `json:"accountBinding,omitempty"`
 	ID                 string                         `json:"id"`
 	Label              string                         `json:"label"`
 	Installation       AgentInstallationObservation   `json:"installation"`
