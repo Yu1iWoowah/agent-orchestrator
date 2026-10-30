@@ -353,32 +353,43 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	if cfg.Kind == domain.KindOrchestrator {
 		cfg.Async = true
-		unlock := s.lockOrchestratorProject(cfg.ProjectID)
-		defer unlock()
+		var result domain.Session
+		var promptBytes, systemPromptBytes int
+		err := s.WithOrchestratorProjectGate(ctx, cfg.ProjectID, func(locked context.Context) error {
+			var err error
+			result, promptBytes, systemPromptBytes, err = s.spawnOrchestratorFromConfig(locked, cfg)
+			return err
+		})
+		return result, promptBytes, systemPromptBytes, err
+	}
+	return s.spawn(ctx, cfg)
+}
 
-		existing, err := s.activeOrchestrators(ctx, cfg.ProjectID)
-		if err != nil {
-			return domain.Session{}, 0, 0, err
-		}
-		if len(existing) > 0 {
-			if cfg.AutomationRunID != nil {
-				for _, candidate := range existing {
-					if candidate.AutomationRunID != nil && *candidate.AutomationRunID == *cfg.AutomationRunID {
-						return candidate, 0, 0, nil
-					}
+// Both public orchestrator entrypoints check for an existing owner while
+// holding the same Manager project gate, including the eventual spawn.
+func (s *Service) spawnOrchestratorFromConfig(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
+	existing, err := s.activeOrchestrators(ctx, cfg.ProjectID)
+	if err != nil {
+		return domain.Session{}, 0, 0, err
+	}
+	if len(existing) > 0 {
+		if cfg.AutomationRunID != nil {
+			for _, candidate := range existing {
+				if candidate.AutomationRunID != nil && *candidate.AutomationRunID == *cfg.AutomationRunID {
+					return candidate, 0, 0, nil
 				}
-				return domain.Session{}, 0, 0, apierr.Conflict(
-					"ORCHESTRATOR_ALREADY_ACTIVE",
-					"Another orchestrator is already active for this project",
-					nil,
-				)
 			}
-			chosen := newestSession(existing)
-			if err := s.checkExistingAccount(ctx, chosen, cfg.AgentAccountID); err != nil {
-				return domain.Session{}, 0, 0, toSpawnAPIError(err)
-			}
-			return chosen, 0, 0, nil
+			return domain.Session{}, 0, 0, apierr.Conflict(
+				"ORCHESTRATOR_ALREADY_ACTIVE",
+				"Another orchestrator is already active for this project",
+				nil,
+			)
 		}
+		chosen := newestSession(existing)
+		if err := s.checkExistingAccount(ctx, chosen, cfg.AgentAccountID); err != nil {
+			return domain.Session{}, 0, 0, toSpawnAPIError(err)
+		}
+		return chosen, 0, 0, nil
 	}
 	return s.spawn(ctx, cfg)
 }
@@ -719,9 +730,25 @@ func (s *Service) SpawnOrchestrator(
 	}
 	_, cancelBudget := ports.ExtendSpawnRequestBudget(ctx, budget)
 	defer cancelBudget()
-	unlock := s.lockOrchestratorProject(projectID)
-	defer unlock()
+	var result domain.Session
+	err = s.WithOrchestratorProjectGate(ctx, projectID, func(locked context.Context) error {
+		if reader, ok := s.store.(replacementAdmissionReader); ok {
+			op, found, err := reader.GetActiveOrchestratorReplacement(locked, projectID)
+			if err != nil {
+				return err
+			}
+			if found {
+				return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", map[string]any{"operationId": op.ID})
+			}
+		}
+		var err error
+		result, err = s.spawnOrchestrator(locked, project, projectID, clean, requestedMode, approval, selectedAccount)
+		return err
+	})
+	return result, err
+}
 
+func (s *Service) spawnOrchestrator(ctx context.Context, project domain.ProjectRecord, projectID domain.ProjectID, clean bool, requestedMode domain.SessionMode, approval domain.PermissionMode, selectedAccount string) (domain.Session, error) {
 	var resolved *domain.ResolvedAgentAccount
 	if clean && s.accountResolver != nil {
 		if project.Config.Orchestrator.Harness == "" {
@@ -1623,6 +1650,11 @@ func toAPIError(err error) error {
 func mapSessionError(err error) error {
 	var relaunchErr *sessionmanager.RelaunchError
 	switch {
+	case errors.Is(err, domain.ErrReplacementInProgress):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", nil)
+	case errors.Is(err, domain.ErrReplacementSourceRetired):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED", "This source orchestrator was replaced and cannot be revived", nil)
+
 	case err == nil:
 		return nil
 	case errors.Is(err, sessionmanager.ErrNotFound):

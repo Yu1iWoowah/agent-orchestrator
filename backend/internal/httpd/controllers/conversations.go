@@ -1184,6 +1184,14 @@ func decodeConversationBodyLimit(w http.ResponseWriter, r *http.Request, into an
 // codes, so a client can tell a permanent answer from a retryable one.
 func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, domain.ErrReplacementIntakeFenced):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_REPLACEMENT_INTAKE_FENCED", err.Error(), nil)
+	case errors.Is(err, domain.ErrReplacementInProgress):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", err.Error(), nil)
+	case errors.Is(err, domain.ErrReplacementSourceRetired):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED", err.Error(), nil)
+	case errors.Is(err, domain.ErrReplacementSourceChanged):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED", err.Error(), nil)
 	case errors.Is(err, domain.ErrAttentionChanged):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ATTENTION_CHANGED", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrFileReferenceInvalid):

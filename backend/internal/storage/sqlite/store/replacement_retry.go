@@ -76,11 +76,14 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		if err != nil {
 			return err
 		}
-		op, err := decodeReplacement(row)
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}
 		result = op
+		if len(op.Repairs) > 0 && !op.Repairs[len(op.Repairs)-1].PreStopSnapshot {
+			return nil
+		}
 		if op.Revision != revision || op.Phase.Terminal() || op.SourceStopIntentAt != nil || op.SourceStop != nil || op.SourceRetiredAt != nil || op.SuccessorSessionID != "" {
 			return nil
 		}
@@ -97,15 +100,11 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 			if !currentSource {
 				return nil
 			}
-			project, err := q.GetProject(tx, op.ProjectID)
+			matched, err := replacementProjectMatches(tx, q, op)
 			if err != nil {
 				return err
 			}
-			fingerprint, err := domain.ReplacementProjectFingerprint(projectRowFromGen(project))
-			if err != nil {
-				return err
-			}
-			if fingerprint != op.ProjectFingerprint {
+			if !matched {
 				return nil
 			}
 		}
@@ -152,16 +151,8 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		if err := settleSupersededPreparation(tx, q, op, cancel, at); err != nil {
 			return err
 		}
-		attemptID := uuid.NewString()
-		if op.Preparation != nil {
-			attemptID = op.Preparation.AttemptID
-		}
 		now := at.UTC()
-		op.Attempts = append(op.Attempts, domain.ReplacementAttempt{ID: attemptID, Phase: op.Phase, Preparation: op.Preparation, Transcript: op.Transcript, FrozenAt: op.FrozenAt, Error: op.Error, EndedAt: now, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt})
-		op.Preparation, op.Transcript, op.FrozenAt = nil, nil, nil
-		op.SourceIntakeReleasedAt = nil
-		op.Phase, op.ResumePhase, op.Error = domain.ReplacementPreflight, "", nil
-		op.UpdatedAt = now
+		op = archiveReplacementAttempt(op, uuid.NewString(), now)
 		if cancel {
 			op.Phase = domain.ReplacementCancelled
 		} else {
@@ -174,11 +165,32 @@ func (s *Store) ResetReplacementBeforeStop(ctx context.Context, id string, revis
 		if !saved {
 			return domain.ErrReplacementStateInvalid
 		}
+		if cancel && currentSource {
+			if err := restoreReplacementHumanProjection(tx, q, source.ID); err != nil {
+				return err
+			}
+		}
 		op.Revision++
 		result, applied = op, true
 		return nil
 	})
 	return result, applied && err == nil, err
+}
+
+// archiveReplacementAttempt preserves the current attempt for Retry/Cancel and
+// for the checkpoint writer's cancellation-capacity projection. It does not
+// mutate the caller's retained history or grant authority to change state.
+func archiveReplacementAttempt(op domain.OrchestratorReplacement, fallbackID string, at time.Time) domain.OrchestratorReplacement {
+	attemptID := fallbackID
+	if op.Preparation != nil {
+		attemptID = op.Preparation.AttemptID
+	}
+	op.Attempts = append(append([]domain.ReplacementAttempt(nil), op.Attempts...), domain.ReplacementAttempt{ID: attemptID, Phase: op.Phase, Preparation: op.Preparation, Transcript: op.Transcript, FrozenAt: op.FrozenAt, Error: op.Error, EndedAt: at, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt})
+	op.Preparation, op.Transcript, op.FrozenAt = nil, nil, nil
+	op.SourceIntakeReleasedAt = nil
+	op.Phase, op.ResumePhase, op.Error = domain.ReplacementPreflight, "", nil
+	op.UpdatedAt = at
+	return op
 }
 
 // Only a proven never-dispatched control turn can be cancelled here. The SQL

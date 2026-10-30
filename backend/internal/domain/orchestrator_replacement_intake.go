@@ -30,8 +30,9 @@ type ReplacementIntakeMessage struct {
 	SenderProjectID     string        `json:"senderProjectId,omitempty"`
 	SenderDisplayName   string        `json:"senderDisplayName,omitempty"`
 	RequestedAt         time.Time     `json:"requestedAt"`
-	ProviderReserved    bool          `json:"providerReserved"`
-	NativeDelivery      string        `json:"nativeDelivery"`
+	// ProviderReserved includes durable reserve/dispatch markers, never a delivery ACK.
+	ProviderReserved bool   `json:"providerReserved"`
+	NativeDelivery   string `json:"nativeDelivery"`
 }
 
 // ReplacementIntakeReport omits outbox claim tokens and internal scheduling.

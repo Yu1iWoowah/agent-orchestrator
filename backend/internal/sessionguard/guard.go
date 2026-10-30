@@ -226,7 +226,14 @@ func (g *Guard) DeliverWithComposerCheck(
 	composerBusy func(context.Context, domain.SessionRecord) (bool, func()),
 	after func(context.Context) error,
 ) (Outcome, error) {
-	return g.sendThenChecked(ctx, id, msg, g.refuseDeliver, composerBusy, after)
+	return g.sendThenChecked(ctx, id, msg, g.refuseDeliver, composerBusy, after, nil)
+}
+
+// DeliverWithOwnershipCheck retains normal input admission and composer
+// protection, then revalidates the owned runtime immediately before writing.
+// A composer probe may perform I/O, so ownership is checked after it returns.
+func (g *Guard) DeliverWithOwnershipCheck(ctx context.Context, id domain.SessionID, msg string, preWrite func(context.Context, domain.SessionRecord) error, composerBusy func(context.Context, domain.SessionRecord) (bool, func()), after func(context.Context) error) (Outcome, error) {
+	return g.sendThenChecked(ctx, id, msg, g.refuseDeliver, composerBusy, after, preWrite)
 }
 
 // DeliverUnderMutation applies the same just-in-time session safety checks as
@@ -384,10 +391,10 @@ func (g *Guard) NudgeCoordination(ctx context.Context, id domain.SessionID, msg 
 // available without scraping the terminal. Fail closed: a store error
 // suppresses the write rather than pressing Enter on an unknown state.
 func (g *Guard) send(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool)) (Outcome, error) {
-	return g.sendThenChecked(ctx, id, msg, refuse, nil, nil)
+	return g.sendThenChecked(ctx, id, msg, refuse, nil, nil, nil)
 }
 
-func (g *Guard) sendThenChecked(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), composerBusy func(context.Context, domain.SessionRecord) (bool, func()), after func(context.Context) error) (Outcome, error) {
+func (g *Guard) sendThenChecked(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), composerBusy func(context.Context, domain.SessionRecord) (bool, func()), after func(context.Context) error, preWrite func(context.Context, domain.SessionRecord) error) (Outcome, error) {
 	g.leaseMu.RLock()
 	lease := g.lease
 	g.leaseMu.RUnlock()
@@ -399,7 +406,7 @@ func (g *Guard) sendThenChecked(ctx context.Context, id domain.SessionID, msg st
 		}
 		defer release()
 	}
-	outcome, err := g.sendAdmitted(ctx, id, msg, refuse, composerBusy)
+	outcome, err := g.sendAdmittedChecked(ctx, id, msg, refuse, preWrite, composerBusy)
 	if err == nil && outcome == Sent && after != nil {
 		if afterErr := after(ctx); afterErr != nil {
 			return outcome, afterErr
@@ -439,12 +446,7 @@ func (g *Guard) sendAdmittedChecked(ctx context.Context, id domain.SessionID, ms
 		g.logger.Info("sessionguard: write suppressed", "sessionID", id, "reason", outcome.String(), "state", string(rec.Activity.State))
 		return outcome, nil
 	}
-	if preWrite != nil {
-		if err := preWrite(ctx, rec); err != nil {
-			return SuppressedUnknown, fmt.Errorf("guard %s: pre-write check: %w", id, err)
-		}
-	}
-	// Composer-occupancy check runs last, under the held input lease and on the
+	// Composer-occupancy check runs under the held input lease and on the
 	// just-read record: an unsent human draft here must not be concatenated with
 	// the delivered message (#5711). It refuses only on a positively proven draft.
 	// On delivery it may return a release that fences terminal input across the
@@ -457,6 +459,11 @@ func (g *Guard) sendAdmittedChecked(ctx context.Context, id domain.SessionID, ms
 		if busy {
 			g.logger.Info("sessionguard: write suppressed", "sessionID", id, "reason", SuppressedComposerBusy.String(), "state", string(rec.Activity.State))
 			return SuppressedComposerBusy, nil
+		}
+	}
+	if preWrite != nil {
+		if err := preWrite(ctx, rec); err != nil {
+			return SuppressedUnknown, fmt.Errorf("guard %s: pre-write check: %w", id, err)
 		}
 	}
 	// A cancelled probe reports "no draft" so it fails open, but its caller is
