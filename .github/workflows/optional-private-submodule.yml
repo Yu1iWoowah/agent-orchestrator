@@ -9,6 +9,7 @@ on:
       - "test/submodule/**"
       - ".github/workflows/optional-private-submodule.yml"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".gitmodules"
       - "private/ao-cloud"
@@ -24,6 +25,7 @@ concurrency:
 
 jobs:
   unauthenticated-recursive-clone:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
