@@ -89,7 +89,7 @@ func (s *Service) resumeNativeSuccessor(ctx context.Context, op domain.Orchestra
 		return op, domain.ErrReplacementStateInvalid
 	}
 	observed, err := s.deps.Runtime.ResumeReplacementSuccessor(ctx, op, allowNew)
-	if allowNew && errors.Is(err, ports.ErrChatResumeNotLaunched) {
+	if errors.Is(err, ports.ErrChatResumeNotLaunched) {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		current, saved, saveErr := s.deps.Store.RecordReplacementResumeUnlaunched(cleanup, op.ID, op.Revision, p.ResumeGeneration, err.Error(), s.deps.Now().UTC())

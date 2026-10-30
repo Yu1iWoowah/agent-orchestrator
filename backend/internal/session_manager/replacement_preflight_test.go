@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -11,8 +12,42 @@ import (
 
 type replacementPreflightChat struct {
 	*recordingLauncher
-	resumeErr error
-	checked   int
+	resumeErr   error
+	resumeStore *replacementSuccessorStore
+	resumeProof ports.ReplacementResumeObservation
+	checked     int
+}
+
+func (c *replacementPreflightChat) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	strict := cfg.HistoryMode == ports.ChatHistoryRequired && cfg.DisableFreshProviderFallback
+	if strict && c.resumeStore != nil {
+		ready := cfg.ControllerReady
+		cfg.ControllerReady = func(started ChatStarted) (ChatControllerCommit, error) {
+			commit, err := ready(started)
+			if err == nil {
+				rec := c.resumeStore.sessions[cfg.SessionID]
+				c.resumeProof = ports.ReplacementResumeObservation{Owner: rec.ControllerOwner(), NativeID: rec.Metadata.ProviderConversationID, CapabilityVerifier: rec.Metadata.BrowserCapabilityVerifier, HistoryVerified: true, ObservedAt: time.Now().UTC()}
+			}
+			return commit, err
+		}
+	}
+	started, err := c.recordingLauncher.StartChat(ctx, cfg)
+	if err == nil && strict {
+		c.live = true
+	}
+	return started, err
+}
+
+func (c *replacementPreflightChat) LookupReplacementChatResume(_ context.Context, id domain.SessionID, generation, native string) (ports.ReplacementResumeObservation, error) {
+	p := c.resumeProof
+	if c.resumeStore == nil || !c.live || !p.HistoryVerified {
+		return ports.ReplacementResumeObservation{}, ports.ErrChatRecoveryInconclusive
+	}
+	rec := c.resumeStore.sessions[id]
+	if p.Owner != rec.ControllerOwner() || p.CapabilityVerifier != rec.Metadata.BrowserCapabilityVerifier || p.Owner.ControllerGeneration != generation || p.NativeID != native {
+		return ports.ReplacementResumeObservation{}, ports.ErrChatRecoveryInconclusive
+	}
+	return p, nil
 }
 
 func (c *replacementPreflightChat) PreflightReplacementChat(ctx context.Context, harness domain.AgentHarness, permissions ports.PermissionMode) error {

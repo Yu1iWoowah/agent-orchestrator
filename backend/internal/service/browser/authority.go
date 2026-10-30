@@ -29,7 +29,7 @@ func (a *Authority) Issue(sessionID domain.SessionID) (token, verifier string, e
 		return "", "", fmt.Errorf("generate browser capability: %w", err)
 	}
 	token = base64.RawURLEncoding.EncodeToString(raw)
-	return token, capabilityVerifier(sessionID, token), nil
+	return token, domain.BrowserCapabilityVerifier(sessionID, token), nil
 }
 
 // Valid compares the presented token with a durable verifier in constant time.
@@ -39,15 +39,6 @@ func (a *Authority) Valid(sessionID domain.SessionID, token, verifier string) bo
 	if a == nil || sessionID == "" || token == "" || verifier == "" {
 		return false
 	}
-	expected := capabilityVerifier(sessionID, token)
+	expected := domain.BrowserCapabilityVerifier(sessionID, token)
 	return hmac.Equal([]byte(expected), []byte(verifier))
-}
-
-func capabilityVerifier(sessionID domain.SessionID, token string) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte("ao-browser-capability-verifier-v1\x00"))
-	_, _ = h.Write([]byte(sessionID))
-	_, _ = h.Write([]byte{'\x00'})
-	_, _ = h.Write([]byte(token))
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }

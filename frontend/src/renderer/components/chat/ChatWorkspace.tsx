@@ -533,6 +533,8 @@ export interface ChatWorkspaceProps {
 	configOptionError?: string;
 	/** Summarize earlier history to reclaim context. */
 	onCompact?: () => void;
+	onHandoff?: () => Promise<unknown>;
+	handoffReceipt?: ReactNode;
 	/** A compaction is running provider-side. It takes seconds, not milliseconds. */
 	compacting?: boolean;
 	/** Why compaction is not available right now, from the daemon's typed refusal. */
@@ -796,6 +798,8 @@ function ChatWorkspaceContent({
 	configOptionPending,
 	configOptionError,
 	onCompact,
+	onHandoff,
+	handoffReceipt,
 	compacting,
 	compactUnavailable,
 	onRollback,
@@ -2143,6 +2147,8 @@ function ChatWorkspaceContent({
 										steerPending={steerPending}
 										steerRefusal={steerRefusal}
 										onCompact={newWorkDisabled || snapshot.controller.state === "hibernated" ? undefined : onCompact}
+										onHandoff={newWorkDisabled || queueEdit ? undefined : onHandoff}
+										handoffReceipt={handoffReceipt}
 										compacting={compacting}
 										compactUnavailable={compactUnavailable}
 										compactBlocked={Boolean(turn)}

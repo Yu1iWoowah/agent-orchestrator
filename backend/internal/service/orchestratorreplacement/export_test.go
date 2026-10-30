@@ -386,10 +386,9 @@ func TestReplacementExportRecoversSourceStopBeforeReceiptSave(t *testing.T) {
 	x.advanceUntil(t, func(op domain.OrchestratorReplacement) bool { return op.SourceStopIntentAt != nil })
 	store := &crashAfterSourceStopStore{Store: x.f.store.Store, crash: true}
 	svc := replacement.New(replacement.Deps{Store: store, Runtime: x.f.runtime, Documents: x.documents, NativeTranscripts: x.reader})
-	var lost any
-	func() { defer func() { lost = recover() }(); _, _ = svc.Advance(ctx, x.operation.ID) }()
-	if lost != "lost coordinator after provider stop" {
-		t.Fatalf("wrong crash boundary: %v", lost)
+	assertReplacementPanicQuarantined(t, svc, x.operation.ID)
+	if _, err := svc.Retry(ctx, x.operation.ID); err != nil {
+		t.Fatal(err)
 	}
 	stored, found, err := x.f.store.GetOrchestratorReplacement(ctx, x.operation.ID)
 	if err != nil || !found || stored.SourceStop != nil || stored.SourceStopIntentAt == nil || *x.actualStops != 1 {

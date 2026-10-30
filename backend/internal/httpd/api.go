@@ -24,6 +24,8 @@ import (
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
+	OrchestratorReplacements controllers.OrchestratorReplacementService
+
 	AgentSettings      controllers.AgentSettingsReader
 	AppDiagnostics     controllers.AppDiagnosticsService
 	Awake              controllers.AwakeService
@@ -136,6 +138,7 @@ type API struct {
 	appDiagnostics   *controllers.AppDiagnosticsController
 	projectDocuments *controllers.ProjectDocumentsController
 	documentRead     *controllers.DocumentReadController
+	replacements     *controllers.OrchestratorReplacementController
 
 	cfg           config.Config
 	deps          APIDeps
@@ -192,6 +195,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		codexAccounts:    &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
 		agentAccounts:    newAgentAccountsController(deps),
 		projectDocuments: &controllers.ProjectDocumentsController{Svc: deps.ProjectDocuments},
+		replacements:     &controllers.OrchestratorReplacementController{Svc: deps.OrchestratorReplacements},
 		documentRead:     &controllers.DocumentReadController{Svc: deps.DocumentRead},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
@@ -328,6 +332,7 @@ func (a *API) Register(root chi.Router) {
 			a.agentAccounts.Register(r)
 			a.projects.Register(r)
 			a.projectDocuments.Register(r)
+			a.replacements.Register(r)
 			a.documentRead.Register(r)
 			a.sessions.Register(r)
 			a.automations.Register(r)

@@ -160,6 +160,33 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"ControllersOrchestratorReplacementDiagnostic":         "OrchestratorReplacementDiagnostic",
+	"ControllersOrchestratorReplacementDiagnosticResponse": "OrchestratorReplacementDiagnosticResponse",
+	"ControllersOrchestratorReplacementRepairRequest":      "OrchestratorReplacementRepairRequest",
+	"ControllersReplacementStopView":                       "ReplacementStopReceipt",
+	"ControllersReplacementControlAttemptView":             "ReplacementControlAttempt",
+	"ControllersReplacementRetainedRetryView":              "ReplacementRetainedRetry",
+	"DomainReplacementResumeUnlaunched":                    "ReplacementResumeUnlaunched",
+	"ControllersOrchestratorReplaceRequest":                "OrchestratorReplaceRequest",
+	"ControllersOrchestratorReplacementPreparedRequest":    "OrchestratorReplacementPreparedRequest",
+	"ControllersOrchestratorReplacementResponse":           "OrchestratorReplacementResponse",
+	"ControllersOrchestratorReplacementView":               "OrchestratorReplacement",
+	"ControllersOrchestratorReplacementActionRequest":      "OrchestratorReplacementActionRequest",
+	"ControllersReplacementPreparationView":                "ReplacementPreparation",
+	"ControllersReplacementEvidenceView":                   "ReplacementEvidence",
+	"ControllersReplacementResumeView":                     "ReplacementResumeEvidence",
+	"ControllersReplacementWriterView":                     "ReplacementWriterActivation",
+	"ControllersReplacementNotificationView":               "ReplacementNotificationReceipt",
+	"ControllersReplacementAttemptView":                    "ReplacementAttempt",
+	"ControllersReplacementProvisioningAttemptView":        "ReplacementProvisioningAttempt",
+	"DomainReplacementFailure":                             "ReplacementFailure",
+	"DomainTranscriptEpochCutoff":                          "TranscriptEpochCutoff",
+	"ControllersOrchestratorReplacementIntakeResponse":     "OrchestratorReplacementIntakeResponse",
+	"DomainReplacementIntake":                              "ReplacementIntake",
+	"DomainReplacementIntakeMessage":                       "ReplacementIntakeMessage",
+	"DomainReplacementIntakeReport":                        "ReplacementIntakeReport",
+	"DomainReplacementIntakeOutput":                        "ReplacementIntakeOutput",
+	"DomainReplacementIntakeTransfer":                      "ReplacementIntakeTransfer",
 	"ControllersQuestionCreateRequest":                     "QuestionCreateRequest",
 	"ControllersQuestionReviseRequest":                     "QuestionReviseRequest",
 	"ControllersQuestionReadRequest":                       "QuestionReadRequest",
@@ -855,6 +882,7 @@ func operations() []operation {
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, projectDocumentOperations()...)
+	ops = append(ops, orchestratorReplacementOperations()...)
 	ops = append(ops, sessionOperations()...)
 	ops = append(ops, automationOperations()...)
 	ops = append(ops, prOperations()...)
