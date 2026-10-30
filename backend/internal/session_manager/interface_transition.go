@@ -714,7 +714,7 @@ func (m *Manager) runInterfaceTransition(
 	}
 	if err := m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionCompleted, "", ""); err != nil {
 		m.logger.Error("interface transition completed but durable completion failed",
-			"sessionID", rec.ID, "transitionID", transition.ID, "error", err)
+			"sessionID", rec.ID, "transitionID", transition.ID, "error", transitionDetail(transition, "TRANSITION_STATE_FAILED", err.Error()))
 		return
 	}
 }
@@ -1504,7 +1504,10 @@ func (m *Manager) retainUnconfirmedTransitionTarget(transition domain.SessionInt
 	// saga would let ordinary restore adopt a target that never passed admission.
 	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionTargetStarting,
 		"TARGET_STOP_UNCONFIRMED", "AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface. "+cause.Error()); err != nil {
-		m.logger.Error("interface transition: retain unconfirmed target shutdown", "transition", transition.ID, "error", err)
+		m.logger.Error("interface transition: retain unconfirmed target shutdown", "transition", transition.ID, "error", transitionDetail(transition, "TRANSITION_STATE_FAILED", err.Error()))
+		if transition.AccountMove() {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
 		return fmt.Errorf("persist unconfirmed target for transition %s: %w", transition.ID, err)
 	}
 	return nil
@@ -1543,6 +1546,12 @@ func (m *Manager) moveInterfaceTransitionWithNativeID(
 		}
 		if nativeConversationID == "" {
 			nativeConversationID = current.NativeConversationID
+		}
+		// Classify at the shared journal boundary, not only in the worker's
+		// fail closure: rollback/stop can introduce a new provider error later.
+		// Never persist that error's contents for an account move.
+		if current.AccountMove() && errorCode != "" {
+			errorDetail = transitionDetail(current, errorCode, "")
 		}
 		moved, err := store.AdvanceSessionInterfaceTransition(ctx, id, current.Phase, next,
 			nativeConversationID, errorCode, errorDetail, m.clock())
@@ -2103,8 +2112,14 @@ func transitionDetail(transition domain.SessionInterfaceTransition, code, detail
 		return "The target account needs sign-in. The current account was left unchanged. Sign in again in Settings."
 	case "NATIVE_SESSION_MISSING", "NATIVE_SESSION_UNVERIFIED":
 		return "AO could not confirm that this conversation is available on the target account. The current account was left unchanged."
-	case "SOURCE_RESTORE_FAILED", "TARGET_STOP_UNCONFIRMED":
-		return "AO could not confirm the account switch recovery. Further launches are blocked until recovery is confirmed."
+	case "SOURCE_STOP_UNCERTAIN":
+		return "AO could not confirm that the original account controller stopped. Restart AO to reconcile this session before sending more work."
+	case "RECOVERY_REQUIRED", "SOURCE_RESTORE_FAILED":
+		return "AO could not restore the original account controller. The session remains on its committed account. Restart AO to reconcile it before resuming."
+	case "TARGET_STOP_UNCONFIRMED":
+		return "AO could not confirm the target account controller stopped. Further launches are blocked; AO will retry recovery the next time it starts."
+	case "SOURCE_RESTORE_STARTING":
+		return "AO is restoring the original account after the target failed."
 	}
 	return "The account switch could not complete. The agent remains on its committed account. Retry after checking the account in Settings."
 }

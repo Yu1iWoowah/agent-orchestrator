@@ -318,7 +318,7 @@ func (c *AgentAccountsController) switchSession(w http.ResponseWriter, r *http.R
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, StartSessionInterfaceTransitionResponse{
-		OK: true, SessionID: transition.SessionID, Transition: sessionInterfaceTransitionView(transition),
+		OK: true, SessionID: transition.SessionID, Transition: sessionInterfaceTransitionView(r.Context(), transition),
 	})
 }
 

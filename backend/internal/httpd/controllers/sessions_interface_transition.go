@@ -10,6 +10,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 )
 
@@ -45,8 +46,12 @@ func (c *SessionsController) interfaceTransitionStatus(w http.ResponseWriter, r 
 		Supported: status.Supported, TargetMode: status.TargetMode,
 		ReasonCode: status.ReasonCode, Reason: status.Reason,
 	}
+	// Reasons can come from native preflight probes or historical journal rows.
+	if ports.IsRemoteAccountRequest(r.Context()) && response.Reason != "" {
+		response.Reason = remoteInterfaceTransitionDetail
+	}
 	if status.Transition != nil {
-		view := sessionInterfaceTransitionView(*status.Transition)
+		view := sessionInterfaceTransitionView(r.Context(), *status.Transition)
 		response.Transition = &view
 	}
 	envelope.WriteJSON(w, http.StatusOK, response)
@@ -73,7 +78,7 @@ func (c *SessionsController) startInterfaceTransition(w http.ResponseWriter, r *
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, StartSessionInterfaceTransitionResponse{
-		OK: true, SessionID: sessionID(r), Transition: sessionInterfaceTransitionView(transition),
+		OK: true, SessionID: sessionID(r), Transition: sessionInterfaceTransitionView(r.Context(), transition),
 	})
 }
 
@@ -106,11 +111,21 @@ func (c *SessionsController) acknowledgeInterfaceTransitionNotice(w http.Respons
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, InterfaceTransitionNoticeAckResponse{
-		OK: true, SessionID: sessionID(r), Transition: sessionInterfaceTransitionView(transition),
+		OK: true, SessionID: sessionID(r), Transition: sessionInterfaceTransitionView(r.Context(), transition),
 	})
 }
 
-func sessionInterfaceTransitionView(transition domain.SessionInterfaceTransition) SessionInterfaceTransitionView {
+const remoteInterfaceTransitionDetail = "Open this session on the host to view interface switch details."
+
+func sessionInterfaceTransitionView(ctx context.Context, transition domain.SessionInterfaceTransition) SessionInterfaceTransitionView {
+	// Listener provenance, never Host/Origin, selects this projection. Work on
+	// the value copy so a mobile read cannot redact the local journal/status.
+	if ports.IsRemoteAccountRequest(ctx) {
+		transition.SourceAccountID, transition.TargetAccountID = "", ""
+		if transition.ErrorDetail != "" {
+			transition.ErrorDetail = remoteInterfaceTransitionDetail
+		}
+	}
 	if transition.HistoryPolicy == "" {
 		transition.HistoryPolicy = domain.SessionInterfaceTransitionHistoryStrict
 	}
