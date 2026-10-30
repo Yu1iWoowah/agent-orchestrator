@@ -2,13 +2,11 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
-	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -51,69 +49,15 @@ func replacementActivationMatches(ctx context.Context, q *gen.Queries, op domain
 	if old.ProjectID != op.ProjectID || old.Kind != domain.KindOrchestrator || old.ControllerOwner() != retired || old.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier {
 		return false, nil
 	}
-	conversation, err := q.SelectConversationBySession(ctx, &expected.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	message, err := q.SelectConversationMessageByClientID(ctx, gen.SelectConversationMessageByClientIDParams{ConversationID: conversation.ID, ClientMessageID: op.ResumeProbeClientID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	m := messageToDomain(message)
-	sum := sha256.Sum256([]byte(m.Text))
-	if m.TurnID != p.Probe.TurnID || m.Role != domain.MessageRoleUser || m.Origin != domain.MessageOriginAutomation || m.AuthoredByUser || m.SenderSessionID != "" || m.DeliveryContentJSON != "" || m.Continuation || hex.EncodeToString(sum[:]) != p.Probe.PromptHash {
-		return false, nil
-	}
-	turnRow, err := q.SelectConversationTurnByID(ctx, p.Probe.TurnID)
-	if err != nil {
-		return false, err
-	}
-	turn := turnToDomain(turnRow)
-	if turn.ConversationID != conversation.ID || turn.HandledBySessionID != expected.ID || turnRow.ControllerGeneration != proof.Owner.ControllerGeneration || turn.State != domain.TurnStateCompleted || turn.ProviderTurnID == "" || turn.RolledBackAt != nil || turn.BranchID != conversation.ActiveBranchID {
-		return false, nil
-	}
-	branch, err := q.SelectConversationBranch(ctx, gen.SelectConversationBranchParams{ConversationID: conversation.ID, BranchID: conversation.ActiveBranchID})
-	if err != nil {
-		return false, err
-	}
-	b := conversationBranchToDomain(branch)
-	if b.SessionID != expected.ID || b.ProviderConversationID != p.AfterNativeID {
-		return false, nil
-	}
-	rows, err := q.SelectConversationNativeThreadEvidence(ctx, gen.SelectConversationNativeThreadEvidenceParams{ConversationID: conversation.ID, SessionID: expected.ID})
-	if err != nil {
-		return false, err
-	}
-	evidence := make([]domain.ConversationNativeThreadEvidence, 0, len(rows))
-	for _, entry := range rows {
-		evidence = append(evidence, domain.ConversationNativeThreadEvidence{BranchID: entry.BranchID, ProviderTurnID: entry.ProviderTurnID, ProviderConversationID: entry.ProviderConversationID})
-	}
-	if domain.IndexNativeThreadEvidence(evidence).Classify(turn.BranchID, turn.ProviderTurnID, p.AfterNativeID) != domain.NativeThreadMain {
-		return false, nil
-	}
 	ack, ok := domain.ReplacementProbeAcknowledgment(op)
 	if !ok {
 		return false, nil
 	}
-	replies, err := q.SelectReplacementProbeReplies(ctx, gen.SelectReplacementProbeRepliesParams{ConversationID: conversation.ID, TurnID: sql.NullString{String: turn.ID, Valid: true}})
-	if err != nil {
-		return false, err
-	}
-	if len(replies) > domain.MaxReplacementProbeReplyMessages {
+	err = verifyReplacementControlLedger(ctx, q, op, op.ResumeProbeClientID, p.Probe.TurnID, p.Probe.PromptHash, proof.Owner, true, ack)
+	if errors.Is(err, domain.ErrReplacementStateInvalid) || errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	for _, reply := range replies {
-		if reply.ByteLength <= domain.MaxReplacementProbeReplyBytes && strings.Contains(reply.BoundedText, ack) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return err == nil, err
 }
 
 func validateReplacementBootstrap(op domain.OrchestratorReplacement) error {
@@ -129,10 +73,13 @@ func validateReplacementBootstrap(op domain.OrchestratorReplacement) error {
 }
 
 func preserveReplacementBootstrap(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
-	if !reflect.DeepEqual(before.Bootstrap, after.Bootstrap) && ctx.Value(replacementRuntimeProgressKey{}) != q {
+	if !reflect.DeepEqual(before.Bootstrap, after.Bootstrap) && ctx.Value(replacementRuntimeProgressKey{}) != q && ctx.Value(replacementControlRetryKey{}) != q {
 		return domain.ErrReplacementStateInvalid
 	}
 	a, b := before.Bootstrap, after.Bootstrap
+	if ctx.Value(replacementControlRetryKey{}) == q && a != nil && a.SettledAt == nil && b == nil {
+		return nil
+	}
 	if a == nil {
 		if b != nil && after.Phase != domain.ReplacementControllerReady {
 			return domain.ErrReplacementStateInvalid
@@ -178,6 +125,15 @@ func preserveReplacementSuccessorController(before, after domain.OrchestratorRep
 
 func validateReplacementResume(op domain.OrchestratorReplacement) error {
 	p := op.ResumeEvidence
+	if p != nil {
+		seen := map[string]bool{}
+		for _, attempt := range p.UnlaunchedAttempts {
+			if p.StartedAt.IsZero() || attempt.Generation == "" || seen[attempt.Generation] || attempt.Generation == p.ResumeGeneration || attempt.IntentAt.IsZero() || attempt.ConfirmedAt.IsZero() || attempt.ConfirmedAt.Before(attempt.IntentAt) {
+				return domain.ErrReplacementStateInvalid
+			}
+			seen[attempt.Generation] = true
+		}
+	}
 	if p == nil || p.StartedAt.IsZero() {
 		return nil
 	} // Earlier partial observations are not stop authority.
@@ -222,10 +178,37 @@ func partialReplacementResume(p *domain.ReplacementResumeEvidence) bool {
 }
 
 func preserveReplacementResume(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
+	a, b := before.ResumeEvidence, after.ResumeEvidence
+	if ctx.Value(replacementControlRetryKey{}) == q && a != nil && b != nil && a.Probe != nil && a.Probe.SettledAt == nil && a.VerifiedAt == nil && b.Probe == nil {
+		expected := *a
+		expected.Probe = nil
+		if reflect.DeepEqual(expected, *b) {
+			return nil
+		}
+		return domain.ErrReplacementStateInvalid
+	}
+	if ctx.Value(replacementResumeUnlaunchedKey{}) == q {
+		if a == nil || b == nil || a.ResumeIntentAt == nil || a.ResumedAt != nil || a.Probe != nil || b.ResumeIntentAt != nil || b.ResumeGeneration != "" || len(b.UnlaunchedAttempts) != len(a.UnlaunchedAttempts)+1 || len(a.UnlaunchedAttempts) > 0 && !reflect.DeepEqual(a.UnlaunchedAttempts, b.UnlaunchedAttempts[:len(a.UnlaunchedAttempts)]) {
+			return domain.ErrReplacementStateInvalid
+		}
+		last := b.UnlaunchedAttempts[len(b.UnlaunchedAttempts)-1]
+		if last.Generation != a.ResumeGeneration || !last.IntentAt.Equal(*a.ResumeIntentAt) {
+			return domain.ErrReplacementStateInvalid
+		}
+		expected := *a
+		expected.ResumeIntentAt, expected.ResumeGeneration = nil, ""
+		expected.UnlaunchedAttempts = b.UnlaunchedAttempts
+		if !reflect.DeepEqual(expected, *b) {
+			return domain.ErrReplacementStateInvalid
+		}
+		return nil
+	}
+	if b != nil && (a == nil && len(b.UnlaunchedAttempts) > 0 || a != nil && !reflect.DeepEqual(a.UnlaunchedAttempts, b.UnlaunchedAttempts)) {
+		return domain.ErrReplacementStateInvalid
+	}
 	if !reflect.DeepEqual(before.ResumeEvidence, after.ResumeEvidence) && (!partialReplacementResume(before.ResumeEvidence) || !partialReplacementResume(after.ResumeEvidence)) && ctx.Value(replacementRuntimeProgressKey{}) != q {
 		return domain.ErrReplacementStateInvalid
 	}
-	a, b := before.ResumeEvidence, after.ResumeEvidence
 	if a == nil || a.StartedAt.IsZero() {
 		if b != nil && !b.StartedAt.IsZero() && after.Phase != domain.ReplacementVerifyingResume {
 			return domain.ErrReplacementStateInvalid

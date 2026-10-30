@@ -423,7 +423,7 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 			if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
 				return err
 			}
-			return s.bindReplacementSuccessorController(ctx, q, rowToRecord(row), rec)
+			return s.bindReplacementSuccessorController(ctx, q, rowToRecord(row), rec, false)
 		})
 	}
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))

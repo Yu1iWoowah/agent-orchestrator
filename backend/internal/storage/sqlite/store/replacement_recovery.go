@@ -82,10 +82,20 @@ func (s *Store) RetryRetainedReplacement(ctx context.Context, id string, revisio
 				return err
 			}
 			t := rowToRecord(target)
-			if t.IsTerminated || t.Kind != domain.KindOrchestrator || t.ProjectID != op.ProjectID || t.Harness != domain.HarnessClaudeCode || t.Mode != domain.SessionModeChat || t.ClientRequestID != op.SpawnRequestID || t.ClientRequestHash != op.SpawnRequestHash || t.Metadata.Model != op.TargetAgentConfig.Model || t.Metadata.Effort != op.TargetAgentConfig.Effort || t.Metadata.Permissions != op.TargetAgentConfig.Permissions {
+			if t.IsTerminated || t.Kind != domain.KindOrchestrator || t.ProjectID != op.ProjectID || t.Harness != domain.HarnessClaudeCode || t.Mode != domain.SessionModeChat || t.ClientRequestID != op.SpawnRequestID || t.ClientRequestHash != op.SpawnRequestHash || phase != domain.ReplacementNotifying && (t.Metadata.Model != op.TargetAgentConfig.Model || t.Metadata.Effort != op.TargetAgentConfig.Effort || t.Metadata.Permissions != op.TargetAgentConfig.Permissions) {
 				return domain.ErrReplacementSourceChanged
 			}
 			proof, verified := candidate.ExpectedSuccessorController()
+			if phase == domain.ReplacementNotifying {
+				matches, err := replacementActivatedOwnerMatches(ctx, q, candidate, t)
+				if err != nil {
+					return err
+				}
+				if !matches {
+					return domain.ErrReplacementSourceChanged
+				}
+				proof.Owner, proof.CapabilityVerifier, verified = t.ControllerOwner(), t.Metadata.BrowserCapabilityVerifier, true
+			}
 			if verified {
 				if t.ControllerOwner() != proof.Owner || t.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
 					return domain.ErrReplacementSourceChanged
@@ -96,8 +106,22 @@ func (s *Store) RetryRetainedReplacement(ctx context.Context, id string, revisio
 		} else if op.SourceRetiredAt != nil && phase != domain.ReplacementStarting {
 			return domain.ErrReplacementStateInvalid
 		}
+		controlRetry, err := retryReplacementControl(ctx, q, op, &candidate, at)
+		if err != nil {
+			return err
+		}
+		if controlRetry {
+			ctx = context.WithValue(ctx, replacementControlRetryKey{}, q)
+		}
 		candidate.ResumePhase, candidate.Error = "", nil
 		candidate.UpdatedAt, candidate.DeadlineAt = at.UTC(), deadline.UTC()
+		if op.Error != nil && !controlRetry {
+			fingerprint, err := domain.ReplacementReconciliationHash(candidate)
+			if err != nil {
+				return err
+			}
+			candidate.RetainedRetry = &domain.ReplacementRetainedRetry{Phase: phase, FactsSHA256: fingerprint, Failure: *op.Error, RequestedAt: at.UTC()}
+		}
 		if attempt, ok := candidate.LatestSpawnAttempt(); phase == domain.ReplacementStarting && ok && attempt.LaunchIntentAt == nil {
 			candidate.SpawnRetryGeneration++
 		}

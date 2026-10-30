@@ -52,6 +52,7 @@ func TestReplacementBootstrapRecoversExactReceiptWithoutResending(t *testing.T) 
 	if err != nil || first.Uncertain || first.TurnID == "" || first.Owner != f.op.SuccessorController.Owner {
 		t.Fatal("persisted intent with no canonical message could not recover", first, err)
 	}
+	waitReplacementControlSent(t, f.provider)
 	again, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, false)
 	if err != nil || again.TurnID != first.TurnID || again.Uncertain || len(f.provider.sentTexts()) != 1 {
 		t.Fatal("bootstrap replayed", first, again, err)
@@ -118,10 +119,38 @@ func TestReplacementBootstrapCompletionRequiresMainNativeTurn(t *testing.T) {
 func TestReplacementBootstrapReceiptCannotBeRewritten(t *testing.T) {
 	for _, change := range []string{"intent", "clear", "turn", "settled", "clear settled"} {
 		t.Run(change, func(t *testing.T) {
-			f, _ := successorBootstrapIntent(t)
+			f, prompt := successorBootstrapIntent(t)
 			ctx := context.Background()
 			now := time.Now().UTC()
-			f.op.Bootstrap.TurnID, f.op.Bootstrap.SettledAt = "bootstrap-turn", &now
+			receipt, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitReplacementControlSent(t, f.provider)
+			f.provider.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"}, ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1", TurnState: domain.TurnStateCompleted})
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				turn, err := f.store.TurnByID(ctx, receipt.TurnID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if turn.State == domain.TurnStateCompleted {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("actual bootstrap failed to settle")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			conversation, err := f.store.ConversationForSession(ctx, f.target.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := fmt.Sprintf(`{"providerTurnId":"provider-turn-1","providerConversationId":%q}`, f.target.Metadata.ProviderConversationID)
+			if _, err := f.store.ProjectProviderEvent(ctx, conversation.ID, f.target.ID, f.target.Metadata.ControllerGeneration, "receipt-main-proof", "turn.completed", payload, time.Now(), func(context.Context) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			f.op.Bootstrap.TurnID, f.op.Bootstrap.SettledAt = receipt.TurnID, &now
 			if saved, err := f.store.SaveReplacementRuntimeProgress(ctx, f.op); err != nil || !saved {
 				t.Fatal(saved, err)
 			}
@@ -161,7 +190,7 @@ func successorChatReadyFixture(t *testing.T) successorChatFixture {
 	return successorChatReadyFixtureWithProvider(t, nil)
 }
 
-func successorChatReadyFixtureWithProvider(t *testing.T, wrap func(*fakeConversation) ports.ChatConversation) successorChatFixture {
+func successorChatReadyFixtureWithProvider(t *testing.T, wrap func(*fakeConversation) ports.ChatConversation, pending ...*atomic.Bool) successorChatFixture {
 	t.Helper()
 	ctx := context.Background()
 	store := openStore(t)
@@ -204,7 +233,11 @@ func successorChatReadyFixtureWithProvider(t *testing.T, wrap func(*fakeConversa
 		native = wrap(provider)
 	}
 	var ids atomic.Int64
-	service := chatsvc.New(chatsvc.Options{Store: store, Reader: fullSnapshotReader(store), Sessions: store, Drivers: fakeRegistry{driver: fakeDriver{conv: native}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("successor-%d", ids.Add(1)) }})
+	var ledger chatsvc.Store = store
+	if len(pending) > 0 {
+		ledger = pendingReplacementControlStore{Store: store, pending: pending[0]}
+	}
+	service := chatsvc.New(chatsvc.Options{Store: ledger, Reader: fullSnapshotReader(store), Sessions: store, Drivers: fakeRegistry{driver: fakeDriver{conv: native}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("successor-%d", ids.Add(1)) }})
 	t.Cleanup(func() { service.StopAll(context.Background()) })
 	manager := lifecycle.New(store, nil)
 	_, err = service.Start(ctx, chatsvc.StartConfig{SessionID: target.ID, ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, WorkspacePath: t.TempDir(), ControllerReady: func(started ports.ChatControllerStarted) (ports.ChatControllerCommit, error) {
@@ -309,5 +342,58 @@ func TestReplacementSuccessorObservationRequiresCommittedLiveOwner(t *testing.T)
 				t.Fatal("observation woke a provider")
 			}
 		})
+	}
+}
+
+// Pending approval is observed through the real Chat readiness path; the fake
+// does not return Busy directly from Ensure, so this exercises the lost-intent
+// gap before Controller.Send has appended anything.
+type pendingReplacementControlStore struct {
+	*sqlite.Store
+	pending *atomic.Bool
+}
+
+func (s pendingReplacementControlStore) HasPendingConversationInteractions(ctx context.Context, id string) (bool, error) {
+	if s.pending.Load() {
+		return true, nil
+	}
+	return s.Store.HasPendingConversationInteractions(ctx, id)
+}
+
+func TestReplacementPreSendBusyCanRecoverPersistedBootstrapIntent(t *testing.T) {
+	var pending atomic.Bool
+	f, prompt := successorBootstrapIntentFor(t, successorChatReadyFixtureWithProvider(t, nil, &pending))
+	ctx := context.Background()
+	pending.Store(true)
+	if _, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, true); !errors.Is(err, domain.ErrReplacementSourceBusy) {
+		t.Fatal("pre-Send Busy not reproduced", err)
+	}
+	c, err := f.store.ConversationForSession(ctx, f.target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := f.store.ConversationMessageByClientID(ctx, c.ID, f.op.BootstrapClientID); err != nil || found || len(f.provider.sentTexts()) != 0 {
+		t.Fatal("Busy accepted a message", found, err)
+	}
+	pending.Store(false)
+	first, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, false)
+	if err != nil || first.Uncertain || first.TurnID == "" {
+		t.Fatal("persisted intent without a message remained uncertain", first, err)
+	}
+	waitReplacementControlSent(t, f.provider)
+	again, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, false)
+	if err != nil || again.TurnID != first.TurnID || len(f.provider.sentTexts()) != 1 {
+		t.Fatal("recovery duplicated control delivery", again, err)
+	}
+}
+
+func waitReplacementControlSent(t *testing.T, provider *fakeConversation) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(provider.sentTexts()) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("control prompt was not delivered to fake provider")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

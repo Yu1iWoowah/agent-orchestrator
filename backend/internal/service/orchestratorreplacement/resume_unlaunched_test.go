@@ -2,6 +2,7 @@ package orchestratorreplacement_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -29,6 +30,24 @@ func TestReplacementKnownUnlaunchedResumeCanRetryWithoutLosingHistory(t *testing
 	}
 	if receipt := op.ResumeEvidence.UnlaunchedAttempts[0]; receipt.Generation != rejectedGeneration || receipt.IntentAt.IsZero() || receipt.ConfirmedAt.IsZero() || !reflect.DeepEqual(*op.ResumeEvidence.StopReceipt, stop) {
 		t.Fatal("unlaunched attempt or strong stop history lost", receipt)
+	}
+	if replay, saved, err := x.f.store.RecordReplacementResumeUnlaunched(ctx, op.ID, op.Revision-1, rejectedGeneration, "reply lost", time.Now().UTC()); err != nil || !saved || replay.Revision != op.Revision {
+		t.Fatal("lost no-launch reply consumed another checkpoint", saved, err)
+	}
+	for _, runtimeSave := range []bool{false, true} {
+		forged := op
+		p := *op.ResumeEvidence
+		p.UnlaunchedAttempts = append(append([]domain.ReplacementResumeUnlaunched{}, p.UnlaunchedAttempts...), domain.ReplacementResumeUnlaunched{Generation: "forged-generation", IntentAt: time.Now(), ConfirmedAt: time.Now()})
+		forged.ResumeEvidence = &p
+		var saved bool
+		if runtimeSave {
+			saved, err = x.f.store.SaveReplacementRuntimeProgress(ctx, forged)
+		} else {
+			saved, err = x.f.store.SaveOrchestratorReplacement(ctx, forged)
+		}
+		if saved || !errors.Is(err, domain.ErrReplacementStateInvalid) {
+			t.Fatal("generic publication minted a no-launch receipt", runtimeSave, saved, err)
+		}
 	}
 	if _, err := x.service().Retry(ctx, op.ID); err != nil {
 		t.Fatal(err)
@@ -58,5 +77,8 @@ func TestReplacementKnownUnlaunchedResumeCanRetryWithoutLosingHistory(t *testing
 	op, err = x.service().Advance(ctx, op.ID)
 	if err != nil || op.ResumeEvidence.ResumedAt == nil || len(op.ResumeEvidence.UnlaunchedAttempts) != 1 || launched != 1 || op.ResumeEvidence.AfterNativeID != stop.NativeID {
 		t.Fatal("explicit retry did not resume the same native thread once", op.ResumeEvidence, launched, err)
+	}
+	if stale, saved, err := x.f.store.RecordReplacementResumeUnlaunched(ctx, op.ID, op.Revision-1, rejectedGeneration, "late callback", time.Now()); err != nil || saved || stale.Revision != op.Revision || stale.ResumeEvidence.ResumedAt == nil {
+		t.Fatal("late no-launch reply overwrote a newer resume", saved, err)
 	}
 }

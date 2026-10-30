@@ -47,13 +47,7 @@ func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.Orc
 		if observation.State != ports.ChatControllerReady || observation.PendingApproval || observation.ControlTurn == nil || observation.ControlTurn.State != domain.TurnStateCompleted {
 			return stop, domain.ErrReplacementSourceBusy
 		}
-		reserved, err := store.SetReplacementTUIRuntimeReleased(ctx, op.ID, op.Revision, rec.ID, rec.Revision)
-		if err != nil {
-			return stop, err
-		}
-		if !reserved {
-			return stop, domain.ErrReplacementSourceBusy
-		}
+
 		attempted := false
 		defer func() {
 			if attempted {
@@ -66,8 +60,17 @@ func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.Orc
 				// Do not wrap the original Busy: the coordinator must retain the
 				// stop intent when its no-stop clearance could not be committed.
 				resultErr = tuiEvidenceError("ORCHESTRATOR_HANDOFF_SOURCE_STOP_UNCERTAIN", fmt.Sprintf("Unattempted TUI release clearance is pending: %v (cleared=%t)", err, cleared))
+			} else if resultErr != nil {
+				resultErr = fmt.Errorf("%w: no Destroy attempted: %w", domain.ErrReplacementSourceBusy, resultErr)
 			}
 		}()
+		reserved, err := store.SetReplacementTUIRuntimeReleased(ctx, op.ID, op.Revision, rec.ID, rec.Revision)
+		if err != nil {
+			return stop, err
+		}
+		if !reserved {
+			return stop, domain.ErrReplacementSourceBusy
+		}
 		_, current, releaseCheck, err := m.beginReplacementSourceAction(ctx, op)
 		if err != nil {
 			return stop, err

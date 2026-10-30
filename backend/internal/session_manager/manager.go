@@ -3450,7 +3450,7 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
 func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
-	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	ctx, releaseReplacement, err := m.beginReplacementResume(ctx, id)
 	if err != nil {
 		return RestoreResult{}, err
 	}

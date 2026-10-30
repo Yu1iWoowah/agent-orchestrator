@@ -51,6 +51,8 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 		return after.Phase == domain.ReplacementCancelled
 	case ctx.Value(replacementUnattemptedStopKey{}) == q:
 		return before.SourceStopIntentAt != nil && after.SourceStopIntentAt == nil
+	case ctx.Value(replacementResumeUnlaunchedKey{}) == q:
+		return before.ResumeEvidence != nil && after.ResumeEvidence != nil && before.ResumeEvidence.ResumeIntentAt != nil && after.ResumeEvidence.ResumeIntentAt == nil && after.Phase == domain.ReplacementRecoveryRequired && after.ResumePhase == domain.ReplacementVerifyingResume
 	case ctx.Value(replacementSourceReleaseKey{}) == q:
 		return before.SourceIntakeReleasedAt == nil && after.SourceIntakeReleasedAt != nil
 	case ctx.Value(replacementIntakeReleaseKey{}) == q:
@@ -83,6 +85,11 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 	}
 	if ctx.Value(replacementRetainedRetryKey{}) == q && before.Phase == domain.ReplacementRecoveryRequired && after.Phase == retainedPhase {
 		allowed.SpawnRetryGeneration = after.SpawnRetryGeneration
+		allowed.RetainedRetry = after.RetainedRetry
+		if ctx.Value(replacementControlRetryKey{}) == q {
+			allowed.ControlAttempts, allowed.Bootstrap, allowed.ResumeEvidence = after.ControlAttempts, after.Bootstrap, after.ResumeEvidence
+			allowed.BootstrapClientID, allowed.ResumeProbeClientID = after.BootstrapClientID, after.ResumeProbeClientID
+		}
 	}
 	if ctx.Value(replacementRuntimeProgressKey{}) == q {
 		if before.Phase == domain.ReplacementStarting && before.SpawnRequestID == "" && before.SpawnRequestHash == "" {
@@ -215,7 +222,7 @@ func legacyReplacementHasNoProof(op domain.OrchestratorReplacement) bool {
 	return op.FrozenAt == nil && op.Transcript == nil && op.SourceStopIntentAt == nil && op.SourceStop == nil && op.SourceRetiredAt == nil &&
 		op.WriterActivation == nil && op.SuccessorSessionID == "" && op.SuccessorController == nil && op.Bootstrap == nil && op.ResumeEvidence == nil &&
 		op.SpawnRequestID == "" && op.SpawnRequestHash == "" && op.SpawnRetryGeneration == 0 && len(op.SpawnAttempts) == 0 &&
-		op.BootstrapClientID == "" && op.ResumeProbeClientID == "" && op.IntakeReleasedAt == nil && op.IntakeDrainRequestedAt == nil && op.IntakeTransfer == nil &&
+		op.RetainedRetry == nil && len(op.ControlAttempts) == 0 && op.BootstrapClientID == "" && op.ResumeProbeClientID == "" && op.IntakeReleasedAt == nil && op.IntakeDrainRequestedAt == nil && op.IntakeTransfer == nil &&
 		op.SourceIntakeReleasedAt == nil && len(op.Attempts) == 0 && len(op.Notifications) == 0 && len(op.Repairs) == 0 &&
 		(op.Preparation == nil || op.Preparation.VerifiedAt == nil && op.Preparation.WriteReceiptID == "")
 }

@@ -1421,8 +1421,13 @@ func (m *Manager) MarkChatReconnected(ctx context.Context, id domain.SessionID, 
 	}
 	if !ok || rec.IsTerminated || rec.Mode != domain.SessionModeChat ||
 		metadata.ProviderConversationID == "" || metadata.ProviderConversationID != rec.Metadata.ProviderConversationID ||
-		metadata.ControllerGeneration == "" || metadata.ControllerGeneration != rec.Metadata.ControllerGeneration {
+		metadata.ControllerGeneration == "" || metadata.ControllerGeneration != rec.Metadata.ControllerGeneration || metadata.BrowserCapabilityVerifier != rec.Metadata.BrowserCapabilityVerifier {
 		return fmt.Errorf("lifecycle: live Chat reconnect for %q no longer owns the session", id)
+	}
+	if publisher, ok := m.store.(interface {
+		ReconnectChatControllerReady(context.Context, domain.SessionRecord) error
+	}); ok {
+		return publisher.ReconnectChatControllerReady(ctx, rec)
 	}
 	// There are no new lifecycle facts to persist. In particular, avoid a full
 	// record write that could overwrite activity arriving during reconnection.
@@ -1516,7 +1521,13 @@ func (m *Manager) markSpawned(
 		}
 		rec.UpdatedAt = now
 		if boundary == nil {
-			if err := m.store.UpdateSession(ctx, rec); err != nil {
+			if publisher, ok := m.store.(interface {
+				CommitChatControllerReady(context.Context, domain.SessionRecord) error
+			}); ok && rec.Mode == domain.SessionModeChat && metadata.ControllerGeneration != "" {
+				if err := publisher.CommitChatControllerReady(ctx, rec); err != nil {
+					return nil, err
+				}
+			} else if err := m.store.UpdateSession(ctx, rec); err != nil {
 				return nil, err
 			}
 		} else if prepare == nil {

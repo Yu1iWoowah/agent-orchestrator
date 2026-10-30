@@ -31,6 +31,32 @@ func (s *Service) replacementChatSuccessor(ctx context.Context, expected domain.
 		return op, rec, nil, nil
 	}
 	proof, verified := op.ExpectedSuccessorController()
+	if op.ActivatedSuccessorMatches(rec) {
+		matches := false
+		if checker, ok := s.sessions.(interface {
+			ReplacementActivatedOwner(context.Context, string, domain.SessionRecord) (bool, error)
+		}); ok {
+			var err error
+			matches, err = checker.ReplacementActivatedOwner(ctx, op.ID, rec)
+			if err != nil {
+				return op, rec, nil, err
+			}
+		} else if rec.ControllerOwner() == op.WriterActivation.Owner && rec.Metadata.BrowserCapabilityVerifier == op.WriterActivation.CapabilityVerifier {
+			if fence, ok := s.sessions.(interface {
+				ReplacementWakeFenced(context.Context, domain.SessionID) (bool, error)
+			}); ok {
+				fenced, err := fence.ReplacementWakeFenced(ctx, rec.ID)
+				if err != nil {
+					return op, rec, nil, err
+				}
+				matches = !fenced
+			}
+		}
+		if !matches {
+			return op, rec, nil, domain.ErrReplacementIntakeFenced
+		}
+		proof.Owner, proof.CapabilityVerifier, verified = rec.ControllerOwner(), rec.Metadata.BrowserCapabilityVerifier, true
+	}
 	if rec.ProvisionState != domain.SessionProvisionReady || !verified || rec.ControllerOwner() != proof.Owner || rec.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
 		return op, rec, nil, domain.ErrReplacementStateInvalid
 	}
@@ -82,6 +108,10 @@ func (s *Service) ObserveReplacementChatSuccessor(ctx context.Context, expected 
 			observation.ActiveTurn = turn
 			break
 		}
+	}
+	if op.ActivatedSuccessorMatches(rec) {
+		observation.ObservedAt = s.now()
+		return observation, nil
 	}
 	control, err := s.replacementSuccessorControlTurn(ctx, op, controller)
 	if err != nil {

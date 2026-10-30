@@ -34,6 +34,7 @@ func (w *replacementBranchCheckingWorkspace) Create(ctx context.Context, cfg por
 	return w.fakeWorkspace.Create(ctx, cfg)
 }
 
+// Audit 78 I2: the git adapter rejects empty branches on same-seed retry.
 func TestReplacementAsyncFailureRetryReusesSameUnlaunchedSeed(t *testing.T) {
 	m, store, chat, deferred := replacementSuccessorFixture(t)
 	ctx := context.Background()

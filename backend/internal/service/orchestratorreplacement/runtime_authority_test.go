@@ -62,3 +62,35 @@ func TestReplacementRuntimeReceiptsCannotBeMintedByGenericSave(t *testing.T) {
 		})
 	}
 }
+
+func TestReplacementRuntimeCannotMintUnbackedBootstrapOrResume(t *testing.T) {
+	t.Run("source stop", func(t *testing.T) {
+		x := preparedExportFixture(t)
+		x.advanceUntil(t, func(op domain.OrchestratorReplacement) bool { return op.SourceStopIntentAt != nil })
+		op := x.operation
+		op.SourceStop = &domain.ReplacementControllerStop{Owner: op.SourceOwner, CapabilityVerifier: op.SourceCapabilityVerifier, NativeID: op.SourceOwner.ProviderConversationID, Method: "chat-hibernate", ConfirmedAt: time.Now().UTC()}
+		if saved, err := x.f.store.SaveReplacementRuntimeProgress(context.Background(), op); saved || err == nil {
+			t.Fatal("runtime path minted stop for a still-running source", saved, err)
+		}
+	})
+	t.Run("bootstrap", func(t *testing.T) {
+		x := bootstrapCoordinatorFixture(t)
+		op := x.operation
+		op.Bootstrap = &domain.ReplacementBootstrap{IntentAt: time.Now().UTC(), PromptHash: strings.Repeat("a", 64), TurnID: "never-accepted"}
+		if saved, err := x.f.store.SaveReplacementRuntimeProgress(context.Background(), op); err == nil || saved {
+			t.Fatal("runtime path minted nonexistent bootstrap", saved, err)
+		}
+	})
+	t.Run("resume", func(t *testing.T) {
+		x := stoppedSuccessorCoordinatorFixture(t)
+		op := x.operation
+		now := time.Now().UTC()
+		p := op.ResumeEvidence
+		p.ResumeIntentAt, p.ResumeGeneration = &now, "never-launched"
+		p.ResumedAt, p.AfterNativeID, p.AfterOwner, p.AfterCapabilityVerifier, p.HistoryVerified = &now, p.BeforeNativeID, p.BeforeOwner, "forged-verifier", true
+		p.AfterOwner.ControllerGeneration = p.ResumeGeneration
+		if saved, err := x.f.store.SaveReplacementRuntimeProgress(context.Background(), op); err == nil || saved {
+			t.Fatal("runtime path minted nonexistent resume", saved, err)
+		}
+	})
+}

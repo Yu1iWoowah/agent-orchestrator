@@ -21,8 +21,9 @@ type replacementStopRuntime struct {
 
 type replacementBusyAfterReleaseStore struct {
 	*replacementTUIStore
-	afterRelease func()
-	failClear bool
+	afterRelease     func()
+	failClear        bool
+	lostReserveReply bool
 }
 
 func (s replacementBusyAfterReleaseStore) ClearUnattemptedReplacementTUIRelease(ctx context.Context, operation string, revision int64, id domain.SessionID, launch string) (bool, error) {
@@ -36,12 +37,16 @@ func (s replacementBusyAfterReleaseStore) SetReplacementTUIRuntimeReleased(ctx c
 	ok, err := s.replacementTUIStore.SetReplacementTUIRuntimeReleased(ctx, operation, revision, id, sessionRevision)
 	if ok && err == nil {
 		s.afterRelease()
+		if s.lostReserveReply {
+			return false, errors.New("reservation reply lost after commit")
+		}
 	}
 	return ok, err
 }
 
+// Audit 78 I3: reserve -> Busy before Destroy -> clear/new intent -> Destroy.
 func TestReplacementTUIUnattemptedStopCanReleaseItsMarker(t *testing.T) {
-	for _, change := range []string{"busy", "cancelled", "clear ENOSPC"} {
+	for _, change := range []string{"busy", "cancelled", "clear ENOSPC", "reservation reply lost"} {
 		t.Run(change, func(t *testing.T) {
 			f := newReplacementTUIFixture(t)
 			f.acceptControl()
@@ -53,7 +58,7 @@ func TestReplacementTUIUnattemptedStopCanReleaseItsMarker(t *testing.T) {
 			f.store.operation = f.op
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			f.manager.store = replacementBusyAfterReleaseStore{replacementTUIStore: f.store, failClear: change == "clear ENOSPC", afterRelease: func() {
+			f.manager.store = replacementBusyAfterReleaseStore{replacementTUIStore: f.store, failClear: change == "clear ENOSPC", lostReserveReply: change == "reservation reply lost", afterRelease: func() {
 				if change == "cancelled" {
 					cancel()
 				} else {
@@ -81,6 +86,12 @@ func TestReplacementTUIUnattemptedStopCanReleaseItsMarker(t *testing.T) {
 			}
 			rec.Activity.State = domain.ActivityIdle
 			f.store.sessions[rec.ID] = rec
+			f.store.operation.SourceStopIntentAt = nil
+			f.store.operation.Revision++
+			nextIntent := now.Add(time.Second)
+			f.store.operation.SourceStopIntentAt = &nextIntent
+			f.store.operation.Revision++
+			f.op = f.store.operation
 			f.manager.store = f.store
 			stop, err := f.manager.QuiesceReplacementSource(context.Background(), f.op)
 			if err != nil || stop.ConfirmedAt.IsZero() || f.runtime.destroyed != 1 {

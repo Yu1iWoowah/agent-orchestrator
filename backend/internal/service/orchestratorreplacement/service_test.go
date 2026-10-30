@@ -31,8 +31,10 @@ func (s *testStore) LoadTranscriptSourceSnapshot(context.Context, domain.Session
 }
 
 type runtime struct {
-	drain  func(context.Context, domain.OrchestratorReplacement) error
-	drains int
+	controlStore *sqlite.Store
+	controls     map[string]string
+	drain        func(context.Context, domain.OrchestratorReplacement) error
+	drains       int
 
 	successorObservation    replacement.SourceObservation
 	successorObservationErr error
@@ -64,15 +66,24 @@ type runtime struct {
 	prompts        []string
 }
 
-func (r *runtime) ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
+func (r *runtime) ObserveReplacementSuccessor(ctx context.Context, op domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
 	r.successorObservations++
+	if r.controlStore != nil {
+		if err := r.projectControl(ctx, op); err != nil {
+			return replacement.SourceObservation{}, err
+		}
+	}
 	return r.successorObservation, r.successorObservationErr
 }
 
 func (r *runtime) EnsureReplacementBootstrap(ctx context.Context, op domain.OrchestratorReplacement, prompt string, allowNew bool) (replacement.PreparationDelivery, error) {
 	r.bootstraps++
 	if r.bootstrap != nil {
-		return r.bootstrap(ctx, op, prompt, allowNew)
+		d, err := r.bootstrap(ctx, op, prompt, allowNew)
+		if err == nil && r.controlStore != nil {
+			err = r.acceptControl(ctx, op, prompt, op.BootstrapClientID, d)
+		}
+		return d, err
 	}
 	return replacement.PreparationDelivery{}, errors.New("unexpected bootstrap")
 }
@@ -96,7 +107,11 @@ func (r *runtime) ResumeReplacementSuccessor(ctx context.Context, op domain.Orch
 func (r *runtime) EnsureReplacementProbe(ctx context.Context, op domain.OrchestratorReplacement, prompt string, allowNew bool) (replacement.PreparationDelivery, error) {
 	r.probes++
 	if r.probe != nil {
-		return r.probe(ctx, op, prompt, allowNew)
+		d, err := r.probe(ctx, op, prompt, allowNew)
+		if err == nil && r.controlStore != nil {
+			err = r.acceptControl(ctx, op, prompt, op.ResumeProbeClientID, d)
+		}
+		return d, err
 	}
 	return replacement.PreparationDelivery{}, errors.New("unexpected continuity probe")
 }
@@ -241,7 +256,7 @@ func setup(t *testing.T) fixture {
 		t.Fatal(err)
 	}
 	st.snapshot = domain.TranscriptSourceSnapshot{Session: source, Fingerprint: "ao-snapshot", NativeSessions: []domain.TranscriptNativeSession{{Harness: domain.HarnessClaudeCode, NativeID: "native-source", ConfigDir: t.TempDir()}}}
-	r, d := &runtime{}, &documents{root: t.TempDir()}
+	r, d := &runtime{controlStore: st.Store}, &documents{root: t.TempDir()}
 	r.observation = replacement.SourceObservation{Owner: source.ControllerOwner(), NativeID: "native-source", Provenance: domain.NativeThreadMain, State: ports.ChatControllerReady, ObservedAt: now}
 	svc := replacement.New(replacement.Deps{Store: st, Runtime: r, Documents: d, Now: func() time.Time { return now }})
 	return fixture{svc: svc, store: st, runtime: r, docs: d, source: source, project: p, request: replacement.Request{ProjectID: "demo", SourceSessionID: source.ID, OperationKey: "11111111-1111-4111-8111-111111111111"}}

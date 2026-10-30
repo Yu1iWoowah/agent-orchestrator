@@ -71,12 +71,12 @@ func (s *Service) retryRetainedBoundary(ctx context.Context, op domain.Orchestra
 		if err != nil {
 			return op, err
 		}
-		if !found || target.ProjectID != op.ProjectID || target.Kind != domain.KindOrchestrator || target.Harness != domain.HarnessClaudeCode || domain.NormalizeSessionMode(target.Mode) != domain.SessionModeChat || target.IsTerminated || target.ClientRequestID != op.SpawnRequestID || target.ClientRequestHash != op.SpawnRequestHash || target.Metadata.Model != op.TargetAgentConfig.Model || target.Metadata.Effort != op.TargetAgentConfig.Effort || target.Metadata.Permissions != op.TargetAgentConfig.Permissions {
+		if !found || target.ProjectID != op.ProjectID || target.Kind != domain.KindOrchestrator || target.Harness != domain.HarnessClaudeCode || domain.NormalizeSessionMode(target.Mode) != domain.SessionModeChat || target.IsTerminated || target.ClientRequestID != op.SpawnRequestID || target.ClientRequestHash != op.SpawnRequestHash || phase != domain.ReplacementNotifying && (target.Metadata.Model != op.TargetAgentConfig.Model || target.Metadata.Effort != op.TargetAgentConfig.Effort || target.Metadata.Permissions != op.TargetAgentConfig.Permissions) {
 			return refuse()
 		}
 		proof, verified := candidate.ExpectedSuccessorController()
 		if verified {
-			if target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
+			if (target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier) && !candidate.ActivatedSuccessorMatches(target) {
 				return refuse()
 			}
 		} else if phase != domain.ReplacementStarting || candidate.SuccessorController != nil || target.Metadata.ControllerGeneration != "" || target.Metadata.ProviderConversationID != "" {

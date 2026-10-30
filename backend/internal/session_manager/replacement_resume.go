@@ -187,6 +187,22 @@ func (m *Manager) guardReplacementNativeResumeLaunch(ctx context.Context, rec do
 	if err != nil || !found {
 		return err
 	}
+	if op.ActivatedSuccessorMatches(rec) {
+		checker, ok := m.store.(interface {
+			ReplacementActivatedOwner(context.Context, string, domain.SessionRecord) (bool, error)
+		})
+		if !ok {
+			return domain.ErrReplacementIntakeFenced
+		}
+		matches, err := checker.ReplacementActivatedOwner(ctx, op.ID, rec)
+		if err != nil {
+			return err
+		}
+		if !matches {
+			return domain.ErrReplacementIntakeFenced
+		}
+		return nil
+	}
 	p := op.ResumeEvidence
 	if op.Phase != domain.ReplacementVerifyingResume || op.SourceRetiredAt == nil || op.SuccessorSessionID != rec.ID || p == nil || !p.StopConfirmed || p.StopReceipt == nil || p.ResumeIntentAt == nil || p.ResumedAt != nil || generation == "" || generation != p.ResumeGeneration || rec.ControllerOwner() != p.BeforeOwner {
 		return domain.ErrReplacementIntakeFenced

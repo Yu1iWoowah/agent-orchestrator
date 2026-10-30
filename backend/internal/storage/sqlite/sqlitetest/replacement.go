@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,4 +139,67 @@ func ReplacementPriorFacts(op domain.OrchestratorReplacement) domain.Orchestrato
 	}
 
 	return op
+}
+
+// FillReplacementMetadataHistory creates a quota-state fixture in one local
+// transaction. It changes metadata only, serializes every capsule and digest,
+// and leaves all immutable triggers enabled. Boundary tests must still use the
+// real producer to verify refusal/recovery after this setup. A dedicated store
+// test covers ordinary managed saves; repeating that setup per phase adds only
+// fsync/decode overhead, not another boundary assertion.
+func FillReplacementMetadataHistory(t testing.TB, dir, id string, limit int64) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "ao.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := gen.New(tx)
+	ctx := context.Background()
+	row, err := q.GetOrchestratorReplacement(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var op domain.OrchestratorReplacement
+	if err := json.Unmarshal([]byte(row.StateJson), &op); err != nil {
+		t.Fatal(err)
+	}
+	originalRevision := row.Revision
+	stmt, err := tx.PrepareContext(ctx, "INSERT INTO orchestrator_replacement_repair_snapshots(operation_id,revision,digest,payload) VALUES (?,?,?,?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for row.Revision < limit {
+		op.Error = &domain.ReplacementFailure{Code: "QUOTA_FIXTURE", Message: fmt.Sprint(row.Revision)}
+		data, err := json.Marshal(op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.Revision++
+		row.StateJson = string(data)
+		payload, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(payload)
+		if _, err := stmt.ExecContext(ctx, id, row.Revision, hex.EncodeToString(sum[:]), payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE orchestrator_replacements SET state_json=?,revision=? WHERE id=? AND revision=?", row.StateJson, row.Revision, id, originalRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		t.Fatal("quota fixture final CAS", n, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }

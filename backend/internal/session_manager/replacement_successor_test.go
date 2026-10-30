@@ -239,14 +239,14 @@ func TestReplacementSuccessorIncompleteSeedRequiresRecoveryWithoutFreshSpawn(t *
 	}
 }
 
-func TestReplacementSuccessorRefusesStaleOrChangedBindingBeforeSpawn(t *testing.T) {
+func TestReplacementSuccessorRefusesFutureRevisionOrChangedBindingBeforeSpawn(t *testing.T) {
 	for _, change := range []string{"revision", "operation", "missing retirement", "source live", "source owner", "hash", "account", "config", "archived"} {
 		t.Run(change, func(t *testing.T) {
 			m, store, chat, deferred := replacementSuccessorFixture(t)
 			op := store.operation
 			switch change {
 			case "revision":
-				op.Revision--
+				op.Revision++
 			case "operation":
 				op.ID = "wrong-operation"
 			case "missing retirement":

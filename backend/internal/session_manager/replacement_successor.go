@@ -124,6 +124,32 @@ func (m *Manager) ObserveReplacementSuccessor(ctx context.Context, expected doma
 	}
 	if rec.ProvisionState != domain.SessionProvisionProvisioning || op.Phase != domain.ReplacementStarting {
 		proof, verified := op.ExpectedSuccessorController()
+		if op.ActivatedSuccessorMatches(rec) {
+			matches := false
+			if checker, ok := m.store.(interface {
+				ReplacementActivatedOwner(context.Context, string, domain.SessionRecord) (bool, error)
+			}); ok {
+				var err error
+				matches, err = checker.ReplacementActivatedOwner(ctx, op.ID, rec)
+				if err != nil {
+					return zero, err
+				}
+			} else if rec.ControllerOwner() == op.WriterActivation.Owner && rec.Metadata.BrowserCapabilityVerifier == op.WriterActivation.CapabilityVerifier {
+				if fence, ok := m.store.(interface {
+					ReplacementWakeFenced(context.Context, domain.SessionID) (bool, error)
+				}); ok {
+					fenced, err := fence.ReplacementWakeFenced(ctx, rec.ID)
+					if err != nil {
+						return zero, err
+					}
+					matches = !fenced
+				}
+			}
+			if !matches {
+				return zero, domain.ErrReplacementIntakeFenced
+			}
+			proof.Owner, proof.CapabilityVerifier, verified = rec.ControllerOwner(), rec.Metadata.BrowserCapabilityVerifier, true
+		}
 		if rec.ProvisionState != domain.SessionProvisionReady || !verified || rec.ControllerOwner() != proof.Owner || rec.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
 			return zero, domain.ErrReplacementStateInvalid
 		}

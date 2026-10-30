@@ -20,7 +20,20 @@ func (s *Store) SaveReplacementRuntimeProgress(ctx context.Context, op domain.Or
 	}
 	applied := false
 	err := s.replacementTx(ctx, func(ctx context.Context, q *gen.Queries) error {
-		var err error
+		row, err := q.GetOrchestratorReplacement(ctx, op.ID)
+		if err != nil {
+			return err
+		}
+		before, err := s.decodeCheckpointedReplacement(ctx, q, row)
+		if err != nil {
+			return err
+		}
+		if before.Revision != op.Revision {
+			return nil
+		}
+		if err := validateReplacementRuntimePublication(ctx, q, before, op); err != nil {
+			return err
+		}
 		applied, err = s.SaveOrchestratorReplacement(context.WithValue(ctx, replacementRuntimeProgressKey{}, q), op)
 		return err
 	})

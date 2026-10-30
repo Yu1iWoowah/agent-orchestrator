@@ -18,22 +18,22 @@ import (
 
 type hibernationConversation struct {
 	*fakeConversation
-	calls             atomic.Int32
-	hostStops         atomic.Int32
-	sessionReads      atomic.Int32
-	started           chan struct{}
-	release           <-chan struct{}
-	onEligibilityRead func()
-	keepOpen          bool
-	markerErr         error
-	rejectMarker      bool
-	shutdownErr       error
-	hostShutdownErr   error
-	backgroundRunning bool
-	backgroundErr     error
+	calls                   atomic.Int32
+	hostStops               atomic.Int32
+	sessionReads            atomic.Int32
+	started                 chan struct{}
+	release                 <-chan struct{}
+	onEligibilityRead       func()
+	keepOpen                bool
+	markerErr               error
+	rejectMarker            bool
+	shutdownErr             error
+	hostShutdownErr         error
+	backgroundRunning       bool
+	backgroundErr           error
 	replacementPreflightErr error
-	backgroundChecks  atomic.Int32
-	onBackgroundCheck func(context.Context)
+	backgroundChecks        atomic.Int32
+	onBackgroundCheck       func(context.Context)
 	// afterNextRead runs once, after the next session read and before that
 	// read's (now possibly stale) record is returned.
 	afterNextRead atomic.Pointer[func()]

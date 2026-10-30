@@ -14,6 +14,7 @@ import (
 
 // Store retains operation facts independently of the request or coordinator.
 type Store interface {
+	RecordReplacementResumeUnlaunched(context.Context, string, int64, string, string, time.Time) (domain.OrchestratorReplacement, bool, error)
 	SaveReplacementRuntimeProgress(context.Context, domain.OrchestratorReplacement) (bool, error)
 	RetryRetainedReplacement(context.Context, string, int64, time.Time, time.Time) (domain.OrchestratorReplacement, bool, error)
 	ClearReplacementStopIntent(context.Context, string, int64, ports.ReplacementSourceObservation, time.Time) (domain.OrchestratorReplacement, bool, error)

@@ -129,7 +129,7 @@ func (s *Store) RecordReplacementIntakeDrain(ctx context.Context, id string, rev
 			return err
 		}
 		target := rowToRecord(targetRow)
-		if target.Kind != domain.KindOrchestrator || target.ProjectID != op.ProjectID || target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier || target.HibernatedAt != nil || target.ProvisionState != domain.SessionProvisionReady {
+		if target.Kind != domain.KindOrchestrator || target.ProjectID != op.ProjectID || (target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier) && !op.ActivatedSuccessorMatches(target) || target.HibernatedAt != nil || target.ProvisionState != domain.SessionProvisionReady {
 			return nil
 		}
 		fenced, err := q.ReplacementWakeFenced(tx, target.ID)

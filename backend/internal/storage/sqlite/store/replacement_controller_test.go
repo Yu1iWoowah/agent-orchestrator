@@ -127,6 +127,7 @@ func TestReplacementSuccessorControllerReceiptCannotBeAssignedByGenericSave(t *t
 	}
 }
 
+// Audit 78 I1: both native publication paths must reject unsealed raw mutations.
 func TestReplacementControllerBindRejectsUnsealedState(t *testing.T) {
 	for _, boundary := range []bool{false, true} {
 		t.Run(map[bool]string{false: "session", true: "provider boundary"}[boundary], func(t *testing.T) {

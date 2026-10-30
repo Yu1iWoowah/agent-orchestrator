@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -70,10 +71,16 @@ func validateReplacement(op domain.OrchestratorReplacement) error {
 			}
 		}
 	}
+	if r := op.RetainedRetry; r != nil && (!r.Phase.Valid() || r.Phase.Terminal() || !replacementHash(r.FactsSHA256) || r.RequestedAt.IsZero() || r.Failure.Code == "" || !r.Failure.Retryable) {
+		return domain.ErrReplacementStateInvalid
+	}
 	if err := validateReplacementAttempts(op); err != nil {
 		return err
 	}
 	if err := validateReplacementSuccessorController(op); err != nil {
+		return err
+	}
+	if err := validateReplacementControlAttempts(op); err != nil {
 		return err
 	}
 	if err := validateReplacementBootstrap(op); err != nil {
@@ -164,7 +171,7 @@ func (s *Store) CreateOrchestratorReplacement(ctx context.Context, op domain.Orc
 	// In particular, Rejected must not bypass the first receipt/retirement guard.
 	if op.Preparation != nil || op.FrozenAt != nil || op.Transcript != nil || op.SourceStopIntentAt != nil || op.SourceStop != nil || op.SourceRetiredAt != nil ||
 		op.SuccessorSessionID != "" || op.SpawnRequestID != "" || op.SpawnRequestHash != "" || op.SpawnRetryGeneration != 0 || len(op.SpawnAttempts) != 0 ||
-		op.SuccessorController != nil || op.Bootstrap != nil || op.BootstrapClientID != "" || op.ResumeProbeClientID != "" || op.ResumeEvidence != nil ||
+		op.RetainedRetry != nil || len(op.ControlAttempts) != 0 || op.SuccessorController != nil || op.Bootstrap != nil || op.BootstrapClientID != "" || op.ResumeProbeClientID != "" || op.ResumeEvidence != nil ||
 		op.WriterActivation != nil || op.IntakeReleasedAt != nil || op.IntakeDrainRequestedAt != nil || op.SourceIntakeReleasedAt != nil || op.IntakeTransfer != nil ||
 		len(op.Notifications) != 0 || len(op.Attempts) != 0 || len(op.Repairs) != 0 || op.ResumePhase != "" {
 		return result, false, domain.ErrReplacementStateInvalid
@@ -318,6 +325,9 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		if before.Revision != op.Revision {
 			return nil
 		}
+		if !reflect.DeepEqual(before.RetainedRetry, op.RetainedRetry) && tx.Value(replacementRetainedRetryKey{}) != q {
+			return domain.ErrReplacementStateInvalid
+		}
 		if err := preserveReplacementRepairs(before, op); err != nil {
 			return err
 		}
@@ -330,13 +340,16 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		if before.SuccessorSessionID != "" && before.SuccessorSessionID != op.SuccessorSessionID || before.SpawnRequestID != "" && before.SpawnRequestID != op.SpawnRequestID || before.SpawnRequestHash != "" && before.SpawnRequestHash != op.SpawnRequestHash {
 			return fmt.Errorf("%w: successor and spawn identity are immutable once bound", domain.ErrReplacementStateInvalid)
 		}
-		if before.BootstrapClientID != "" && before.BootstrapClientID != op.BootstrapClientID || before.ResumeProbeClientID != "" && before.ResumeProbeClientID != op.ResumeProbeClientID {
+		if (before.BootstrapClientID != "" && before.BootstrapClientID != op.BootstrapClientID || before.ResumeProbeClientID != "" && before.ResumeProbeClientID != op.ResumeProbeClientID) && tx.Value(replacementControlRetryKey{}) != q {
 			return fmt.Errorf("%w: successor control identities are immutable once bound", domain.ErrReplacementStateInvalid)
 		}
 		if err := preserveReplacementSuccessorController(before, op); err != nil {
 			return err
 		}
 		if err := preserveReplacementSpawnAttempts(tx, q, before, op); err != nil {
+			return err
+		}
+		if err := preserveReplacementControlAttempts(tx, q, before, op); err != nil {
 			return err
 		}
 		if err := preserveReplacementBootstrap(tx, q, before, op); err != nil {

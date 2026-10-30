@@ -225,6 +225,15 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 			failure.Code, failure.Message = "ORCHESTRATOR_HANDOFF_SUCCESSOR_STOP_UNCERTAIN", "Successor shutdown cannot be positively confirmed for the current owner"
 		}
 	}
+	if retry := op.RetainedRetry; retry != nil && retry.Phase == op.Phase && retry.Failure == failure {
+		fingerprint, err := domain.ReplacementReconciliationHash(op)
+		if err != nil {
+			return op, err
+		}
+		if fingerprint == retry.FactsSHA256 {
+			return op, nil
+		}
+	}
 	if op.Phase == phase && op.ResumePhase == resume && op.Error != nil && *op.Error == failure {
 		return s.releaseSourceIntake(ctx, op)
 	}

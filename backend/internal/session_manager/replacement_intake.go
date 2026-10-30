@@ -23,6 +23,11 @@ func (m *Manager) DrainReplacementIntake(ctx context.Context, op domain.Orchestr
 		return err
 	}
 	proof, verified := op.ExpectedSuccessorController()
+	if rec, found, err := m.store.GetSession(ctx, op.SuccessorSessionID); err != nil {
+		return err
+	} else if found && op.ActivatedSuccessorMatches(rec) {
+		proof.Owner, verified = rec.ControllerOwner(), true
+	}
 	if !verified || observed.Owner != proof.Owner || observed.NativeID != proof.Owner.ProviderConversationID || observed.Provenance != domain.NativeThreadMain || observed.ObservedAt.IsZero() || (observed.State != ports.ChatControllerReady && observed.State != ports.ChatControllerBusy) {
 		return domain.ErrReplacementStateInvalid
 	}
