@@ -70,6 +70,15 @@ async function editModel() {
 }
 
 describe("Session agent settings intent", () => {
+	it("exposes a provider observation reason in a disclosure without guessing an effective value", async () => {
+		showSession();
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		const summary = await screen.findByText("Fast observation details");
+		expect(screen.getByText("provider_not_provided")).not.toBeVisible();
+		await userEvent.click(summary);
+		expect(screen.getByText("provider_not_provided")).toBeVisible();
+		expect(within(screen.getByRole("group", { name: "Provider effective values" })).getByText("Not provided")).toBeVisible();
+	});
 	it("reports malformed or wrong-session readback instead of displaying another selection", async () => {
 		getMock.mockResolvedValue({ data: { sessionId: "different-session", revision: 4 } });
 		showSession();

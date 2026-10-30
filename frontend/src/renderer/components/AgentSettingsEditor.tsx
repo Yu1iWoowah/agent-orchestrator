@@ -71,7 +71,7 @@ export function AgentSettingsEditor({ snapshot, sessionId, hostId }: {
 			{draft && <div className="min-w-0 space-y-3">
 				{draft.revision !== snapshot.revision && <div className="space-y-2 text-caption">
 					<p className="text-warning" role="status">{t("agentSettings.draftChanged")}</p>
-					<p className="text-settings-muted [overflow-wrap:anywhere]">{t("agentSettings.current")}: {snapshot.settings.model || t("agentSettings.providerDefault")} / {snapshot.settings.effort || t("agentSettings.providerDefault")} / fast {snapshot.settings.fastMode}</p>
+					<p className="text-settings-muted [overflow-wrap:anywhere]">{t("agentSettings.current")}: {snapshot.settings.model || t("agentSettings.providerDefault")} / {snapshot.settings.effort || t("agentSettings.providerDefault")} / {t("agentSettings.fast")} {snapshot.settings.fastMode}</p>
 					<button className="underline" disabled={change.isPending} onClick={() => {
 						const changes = settingsDraftPatch(draft.baseline, draft.selection);
 						setDraft({ baseline: { ...snapshot.settings }, revision: snapshot.revision, selection: {

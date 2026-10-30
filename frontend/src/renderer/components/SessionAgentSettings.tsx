@@ -29,12 +29,15 @@ function SelectionGroup({ label, settings }: { label: string; settings: AgentSet
 	</div>;
 }
 
-function EffectiveValue({ observation }: { observation: components["schemas"]["AgentSettingObservation"] }) {
+function EffectiveValue({ observation, label }: { observation: components["schemas"]["AgentSettingObservation"]; label: string }) {
 	const { t } = useTranslation();
-	return <span title={observation.reason}>
+	return <><span>
 		{observation.state === "known" ? observation.value || t("agentSettings.providerDefault")
 			: observation.state === "not_provided" ? t("agentSettings.notProvided") : t("agentSettings.unknown")}
-	</span>;
+	</span>{observation.reason && <details className="mt-1 text-muted-foreground">
+		<summary className="cursor-pointer underline">{t("agentSettings.observationReason", { field: label })}</summary>
+		<p className="mt-1 [overflow-wrap:anywhere]">{observation.reason}</p>
+	</details>}</>;
 }
 
 /** A saved preference is never substituted for provider confirmation. The
@@ -77,9 +80,9 @@ export function SessionAgentSettings({ session, hostId }: { session: WorkspaceSe
 				<div aria-label={t("agentSettings.effective")} className="space-y-1.5" role="group">
 					<h4 className="font-medium">{t("agentSettings.effective")}</h4>
 					<dl className="space-y-1">
-						<SettingsValue label={t("agentSettings.model")}><EffectiveValue observation={snapshot.effective.model} /></SettingsValue>
-						<SettingsValue label={t("agentSettings.effort")}><EffectiveValue observation={snapshot.effective.effort} /></SettingsValue>
-						<SettingsValue label={t("agentSettings.fast")}><EffectiveValue observation={snapshot.effective.fastMode} /></SettingsValue>
+						<SettingsValue label={t("agentSettings.model")}><EffectiveValue label={t("agentSettings.model")} observation={snapshot.effective.model} /></SettingsValue>
+						<SettingsValue label={t("agentSettings.effort")}><EffectiveValue label={t("agentSettings.effort")} observation={snapshot.effective.effort} /></SettingsValue>
+						<SettingsValue label={t("agentSettings.fast")}><EffectiveValue label={t("agentSettings.fast")} observation={snapshot.effective.fastMode} /></SettingsValue>
 					</dl>
 				</div>
 				{snapshot.writerRecovery && <p className="text-warning [overflow-wrap:anywhere]" role="alert">{t("agentSettings.writerUnconfirmed")}</p>}
@@ -90,7 +93,7 @@ export function SessionAgentSettings({ session, hostId }: { session: WorkspaceSe
 						{snapshot.history?.map((entry) => <li className="space-y-1 py-2 [overflow-wrap:anywhere]" key={entry.id}>
 							<p>{verifiedSettingsActor(entry) ? t("agentSettings.byOrchestrator", { id: verifiedSettingsActor(entry) }) : t(entry.actor.kind === "local_operator_unverified" ? "agentSettings.localOperator" : "agentSettings.unverifiedSource")}</p>
 							<p className="text-muted-foreground">{entry.phase} · {entry.updatedAt}</p>
-							<p>{entry.source.model || t("agentSettings.providerDefault")} / {entry.source.effort || t("agentSettings.providerDefault")} / fast {entry.source.fastMode} → {entry.target.model || t("agentSettings.providerDefault")} / {entry.target.effort || t("agentSettings.providerDefault")} / fast {entry.target.fastMode}</p>
+							<p>{entry.source.model || t("agentSettings.providerDefault")} / {entry.source.effort || t("agentSettings.providerDefault")} / {t("agentSettings.fast")} {entry.source.fastMode} → {entry.target.model || t("agentSettings.providerDefault")} / {entry.target.effort || t("agentSettings.providerDefault")} / {t("agentSettings.fast")} {entry.target.fastMode}</p>
 							{entry.errorCode && <p>{entry.errorCode}</p>}
 							{entry.writerStatus && <p>{t(entry.writerStatus === "stopped" ? "agentSettings.writerStopped" : "agentSettings.writerUnconfirmed")}</p>}
 						</li>)}

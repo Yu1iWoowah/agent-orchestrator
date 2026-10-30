@@ -1,4 +1,5 @@
 {
+	"agentSettings.observationReason": "{{field}} 觀測詳細資料",
 	"agentSettings.fastEffective": "Fast 實際生效值",
 	"agentSettings.preference": "偏好",
 	"agentSettings.unverifiedSource": "未驗證來源",

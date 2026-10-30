@@ -1,4 +1,5 @@
 {
+	"agentSettings.observationReason": "{{field}} observation details",
 	"agentSettings.fastEffective": "Fast effective value",
 	"agentSettings.preference": "Preference",
 	"agentSettings.unverifiedSource": "Unverified source",

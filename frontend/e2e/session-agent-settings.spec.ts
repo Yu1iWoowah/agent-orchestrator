@@ -12,6 +12,15 @@ const test = process.env.AO_E2E_ELECTRON ? base.extend({
 		const app = await electron.launch({ executablePath: require("electron") as string, args: [path.join(__dirname, "support/electron-shell.cjs")], recordVideo: { dir: info.outputPath("video"), size: { width: 1440, height: 960 } } });
 		try {
 			const page = await app.firstWindow();
+			const isolation = await app.evaluate(({ app, BrowserWindow }) => ({
+				electron: process.versions.electron,
+				userData: app.getPath("userData"),
+				noSandbox: app.commandLine.hasSwitch("no-sandbox"),
+				rendererSandbox: BrowserWindow.getAllWindows()[0]?.webContents.getLastWebPreferences().sandbox,
+			}));
+			expect(isolation.noSandbox).toBe(false);
+			expect(isolation.rendererSandbox).toBe(true);
+			await info.attach("electron-isolation", { body: Buffer.from(JSON.stringify(isolation, null, 2)), contentType: "application/json" });
 			page.on("pageerror", (error) => console.error("Electron renderer error:", error.message));
 			page.on("console", (message) => { if (message.type() === "error" && !message.text().includes("Failed to load resource")) console.error("Electron console:", message.text()); });
 			await page.bringToFront(); await use(page);
@@ -128,6 +137,10 @@ test("settings preserve the busy turn, drafts, fast resume and conflict evidence
 	await expect(page.getByTestId("agent-settings-composer")).toContainText("pending-model");
 	await expect(inspector.getByRole("group", { name: "Current selection" })).toContainText("committed-model");
 	await expect(inspector.getByRole("group", { name: "Provider effective values" })).toContainText("Not provided");
+	await inspector.getByText("Fast observation details", { exact: true }).focus();
+	await page.keyboard.press("Enter");
+	await expect(inspector.getByText("provider_not_provided", { exact: true })).toBeVisible();
+	await page.screenshot({ path: info.outputPath("effective-reason-keyboard.png"), fullPage: true });
 	await expect(message).toHaveText("Unsent draft must survive external settings and resume");
 	await page.screenshot({ path: info.outputPath("busy-pending-dark.png"), fullPage: true });
 	await state.apply();
