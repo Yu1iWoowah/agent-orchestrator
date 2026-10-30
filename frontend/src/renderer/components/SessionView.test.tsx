@@ -1381,6 +1381,22 @@ describe("SessionView", () => {
 		picker.remove();
 	});
 
+	it.each([false, true])("hides the native browser while Settings covers the mounted session (popped out: %s)", async (poppedOut) => {
+		render(<SessionView sessionId="sess-1" />);
+		act(() => {
+			useUiStore.getState().setInspectorView("sess-1", "browser");
+			useUiStore.getState().setInspectorOpen("sess-1", true);
+		});
+		await waitFor(() => expect(browserViewOptions.current?.active).toBe(true));
+		if (poppedOut) fireEvent.click(screen.getByRole("button", { name: "pop browser" }));
+		act(() => useUiStore.getState().openGlobalSettings("general"));
+		expect(browserViewOptions.current?.active).toBe(false);
+		expect(document.querySelector(".browser-popout-overlay")).not.toBeInTheDocument();
+		act(() => useUiStore.getState().closeSettings());
+		expect(browserViewOptions.current?.active).toBe(true);
+		if (poppedOut) expect(document.querySelector(".browser-popout-overlay")).toBeInTheDocument();
+	});
+
 	it("ignores session shortcuts while the global Settings page covers the session", async () => {
 		const copy = vi.spyOn(window.ao!.editorHandoff, "copyWorkspacePath").mockResolvedValue(undefined);
 		act(() => useUiStore.getState().setInspectorOpen("sess-1", false));

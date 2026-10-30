@@ -271,6 +271,26 @@ describe("useBrowserView", () => {
 		expect(result.current.viewId).toBe("42:sess-1");
 	});
 
+	it("publishes the visible browser hole in opaque windows and clears it when hidden", async () => {
+		setupBridge();
+		const slot = createSlot();
+		const { result, rerender, unmount } = renderHook(
+			({ active }) => useBrowserView({ sessionId: "hole", active, poppedOut: false }),
+			{ initialProps: { active: true } },
+		);
+		await waitFor(() => expect(result.current.viewId).toBe("42:hole"));
+		act(() => result.current.slotRef(slot));
+		expect(document.documentElement.dataset.browserHole).toBe("true");
+		expect(document.documentElement.style.getPropertyValue("--browser-hole-x")).toBe("12px");
+		expect(document.documentElement.style.getPropertyValue("--browser-hole-h")).toBe("240px");
+		rerender({ active: false });
+		await waitFor(() => expect(document.documentElement.dataset.browserHole).toBeUndefined());
+		rerender({ active: true });
+		await waitFor(() => expect(document.documentElement.dataset.browserHole).toBe("true"));
+		unmount();
+		expect(document.documentElement.dataset.browserHole).toBeUndefined();
+	});
+
 	it("leaves the runtime link state to the Browser panel (#6466)", async () => {
 		const bridge = setupBridge();
 		createSlot();

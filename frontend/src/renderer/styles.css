@@ -5177,7 +5177,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	padding-left: var(--size-titlebar-content-offset);
 }
 
-.browser-popout-titlebar > .browser-panel__address-bar {
+.browser-popout-titlebar > .browser-panel__title-row {
 	position: absolute;
 	left: 50%;
 	width: min(480px, calc(100vw - 32px));
@@ -5188,7 +5188,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	transition: width var(--duration-fast) ease;
 }
 
-.browser-popout-titlebar > .browser-panel__address-bar--editing {
+.browser-popout-titlebar:has(.browser-panel__address-bar--editing) > .browser-panel__title-row {
 	width: min(760px, calc(100vw - 32px));
 }
 
@@ -5196,7 +5196,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	max-width: none;
 }
 
-.browser-popout-titlebar--mac-windowed > .browser-panel__address-bar {
+.browser-popout-titlebar--mac-windowed > .browser-panel__title-row {
 	max-width: calc(100vw - (2 * var(--size-titlebar-content-offset)));
 }
 
@@ -5333,11 +5333,40 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	justify-content: center;
 }
 
-.browser-panel__topbar-host > .browser-panel__address-bar {
+.browser-panel__title-row > .browser-panel__address-bar {
 	flex: 1 1 0;
 }
 
-.browser-panel > .browser-panel__address-bar {
+/* The active page's address is its tab label: one title row, including when
+ * portaled into the inspector or maximized window header. */
+.browser-panel__title-row {
+	display: flex;
+	min-width: 0;
+	width: 100%;
+	align-items: center;
+	gap: var(--space-1);
+	background: var(--bg);
+}
+
+.browser-panel__tab.browser-panel__tab--address {
+	max-width: none;
+	height: var(--size-inspector-tabs);
+	flex: 1 0 150px;
+	align-items: center;
+	background: transparent;
+}
+
+.browser-panel__tab--address > .browser-panel__tab-select {
+	flex: none;
+	padding-inline: var(--space-1);
+}
+
+.browser-panel__tab--address > .browser-panel__address-bar {
+	min-width: 0;
+	flex: 1;
+}
+
+.browser-panel > .browser-panel__title-row {
 	width: 100%;
 	flex: 0 0 var(--size-inspector-tabs);
 	padding: 0 4px;
@@ -5867,11 +5896,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	transition: max-width var(--duration-fast) ease;
 }
 
-.browser-panel > .browser-panel__address-bar--editing .browser-panel__url-wrap {
-	max-width: min(520px, calc(100% - 8px));
-}
-
-.browser-panel__topbar-host > .browser-panel__address-bar--editing .browser-panel__url-wrap {
+.browser-panel__address-bar--editing .browser-panel__url-wrap {
 	max-width: 100%;
 }
 
@@ -6023,9 +6048,9 @@ body:has(#root .platform-linux) > .files-popout-overlay {
  * path remains available for web-only development; these rules remove the
  * opaque paint layers that would otherwise hide the native page behind the
  * shell. Toolbar and controls stay opaque so the app chrome remains readable. */
-html[data-native-browser-composition="true"] body:has(.browser-panel[data-browser-native-page="live"]),
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay),
-html[data-native-browser-composition="true"] #root:has(.browser-panel[data-browser-native-page="live"]) {
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-panel[data-browser-native-page="live"]),
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay),
+html[data-native-browser-composition="true"][data-browser-hole="true"] #root:has(.browser-panel[data-browser-native-page="live"]) {
 	background: transparent;
 }
 
@@ -6034,9 +6059,9 @@ html[data-native-browser-composition="true"] #root:has(.browser-panel[data-brows
  * and this opaque `bg-sidebar` wrapper painted over the live native page
  * whenever an overlay raised the shell. Match it by its own class so every
  * platform is covered. */
-html[data-native-browser-composition="true"] .app-shell-root:has(.browser-panel[data-browser-native-page="live"]),
-html[data-native-browser-composition="true"] .platform-windows:has(.browser-panel[data-browser-native-page="live"]),
-html[data-native-browser-composition="true"] .platform-linux:has(.browser-panel[data-browser-native-page="live"]) {
+html[data-native-browser-composition="true"][data-browser-hole="true"] .app-shell-root:has(.browser-panel[data-browser-native-page="live"]),
+html[data-native-browser-composition="true"][data-browser-hole="true"] .platform-windows:has(.browser-panel[data-browser-native-page="live"]),
+html[data-native-browser-composition="true"][data-browser-hole="true"] .platform-linux:has(.browser-panel[data-browser-native-page="live"]) {
 	background: transparent;
 }
 
@@ -6052,20 +6077,20 @@ html[data-native-browser-composition="true"] .platform-linux:has(.browser-panel[
  * and once the panel is portaled to <body> the panel is no longer a descendant,
  * so `:has()` never matches. Symptom without this line: opening any overlay over
  * a maximized browser panel on macOS blanks the live page to black. */
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .app-shell-root,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .platform-windows,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .platform-linux,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .center-panel-shell,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .center-panel-surface,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root [data-testid="session-detail"],
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .session-split,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .session-inspector,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .session-inspector__body,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root [data-slot="sidebar-container"],
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root [data-slot="sidebar-inner"],
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .dashboard-app-header,
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root .session-topbar-surface {
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .app-shell-root,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .platform-windows,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .platform-linux,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .center-panel-shell,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .center-panel-surface,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root [data-testid="session-detail"],
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .session-split,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .session-inspector,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .session-inspector__body,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root [data-slot="sidebar-container"],
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root [data-slot="sidebar-inner"],
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .dashboard-app-header,
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root .session-topbar-surface {
 	background: transparent !important;
 }
 
@@ -6074,21 +6099,21 @@ html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #
  * the transparent compositor when the shell is raised for a menu portal. The
  * BrowserPanel portal and the Windows titlebar remain outside this wrapper and
  * stay interactive. */
-html[data-native-browser-composition="true"] body:has(.browser-popout-overlay) #root [data-slot="sidebar-wrapper"] {
+html[data-native-browser-composition="true"][data-browser-hole="true"] body:has(.browser-popout-overlay) #root [data-slot="sidebar-wrapper"] {
 	visibility: hidden;
 }
 
-html[data-native-browser-composition="true"] .center-panel-shell--session:has(.browser-panel[data-browser-native-page="live"]),
-html[data-native-browser-composition="true"] .center-panel-shell--session:has(.browser-panel[data-browser-native-page="live"]) > .center-panel-surface,
-html[data-native-browser-composition="true"] [data-testid="session-detail"]:has(.browser-panel[data-browser-native-page="live"]),
-html[data-native-browser-composition="true"] .session-split:has(.browser-panel[data-browser-native-page="live"]) {
+html[data-native-browser-composition="true"][data-browser-hole="true"] .center-panel-shell--session:has(.browser-panel[data-browser-native-page="live"]),
+html[data-native-browser-composition="true"][data-browser-hole="true"] .center-panel-shell--session:has(.browser-panel[data-browser-native-page="live"]) > .center-panel-surface,
+html[data-native-browser-composition="true"][data-browser-hole="true"] [data-testid="session-detail"]:has(.browser-panel[data-browser-native-page="live"]),
+html[data-native-browser-composition="true"][data-browser-hole="true"] .session-split:has(.browser-panel[data-browser-native-page="live"]) {
 	background: transparent;
 }
 
-html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"],
-html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__content,
-html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__body,
-html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__viewport {
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-panel[data-browser-native-page="live"],
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__content,
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__body,
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__viewport {
 	background: transparent !important;
 	box-shadow: none;
 }
@@ -6097,23 +6122,23 @@ html[data-native-browser-composition="true"] .browser-panel[data-browser-native-
  * active, clear only that containing rail so the native page remains visible
  * when the transparent shell is raised for a menu. Other inspector tabs keep
  * their existing surface unchanged. */
-html[data-native-browser-composition="true"] .session-inspector:has(.browser-panel[data-browser-native-page="live"]),
-html[data-native-browser-composition="true"] .session-inspector:has(.browser-panel[data-browser-native-page="live"]) .session-inspector__body,
+html[data-native-browser-composition="true"][data-browser-hole="true"] .session-inspector:has(.browser-panel[data-browser-native-page="live"]),
+html[data-native-browser-composition="true"][data-browser-hole="true"] .session-inspector:has(.browser-panel[data-browser-native-page="live"]) .session-inspector__body,
 /* The element that actually paints is SessionView.tsx's inspector container,
  * which carries an opaque `bg-background` utility. `.session-inspector` alone is
  * NOT enough: that class sits on a `display: contents` wrapper which generates
  * no box, and product-ui's SessionInspectorShellView `<aside>` carries only
  * layout classes. Verified by measuring the live paint stack at the blanked
  * pixel — this container and the app shell root were the only opaque layers. */
-html[data-native-browser-composition="true"] [data-slot="inspector-container"]:has(.browser-panel[data-browser-native-page="live"]) {
+html[data-native-browser-composition="true"][data-browser-hole="true"] [data-slot="inspector-container"]:has(.browser-panel[data-browser-native-page="live"]) {
 	background: transparent;
 }
 
-html[data-native-browser-composition="true"] .browser-popout-overlay {
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-popout-overlay {
 	background: transparent;
 }
 
-html[data-native-browser-composition="true"] .browser-popout-backdrop {
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-popout-backdrop {
 	background: transparent;
 }
 
@@ -6123,7 +6148,7 @@ html[data-native-browser-composition="true"] .browser-popout-backdrop {
  * above — those target ancestors under #root — and leaving it opaque blanked
  * the live page to black on Windows whenever an overlay (tooltip, menu) raised
  * the transparent shell over the native view in a maximized window. */
-html[data-native-browser-composition="true"] .browser-popout-frame {
+html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-popout-frame {
 	background: transparent;
 }
 
@@ -6391,20 +6416,26 @@ html[data-window-translucent="true"] :is(
 	--surface: var(--color-bg-secondary);
 }
 
-/* The single tint, on its own layer under the shell's content. The native
- * browser rules clear .app-shell-root's own background while a page is live,
- * which would drop the tint; this pseudo-element is untouched by them. */
+/* Paint the shell outside the measured native viewport. Clearing whole
+ * ancestors without this plate leaves the header and gutters alpha-zero.
+ * macOS translucency uses the same plate with its existing vibrancy tint. */
+html[data-native-browser-composition="true"] .app-shell-root,
 html[data-window-translucent="true"] .app-shell-root {
 	position: relative;
 	isolation: isolate;
 }
 
+html[data-native-browser-composition="true"] .app-shell-root::before,
 html[data-window-translucent="true"] .app-shell-root::before {
 	content: "";
 	position: absolute;
 	inset: 0;
 	z-index: -1;
 	pointer-events: none;
+	background-color: var(--color-bg-sidebar);
+}
+
+html[data-window-translucent="true"] .app-shell-root::before {
 	background-color: color-mix(in srgb, var(--sidebar) 70%, transparent);
 }
 
@@ -6425,9 +6456,9 @@ html[data-window-translucent="true"] .app-shell-root .ao-startup-screen {
 	visibility: visible;
 }
 
-/* The live page is a native view below the shell. Cut the tint out over its
- * rect (published by useBrowserView) so the page is not tinted. */
-html[data-window-translucent="true"][data-browser-hole="true"]:has(.browser-panel[data-browser-native-page="live"]) .app-shell-root::before {
+/* Leave only the visible native viewport unpainted, including when the shell
+ * is raised for a menu. Hidden Browser panels no longer own a hole. */
+html[data-browser-hole="true"]:has(.browser-panel[data-browser-native-page="live"]) .app-shell-root::before {
 	mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
 	mask-size: 100% 100%, var(--browser-hole-w) var(--browser-hole-h);
 	mask-position: 0 0, var(--browser-hole-x) var(--browser-hole-y);

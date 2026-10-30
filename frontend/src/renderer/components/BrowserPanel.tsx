@@ -10,6 +10,7 @@ import {
 	type FocusEvent,
 	type FormEvent,
 	type KeyboardEvent,
+	type ReactNode,
 	type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
@@ -1092,8 +1093,12 @@ export function BrowserPanelView({
 			</Popover>
 		</form>
 	);
+	// Nav and tab-list events can arrive separately during a tab switch.
+	const addressTabId = tabs.some((tab) => tab.id === activeTabId)
+		? activeTabId : tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id;
 	const browserTabBar = (
 		<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
+			{tabs.length === 0 ? browserAddressBar : null}
 			<DndContext
 				collisionDetection={closestCenter}
 				modifiers={browserTopTabDragModifiers}
@@ -1114,9 +1119,10 @@ export function BrowserPanelView({
 							{tabs.map((tab) => (
 								<SortableBrowserTopTab
 									key={tab.id}
+									addressBar={tab.id === addressTabId ? browserAddressBar : undefined}
 									onClose={handleCloseTab}
 									onSelect={handleSelectTab}
-									selected={tab.id === activeTabId}
+									selected={tab.id === addressTabId}
 									tab={tab}
 								/>
 							))}
@@ -1286,12 +1292,11 @@ export function BrowserPanelView({
 			}}
 			role="tabpanel"
 		>
-			{topbarHost ? createPortal(browserAddressBar, topbarHost) : browserAddressBar}
+			{topbarHost ? createPortal(<div className="browser-panel__title-row">{browserTabBar}</div>, topbarHost) : <div className="browser-panel__title-row">{browserTabBar}</div>}
 			<div
 				className="browser-panel__tab-row"
 				data-testid="browser-tab-row"
 			>
-				{browserTabBar}
 				<div className="browser-panel__toolbar" data-testid="browser-toolbar">
 							{runtimeDisconnected ? (
 								<div className="flex min-w-0 items-center gap-1.5 text-2xs text-destructive" data-testid="browser-runtime-alert" role="alert">
@@ -1831,11 +1836,13 @@ function BrowserControlTooltip({
 
 const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 	tab,
+	addressBar,
 	selected,
 	onSelect,
 	onClose,
 }: {
 	tab: BrowserViewModel["tabs"][number];
+	addressBar?: ReactNode;
 	selected: boolean;
 	onSelect: (tabId: string) => void;
 	onClose: (tabId: string) => void;
@@ -1849,6 +1856,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			className={cn(
 				"browser-panel__tab",
 				selected && "browser-panel__tab--active",
+				addressBar && "browser-panel__tab--address",
 				isDragging && "browser-panel__tab--drag-placeholder",
 			)}
 			data-browser-tab-id={tab.id}
@@ -1860,6 +1868,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 					{...attributes}
 					{...listeners}
 					aria-selected={selected}
+					aria-label={label.title}
 					className="browser-panel__tab-select"
 					onClick={() => void onSelect(tab.id)}
 					role="tab"
@@ -1871,9 +1880,10 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 					) : (
 						<BrowserIcon aria-hidden="true" className="browser-panel__tab-icon" />
 					)}
-					<span className="browser-panel__tab-title">{label.title}</span>
+					{addressBar ? null : <span className="browser-panel__tab-title">{label.title}</span>}
 				</button>
 			</BrowserControlTooltip>
+			{addressBar}
 			<BrowserControlTooltip label={closeLabel}>
 				<button
 					aria-label={closeLabel}

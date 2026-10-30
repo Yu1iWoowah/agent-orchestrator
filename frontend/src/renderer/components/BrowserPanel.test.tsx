@@ -1294,6 +1294,14 @@ describe("BrowserPanel", () => {
 		expect(screen.queryByTestId("browser-tabs-rail")).not.toBeInTheDocument();
 	});
 
+	it("uses the active tab for the address field instead of a second title row", () => {
+		const topbarHost = document.createElement("div");
+		document.body.appendChild(topbarHost);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} topbarHost={topbarHost} />);
+		expect(topbarHost.querySelector('[data-testid="browser-tab-bar"]')).toContainElement(screen.getByTestId("browser-address-bar"));
+		expect(screen.getByTestId("browser-tab-row")).not.toContainElement(screen.getByTestId("browser-tab-bar"));
+	});
+
 	it("does not render a tab-specific agent marker in the tab strip", () => {
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
 		hookState.tabs = [
