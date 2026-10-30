@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -152,12 +153,12 @@ func (m *Manager) admitNewWorkspace(ctx context.Context, cfg ports.WorkspaceConf
 			}
 			return cfg, err
 		}
-		missing, err := workspacePathMissing(path)
+		_, err = os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
 		if err != nil {
 			return cfg, err
-		}
-		if missing {
-			return cfg, nil
 		}
 	}
 	return cfg, fmt.Errorf("no unused managed path is available for a new orchestrator; existing workspaces are retained: %w", admissionErr)

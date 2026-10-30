@@ -107,7 +107,11 @@ Spawn and restore resolve the adapter's managed path without materializing it.
 When an orchestrator's canonical directory has a writer obligation, a new spawn
 uses `<prefix>-orchestrator-<session-id>` and a fresh branch instead. Existing
 candidates are skipped with bounded numeric suffixes (`-2` through `-100`), so a
-filesystem orphan is not silently reused. The adapter
+filesystem orphan is not silently reused. Candidate checks use `Lstat`: any
+existing item, including a dangling symlink, is occupied. Fresh worktree adds
+exclusively claim their new directory before Git runs. Failed-add rollback may
+remove only that attempt's directory while its identity still matches; existing
+or replaced files, symlinks and directories stay untouched. The adapter
 validates that alternate managed path and refuses to reattach an existing
 allocation; selection, admission and creation share the project workspace gate.
 The old worktree and branch remain untouched. Restore/relaunch of a session

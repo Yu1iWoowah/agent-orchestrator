@@ -335,13 +335,20 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 			return ports.WorkspaceInfo{}, err
 		}
 	}
-	baseRef, err := w.addWorktree(ctx, repo, path, cfg.Branch, cfg.BaseBranch, cfg.BaseRef, seedRef, true)
+	var claim os.FileInfo
+	if cfg.FreshBranch || cfg.FreshPath {
+		claim, err = w.claimWorktreePath(path)
+		if err != nil {
+			return ports.WorkspaceInfo{}, err
+		}
+	}
+	baseRef, err := w.addWorktree(ctx, repo, path, cfg.Branch, cfg.BaseBranch, cfg.BaseRef, seedRef, true, claim)
 	if err != nil {
-		if cfg.FreshBranch {
+		if claim != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			info := ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseSHA: seedSHA, BaseRef: cfg.BaseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: repo}
-			remaining, cleanupErr := w.rollbackPreparedAdd(cleanupCtx, info)
+			remaining, cleanupErr := w.rollbackPreparedAdd(cleanupCtx, info, claim)
 			if cleanupErr != nil {
 				return remaining, errors.Join(err, cleanupErr)
 			}
@@ -355,11 +362,52 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseSHA: baseSHA, BaseRef: baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}, nil
 }
 
+// claimWorktreePath creates the leaf exclusively. Pre-existing files, empty
+// directories and dangling symlinks are never adopted by a fresh add attempt.
+func (w *Workspace) claimWorktreePath(path string) (os.FileInfo, error) {
+	validated, err := w.validateManagedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	if validated != path {
+		return nil, fmt.Errorf("%w: path changed after workspace planning: %q", ErrUnsafePath, path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(path, 0o750); err != nil {
+		return nil, fmt.Errorf("gitworktree: cannot claim existing or unavailable path %q: %w", path, err)
+	}
+	return os.Lstat(path)
+}
+
+func checkWorktreePathClaim(path string, claim os.FileInfo) error {
+	current, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // no existing item to remove
+	}
+	if err != nil {
+		return err
+	}
+	if claim == nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(claim, current) {
+		return fmt.Errorf("gitworktree: preserve path whose creation ownership changed %q: %w", path, ports.ErrWorkspaceDirty)
+	}
+	return nil
+}
+
 // rollbackPreparedAdd cleans only the exact registered worktree, without
 // forcing dirty files away, then deletes the branch only at its creation SHA.
-func (w *Workspace) rollbackPreparedAdd(ctx context.Context, info ports.WorkspaceInfo) (ports.WorkspaceInfo, error) {
+func (w *Workspace) rollbackPreparedAdd(ctx context.Context, info ports.WorkspaceInfo, claim os.FileInfo) (ports.WorkspaceInfo, error) {
+	if err := checkWorktreePathClaim(info.Path, claim); err != nil {
+		info.Path = "" // never hand an unowned item to a caller's cleanup retry
+		return info, err
+	}
 	records, err := w.listRecords(ctx, info.RepoPath)
 	if err != nil {
+		return info, err
+	}
+	if err := checkWorktreePathClaim(info.Path, claim); err != nil {
+		info.Path = ""
 		return info, err
 	}
 	if record, ok := findWorktree(records, info.Path); ok {
@@ -377,6 +425,10 @@ func (w *Workspace) rollbackPreparedAdd(ctx context.Context, info ports.Workspac
 		}
 		if nonEmpty {
 			return info, fmt.Errorf("gitworktree: preserve unregistered partial worktree %q: %w", info.Path, ports.ErrWorkspaceDirty)
+		}
+		if err := checkWorktreePathClaim(info.Path, claim); err != nil {
+			info.Path = ""
+			return info, err
 		}
 		if err := os.Remove(info.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return info, err
@@ -520,12 +572,17 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 	}
 	created := make([]workspaceProjectRepo, 0, len(repos))
 	touched := make([]ports.WorkspaceRepoInfo, 0, len(repos))
+	claims := make(map[string]os.FileInfo, len(repos))
 	out := ports.WorkspaceProjectInfo{Worktrees: make([]ports.WorkspaceRepoInfo, 0, len(repos))}
 	fail := func(cause error) (ports.WorkspaceProjectInfo, error) {
 		if cfg.FreshBranch {
-			return w.rollbackWorkspaceProjectPreparation(ctx, out, touched, cause)
+			return w.rollbackWorkspaceProjectPreparation(ctx, out, touched, claims, cause)
 		}
 		for i := len(created) - 1; i >= 0; i-- {
+			if err := checkWorktreePathClaim(created[i].outputPath, created[i].claim); err != nil {
+				cause = errors.Join(cause, err)
+				break
+			}
 			_ = w.forceDestroyPath(ctx, created[i].repoPath, created[i].outputPath)
 		}
 		return ports.WorkspaceProjectInfo{}, cause
@@ -557,6 +614,13 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 		if err == nil {
 			info.BaseSHA = baseSHA
 			if _, ok := existing[repoIndex]; !ok {
+				repo.claim, err = w.claimWorktreePath(repo.outputPath)
+				if err != nil {
+					// Removing our parent would also remove this unowned child.
+					// Preserve the partial inventory for guarded cleanup instead.
+					return out, err
+				}
+				claims[repo.outputPath] = repo.claim
 				if cfg.FreshBranch {
 					touched = append(touched, info)
 				}
@@ -590,7 +654,7 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 	return out, nil
 }
 
-func (w *Workspace) rollbackWorkspaceProjectPreparation(ctx context.Context, out ports.WorkspaceProjectInfo, touched []ports.WorkspaceRepoInfo, cause error) (ports.WorkspaceProjectInfo, error) {
+func (w *Workspace) rollbackWorkspaceProjectPreparation(ctx context.Context, out ports.WorkspaceProjectInfo, touched []ports.WorkspaceRepoInfo, claims map[string]os.FileInfo, cause error) (ports.WorkspaceProjectInfo, error) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	keep := make(map[string]bool, len(out.Worktrees)+len(touched))
@@ -600,9 +664,13 @@ func (w *Workspace) rollbackWorkspaceProjectPreparation(ctx context.Context, out
 	for i := len(touched) - 1; i >= 0; i-- {
 		row := touched[i]
 		info := ports.WorkspaceInfo{Path: row.Path, Branch: row.Branch, BaseSHA: row.CreationSHA, BaseRef: row.BaseRef, RepoPath: row.RepoPath, SessionID: row.SessionID, ProjectID: row.ProjectID}
-		if _, err := w.rollbackPreparedAdd(cleanupCtx, info); err != nil {
+		if remaining, err := w.rollbackPreparedAdd(cleanupCtx, info, claims[row.Path]); err != nil {
 			cause = errors.Join(cause, err)
-			keep[row.Path] = true
+			if remaining.Path == "" {
+				delete(keep, row.Path)
+			} else {
+				keep[row.Path] = true
+			}
 			// A nested child can be ignored by its parent repo. If it is dirty,
 			// the parent may look clean and remove the child's files, so do not
 			// continue teardown toward the root after any child failure.
@@ -1464,7 +1532,7 @@ func (w *Workspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (por
 	if err := w.validateBranch(ctx, repo, recreateBranch); err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
-	baseRef, err := w.addWorktree(ctx, repo, path, recreateBranch, cfg.BaseBranch, cfg.BaseRef, "", false)
+	baseRef, err := w.addWorktree(ctx, repo, path, recreateBranch, cfg.BaseBranch, cfg.BaseRef, "", false, nil)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
@@ -1557,7 +1625,7 @@ func registeredWorktreeDirMissing(rec worktreeRecord) (bool, error) {
 	return false, nil
 }
 
-func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBranch, baseRef, seedRef string, resolveExistingBase bool) (string, error) {
+func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBranch, baseRef, seedRef string, resolveExistingBase bool, claim os.FileInfo) (string, error) {
 	// Refuse early if the branch is already checked out in another worktree:
 	// `git worktree add` will fail, but its stderr leaks through as an opaque
 	// 500. A typed sentinel lets the HTTP layer surface a 409.
@@ -1576,6 +1644,11 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 	force, err := staleRegistrationForPath(records, path)
 	if err != nil {
 		return "", err
+	}
+	if claim != nil {
+		if _, registered := findWorktree(records, path); registered {
+			force = true // this directory was absent before our exclusive claim
+		}
 	}
 
 	localBranch, err := w.refExists(ctx, repo, "refs/heads/"+branch)
@@ -1709,6 +1782,7 @@ func (w *Workspace) addNewBranchWorktree(ctx context.Context, repo, branch, path
 }
 
 type workspaceProjectRepo struct {
+	claim        os.FileInfo
 	name         string
 	relativePath string
 	repoPath     string
@@ -1791,7 +1865,7 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 	}
 	// addWorktree handles both the ordinary new-branch path and a preparation
 	// recovered after a daemon crash left this branch or registration behind.
-	if _, err := w.addWorktree(ctx, repo.repoPath, repo.outputPath, branch, repo.baseBranch, baseRef, seedRef, false); err != nil {
+	if _, err := w.addWorktree(ctx, repo.repoPath, repo.outputPath, branch, repo.baseBranch, baseRef, seedRef, false, repo.claim); err != nil {
 		return "", fmt.Errorf("gitworktree: workspace repo %q worktree add branch %q from %q: %w", repo.name, branch, seedRef, err)
 	}
 	return baseSHA, nil

@@ -301,3 +301,52 @@ func TestOrchestratorFreshPathPublicSpawnHoldsWorkspaceGate(t *testing.T) {
 		t.Fatalf("public spawn did not persist a distinct session-owned path: %+v err=%v", got.rec, got.err)
 	}
 }
+
+func TestOrchestratorFreshPathSkipsDanglingSymlinkAndFile(t *testing.T) {
+	for _, item := range []string{"dangling-symlink", "file"} {
+		t.Run(item, func(t *testing.T) {
+			m, st, ws, _ := newGitTaskPreparationManager(t)
+			project := st.projects["mer"]
+			old, err := ws.Create(t.Context(), ports.WorkspaceConfig{ProjectID: "mer", SessionID: "unknown", Kind: domain.KindOrchestrator, SessionPrefix: sessionPrefix(project), Branch: "ao/old", BaseBranch: "main"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			st.sessions["unknown"] = domain.SessionRecord{ID: "unknown", ProjectID: "mer", Kind: domain.KindOrchestrator, IsTerminated: true, Metadata: domain.SessionMetadata{WorkspacePath: old.Path}}
+			m.store = abandonedWorkspaceStore{st}
+			candidate, err := ws.ResolveWorkspacePath(t.Context(), ports.WorkspaceConfig{ProjectID: "mer", SessionID: "replacement", Kind: domain.KindOrchestrator, SessionPrefix: sessionPrefix(project), FreshPath: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if item == "dangling-symlink" {
+				if err := os.Symlink("missing-target", candidate); err != nil {
+					if errors.Is(err, os.ErrPermission) {
+						t.Skipf("symlinks unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(candidate, []byte("existing data"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Lstat(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, _, spawnErr := m.createSessionWorkspace(t.Context(), project, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindOrchestrator}, "replacement", old.Branch, nil)
+			after, statErr := os.Lstat(candidate)
+			if spawnErr != nil || statErr != nil || !os.SameFile(before, after) || next.Path == candidate || !strings.HasSuffix(next.Path, "-2") {
+				t.Fatalf("existing candidate must be untouched and skipped: item=%s next=%+v spawnErr=%v Lstat=%v", item, next, spawnErr, statErr)
+			}
+			if item == "dangling-symlink" {
+				target, err := os.Readlink(candidate)
+				if err != nil || target != "missing-target" {
+					t.Fatalf("existing symlink changed: Readlink=%q err=%v", target, err)
+				}
+			} else {
+				data, err := os.ReadFile(candidate)
+				if err != nil || string(data) != "existing data" {
+					t.Fatalf("existing file changed: %q %v", data, err)
+				}
+			}
+		})
+	}
+}
