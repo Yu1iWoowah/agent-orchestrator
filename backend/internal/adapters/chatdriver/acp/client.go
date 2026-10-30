@@ -591,6 +591,12 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 	if c.captureReplayUpdate(params) {
 		return nil
 	}
+	c.mu.Lock()
+	ignore := c.ignorePromptResult
+	c.mu.Unlock()
+	if ignore {
+		return nil
+	}
 	return c.processUpdate(params)
 }
 
@@ -600,6 +606,11 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 func (c *conversation) handleNotification(method string, params json.RawMessage) bool {
 	var err error
 	switch method {
+	case "_claude/sdkMessage":
+		if !c.claudeBackgroundTurns {
+			return false
+		}
+		err = c.claudeBackgroundEvent(params)
 	case acpsdk.ClientMethodSessionUpdate:
 		var update acpsdk.SessionNotification
 		if err = json.Unmarshal(params, &update); err == nil {

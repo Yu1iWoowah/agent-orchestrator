@@ -3199,6 +3199,9 @@ func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, project
 		"threadState":            event.ThreadState,
 		"mcpServers":             event.MCPServers,
 	}
+	if event.ProviderInitiated {
+		record["providerInitiated"] = true
+	}
 	if c.harness == domain.HarnessCodex {
 		// Codex account identity and subscription capacity are daemon-memory
 		// account state. Conversation provider archives must not become a second
@@ -3289,7 +3292,7 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		c.mu.Unlock()
 		if event.ProviderTurnID != "" {
 			rootConversation := event.ProviderConversationID == "" || event.ProviderConversationID == c.conv.ProviderConversationID()
-			if dispatchingTurnID != "" && rootConversation {
+			if dispatchingTurnID != "" && rootConversation && !event.ProviderInitiated {
 				if err := c.store.BindTurnToProvider(ctx, dispatchingTurnID, event.ProviderTurnID, now); err != nil {
 					return fmt.Errorf("bind early provider-started turn %s: %w", event.ProviderTurnID, err)
 				}
@@ -3308,6 +3311,13 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 				if adoptErr != nil {
 					return fmt.Errorf("adopt provider-started turn %s: %w", event.ProviderTurnID, adoptErr)
 				}
+			}
+			if event.ProviderInitiated {
+				return c.store.UpsertActivity(ctx, c.conversation.ID, event.ProviderTurnID, domain.ConversationActivity{
+					ID: c.newID(), ProviderItemID: "harness-trigger:" + event.ProviderTurnID,
+					Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted,
+					Summary: "Harness-triggered turn", Detail: []byte(`{"event":"harness_triggered"}`),
+				}, now)
 			}
 		}
 		return nil

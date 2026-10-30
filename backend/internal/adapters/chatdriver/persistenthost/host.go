@@ -62,6 +62,11 @@ const (
 	// ACPPromptAckMethod acknowledges that AO durably committed a replayed prompt
 	// result, allowing the host to discard its prompt journal.
 	ACPPromptAckMethod = "_ao/persistent_prompt_ack"
+	// ACPUnpromptedAckMethod releases unsolicited frames through a committed
+	// terminal event, without releasing any in-flight prompt's journal.
+	ACPUnpromptedAckMethod = "_ao/persistent_unprompted_ack"
+	// ACPUnpromptedMetaKey marks notifications emitted outside session/prompt.
+	ACPUnpromptedMetaKey = "ao.unprompted"
 	// ACPInteractionCommandMethod records a user interaction decision in the host
 	// before the daemon releases the blocked ACP responder.
 	ACPInteractionCommandMethod = "_ao/persistent_interaction_command"
@@ -126,13 +131,14 @@ type PreparedProvider struct {
 // ACPState is the connection-scoped state needed to reconstruct an ACP client
 // without initializing or resuming the same live provider a second time.
 type ACPState struct {
-	InitialPermissions   string          `json:"initialPermissions,omitempty"`
-	InitializeResult     json.RawMessage `json:"initializeResult,omitempty"`
-	SessionResult        json.RawMessage `json:"sessionResult,omitempty"`
-	SessionID            string          `json:"sessionId,omitempty"`
-	ActivePrompt         bool            `json:"activePrompt,omitempty"`
-	ActiveCompaction     bool            `json:"activeCompaction,omitempty"`
-	PendingResultEventID string          `json:"pendingResultEventId,omitempty"`
+	InitialPermissions     string          `json:"initialPermissions,omitempty"`
+	InitializeResult       json.RawMessage `json:"initializeResult,omitempty"`
+	SessionResult          json.RawMessage `json:"sessionResult,omitempty"`
+	SessionID              string          `json:"sessionId,omitempty"`
+	ActivePrompt           bool            `json:"activePrompt,omitempty"`
+	ActiveCompaction       bool            `json:"activeCompaction,omitempty"`
+	PendingResultEventID   string          `json:"pendingResultEventId,omitempty"`
+	RetainUnpromptedEvents bool            `json:"retainUnpromptedEvents,omitempty"`
 }
 
 // Transport is one authenticated attachment to a persistent provider host.

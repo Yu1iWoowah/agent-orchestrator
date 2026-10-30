@@ -40,6 +40,7 @@ type acpServerRequest struct {
 	requestID   string
 	frame       []byte
 	promptOwned bool
+	unprompted  bool
 }
 
 type acpInteractionCommand struct {
@@ -47,6 +48,7 @@ type acpInteractionCommand struct {
 	canonical   string
 	params      json.RawMessage
 	promptOwned bool
+	unprompted  bool
 }
 
 type acpReplayKind uint8
@@ -55,12 +57,14 @@ const (
 	acpReplayFrame acpReplayKind = iota
 	acpReplayRequest
 	acpReplayCommand
+	acpReplayResult
 )
 
 type acpReplayEntry struct {
-	kind acpReplayKind
-	key  string
-	span acpJournalSpan
+	kind       acpReplayKind
+	key        string
+	span       acpJournalSpan
+	unprompted bool
 }
 
 type acpClientFrames struct {
@@ -84,6 +88,7 @@ type acpRelay struct {
 	promptReplay      []acpReplayEntry
 	state             ACPState
 	promptJournal     *acpPromptJournal
+	unpromptedJournal *acpPromptJournal
 	promptResult      []byte
 	cancelRequested   bool
 	// lastActivityAt stamps the last adapter output, prompt registration, or
@@ -104,12 +109,18 @@ func newACPRelay(ctx context.Context, journalPath string) (*acpRelay, error) {
 	if err != nil {
 		return nil, err
 	}
+	unprompted, err := openACPPromptJournal(ctx, journalPath+".unprompted")
+	if err != nil {
+		_ = journal.close(ctx)
+		return nil, err
+	}
 	return &acpRelay{
 		identity: identity,
 		pending:  make(map[string]acpClientRequest), serverRequests: make(map[string]acpServerRequest),
-		commands:         make(map[string]acpInteractionCommand),
-		abandonedPrompts: make(map[string]struct{}),
-		promptJournal:    journal,
+		commands:          make(map[string]acpInteractionCommand),
+		abandonedPrompts:  make(map[string]struct{}),
+		promptJournal:     journal,
+		unpromptedJournal: unprompted,
 	}, nil
 }
 
@@ -124,7 +135,15 @@ func (r *acpRelay) replayTo(ctx context.Context, dst io.Writer) error {
 	for _, entry := range r.promptReplay {
 		switch entry.kind {
 		case acpReplayFrame:
-			if err := r.promptJournal.replayTo(ctx, dst, entry.span); err != nil {
+			journal := r.promptJournal
+			if entry.unprompted {
+				journal = r.unpromptedJournal
+			}
+			if err := journal.replayTo(ctx, dst, entry.span); err != nil {
+				return err
+			}
+		case acpReplayResult:
+			if _, err := dst.Write(r.promptResult); err != nil {
 				return err
 			}
 		case acpReplayRequest:
@@ -159,10 +178,6 @@ func (r *acpRelay) replayTo(ctx context.Context, dst io.Writer) error {
 			return err
 		}
 	}
-	if len(r.promptResult) > 0 {
-		_, err := dst.Write(r.promptResult)
-		return err
-	}
 	return nil
 }
 
@@ -191,7 +206,29 @@ func (r *acpRelay) replayInteractionCommand(
 	return err
 }
 
-func (r *acpRelay) close(ctx context.Context) error { return r.promptJournal.close(ctx) }
+func (r *acpRelay) close(ctx context.Context) error {
+	return errors.Join(r.promptJournal.close(ctx), r.unpromptedJournal.close(ctx))
+}
+
+// Prompt ACK/reset must preserve frames that arrived independently of a prompt.
+func (r *acpRelay) clearPromptReplay() {
+	retained := r.promptReplay[:0]
+	for _, entry := range r.promptReplay {
+		if entry.unprompted {
+			retained = append(retained, entry)
+		}
+	}
+	r.promptReplay = retained
+	commands := r.commandOrder[:0]
+	for _, id := range r.commandOrder {
+		if r.commands[id].unprompted {
+			commands = append(commands, id)
+		} else {
+			delete(r.commands, id)
+		}
+	}
+	r.commandOrder = commands
+}
 
 func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uint64) (acpClientFrames, error) {
 	var envelope map[string]json.RawMessage
@@ -200,6 +237,47 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 	}
 	var method string
 	_ = json.Unmarshal(envelope["method"], &method)
+	if method == ACPUnpromptedAckMethod {
+		var params struct {
+			EventID string `json:"eventId"`
+		}
+		_ = json.Unmarshal(envelope["params"], &params)
+		through := -1
+		for i, entry := range r.promptReplay {
+			if entry.unprompted && entry.key == params.EventID {
+				through = i
+				break
+			}
+		}
+		if through >= 0 {
+			retained := r.promptReplay[:0]
+			for i, entry := range r.promptReplay {
+				if !entry.unprompted || i > through {
+					retained = append(retained, entry)
+				} else if entry.kind == acpReplayCommand {
+					delete(r.commands, entry.key)
+				}
+			}
+			r.promptReplay = retained
+			order := r.commandOrder[:0]
+			for _, id := range r.commandOrder {
+				if _, exists := r.commands[id]; exists {
+					order = append(order, id)
+				}
+			}
+			r.commandOrder = order
+			remaining := false
+			for _, entry := range retained {
+				remaining = remaining || entry.unprompted
+			}
+			if !remaining {
+				if err := r.unpromptedJournal.reset(ctx); err != nil {
+					return acpClientFrames{}, err
+				}
+			}
+		}
+		return acpClientFrames{}, nil
+	}
 	if method == ACPPromptAckMethod {
 		var params struct {
 			EventID string `json:"eventId"`
@@ -211,9 +289,7 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 			}
 			r.promptResult = nil
 			r.state.PendingResultEventID = ""
-			r.commands = make(map[string]acpInteractionCommand)
-			r.commandOrder = nil
-			r.promptReplay = nil
+			r.clearPromptReplay()
 		}
 		return acpClientFrames{}, nil
 	}
@@ -242,6 +318,14 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 	if method == "session/prompt" && (r.state.ActivePrompt || r.state.PendingResultEventID != "") {
 		return acpClientFrames{client: rpcErrorFrame(id, -32602, "previous ACP prompt is active or not acknowledged")}, nil
 	}
+	if method == "session/new" || method == "session/load" || method == "session/resume" {
+		var params struct {
+			Meta map[string]any `json:"_meta"`
+		}
+		if json.Unmarshal(envelope["params"], &params) == nil {
+			r.state.RetainUnpromptedEvents, _ = params.Meta["ao.retainUnpromptedEvents"].(bool)
+		}
+	}
 	r.nextRequestID++
 	providerID, _ := json.Marshal(r.nextRequestID)
 	r.pending[string(providerID)] = acpClientRequest{
@@ -259,9 +343,7 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 			return acpClientFrames{}, err
 		}
 		r.promptResult = nil
-		r.commands = make(map[string]acpInteractionCommand)
-		r.commandOrder = nil
-		r.promptReplay = nil
+		r.clearPromptReplay()
 	}
 	return acpClientFrames{provider: marshalFrame(envelope, frame)}, nil
 }
@@ -299,11 +381,12 @@ func (r *acpRelay) acceptInteractionCommand(
 		eventID: r.newEventID(), canonical: canonical,
 		params:      append(json.RawMessage(nil), params...),
 		promptOwned: request.promptOwned,
+		unprompted:  request.unprompted,
 	}
 	r.commands[identity.RequestID] = command
 	r.commandOrder = append(r.commandOrder, identity.RequestID)
 	if command.promptOwned {
-		r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayCommand, key: identity.RequestID})
+		r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayCommand, key: identity.RequestID, unprompted: command.unprompted})
 	}
 	return acpClientFrames{client: rpcResultFrame(id, map[string]string{"eventId": command.eventID})}, nil
 }
@@ -351,20 +434,26 @@ func (r *acpRelay) providerFrame(
 	if method != "" {
 		if len(id) > 0 && string(id) != "null" {
 			rewritten, key, created := r.providerRequest(envelope, frame)
-			if created && r.state.ActivePrompt {
-				r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayRequest, key: key})
+			if created && (r.state.ActivePrompt || r.state.RetainUnpromptedEvents) {
+				r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayRequest, key: key, unprompted: !r.state.ActivePrompt})
 			}
 			return rewritten, true, nil
 		}
-		if r.state.ActivePrompt {
+		if r.state.ActivePrompt || r.state.RetainUnpromptedEvents {
 			eventID := r.newEventID()
 			injectMeta(envelope, ACPEventIDMetaKey, eventID)
+			unprompted := !r.state.ActivePrompt
+			journal := r.promptJournal
+			if unprompted {
+				journal = r.unpromptedJournal
+				injectMeta(envelope, ACPUnpromptedMetaKey, "true")
+			}
 			rewritten := marshalFrame(envelope, frame)
-			span, err := r.promptJournal.append(ctx, rewritten)
+			span, err := journal.append(ctx, rewritten)
 			if err != nil {
 				return nil, false, err
 			}
-			r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayFrame, span: span})
+			r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayFrame, span: span, key: eventID, unprompted: unprompted})
 			if !attached {
 				return nil, true, nil
 			}
@@ -395,6 +484,7 @@ func (r *acpRelay) providerFrame(
 		injectResultMeta(envelope, ACPEventIDMetaKey, eventID)
 		rewritten := rewriteResponseID(envelope, request.clientID, frame)
 		r.promptResult = promptResultNotification(envelope, eventID)
+		r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayResult})
 		r.state.PendingResultEventID = eventID
 		if !attached {
 			return nil, true, nil
@@ -466,7 +556,8 @@ func (r *acpRelay) providerRequest(
 	if request.requestID == "" {
 		r.nextInteractionID++
 		request.requestID = fmt.Sprintf("acp-request:%s:%d", r.identity, r.nextInteractionID)
-		request.promptOwned = r.state.ActivePrompt
+		request.promptOwned = r.state.ActivePrompt || r.state.RetainUnpromptedEvents
+		request.unprompted = !r.state.ActivePrompt
 		r.serverOrder = append(r.serverOrder, key)
 		created = true
 	}

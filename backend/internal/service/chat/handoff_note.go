@@ -61,9 +61,17 @@ func chatHandoffTurns(turns []domain.ConversationTurn, messages []domain.Convers
 	}
 	var markers []marker
 	var firstSource domain.AgentHarness
+	triggeredTurns := make(map[string]bool)
 	for _, activity := range activities {
 		var detail providerSwitchActivityDetail
-		if activity.Kind != domain.ActivityKindSystem || json.Unmarshal(activity.Detail, &detail) != nil || detail.Event != "provider_switch" {
+		if activity.Kind != domain.ActivityKindSystem || json.Unmarshal(activity.Detail, &detail) != nil {
+			continue
+		}
+		if detail.Event == "harness_triggered" {
+			triggeredTurns[activity.TurnID] = true
+			continue
+		}
+		if detail.Event != "provider_switch" {
 			continue
 		}
 		if len(markers) == 0 {
@@ -109,7 +117,10 @@ func chatHandoffTurns(turns []domain.ConversationTurn, messages []domain.Convers
 		}
 	}
 	complete := make([]*exchange, 0, len(exchanges))
-	for _, pair := range exchanges {
+	for id, pair := range exchanges {
+		if pair.user == nil && pair.assistant != nil && triggeredTurns[id] {
+			pair.user = &domain.ConversationMessage{Text: "[Harness-triggered turn]", Sequence: pair.assistant.Sequence, CreatedAt: pair.assistant.CreatedAt}
+		}
 		if pair.user != nil && pair.assistant != nil && strings.TrimSpace(pair.user.Text) != "" {
 			complete = append(complete, pair)
 		}

@@ -154,7 +154,11 @@ type conversation struct {
 	// historyUserChunkIsMessage: see Config.HistoryUserChunkIsMessage.
 	historyUserChunkIsMessage bool
 	// plansSpanTurns: see Config.PlansSpanTurns.
-	plansSpanTurns bool
+	plansSpanTurns           bool
+	claudeBackgroundTurns    bool
+	backgroundTurn           string
+	backgroundTerminalEvents map[string]bool
+	promptFinished           chan struct{}
 	// preamble is standing context attached to the first prompt that actually
 	// reaches the provider. It is the delivery channel for agents that accept no
 	// system-prompt launch flag and ignore session/new _meta but do execute
@@ -428,15 +432,18 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 		return nil
 	}
 	durableBusy := strings.TrimSpace(providerTurnID) != ""
+	backgroundBusy := c.claudeBackgroundTurns && c.liveState.RetainUnpromptedEvents && strings.HasPrefix(providerTurnID, claudeBackgroundTurnPrefix)
 	switch {
 	case c.liveState.ActivePrompt && !durableBusy:
 		return fmt.Errorf("%w: ACP host has an active prompt but no durable running turn",
 			ports.ErrChatRecoveryInconclusive)
-	case durableBusy && !c.liveState.ActivePrompt && c.liveState.PendingResultEventID == "":
+	case durableBusy && !c.liveState.ActivePrompt && c.liveState.PendingResultEventID == "" && !backgroundBusy:
 		return fmt.Errorf("%w: durable turn %q is running but the ACP host is idle",
 			ports.ErrChatRecoveryInconclusive, providerTurnID)
-	case c.liveState.PendingResultEventID != "" && !durableBusy:
+	case c.liveState.PendingResultEventID != "" && (!durableBusy || backgroundBusy):
 		// The old controller committed the terminal event but died before its ACK.
+		// A newer durable background turn also proves the preceding prompt settled:
+		// its lifecycle is projected in wire order after the prompt completion.
 		// The replay is already queued on this socket, so acknowledge it and ignore
 		// that one private completion after opening the reader gate.
 		c.mu.Lock()
@@ -452,6 +459,9 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 	c.mu.Lock()
 	if durableBusy {
 		c.activeTurn = providerTurnID
+		if backgroundBusy {
+			c.backgroundTurn = providerTurnID
+		}
 		if c.liveState.ActiveCompaction {
 			c.compactingTurnID = providerTurnID
 			c.compactionBefore = c.contextTokens
@@ -735,6 +745,7 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 		c.preambleSpent = true
 	}
 	c.activeTurn = turn.id
+	c.promptFinished = make(chan struct{})
 	c.settlingTurn = ""
 	turnCtx, cancel := context.WithCancel(context.Background())
 	c.turnCancel = cancel
@@ -901,6 +912,10 @@ func (c *conversation) finishPrompt(
 		if c.interrupt == interrupt {
 			c.interrupt = nil
 		}
+	}
+	if c.promptFinished != nil {
+		close(c.promptFinished)
+		c.promptFinished = nil
 	}
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
@@ -1251,7 +1266,17 @@ func (c *conversation) closeProviderWithProof(terminate, closeSession, replaceme
 func (c *conversation) AcknowledgeProviderEvent(ctx context.Context, providerEventID string) error {
 	c.mu.Lock()
 	terminal := c.terminalEventID
+	background := c.backgroundTerminalEvents[providerEventID]
 	c.mu.Unlock()
+	if background && c.proc.terminate != nil {
+		if err := c.conn.NotifyExtension(ctx, persistenthost.ACPUnpromptedAckMethod, map[string]string{"eventId": providerEventID}); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		delete(c.backgroundTerminalEvents, providerEventID)
+		c.mu.Unlock()
+		return nil
+	}
 	if providerEventID == "" || providerEventID != terminal || c.proc.terminate == nil {
 		return nil
 	}
