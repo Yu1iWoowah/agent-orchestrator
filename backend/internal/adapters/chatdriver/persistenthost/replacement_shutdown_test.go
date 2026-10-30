@@ -6,8 +6,50 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
+	"reflect"
+	"syscall"
 	"testing"
 )
+
+func TestReplacementShutdownUsesPositiveJobProof(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		platform   string
+		cleanupErr error
+		waitErr    error
+		treeErr    error
+		confirmed  bool
+		order      []string
+	}{
+		{name: "Windows reaped handle", platform: "windows", cleanupErr: syscall.EINVAL, confirmed: true, order: []string{"tree", "wait"}},
+		{name: "Windows arbitrary kill failure", platform: "windows", cleanupErr: errors.New("process access denied"), confirmed: true, order: []string{"tree", "wait"}},
+		{name: "Windows wait failure after job proof", platform: "windows", waitErr: errors.New("process wait handle released"), confirmed: true, order: []string{"tree", "wait"}},
+		{name: "Windows active job", platform: "windows", treeErr: ErrOwnershipInconclusive, order: []string{"tree"}},
+		{name: "Windows job close failure", platform: "windows", cleanupErr: syscall.EINVAL, treeErr: errors.New("job close failed"), order: []string{"tree"}},
+		{name: "Unix cleanup failure", platform: "linux", cleanupErr: syscall.EINVAL, order: []string{"wait", "tree"}},
+		{name: "Unix wait failure", platform: "darwin", waitErr: errors.New("wait failed"), order: []string{"wait", "tree"}},
+		{name: "Unix exit code", platform: "linux", waitErr: &exec.ExitError{}, confirmed: true, order: []string{"wait", "tree"}},
+		{name: "Unix group still alive", platform: "linux", treeErr: ErrOwnershipInconclusive, order: []string{"wait", "tree"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var order []string
+			response := confirmedProviderShutdown(tc.platform, tc.cleanupErr, func() error {
+				order = append(order, "wait")
+				return tc.waitErr
+			}, func(verify bool) error {
+				if !verify {
+					t.Fatal("cleanup was not asked for a positive stop proof")
+				}
+				order = append(order, "tree")
+				return tc.treeErr
+			})
+			if response.OK != tc.confirmed || response.ProviderStopped != tc.confirmed || !reflect.DeepEqual(order, tc.order) {
+				t.Fatalf("confirmation=%+v cleanup order=%v; want confirmed=%t order=%v", response, order, tc.confirmed, tc.order)
+			}
+		})
+	}
+}
 
 func TestReplacementShutdownRequiresExistingMatchingHost(t *testing.T) {
 	ctx := context.Background()

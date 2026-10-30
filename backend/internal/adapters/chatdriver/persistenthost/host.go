@@ -799,22 +799,38 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 	_ = listener.Close()
-	waitErr := wait()
 	h.mu.Lock()
 	h.finishing = true
 	confirmation := h.stopConfirmation
 	h.mu.Unlock()
 	if confirmation != nil {
-		cleanupErr = errors.Join(cleanupErr, closeProviderTree(true))
-		var exitErr *exec.ExitError
-		if waitErr != nil && !errors.As(waitErr, &exitErr) {
-			cleanupErr = errors.Join(cleanupErr, waitErr)
-		}
+		response := confirmedProviderShutdown(runtime.GOOS, cleanupErr, wait, closeProviderTree)
 		_ = confirmation.SetWriteDeadline(time.Now().Add(handshakeTimeout))
-		_ = json.NewEncoder(confirmation).Encode(helloResponse{OK: cleanupErr == nil, ProviderStopped: cleanupErr == nil})
+		_ = json.NewEncoder(confirmation).Encode(response)
 		_ = confirmation.Close()
+	} else {
+		_ = wait()
 	}
 	return runErr
+}
+
+func confirmedProviderShutdown(platform string, cleanupErr error, wait func() error, closeTree func(bool) error) helloResponse {
+	if platform == "windows" {
+		// Successful verification proves zero active processes and a closed
+		// Job Object. Process-handle errors cannot invalidate that proof.
+		if err := closeTree(true); err != nil {
+			return helloResponse{}
+		}
+		_ = wait()
+		return helloResponse{OK: true, ProviderStopped: true}
+	}
+	waitErr := wait()
+	cleanupErr = errors.Join(cleanupErr, closeTree(true))
+	var exitErr *exec.ExitError
+	if waitErr != nil && !errors.As(waitErr, &exitErr) {
+		cleanupErr = errors.Join(cleanupErr, waitErr)
+	}
+	return helloResponse{OK: cleanupErr == nil, ProviderStopped: cleanupErr == nil}
 }
 
 type host struct {

@@ -150,9 +150,9 @@ func killProviderProcess(ctx context.Context, cmd *exec.Cmd) error {
 	kill := aoprocess.CommandContext(ctx, "taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
 	if err := kill.Run(); err != nil {
 		err = cmd.Process.Kill()
-		if errors.Is(err, os.ErrProcessDone) {
-			// Wait may already have reaped the bridge. The subsequent Job
-			// Object confirmation still proves every descendant has stopped.
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.EINVAL) {
+			// Windows Wait releases the process handle; Kill then returns EINVAL.
+			// This is not stop proof: confirmed shutdown still verifies the Job.
 			return nil
 		}
 		return err
