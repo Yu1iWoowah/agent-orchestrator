@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,30 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	replacement "github.com/aoagents/agent-orchestrator/backend/internal/service/orchestratorreplacement"
 )
+
+func TestReplacementAdmissionExposesCorruptActiveIdentity(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	op, err := f.svc.Accept(ctx, f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", filepath.Join(f.store.dataDir, "ao.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`UPDATE orchestrator_replacements SET state_json = json_set(state_json, '$.unknownCorruptFact', 1) WHERE id = ?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	request := f.request
+	request.OperationKey = "33333333-3333-4333-8333-333333333333"
+	_, err = f.svc.Accept(ctx, request)
+	var api *apierr.Error
+	if !errors.As(err, &api) || api.Code != "ORCHESTRATOR_REPLACEMENT_STATE_UNVERIFIED" || !strings.Contains(fmt.Sprint(api.Details), op.ID) {
+		t.Fatalf("corrupt active operation cannot be located: %v", err)
+	}
+}
 
 type operatorService interface {
 	Diagnose(context.Context, string) (domain.ReplacementDiagnostic, error)

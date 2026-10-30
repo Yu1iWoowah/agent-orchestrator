@@ -207,8 +207,16 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 	return controllerHandoffInterfaceInterrupt
 }
 
+type replacementReplayProof struct {
+	owner              domain.SessionControllerOwner
+	capabilityVerifier string
+}
+
 // Controller drives one Chat session.
 type Controller struct {
+	// Immutable after publication; belongs only to this successfully replayed
+	// controller, never to a future controller rebuilt from startConfigs.
+	strictReplacementReplay     *replacementReplayProof
 	sessionID                   domain.SessionID
 	reviewID                    string
 	conversation                domain.ConversationRecord

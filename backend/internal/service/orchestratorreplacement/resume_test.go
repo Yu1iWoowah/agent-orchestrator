@@ -134,11 +134,7 @@ func TestReplacementNativeResumePersistsExactAfterOwnerAndFailsClosed(t *testing
 				return observed, nil
 			}
 			if result == "crash before resume" || result == "crash after resume" {
-				var crash any
-				func() { defer func() { crash = recover() }(); _, _ = x.service().Advance(ctx, x.operation.ID) }()
-				if crash == nil {
-					t.Fatal("native resume crash boundary not reached")
-				}
+				assertReplacementPanicQuarantined(t, x.service(), x.operation.ID)
 			}
 			op, err := x.service().Advance(ctx, x.operation.ID)
 			if err != nil {
@@ -231,11 +227,7 @@ func TestReplacementResumeStopIntentAndReceiptSurviveCallerLoss(t *testing.T) {
 				t.Fatal("missing independent stop intent", intent.Phase, err)
 			}
 			if loss == "after stop" {
-				var crash any
-				func() { defer func() { crash = recover() }(); _, _ = x.service().Advance(ctx, intent.ID) }()
-				if crash != "lost successor stop receipt" {
-					t.Fatal("wrong stop crash", crash)
-				}
+				assertReplacementPanicQuarantined(t, x.service(), intent.ID)
 			}
 			result, err := x.service().Advance(ctx, intent.ID)
 			if err != nil {

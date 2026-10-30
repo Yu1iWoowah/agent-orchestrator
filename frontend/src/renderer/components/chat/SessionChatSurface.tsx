@@ -1,6 +1,7 @@
 import type { OpenFileAnnotation } from "../../../shared/chat-file-reference";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useOrchestratorHandoff } from "../../hooks/useOrchestratorHandoff";
 import { agentLabel } from "../../lib/agent-options";
 import { useIndependentSideChats } from "./IndependentSideChats";
 import type { ChatDraftExcerptReference } from "../../lib/chat-drafts";
@@ -204,6 +205,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 }) {
 	const { t } = useTranslation();
 	const uiSessionId = sessionUiKey(session.id, hostId);
+	const handoff = useOrchestratorHandoff({ projectId: session.workspaceId, sourceSessionId: session.id, hostId });
 	const {
 		snapshot: queriedSnapshot,
 		isLoading,
@@ -817,6 +819,12 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				onChooseConfigOption={configOptions.setOption}
 				configOptionPending={configOptions.pending || commands.choosingSettings}
 				configOptionError={controllerCatalogsEnabled ? configOptions.error : undefined}
+				onHandoff={session.kind === "orchestrator" && session.provider === "claude-code" && session.mode === "chat" && !hostId && !session.cloud && session.isTerminated !== true && !newWorkDisabled ? handoff.request : undefined}
+				handoffReceipt={handoff.receipt ? <div role="status" className="rounded-md border border-border bg-surface px-3 py-2 text-xs">
+					<p>{t(handoff.receipt.phase === "cancelled" ? "chat.handoff.cancelled" : handoff.receipt.phase === "rejected" ? "chat.handoff.rejected" : handoff.receipt.phase === "completed" ? "chat.handoff.completed" : handoff.receipt.phase === "recovery_required" ? "chat.handoff.recovery" : "chat.handoff.accepted")}</p>
+					<p className="mt-1 text-muted-foreground">{t("chat.handoff.statusHint")}</p>
+					<code className="block break-all select-text">{handoff.receipt.readCommand}</code>
+				</div> : undefined}
 				onCompact={commands.compact}
 				compacting={commands.compacting}
 				compactUnavailable={commands.compactUnavailable}

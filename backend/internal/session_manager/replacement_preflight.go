@@ -10,6 +10,7 @@ import (
 )
 
 type replacementChatPreflight interface {
+	replacementResumeLookup
 	PreflightReplacementChat(context.Context, domain.AgentHarness, ports.PermissionMode) error
 }
 

@@ -3,6 +3,7 @@ package orchestratorreplacement_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -38,6 +39,30 @@ func TestReplacementReconcileResumesPersistedOperation(t *testing.T) {
 	after, err := restarted.Get(ctx, op.ID)
 	if err != nil || after.Revision != got.Revision {
 		t.Fatal("cancelled reconcile changed operation", err)
+	}
+}
+
+func TestReplacementAdvanceContainsPanicAndRetainsOperatorBoundary(t *testing.T) {
+	x := preparedExportFixture(t)
+	f, svc := x.f, x.service()
+	ctx := context.Background()
+	x.advanceUntil(t, func(op domain.OrchestratorReplacement) bool { return op.SourceStopIntentAt != nil })
+	f.runtime.quiesce = func(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error) {
+		panic("private-provider-panic")
+	}
+	op, err := svc.Advance(ctx, x.operation.ID)
+	if err == nil || strings.Contains(err.Error(), "private-provider-panic") || op.Phase != domain.ReplacementRecoveryRequired || op.Error == nil || op.Error.Code != "ORCHESTRATOR_REPLACEMENT_PANIC" {
+		t.Fatal("panic escaped or operator boundary lost", op.Phase, err)
+	}
+	revision, calls := op.Revision, f.runtime.quiescences
+	for range 3 {
+		if _, err := svc.Advance(ctx, op.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, err := svc.Get(ctx, op.ID)
+	if err != nil || current.Revision != revision || f.runtime.quiescences != calls || current.SourceStopIntentAt == nil || current.SourceStop != nil {
+		t.Fatal("panic automatically retried or minted stop", current.Phase, err)
 	}
 }
 
@@ -119,5 +144,13 @@ func TestReplacementReconcileDoesNotRetryWaitingOrTerminalOperations(t *testing.
 				t.Fatal("paused reconciliation changed facts", err)
 			}
 		})
+	}
+}
+
+func assertReplacementPanicQuarantined(t *testing.T, svc *replacement.Service, id string) {
+	t.Helper()
+	op, err := svc.Advance(context.Background(), id)
+	if err == nil || op.ID != id || op.Phase != domain.ReplacementRecoveryRequired || op.Error == nil || op.Error.Code != "ORCHESTRATOR_REPLACEMENT_PANIC" {
+		t.Fatalf("panic escaped or quarantine missing: phase=%s err=%v", op.Phase, err)
 	}
 }

@@ -169,7 +169,7 @@ func TestReplacementSuccessorIntentPrecedesSeedAndRecoversOneIdentity(t *testing
 					t.Fatal("spawn preceded durable intent", err)
 				}
 				now := time.Now().UTC()
-				seed := domain.SessionRecord{ProjectID: op.ProjectID, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, ClientRequestID: op.SpawnRequestID, ClientRequestHash: op.SpawnRequestHash, ProvisionState: domain.SessionProvisionProvisioning, CreatedAt: now, UpdatedAt: now}
+				seed := domain.SessionRecord{ProjectID: op.ProjectID, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, ClientRequestID: op.SpawnRequestID, ClientRequestHash: op.SpawnRequestHash, ProvisionState: domain.SessionProvisionProvisioning, CreatedAt: now, UpdatedAt: now, Metadata: domain.SessionMetadata{Model: op.TargetAgentConfig.Model, Effort: op.TargetAgentConfig.Effort, Permissions: op.TargetAgentConfig.Permissions}}
 				rec, fresh, err := x.f.store.CreateClientRequestSession(ctx, seed)
 				if err != nil {
 					t.Fatal(err)
@@ -190,10 +190,9 @@ func TestReplacementSuccessorIntentPrecedesSeedAndRecoversOneIdentity(t *testing
 				t.Fatalf("missing independent spawn intent: phase=%s key=%s calls=%d err=%v failure=%+v", intent.Phase, intent.SpawnRequestID, x.f.runtime.successors, err, intent.Error)
 			}
 			if loss == "coordinator lost" {
-				var crashed any
-				func() { defer func() { crashed = recover() }(); _, _ = x.service().Advance(ctx, intent.ID) }()
-				if crashed != "lost coordinator after seed insert" {
-					t.Fatalf("wrong crash boundary: %v", crashed)
+				assertReplacementPanicQuarantined(t, x.service(), intent.ID)
+				if _, err := x.service().Retry(ctx, intent.ID); err != nil {
+					t.Fatal(err)
 				}
 			} else {
 				if _, err := x.service().Advance(ctx, intent.ID); err != nil {
