@@ -540,6 +540,7 @@ func Run(buildVersion string) error {
 	agentSvc = agentsvc.NewWithDeps(agentDeps)
 	agentSvc.SetAccountExecution(agentAccountSvc, store)
 	agentAccountSvc.SetLegacyIdentityCheck(agentSvc.LegacyIdentityConflict)
+	agentAccountSvc.SetDefaultHarness(domain.AgentHarness(cfg.Agent))
 	agentSvc.WarmModelCatalogs(ctx)
 
 	persistentHostsReconciled := make(chan struct{})

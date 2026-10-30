@@ -335,3 +335,66 @@ NULL configs retain their defaults. No Git discovery runs during migration, and
 no earlier migration is modified. Downgrading preserves config data; older
 versions do not support canonical claims and may drop this field when saving
 project settings.
+
+
+## Local subscription accounts (Linux)
+
+These commands call the daemon account APIs. They do not open the AO database,
+read provider credentials, or execute a provider binary in the CLI process.
+Claude subscription and ChatGPT sign-in profiles remain on this computer;
+these references cannot be selected over LAN or sent to Cloud.
+
+```bash
+ao account ls --provider codex --refresh --json
+ao account add --provider codex
+ao account add --provider claude
+ao account login <account-id>
+ao account login --operation <operation-id>
+ao account use <account-id> --default
+ao account use <account-id> --project <project-id>
+ao account use <account-id> --project <project-id> --role worker
+ao account use <account-id> --project <project-id> --role reviewer --reviewer claude-code
+ao spawn --project <project-id> --agent codex --account <account-id> --name "Worker"
+ao account use <account-id> --session <session-id> --wait
+ao account use <account-id> --session <session-id> --stop-turn --wait
+ao account logout <account-id>
+ao account rm <account-id>
+```
+
+`use` requires exactly one scope. `--default` applies to the account's provider;
+`--project` alone changes that provider's project default. Role selection changes
+only that role's reference. Reviewer selection always names the configured
+harness with `--reviewer`, never an array position. Project mutations preserve
+other config fields in a daemon transaction. A provider mismatch is rejected.
+Existing sessions and reviewer executions keep their own durable binding when
+any default changes. New work inherits explicit selection, then role, project,
+and global defaults. Explicit device accounts preserve the device login policy.
+
+A session move drains the current turn by default. Only `--stop-turn` authorizes
+interruption. Without `--wait`, the printed transition is pending, not proof of
+completion; `--wait` checks the same durable transition until completed, failed,
+cancelled, or recovery required (up to ten minutes; timing out does not cancel
+the durable handoff). A failed handoff never silently chooses another
+account. Removal refuses active owners and prints their non-secret use list;
+it does not automatically stop them. History and past bindings remain traceable.
+
+Interactive add/login attaches the daemon's login PTY, not a local provider.
+Native prompts are live only; credential-shaped lines are hidden and no
+transcript is written by the CLI. Do not paste API keys or tokens into a
+subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
+cleanup. If acceptance won the race, it reports that the account was saved.
+If cleanup is unconfirmed, retain the operation reference and reconnect; do not
+start a second login for the same operation.
+
+For automation, `--detach --json` starts or reads a **pending** operation reference
+without attaching; it never claims success from HTTP 202. Reconnect with
+`ao account login --operation <id> --no-attach --json` to verify and wait without
+reading PTY output. This mode is useful when sign-in is completed in an already
+attached terminal. A disconnect does not create another profile. The daemon
+recovers unfinished operations after restart; a cancelled operation cannot be
+resumed into a new login.
+
+Malformed arguments and missing/conflicting scopes exit 2. Daemon/runtime
+errors, provider mismatch, failed transitions and confirmed cancellation exit 1.
+API error codes and request IDs are retained for diagnosis. No credential value
+is accepted as a command-line argument. Quota exhaustion does not rotate accounts.
