@@ -9,10 +9,12 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
 )
 
@@ -105,6 +107,8 @@ type ReviewsController struct {
 
 // Register mounts the review routes on the supplied router.
 func (c *ReviewsController) Register(r chi.Router) {
+	r.Get("/reviews/{reviewId}/agent-settings", c.reviewerSettings)
+	r.Patch("/reviews/{reviewId}/agent-settings", c.changeReviewerSettings)
 	r.Post("/reviews/{reviewSessionID}/activity", c.activity)
 	r.Get("/sessions/{sessionId}/reviews", c.list)
 	r.Post("/sessions/{sessionId}/reviews/trigger", c.trigger)
@@ -196,7 +200,8 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	res, err := c.Svc.TriggerRequested(r.Context(), sessionID(r), reviewsvc.TriggerRequest{
+	ctx := ports.WithAgentSettingsCaller(r.Context(), settingsCaller(r))
+	res, err := c.Svc.TriggerRequested(ctx, sessionID(r), reviewsvc.TriggerRequest{
 		AgentAccountID:     in.AgentAccountID,
 		Harness:            in.Harness,
 		Config:             in.AgentConfig,
@@ -344,7 +349,8 @@ func (c *ReviewsController) switchReviewer(w http.ResponseWriter, r *http.Reques
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	res, err := c.Svc.SwitchReviewer(r.Context(), sessionID(r), in.Harness, in.AgentConfig)
+	ctx := ports.WithAgentSettingsCaller(r.Context(), settingsCaller(r))
+	res, err := c.Svc.SwitchReviewer(ctx, sessionID(r), in.Harness, in.AgentConfig)
 	if err != nil {
 		writeReviewError(w, r, err)
 		return
@@ -431,7 +437,14 @@ func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeReviewError(w http.ResponseWriter, r *http.Request, err error) {
+	var structured *apierr.Error
+	if errors.As(err, &structured) {
+		envelope.WriteError(w, r, structured)
+		return
+	}
 	switch {
+	case errors.Is(err, ports.ErrAgentSettingsConflict), errors.Is(err, ports.ErrAgentSettingsUnsupported), errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable), errors.Is(err, ports.ErrAgentSettingsGrantInvalid), errors.Is(err, ports.ErrAgentSettingsInvalid):
+		envelope.WriteError(w, r, agentsettings.SettingsError(err))
 	case errors.Is(err, reviewsvc.ErrInvalid):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "REVIEW_INVALID", err.Error(), nil)
 	case errors.Is(err, reviewsvc.ErrNotFound):

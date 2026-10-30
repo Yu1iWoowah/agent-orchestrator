@@ -7,6 +7,7 @@ import { useChatMessageFocus, type ChatMessageFocusTarget } from "../../hooks/us
 import { sessionUiKey } from "../../lib/hosts";
 import { useSessionLinkNavigation } from "../../lib/use-session-link-navigation";
 import { ChatWorkspace } from "./ChatWorkspace";
+import { ReviewerAgentSettings } from "../ReviewerAgentSettings";
 
 export function ReviewerChatSurface({ reviewId, workerSessionId, hostId, hideHeader = false }: { reviewId: string; workerSessionId: string; hostId?: string; hideHeader?: boolean }) {
 	const { t } = useTranslation();
@@ -46,8 +47,8 @@ export function ReviewerChatSurface({ reviewId, workerSessionId, hostId, hideHea
 			hideHeader={hideHeader}
 			busy={commands.busy}
 			commandError={commands.error ?? catalog.error}
+			agentSettingsNotice={<ReviewerAgentSettings key={sessionUiKey(reviewId, hostId)} reviewId={reviewId} hostId={hostId} />}
 			models={catalog.models}
-			onChooseSettings={commands.chooseSettings}
 			approvalModes={["auto"]}
 			hasOlder={hasOlder}
 			loadingOlder={isLoadingOlder}

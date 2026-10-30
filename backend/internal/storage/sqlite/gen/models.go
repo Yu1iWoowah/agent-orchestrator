@@ -827,21 +827,23 @@ type Review struct {
 }
 
 type ReviewRun struct {
-	ID               string
-	ReviewID         string
-	SessionID        domain.SessionID
-	Harness          domain.ReviewerHarness
-	PRURL            string
-	TargetSha        string
-	Status           domain.ReviewRunStatus
-	Verdict          domain.ReviewVerdict
-	Body             string
-	CreatedAt        time.Time
-	GithubReviewID   string
-	DeliveredAt      sql.NullTime
-	BatchID          string
-	AutoInjectReview bool
-	TriggerSource    domain.ReviewTriggerSource
+	ID                    string
+	ReviewID              string
+	SessionID             domain.SessionID
+	Harness               domain.ReviewerHarness
+	PRURL                 string
+	TargetSha             string
+	Status                domain.ReviewRunStatus
+	Verdict               domain.ReviewVerdict
+	Body                  string
+	CreatedAt             time.Time
+	GithubReviewID        string
+	DeliveredAt           sql.NullTime
+	BatchID               string
+	AutoInjectReview      bool
+	TriggerSource         domain.ReviewTriggerSource
+	AgentSettingsJson     sql.NullString
+	AgentSettingsRevision sql.NullInt64
 }
 
 type ReviewerAgentAccount struct {
@@ -850,6 +852,26 @@ type ReviewerAgentAccount struct {
 	AccountID        string
 	ResolutionSource string
 	BoundAt          time.Time
+}
+
+type ReviewerAgentSetting struct {
+	ReviewID     string
+	Revision     int64
+	SettingsJson string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type ReviewerAgentSettingsOperation struct {
+	ID                 string
+	ReviewID           string
+	Revision           int64
+	Phase              string
+	ApplyMode          string
+	IdempotencyKey     string
+	RequestFingerprint string
+	OperationJson      string
+	CreatedAt          time.Time
 }
 
 type Session struct {

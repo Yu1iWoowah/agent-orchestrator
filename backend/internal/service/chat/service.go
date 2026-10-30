@@ -54,20 +54,21 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
-	store                  Store
-	settingsValidator      ports.ChatAgentSettingsValidator    // guarded by mu
-	settingsMutator        ports.ChatAgentSettingsMutator      // guarded by mu
-	settingsGrants         ports.AgentSettingsGrantEnvironment // guarded by mu
-	reader                 SnapshotReader
-	pageReader             SnapshotPageReader
-	sessions               SessionReader
-	drivers                ports.ChatDriverRegistry
-	activity               ActivityRecorder
-	log                    *slog.Logger
-	newID                  IDFactory
-	now                    Clock
-	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
-	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	store                   Store
+	settingsValidator       ports.ChatAgentSettingsValidator    // guarded by mu
+	settingsMutator         ports.ChatAgentSettingsMutator      // guarded by mu
+	reviewerSettingsControl ports.ReviewerChatSettingsControl   // guarded by mu
+	settingsGrants          ports.AgentSettingsGrantEnvironment // guarded by mu
+	reader                  SnapshotReader
+	pageReader              SnapshotPageReader
+	sessions                SessionReader
+	drivers                 ports.ChatDriverRegistry
+	activity                ActivityRecorder
+	log                     *slog.Logger
+	newID                   IDFactory
+	now                     Clock
+	onAccountChanged        func(domain.SessionID, string, domain.AgentHarness)
+	onCodexCapacityChanged  func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
 	// session metadata before the next prompt routes or a later TUI rebuild.
 	onModelChanged   func(domain.SessionID, string)
@@ -2595,7 +2596,14 @@ func (s *Service) ModelsForOwner(ctx context.Context, owner domain.ConversationO
 	if err != nil {
 		return nil, domain.ConversationSettings{}, err
 	}
-	return listModels(ctx, controller)
+	models, settings, err := listModels(ctx, controller)
+	if err != nil {
+		return models, settings, err
+	}
+	if owner.Kind == domain.ConversationOwnerReview {
+		settings, err = s.projectReviewerSettings(ctx, owner.ID, settings)
+	}
+	return models, settings, err
 }
 
 func listModels(ctx context.Context, controller *Controller) ([]ports.ChatModel, domain.ConversationSettings, error) {
@@ -2916,6 +2924,9 @@ func (s *Service) setTurnSettings(ctx context.Context, controller *Controller, o
 	previous := controller.Settings()
 	if owner.Kind == domain.ConversationOwnerReview && settings.ApprovalMode != previous.ApprovalMode {
 		return domain.ConversationSettings{}, ErrReviewerPermissionsFixed
+	}
+	if owner.Kind == domain.ConversationOwnerReview {
+		return s.pinReviewerTurnSettings(ctx, owner.ID, previous, settings)
 	}
 	settings.OpenCodeMode = previous.OpenCodeMode
 	if err := controller.SetSettings(ctx, settings); err != nil {

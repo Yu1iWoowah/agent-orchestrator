@@ -14,6 +14,10 @@ type savedReviewerModels struct {
 	catalog   ports.AgentModelCatalog
 }
 
+func (m *savedReviewerModels) CatalogFingerprint(context.Context, string, string) (string, error) {
+	return "saved-fingerprint", nil
+}
+
 func (m *savedReviewerModels) ModelCatalog(_ context.Context, _, _ string, refresh bool) (ports.AgentModelCatalog, error) {
 	m.refreshes = append(m.refreshes, refresh)
 	if refresh {
@@ -24,7 +28,7 @@ func (m *savedReviewerModels) ModelCatalog(_ context.Context, _, _ string, refre
 
 func TestReviewerUsesSavedCatalogBeforeNativeDiscovery(t *testing.T) {
 	for _, stale := range []bool{false, true} {
-		models := &savedReviewerModels{catalog: ports.AgentModelCatalog{Stale: stale, Models: []ports.AgentModelInfo{{ID: "saved-model", Efforts: []string{"high"}}}}}
+		models := &savedReviewerModels{catalog: ports.AgentModelCatalog{InputFingerprint: "saved-fingerprint", Stale: stale, Models: []ports.AgentModelInfo{{ID: "saved-model", Efforts: []string{"high"}}}}}
 		engine := &Engine{models: models}
 		err := engine.validateReviewerModels(context.Background(), domain.ReviewerCodex, domain.AgentConfig{Model: "saved-model", Effort: "high"})
 		if !stale && (err != nil || len(models.refreshes) != 1 || models.refreshes[0]) {

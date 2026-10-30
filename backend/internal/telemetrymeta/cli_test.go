@@ -29,6 +29,8 @@ func TestCLIActorTypeKeepsKnownLegacyUserCommands(t *testing.T) {
 	for _, commandPath := range []string{
 		"ao ask", "ao ask create", "ao ask list", "ao ask get", "ao ask answer", "ao ask read", "ao ask cancel", "ao ask revise",
 		"ao agent ls",
+		"ao review settings",
+		"ao review set",
 		"ao session claim-pr",
 		"ao dev import-projects",
 		"ao project orchestration get",

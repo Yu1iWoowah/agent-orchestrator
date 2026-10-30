@@ -793,6 +793,23 @@ func (c reviewerModelConversation) ListModels(context.Context) ([]ports.ChatMode
 	return []ports.ChatModel{{ID: "review-model", DisplayName: "Review model", Efforts: []string{"high"}}}, nil
 }
 
+type reviewerMenuPins struct {
+	id        string
+	patch     domain.AgentSettingsPatch
+	selection domain.AgentSettings
+}
+
+func (p *reviewerMenuPins) ReviewerChatSettings(context.Context, string) (*domain.AgentSettings, error) {
+	selected := p.selection
+	return &selected, nil
+}
+func (p *reviewerMenuPins) PinReviewerChatSettings(_ context.Context, id string, patch domain.AgentSettingsPatch) (domain.AgentSettings, error) {
+	p.id, p.patch = id, patch
+	var err error
+	p.selection, err = p.selection.Apply(patch)
+	return p.selection, err
+}
+
 func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -812,6 +829,14 @@ func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 	var synced bool
 	var ids atomic.Uint64
 	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: provider}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("review-model-%d", ids.Add(1)) }, OnModelChanged: func(domain.SessionID, string) { synced = true }})
+	pins := &reviewerMenuPins{selection: domain.AgentSettings{FastMode: domain.AgentFastDefault}}
+	installer, ok := any(svc).(interface {
+		SetReviewerSettingsControl(ports.ReviewerChatSettingsControl)
+	})
+	if !ok {
+		t.Fatal("reviewer menu has no next-pass pin boundary")
+	}
+	installer.SetReviewerSettingsControl(pins)
 	owner := domain.ReviewConversationOwner("review-models")
 	t.Cleanup(func() { _ = svc.StopForOwner(context.Background(), owner) })
 	if _, err := svc.Start(ctx, chatsvc.StartConfig{Owner: owner, SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), Permissions: ports.PermissionModeAuto}); err != nil {
@@ -830,8 +855,12 @@ func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewConversation.Settings.Model != "review-model" || reviewConversation.Settings.ReasoningEffort != "high" {
-		t.Fatalf("review settings=%+v", reviewConversation.Settings)
+	if reviewConversation.Settings.Model == "review-model" || reviewConversation.Settings.ReasoningEffort == "high" || pins.id != owner.ID || pins.patch.Model == nil || *pins.patch.Model != "review-model" {
+		t.Fatalf("review menu changed live pass or wrong owner: settings=%+v pin=%+v", reviewConversation.Settings, pins)
+	}
+	_, projected, err := svc.ModelsForOwner(ctx, owner)
+	if err != nil || projected.Model != "review-model" || projected.ReasoningEffort != "high" {
+		t.Fatalf("next-pass projection=%+v %v", projected, err)
 	}
 	workerAfter, err := st.LoadConversationSnapshot(ctx, worker.ID)
 	if err != nil || workerAfter.Conversation.Settings != workerSettings || synced {
@@ -841,7 +870,7 @@ func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := provider.sentMessages()
-	if len(sent) != 1 || sent[0].Settings.Model != "review-model" || sent[0].Settings.Effort != "high" {
+	if len(sent) != 1 || sent[0].Settings.Model == "review-model" || sent[0].Settings.Effort == "high" {
 		t.Fatalf("provider turn settings = %+v", sent)
 	}
 	settings.ApprovalMode = domain.PermissionModeBypassPermissions

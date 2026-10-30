@@ -283,17 +283,24 @@ identify a retired model. AO does not substitute a model or a fresh thread.
 The Claude version gate accepts stable major.minor.patch output; prerelease
 suffixes remain unverified and are rejected.
 
-Follow-up in PR 6: optionally moving back to a canonical branch after settlement
-needs a separate dirty/shared/multi-repo ownership workflow; settlement itself
-must not move native history or files. Specialized retired-model resume messages
-need provider-qualified error categories; a failed pinned resume must not infer
-retirement from a network or permission error, substitute a model, or start a
-fresh conversation. Legacy relaunch capability validation also remains separate
-from this UI delivery: applying new-mutation freshness rules there would regress
-the qualified pinned fallback for stale discovery. Fresh mutations retain their
-strict account-scoped validation. The per-session ownership scan's bulk O(N²)
-cost, adapters without an alternate-path resolver, and wiring the currently
-unused SaveAndTeardownAll helper into daemon shutdown are not broadened here.
+The following lifecycle work remains outside reviewer settings delivery:
+
+- Moving a settled workspace back to a canonical branch needs a separate
+  dirty/shared/multi-repo ownership workflow. Settlement must not move files or
+  native history, so reviewer settings do not add this action.
+- Specialized retired-model resume messages need provider-qualified error
+  categories. Network/auth failures do not prove retirement. A failed pinned
+  resume never substitutes a model or starts a fresh conversation.
+- Legacy relaunch validation must retain qualified pinned fallback when fresh
+  discovery fails. New-mutation freshness rules cannot replace that fallback.
+- Replacing the bulk O(N²) workspace ownership scan changes teardown ordering.
+  This PR does not refactor workspace reclamation or its durable writer veto.
+- Adapters without an alternate-path resolver remain fail-closed; this PR does
+  not infer workspace ownership or add unverified path allocation to them.
+- Wiring SaveAndTeardownAll into daemon shutdown changes daemon-wide ordering
+  and needs separate lifecycle validation. It remains unused here.
+- Claude prerelease version suffixes remain unverified. This PR does not widen
+  the TUI version gate without binary compatibility evidence.
 
 TUI settings restart admission uses the orchestrator replacement gate before
 creating an operation or interrupting a turn. An active replacement returns 409
@@ -319,3 +326,66 @@ It never calls the unqualified force-removal fallback. FreshPath with FreshBranc
 still conservatively retains a dirty partial root, branch and copied assets;
 the failed spawn records that inventory. This pre-existing preservation policy
 is not a guarantee that every alternate-path failure leaves no worktree behind.
+
+## Reviewer settings
+
+A reviewer has a stable `reviewId`, its own fixed U3 account binding, and a
+preference revision independent of the worker. A new reviewer accepts its own
+model, effort and fast choice:
+
+```sh
+ao review trigger worker-1 --agent codex --model reviewer-model --effort high --fast off
+ao review ls worker-1 --json
+ao review settings <reviewId> --json
+ao review set <reviewId> --model default --effort high --fast off --if-revision 2
+```
+
+`review set` uses `GET/PATCH /api/v1/reviews/{reviewId}/agent-settings`.
+PATCH requires `expectedRevision`, a nonempty `settings` patch and an
+`Idempotency-Key` header. Model/effort null resets the provider override; fast
+is `default`, `on` or `off`. The CLI reads a revision once when `--if-revision`
+is omitted and never retries a revision conflict automatically. Usage errors
+exit 2; daemon failures exit 1 and preserve the code and request ID.
+
+The successful receipt is `phase: pinned`, `applyMode: next-pass`. It does not
+claim a provider applied the selection. A running pass or queued/running Chat
+turn conflicts, without stopping the reviewer or changing that pass. A pass
+atomically records its selection/revision when admitted. Recovery uses that
+pass snapshot; later project defaults do not replace it or reselect its account.
+When an idle live reviewer needs the new selection, the old runtime is stopped
+before the next writer launches with the original native history. Fixed
+reviewer sandbox/tool restrictions remain in force.
+
+The Chat composer labels these controls **Next review pass**. It keeps a draft
+until the daemon accepts a pin, shows conflicts beside the action and preserves
+the draft on failure. External updates refresh the saved preference without
+rewriting an open draft. Provider-effective settings remain explicitly unknown;
+in particular, a Claude fast `on` preference is never displayed as proof that
+the live session offers or applies fast. Pin CDC refreshes only the affected
+host/review preference, without downloading conversation history.
+
+Managed changes require a current settings-purpose orchestrator grant, a
+same-project worker parent and an explicit `agentSettingsPolicy.reviewers`
+allowlist keyed by reviewer harness. `agentSettingsPolicy.harnesses` grants
+worker permissions only. Actor identity, the sole live orchestrator, project
+policy and reviewer owner/account/revision are checked again inside the commit
+transaction. Local UI and identity-free CLI retain the A-Q8 manual exception,
+audited as `local_operator_unverified`; they still need CAS and provider
+validation. The API accepts neither account changes nor permission changes.
+Grants expire after 24 hours; they do not renew in a running provider process.
+
+| Surface | Declared support and limits |
+| --- | --- |
+| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Native fake-wire contracts also retain fixed reviewer permissions. |
+| Existing reviewer next-pass mutation | Stable review owner with recorded preference, fixed U3 binding and complete native/generation identity. Active passes conflict. Legacy unknown preferences are not reconstructed from worker settings. |
+| Other reviewer launch adapters | Only fields declared by the adapter config spec and accepted by its catalog. Catalog variants alone do not declare effort or fast support. |
+| Other harness reconfigure | No generic hot-reconfigure or account binding is inferred from a model launch flag. Missing settings/runtime/account capability remains unsupported or unavailable. |
+| Cursor | Exact variant IDs remain model IDs, never a generic effort or fast choice. |
+| Amp | Native mode remains distinct from effort/fast. Older launch preferences using its mode in the model slot retain launch compatibility; they do not qualify typed effort/fast. |
+
+The additive reviewer migration leaves every old row unchanged, including
+worker revisions, reviewer bindings and historical run selections (`NULL`). A
+downgrade refuses to erase recorded preferences or pass snapshots. Rollback of
+the feature disables reviewer mutation, preserving existing owners and account
+bindings. Live-provider and paid-fast compatibility require separate authority;
+fake-wire evidence is not a claim of a real paid turn.

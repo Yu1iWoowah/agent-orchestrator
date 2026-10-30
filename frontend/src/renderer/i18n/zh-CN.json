@@ -3969,5 +3969,19 @@
 	"settings.agentAccounts.identityUpdated": "身份确认于 {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "管理旧版 Codex 登录",
 	"settings.agentAccounts.legacyAccountsTitle": "旧版已保存的 Codex 登录",
-	"settings.agentAccounts.legacyAccountsDescription": "在此管理旧版 AO 保存的 Codex 登录。若要在上方添加相同身份，请先退出并移除旧条目。"
+	"settings.agentAccounts.legacyAccountsDescription": "在此管理旧版 AO 保存的 Codex 登录。若要在上方添加相同身份，请先退出并移除旧条目。",
+	"reviewerSettings.nextPass": "下一轮 review",
+	"reviewerSettings.effectiveUnknown": "Provider 实际生效设置：未知。固定选择不代表已应用。",
+	"reviewerSettings.preferenceUnknown": "尚无经验证的 reviewer 偏好记录。",
+	"reviewerSettings.activePass": "Review 正在运行。当前设置与账号保持固定；结束后才能修改下一轮设置。",
+	"reviewerSettings.loadError": "无法验证 reviewer 设置。",
+	"reviewerSettings.changeError": "Daemon 未确认下一轮固定设置。",
+	"reviewerSettings.conflict": "Revision 已改变或 review 已开始。草稿已保留，请先加载最新偏好。",
+	"reviewerSettings.reload": "加载最新偏好",
+	"reviewerSettings.edit": "编辑下一轮设置",
+	"reviewerSettings.pin": "固定供下一轮使用",
+	"reviewerSettings.description": "仅下一轮 review 使用此选择；当前轮次不变，reviewer 保留账号与固定权限。清空 model 或 effort 会重置为 provider 默认值。",
+	"reviewerSettings.fastOn": "开启",
+	"reviewerSettings.fastOff": "关闭",
+	"reviewerSettings.fastCost": "Fast 可能产生额外费用。固定为开启代表你明确选择在下一轮使用。"
 }

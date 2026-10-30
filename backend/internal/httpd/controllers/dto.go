@@ -1699,6 +1699,42 @@ type ReviewIDParam struct {
 	ReviewID string `path:"reviewId" description:"Reviewer conversation identifier."`
 }
 
+// ChangeReviewerAgentSettingsPayload pins settings for a stable review owner.
+type ChangeReviewerAgentSettingsPayload struct {
+	ExpectedRevision *int64                    `json:"expectedRevision" minimum:"0"`
+	Settings         domain.AgentSettingsPatch `json:"settings"`
+}
+
+// ReviewerAgentSettingsResponse separates next-pass preference from unknown
+// provider-effective state. No worker or private account/native identity leaks.
+type ReviewerAgentSettingsResponse struct {
+	ReviewID       string                 `json:"reviewId"`
+	Harness        domain.ReviewerHarness `json:"harness"`
+	Revision       int64                  `json:"revision"`
+	Settings       *domain.AgentSettings  `json:"settings"`
+	ActivePass     bool                   `json:"activePass"`
+	ApplyMode      string                 `json:"applyMode" enum:"next-pass"`
+	EffectiveState string                 `json:"effectiveState" enum:"unknown"`
+	Reason         string                 `json:"reason"`
+}
+
+// ReviewerSettingsOperationResponse is the public pin receipt. Qualification
+// proof, grant scope, account, native identity and idempotency key stay private.
+type ReviewerSettingsOperationResponse struct {
+	ID             string                    `json:"id"`
+	ReviewID       string                    `json:"reviewId"`
+	BaseRevision   int64                     `json:"baseRevision"`
+	Revision       int64                     `json:"revision"`
+	Phase          string                    `json:"phase" enum:"pinned"`
+	ApplyMode      string                    `json:"applyMode" enum:"next-pass"`
+	Source         *domain.AgentSettings     `json:"source,omitempty"`
+	Target         domain.AgentSettings      `json:"target"`
+	Actor          domain.AgentSettingsActor `json:"actor"`
+	PolicyRevision string                    `json:"policyRevision"`
+	RequestID      string                    `json:"requestId,omitempty"`
+	CreatedAt      time.Time                 `json:"createdAt"`
+}
+
 // SpawnOrchestratorRequest is the body of POST /api/v1/orchestrators.
 type SpawnOrchestratorRequest struct {
 	AgentAccountID string           `json:"agentAccountId,omitempty" maxLength:"200"`

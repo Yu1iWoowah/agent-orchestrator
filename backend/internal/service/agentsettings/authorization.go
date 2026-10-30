@@ -118,6 +118,10 @@ func (a *Authorizer) CheckSelection(ctx context.Context, accepted Authorization,
 	if !ok || p.ID != string(target.ProjectID) || policy == nil || policy.Validate() != nil || !policy.Allows(target.Harness, settings) {
 		return "", apierr.Forbidden("AGENT_SETTINGS_POLICY_DENIED", "Project settings policy does not allow this selection")
 	}
+	return settingsPolicyRevision(policy)
+}
+
+func settingsPolicyRevision(policy *domain.AgentSettingsPolicy) (string, error) {
 	raw, err := json.Marshal(policy)
 	if err != nil {
 		return "", err

@@ -4057,5 +4057,19 @@
 	"settings.agentAccounts.identityUpdated": "Identidad comprobada {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "Gestionar inicios de Codex guardados anteriormente",
 	"settings.agentAccounts.legacyAccountsTitle": "Inicios de Codex guardados anteriormente",
-	"settings.agentAccounts.legacyAccountsDescription": "Gestiona los inicios de Codex guardados por versiones anteriores de AO. Para añadir la misma identidad arriba, cierra la sesión y elimina primero la entrada antigua."
+	"settings.agentAccounts.legacyAccountsDescription": "Gestiona los inicios de Codex guardados por versiones anteriores de AO. Para añadir la misma identidad arriba, cierra la sesión y elimina primero la entrada antigua.",
+	"reviewerSettings.nextPass": "Próxima revisión",
+	"reviewerSettings.effectiveUnknown": "Configuración efectiva del provider: desconocida. Una selección fijada no demuestra su aplicación.",
+	"reviewerSettings.preferenceUnknown": "No hay preferencias verificadas del reviewer.",
+	"reviewerSettings.activePass": "Hay una revisión activa. La configuración y la cuenta permanecen fijas; podrás cambiar la próxima al terminar.",
+	"reviewerSettings.loadError": "No se pudo verificar la configuración del reviewer.",
+	"reviewerSettings.changeError": "El daemon no confirmó la selección para la próxima revisión.",
+	"reviewerSettings.conflict": "Cambió la revisión de datos o comenzó una revisión. Se conserva tu borrador. Carga la preferencia actual.",
+	"reviewerSettings.reload": "Cargar preferencia actual",
+	"reviewerSettings.edit": "Editar próxima revisión",
+	"reviewerSettings.pin": "Fijar para la próxima revisión",
+	"reviewerSettings.description": "Solo la próxima revisión usa esta selección. La actual, la cuenta y los permisos fijos no cambian. Vaciar model o effort restablece el valor predeterminado del provider.",
+	"reviewerSettings.fastOn": "Activado",
+	"reviewerSettings.fastOff": "Desactivado",
+	"reviewerSettings.fastCost": "Fast puede generar cargos adicionales. Fijarlo en Activado es una elección explícita para la próxima revisión."
 }

@@ -291,6 +291,9 @@ func (c *Control) Cancel(ctx context.Context, caller Caller, id domain.SessionID
 	return op, settingsError(err)
 }
 
+// SettingsError maps shared settings failures without exposing provider text.
+func SettingsError(err error) error { return settingsError(err) }
+
 func settingsError(err error) error {
 	if err == nil {
 		return nil
@@ -300,6 +303,8 @@ func settingsError(err error) error {
 		return structured
 	}
 	switch {
+	case errors.Is(err, ports.ErrAgentSettingsGrantInvalid):
+		return apierr.Forbidden("AGENT_SETTINGS_ACTOR_DENIED", "The settings actor is no longer valid")
 	case errors.Is(err, domain.ErrReplacementInProgress):
 		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", nil)
 	case errors.Is(err, domain.ErrReplacementSourceRetired):

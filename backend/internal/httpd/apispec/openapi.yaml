@@ -7107,6 +7107,149 @@ paths:
       summary: Persist a worker report for later orchestrator delivery
       tags:
       - reports
+  /api/v1/reviews/{reviewId}/agent-settings:
+    get:
+      operationId: getReviewerAgentSettings
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - in: header
+        name: X-AO-Session-ID
+        schema:
+          type: string
+      - description: Settings-purpose native-environment grant; never returned or
+          persisted.
+        in: header
+        name: X-AO-Settings-Grant
+        schema:
+          description: Settings-purpose native-environment grant; never returned or
+            persisted.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewerAgentSettingsResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a stable review owner's next-pass preference; effective values
+        remain unknown
+      tags:
+      - reviews
+    patch:
+      operationId: changeReviewerAgentSettings
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - in: header
+        name: X-AO-Session-ID
+        schema:
+          type: string
+      - description: Settings-purpose native-environment grant; never returned or
+          persisted.
+        in: header
+        name: X-AO-Settings-Grant
+        schema:
+          description: Settings-purpose native-environment grant; never returned or
+            persisted.
+          type: string
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeReviewerAgentSettingsPayload'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewerSettingsOperationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Pin the next pass selection; active passes conflict and keep their
+        original settings/account
+      tags:
+      - reviews
   /api/v1/reviews/{reviewId}/conversation:
     get:
       operationId: getReviewerConversation
@@ -17492,6 +17635,10 @@ components:
           type:
           - object
           - "null"
+        reviewers:
+          additionalProperties:
+            $ref: '#/components/schemas/AgentSettingsAllowance'
+          type: object
       required:
       - enabled
       - harnesses
@@ -19415,6 +19562,19 @@ components:
       required:
       - ok
       - sessionId
+      type: object
+    ChangeReviewerAgentSettingsPayload:
+      properties:
+        expectedRevision:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+        settings:
+          $ref: '#/components/schemas/AgentSettingsPatch'
+      required:
+      - expectedRevision
+      - settings
       type: object
     ChangeSessionAgentSettingsPayload:
       properties:
@@ -25519,6 +25679,12 @@ components:
       type: object
     ReviewRun:
       properties:
+        agentSettings:
+          $ref: '#/components/schemas/AgentSettings'
+        agentSettingsRevision:
+          type:
+          - "null"
+          - integer
         autoInjectReview:
           type: boolean
         batchId:
@@ -25587,6 +25753,87 @@ components:
       - review
       - reviews
       - reviewerHandleId
+      type: object
+    ReviewerAgentSettingsResponse:
+      properties:
+        activePass:
+          type: boolean
+        applyMode:
+          enum:
+          - next-pass
+          type: string
+        effectiveState:
+          enum:
+          - unknown
+          type: string
+        harness:
+          type: string
+        reason:
+          type: string
+        reviewId:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        settings:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/AgentSettings'
+            type: object
+      required:
+      - reviewId
+      - harness
+      - revision
+      - settings
+      - activePass
+      - applyMode
+      - effectiveState
+      - reason
+      type: object
+    ReviewerSettingsOperationResponse:
+      properties:
+        actor:
+          $ref: '#/components/schemas/AgentSettingsActor'
+        applyMode:
+          enum:
+          - next-pass
+          type: string
+        baseRevision:
+          format: int64
+          type: integer
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        phase:
+          enum:
+          - pinned
+          type: string
+        policyRevision:
+          type: string
+        requestId:
+          type: string
+        reviewId:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        source:
+          $ref: '#/components/schemas/AgentSettings'
+        target:
+          $ref: '#/components/schemas/AgentSettings'
+      required:
+      - id
+      - reviewId
+      - baseRevision
+      - revision
+      - phase
+      - applyMode
+      - target
+      - actor
+      - policyRevision
+      - createdAt
       type: object
     RoleOverride:
       properties:

@@ -3987,5 +3987,19 @@
 	"settings.agentAccounts.identityUpdated": "신원 확인 {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "이전에 저장한 Codex 로그인 관리",
 	"settings.agentAccounts.legacyAccountsTitle": "이전에 저장한 Codex 로그인",
-	"settings.agentAccounts.legacyAccountsDescription": "이전 AO에서 저장한 Codex 로그인을 관리합니다. 위에서 같은 계정을 추가하려면 이전 항목에서 로그아웃한 뒤 삭제하세요."
+	"settings.agentAccounts.legacyAccountsDescription": "이전 AO에서 저장한 Codex 로그인을 관리합니다. 위에서 같은 계정을 추가하려면 이전 항목에서 로그아웃한 뒤 삭제하세요.",
+	"reviewerSettings.nextPass": "다음 review",
+	"reviewerSettings.effectiveUnknown": "Provider 실제 적용 설정: 알 수 없음. 선택 고정은 적용을 증명하지 않습니다.",
+	"reviewerSettings.preferenceUnknown": "검증된 reviewer 설정이 없습니다.",
+	"reviewerSettings.activePass": "Review 실행 중입니다. 설정과 계정은 유지되며, 종료 후 다음 설정을 변경할 수 있습니다.",
+	"reviewerSettings.loadError": "Reviewer 설정을 확인할 수 없습니다.",
+	"reviewerSettings.changeError": "Daemon이 다음 설정 고정을 확인하지 않았습니다.",
+	"reviewerSettings.conflict": "Revision이 변경되었거나 review가 시작되었습니다. 초안은 유지됩니다. 최신 설정을 불러오세요.",
+	"reviewerSettings.reload": "최신 설정 불러오기",
+	"reviewerSettings.edit": "다음 설정 편집",
+	"reviewerSettings.pin": "다음 review에 고정",
+	"reviewerSettings.description": "이 선택은 다음 review에만 사용됩니다. 현재 review, 계정, 고정 권한은 유지됩니다. model 또는 effort를 비우면 provider 기본값으로 돌아갑니다.",
+	"reviewerSettings.fastOn": "켜기",
+	"reviewerSettings.fastOff": "끄기",
+	"reviewerSettings.fastCost": "Fast는 추가 요금이 발생할 수 있습니다. 켜기로 고정하면 다음 review에서 사용하도록 명시적으로 선택합니다."
 }

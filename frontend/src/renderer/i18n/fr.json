@@ -4057,5 +4057,19 @@
 	"settings.agentAccounts.identityUpdated": "Identité vérifiée {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "Gérer les anciennes connexions Codex enregistrées",
 	"settings.agentAccounts.legacyAccountsTitle": "Anciennes connexions Codex enregistrées",
-	"settings.agentAccounts.legacyAccountsDescription": "Gérez les connexions Codex enregistrées par les anciennes versions d’AO. Pour ajouter la même identité ci-dessus, déconnectez puis supprimez d’abord l’ancienne entrée."
+	"settings.agentAccounts.legacyAccountsDescription": "Gérez les connexions Codex enregistrées par les anciennes versions d’AO. Pour ajouter la même identité ci-dessus, déconnectez puis supprimez d’abord l’ancienne entrée.",
+	"reviewerSettings.nextPass": "Prochaine passe de review",
+	"reviewerSettings.effectiveUnknown": "Paramètres effectifs du provider : inconnus. Un choix fixé ne prouve pas son application.",
+	"reviewerSettings.preferenceUnknown": "Aucune préférence vérifiée du reviewer enregistrée.",
+	"reviewerSettings.activePass": "Une review est en cours. Paramètres et compte restent fixes ; modifie la prochaine passe après sa fin.",
+	"reviewerSettings.loadError": "Impossible de vérifier les paramètres du reviewer.",
+	"reviewerSettings.changeError": "Le daemon n’a pas confirmé le choix pour la prochaine passe.",
+	"reviewerSettings.conflict": "La révision a changé ou une passe a commencé. Ton brouillon est conservé. Charge la préférence actuelle.",
+	"reviewerSettings.reload": "Charger la préférence actuelle",
+	"reviewerSettings.edit": "Modifier la prochaine passe",
+	"reviewerSettings.pin": "Fixer pour la prochaine passe",
+	"reviewerSettings.description": "Seule la prochaine passe utilise ce choix. La passe actuelle, le compte et les permissions fixes restent inchangés. Vider model ou effort rétablit la valeur par défaut du provider.",
+	"reviewerSettings.fastOn": "Activé",
+	"reviewerSettings.fastOff": "Désactivé",
+	"reviewerSettings.fastCost": "Fast peut entraîner des frais supplémentaires. Le fixer sur Activé est un choix explicite pour la prochaine passe."
 }

@@ -211,7 +211,8 @@ func (c *ConversationsController) reviewModels(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	models, selected, err := svc.ModelsForOwner(r.Context(), domain.ReviewConversationOwner(chi.URLParam(r, "reviewId")))
+	ctx := ports.WithAgentSettingsCaller(r.Context(), settingsCaller(r))
+	models, selected, err := svc.ModelsForOwner(ctx, domain.ReviewConversationOwner(chi.URLParam(r, "reviewId")))
 	if err != nil && !errors.Is(err, chatsvc.ErrModelsUnsupported) {
 		writeConversationError(w, r, err)
 		return
@@ -233,7 +234,8 @@ func (c *ConversationsController) reviewSetSettings(w http.ResponseWriter, r *ht
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_APPROVAL_MODE_INVALID", "unknown approval mode", nil)
 		return
 	}
-	settings, err := svc.SetTurnSettingsForOwner(r.Context(), domain.ReviewConversationOwner(chi.URLParam(r, "reviewId")), domain.ConversationSettings{Model: req.Model, ReasoningEffort: req.ReasoningEffort, ApprovalMode: approval})
+	ctx := ports.WithAgentSettingsCaller(r.Context(), settingsCaller(r))
+	settings, err := svc.SetTurnSettingsForOwner(ctx, domain.ReviewConversationOwner(chi.URLParam(r, "reviewId")), domain.ConversationSettings{Model: req.Model, ReasoningEffort: req.ReasoningEffort, FastMode: req.FastMode, ApprovalMode: approval})
 	if errors.Is(err, chatsvc.ErrReviewerPermissionsFixed) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_REVIEW_PERMISSIONS_FIXED", err.Error(), nil)
 		return

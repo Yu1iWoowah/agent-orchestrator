@@ -3987,5 +3987,19 @@
 	"settings.agentAccounts.identityUpdated": "Identität geprüft {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "Ältere gespeicherte Codex-Anmeldungen verwalten",
 	"settings.agentAccounts.legacyAccountsTitle": "Ältere gespeicherte Codex-Anmeldungen",
-	"settings.agentAccounts.legacyAccountsDescription": "Verwalte Codex-Anmeldungen aus älteren AO-Versionen. Um dieselbe Identität oben hinzuzufügen, melde den alten Eintrag zuerst ab und entferne ihn."
+	"settings.agentAccounts.legacyAccountsDescription": "Verwalte Codex-Anmeldungen aus älteren AO-Versionen. Um dieselbe Identität oben hinzuzufügen, melde den alten Eintrag zuerst ab und entferne ihn.",
+	"reviewerSettings.nextPass": "Nächster Review-Durchlauf",
+	"reviewerSettings.effectiveUnknown": "Effektive Provider-Einstellungen: unbekannt. Eine fixierte Auswahl belegt keine Anwendung.",
+	"reviewerSettings.preferenceUnknown": "Keine geprüfte Reviewer-Präferenz gespeichert.",
+	"reviewerSettings.activePass": "Ein Review läuft. Einstellungen und Konto bleiben fest; Änderungen sind nach Abschluss für den nächsten Durchlauf möglich.",
+	"reviewerSettings.loadError": "Reviewer-Einstellungen konnten nicht geprüft werden.",
+	"reviewerSettings.changeError": "Der Daemon hat die Fixierung nicht bestätigt.",
+	"reviewerSettings.conflict": "Die Revision wurde geändert oder ein Durchlauf gestartet. Der Entwurf bleibt erhalten. Lade die aktuelle Präferenz.",
+	"reviewerSettings.reload": "Aktuelle Präferenz laden",
+	"reviewerSettings.edit": "Nächsten Durchlauf bearbeiten",
+	"reviewerSettings.pin": "Für nächsten Durchlauf fixieren",
+	"reviewerSettings.description": "Die Auswahl gilt nur für den nächsten Durchlauf. Aktueller Durchlauf, Konto und feste Berechtigungen bleiben bestehen. Leeres model oder effort setzt den Provider-Standard.",
+	"reviewerSettings.fastOn": "Ein",
+	"reviewerSettings.fastOff": "Aus",
+	"reviewerSettings.fastCost": "Fast kann zusätzliche Kosten verursachen. Mit Ein wählst du die Nutzung im nächsten Durchlauf ausdrücklich."
 }

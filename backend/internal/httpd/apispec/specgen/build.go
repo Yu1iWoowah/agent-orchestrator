@@ -160,6 +160,9 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"ControllersChangeReviewerAgentSettingsPayload":        "ChangeReviewerAgentSettingsPayload",
+	"ControllersReviewerAgentSettingsResponse":             "ReviewerAgentSettingsResponse",
+	"ControllersReviewerSettingsOperationResponse":         "ReviewerSettingsOperationResponse",
 	"ControllersOrchestratorReplacementDiagnostic":         "OrchestratorReplacementDiagnostic",
 	"ControllersOrchestratorReplacementDiagnosticResponse": "OrchestratorReplacementDiagnosticResponse",
 	"ControllersOrchestratorReplacementRepairRequest":      "OrchestratorReplacementRepairRequest",
@@ -2774,6 +2777,19 @@ func reviewOperations() []operation {
 				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/reviews/{reviewId}/agent-settings", id: "getReviewerAgentSettings", tag: "reviews",
+			summary:    "Read a stable review owner's next-pass preference; effective values remain unknown",
+			pathParams: []any{controllers.ReviewIDParam{}, controllers.AgentSettingsCallerHeaders{}},
+			resps:      []respUnit{{http.StatusOK, controllers.ReviewerAgentSettingsResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/reviews/{reviewId}/agent-settings", id: "changeReviewerAgentSettings", tag: "reviews",
+			summary:    "Pin the next pass selection; active passes conflict and keep their original settings/account",
+			pathParams: []any{controllers.ReviewIDParam{}, controllers.AgentSettingsCallerHeaders{}, controllers.AgentSettingsIdempotencyHeader{}},
+			reqBody:    controllers.ChangeReviewerAgentSettingsPayload{},
+			resps:      []respUnit{{http.StatusOK, controllers.ReviewerSettingsOperationResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusUnprocessableEntity, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/reviews/trigger", id: "triggerReview", tag: "reviews",
