@@ -2802,6 +2802,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Local operator cleanup: version-CAS confirms all handoff writers stopped; stopIfAlive explicitly permits stopping exact matching generations; never resumes or accepts caller proof */
+        post: operations["settleAgentSettingsWriter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/artifact-files": {
         parameters: {
             query?: never;
@@ -5502,6 +5519,43 @@ export interface components {
             owner?: components["schemas"]["AgentSettingsOwner"];
             source?: string;
         };
+        AgentSettingsHistoryEntry: {
+            accountId?: string;
+            actor: components["schemas"]["AgentSettingsActor"];
+            /** @enum {string} */
+            applyMode: "after-turn" | "restart";
+            /** Format: int64 */
+            baseRevision: number;
+            branchId?: string;
+            /** @enum {string} */
+            checkpoint: "queued" | "applying_model" | "applying_effort" | "applying_fast" | "verifying" | "verified" | "rolling_back" | "restored";
+            controllerGeneration: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            errorCategory?: "conflict" | "cancelled" | "provider" | "storage" | "validation" | "recovery_required";
+            errorCode?: string;
+            /** Format: date-time */
+            finishedAt?: null | string;
+            id: string;
+            /** @enum {string} */
+            phase: "pending" | "applied" | "cancelled" | "failed" | "recovery_required";
+            providerConversationId?: string;
+            recovery?: components["schemas"]["AgentSettingsRecovery"];
+            requestId?: string;
+            sessionId: string;
+            source: components["schemas"]["AgentSettings"];
+            /** Format: date-time */
+            startedAt?: null | string;
+            stopTurn?: boolean;
+            target: components["schemas"]["AgentSettings"];
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
+            /** @enum {string} */
+            writerStatus?: "unconfirmed" | "stopped";
+        };
         AgentSettingsOperation: {
             accountId?: string;
             actor: components["schemas"]["AgentSettingsActor"];
@@ -5587,6 +5641,18 @@ export interface components {
             /** @enum {string} */
             state: "known" | "unknown";
             turnId?: string;
+        };
+        AgentSettingsWriterRecovery: {
+            operationId: string;
+            /** @enum {string} */
+            state: "writer_unconfirmed";
+            /** Format: int64 */
+            version: number;
+        };
+        AgentSettingsWriterSettlementResponse: {
+            operation: components["schemas"]["AgentSettingsOperation"];
+            /** @enum {string} */
+            writerStatus: "stopped";
         };
         AgentUpdateAdvisory: {
             agentId: string;
@@ -8701,12 +8767,14 @@ export interface components {
             capabilities: components["schemas"]["SessionAgentSettingsCapabilities"];
             currentTurn?: components["schemas"]["AgentSettingsTurnSnapshot"];
             effective: components["schemas"]["AgentSettingsEffective"];
+            history?: components["schemas"]["AgentSettingsHistoryEntry"][];
             pending?: components["schemas"]["AgentSettingsOperation"];
             restartRequired?: boolean;
             /** Format: int64 */
             revision: number;
             sessionId: string;
             settings: components["schemas"]["AgentSettings"];
+            writerRecovery?: components["schemas"]["AgentSettingsWriterRecovery"];
         };
         SessionArchiveSummary: {
             byProject: {
@@ -9154,6 +9222,10 @@ export interface components {
             trackerIntakeEnabled: boolean;
             /** @description After a harness update, idle open sessions restart on the new release instead of running the old one until they happen to restart. */
             versionRefresh: boolean;
+        };
+        SettleAgentSettingsWriterPayload: {
+            expectedVersion: number;
+            stopIfAlive?: boolean;
         };
         ShellTerminalEnvelope: {
             shellTerminal: components["schemas"]["ShellTerminalResponse"];
@@ -20720,6 +20792,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentSettingsOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    settleAgentSettingsWriter: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+            };
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettleAgentSettingsWriterPayload"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsWriterSettlementResponse"];
                 };
             };
             /** @description Bad Request */

@@ -41,6 +41,7 @@ import { isArtifactPreviewUrl } from "../lib/artifact-preview";
 import { SessionBrowserPopOut } from "./SessionBrowserPopOut";
 import { SessionTabMenu } from "./TerminalAgentControls";
 import { SessionInspector } from "./SessionInspector";
+import { AgentSettingsStatus } from "./AgentSettingsStatus";
 import type { ArtifactOpenRequest } from "./SessionArtifactsView";
 import { ShellTopbar } from "./ShellTopbar";
 import { SessionTopbarHost } from "./SessionTopbarPortal";
@@ -1959,6 +1960,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 							className="relative z-chrome flex h-inspector-tabs w-full shrink-0 overflow-hidden"
 							data-testid="session-topbar-host"
 						/>
+						{session && <AgentSettingsStatus enabled={!session.cloud && (session.provider === "codex" || session.provider === "claude-code")} hostId={hostId} placement="header" sessionId={session.id} terminated={session.isTerminated === true} />}
 						<div className="relative min-h-0 flex-1">
 							{isOrchestrator && session?.cloud && routedWorkspace ? (
 								<SharedProjectPanel hostId={hostId} orchestrator={session} sessions={routedWorkspace.sessions} />

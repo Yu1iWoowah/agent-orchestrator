@@ -55,6 +55,8 @@ type Snapshot struct {
 	Pending            *domain.AgentSettingsOperation    `json:"pending,omitempty"`
 	Effective          domain.AgentSettingsEffective     `json:"effective"`
 	CurrentTurn        *domain.AgentSettingsTurnSnapshot `json:"currentTurn,omitempty"`
+	History            []HistoryEntry                    `json:"history,omitempty"`
+	WriterRecovery     *WriterRecovery                   `json:"writerRecovery,omitempty"`
 	catalogFingerprint string
 }
 

@@ -12,6 +12,7 @@ import {
 } from "@aoagents/product-ui";
 
 import type { ReviewerHarnessId } from "../lib/reviewer-harnesses";
+import type { components } from "../../api/schema";
 
 export { toKanbanColumn, toSessionActivity, toSessionStatus };
 export type { KanbanColumn, SessionActivity, SessionActivityState, SessionStatus };
@@ -179,6 +180,8 @@ export type WorkspaceSession = {
 	staleBinary?: SessionStaleBinary;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
+	/** Initial selection provenance, independent of current provider observations. */
+	spawnAgentSettings?: components["schemas"]["SpawnAgentSettingsResolution"];
 	/** Whether the cloud worker has a current control-plane connection. */
 	runtimeConnected?: boolean;
 	chatProviderPreserved?: boolean;

@@ -18,6 +18,9 @@ func (s *Service) SetObservationSource(source ports.AgentSettingsObservationSour
 
 func (s *Service) readObservations(ctx context.Context, snapshot *Snapshot) error {
 	snapshot.Effective = domain.UnknownAgentSettingsEffective("controller_unavailable")
+	if err := s.readHistory(ctx, snapshot); err != nil {
+		return err
+	}
 	if reader, ok := s.store.(pendingSettingsReader); ok {
 		op, found, err := reader.PendingAgentSettingsOperation(ctx, snapshot.SessionID)
 		if err != nil {

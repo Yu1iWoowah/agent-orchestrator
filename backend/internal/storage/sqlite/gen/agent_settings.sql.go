@@ -114,6 +114,39 @@ func (q *Queries) CommitSessionAgentSettings(ctx context.Context, arg CommitSess
 	return result.RowsAffected()
 }
 
+const confirmAbandonedTUISettingsWriter = `-- name: ConfirmAbandonedTUISettingsWriter :execrows
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,'$.tui.terminationVerified',json('true'),'$.tui.unconfirmedRuntime',json('false')),
+ operation_revision=operation_revision+1,updated_at=?1
+WHERE session_agent_settings_operations.session_id=?2 AND session_agent_settings_operations.id=?3
+ AND operation_revision=?4 AND phase='cancelled'
+ AND error_code='AGENT_SETTINGS_SESSION_TERMINATED' AND started_at IS NOT NULL
+ AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL
+ AND COALESCE(json_extract(request_json,'$.tui.terminationVerified'),0)=0
+ AND EXISTS(SELECT 1 FROM sessions s WHERE s.id=session_agent_settings_operations.session_id AND s.is_terminated=1 AND s.session_mode='tui')
+`
+
+type ConfirmAbandonedTUISettingsWriterParams struct {
+	At              time.Time
+	SessionID       string
+	ID              string
+	ExpectedVersion int64
+}
+
+// Only the coordinator's exact-generation stop proof may call this CAS.
+func (q *Queries) ConfirmAbandonedTUISettingsWriter(ctx context.Context, arg ConfirmAbandonedTUISettingsWriterParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, confirmAbandonedTUISettingsWriter,
+		arg.At,
+		arg.SessionID,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getAgentSettingsOperation = `-- name: GetAgentSettingsOperation :one
 SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json, error_code FROM session_agent_settings_operations WHERE session_id=? AND id=?
 `
@@ -388,6 +421,82 @@ INSERT INTO agent_settings_authority_keys(singleton,key_bytes) VALUES(1,?) ON CO
 func (q *Queries) InsertAgentSettingsSigningKey(ctx context.Context, keyBytes []byte) error {
 	_, err := q.db.ExecContext(ctx, insertAgentSettingsSigningKey, keyBytes)
 	return err
+}
+
+const insertAgentSettingsWriterSettlement = `-- name: InsertAgentSettingsWriterSettlement :exec
+INSERT INTO session_agent_settings_writer_settlements(operation_id,operation_revision,recorded_at,request_id)
+VALUES(?,?,?,?)
+`
+
+type InsertAgentSettingsWriterSettlementParams struct {
+	OperationID       string
+	OperationRevision int64
+	RecordedAt        time.Time
+	RequestID         string
+}
+
+func (q *Queries) InsertAgentSettingsWriterSettlement(ctx context.Context, arg InsertAgentSettingsWriterSettlementParams) error {
+	_, err := q.db.ExecContext(ctx, insertAgentSettingsWriterSettlement,
+		arg.OperationID,
+		arg.OperationRevision,
+		arg.RecordedAt,
+		arg.RequestID,
+	)
+	return err
+}
+
+const listAgentSettingsOperations = `-- name: ListAgentSettingsOperations :many
+SELECT id, session_id, idempotency_key, request_json, phase, created_at, updated_at, apply_mode, error_category, request_id, provider_conversation_id, branch_id, checkpoint, operation_revision, started_at, finished_at, recovery_json, execution_json, error_code FROM session_agent_settings_operations
+WHERE session_id=?1
+ORDER BY created_at DESC,id DESC LIMIT ?2
+`
+
+type ListAgentSettingsOperationsParams struct {
+	SessionID string
+	Maximum   int64
+}
+
+func (q *Queries) ListAgentSettingsOperations(ctx context.Context, arg ListAgentSettingsOperationsParams) ([]SessionAgentSettingsOperation, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentSettingsOperations, arg.SessionID, arg.Maximum)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionAgentSettingsOperation{}
+	for rows.Next() {
+		var i SessionAgentSettingsOperation
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.IdempotencyKey,
+			&i.RequestJson,
+			&i.Phase,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ApplyMode,
+			&i.ErrorCategory,
+			&i.RequestID,
+			&i.ProviderConversationID,
+			&i.BranchID,
+			&i.Checkpoint,
+			&i.OperationRevision,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.RecoveryJson,
+			&i.ExecutionJson,
+			&i.ErrorCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pinAgentSettingsExecution = `-- name: PinAgentSettingsExecution :execrows

@@ -23,6 +23,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { agentSettingsErrorMessage } from "../lib/agent-settings";
+import { appI18n } from "../i18n";
 import { clientForSessionHost } from "../lib/host-clients";
 import { sessionUiKey } from "../lib/hosts";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
@@ -843,9 +845,11 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		onSuccess: invalidate,
 	});
 
-	// The picker stays usable while a pick is being saved, so picks can overlap. Each is
-	// written after the one before it, and only the newest one's answer is kept.
+	// Serialize writes, but never project an unaccepted choice into the snapshot.
 	const settingsWrites = useRef({ queue: Promise.resolve() as Promise<unknown>, latest: 0 });
+	type SettingsInput = { targetSessionId: string; settings: TurnSettings; baseline?: TurnSettings };
+	const currentSettings = (id: string) => queryClient.getQueryData<InfiniteData<ConversationSnapshot>>(conversationQueryKey(id, hostId))?.pages[0]?.settings;
+	const settingsInput = (settings: TurnSettings): SettingsInput => ({ targetSessionId: sessionId as string, settings, baseline: currentSettings(sessionId as string) });
 	const setSnapshotSettings = (targetSessionId: string, settings: TurnSettings) =>
 		queryClient.setQueryData<InfiniteData<ConversationSnapshot>>(conversationQueryKey(targetSessionId, hostId), (current) =>
 			current ? {
@@ -854,13 +858,8 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			} : current,
 		);
 	const chooseSettings = useMutation({
-		// Shown at once, so the next pick builds on this one rather than on the saved settings.
-		onMutate: async ({ targetSessionId, settings }: { targetSessionId: string; settings: TurnSettings }) => {
-			await queryClient.cancelQueries({ queryKey: conversationQueryKey(targetSessionId, hostId) });
-			setSnapshotSettings(targetSessionId, settings);
-			return { write: ++settingsWrites.current.latest };
-		},
-		mutationFn: async ({ targetSessionId, settings }: { targetSessionId: string; settings: TurnSettings }) => {
+		onMutate: (_input: SettingsInput) => ({ write: ++settingsWrites.current.latest }),
+		mutationFn: async ({ targetSessionId, settings }: SettingsInput) => {
 			const write = settingsWrites.current.queue.then(async () => {
 				const { data, error } = await clientForSessionHost(hostId).PATCH(
 					"/api/v1/sessions/{sessionId}/conversation/settings",
@@ -890,6 +889,22 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			refreshSessionInBackground(targetSessionId);
 		},
 	});
+	const settingsTargetsCurrentSession = chooseSettings.variables?.targetSessionId === sessionId;
+	const chooseSettingsError = settingsTargetsCurrentSession ? chooseSettings.error : undefined;
+	const settingsChoiceError = chooseSettingsError
+		? agentSettingsErrorMessage(chooseSettingsError, appI18n.t("agentSettings.conflict")) : undefined;
+	function retrySettingsChoice() {
+		const previous = chooseSettings.variables;
+		if (!previous || !settingsTargetsCurrentSession || !chooseSettings.isError) return;
+		const baseline = currentSettings(previous.targetSessionId) ?? previous.baseline ?? {};
+		const settings = { ...baseline };
+		for (const field of ["model", "reasoningEffort", "approvalMode", "fastMode", "planMode", "autoCompactWindow"] as const) {
+			if (Object.prototype.hasOwnProperty.call(previous.settings, field) && previous.settings[field] !== previous.baseline?.[field]) {
+				Object.assign(settings, { [field]: previous.settings[field] });
+			}
+		}
+		chooseSettings.mutate({ targetSessionId: previous.targetSessionId, baseline, settings });
+	}
 
 	/**
 	 * Undo back to a turn. This asks the agent to forget, not the timeline to hide:
@@ -1210,10 +1225,14 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
 		compact: () => compact.mutateAsync(),
 		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
-		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate({ targetSessionId: sessionId as string, settings }),
+		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate(settingsInput(settings)),
+		settingsChoiceError,
+		settingsDraft: settingsChoiceError ? chooseSettings.variables?.settings : undefined,
+		retrySettingsChoice,
+		dismissSettingsChoice: () => { if (!chooseSettings.isPending) chooseSettings.reset(); },
 		/** Saves settings the agent only reads when it starts, then restarts it. The conversation is resumed, not replaced. */
 		chooseStartSettings: async (settings: TurnSettings) => {
-			await chooseSettings.mutateAsync({ targetSessionId: sessionId as string, settings });
+			await chooseSettings.mutateAsync(settingsInput(settings));
 			const { error } = await clientForSessionHost(hostId).POST(
 				"/api/v1/sessions/{sessionId}/exit-agent",
 				{ params: { path: { sessionId: sessionId as string } } },
@@ -1354,12 +1373,14 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			sendError ||
 			resolve.error ||
 			(interruptTargetsCurrentSession && interrupt.error) ||
-			chooseSettings.error
-				? apiErrorMessage(
+			chooseSettingsError
+				? chooseSettingsError && !sendError && !resolve.error && !(interruptTargetsCurrentSession && interrupt.error)
+					? settingsChoiceError
+					: apiErrorMessage(
 							sendError ??
 							resolve.error ??
 							(interruptTargetsCurrentSession ? interrupt.error : undefined) ??
-							chooseSettings.error,
+							chooseSettingsError,
 					)
 				: undefined,
 	};
@@ -1618,7 +1639,7 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		setOption: async (optionId: string, value: ChatConfigOptionValue) =>
 			(await mutation.mutateAsync({ optionId, value })).options,
 		pending: mutation.isPending,
-		error: mutation.error || query.error ? apiErrorMessage(mutation.error ?? query.error) : undefined,
+		error: mutation.error || query.error ? agentSettingsErrorMessage(mutation.error ?? query.error, appI18n.t("agentSettings.conflict")) : undefined,
 	};
 }
 

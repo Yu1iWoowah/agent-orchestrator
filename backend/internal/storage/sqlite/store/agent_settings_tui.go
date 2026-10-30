@@ -7,6 +7,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
@@ -206,4 +207,36 @@ func (s *Store) AbandonTerminatedTUISettings(ctx context.Context, id domain.Sess
 func (s *Store) HasAbandonedTUISettingsWriter(ctx context.Context, id domain.SessionID) (bool, error) {
 	exists, err := s.qr.HasAbandonedTUISettingsWriter(ctx, string(id))
 	return exists, err
+}
+
+// ConfirmAbandonedTUISettingsWriter records the coordinator's positive stop
+// evidence. It cannot restore a session, commit preferences or rewrite history.
+func (s *Store) ConfirmAbandonedTUISettingsWriter(ctx context.Context, id domain.SessionID, operationID string, version int64, at time.Time) (domain.AgentSettingsOperation, error) {
+	if at.IsZero() || version < 0 {
+		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsInvalid
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return domain.AgentSettingsOperation{}, err
+	}
+	defer s.writeMu.Unlock()
+	var result domain.AgentSettingsOperation
+	err := s.inTx(ctx, "confirm abandoned TUI writer stopped", func(q *gen.Queries) error {
+		changed, err := q.ConfirmAbandonedTUISettingsWriter(ctx, gen.ConfirmAbandonedTUISettingsWriterParams{SessionID: string(id), ID: operationID, ExpectedVersion: version, At: at})
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return ports.ErrAgentSettingsConflict
+		}
+		row, err := q.GetAgentSettingsOperation(ctx, gen.GetAgentSettingsOperationParams{SessionID: string(id), ID: operationID})
+		if err != nil {
+			return settingsStoreError(err)
+		}
+		result, err = decodeSettingsOperation(row)
+		if err != nil {
+			return err
+		}
+		return q.InsertAgentSettingsWriterSettlement(ctx, gen.InsertAgentSettingsWriterSettlementParams{OperationID: operationID, OperationRevision: result.Version, RecordedAt: at, RequestID: reqid.FromContext(ctx)})
+	})
+	return result, err
 }
