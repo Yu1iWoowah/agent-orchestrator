@@ -19,14 +19,18 @@ if '--version' in args or '-v' in args:print('codex-cli 0.165.0' if provider=='c
 if '--help' in args:print('Fixture provider');sys.exit(0)
 if 'generate-json-schema' in args:
  out=pathlib.Path(args[args.index('--out')+1]);out.mkdir(parents=True,exist_ok=True);(out/'fixture.json').write_text(json.dumps({'enum':['account/read','account/rateLimits/read','account/updated','model/list']}));sys.exit(0)
+# Authentication probes are observations, not interactive sign-in attempts.
+if provider=='codex' and 'login' in args and args[args.index('login')+1:][:1]==['status']:
+ audit('login-status');print('Logged in using ChatGPT' if credential.is_file() else 'Not logged in',file=sys.stderr,flush=True);sys.exit(0 if credential.is_file() else 1)
 if 'login' in args:
- audit('login');print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste authorization code: ',end='',flush=True)
+ audit('login');print('access_token[session]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('https://example.test/?refresh_token[0]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('oauth.token.value=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste authorization code: ',end='',flush=True)
  while not(root/'approve-login').exists():time.sleep(.02)
  home.mkdir(mode=0o700,parents=True,exist_ok=True);(home/'.fixture-identity').write_text((root/'next-identity').read_text());(home/'.fixture-identity').chmod(0o600);credential.write_text(json.dumps({'fakeCredential':'ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','fixtureEmail':(root/'next-identity').read_text().strip()}));credential.chmod(0o600)
  if(root/'hold-login').exists():
   (root/'credential-written').write_text(str(os.getpid()))
   while(root/'hold-login').exists():time.sleep(.02)
- (root/'login-finalized').write_text('complete')
+ (root/'login-finalized').mkdir(mode=0o700,exist_ok=True);(root/'login-finalized'/provider).mkdir(mode=0o700,exist_ok=True)
+ marker=root/'login-finalized'/provider/home.name;marker.write_text('complete');marker.chmod(0o600)
  print('Fake sign-in completed.',end='',flush=True);sys.exit(0)
 if 'logout' in args:audit('logout');credential.unlink(missing_ok=True);sys.exit(0)
 if provider=='claude' and 'status' in args:audit('identity');output({'loggedIn':credential.exists(),'authMethod':'claude.ai','email':email,'subscriptionType':'max'});sys.exit(0)

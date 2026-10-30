@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
@@ -155,9 +156,24 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 				return fmt.Errorf("login operation %s has no confirmed terminal exit; reconnect: %w", operation, err)
 			}
 		}
-		for {
+		// Bound the whole post-exit verification phase as well as its retries.
+		// Failure retains the operation so retrying cannot create another profile.
+		verifyCtx, finishVerify := context.WithTimeout(ctx, commandTimeout)
+		defer finishVerify()
+		failed := func(err error) error {
+			action := "resolve the reported problem before retrying"
+			var response apiResponseError
+			if errors.Is(err, errDaemonNotRunning) {
+				action = "start the daemon with ao start"
+			} else if errors.As(err, &response) && response.ErrorBody.Code == "AGENT_ACCOUNT_STORAGE_UNAVAILABLE" {
+				action = "check the account storage permissions in Settings"
+			}
+			return fmt.Errorf("login verification failed; %s; operation retained; reconnect with ao account login --operation %s: %w", action, operation, err)
+		}
+		const maxAttempts = 3
+		for attempt := 1; ; attempt++ {
 			var op accountOperation
-			err := c.getJSON(ctx, "agents/accounts/operations/"+url.PathEscape(operation), &op)
+			err := c.getJSON(verifyCtx, "agents/accounts/operations/"+url.PathEscape(operation), &op)
 			if err == nil && op.Phase == "complete" {
 				return writeLoginOutcome(cmd, op, jsonOut)
 			}
@@ -165,16 +181,42 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 				var verified struct {
 					Status string `json:"status"`
 				}
-				err = c.postJSON(ctx, "agents/accounts/login/"+url.PathEscape(operation)+"/verify", struct{}{}, &verified)
+				err = c.postJSON(verifyCtx, "agents/accounts/login/"+url.PathEscape(operation)+"/verify", struct{}{}, &verified)
+				if ctx.Err() != nil {
+					return c.cancelAccountLogin(cmd, operation, jsonOut)
+				}
+				if err == nil && verified.Status == "waiting" {
+					return fmt.Errorf("not signed in; native login has exited. Operation retained; retry with ao account login --operation %s, or cancel it in Settings", operation)
+				}
+				if err == nil {
+					err = c.getJSON(verifyCtx, "agents/accounts/operations/"+url.PathEscape(operation), &op)
+					if err == nil && op.Phase == "complete" {
+						return writeLoginOutcome(cmd, op, jsonOut)
+					}
+					if err == nil {
+						err = fmt.Errorf("login result remains unconfirmed")
+					}
+				}
 			}
 			if ctx.Err() != nil {
 				return c.cancelAccountLogin(cmd, operation, jsonOut)
 			}
-			if err != nil && !transientAccountLoginError(err) {
-				return err
+			if !transientAccountLoginError(err) || attempt == maxAttempts || verifyCtx.Err() != nil {
+				return failed(err)
 			}
-			if err = accountPoll(ctx); err != nil {
-				return c.cancelAccountLogin(cmd, operation, jsonOut)
+			delay := 500 * time.Millisecond * time.Duration(1<<(attempt-1))
+			if _, writeErr := fmt.Fprintf(cmd.ErrOrStderr(), "Login verification attempt %d/%d failed: %v; retrying in %s.\n", attempt, maxAttempts, err, delay); writeErr != nil {
+				return writeErr
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-verifyCtx.Done():
+				timer.Stop()
+				if ctx.Err() != nil {
+					return c.cancelAccountLogin(cmd, operation, jsonOut)
+				}
+				return failed(err)
+			case <-timer.C:
 			}
 		}
 	}}
@@ -191,9 +233,17 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 func transientAccountLoginError(err error) bool {
 	var response apiResponseError
 	if errors.As(err, &response) {
-		return response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError
+		if response.ErrorBody.Code == "AGENT_ACCOUNT_STORAGE_UNAVAILABLE" {
+			return false
+		}
+		switch response.StatusCode {
+		case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
 	}
-	return errors.Is(err, errDaemonUnavailable) || errors.Is(err, errDaemonNotRunning)
+	return errors.Is(err, errDaemonUnavailable) && !errors.Is(err, errDaemonNotRunning)
 }
 
 func writeLoginOutcome(cmd *cobra.Command, op accountOperation, jsonOut bool) error {
@@ -263,15 +313,16 @@ func accountCredentialKey(name string) (root, sensitive bool) {
 }
 
 type accountLoginOutput struct {
-	parser  *ansi.Parser
-	key     string
-	keyRoot bool
-	padding int
-	hiding  bool
+	parser    *ansi.Parser
+	key       string
+	keyRoot   bool
+	nameDepth int
+	padding   int
+	hiding    bool
 }
 
 func (w *accountLoginOutput) resetKey() {
-	w.key, w.keyRoot, w.padding = "", false, 0
+	w.key, w.keyRoot, w.nameDepth, w.padding = "", false, 0, 0
 }
 
 func (w *accountLoginOutput) write(out io.Writer, data []byte) {
@@ -298,12 +349,29 @@ func (w *accountLoginOutput) write(out io.Writer, data []byte) {
 				hide()
 				return
 			}
-			w.padding++
+			if w.nameDepth == 0 {
+				w.padding++
+			}
 		case r == '\'' || r == '"':
-			w.padding++
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '%':
-			if w.padding > 0 {
+			if w.nameDepth == 0 {
+				w.padding++
+			}
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '%' || r == '.' || r == '[' || r == ']':
+			separator := r == '.' || r == '[' || r == ']'
+			if w.padding > 0 && !separator {
 				w.resetKey()
+			}
+			if separator {
+				// A sensitive segment remains sensitive through nested names
+				// such as access_token[session] or oauth.token.value.
+				_, sensitive := accountCredentialKey(w.key)
+				w.keyRoot = w.keyRoot || sensitive
+				w.padding = 0
+			}
+			if r == '[' {
+				w.nameDepth++
+			} else if r == ']' && w.nameDepth > 0 {
+				w.nameDepth--
 			}
 			w.key += string(r)
 			if strings.EqualFold(w.key, "sk-") || w.key == "eyJ" {

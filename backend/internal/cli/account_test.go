@@ -176,7 +176,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 			_, _ = io.WriteString(w, `{"operationId":"op-A","provider":"codex","shellTerminal":{"handleId":"shellterm-A"}}`)
 		case "/api/v1/agents/accounts/login/op-A/verify":
 			cancel()
-			w.WriteHeader(http.StatusNoContent)
+			_, _ = io.WriteString(w, `{"status":"waiting"}`)
 		case "/api/v1/agents/accounts/login/op-A/cancel":
 			cancelled = true
 			w.WriteHeader(http.StatusNoContent)

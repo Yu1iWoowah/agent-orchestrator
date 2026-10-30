@@ -226,9 +226,13 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 		}
 		return op.ResultAccountID
 	}
+	// This route waits for local-store initialization; /readyz only publishes
+	// the listener. Do not race catalog directory creation/protection below.
+	api("GET", "/agents/codex/accounts", nil)
 	// Reproduce the audit81 unresolved boundary with explicit metadata evidence.
 	legacyID := "b60a377d-da68-4a61-86f2-f31f04c571f2"
-	legacyRoot := filepath.Join(e.dataDir, "harnesses", "codex", "accounts")
+	legacyParent := filepath.Join(e.dataDir, "harnesses", "codex")
+	legacyRoot := filepath.Join(legacyParent, "accounts")
 	legacyHome := filepath.Join(legacyRoot, legacyID, "credential-home")
 	if err := os.MkdirAll(legacyHome, 0700); err != nil {
 		t.Fatal(err)
@@ -242,7 +246,7 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 	}
 	_ = os.WriteFile(filepath.Join(root, "next-identity"), []byte("legacy@example.test"), 0600)
 	_ = os.WriteFile(filepath.Join(root, "approve-login"), nil, 0600)
-	if err := os.Chmod(legacyRoot, 0775); err != nil {
+	if err := os.Chmod(legacyParent, 0775); err != nil {
 		t.Fatal(err)
 	}
 	var detached struct {
@@ -252,19 +256,43 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 		t.Fatal("missing detached reconnect reference", err)
 	}
 	finalizedDeadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(finalizedDeadline) {
-		if _, err := os.Stat(filepath.Join(root, "login-finalized")); err == nil {
+	// Force the same read-only probe that startup can run concurrently with
+	// a managed login. It must not change the device identity into a duplicate.
+	probeCtx, probeCancel := context.WithDeadline(context.Background(), finalizedDeadline)
+	probe := exec.CommandContext(probeCtx, filepath.Join(root, "bin", "codex"), "login", "status")
+	probe.Env = environ
+	probeOutput, probeErr := probe.CombinedOutput()
+	probeCancel()
+	if probeErr != nil || !strings.Contains(string(probeOutput), "Logged in using ChatGPT") || !reflect.DeepEqual(deviceBefore, deviceSnapshot()) {
+		t.Fatal("read-only background probe mutated the device or failed")
+	}
+	// A status probe or another login cannot satisfy this operation's marker.
+	finalized := filepath.Join(root, "login-finalized", "codex", detached.OperationID)
+	for {
+		if _, err := os.Stat(finalized); err == nil {
 			break
+		}
+		if !time.Now().Before(finalizedDeadline) {
+			t.Fatal("this login did not reach its finalization checkpoint")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// An explicit check preserves the unsafe-root 503 assertion; the CLI now
-	// correctly waits/retries temporary failures instead of exiting on 503.
+	// Make an ancestor unsafe: catalog refresh may protect its own root, but
+	// must reject a writable ancestor rather than repair it. Check the exact
+	// precondition before and after the RPC, with no retry/alternate outcome.
+	assertUnsafeParent := func() {
+		info, err := os.Stat(legacyParent)
+		if err != nil || info.Mode().Perm() != 0775 {
+			t.Fatal("unsafe legacy ancestor precondition changed")
+		}
+	}
+	assertUnsafeParent()
 	failure := api("POST", "/agents/accounts/login/"+detached.OperationID+"/verify", struct{}{}, http.StatusServiceUnavailable)
 	if failure["code"] != "AGENT_ACCOUNT_STORAGE_UNAVAILABLE" {
 		t.Fatalf("unsafe legacy root lost canonical error: %v", failure)
 	}
-	if err := os.Chmod(legacyRoot, 0700); err != nil {
+	assertUnsafeParent()
+	if err := os.Chmod(legacyParent, 0700); err != nil {
 		t.Fatal(err)
 	}
 	legacySnapshot := api("GET", "/agents/codex/accounts", nil)
@@ -650,5 +678,70 @@ func stopAccountFixtureProcesses(root string) {
 	}
 	for _, pid := range owned() {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+// Login status is an observation, even when a different managed login has
+// already been approved. It must never run the credential-writing login path.
+func TestE2E_AccountProviderLoginStatusDoesNotMutateDeviceOrFinalizeLogin(t *testing.T) {
+	for _, signedIn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("signed-in=%t", signedIn), func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, "h")
+			device := filepath.Join(home, ".codex")
+			if err := os.MkdirAll(device, 0700); err != nil {
+				t.Fatal(err)
+			}
+			bin := filepath.Join(root, "codex")
+			if err := os.WriteFile(bin, accountProviderFixture, 0700); err != nil {
+				t.Fatal(err)
+			}
+			credential := filepath.Join(device, "auth.json")
+			before := []byte(`{"fixtureEmail":"device@example.test","fakeCredential":"DEVICE_FIXTURE"}`)
+			var beforeInfo os.FileInfo
+			if signedIn {
+				if err := os.WriteFile(credential, before, 0600); err != nil {
+					t.Fatal(err)
+				}
+				beforeInfo, _ = os.Stat(credential)
+			}
+			if err := os.WriteFile(filepath.Join(root, "approve-login"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "next-identity"), []byte("different@example.test"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, "login", "status")
+			cmd.Env = []string{"HOME=" + home, "ACCOUNT_E2E_ROOT=" + root, "PATH=/usr/bin:/bin"}
+			out, runErr := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatal("read-only status blocked", ctx.Err())
+			}
+			data, readErr := os.ReadFile(credential)
+			if signedIn {
+				afterInfo, err := os.Stat(credential)
+				if err != nil || readErr != nil || !bytes.Equal(data, before) || !os.SameFile(beforeInfo, afterInfo) || afterInfo.Mode() != beforeInfo.Mode() {
+					t.Fatal("read-only status changed device credentials")
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatal("read-only status created device credentials")
+			}
+			for _, path := range []string{filepath.Join(device, ".fixture-identity"), filepath.Join(root, "login-finalized"), filepath.Join(root, "credential-written")} {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatal("read-only status created login state", filepath.Base(path))
+				}
+			}
+			if signedIn && (runErr != nil || !strings.Contains(string(out), "Logged in using ChatGPT")) {
+				t.Fatalf("signed-in observation failed: %v %s", runErr, out)
+			}
+			if !signedIn {
+				var exit *exec.ExitError
+				if !asExit(runErr, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), "Not logged in") {
+					t.Fatalf("signed-out observation failed: %v %s", runErr, out)
+				}
+			}
+		})
 	}
 }

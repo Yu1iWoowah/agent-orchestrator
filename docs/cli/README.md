@@ -383,7 +383,8 @@ it does not automatically stop them. History and past bindings remain traceable.
 Interactive add/login attaches the daemon's login PTY, not a local provider.
 Native prompts and input echo stream immediately, including fragments without a
 newline. ANSI/OSC controls are removed and credential-shaped values are masked
-across frames; no transcript is written by the CLI. Do not paste API keys or tokens into a
+across frames, including nested/indexed/dotted parameter names; no transcript
+is written by the CLI. Do not paste API keys or tokens into a
 subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
 cleanup. If acceptance won the race, it reports that the account was saved.
 If cleanup is unconfirmed, retain the operation reference and reconnect; do not
@@ -393,8 +394,13 @@ For automation, `--detach --json` starts or reads a **pending** operation refere
 without attaching; it never claims success from HTTP 202. Reconnect with
 `ao account login --operation <id> --no-attach --json` to watch the terminal exit
 without displaying its output. Both modes verify only after a confirmed native
-exit and retry temporary verification failures. This mode is useful when sign-in is completed in an already
-attached terminal. A disconnect does not create another profile. The daemon
+exit. If verification reports **Not signed in**, the command exits 1 and retains
+the operation; retry the same `--operation` or cancel it in Settings. Temporary
+verification failures are shown on stderr and retried at most three times with
+500ms then 1s backoff, within a two-minute overall verification budget. Account
+storage errors, unsupported modes and a stopped daemon exit immediately with
+repair/start and reconnect instructions. This mode is useful when sign-in is completed in an
+already attached terminal. A disconnect does not create another profile. The daemon
 recovers unfinished operations after restart; a cancelled operation cannot be
 resumed into a new login.
 
