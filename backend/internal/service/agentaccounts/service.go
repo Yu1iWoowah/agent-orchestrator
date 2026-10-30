@@ -45,10 +45,11 @@ type resetCrediter interface {
 // Service is the account catalog, its cached readings, and the per-session
 // launch environment.
 type Service struct {
-	store     ports.AgentAccountStore
-	providers map[domain.AgentAccountProvider]ports.AgentAccountProviderCLI
-	root      string // account folders live in root/<provider>/<id>
-	terminals Terminals
+	store          ports.AgentAccountStore
+	providers      map[domain.AgentAccountProvider]ports.AgentAccountProviderCLI
+	defaultHarness domain.AgentHarness
+	root           string // account folders live in root/<provider>/<id>
+	terminals      Terminals
 	// stopAgents stops every running agent on an account before it is removed.
 	stopAgents  func(context.Context, string) error
 	usageOwners func(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
@@ -98,7 +99,7 @@ func New(store ports.AgentAccountStore, providers []ports.AgentAccountProviderCL
 		byProvider[p.Provider()] = p
 	}
 	return &Service{
-		store: store, providers: byProvider, root: filepath.Clean(root), terminals: terminals, log: log,
+		defaultHarness: domain.HarnessClaudeCode, store: store, providers: byProvider, root: filepath.Clean(root), terminals: terminals, log: log,
 		now: func() time.Time { return time.Now().UTC() }, readings: map[string]*reading{}, warnings: map[string]string{}, activeLogins: map[string]bool{}, retries: map[string]lifecycleRetry{},
 	}
 }

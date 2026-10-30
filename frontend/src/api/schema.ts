@@ -277,6 +277,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/accounts/{accountId}/projects/{projectId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set one local project provider or role account without replacing config */
+        put: operations["setProjectAgentAccount"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/accounts/{accountId}/reset-credit": {
         parameters: {
             query?: never;
@@ -5241,6 +5258,8 @@ export interface components {
             provider: string;
             reasonCode?: string;
             resultAccountId?: string;
+            /** @description Opaque login PTY handle, only while a login is pending; no profile or transcript. */
+            terminalHandleId?: string;
             /** Format: date-time */
             updatedAt: string;
         };
@@ -9157,6 +9176,12 @@ export interface components {
         SetConversationTitleResponse: {
             title: string;
         };
+        SetProjectAgentAccountRequest: {
+            /** @description Stable configured reviewer harness; required for reviewer role, never an array index. */
+            reviewer?: string;
+            /** @enum {string} */
+            role?: "worker" | "orchestrator" | "reviewer";
+        };
         SetProjectConfigInput: {
             config: components["schemas"]["ProjectConfig"];
         };
@@ -10935,6 +10960,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentAccountsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setProjectAgentAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                accountId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetProjectAgentAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

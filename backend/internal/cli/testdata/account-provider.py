@@ -1,0 +1,86 @@
+#!/usr/bin/python3
+"""Linux account E2E provider; never connects to a real provider or keyring."""
+import os,sys,json,pathlib,time,uuid,urllib.parse
+provider=pathlib.Path(sys.argv[0]).name
+root=pathlib.Path(os.environ['ACCOUNT_E2E_ROOT']); home=pathlib.Path(os.environ.get('CODEX_HOME' if provider=='codex' else 'CLAUDE_CONFIG_DIR') or pathlib.Path.home()/('.codex' if provider=='codex' else '.claude'))
+credential=home/('auth.json' if provider=='codex' else '.credentials.json');args=sys.argv[1:]
+email=json.loads(credential.read_text()).get('fixtureEmail','device-'+provider+'@example.test') if credential.is_file() else 'device-'+provider+'@example.test'
+def audit(action,conversation=None):
+ if '/agent-accounts/' in str(home):
+  for key in (('OPENAI_API_KEY','CODEX_API_KEY','CODEX_ACCESS_TOKEN') if provider=='codex' else ('ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN')):
+   if os.environ.get(key):raise RuntimeError('ambient credential reached managed provider')
+ with(root/'invocations.jsonl').open('a')as f:f.write(json.dumps({'provider':provider,'identity':email,'action':action,'conversationId':conversation})+'\n')
+def output(value):print(json.dumps(value),flush=True)
+def identity():return {'type':'chatgpt','email':email,'planType':'plus'} if credential.is_file() else None
+def transcript(tid,cwd):
+ d=home/'sessions';d.mkdir(parents=True,exist_ok=True);p=d/('rollout-'+tid+'.jsonl')
+ if not p.exists():p.write_text(json.dumps({'timestamp':'2026-10-30T00:00:00Z','type':'session_meta','payload':{'id':tid,'cwd':cwd,'timestamp':'2026-10-30T00:00:00Z','cli_version':'0.165.0'}})+'\n'+json.dumps({'type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'Fake preserved history'}]}})+'\n')
+if '--version' in args or '-v' in args:print('codex-cli 0.165.0' if provider=='codex' else '2.1.0 (Claude Code)');sys.exit(0)
+if '--help' in args:print('Fixture provider');sys.exit(0)
+if 'generate-json-schema' in args:
+ out=pathlib.Path(args[args.index('--out')+1]);out.mkdir(parents=True,exist_ok=True);(out/'fixture.json').write_text(json.dumps({'enum':['account/read','account/rateLimits/read','account/updated','model/list']}));sys.exit(0)
+# Authentication probes are observations, not interactive sign-in attempts.
+if provider=='codex' and 'login' in args and args[args.index('login')+1:][:1]==['status']:
+ audit('login-status');print('Logged in using ChatGPT' if credential.is_file() else 'Not logged in',file=sys.stderr,flush=True);sys.exit(0 if credential.is_file() else 1)
+if 'login' in args:
+ # Original audit D4 readability controls, with one unique public code.
+ for line in ('Open https://auth.example.test/device?user_code=D4_PUBLIC_CODE_83157\r\n','Enter your one-time code (expires in 15 minutes):\r\n  D4_PUBLIC_CODE_83157\r\n'):
+  for part in (line[:len(line)//2],line[len(line)//2:]):
+   os.write(1,part.encode());time.sleep(.001)
+ # Public fake OAuth inputs must stay usable when host/path or previous values
+ # contain credential-family words. Never use real authorization data.
+ for address in ('https://claude.ai/oauth/authorize?code=true&client_id=x&response_type=code&redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile&code_challenge=x&code_challenge_method=S256&state=x','https://auth.openai.com/oauth/authorize?response_type=code&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&code_challenge=x&code_challenge_method=S256&state=x'):
+  for part in (address[:len(address)//2],address[len(address)//2:]+'\r\n'):
+   os.write(1,part.encode());time.sleep(.001)
+ # Original audit D3 Unicode and multiline counterexamples, independently delimited.
+ for prefix,suffix in [('headers[ToKen]=',''),('request.headers.APIKey=',''),('headers[Authorİzation]=',''),('Authorization: Basic\r\n ','') ,('Authorization:\r\n\t',''),('{"headers":{"Authorization":\n "','"}}')]:
+  for part in (prefix,'~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',suffix+'\r\n\r\n'):
+   os.write(1,part.encode());time.sleep(.001)
+ # Representative names crossed with wrappers; '~' identifies even a one-byte leak.
+ for key in ('Authorization','Proxy-Authorization','Cookie','Set-Cookie','Session','Auth','passwd','api_key'):
+  for name in ('headers['+key+'][0]','request.headers.'+key,urllib.parse.quote('headers[ '+key+' ][0]',safe='')):
+   for part in (name[:len(name)//2],name[len(name)//2:]+'=','~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','\r\n\r\n'):
+    os.write(1,part.encode());time.sleep(.001)
+ audit('login');print('access_token[session]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('https://example.test/?refresh_token[0]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('oauth.token.value=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste code here if prompted > ',end='',flush=True);print('Paste authorization code: ',end='',flush=True)
+ while not(root/'approve-login').exists():time.sleep(.02)
+ if(root/'decline-login').exists():print('Fake sign-in declined.',flush=True);sys.exit(1)
+ home.mkdir(mode=0o700,parents=True,exist_ok=True);(home/'.fixture-identity').write_text((root/'next-identity').read_text());(home/'.fixture-identity').chmod(0o600);credential.write_text(json.dumps({'fakeCredential':'ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','fixtureEmail':(root/'next-identity').read_text().strip()}));credential.chmod(0o600)
+ if(root/'hold-login').exists():
+  (root/'credential-written').write_text(str(os.getpid()))
+  while(root/'hold-login').exists():time.sleep(.02)
+ (root/'login-finalized').mkdir(mode=0o700,exist_ok=True);(root/'login-finalized'/provider).mkdir(mode=0o700,exist_ok=True)
+ marker=root/'login-finalized'/provider/home.name;marker.write_text('complete');marker.chmod(0o600)
+ print('Fake sign-in completed.',end='',flush=True);sys.exit(0)
+if 'logout' in args:audit('logout');credential.unlink(missing_ok=True);sys.exit(0)
+if provider=='claude' and 'status' in args:audit('identity');output({'loggedIn':credential.exists(),'authMethod':'claude.ai','email':email,'subscriptionType':'max'});sys.exit(0)
+if provider=='claude' and '--output-format' in args:
+ audit('usage')
+ for line in sys.stdin:
+  try:m=json.loads(line)
+  except ValueError:continue
+  if m.get('type')=='control_request':output({'type':'control_response','response':{'subtype':'success','request_id':m.get('request_id'),'response':{'usage':{}}}})
+ sys.exit(0)
+if 'app-server' in args:
+ audit('app-server')
+ for line in sys.stdin:
+  try:m=json.loads(line)
+  except ValueError:continue
+  if 'id'not in m:continue
+  method=m.get('method');params=m.get('params')or{}
+  if method=='account/read':result={'account':identity(),'requiresOpenaiAuth':True}
+  elif method=='account/logout':credential.unlink(missing_ok=True);result={};audit('logout')
+  elif method=='account/rateLimits/read':result={'rateLimits':{'primary':{'usedPercent':20,'windowDurationMins':300,'resetsAt':int(time.time())+3600},'planType':'plus'}}
+  elif method=='model/list':result={'data':[{'id':'gpt-fake','model':'gpt-fake','displayName':'GPT Fake','isDefault':True,'supportedReasoningEfforts':[{'reasoningEffort':'low','description':'Low'}],'defaultReasoningEffort':'low'}],'nextCursor':None}
+  elif method in ('thread/start','thread/resume','thread/read'):
+   tid=params.get('threadId')or str(uuid.uuid4())
+   if method=='thread/resume' and not (home/'sessions'/('rollout-'+tid+'.jsonl')).exists():
+    output({'id':m['id'],'error':{'code':-32602,'message':'Fixture conversation unavailable'}});continue
+   if method=='thread/start' and not params.get('ephemeral'):transcript(tid,params.get('cwd')or os.getcwd())
+   result={'thread':{'id':tid,'turns':[]}};audit(method+'-ephemeral' if params.get('ephemeral') else method,tid)
+  elif method=='turn/start':tid=params.get('threadId');result={'turn':{'id':'fake-turn','status':'inProgress'}};audit('turn')
+  else:result={}
+  output({'id':m['id'],'result':result})
+  if method=='turn/start':output({'method':'turn/completed','params':{'threadId':tid,'turn':{'id':'fake-turn','status':'completed','items':[]}}})
+ sys.exit(0)
+audit('terminal');print('Fake terminal ready',flush=True)
+while True:time.sleep(1)

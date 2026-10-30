@@ -50,6 +50,7 @@ type AgentAccountsController struct {
 // Register adds the account routes.
 func (c *AgentAccountsController) Register(r chi.Router) {
 	r.Get("/agents/accounts", c.list)
+	r.Put("/agents/accounts/{accountId}/projects/{projectId}", c.setProjectAccount)
 	r.Get("/agents/accounts/usage", c.usage)
 	r.Get("/agents/accounts/{accountId}/usage-owners", c.usageOwners)
 	r.Post("/agents/accounts/reviewers/{reviewId}/rebuild", c.rebuildReviewer)
@@ -328,6 +329,10 @@ const agentAccountUnsharedMessage = "AO cannot link this account's folder to thi
 
 func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrAgentAccountScopeInvalid):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "AGENT_ACCOUNT_SCOPE_INVALID", "Choose a configured role and a stable reviewer harness.", nil)
+	case errors.Is(err, ports.ErrAgentAccountProjectUnknown):
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PROJECT_NOT_FOUND", "Unknown project", nil)
 	case errors.Is(err, ports.ErrAgentAccountLegacyIdentityConflict):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT", "This identity is already saved in the legacy device account catalog. Choose which login to keep in Settings; AO has not changed the old login.", accountOperationErrorDetails(err, "account_legacy_identity_conflict"))
 	case errors.Is(err, ports.ErrAgentAccountChanged):
@@ -384,11 +389,15 @@ func (c *AgentAccountsController) operation(w http.ResponseWriter, r *http.Reque
 		writeAgentAccountError(w, r, e)
 		return
 	}
+	terminalID := ""
+	if (o.Action == "login" || o.Action == "login-again") && o.Phase == "pending" {
+		terminalID = o.TerminalID
+	}
 	outcome := ""
 	if o.Phase == "complete" {
 		outcome = o.Outcome
 	}
-	envelope.WriteJSON(w, http.StatusOK, AgentAccountOperationResponse{OperationID: o.ID, AccountID: o.AccountID, Provider: o.Provider, Action: o.Action, Phase: o.Phase, Outcome: outcome, ReasonCode: o.ReasonCode, ResultAccountID: o.ResultAccountID, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt})
+	envelope.WriteJSON(w, http.StatusOK, AgentAccountOperationResponse{TerminalHandleID: terminalID, OperationID: o.ID, AccountID: o.AccountID, Provider: o.Provider, Action: o.Action, Phase: o.Phase, Outcome: outcome, ReasonCode: o.ReasonCode, ResultAccountID: o.ResultAccountID, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt})
 }
 func (c *AgentAccountsController) logout(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
@@ -421,4 +430,24 @@ func accountOperationErrorDetails(err error, reason string) map[string]any {
 		}
 	}
 	return details
+}
+
+func (c *AgentAccountsController) setProjectAccount(w http.ResponseWriter, r *http.Request) {
+	svc, ok := c.Svc.(interface {
+		SetProjectAccount(context.Context, string, string, string, string) error
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, "PUT", "/api/v1/agents/accounts/{accountId}/projects/{projectId}")
+		return
+	}
+	var in SetProjectAgentAccountRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	if err := svc.SetProjectAccount(r.Context(), chi.URLParam(r, "projectId"), chi.URLParam(r, "accountId"), in.Role, in.Reviewer); err != nil {
+		writeAgentAccountError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
