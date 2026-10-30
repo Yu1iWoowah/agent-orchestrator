@@ -379,7 +379,8 @@ func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID,
 	return rows > 0, nil
 }
 
-// DeleteTaskPreparation removes only a row that has not been claimed.
+// DeleteTaskPreparation removes only a row that has not been claimed. An old
+// replacement target retains its hidden row and positive termination evidence.
 func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -388,6 +389,32 @@ func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) 
 		return false, fmt.Errorf("begin delete task preparation %s: %w", id, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	q := s.qw.WithTx(tx)
+	row, err := q.GetSession(ctx, id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read task preparation %s: %w", id, err)
+	}
+	if err == nil && row.IsTaskPreparation {
+		retained, err := s.replacementNotificationRetainsSeed(ctx, q, id)
+		if err != nil {
+			return false, fmt.Errorf("verify task preparation notification target %s: %w", id, err)
+		}
+		if retained {
+			// All preparation cleanup callers ignore deleted=false, unlike
+			// seed rollback. Record termination here, in the same transaction.
+			if !row.IsTerminated {
+				rec := rowToRecord(row)
+				rec.IsTerminated, rec.UpdatedAt = true, time.Now().UTC()
+				if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
+					return false, fmt.Errorf("terminate retained task preparation %s: %w", id, err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return false, fmt.Errorf("commit retained task preparation %s: %w", id, err)
+			}
+			return false, nil
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM change_log
 WHERE session_id = ?
