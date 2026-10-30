@@ -191,6 +191,11 @@ vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 }));
 
 vi.mock("../lib/api-client", () => ({
+	// This lifecycle/layout suite has no connected daemon. Settings reads stay
+	// disabled; their connected behavior is covered by the settings suites.
+	subscribeApiBaseUrl: () => () => undefined,
+	getApiBaseUrl: () => "",
+	hasTrustedApiBaseUrl: () => false,
 	apiClient: {
 		GET: reviewGetMock,
 		POST: vi.fn((path: string, ...args: unknown[]) =>
