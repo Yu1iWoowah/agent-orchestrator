@@ -177,8 +177,10 @@ func (c *OrchestratorReplacementController) write(w http.ResponseWriter, r *http
 				view.NotificationReceipts, readErr = replacementNoticeViews(op, receipts)
 			}
 			if readErr != nil {
-				envelope.WriteError(w, r, readErr)
-				return
+				// The operation has already committed. A secondary ledger read
+				// must not turn success into an ambiguous retry of that mutation.
+				view.NotificationReceipts = []ReplacementNotificationView{}
+				view.NotificationReceiptsUnavailable = true
 			}
 		}
 	}

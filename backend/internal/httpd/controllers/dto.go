@@ -4302,6 +4302,8 @@ type OrchestratorReplacementView struct {
 	CancelCommand        string                               `json:"cancelCommand,omitempty"`
 
 	NotificationCompletion *ReplacementNotificationSummaryView `json:"notificationCompletion,omitempty"`
+	// A secondary ledger failure does not invalidate the durable operation.
+	NotificationReceiptsUnavailable bool `json:"notificationReceiptsUnavailable,omitempty" description:"Receipt evidence could not be read. The operation result remains durable; use readCommand to retry the read."`
 
 	// IntakeDrainRequestedAt records a queue kick, not delivery or reading.
 	IntakeDrainRequestedAt *time.Time                        `json:"intakeDrainRequestedAt,omitempty"`

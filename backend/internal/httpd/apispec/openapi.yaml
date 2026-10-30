@@ -23465,6 +23465,10 @@ components:
           items:
             $ref: '#/components/schemas/ReplacementNotificationReceipt'
           type: array
+        notificationReceiptsUnavailable:
+          description: Receipt evidence could not be read. The operation result remains
+            durable; use readCommand to retry the read.
+          type: boolean
         operationKey:
           type: string
         operatorGuidance:

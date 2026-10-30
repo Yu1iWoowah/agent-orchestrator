@@ -7825,6 +7825,8 @@ export interface components {
             intakeTransfer?: components["schemas"]["ReplacementIntakeTransfer"];
             notificationCompletion?: components["schemas"]["ReplacementNotificationSummary"];
             notificationReceipts: components["schemas"]["ReplacementNotificationReceipt"][];
+            /** @description Receipt evidence could not be read. The operation result remains durable; use readCommand to retry the read. */
+            notificationReceiptsUnavailable?: boolean;
             operationKey: string;
             operatorGuidance?: string;
             phase: string;

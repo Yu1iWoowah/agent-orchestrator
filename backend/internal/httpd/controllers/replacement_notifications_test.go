@@ -2,6 +2,8 @@ package controllers_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,10 +18,53 @@ import (
 type noticeReadAPI struct {
 	*replacementAPI
 	receipts []domain.ReplacementNoticeReceipt
+	err      error
 }
 
 func (s noticeReadAPI) WorkerNotificationReceipts(context.Context, string) ([]domain.ReplacementNoticeReceipt, error) {
-	return s.receipts, nil
+	return s.receipts, s.err
+}
+
+func TestReplacementHTTPKeepsCommittedResultWhenNoticeReceiptsUnavailable(t *testing.T) {
+	for _, failure := range []string{"read error", "invalid projection"} {
+		for _, action := range []string{"accept", "get", "retry", "cancel"} {
+			t.Run(failure+"/"+action, func(t *testing.T) {
+				op := replacementAPIState()
+				base := &replacementAPI{op: op}
+				svc := noticeReadAPI{replacementAPI: base}
+				if failure == "read error" {
+					svc.err = errors.New("private-receipt-capability read failed")
+				}
+				router := chi.NewRouter()
+				(&controllers.OrchestratorReplacementController{Svc: svc}).Register(router)
+				method, path, body := http.MethodPost, "/orchestrator/replacements/"+op.ID+"/"+action, `{}`
+				want := http.StatusAccepted
+				if action == "get" {
+					method, path, want = http.MethodGet, "/orchestrator/replacements/"+op.ID, http.StatusOK
+				} else if action == "accept" {
+					path, body = "/projects/demo/orchestrator/replacements", `{"sourceSessionId":"source","operationKey":"`+op.OperationKey+`"}`
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+				if w.Code != want {
+					t.Fatalf("durable %s result was replaced by receipt failure: status=%d body=%s", action, w.Code, w.Body.String())
+				}
+				var response struct {
+					Operation struct {
+						ID          string            `json:"id"`
+						Unavailable bool              `json:"notificationReceiptsUnavailable"`
+						Receipts    []json.RawMessage `json:"notificationReceipts"`
+					} `json:"operation"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Operation.ID != op.ID || !response.Operation.Unavailable || len(response.Operation.Receipts) != 0 {
+					t.Fatalf("missing explicit unavailable receipt view: body=%s err=%v", w.Body.String(), err)
+				}
+				if len(base.calls) != 1 || strings.Contains(w.Body.String(), "private-receipt-capability") {
+					t.Fatal("receipt fallback repeated mutation or leaked private error", base.calls, w.Body.String())
+				}
+			})
+		}
+	}
 }
 func TestReplacementHTTPProjectsDurableNoticeEvidenceWithoutPrivateClaims(t *testing.T) {
 	op := replacementAPIState()

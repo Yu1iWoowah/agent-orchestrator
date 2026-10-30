@@ -11,6 +11,28 @@ import (
 
 const replacementTestID = "11111111-1111-4111-8111-111111111111"
 
+func TestReplacementGetPreservesUnavailableNotificationReceipts(t *testing.T) {
+	cfg := setConfigEnv(t)
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			return
+		}
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/orchestrator/replacements/"+replacementTestID {
+			t.Error("receipt read unexpectedly became a mutation", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"operation":{"id":%q,"phase":"notifying","notificationReceipts":[],"notificationReceiptsUnavailable":true}}`, replacementTestID)
+	}))
+	defer srv.Close()
+	writeRunFileFor(t, cfg, srv)
+	out, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "orchestrator", "replacement", "get", replacementTestID, "--json")
+	if err != nil || calls != 1 || !strings.Contains(out, `"notificationReceiptsUnavailable": true`) {
+		t.Fatal("CLI lost secondary ledger unavailability", calls, out, stderr, err)
+	}
+}
+
 func TestReplacementRepairCLIRequiresExplicitCAS(t *testing.T) {
 	cfg := setConfigEnv(t)
 	calls := 0
