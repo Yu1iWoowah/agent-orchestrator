@@ -195,3 +195,10 @@ Creation claims capture directory identity from an open handle before Git runs.
 This also keeps the snapshot stable on Windows, where `Lstat` may defer loading
 the file ID until a later `SameFile` call. The handle is closed before rename;
 identity comparisons still reject replacements and preserve unverified data.
+
+Ordinary multi-repo child failure also carries its creation claim through the
+private-holder removal pipeline, including the final check after Git prune.
+It never calls the unqualified force-removal fallback. FreshPath with FreshBranch
+still conservatively retains a dirty partial root, branch and copied assets;
+the failed spawn records that inventory. This pre-existing preservation policy
+is not a guarantee that every alternate-path failure leaves no worktree behind.

@@ -667,7 +667,11 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 				forget(repo.outputPath) // an unowned replacement is never a cleanup handle
 				return out, errors.Join(cause, err)
 			}
-			if err := w.forceDestroyPath(cleanupCtx, repo.repoPath, repo.outputPath); err != nil {
+			if err := w.forceDestroyClaimedPath(cleanupCtx, repo.repoPath, repo.outputPath, repo.claim); err != nil {
+				current, statErr := os.Lstat(repo.outputPath)
+				if statErr != nil || !os.SameFile(repo.claim, current) {
+					forget(repo.outputPath)
+				}
 				return out, errors.Join(cause, err)
 			}
 			forget(repo.outputPath)
@@ -1092,7 +1096,7 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo, claim
 	// Move the directory aside rather than waiting out `git worktree remove`'s
 	// walk of an ignored-file mountain; falls through to the git-driven path
 	// below whenever the move is not clearly safe.
-	if handled, err := w.discardWorktree(ctx, repo, path, claim); handled {
+	if handled, err := w.discardWorktree(ctx, repo, path, claim, false); handled {
 		return reclaim, err
 	}
 	if claim != nil {
@@ -1963,6 +1967,31 @@ func (w *Workspace) createWorkspaceProjectRepo(ctx context.Context, repo workspa
 		return "", fmt.Errorf("gitworktree: workspace repo %q worktree add branch %q from %q: %w", repo.name, branch, seedRef, err)
 	}
 	return baseSHA, nil
+}
+
+// forceDestroyClaimedPath reclaims only a directory created by this failed
+// materialization, including copied assets. It never falls back to unqualified
+// Git remove/RemoveAll when identity or probe evidence is unavailable.
+func (w *Workspace) forceDestroyClaimedPath(ctx context.Context, repo, path string, claim os.FileInfo) error {
+	if claim == nil {
+		return fmt.Errorf("gitworktree: missing creation claim for %q: %w", path, ports.ErrWorkspaceDirty)
+	}
+	unlock, err := repoTeardownLock(repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: repo path: %w", err)
+	}
+	defer unlock()
+	if err := w.requireReachableRepo(repo); err != nil {
+		return err
+	}
+	handled, err := w.discardWorktree(ctx, repo, path, claim, true)
+	if err != nil {
+		return err
+	}
+	if !handled {
+		return fmt.Errorf("gitworktree: claimed rollback removal could not be verified for %q: %w", path, ports.ErrWorkspaceDirty)
+	}
+	return nil
 }
 
 func (w *Workspace) forceDestroyPath(ctx context.Context, repo, path string) error {

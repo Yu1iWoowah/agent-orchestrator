@@ -156,7 +156,12 @@ func (w *Workspace) worktreeDirty(ctx context.Context, path string) (dirty, conc
 // first, because a refused teardown must leave the worktree exactly as it was.
 // Creation-claimed rollback instead fails closed when no verified discard is
 // possible; it must not fall back to an unqualified path-based Git removal.
-func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, claim os.FileInfo) (bool, error) {
+// removeCreated is only for the caller's failed new materialization, including
+// copied assets. It requires a claim; normal teardown still refuses dirty data.
+func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, claim os.FileInfo, removeCreated bool) (bool, error) {
+	if removeCreated && claim == nil {
+		return true, fmt.Errorf("gitworktree: removal of newly created directory requires identity: %w", ports.ErrWorkspaceDirty)
+	}
 	registered, locked, conclusive := w.worktreeRegistration(ctx, repo, path)
 	if !conclusive || locked {
 		return false, nil
@@ -227,7 +232,7 @@ func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, clai
 	// anyone, so what git reports here is exactly what gets unlinked. The
 	// worktree stays registered until the prune below, which is what keeps
 	// `git status` answerable at the new location.
-	if registered {
+	if registered && !removeCreated {
 		dirty, conclusive := w.worktreeDirty(ctx, discarded)
 		if !conclusive {
 			restore()
@@ -246,8 +251,9 @@ func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, clai
 	// no longer a safe undo: it would put a de-registered worktree back on disk,
 	// and the next teardown would treat it as an unregistered stray and delete
 	// it without a dirty check. Nothing is at risk in letting it go instead,
-	// because the move only happened after a conclusive clean status: every
-	// change in there is already committed on the session branch.
+	// because normal teardown checked a conclusive clean status, or this is the
+	// caller's newly created rollback directory (including its copied assets).
+	// A creation claim is still rechecked after the remaining probes.
 	stillRegistered, _, conclusive := w.worktreeRegistration(ctx, repo, path)
 	if !conclusive {
 		return true, remove()

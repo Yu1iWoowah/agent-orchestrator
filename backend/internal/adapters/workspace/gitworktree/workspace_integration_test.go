@@ -2033,3 +2033,122 @@ func TestWorktreeCreationIdentityCapturedBeforePathChanges(t *testing.T) {
 		})
 	}
 }
+
+func newChildClaimFailureWorkspace(t *testing.T) (*Workspace, ports.WorkspaceProjectConfig) {
+	t.Helper()
+	git := requireGit(t)
+	tmp := t.TempDir()
+	root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	for name, contents := range map[string]string{"api": "tracked child placeholder", ".gitignore": "/ignored-owner-data\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, git, root, "add", "api", ".gitignore")
+	runGit(t, git, root, "commit", "-m", "add child claim fixture")
+	runGit(t, git, root, "push", "origin", "HEAD:main")
+	source := filepath.Join(root, "copied-source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "marker.txt"), []byte("copied by failed spawn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "child-failure", Kind: domain.KindOrchestrator, Branch: "ao/child-failure", RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: child, BaseBranch: "main"}}, Assets: []ports.WorkspaceProjectAssetConfig{{RelativePath: "copied", SourcePath: source}}}
+	return ws, cfg
+}
+
+func TestDestroyChildRollbackPreservesOwnerReplacedAfterPrune(t *testing.T) {
+	ws, cfg := newChildClaimFailureWorkspace(t)
+	replacement := filepath.Join(t.TempDir(), "replacement")
+	runGit(t, ws.binary, cfg.RootRepoPath, "worktree", "add", "-b", "owner/replacement", replacement, "main")
+	if err := os.WriteFile(filepath.Join(replacement, "ignored-owner-data"), []byte("new rollback owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitOutput(t, ws.binary, replacement, "status", "--porcelain"); status != "" {
+		t.Fatalf("replacement is not clean: %s", status)
+	}
+	handle, err := os.Open(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, statErr := handle.Stat()
+	closeErr := handle.Close()
+	if err := errors.Join(statErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	inner := ws.run
+	swapped := false
+	staged := ""
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := inner(ctx, binary, args...)
+		if err == nil && !swapped && strings.Contains(strings.Join(args, " "), "worktree prune") {
+			// Observe the actual staged root on both implementations. The fault must
+			// still execute when the fixed code uses a private holder instead of trash.
+			trash, globErr := filepath.Glob(filepath.Join(ws.discardedRoot(), "*"))
+			if globErr != nil {
+				return nil, globErr
+			}
+			private, globErr := filepath.Glob(filepath.Join(ws.managedRoot, ".rollback-*", "worktree"))
+			if globErr != nil {
+				return nil, globErr
+			}
+			for _, candidate := range append(trash, private...) {
+				marker, readErr := os.ReadFile(filepath.Join(candidate, "copied", "marker.txt"))
+				if readErr != nil || string(marker) != "copied by failed spawn" {
+					continue
+				}
+				if err := os.Rename(candidate, candidate+".claimed"); err != nil {
+					return nil, err
+				}
+				if err := os.Rename(replacement, candidate); err != nil {
+					return nil, err
+				}
+				staged = candidate
+				swapped = true
+				break
+			}
+		}
+		return out, err
+	}
+	remaining, createErr := ws.CreateWorkspaceProject(t.Context(), cfg)
+	ws.waitForDiscards()
+	ws.sweepDiscarded()
+	ws.waitForDiscards()
+	if !swapped || createErr == nil {
+		t.Fatalf("late prune fault not exercised: swapped=%v error=%v", swapped, createErr)
+	}
+	after, statErr := os.Lstat(staged)
+	if statErr != nil || !os.SameFile(identity, after) {
+		t.Errorf("child rollback deleted replacement: swapped=%v Lstat=%v", swapped, statErr)
+	}
+	if marker, err := os.ReadFile(filepath.Join(staged, "ignored-owner-data")); err != nil || string(marker) != "new rollback owner" {
+		t.Errorf("child rollback deleted new owner data: %q %v", marker, err)
+	}
+	if remaining.Root.Path != "" || len(remaining.Worktrees) != 0 {
+		t.Errorf("unverified rollback returned owned inventory: %+v", remaining)
+	}
+}
+
+func TestWorkspaceProjectFreshPathRetainsCopiedAssetsOnChildFailure(t *testing.T) {
+	ws, cfg := newChildClaimFailureWorkspace(t)
+	cfg.FreshPath, cfg.FreshBranch = true, true
+	remaining, err := ws.CreateWorkspaceProject(t.Context(), cfg)
+	if err == nil || remaining.Root.Path == "" || len(remaining.Worktrees) != 1 || remaining.Worktrees[0].CreationSHA == "" {
+		t.Fatalf("dirty partial lost its durable inventory: %+v %v", remaining, err)
+	}
+	if marker, err := os.ReadFile(filepath.Join(remaining.Root.Path, "copied", "marker.txt")); err != nil || string(marker) != "copied by failed spawn" {
+		t.Fatalf("copied asset was discarded: %q %v", marker, err)
+	}
+	if refs := gitOutput(t, ws.binary, cfg.RootRepoPath, "for-each-ref", "--format=%(refname)", "refs/heads/"+remaining.Root.Branch); refs == "" {
+		t.Fatal("retained root lost its branch")
+	}
+	if marker, err := os.ReadFile(filepath.Join(cfg.Assets[0].SourcePath, "marker.txt")); err != nil || string(marker) != "copied by failed spawn" {
+		t.Fatalf("canonical source changed: %q %v", marker, err)
+	}
+}
