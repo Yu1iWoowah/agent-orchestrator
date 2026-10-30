@@ -80,6 +80,9 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 	// validateReplacementTransition/Stage already require positive facts for
 	// every phase edge. All non-whitelisted fields must still match below.
 	allowed.Phase = after.Phase
+	if ctx.Value(replacementNoticeCompletionKey{}) == q {
+		allowed.NotificationCompletion = after.NotificationCompletion
+	}
 	if activation {
 		allowed.WriterActivation, allowed.Notifications = after.WriterActivation, after.Notifications
 	}
@@ -219,7 +222,7 @@ func (s *Store) saveReplacementCheckpoint(ctx context.Context, q *gen.Queries, i
 }
 
 func legacyReplacementHasNoProof(op domain.OrchestratorReplacement) bool {
-	return op.FrozenAt == nil && op.Transcript == nil && op.SourceStopIntentAt == nil && op.SourceStop == nil && op.SourceRetiredAt == nil &&
+	return op.NotificationCompletion == nil && op.FrozenAt == nil && op.Transcript == nil && op.SourceStopIntentAt == nil && op.SourceStop == nil && op.SourceRetiredAt == nil &&
 		op.WriterActivation == nil && op.SuccessorSessionID == "" && op.SuccessorController == nil && op.Bootstrap == nil && op.ResumeEvidence == nil &&
 		op.SpawnRequestID == "" && op.SpawnRequestHash == "" && op.SpawnRetryGeneration == 0 && len(op.SpawnAttempts) == 0 &&
 		op.RetainedRetry == nil && len(op.ControlAttempts) == 0 && op.BootstrapClientID == "" && op.ResumeProbeClientID == "" && op.IntakeReleasedAt == nil && op.IntakeDrainRequestedAt == nil && op.IntakeTransfer == nil &&

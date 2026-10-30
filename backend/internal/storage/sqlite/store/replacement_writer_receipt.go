@@ -33,7 +33,7 @@ func validateReplacementWriterActivation(op domain.OrchestratorReplacement) erro
 		}
 		seen[notice.SessionID] = true
 	}
-	if op.Phase == domain.ReplacementCompleted && (op.IntakeReleasedAt == nil || op.IntakeDrainRequestedAt == nil || len(op.Notifications) != 0) {
+	if op.Phase == domain.ReplacementCompleted && (op.IntakeReleasedAt == nil || op.IntakeDrainRequestedAt == nil || len(op.Notifications) != 0 && (op.NotificationCompletion == nil || !op.NotificationCompletion.ValidFor(op))) {
 		return domain.ErrReplacementStateInvalid
 	}
 	return nil
@@ -63,6 +63,9 @@ func preserveReplacementWriterActivation(ctx context.Context, q *gen.Queries, be
 		return nil
 	}
 	if b == nil || a.BeforeEpoch != b.BeforeEpoch || a.AfterEpoch != b.AfterEpoch || a.Owner != b.Owner || a.CapabilityVerifier != b.CapabilityVerifier || !a.ActivatedAt.Equal(b.ActivatedAt) {
+		return domain.ErrReplacementStateInvalid
+	}
+	if len(before.Notifications) != len(after.Notifications) {
 		return domain.ErrReplacementStateInvalid
 	}
 	nextByID := make(map[domain.SessionID]domain.ReplacementWorkerNotification, len(after.Notifications))

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestReplacementIntakeKickReceiptFencesCurrentWriter(t *testing.T) {
@@ -126,9 +127,8 @@ func TestReplacementKickDoesNotClearWorkerNotificationFailure(t *testing.T) {
 	op.Error = &domain.ReplacementFailure{Code: "ORCHESTRATOR_HANDOFF_WORKER_NOTIFICATION_PENDING", Message: "worker notification pending", Retryable: true}
 	op.ResumePhase = domain.ReplacementNotifying
 	op.Notifications = []domain.ReplacementWorkerNotification{{SessionID: f.worker.ID, ContactID: "handoff-notice:" + op.ID + ":" + string(f.worker.ID), ObservedOwner: f.worker.ControllerOwner(), State: "pending", CreatedAt: time.Now().UTC()}}
-	if saved, err := f.st.SaveOrchestratorReplacement(ctx, op); err != nil || !saved {
-		t.Fatal(saved, err)
-	}
+	// Activation targets are managed facts, so preload the sealed fixture.
+	fixturestore.SeedReplacementTestFacts(t, f.st, op)
 	op, _, err := f.st.GetOrchestratorReplacement(ctx, op.ID)
 	if err != nil {
 		t.Fatal(err)

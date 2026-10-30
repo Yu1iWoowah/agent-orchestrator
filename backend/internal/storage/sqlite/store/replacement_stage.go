@@ -60,7 +60,7 @@ func validateReplacementStage(op domain.OrchestratorReplacement) error {
 			return invalid
 		}
 	}
-	if op.Phase == domain.ReplacementCompleted && (op.IntakeReleasedAt == nil || op.IntakeDrainRequestedAt == nil || len(op.Notifications) != 0) {
+	if op.Phase == domain.ReplacementCompleted && (op.IntakeReleasedAt == nil || op.IntakeDrainRequestedAt == nil || len(op.Notifications) != 0 && (op.NotificationCompletion == nil || !op.NotificationCompletion.ValidFor(op))) {
 		return invalid
 	}
 	if op.SourceStopIntentAt != nil || op.SourceStop != nil || op.SourceRetiredAt != nil {

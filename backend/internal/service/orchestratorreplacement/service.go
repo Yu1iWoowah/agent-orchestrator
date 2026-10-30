@@ -14,6 +14,8 @@ import (
 
 // Store retains operation facts independently of the request or coordinator.
 type Store interface {
+	ReconcileReplacementNotificationReceipts(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
+	ReplacementWorkerNoticeReceipts(context.Context, string) ([]domain.ReplacementNoticeReceipt, error)
 	RecordReplacementResumeUnlaunched(context.Context, string, int64, string, string, time.Time) (domain.OrchestratorReplacement, bool, error)
 	SaveReplacementRuntimeProgress(context.Context, domain.OrchestratorReplacement) (bool, error)
 	RetryRetainedReplacement(context.Context, string, int64, time.Time, time.Time) (domain.OrchestratorReplacement, bool, error)
@@ -84,9 +86,11 @@ type Deps struct {
 
 // Service accepts and reconciles operations; it never owns provider processes.
 type Service struct {
-	deps    Deps
-	locksMu sync.Mutex
-	locks   map[domain.ProjectID]*sync.Mutex
+	noticeMu     sync.Mutex
+	noticeCursor map[string]int
+	deps         Deps
+	locksMu      sync.Mutex
+	locks        map[domain.ProjectID]*sync.Mutex
 }
 
 // Request intentionally contains no caller-supplied harness or config override.
@@ -124,4 +128,9 @@ func (s *Service) Get(ctx context.Context, id string) (domain.OrchestratorReplac
 		return op, operationNotFound()
 	}
 	return op, err
+}
+
+// WorkerNotificationReceipts reads verified ledger facts, not provider replies.
+func (s *Service) WorkerNotificationReceipts(ctx context.Context, id string) ([]domain.ReplacementNoticeReceipt, error) {
+	return s.deps.Store.ReplacementWorkerNoticeReceipts(ctx, id)
 }

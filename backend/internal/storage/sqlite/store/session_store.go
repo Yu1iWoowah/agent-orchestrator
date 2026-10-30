@@ -883,7 +883,16 @@ func (s *Store) DeleteSession(ctx context.Context, id domain.SessionID) (bool, e
 	if err != nil {
 		return false, fmt.Errorf("delete seed session: probe seed state for %s: %w", id, err)
 	}
+	if isSeed {
+		retained, err := s.replacementNotificationRetainsSeed(ctx, q, id)
+		if err != nil {
+			return false, fmt.Errorf("delete seed session: verify notification target: %w", err)
+		}
+		isSeed = !retained
+	}
 	if !isSeed {
+		// An activation target retains its row for the caller's existing
+		// MarkTerminated fallback. Absence cannot become skipped evidence.
 		// Commit the empty tx so we don't leak a transaction. Critically, do
 		// NOT touch change_log here — for a live session that contains real
 		// session_created / session_updated CDC events.
