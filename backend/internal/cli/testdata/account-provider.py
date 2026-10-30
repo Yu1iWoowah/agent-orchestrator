@@ -23,10 +23,14 @@ if 'generate-json-schema' in args:
 if provider=='codex' and 'login' in args and args[args.index('login')+1:][:1]==['status']:
  audit('login-status');print('Logged in using ChatGPT' if credential.is_file() else 'Not logged in',file=sys.stderr,flush=True);sys.exit(0 if credential.is_file() else 1)
 if 'login' in args:
+ # Original audit D3 Unicode and multiline counterexamples, independently delimited.
+ for prefix,suffix in [('headers[ToKen]=',''),('request.headers.APIKey=',''),('headers[Authorİzation]=',''),('Authorization: Basic\r\n ','') ,('Authorization:\r\n\t',''),('{"headers":{"Authorization":\n "','"}}')]:
+  for part in (prefix,'~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',suffix+'\r\n\r\n'):
+   os.write(1,part.encode());time.sleep(.001)
  # Representative names crossed with wrappers; '~' identifies even a one-byte leak.
  for key in ('Authorization','Proxy-Authorization','Cookie','Set-Cookie','Session','Auth','passwd','api_key'):
   for name in ('headers['+key+'][0]','request.headers.'+key,urllib.parse.quote('headers[ '+key+' ][0]',safe='')):
-   for part in (name[:len(name)//2],name[len(name)//2:]+'=','~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','\r\n'):
+   for part in (name[:len(name)//2],name[len(name)//2:]+'=','~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','\r\n\r\n'):
     os.write(1,part.encode());time.sleep(.001)
  audit('login');print('access_token[session]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('https://example.test/?refresh_token[0]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('oauth.token.value=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste authorization code: ',end='',flush=True)
  while not(root/'approve-login').exists():time.sleep(.02)

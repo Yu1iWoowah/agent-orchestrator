@@ -386,7 +386,13 @@ newline. ANSI/OSC controls are removed and credential-shaped values are masked
 across frames. URL-decoded parameter path segments (including nested/indexed,
 dotted, slash, hyphen and underscore forms) are classified by credential family,
 including authorization, cookie, session and auth fields. Ambiguous encodings
-are hidden at assignment. No transcript is written by the CLI. Do not paste API keys or tokens into a
+are hidden at assignment. Names use Unicode case-folding and NFKC normalization;
+non-ASCII or unknown name characters remain sensitive. Sensitive values stay
+hidden across LF, CRLF and CR. A JSON value is hidden until its complete string,
+container or scalar boundary. Other uncertain output stays hidden until a blank
+line or a recognizable login prompt; unrecognized continuation/metadata lines
+may therefore remain hidden. Prompt recognition never ends a JSON string.
+No transcript is written by the CLI. Do not paste API keys or tokens into a
 subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
 cleanup. If acceptance won the race, it reports that the account was saved.
 If cleanup is unconfirmed, retain the operation reference and reconnect; do not

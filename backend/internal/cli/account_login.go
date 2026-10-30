@@ -13,9 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"time"
-	"unicode/utf8"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -24,6 +22,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
+
+const legacyConflictGuidance = "remove the conflicting legacy Codex login in Settings > Accounts, then run ao account add --provider codex"
 
 type accountOperation struct {
 	OperationID      string `json:"operationId"`
@@ -166,7 +166,7 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 			if errors.As(err, &response) && response.ErrorBody.Code == "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT" {
 				// The daemon emits this only after completing legacy-conflict
 				// cleanup; reconnecting that finished operation cannot retry it.
-				return fmt.Errorf("login ended with a legacy identity conflict; remove the conflicting legacy Codex login in Settings > Accounts, then run ao account add --provider codex: %w", err)
+				return fmt.Errorf("login ended with a legacy identity conflict; %s: %w", legacyConflictGuidance, err)
 			}
 			if errors.Is(err, errDaemonNotRunning) {
 				action = "start the daemon with ao start"
@@ -269,6 +269,9 @@ func writeLoginOutcome(cmd *cobra.Command, op accountOperation, jsonOut bool) er
 	if op.Phase != "complete" {
 		return fmt.Errorf("login %s is not confirmed", op.OperationID)
 	}
+	if op.Outcome == "legacy-conflict" {
+		return fmt.Errorf("login %s ended with a legacy identity conflict; %s", op.OperationID, legacyConflictGuidance)
+	}
 	if op.Outcome != "complete" {
 		return fmt.Errorf("login %s: %s (%s)", op.OperationID, op.Outcome, op.ReasonCode)
 	}
@@ -306,145 +309,6 @@ type accountTerminalFrame struct {
 	Data string `json:"data,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
-}
-
-// Provider login prompts are live only. No replay/transcript file or credential
-// file is read by this client. Known credential-shaped values are suppressed;
-// device authorization codes remain visible so the native login can complete.
-// Classify parameter-name families rather than provider-specific field names.
-func accountCredentialKey(name string) (root, sensitive bool) {
-	decoded, err := url.QueryUnescape(name)
-	if err != nil || strings.ContainsRune(decoded, '%') {
-		// An incomplete/ambiguous encoding is not proof of a harmless name.
-		// Do not latch a partial escape, but hide its value at assignment.
-		return false, true
-	}
-	name = strings.ToLower(decoded)
-	separator := func(r rune) bool { return strings.ContainsRune("[] ./-_\"'\t\r\n", r) }
-	fragments := strings.FieldsFunc(name, separator)
-	trailingSeparator := name != "" && separator(rune(name[len(name)-1]))
-	for i, fragment := range fragments {
-		for _, family := range []string{"token", "secret", "password", "passwd", "credential", "apikey", "authorization", "bearer", "cookie", "session", "auth"} {
-			if strings.Contains(fragment, family) {
-				root = true
-			}
-		}
-		if strings.HasSuffix(fragment, "key") {
-			sensitive = true
-			// A completed *key segment stays sensitive through later path
-			// segments. A prefix like keyboard is not itself a *key name.
-			root = root || i < len(fragments)-1 || trailingSeparator
-		}
-	}
-	return root, root || sensitive
-}
-
-type accountLoginOutput struct {
-	parser    *ansi.Parser
-	key       string
-	keyRoot   bool
-	nameDepth int
-	padding   int
-	hiding    bool
-}
-
-func (w *accountLoginOutput) resetKey() {
-	w.key, w.keyRoot, w.nameDepth, w.padding = "", false, 0, 0
-}
-
-func (w *accountLoginOutput) write(out io.Writer, data []byte) {
-	if w.parser == nil {
-		w.parser = ansi.NewParser()
-		w.parser.SetDataSize(4096)
-	}
-	var visible strings.Builder
-	hide := func() { w.hiding = true; visible.WriteString("[credential output hidden]") }
-	printRune := func(r rune) {
-		if w.hiding {
-			return
-		}
-		switch {
-		case r == '=' || r == ':':
-			_, sensitive := accountCredentialKey(w.key)
-			if w.keyRoot || sensitive {
-				hide()
-				return
-			}
-			w.resetKey()
-		case r == ' ' || r == '\t':
-			if strings.EqualFold(w.key, "bearer") {
-				hide()
-				return
-			}
-			if w.nameDepth == 0 {
-				w.padding++
-			}
-		case r == '\'' || r == '"':
-			if w.nameDepth == 0 {
-				w.padding++
-			}
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '%' || r == '+' || r == '.' || r == '[' || r == ']' || r == '/':
-			separator := r == '.' || r == '[' || r == ']' || r == '/' || r == '-' || r == '_' || r == '+'
-			if w.padding > 0 && !separator {
-				w.resetKey()
-			}
-			if separator {
-				// A sensitive segment remains sensitive through nested names
-				// such as access_token[session] or oauth.token.value.
-				_, sensitive := accountCredentialKey(w.key)
-				w.keyRoot = w.keyRoot || sensitive
-				w.padding = 0
-			}
-			if r == '[' {
-				w.nameDepth++
-			} else if r == ']' && w.nameDepth > 0 {
-				w.nameDepth--
-			}
-			w.key += string(r)
-			if strings.EqualFold(w.key, "sk-") || w.key == "eyJ" {
-				hide()
-				return
-			}
-			root, _ := accountCredentialKey(w.key)
-			w.keyRoot = w.keyRoot || root
-			if len(w.key) > 128 {
-				w.key = w.key[len(w.key)-128:]
-			}
-		default:
-			w.resetKey()
-		}
-		visible.WriteRune(r)
-	}
-	w.parser.SetHandler(ansi.Handler{
-		Print: printRune,
-		Execute: func(b byte) {
-			switch b {
-			case '\n':
-				w.hiding = false
-				w.resetKey()
-				visible.WriteByte(b)
-			case '\r':
-				visible.WriteByte(b)
-			case '\t':
-				printRune('\t')
-			case '\b':
-				if !w.hiding {
-					if w.padding > 0 {
-						w.padding--
-					} else if w.key != "" {
-						_, size := utf8.DecodeLastRuneInString(w.key)
-						w.key = w.key[:len(w.key)-size]
-					}
-					visible.WriteByte(b)
-				}
-			}
-		},
-	})
-	// Never forward ANSI/OSC payloads; hyperlink URIs may carry credentials.
-	// The bounded parser retains controls/UTF-8 across frames. Names may stream,
-	// but an assignment is classified before emitting any value bytes.
-	w.parser.Parse(data)
-	_, _ = io.WriteString(out, visible.String())
 }
 
 func (c *commandContext) observeAccountLogin(ctx context.Context, cancel context.CancelFunc, id string, in *os.File, out io.Writer) (<-chan error, func(), error) {
