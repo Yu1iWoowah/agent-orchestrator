@@ -28,7 +28,7 @@ it("keeps unaccepted choices in the draft, exposes conflict and retries the same
 	const client = setup();
 	await waitFor(() => expect(screen.getByRole("button", { name: "reviewerSettings.edit" })).toBeEnabled());
 	fireEvent.click(screen.getByRole("button", { name: "reviewerSettings.edit" }));
-	expect(screen.getByRole("combobox", { name: "agentSettings.fast", exact: true })).toHaveValue("off");
+	expect(screen.getByRole("combobox", { name: "agentSettings.fast" })).toHaveValue("off");
 	fireEvent.change(screen.getByLabelText("agentSettings.model"), { target: { value: "draft-model" } });
 	fireEvent.click(screen.getByRole("button", { name: "reviewerSettings.pin" }));
 	await waitFor(() => expect(api.patch).toHaveBeenCalledTimes(1));
