@@ -50,18 +50,22 @@ type Service struct {
 	root      string // account folders live in root/<provider>/<id>
 	terminals Terminals
 	// stopAgents stops every running agent on an account before it is removed.
-	stopAgents func(context.Context, string) error
-	log        *slog.Logger
-	now        func() time.Time
+	stopAgents  func(context.Context, string) error
+	usageOwners func(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
+	log         *slog.Logger
+	now         func() time.Time
 
-	mu             sync.Mutex
-	readings       map[string]*reading
-	warnings       map[string]string
-	activeLogins   map[string]bool
-	retries        map[string]lifecycleRetry
-	opMu           sync.Mutex
-	unavailableMu  sync.Mutex
-	defaultChanged func(domain.AgentAccountProvider)
+	mu                  sync.Mutex
+	readings            map[string]*reading
+	warnings            map[string]string
+	activeLogins        map[string]bool
+	retries             map[string]lifecycleRetry
+	opMu                sync.Mutex
+	useMu               sync.Mutex
+	uses                map[string]*sync.RWMutex
+	unavailableMu       sync.Mutex
+	defaultChanged      func(domain.AgentAccountProvider)
+	legacyIdentityCheck func(context.Context, domain.AgentAccountProvider, string) (bool, error)
 }
 
 // reading is the last identity and limits read for one account.
@@ -188,7 +192,14 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 	defer cancel()
 	r := &reading{at: s.now()}
 	var identity domain.AgentAccountIdentityCheck
-	err := accountAvailability(account)
+	release, err := s.acquireProfileRead(ctx, account.ID)
+	if err == nil {
+		defer release()
+		account, err = s.find(ctx, account.ID)
+	}
+	if err == nil {
+		err = accountAvailability(account)
+	}
 	if err == nil {
 		err = s.checkAccountProfile(account.Home)
 	}
@@ -461,6 +472,11 @@ const (
 
 // ConsumeResetCredit spends one Codex usage-limit reset of the account.
 func (s *Service) ConsumeResetCredit(ctx context.Context, accountID, idempotencyKey string) (domain.CodexResetCreditOutcome, error) {
+	release, err := s.acquireProfileRead(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	account, err := s.find(ctx, accountID)
 	if err != nil {
 		return "", err
@@ -526,6 +542,11 @@ func (s *Service) ValidateAccount(ctx context.Context, harness domain.AgentHarne
 // provider and signed in as itself, or the agent would start signed out or as
 // someone else.
 func (s *Service) pick(ctx context.Context, harness domain.AgentHarness, accountID string) (domain.AgentAccount, error) {
+	release, err := s.acquireProfileRead(ctx, accountID)
+	if err != nil {
+		return domain.AgentAccount{}, err
+	}
+	defer release()
 	p, ok := domain.AgentAccountProviderFor(harness)
 	if !ok || s.providers[p] == nil {
 		return domain.AgentAccount{}, ports.ErrAgentAccountProviderMismatch
@@ -770,6 +791,12 @@ func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID,
 
 func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness, reviewID string) (map[string]string, error) {
 	env := map[string]string{}
+	releases := make([]func(), 0, len(domain.AgentAccountProviders))
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
 	var errs []error
 	active, _ := domain.AgentAccountProviderFor(harness)
 	validationError := func(p domain.AgentAccountProvider, id string, err error) {
@@ -839,6 +866,18 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if account.Device() {
 			continue
 		}
+		release, refreshErr := s.acquireProfileRead(ctx, account.ID)
+		if refreshErr == nil {
+			releases = append(releases, release)
+			current, err := s.find(ctx, account.ID)
+			if err == nil {
+				account = current
+			} else if !errors.Is(err, ports.ErrAgentAccountUnknown) || account.RetiredAt == nil || account.Home != "" {
+				refreshErr = err
+			}
+			// Pre-tombstone deleted rows deliberately remain synthetic retired
+			// owners. Every branch below still pins their unavailable namespace.
+		}
 		// Even a rejected environment stays isolated from the device login.
 		// Legacy deleted bindings have no known home: use a fixed reserved
 		// namespace, never an empty home or a path derived from the missing ID.
@@ -863,6 +902,15 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		}
 		if namespaceErr != nil {
 			validationError(p, account.ID, namespaceErr)
+			if p != active && !errors.Is(namespaceErr, ports.ErrAgentAccountUnavailableHomeOccupied) {
+				// An occupied or unsafe reserved namespace is not a known private
+				// home. Refuse the whole launch, including non-harness children.
+				errs = append(errs, namespaceErr)
+			}
+			continue
+		}
+		if refreshErr != nil {
+			validationError(p, account.ID, refreshErr)
 			continue
 		}
 		if err := accountAvailability(account); err != nil {

@@ -3541,7 +3541,7 @@
 	"settings.defaultSandbox.adminOnly": "只有組織管理員可變更此設定。",
 	"settings.defaultSandbox.saveFailed": "無法儲存預設沙盒。請再試一次。",
 	"settings.agentAccounts.cleanupScheduled": "此帳號已停用，清理已排定。使用此帳號的 agent 停止後，AO 會自動重試。你也可以先停止 agent 再重試，提早完成清理。",
-	"settings.agentAccounts.cleanupScheduledReviewer": "清理已排定。reviewer {{reviewId}} 仍在使用此帳號，請先停止或封存該 reviewer，再重試。",
+	"settings.agentAccounts.cleanupScheduledReviewer": "已排定清理。{{name}} 的 reviewer 仍使用此帳號。請停止或封存該 reviewer 後重試。",
 	"settings.agentAccounts.unavailableHomeOccupied": "AO 保留的 unavailable 帳號目錄已被佔用，或無法安全檢查。請停止相關子工具，檢查並移出 AO 帳號儲存空間中 .unavailable 內的資料後重試。AO 只會自動移除空的保留資料夾。",
 	"settings.agentAccounts.storageUnsafe": "帳號儲存空間不安全。請檢查資料夾權限與符號連結後重試。",
 	"settings.agentAccounts.storageUnavailable": "帳號儲存空間暫時無法使用。請稍後重試。",
@@ -3557,7 +3557,7 @@
 	"settings.agentAccounts.refresh": "重新整理限額",
 	"settings.agentAccounts.signedOut": "已登出",
 	"settings.agentAccounts.remove": "移除帳號",
-	"settings.agentAccounts.removeDescription": "AO 會停止使用 {{email}} 的 agent、登出該帳號並刪除其資料夾。再次開啟已停止的 session 時，會使用預設帳號繼續。之後你可以在摘要中將它移至其他帳號。",
+	"settings.agentAccounts.removeDescription": "使用此帳號的工作停止後，登出 {{email}} 並移除其私人設定檔。歷史與帳號綁定會保留。恢復舊 session 時必須明確選擇帳號，不會改用預設登入。",
 	"settings.agentAccounts.loginTitle": "登入 {{provider}}",
 	"settings.agentAccounts.checkSignIn": "檢查登入狀態",
 	"settings.agentAccounts.loginAlreadySaved": "登入已完成，帳號已保存。",
@@ -3856,5 +3856,9 @@
 	"decision.scopeLimits": "限制",
 	"decision.scopeEvidence": "依據",
 	"decision.open": "開啟決策對話方塊：{{title}}",
-	"decision.older": "載入較早的問題"
+	"decision.older": "載入較早的問題",
+	"settings.agentAccounts.inUse": "此帳號仍在使用中。請先停止或交接使用此帳號的 session 與 reviewer，再重試。帳號尚未變更。",
+	"settings.agentAccounts.reviewerOwner": "reviewer",
+	"settings.agentAccounts.openPR": "開啟 PR",
+	"settings.agentAccounts.legacyIdentityConflict": "舊版裝置帳號目錄已保存此身分。請在設定中選擇保留哪個登入；AO 尚未變更舊登入。"
 }

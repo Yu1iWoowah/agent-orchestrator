@@ -9,9 +9,9 @@ afterEach(async () => { await appI18n.changeLanguage("en"); });
 it.each(APP_LOCALES)("identifies the blocking reviewer in %s", async (locale) => {
 	await appI18n.changeLanguage(locale);
 	expect(appCatalogs[locale]["settings.agentAccounts.cleanupScheduledReviewer"]).toBeTruthy();
-	const message = agentAccountErrorMessage({code:"AGENT_ACCOUNT_IN_USE",details:{reviewId:"review-123"}});
-	expect(message).toBe(appI18n.t("settings.agentAccounts.cleanupScheduledReviewer",{reviewId:"review-123"}));
-	expect(message).toContain("review-123");
+	const message = agentAccountErrorMessage({code:"AGENT_ACCOUNT_IN_USE",details:{scheduled:true,reviewerSessionName:"Fake worker"}});
+	expect(message).toBe(appI18n.t("settings.agentAccounts.cleanupScheduledReviewer",{name:"Fake worker"}));
+	expect(message).toContain("Fake worker");
 });
 
 it.each(APP_LOCALES)("localizes account diagnostics in %s without machine-code fallbacks", async (locale) => {
@@ -19,7 +19,8 @@ it.each(APP_LOCALES)("localizes account diagnostics in %s without machine-code f
 	for (const [code, key] of [
 		["account_unavailable_home_occupied", "settings.agentAccounts.unavailableHomeOccupied"],
 		["AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED", "settings.agentAccounts.unavailableHomeOccupied"],
-		["AGENT_ACCOUNT_IN_USE", "settings.agentAccounts.cleanupScheduled"],
+		["AGENT_ACCOUNT_IN_USE", "settings.agentAccounts.inUse"],
+		["account_legacy_identity_conflict", "settings.agentAccounts.legacyIdentityConflict"],
 		["account_identity_mismatch", "settings.agentAccounts.identityMismatch"],
 		["account_provider_unavailable", "settings.agentAccounts.providerUnavailable"],
 		["account_credential_store_unsupported", "settings.agentAccounts.credentialStoreUnsupported"],

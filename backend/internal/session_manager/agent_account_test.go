@@ -1,11 +1,15 @@
 package sessionmanager
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,7 +122,15 @@ func newAccountTransitionManager(t *testing.T, mode domain.SessionMode) (*Manage
 	useFastInterfaceTransitionTimings(manager)
 	accounts := newTransitionAccounts(log)
 	manager.SetAgentAccounts(accounts)
+	manager.agents = singleAgent{agent: accountHistoryTransitionAgent{}}
+	manager.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "fake-default", IsDefault: true}}}})
 	return manager, store, runtime, chat, accounts, log
+}
+
+type accountHistoryTransitionAgent struct{ transitionAgent }
+
+func (accountHistoryTransitionAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
+	return true, nil
 }
 
 // The move is a transaction: the agent restarts on the new account first, and
@@ -213,7 +225,7 @@ func TestAccountTransitionMovesANeverMessagedChat(t *testing.T) {
 // agent restarts on the old account and the binding never changed.
 func TestAccountTransitionRollsBackToTheOldAccountWhenTheTargetFails(t *testing.T) {
 	manager, store, runtime, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
-	runtime.createErrSequence = []error{errors.New("claude exited: not logged in"), nil}
+	runtime.createErrSequence = []error{noEffectAccountRuntimeError{errors.New("claude exited: not logged in")}, nil}
 
 	transition, err := manager.StartAccountTransition(context.Background(), "session-1", "acct-b", domain.SessionInterfaceTransitionDrain)
 	if err != nil {
@@ -239,6 +251,17 @@ func TestAccountTransitionRollsBackToTheOldAccountWhenTheTargetFails(t *testing.
 	}
 }
 
+// This fake fails before creating any process; make that evidence explicit.
+type noEffectAccountRuntimeError struct{ error }
+
+func (noEffectAccountRuntimeError) PossibleHandle() ports.RuntimeHandle { return ports.RuntimeHandle{} }
+func (noEffectAccountRuntimeError) EffectOutcome() ports.RuntimeEffectOutcome {
+	return ports.RuntimeEffectNone
+}
+func (noEffectAccountRuntimeError) CleanupOutcome() ports.RuntimeCleanupOutcome {
+	return ports.RuntimeCleanupNotAttempted
+}
+
 // Everything that can fail without touching the conversation is checked while
 // the old agent still runs, so a bad target never stops it.
 func TestAccountTransitionPreflightFailureLeavesTheAgentRunning(t *testing.T) {
@@ -258,6 +281,49 @@ func TestAccountTransitionPreflightFailureLeavesTheAgentRunning(t *testing.T) {
 	}
 	if accounts.boundTo("session-1") != "device-claude" {
 		t.Fatal("binding changed on a failed preflight")
+	}
+}
+
+type handoffModelCatalog struct {
+	t      *testing.T
+	models []ports.AgentModelInfo
+	calls  atomic.Int32
+}
+
+func (c *handoffModelCatalog) Models(ctx context.Context, _, _ string, _ bool) (ports.AgentModelCatalog, error) {
+	c.calls.Add(1)
+	selected, ok := ports.AgentAccountFromContext(ctx)
+	if !ok || selected.AccountID != "acct-b" {
+		c.t.Error("target model probe used source/global identity")
+	}
+	return ports.AgentModelCatalog{Models: c.models}, nil
+}
+
+func TestAccountPreflightRejectsTargetModelsBeforeStoppingSource(t *testing.T) {
+	m, st, _, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+	rec := st.sessions["session-1"]
+	rec.Metadata.Model = "retained-model"
+	rec.Metadata.Effort = "high"
+	st.sessions[rec.ID] = rec
+	catalog := &handoffModelCatalog{t: t, models: []ports.AgentModelInfo{{ID: "different-model", IsDefault: true}}}
+	m.SetModelCatalog(catalog)
+	transition, err := m.StartAccountTransition(context.Background(), rec.ID, "acct-b", domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, st, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed || catalog.calls.Load() == 0 || len(*log) != 0 || accounts.boundTo(rec.ID) != "device-claude" {
+		t.Fatalf("unavailable target model stopped source: %+v calls=%d log=%v", settled, catalog.calls.Load(), *log)
+	}
+}
+
+func TestAccountPreflightRequiresNativeHistoryEvidence(t *testing.T) {
+	m, st, _, _, _, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+	// This adapter can name a conversation but cannot prove target visibility.
+	m.agents = singleAgent{agent: transitionAgent{}}
+	err := m.preflightAccountTarget(context.Background(), st.sessions["session-1"], domain.SessionInterfaceTransition{NativeConversationID: "native-1", SourceAccountID: "device-claude", TargetAccountID: "acct-b"})
+	if !errors.Is(err, ErrNativeConversationUnverified) {
+		t.Fatalf("missing history evidence was accepted: %v", err)
 	}
 }
 
@@ -315,6 +381,7 @@ func TestAccountTransitionRecoveryStopsAnUncommittedTarget(t *testing.T) {
 		Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 		Phase: domain.SessionInterfaceTransitionTargetStarting, NativeConversationID: "native-1",
 		SourceAccountID: "device-claude", TargetAccountID: "acct-b", CreatedAt: now, UpdatedAt: now,
+		TargetRuntimeState: domain.AccountTransitionRuntimeStarted, TargetRuntimeHandleID: "runtime-1", TargetRuntimeLaunchID: "target-generation",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +412,7 @@ func TestAccountTransitionRecoveryKeepsACommittedTarget(t *testing.T) {
 		Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 		Phase: domain.SessionInterfaceTransitionTargetStarting, NativeConversationID: "native-1",
 		SourceAccountID: "device-claude", TargetAccountID: "acct-b", CreatedAt: now, UpdatedAt: now,
+		TargetRuntimeState: domain.AccountTransitionRuntimeStarted, TargetRuntimeLaunchID: "committed-target", TargetRuntimeHandleID: "runtime-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -362,6 +430,66 @@ func TestAccountTransitionRecoveryKeepsACommittedTarget(t *testing.T) {
 	}
 	if accounts.boundTo("session-1") != "acct-b" {
 		t.Fatal("recovery moved the binding")
+	}
+}
+
+func TestAccountRecoveryDoesNotAssumeUnrecordedTargetIsDead(t *testing.T) {
+	m, st, _, _, _, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+	rec := st.sessions["session-1"]
+	// The daemon exited after Create but before the new handle was saved.
+	// An empty/stale session handle is not evidence the target never started.
+	rec.Metadata.RuntimeHandleID = ""
+	st.sessions[rec.ID] = rec
+	_, _, err := st.CreateSessionInterfaceTransition(context.Background(), domain.SessionInterfaceTransition{ID: "target-create-gap", SessionID: rec.ID, SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, Phase: domain.SessionInterfaceTransitionTargetStarting, SourceAccountID: "device-claude", TargetAccountID: "acct-b", TargetRuntimeState: domain.AccountTransitionRuntimeReserved, TargetRuntimeLaunchID: "unknown-target-generation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.recoverInterfaceTransitions(context.Background(), "target-create-gap"); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := st.GetSessionInterfaceTransition(context.Background(), "target-create-gap")
+	if err != nil || !current.Active() || current.ErrorCode != "TARGET_STOP_UNCONFIRMED" || !m.SessionMutationInProgress(rec.ID) {
+		t.Fatalf("uncertain writer lost recovery fence: %+v %v", current, err)
+	}
+	if err := m.ExitAgentsOnAccount(context.Background(), "acct-b"); !errors.Is(err, ports.ErrAgentAccountInUse) {
+		t.Fatalf("uncertain writer profile could be removed: %v", err)
+	}
+}
+
+func TestAccountUnknownCreateRetainsInputAndReaperFenceAfterWorkerReturns(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(fmt.Sprint("rollback=", rollback), func(t *testing.T) {
+			m, st, runtime, _, _, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+			runtime.createErrSequence = []error{errors.New("unknown runtime effect")}
+			if rollback {
+				runtime.createErrSequence = []error{noEffectAccountRuntimeError{errors.New("target never started")}, errors.New("rollback runtime effect unknown")}
+			}
+			transition, err := m.StartAccountTransition(context.Background(), "session-1", "acct-b", domain.SessionInterfaceTransitionDrain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.transitionMu.Lock()
+			run := m.transitions["session-1"]
+			m.transitionMu.Unlock()
+			if run != nil {
+				select {
+				case <-run.done:
+				case <-time.After(3 * time.Second):
+					t.Fatal("transition worker did not return")
+				}
+			}
+			current, _, err := st.GetSessionInterfaceTransition(context.Background(), transition.ID)
+			if err != nil || !current.Active() || current.ErrorCode != "TARGET_STOP_UNCONFIRMED" {
+				t.Fatalf("unknown writer was terminalized: %+v %v", current, err)
+			}
+			if !m.SessionMutationInProgress("session-1") {
+				t.Fatal("unknown writer was exposed to reaper after worker returned")
+			}
+			if release, ok := m.AcquireSessionInput("session-1"); ok {
+				release()
+				t.Fatal("unknown writer accepted terminal input")
+			}
+		})
 	}
 }
 
@@ -532,6 +660,73 @@ func TestAccountTransitionFencesTheReaperWhileTheTargetStarts(t *testing.T) {
 	}
 }
 
+func TestAccountRemovalRefusesUncommittedTransitionTarget(t *testing.T) {
+	m, st, _, _, accounts, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+	ctx := context.Background()
+	_, _, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
+		ID: "in-flight-account-move", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI,
+		Phase: domain.SessionInterfaceTransitionTargetStarting, SourceAccountID: "device-claude", TargetAccountID: "acct-b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts.boundTo("session-1") != "device-claude" {
+		t.Fatal("test must exercise target before binding commit")
+	}
+	if err := m.ExitAgentsOnAccount(ctx, "acct-b"); !errors.Is(err, ports.ErrAgentAccountInUse) {
+		t.Fatalf("uncommitted target profile could be removed: %v", err)
+	}
+}
+
+type guardedTransitionAccounts struct {
+	*transitionAccounts
+	uses atomic.Int32
+}
+
+func (a *guardedTransitionAccounts) AcquireAccountUses(_ context.Context, ids ...string) (func(), error) {
+	for _, id := range ids {
+		if id == "acct-b" {
+			a.uses.Add(1)
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for _, id := range ids {
+				if id == "acct-b" {
+					a.uses.Add(-1)
+				}
+			}
+		})
+	}, nil
+}
+
+func (a *guardedTransitionAccounts) CommitSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, accountID string) error {
+	if a.uses.Load() == 0 {
+		return errors.New("target profile was unprotected before binding commit")
+	}
+	return a.transitionAccounts.CommitSession(ctx, id, harness, accountID)
+}
+
+func TestAccountTransitionProtectsTargetThroughPreflightAndCommit(t *testing.T) {
+	m, st, _, _, accounts, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+	guard := &guardedTransitionAccounts{transitionAccounts: accounts}
+	m.SetAgentAccounts(guard)
+	accounts.onLaunchWith = func() {
+		if guard.uses.Load() == 0 {
+			t.Error("target native probe/launch raced profile mutation")
+		}
+	}
+	transition, err := m.StartAccountTransition(context.Background(), "session-1", "acct-b", domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, st, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("handoff failed: %+v", settled)
+	}
+}
+
 // A resume already underway read the account's folder while the session still
 // reads as exited. Removing the account then refuses instead of deleting the
 // folder under it.
@@ -569,4 +764,223 @@ func (a *transitionAccounts) ResolveAccount(_ context.Context, in ports.AgentAcc
 }
 func (a *transitionAccounts) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
 	return a.BindSession(ctx, id, harness, selected.AccountID)
+}
+
+type failedAccountReceiptStore struct{ *transitionStore }
+
+func (s *failedAccountReceiptStore) RecordAccountTransitionRuntime(ctx context.Context, id string, state domain.AccountTransitionRuntimeState, launch, handle string, at time.Time) (bool, error) {
+	if state == domain.AccountTransitionRuntimeStarted {
+		return false, errors.New("injected receipt write failure")
+	}
+	return s.transitionStore.RecordAccountTransitionRuntime(ctx, id, state, launch, handle, at)
+}
+func TestAccountReceiptFailureCleansOnlyExactCreatedHandleOrRetainsFence(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprint("unknown=", unknown), func(t *testing.T) {
+			m, st, runtime, _, _, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+			m.store = &failedAccountReceiptStore{st}
+			if unknown {
+				runtime.stopErrors = []error{errors.New("stop unknown"), errors.New("stop unknown"), errors.New("stop unknown")}
+			}
+			ctx := context.Background()
+			_, _, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{ID: "receipt-failure", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-b", Phase: domain.SessionInterfaceTransitionTargetStarting})
+			if err != nil {
+				t.Fatal(err)
+			}
+			launchCtx := context.WithValue(ctx, accountTransitionRuntimeContextKey{}, "receipt-failure")
+			if err := m.recordAccountRuntime(launchCtx, domain.AccountTransitionRuntimeReserved, "fresh-generation", ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.accountRuntimeCreated(launchCtx, "fresh-generation", ports.RuntimeHandle{ID: "fresh-exact-handle"}, nil); err == nil {
+				t.Fatal("failed ownership write reported success")
+			}
+			for _, entry := range *log {
+				if strings.HasPrefix(entry, "stop:") && entry != "stop:tui:fresh-exact-handle" {
+					t.Fatalf("cleanup guessed another handle: %v", *log)
+				}
+			}
+			current, _, err := st.GetSessionInterfaceTransition(ctx, "receipt-failure")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := domain.AccountTransitionRuntimeStopped
+			if unknown {
+				want = domain.AccountTransitionRuntimeReserved
+			}
+			if current.TargetRuntimeState != want {
+				t.Fatalf("cleanup evidence=%s want=%s", current.TargetRuntimeState, want)
+			}
+			if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if unknown && !m.SessionMutationInProgress("session-1") {
+				t.Fatal("unknown cleanup lost recovery fence")
+			}
+		})
+	}
+}
+
+func TestAccountMoveFailureDetailNeverContainsProviderPayload(t *testing.T) {
+	move := domain.SessionInterfaceTransition{SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, TargetAccountID: "B"}
+	for _, code := range []string{"TARGET_PREFLIGHT_FAILED", "NATIVE_SESSION_UNVERIFIED", "TARGET_START_FAILED", "ACCOUNT_BIND_FAILED", "SOURCE_RESTORE_FAILED", "TARGET_AUTH_REQUIRED"} {
+		detail := transitionDetail(move, code, "fake-credential-canary /fake/private/profile")
+		if strings.Contains(detail, "canary") || strings.Contains(detail, "/fake/") {
+			t.Fatalf("provider content exposed: %s", detail)
+		}
+	}
+}
+
+func TestAccountHandoffRuntimeFailureKeepsProviderPayloadOutOfJournalAndLogs(t *testing.T) {
+	m, st, runtime, _, _, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
+	var logs bytes.Buffer
+	m.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	runtime.createErrSequence = []error{noEffectAccountRuntimeError{errors.New("fake-private-credential-canary /fake/private/profile")}, nil}
+	transition, err := m.StartAccountTransition(context.Background(), "session-1", "acct-b", domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := awaitTransition(t, st, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionFailed {
+		t.Fatalf("expected confirmed rollback: %+v", settled)
+	}
+	wire, err := json.Marshal(settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sink := range []string{string(wire), logs.String()} {
+		if strings.Contains(sink, "fake-private-credential-canary") || strings.Contains(sink, "/fake/private/profile") {
+			t.Fatal("provider payload reached transition journal/API or log")
+		}
+	}
+}
+
+func TestAccountModelPreflightKeepsDefaultAndCustomLaunchSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  ports.AgentConfig
+		catalog ports.AgentModelCatalog
+		wantErr bool
+	}{
+		{name: "provider defaults"},
+		{name: "direct custom model", config: ports.AgentConfig{Model: "custom-model"}, catalog: ports.AgentModelCatalog{AllowCustom: true}},
+		{name: "custom effort needs evidence", config: ports.AgentConfig{Model: "custom-model", Effort: "high"}, catalog: ports.AgentModelCatalog{AllowCustom: true}, wantErr: true},
+		{name: "custom fast needs evidence", config: ports.AgentConfig{Model: "custom-model", FastMode: domain.AgentFastOn}, catalog: ports.AgentModelCatalog{AllowCustom: true}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			m := &Manager{modelCatalog: tuningCatalog{catalog: tc.catalog, calls: &calls}}
+			err := m.preflightAccountModels(context.Background(), domain.SessionRecord{Harness: domain.HarnessCodex}, tc.config)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("preflight: %v wantErr=%t", err, tc.wantErr)
+			}
+			if tc.name == "provider defaults" && calls != 0 {
+				t.Fatalf("unconfigured model required discovery: %d", calls)
+			}
+		})
+	}
+}
+
+type sessionStoppingTransitionRuntime struct {
+	*transitionRuntime
+	stopSessionCalls int
+	stopSessionErr   error
+}
+
+func (r *sessionStoppingTransitionRuntime) StopSessionRuntimes(ctx context.Context, id domain.SessionID) error {
+	r.stopSessionCalls++
+	if id != "session-1" {
+		return errors.New("wrong session namespace")
+	}
+	if r.stopSessionErr != nil {
+		return r.stopSessionErr
+	}
+	return r.Destroy(ctx, ports.RuntimeHandle{ID: "runtime-1"})
+}
+
+func TestTerminalAccountRecoveryConvergesWithoutDeletingSession(t *testing.T) {
+	for _, tc := range []struct {
+		name                                   string
+		committed, terminated, legacy, unknown bool
+	}{
+		{name: "committed daemon restart", committed: true},
+		{name: "terminated receipt", terminated: true},
+		{name: "legacy recovery", legacy: true},
+		{name: "legacy uncertain stop", legacy: true, terminated: true, unknown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			m, st, rt, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+			rec := st.sessions["session-1"]
+			rec.IsTerminated = tc.terminated
+			st.sessions[rec.ID] = rec
+			if tc.committed {
+				accounts.bound[rec.ID] = "acct-b"
+			}
+			runtime := &sessionStoppingTransitionRuntime{transitionRuntime: rt}
+			if tc.unknown {
+				runtime.stopSessionErr = errors.New("registry unavailable")
+			}
+			m.runtime = runtime
+			move := domain.SessionInterfaceTransition{ID: "terminal-move", SessionID: rec.ID, SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-b", Phase: domain.SessionInterfaceTransitionRecovery, TargetRuntimeState: domain.AccountTransitionRuntimeStarted, TargetRuntimeLaunchID: "target-generation", TargetRuntimeHandleID: "runtime-1"}
+			if tc.legacy {
+				move.TargetRuntimeState = ""
+				move.TargetRuntimeLaunchID = ""
+				move.TargetRuntimeHandleID = ""
+			}
+			st.transitions[move.ID] = move
+			if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := st.GetSessionInterfaceTransition(ctx, move.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.committed {
+				if len(*log) != 0 || got.TargetRuntimeState != move.TargetRuntimeState {
+					t.Fatalf("legal committed target stopped: %+v %v", got, *log)
+				}
+			} else if tc.legacy && !tc.terminated {
+				if len(*log) != 0 || got.TargetRuntimeState != domain.AccountTransitionRuntimeStopped || m.SessionMutationInProgress(rec.ID) {
+					t.Fatalf("legacy recovery stopped a resumed source or stayed fenced: %+v %v", got, *log)
+				}
+			} else if tc.unknown {
+				if !m.SessionMutationInProgress(rec.ID) || got.TargetRuntimeState == domain.AccountTransitionRuntimeStopped {
+					t.Fatal("unknown stop was declared dead")
+				}
+				runtime.stopSessionErr = nil
+				if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+					t.Fatal(err)
+				}
+				got, _, _ = st.GetSessionInterfaceTransition(ctx, move.ID)
+				if got.TargetRuntimeState != domain.AccountTransitionRuntimeStopped || m.SessionMutationInProgress(rec.ID) {
+					t.Fatal("confirmed retry never released legacy fence")
+				}
+			} else if got.TargetRuntimeState != domain.AccountTransitionRuntimeStopped || m.SessionMutationInProgress(rec.ID) {
+				t.Fatalf("terminal receipt never settled: %+v", got)
+			}
+			if _, found, _ := st.GetSession(ctx, rec.ID); !found {
+				t.Fatal("recovery deleted session history")
+			}
+		})
+	}
+}
+
+func TestOldAccountRecoveryNeverStopsASuccessorExecution(t *testing.T) {
+	ctx := context.Background()
+	m, st, rt, _, accounts, log := newAccountTransitionManager(t, domain.SessionModeTUI)
+	m.runtime = &sessionStoppingTransitionRuntime{transitionRuntime: rt}
+	now := time.Now()
+	st.transitions["old-legacy"] = domain.SessionInterfaceTransition{ID: "old-legacy", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-b", Phase: domain.SessionInterfaceTransitionRecovery, CreatedAt: now}
+	st.transitions["successor"] = domain.SessionInterfaceTransition{ID: "successor", SessionID: "session-1", SourceMode: domain.SessionModeTUI, TargetMode: domain.SessionModeTUI, SourceAccountID: "device-claude", TargetAccountID: "acct-c", Phase: domain.SessionInterfaceTransitionCompleted, CreatedAt: now.Add(time.Second)}
+	accounts.bound["session-1"] = "acct-c"
+	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*log) != 0 {
+		t.Fatalf("old receipt stopped the new legitimate agent: %v", *log)
+	}
+	old, _, _ := st.GetSessionInterfaceTransition(ctx, "old-legacy")
+	if old.TargetRuntimeState != domain.AccountTransitionRuntimeStopped {
+		t.Fatal("superseded legacy owner never converged")
+	}
 }

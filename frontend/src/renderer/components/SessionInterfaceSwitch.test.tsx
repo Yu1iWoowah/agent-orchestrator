@@ -621,6 +621,14 @@ describe("account moves", () => {
 		expect(screen.queryByText(/Switching to/)).not.toBeInTheDocument();
 	});
 
+
+	it("preserves account phase copy when remote account IDs are redacted", () => {
+		const redacted = { ...accountMove("target_starting"), sourceAccountId: undefined, targetAccountId: undefined, accountMove: true };
+		render(<TooltipProvider><SessionInterfaceSwitchButton target="tui" supported transition={redacted} onClick={vi.fn()} onCancel={vi.fn()} /></TooltipProvider>);
+		expect(screen.getByRole("status", { name: "Resuming on the new account…" })).toBeInTheDocument();
+		expect(screen.queryByText(/Switching to/)).not.toBeInTheDocument();
+	});
+
 	it("keeps the agent on its previous account in the failure notice and offers no interface retry", () => {
 		render(
 			<SessionInterfaceTransitionNotice

@@ -199,3 +199,24 @@ func TestLANAccountSelectionCannotReachLocalPrivateProfiles(t *testing.T) {
 		t.Fatal("Host header was trusted as LAN provenance")
 	}
 }
+
+func TestLANCannotReadAccountOwnersOrRebuildReviewer(t *testing.T) {
+	calls := 0
+	router := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("private-owner-and-profile-canary"))
+	})
+	auth := &authState{}
+	auth.setHash(mobilebridge.HashPassword("fake-password"))
+	lan := NewLANManager(router, auth, 0, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	for _, tc := range []struct{ method, path string }{{http.MethodGet, "/api/v1/agents/accounts/fake-account/usage-owners"}, {http.MethodPost, "/api/v1/agents/accounts/reviewers/fake-review/rebuild"}} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"accountId":"fake-account"}`))
+		req.Host = "127.0.0.1"
+		req.Header.Set("Authorization", "Bearer fake-password")
+		rec := httptest.NewRecorder()
+		lan.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound || calls != 0 || strings.Contains(rec.Body.String(), "canary") {
+			t.Fatalf("LAN owner boundary: %d %s calls=%d", rec.Code, rec.Body, calls)
+		}
+	}
+}

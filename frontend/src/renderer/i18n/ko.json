@@ -3560,7 +3560,7 @@
 	"settings.defaultSandbox.adminOnly": "조직 관리자만 변경할 수 있습니다.",
 	"settings.defaultSandbox.saveFailed": "기본 샌드박스를 저장하지 못했습니다. 다시 시도하세요.",
 	"settings.agentAccounts.cleanupScheduled": "이 계정은 비활성화되었으며 정리가 예약되었습니다. 사용 중인 에이전트가 중지되면 AO가 다시 시도합니다. 에이전트를 먼저 중지한 뒤 다시 시도할 수도 있습니다.",
-	"settings.agentAccounts.cleanupScheduledReviewer": "정리가 예약되었습니다. 검토자 {{reviewId}}가 이 계정을 사용 중입니다. 해당 검토자를 중지하거나 보관한 후 다시 시도하세요.",
+	"settings.agentAccounts.cleanupScheduledReviewer": "정리가 예약되었습니다. {{name}}의 검토자가 아직 이 계정을 사용 중입니다. 검토자를 중지하거나 보관한 후 다시 시도하세요.",
 	"settings.agentAccounts.unavailableHomeOccupied": "AO가 예약한 unavailable 계정 디렉터리가 사용 중이거나 안전하게 확인할 수 없습니다. 관련 하위 도구를 중지하고 AO 계정 저장소의 .unavailable 안에 있는 데이터를 확인한 뒤 다른 곳으로 옮기고 다시 시도하세요. AO는 비어 있는 예약 폴더만 자동으로 제거합니다.",
 	"settings.agentAccounts.storageUnsafe": "계정 저장소가 안전하지 않습니다. 폴더 권한과 심볼릭 링크를 확인한 후 다시 시도하세요.",
 	"settings.agentAccounts.storageUnavailable": "계정 저장소를 일시적으로 사용할 수 없습니다. 나중에 다시 시도하세요.",
@@ -3576,7 +3576,7 @@
 	"settings.agentAccounts.refresh": "한도 새로 고침",
 	"settings.agentAccounts.signedOut": "로그아웃됨",
 	"settings.agentAccounts.remove": "계정 제거",
-	"settings.agentAccounts.removeDescription": "AO가 {{email}}에서 실행 중인 에이전트를 중지하고, 로그아웃한 뒤 해당 폴더를 삭제합니다. 중지된 세션은 열면 기본 계정으로 계속됩니다. 그런 다음 요약에서 다른 계정으로 옮길 수 있습니다.",
+	"settings.agentAccounts.removeDescription": "사용 중인 작업이 중지된 후 {{email}}에서 로그아웃하고 전용 프로필을 삭제합니다. 기록과 계정 바인딩은 유지됩니다. 이전 세션을 재개하려면 계정을 명시적으로 선택해야 하며 기본 로그인으로 전환되지 않습니다.",
 	"settings.agentAccounts.loginTitle": "{{provider}}에 로그인",
 	"settings.agentAccounts.checkSignIn": "로그인 확인",
 	"settings.agentAccounts.loginAlreadySaved": "로그인이 완료되어 계정이 저장되었습니다.",
@@ -3875,5 +3875,9 @@
 	"decision.scopeLimits": "Limits",
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
-	"decision.older": "Load older questions"
+	"decision.older": "Load older questions",
+	"settings.agentAccounts.inUse": "이 계정을 사용 중입니다. 사용 중인 세션과 리뷰어를 중지하거나 인계한 후 다시 시도하세요. 계정은 변경되지 않았습니다.",
+	"settings.agentAccounts.reviewerOwner": "검토자",
+	"settings.agentAccounts.openPR": "PR 열기",
+	"settings.agentAccounts.legacyIdentityConflict": "이 ID는 기존 기기 계정 목록에 저장되어 있습니다. 설정에서 유지할 로그인을 선택하세요. AO는 기존 로그인을 변경하지 않았습니다."
 }

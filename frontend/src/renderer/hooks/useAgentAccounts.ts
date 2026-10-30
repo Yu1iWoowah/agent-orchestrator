@@ -12,6 +12,8 @@ export type AgentAccountLimitWindow = components["schemas"]["AgentAccountLimitWi
 export type AgentAccountLogin = components["schemas"]["StartAgentAccountLoginResponse"];
 export type AgentAccountUsageRow = components["schemas"]["AgentAccountUsageRow"];
 
+export type AgentAccountUsageOwner = components["schemas"]["AgentAccountUsageOwner"];
+
 export const agentAccountsQueryKey = ["agent-accounts"] as const;
 const usageQueryKey = ["agent-accounts", "usage"] as const;
 const sessionAccountsKey = (sessionId: string) => ["agent-accounts", "session", sessionId] as const;
@@ -33,12 +35,16 @@ export function agentAccountErrorMessage(error: unknown, accountEmail?: string):
 	const code = typeof error === "string" ? error : apiErrorCode(error);
 	switch (code) {
 		case "AGENT_ACCOUNT_IN_USE": {
-			const reviewId = apiErrorDetails(error)?.reviewId;
-			if (typeof reviewId === "string" && reviewId !== "") {
-				return appI18n.t("settings.agentAccounts.cleanupScheduledReviewer", { reviewId });
-			}
-			return appI18n.t("settings.agentAccounts.cleanupScheduled");
+			const details = apiErrorDetails(error);
+			if (details?.scheduled !== true) return appI18n.t("settings.agentAccounts.inUse");
+			const name = details.reviewerSessionName;
+			return typeof name === "string" && name !== ""
+				? appI18n.t("settings.agentAccounts.cleanupScheduledReviewer", { name })
+				: appI18n.t("settings.agentAccounts.cleanupScheduled");
 		}
+		case "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT":
+		case "account_legacy_identity_conflict":
+			return appI18n.t("settings.agentAccounts.legacyIdentityConflict");
 		case "account_identity_mismatch":
 			return accountEmail
 				? appI18n.t("settings.agentAccounts.loginMismatch", { email: accountEmail })
@@ -159,4 +165,8 @@ export function useAgentAccountActions() {
 		},
 		refreshSession: (sessionId: string) => queryClient.invalidateQueries({ queryKey: sessionAccountsKey(sessionId) }),
 	};
+}
+
+export function useAgentAccountUsageOwners(accountId: string | undefined) {
+ return useQuery({queryKey:["agent-accounts","owners",accountId],enabled:Boolean(accountId),queryFn:async()=>unwrap(await apiClient.GET("/api/v1/agents/accounts/{accountId}/usage-owners",{params:{path:{accountId:accountId??""}}})).owners});
 }

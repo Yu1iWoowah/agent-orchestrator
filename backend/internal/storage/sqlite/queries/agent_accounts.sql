@@ -129,5 +129,39 @@ SELECT account_id,provider,resolution_source FROM reviewer_agent_accounts WHERE 
 -- name: GetOpenReviewerAccountUse :one
 SELECT r.id AS review_id,r.session_id,r.harness
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
-WHERE a.account_id=? AND r.is_archived=0 AND r.reviewer_activity_state<>'exited'
+WHERE a.account_id=? AND r.is_archived=0
+  AND (r.reviewer_activity_state<>'exited'
+       OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running'))
 ORDER BY r.created_at,r.id,a.provider LIMIT 1;
+
+-- Current bindings are owners; older receipts remain historical attribution.
+-- A running pass owns its profile before native activity replaces an old exited
+-- observation; the launch lease may return before the caller commits its handle.
+-- Transition targets are owners before a binding is committed. No profile path
+-- or provider output is part of this local-only projection.
+-- A committed target is owned by its current session binding, never by a
+-- historical source receipt. Uncommitted/terminated targets retain an owner
+-- until recovery positively settles their runtime receipt.
+-- name: ListAgentAccountUsageOwners :many
+SELECT 'session' AS owner_kind, CAST(COALESCE(s.project_id,'') AS TEXT) AS project_id, s.id AS session_id, s.display_name AS session_name,
+       CAST('' AS TEXT) AS review_id, CAST('' AS TEXT) AS pr_url, s.harness,
+       CAST('' AS TEXT) AS transition_id,
+       CAST(s.is_terminated=0 AND (s.activity_state<>'exited' OR s.provision_state='provisioning') AS INTEGER) AS blocking
+FROM session_agent_accounts AS a JOIN sessions AS s ON s.id=a.session_id
+WHERE a.account_id=sqlc.arg(account_id)
+  AND a.bound_at=(SELECT MAX(b.bound_at) FROM session_agent_accounts AS b WHERE b.session_id=a.session_id AND b.provider=a.provider)
+UNION ALL
+SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, r.id, r.pr_url, r.harness, '',
+       CAST(r.is_archived=0 AND (r.reviewer_activity_state<>'exited'
+         OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running')) AS INTEGER)
+FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id JOIN sessions AS s ON s.id=r.session_id
+WHERE a.account_id=sqlc.arg(account_id)
+UNION ALL
+SELECT 'transition', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, '', '', s.harness, t.id, 1
+FROM session_interface_transitions AS t JOIN sessions AS s ON s.id=t.session_id
+WHERE ((t.source_account_id=sqlc.arg(account_id) OR t.target_account_id=sqlc.arg(account_id))
+       AND t.phase NOT IN ('completed','failed','cancelled','recovery_required'))
+   OR (t.target_account_id=sqlc.arg(account_id) AND t.id IN (
+       SELECT id FROM account_transition_recovery_evidence
+       WHERE retire_without_stop=0 AND current_target=0))
+ORDER BY owner_kind, session_id, review_id, transition_id;

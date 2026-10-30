@@ -14,6 +14,7 @@ import type {
 } from "../hooks/useSessionInterfaceTransition";
 import {
 	interfaceTransitionIsActive,
+	interfaceTransitionIsAccountMove,
 	interfaceTransitionIsCancellable,
 	interfaceTransitionNeedsRestart,
 } from "../hooks/useSessionInterfaceTransition";
@@ -114,7 +115,7 @@ export function SessionInterfaceSwitchButton({
 	if (transition && interfaceTransitionIsActive(transition)) {
 		const needsRestart = interfaceTransitionNeedsRestart(transition);
 		const cancellable = !needsRestart && interfaceTransitionIsCancellable(transition) && Boolean(onCancel);
-		const accountMove = Boolean(transition.targetAccountId);
+		const accountMove = interfaceTransitionIsAccountMove(transition);
 		const statusLabel = needsRestart
 			? `${accountMove ? "Account" : "Interface"} switch needs attention. ${transition.errorDetail || targetStopUnconfirmedDetail}`
 			: cancelError || (accountMove
@@ -422,7 +423,7 @@ export function SessionInterfaceTransitionNotice({
 	}
 	const recovered =
 		transition.phase === "recovery_required" && transition.errorCode === "DAEMON_RESTARTED";
-	const accountMove = Boolean(transition.targetAccountId);
+	const accountMove = interfaceTransitionIsAccountMove(transition);
 	const copy = accountMove ? accountPhaseCopy : phaseCopy;
 	const historyRecoveryPolicy = interfaceTransitionHistoryRecoveryPolicy(transition);
 	const interactiveSourceUnverified =

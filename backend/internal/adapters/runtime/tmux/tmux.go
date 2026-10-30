@@ -1749,3 +1749,16 @@ func (e commandError) Error() string {
 }
 
 func (e commandError) Unwrap() error { return e.err }
+
+// StopSessionRuntimes uses the same adapter-owned key as Create. Destroy only
+// succeeds after shutdown or conclusive absence; uncertain probes remain errors.
+func (r *Runtime) StopSessionRuntimes(ctx context.Context, id domain.SessionID) error {
+	if id == "" {
+		return ports.ErrRuntimeProbeInconclusive
+	}
+	name, err := tmuxSessionName(id)
+	if err != nil {
+		return err
+	}
+	return r.Destroy(ctx, ports.RuntimeHandle{ID: name})
+}
