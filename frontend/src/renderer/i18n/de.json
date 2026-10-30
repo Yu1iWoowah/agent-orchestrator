@@ -3879,7 +3879,7 @@
 	"settings.agentAccounts.inUse": "Dieses Konto wird verwendet. Stoppe oder übergib die Sitzungen und Reviewer, die es verwenden, und versuche es erneut. Das Konto wurde nicht geändert.",
 	"settings.agentAccounts.reviewerOwner": "Reviewer",
 	"settings.agentAccounts.openPR": "PR öffnen",
-	"settings.agentAccounts.legacyIdentityConflict": "Diese Identität ist bereits im alten Geräte-Kontokatalog gespeichert. Wähle in den Einstellungen, welche Anmeldung du behalten möchtest. AO hat die alte Anmeldung nicht geändert.",
+	"settings.agentAccounts.legacyIdentityConflict": "Diese Identität ist bereits in älteren Codex-Anmeldungen gespeichert. Öffne unter Konten „Ältere gespeicherte Codex-Anmeldungen verwalten“, melde den alten Eintrag ab und entferne ihn. Versuche es dann erneut. AO hat die alte Anmeldung nicht geändert.",
 	"settings.agentAccounts.title": "Konten",
 	"settings.agentAccounts.inherit": "Übernehmen",
 	"settings.agentAccounts.inheritAccount": "Übernehmen · {{name}} ({{source}})",
@@ -3903,5 +3903,8 @@
 	"settings.agentAccounts.bindingUnavailable": "Konto nicht verfügbar",
 	"settings.agentAccounts.bindingLoading": "Konto wird gelesen…",
 	"settings.agentAccounts.quotaSnapshot": "Momentaufnahme des Anbieters; die Verfügbarkeit für den nächsten Durchlauf ist nicht garantiert.",
-	"settings.agentAccounts.identityUpdated": "Identität geprüft {{time}}"
+	"settings.agentAccounts.identityUpdated": "Identität geprüft {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "Ältere gespeicherte Codex-Anmeldungen verwalten",
+	"settings.agentAccounts.legacyAccountsTitle": "Ältere gespeicherte Codex-Anmeldungen",
+	"settings.agentAccounts.legacyAccountsDescription": "Verwalte Codex-Anmeldungen aus älteren AO-Versionen. Um dieselbe Identität oben hinzuzufügen, melde den alten Eintrag zuerst ab und entferne ihn."
 }

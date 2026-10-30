@@ -3860,7 +3860,7 @@
 	"settings.agentAccounts.inUse": "此帳號仍在使用中。請先停止或交接使用此帳號的 session 與 reviewer，再重試。帳號尚未變更。",
 	"settings.agentAccounts.reviewerOwner": "reviewer",
 	"settings.agentAccounts.openPR": "開啟 PR",
-	"settings.agentAccounts.legacyIdentityConflict": "舊版裝置帳號目錄已保存此身分。請在設定中選擇保留哪個登入；AO 尚未變更舊登入。",
+	"settings.agentAccounts.legacyIdentityConflict": "此身分已存在於舊版 Codex 登入。請在「帳號」開啟「管理舊版 Codex 登入」，先登出並移除舊項目後再重試；AO 尚未變更原登入。",
 	"settings.agentAccounts.title": "帳號",
 	"settings.agentAccounts.inherit": "繼承",
 	"settings.agentAccounts.inheritAccount": "繼承 · {{name}}（{{source}}）",
@@ -3884,5 +3884,8 @@
 	"settings.agentAccounts.bindingUnavailable": "帳號無法使用",
 	"settings.agentAccounts.bindingLoading": "正在讀取帳號…",
 	"settings.agentAccounts.quotaSnapshot": "供應商當時回報的額度，不保證下個回合可用。",
-	"settings.agentAccounts.identityUpdated": "身分確認於 {{time}}"
+	"settings.agentAccounts.identityUpdated": "身分確認於 {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "管理舊版 Codex 登入",
+	"settings.agentAccounts.legacyAccountsTitle": "舊版已儲存的 Codex 登入",
+	"settings.agentAccounts.legacyAccountsDescription": "在此管理舊版 AO 儲存的 Codex 登入。若要在上方新增相同身分，請先登出並移除舊項目。"
 }

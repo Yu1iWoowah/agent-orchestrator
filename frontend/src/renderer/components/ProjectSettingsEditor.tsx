@@ -18,9 +18,11 @@ export type ProjectSettingsDraft = {
 		providers: Partial<Record<"claude" | "codex", string>>;
 		worker: string;
 		orchestrator: string;
-		/** Reviewers are unique per harness; array order is never an identity. */
+		/** Account drafts are keyed by harness, not by their position in the list. */
 		reviewers: Record<string, string>;
 	};
+	/** Replacing the primary reviewer retains only these configured extras. */
+	additionalReviewerHarnesses?: string[];
 	displayName: string;
 	defaultBranch: string;
 	sessionPrefix: string;
@@ -48,6 +50,13 @@ export type ProjectSettingsDraft = {
 };
 
 const roles = ["worker", "orchestrator", "reviewer"] as const;
+/** The UI and persistence share the retained set; cached account drafts for a
+ * replaced primary must not become editable phantom reviewers. */
+export function additionalProjectReviewerHarnesses(draft: ProjectSettingsDraft): string[] {
+	return draft.reviewerHarness
+		? (draft.additionalReviewerHarnesses ?? []).filter((harness) => harness !== draft.reviewerHarness)
+		: [];
+}
 export type ProjectSettingsRole = typeof roles[number];
 export type ProjectAgentPickerProps = {
 	role: ProjectSettingsRole;
@@ -238,7 +247,7 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 						<ProjectSettingsRow label={t("settings.project.approval")}><div className="min-w-0"><ProjectRolePermissions role={role} agent={agent} value={draft[fields.permissions]} runtimeDefaults={capabilities.runtimeDefaults} onChange={updatePermissions} /></div></ProjectSettingsRow>
 					</ProjectSettingsSection>;
 				})}
-				{accountSettings ? Object.keys(accountSettings.reviewers).filter((harness) => agentAccountProviderFor(harness) && harness !== (draft.reviewerHarness || defaultReviewer(draft))).map((harness) => <ProjectSettingsSection key={harness} title={`${t("settings.models.reviewerRole")} · ${harness}`} grouped><ProjectSettingsRow label={t("settings.agentAccounts.sessionAccount")}><AgentAccountPicker harness={harness} projectId={accountSettings.projectId} role="reviewer" value={accountSettings.reviewers[harness] ?? ""} inheritId={accountSettings.providers[agentAccountProviderFor(harness) ?? "codex"] ?? ""} onChange={(value) => setDraft((current) => !current.accountSettings ? current : { ...current, accountSettings: { ...current.accountSettings, reviewers: { ...current.accountSettings.reviewers, [harness]: value } } })} /></ProjectSettingsRow></ProjectSettingsSection>) : null}
+				{accountSettings ? additionalProjectReviewerHarnesses(draft).filter((harness) => agentAccountProviderFor(harness)).map((harness) => <ProjectSettingsSection key={harness} title={`${t("settings.models.reviewerRole")} · ${harness}`} grouped><ProjectSettingsRow label={t("settings.agentAccounts.sessionAccount")}><AgentAccountPicker harness={harness} projectId={accountSettings.projectId} role="reviewer" value={accountSettings.reviewers[harness] ?? ""} inheritId={accountSettings.providers[agentAccountProviderFor(harness) ?? "codex"] ?? ""} onChange={(value) => setDraft((current) => !current.accountSettings ? current : { ...current, accountSettings: { ...current.accountSettings, reviewers: { ...current.accountSettings.reviewers, [harness]: value } } })} /></ProjectSettingsRow></ProjectSettingsSection>) : null}
  {capabilities.requiredAgents && (!draft.workerAgent || !draft.orchestratorAgent) && <p className="px-(--settings-row-inset) text-xs text-error" role="alert">{t("settings.project.agentsRequired")}</p>}
 				{warning && <p className="px-(--settings-row-inset) text-xs text-warning" role="status">{warning}</p>}
 			</>}

@@ -2183,4 +2183,27 @@ describe("ProjectSettingsForm", () => {
 			),
 		);
 	});
+ it("replaces the primary reviewer without displaying or dropping editable phantom accounts", async () => {
+  mockProject({
+   id: "proj-1", name: "Project One", kind: "single_repo", path: "/fake/repo", repo: "", defaultBranch: "main",
+   config: {
+    worker: {agent:"codex"}, orchestrator: {agent:"claude-code"},
+    reviewers: [
+     {harness:"codex",agentAccountId:"reviewer-C"},
+     {harness:"claude-code",agentAccountId:"reviewer-D",agentConfig:{model:"claude-native"}},
+     {harness:"copilot",agentConfig:{model:"copilot-native"}},
+    ],
+   },
+  });
+  renderSettings("proj-1",undefined,"agents");
+  await chooseOption(await screen.findByRole("button",{name:"Reviewer agent"}),"Claude Code");
+  expect(screen.queryByRole("heading",{name:"Reviewer · codex"})).not.toBeInTheDocument();
+  submitSettings();
+  await waitFor(()=>expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}",expect.objectContaining({
+   body:expect.objectContaining({config:expect.objectContaining({
+    reviewers:[expect.objectContaining({harness:"claude-code",agentAccountId:"reviewer-D"}),{harness:"copilot",agentConfig:{model:"copilot-native"}}],
+   })}),
+  })));
+ });
+
 });

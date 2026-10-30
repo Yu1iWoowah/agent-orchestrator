@@ -2,6 +2,7 @@ package sessionmanager
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -42,5 +43,35 @@ func TestExplicitAccountRecoveryRetryKeepsFenceUntilStopConfirmed(t *testing.T) 
 	confirmed, err = m.RetryAccountRecovery(ctx, rec.ID)
 	if err != nil || !confirmed {
 		t.Fatalf("repeat retry is not idempotent: %v %v", confirmed, err)
+	}
+}
+
+func TestExplicitRecoveryRetriesAnActiveUnconfirmedInterfaceTarget(t *testing.T) {
+	ctx := context.Background()
+	m, st, rt, _, _ := newTransitionManager(t, domain.SessionModeTUI)
+	rec := st.sessions["session-1"]
+	rec.Metadata.RuntimeHandleID = "failed-interface-target"
+	st.sessions[rec.ID] = rec
+	st.transitions["retained-interface"] = domain.SessionInterfaceTransition{
+		ID: "retained-interface", SessionID: rec.ID, SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeTUI,
+		Phase: domain.SessionInterfaceTransitionTargetStarting, ErrorCode: "TARGET_STOP_UNCONFIRMED", NativeConversationID: "native-1",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	rt.aliveByHandle = map[string]bool{"failed-interface-target": true, "other-session": true}
+	rt.destroyErr = errors.New("target still alive")
+	confirmed, err := m.RetryAccountRecovery(ctx, rec.ID)
+	if err != nil || confirmed || !m.SessionMutationInProgress(rec.ID) {
+		t.Fatalf("unconfirmed target must remain fenced: confirmed=%v err=%v", confirmed, err)
+	}
+	rt.destroyErr = nil
+	confirmed, err = m.RetryAccountRecovery(ctx, rec.ID)
+	if err != nil || !confirmed || m.SessionMutationInProgress(rec.ID) {
+		t.Fatalf("confirmed target must release fence: confirmed=%v err=%v", confirmed, err)
+	}
+	if rt.aliveByHandle["failed-interface-target"] || !rt.aliveByHandle["other-session"] || rt.created != 0 {
+		t.Fatal("retry changed another writer or launched a replacement")
+	}
+	if st.sessions[rec.ID].Mode != domain.SessionModeChat {
+		t.Fatal("recovery did not restore source ownership")
 	}
 }

@@ -1,4 +1,3 @@
-import { AccountRecoveryAction } from "./AccountRecoveryAction";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -31,7 +30,7 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 	const current = useSessionAgentAccounts(provider ? session.id : undefined);
 	const actions = useAgentAccountActions();
 	const label = useAgentAccountLabel();
-	const { transition, status: transitionStatus } = useSessionInterfaceTransitionStatus(
+	const { transition } = useSessionInterfaceTransitionStatus(
 		provider ? session.id : undefined,
 	);
 	const [message, setMessage] = useState("");
@@ -152,11 +151,6 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 				</p>
 			) : null}
 			{account ? <AccountLimits account={account} /> : null}
-			{!session.isTerminated &&
-			accountMove &&
-			transitionStatus?.reasonCode === "TARGET_STOP_UNCONFIRMED" ? (
-				<AccountRecoveryAction sessionId={session.id} />
-			) : null}
 			{confirming ? (
 				<ConfirmDialog
 					open

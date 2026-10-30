@@ -3949,7 +3949,7 @@
 	"settings.agentAccounts.inUse": "Esta cuenta está en uso. Detén o transfiere las sesiones y revisores que la usan y vuelve a intentarlo. La cuenta no se ha modificado.",
 	"settings.agentAccounts.reviewerOwner": "Revisor",
 	"settings.agentAccounts.openPR": "Abrir PR",
-	"settings.agentAccounts.legacyIdentityConflict": "Esta identidad ya está guardada en el catálogo antiguo de cuentas del dispositivo. Elige qué inicio de sesión conservar en Configuración; AO no ha cambiado el anterior.",
+	"settings.agentAccounts.legacyIdentityConflict": "Esta identidad ya está guardada en los inicios antiguos de Codex. En Cuentas, abre «Gestionar inicios de Codex guardados anteriormente», cierra la sesión y elimina la entrada antigua antes de reintentar. AO no ha cambiado ese inicio.",
 	"settings.agentAccounts.title": "Cuentas",
 	"settings.agentAccounts.inherit": "Heredar",
 	"settings.agentAccounts.inheritAccount": "Heredar · {{name}} ({{source}})",
@@ -3973,5 +3973,8 @@
 	"settings.agentAccounts.bindingUnavailable": "Cuenta no disponible",
 	"settings.agentAccounts.bindingLoading": "Leyendo cuenta…",
 	"settings.agentAccounts.quotaSnapshot": "Instantánea del proveedor; no garantiza disponibilidad para el siguiente turno.",
-	"settings.agentAccounts.identityUpdated": "Identidad comprobada {{time}}"
+	"settings.agentAccounts.identityUpdated": "Identidad comprobada {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "Gestionar inicios de Codex guardados anteriormente",
+	"settings.agentAccounts.legacyAccountsTitle": "Inicios de Codex guardados anteriormente",
+	"settings.agentAccounts.legacyAccountsDescription": "Gestiona los inicios de Codex guardados por versiones anteriores de AO. Para añadir la misma identidad arriba, cierra la sesión y elimina primero la entrada antigua."
 }

@@ -2031,7 +2031,7 @@ func (s *Service) checkExistingAccount(ctx context.Context, existing domain.Sess
 	return nil
 }
 
-// RetryAccountRecovery retries the host-local failed account shutdown. A remote
+// RetryAccountRecovery retries the host-local failed controller shutdown. A remote
 // client may inspect the anonymous status but cannot mutate local accounts.
 func (s *Service) RetryAccountRecovery(ctx context.Context, id domain.SessionID) (bool, error) {
 	if ports.IsRemoteAccountRequest(ctx) {

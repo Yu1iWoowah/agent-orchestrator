@@ -21,7 +21,7 @@ import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake } from "./IntakeFields";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
-import { ProjectSettingsEditor, type ProjectAgentPickerProps, type ProjectSettingsDraft } from "./ProjectSettingsEditor";
+import { additionalProjectReviewerHarnesses, ProjectSettingsEditor, type ProjectAgentPickerProps, type ProjectSettingsDraft } from "./ProjectSettingsEditor";
 import { CloudProjectSettingsAdapter } from "./CloudProjectSettingsForm";
 
 type Project = components["schemas"]["Project"];
@@ -145,6 +145,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 	const activeOrchestrator = newestActiveOrchestrator(workspace?.sessions ?? []);
 	const intake: TrackerIntakeConfig = config.trackerIntake ?? {};
 	const initialValues: ProjectSettingsDraft = {
+		additionalReviewerHarnesses: (config.reviewers ?? []).slice(1).map((reviewer) => reviewer.harness),
 		...(!hostId ? { accountSettings: { projectId, providers: { ...config.agentAccounts }, worker: config.worker?.agentAccountId ?? "", orchestrator: config.orchestrator?.agentAccountId ?? "", reviewers: Object.fromEntries((config.reviewers ?? []).map((reviewer) => [reviewer.harness, reviewer.agentAccountId ?? ""])) } } : {}),
 		displayName: project.name,
 		defaultBranch: config.defaultBranch ?? DEFAULT_BRANCH_AUTO,
@@ -248,7 +249,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 										values.reviewerPermissions,
 									),
 								},
-								...(config.reviewers ?? []).slice(1).filter((reviewer) => reviewer.harness !== values.reviewerHarness).map((reviewer) => ({ ...reviewer, agentAccountId: values.accountSettings?.reviewers[reviewer.harness] || undefined })),
+								...(config.reviewers ?? []).filter((reviewer) => additionalProjectReviewerHarnesses(values).includes(reviewer.harness)).map((reviewer) => ({ ...reviewer, agentAccountId: values.accountSettings?.reviewers[reviewer.harness] || undefined })),
 							]
 						: undefined,
 					trackerIntake: buildIntake(

@@ -1,4 +1,3 @@
-import { AccountRecoveryAction } from "./AccountRecoveryAction";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -8,7 +7,6 @@ import {
 } from "../hooks/useAgentAccounts";
 import {
 	interfaceTransitionIsActive,
-	interfaceTransitionIsAccountMove,
 	useSessionInterfaceTransitionStatus,
 } from "../hooks/useSessionInterfaceTransition";
 import type { WorkspaceSession } from "../types/workspace";
@@ -22,7 +20,7 @@ export function SessionAccountControl({ session }: { session: WorkspaceSession }
 	const { t } = useTranslation();
 	const provider = agentAccountProviderFor(session.provider);
 	const current = useSessionAgentAccounts(provider ? session.id : undefined);
-	const { transition, status } = useSessionInterfaceTransitionStatus(
+	const { transition } = useSessionInterfaceTransitionStatus(
 		provider ? session.id : undefined,
 	);
 	const actions = useAgentAccountActions();
@@ -42,11 +40,7 @@ export function SessionAccountControl({ session }: { session: WorkspaceSession }
 				: t("settings.agentAccounts.bindingUnavailable"));
 	return (
 		<>
-			{!session.isTerminated &&
-			interfaceTransitionIsAccountMove(transition) &&
-			status?.reasonCode === "TARGET_STOP_UNCONFIRMED" ? (
-				<AccountRecoveryAction sessionId={session.id} />
-			) : null}
+
 			<Popover>
 				<PopoverTrigger asChild>
 					<Button

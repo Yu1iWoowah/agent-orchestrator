@@ -3949,7 +3949,7 @@
 	"settings.agentAccounts.inUse": "Esta conta está em uso. Pare ou transfira as sessões e os revisores que a utilizam e tente novamente. A conta não foi alterada.",
 	"settings.agentAccounts.reviewerOwner": "Revisor",
 	"settings.agentAccounts.openPR": "Abrir PR",
-	"settings.agentAccounts.legacyIdentityConflict": "Esta identidade já está salva no catálogo antigo de contas do dispositivo. Escolha qual login manter nas configurações; o AO não alterou o login antigo.",
+	"settings.agentAccounts.legacyIdentityConflict": "Esta identidade já está salva nos logins antigos do Codex. Em Contas, abra “Gerenciar logins antigos do Codex”, saia e remova a entrada antiga antes de tentar novamente. O AO não alterou esse login.",
 	"settings.agentAccounts.title": "Contas",
 	"settings.agentAccounts.inherit": "Herdar",
 	"settings.agentAccounts.inheritAccount": "Herdar · {{name}} ({{source}})",
@@ -3973,5 +3973,8 @@
 	"settings.agentAccounts.bindingUnavailable": "Conta indisponível",
 	"settings.agentAccounts.bindingLoading": "Lendo conta…",
 	"settings.agentAccounts.quotaSnapshot": "Retrato do provedor; não garante disponibilidade para o próximo turno.",
-	"settings.agentAccounts.identityUpdated": "Identidade verificada {{time}}"
+	"settings.agentAccounts.identityUpdated": "Identidade verificada {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "Gerenciar logins antigos do Codex",
+	"settings.agentAccounts.legacyAccountsTitle": "Logins antigos do Codex",
+	"settings.agentAccounts.legacyAccountsDescription": "Gerencie os logins do Codex salvos por versões anteriores do AO. Para adicionar a mesma identidade acima, saia e remova primeiro a entrada antiga."
 }

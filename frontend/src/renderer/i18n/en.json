@@ -3860,7 +3860,7 @@
 	"settings.agentAccounts.inUse": "This account is in use. Stop or hand off the sessions and reviewers using it, then retry. The account has not been changed.",
 	"settings.agentAccounts.reviewerOwner": "Reviewer",
 	"settings.agentAccounts.openPR": "Open PR",
-	"settings.agentAccounts.legacyIdentityConflict": "This identity is already saved in the legacy device account catalog. Choose which login to keep in Settings; AO has not changed the old login.",
+	"settings.agentAccounts.legacyIdentityConflict": "This identity is already saved in older Codex logins. In Accounts, open “Manage older saved Codex logins” and sign out and remove the older entry before retrying. AO has not changed that login.",
 	"settings.agentAccounts.title": "Accounts",
 	"settings.agentAccounts.inherit": "Inherit",
 	"settings.agentAccounts.inheritAccount": "Inherit · {{name}} ({{source}})",
@@ -3884,5 +3884,8 @@
 	"settings.agentAccounts.bindingUnavailable": "Account unavailable",
 	"settings.agentAccounts.bindingLoading": "Reading account…",
 	"settings.agentAccounts.quotaSnapshot": "Provider snapshot; availability for the next turn is not guaranteed.",
-	"settings.agentAccounts.identityUpdated": "Identity checked {{time}}"
+	"settings.agentAccounts.identityUpdated": "Identity checked {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "Manage older saved Codex logins",
+	"settings.agentAccounts.legacyAccountsTitle": "Older saved Codex logins",
+	"settings.agentAccounts.legacyAccountsDescription": "Manage Codex logins saved by older AO versions. If you want to add the same identity above, sign out and remove the older entry first."
 }

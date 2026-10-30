@@ -7,7 +7,7 @@ import (
 )
 
 // RetryAccountRecovery is explicit permission to retry shutdown of this
-// session's failed account controller. It reuses the exact-generation recovery
+// session's failed controller. It reuses the exact-generation recovery
 // and durable receipts; it cannot clear a fence or launch a replacement itself.
 func (m *Manager) RetryAccountRecovery(ctx context.Context, id domain.SessionID) (bool, error) {
 	if _, found, err := m.store.GetSession(ctx, id); err != nil {
@@ -30,7 +30,7 @@ func (m *Manager) RetryAccountRecovery(ctx context.Context, id domain.SessionID)
 	if active, found, err := transitions.GetActiveSessionInterfaceTransition(ctx, id); err != nil {
 		return false, err
 	} else if found {
-		if !active.AccountMove() || active.ErrorCode != "TARGET_STOP_UNCONFIRMED" {
+		if active.ErrorCode != "TARGET_STOP_UNCONFIRMED" {
 			return false, ErrInterfaceTransitionInProgress
 		}
 		pending = append(pending, active)

@@ -3879,7 +3879,7 @@
 	"settings.agentAccounts.inUse": "이 계정을 사용 중입니다. 사용 중인 세션과 리뷰어를 중지하거나 인계한 후 다시 시도하세요. 계정은 변경되지 않았습니다.",
 	"settings.agentAccounts.reviewerOwner": "검토자",
 	"settings.agentAccounts.openPR": "PR 열기",
-	"settings.agentAccounts.legacyIdentityConflict": "이 ID는 기존 기기 계정 목록에 저장되어 있습니다. 설정에서 유지할 로그인을 선택하세요. AO는 기존 로그인을 변경하지 않았습니다.",
+	"settings.agentAccounts.legacyIdentityConflict": "이 계정은 이전 Codex 로그인에 저장되어 있습니다. 계정에서 ‘이전에 저장한 Codex 로그인 관리’를 열고 이전 항목에서 로그아웃한 뒤 삭제하고 다시 시도하세요. AO는 기존 로그인을 변경하지 않았습니다.",
 	"settings.agentAccounts.title": "계정",
 	"settings.agentAccounts.inherit": "상속",
 	"settings.agentAccounts.inheritAccount": "상속 · {{name}} ({{source}})",
@@ -3903,5 +3903,8 @@
 	"settings.agentAccounts.bindingUnavailable": "계정 사용 불가",
 	"settings.agentAccounts.bindingLoading": "계정 읽는 중…",
 	"settings.agentAccounts.quotaSnapshot": "공급자가 보고한 시점의 한도로 다음 턴 사용을 보장하지 않습니다.",
-	"settings.agentAccounts.identityUpdated": "신원 확인 {{time}}"
+	"settings.agentAccounts.identityUpdated": "신원 확인 {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "이전에 저장한 Codex 로그인 관리",
+	"settings.agentAccounts.legacyAccountsTitle": "이전에 저장한 Codex 로그인",
+	"settings.agentAccounts.legacyAccountsDescription": "이전 AO에서 저장한 Codex 로그인을 관리합니다. 위에서 같은 계정을 추가하려면 이전 항목에서 로그아웃한 뒤 삭제하세요."
 }

@@ -3949,7 +3949,7 @@
 	"settings.agentAccounts.inUse": "Ce compte est utilisé. Arrêtez ou transférez les sessions et les réviseurs qui l’utilisent, puis réessayez. Le compte n’a pas été modifié.",
 	"settings.agentAccounts.reviewerOwner": "Réviseur",
 	"settings.agentAccounts.openPR": "Ouvrir la PR",
-	"settings.agentAccounts.legacyIdentityConflict": "Cette identité est déjà enregistrée dans l’ancien catalogue des comptes de l’appareil. Choisissez la connexion à conserver dans les paramètres. AO n’a pas modifié l’ancienne connexion.",
+	"settings.agentAccounts.legacyIdentityConflict": "Cette identité figure déjà dans les anciennes connexions Codex. Dans Comptes, ouvrez « Gérer les anciennes connexions Codex enregistrées », déconnectez puis supprimez l’ancienne entrée avant de réessayer. AO n’a pas modifié cette connexion.",
 	"settings.agentAccounts.title": "Comptes",
 	"settings.agentAccounts.inherit": "Hériter",
 	"settings.agentAccounts.inheritAccount": "Hériter · {{name}} ({{source}})",
@@ -3973,5 +3973,8 @@
 	"settings.agentAccounts.bindingUnavailable": "Compte indisponible",
 	"settings.agentAccounts.bindingLoading": "Lecture du compte…",
 	"settings.agentAccounts.quotaSnapshot": "Instantané du fournisseur ; aucune garantie pour le prochain tour.",
-	"settings.agentAccounts.identityUpdated": "Identité vérifiée {{time}}"
+	"settings.agentAccounts.identityUpdated": "Identité vérifiée {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "Gérer les anciennes connexions Codex enregistrées",
+	"settings.agentAccounts.legacyAccountsTitle": "Anciennes connexions Codex enregistrées",
+	"settings.agentAccounts.legacyAccountsDescription": "Gérez les connexions Codex enregistrées par les anciennes versions d’AO. Pour ajouter la même identité ci-dessus, déconnectez puis supprimez d’abord l’ancienne entrée."
 }

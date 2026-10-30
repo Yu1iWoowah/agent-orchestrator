@@ -4320,6 +4320,7 @@ describe("SessionView", () => {
 
 			render(<SessionView sessionId="sess-1" />);
 
+			expect(screen.getAllByRole("button", { name: "Stop and retry recovery" })).toHaveLength(1);
 			const alert = screen.getByRole("status", { name: /^Interface switch needs attention/ });
 			expect(alert).toHaveAttribute("aria-label", expect.stringContaining("Interface switch needs attention"));
 			expect(alert).toHaveAttribute("aria-label", expect.stringContaining(errorDetail));

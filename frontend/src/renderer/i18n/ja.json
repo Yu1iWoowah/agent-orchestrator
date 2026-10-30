@@ -3879,7 +3879,7 @@
 	"settings.agentAccounts.inUse": "このアカウントは使用中です。使用しているセッションとレビュアーを停止または引き継いでから再試行してください。アカウントは変更されていません。",
 	"settings.agentAccounts.reviewerOwner": "レビュアー",
 	"settings.agentAccounts.openPR": "PR を開く",
-	"settings.agentAccounts.legacyIdentityConflict": "この ID は従来のデバイスアカウント一覧に保存されています。設定で残すログインを選んでください。AO は従来のログインを変更していません。",
+	"settings.agentAccounts.legacyIdentityConflict": "このアカウントは以前の Codex ログインに保存されています。「アカウント」の「以前に保存した Codex ログインを管理」で古い項目からログアウトして削除してから再試行してください。AO は元のログインを変更していません。",
 	"settings.agentAccounts.title": "アカウント",
 	"settings.agentAccounts.inherit": "継承",
 	"settings.agentAccounts.inheritAccount": "継承 · {{name}}（{{source}}）",
@@ -3903,5 +3903,8 @@
 	"settings.agentAccounts.bindingUnavailable": "アカウントを利用できません",
 	"settings.agentAccounts.bindingLoading": "アカウントを読込中…",
 	"settings.agentAccounts.quotaSnapshot": "上限は取得時点の情報です。次のターンの利用を保証しません。",
-	"settings.agentAccounts.identityUpdated": "本人情報の確認日時 {{time}}"
+	"settings.agentAccounts.identityUpdated": "本人情報の確認日時 {{time}}",
+	"settings.agentAccounts.manageLegacyAccounts": "以前に保存した Codex ログインを管理",
+	"settings.agentAccounts.legacyAccountsTitle": "以前に保存した Codex ログイン",
+	"settings.agentAccounts.legacyAccountsDescription": "以前の AO で保存した Codex ログインを管理します。同じアカウントを上で追加するには、古い項目からログアウトして削除してください。"
 }
