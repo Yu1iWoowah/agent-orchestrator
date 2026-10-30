@@ -416,6 +416,10 @@ func (c *conversation) PreservesProviderOnClose() bool { return c.proc.terminate
 // replacement process recovered with session/load or session/resume.
 func (c *conversation) ReconnectedLive() bool { return c.proc.reconnected }
 
+// LaunchCapabilityVerifier is immutable evidence from the authenticated host,
+// never the reconnecting daemon's current session metadata.
+func (c *conversation) LaunchCapabilityVerifier() string { return c.proc.launchCapabilityVerifier }
+
 // ActivateLiveReconnect installs the durable turn correlation before releasing
 // replayed ACP updates to the SDK. This prevents a replacement daemon from
 // attributing output to an empty turn or starting a second root prompt.

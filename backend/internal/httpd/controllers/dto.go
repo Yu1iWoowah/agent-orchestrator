@@ -4250,3 +4250,212 @@ type AgentAccountProjectParam struct {
 	AccountID string `path:"accountId"`
 	ProjectID string `path:"projectId"`
 }
+
+// OrchestratorReplaceRequest contains intent, never caller-selected launch configuration.
+type OrchestratorReplaceRequest struct {
+	SourceSessionID domain.SessionID `json:"sourceSessionId" required:"true"`
+	OperationKey    string           `json:"operationKey" required:"true"`
+}
+
+// OrchestratorReplacementPreparedRequest authenticates one managed author receipt.
+type OrchestratorReplacementPreparedRequest projectdocs.ReplacementPreparationInput
+
+// OrchestratorReplacementResponse is a durable receipt rather than completion.
+type OrchestratorReplacementResponse struct {
+	Operation OrchestratorReplacementView `json:"operation"`
+}
+
+// OrchestratorReplacementView deliberately excludes configuration, capabilities,
+// internal nonces and prompt hashes from the public operation read model.
+type OrchestratorReplacementView struct {
+	Revision             int64                                `json:"revision"`
+	IntakeRevision       int64                                `json:"intakeRevision"`
+	ControlAttempts      []ReplacementControlAttemptView      `json:"controlAttempts"`
+	RetainedRetry        *ReplacementRetainedRetryView        `json:"retainedRetry,omitempty"`
+	OperatorGuidance     string                               `json:"operatorGuidance,omitempty"`
+	ID                   string                               `json:"id"`
+	OperationKey         string                               `json:"operationKey"`
+	ProjectID            domain.ProjectID                     `json:"projectId"`
+	SourceSessionID      domain.SessionID                     `json:"sourceSessionId"`
+	SuccessorSessionID   domain.SessionID                     `json:"successorSessionId,omitempty"`
+	Phase                domain.ReplacementPhase              `json:"phase"`
+	ResumePhase          domain.ReplacementPhase              `json:"resumePhase,omitempty"`
+	CreatedAt            time.Time                            `json:"createdAt"`
+	UpdatedAt            time.Time                            `json:"updatedAt"`
+	DeadlineAt           time.Time                            `json:"deadlineAt"`
+	SourceStopIntentAt   *time.Time                           `json:"sourceStopIntentAt,omitempty"`
+	SourceStoppedAt      *time.Time                           `json:"sourceStoppedAt,omitempty"`
+	SourceRetiredAt      *time.Time                           `json:"sourceRetiredAt,omitempty"`
+	FrozenAt             *time.Time                           `json:"frozenAt,omitempty"`
+	IntakeReleasedAt     *time.Time                           `json:"intakeReleasedAt,omitempty"`
+	SharedDir            string                               `json:"sharedDir,omitempty"`
+	DocumentPath         string                               `json:"documentPath,omitempty"`
+	Preparation          *ReplacementPreparationView          `json:"preparation,omitempty"`
+	Evidence             *ReplacementEvidenceView             `json:"evidence,omitempty"`
+	ResumeEvidence       ReplacementResumeView                `json:"resumeEvidence"`
+	WriterActivation     *ReplacementWriterView               `json:"writerActivation,omitempty"`
+	NotificationReceipts []ReplacementNotificationView        `json:"notificationReceipts"`
+	Attempts             []ReplacementAttemptView             `json:"attempts"`
+	ProvisioningAttempts []ReplacementProvisioningAttemptView `json:"provisioningAttempts"`
+	Error                *domain.ReplacementFailure           `json:"error,omitempty"`
+	ReadCommand          string                               `json:"readCommand"`
+	RetryCommand         string                               `json:"retryCommand,omitempty"`
+	CancelCommand        string                               `json:"cancelCommand,omitempty"`
+
+	// IntakeDrainRequestedAt records a queue kick, not delivery or reading.
+	IntakeDrainRequestedAt *time.Time                        `json:"intakeDrainRequestedAt,omitempty"`
+	SourceIntakeReleasedAt *time.Time                        `json:"sourceIntakeReleasedAt,omitempty"`
+	IntakeTransfer         *domain.ReplacementIntakeTransfer `json:"intakeTransfer,omitempty"`
+}
+
+// ReplacementProvisioningAttemptView exposes durable intent, not confirmation
+// that a provider started. Internal attempt identity stays daemon-owned.
+type ReplacementProvisioningAttemptView struct {
+	Number         int        `json:"number"`
+	ReservedAt     time.Time  `json:"reservedAt"`
+	LaunchIntentAt *time.Time `json:"launchIntentAt,omitempty"`
+	FailedAt       *time.Time `json:"failedAt,omitempty"`
+}
+
+// ReplacementPreparationView separates author receipt submission from verification.
+type ReplacementPreparationView struct {
+	IntakeRevision int64      `json:"intakeRevision"`
+	PromptIntentAt *time.Time `json:"promptIntentAt,omitempty"`
+	StartedAt      time.Time  `json:"startedAt"`
+	DeadlineAt     time.Time  `json:"deadlineAt"`
+	AttemptID      string     `json:"attemptId"`
+	LeaseEpoch     int64      `json:"leaseEpoch,omitempty"`
+	ControlTurnID  string     `json:"controlTurnId,omitempty"`
+	SubmittedHash  string     `json:"submittedHash,omitempty"`
+	WriteReceiptID string     `json:"writeReceiptId,omitempty"`
+	SubmittedAt    *time.Time `json:"submittedAt,omitempty"`
+	VerifiedAt     *time.Time `json:"verifiedAt,omitempty"`
+}
+
+// ReplacementEvidenceView locates create-only files without exposing native source paths.
+type ReplacementEvidenceView struct {
+	AttemptID           string                         `json:"attemptId"`
+	HandoffHash         string                         `json:"handoffHash,omitempty"`
+	TranscriptHash      string                         `json:"transcriptHash,omitempty"`
+	ManifestHash        string                         `json:"manifestHash,omitempty"`
+	Directory           string                         `json:"directory,omitempty"`
+	HandoffPath         string                         `json:"handoffPath,omitempty"`
+	TranscriptPath      string                         `json:"transcriptPath,omitempty"`
+	ManifestPath        string                         `json:"manifestPath,omitempty"`
+	CapturedAt          *time.Time                     `json:"capturedAt,omitempty"`
+	ConversationCutoffs map[string]int64               `json:"conversationCutoffs"`
+	NativeCutoffs       []domain.TranscriptEpochCutoff `json:"nativeCutoffs"`
+}
+
+// ReplacementResumeView reports proof boundaries without their private control credentials.
+type ReplacementResumeView struct {
+	BootstrapIntentAt  *time.Time                           `json:"bootstrapIntentAt,omitempty"`
+	StartedAt          time.Time                            `json:"startedAt,omitempty"`
+	StopReceipt        *ReplacementStopView                 `json:"stopReceipt,omitempty"`
+	ResumeIntentAt     *time.Time                           `json:"resumeIntentAt,omitempty"`
+	ResumeGeneration   string                               `json:"resumeGeneration,omitempty"`
+	UnlaunchedAttempts []domain.ReplacementResumeUnlaunched `json:"unlaunchedAttempts"`
+	ProbeIntentAt      *time.Time                           `json:"probeIntentAt,omitempty"`
+	BootstrapTurnID    string                               `json:"bootstrapTurnId,omitempty"`
+	BootstrapSettledAt *time.Time                           `json:"bootstrapSettledAt,omitempty"`
+	BeforeNativeID     string                               `json:"beforeNativeId,omitempty"`
+	AfterNativeID      string                               `json:"afterNativeId,omitempty"`
+	BeforeGeneration   string                               `json:"beforeGeneration,omitempty"`
+	AfterGeneration    string                               `json:"afterGeneration,omitempty"`
+	StopConfirmed      bool                                 `json:"stopConfirmed"`
+	HistoryVerified    bool                                 `json:"historyVerified"`
+	ResumedAt          *time.Time                           `json:"resumedAt,omitempty"`
+	ProbeTurnID        string                               `json:"probeTurnId,omitempty"`
+	ProbeSettledAt     *time.Time                           `json:"probeSettledAt,omitempty"`
+	Verified           bool                                 `json:"verified"`
+	VerifiedAt         *time.Time                           `json:"verifiedAt,omitempty"`
+}
+
+// ReplacementWriterView exposes the committed lease move without its claim verifier.
+type ReplacementWriterView struct {
+	SessionID   domain.SessionID `json:"sessionId"`
+	BeforeEpoch int64            `json:"beforeEpoch"`
+	AfterEpoch  int64            `json:"afterEpoch"`
+	ActivatedAt time.Time        `json:"activatedAt"`
+}
+
+// ReplacementNotificationView preserves acceptance as distinct from reading or acting.
+type ReplacementNotificationView struct {
+	SessionID domain.SessionID `json:"sessionId"`
+	ContactID string           `json:"contactId"`
+	State     string           `json:"state"`
+	CreatedAt time.Time        `json:"createdAt"`
+}
+
+// ReplacementAttemptView retains safe previous preparation and evidence facts.
+type ReplacementAttemptView struct {
+	SourceIntakeReleasedAt *time.Time `json:"sourceIntakeReleasedAt,omitempty"`
+
+	ID          string                      `json:"id"`
+	Phase       domain.ReplacementPhase     `json:"phase"`
+	EndedAt     time.Time                   `json:"endedAt"`
+	FrozenAt    *time.Time                  `json:"frozenAt,omitempty"`
+	Preparation *ReplacementPreparationView `json:"preparation,omitempty"`
+	Evidence    *ReplacementEvidenceView    `json:"evidence,omitempty"`
+	Error       *domain.ReplacementFailure  `json:"error,omitempty"`
+}
+
+// OrchestratorReplacementActionRequest permits no caller override or fresh fallback.
+type OrchestratorReplacementActionRequest struct{}
+
+// OrchestratorReplacementDiagnostic exposes operator CAS metadata, never raw state.
+type OrchestratorReplacementDiagnostic struct {
+	OperationID      string           `json:"operationId"`
+	ProjectID        domain.ProjectID `json:"projectId"`
+	SourceSessionID  domain.SessionID `json:"sourceSessionId"`
+	Revision         int64            `json:"revision"`
+	Active           bool             `json:"active"`
+	RawDigest        string           `json:"rawDigest"`
+	Corrupt          bool             `json:"corrupt"`
+	SnapshotRevision int64            `json:"snapshotRevision,omitempty"`
+	SnapshotDigest   string           `json:"snapshotDigest,omitempty"`
+}
+
+// OrchestratorReplacementDiagnosticResponse contains safe operator CAS metadata.
+type OrchestratorReplacementDiagnosticResponse struct {
+	Diagnostic OrchestratorReplacementDiagnostic `json:"diagnostic"`
+}
+
+// OrchestratorReplacementRepairRequest authorizes exactly the inspected row and
+// sealed snapshot. The server loads bytes; callers cannot supply state overrides.
+type OrchestratorReplacementRepairRequest struct {
+	ExpectedRevision *int64 `json:"expectedRevision" required:"true" nullable:"false"`
+	ExpectedDigest   string `json:"expectedDigest" required:"true"`
+	SnapshotRevision *int64 `json:"snapshotRevision" required:"true" nullable:"false"`
+	SnapshotDigest   string `json:"snapshotDigest" required:"true"`
+}
+
+// OrchestratorReplacementIntakeResponse is a live read, never a delivery ack.
+type OrchestratorReplacementIntakeResponse struct {
+	Intake domain.ReplacementIntake `json:"intake"`
+}
+
+// ReplacementStopView retains positive shutdown evidence without its verifier.
+type ReplacementStopView struct {
+	NativeID    string    `json:"nativeId"`
+	Method      string    `json:"method"`
+	ConfirmedAt time.Time `json:"confirmedAt"`
+}
+
+// ReplacementControlAttemptView retains historical control outcomes, not prompts.
+type ReplacementControlAttemptView struct {
+	Kind       string           `json:"kind"`
+	ClientID   string           `json:"clientId"`
+	State      domain.TurnState `json:"state"`
+	ArchivedAt time.Time        `json:"archivedAt"`
+	IntentAt   time.Time        `json:"intentAt"`
+	TurnID     string           `json:"turnId,omitempty"`
+	SettledAt  *time.Time       `json:"settledAt,omitempty"`
+}
+
+// ReplacementRetainedRetryView preserves the failure at Retry acceptance.
+type ReplacementRetainedRetryView struct {
+	Phase       domain.ReplacementPhase   `json:"phase"`
+	Failure     domain.ReplacementFailure `json:"failure"`
+	RequestedAt time.Time                 `json:"requestedAt"`
+}

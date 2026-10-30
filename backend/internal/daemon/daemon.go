@@ -71,6 +71,7 @@ import (
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
+	replacementsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/orchestratorreplacement"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	projectdocssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
@@ -1077,8 +1078,24 @@ func Run(buildVersion string) error {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
+	replacementRuntime, ok := sessMgr.(replacementSessionRuntime)
+	if !ok {
+		return fmt.Errorf("session manager lacks orchestrator replacement runtime")
+	}
+	claudeAgent, ok := agents.Agent(domain.HarnessClaudeCode)
+	if !ok {
+		return fmt.Errorf("claude-code adapter is unavailable for orchestrator replacement")
+	}
+	nativeTranscripts, ok := claudeAgent.(ports.NativeTranscriptReader)
+	if !ok {
+		return fmt.Errorf("claude-code adapter lacks native transcript reader")
+	}
+	chatSvc.SetReplacementMutationGate(replacementRuntime)
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
+	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithOrchestratorProjectGate})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		OrchestratorReplacements: replacementSvc,
+
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
 		AgentSettings:      agentSettingsSvc,
@@ -1244,6 +1261,7 @@ func Run(buildVersion string) error {
 
 	var startupReconcileDone <-chan struct{}
 	var usageLimitResumeDone <-chan struct{}
+	var replacementReconcileDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1257,6 +1275,14 @@ func Run(buildVersion string) error {
 		}
 		done := make(chan struct{})
 		startupReconcileDone = done
+		replacementDone := make(chan struct{})
+		replacementReconcileDone = replacementDone
+		go func() {
+			defer close(replacementDone)
+			ticker := time.NewTicker(replacementReconcileTick)
+			defer ticker.Stop()
+			runReplacementReconciliation(ctx, done, ticker.C, replacementSvc.Reconcile, log)
+		}()
 		go func() {
 			defer close(done)
 			if reconcileErr := reconcilePersistentChatHosts(ctx, cfg.DataDir, store, cfg.AppRunID); reconcileErr != nil {
@@ -1343,6 +1369,13 @@ func Run(buildVersion string) error {
 	// via defer) avoids the LIFO trap where a Stop() that blocks on ctx-cancel
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
+	if replacementReconcileDone != nil {
+		joinCtx, cancelJoin := context.WithTimeout(context.Background(), 5*time.Second)
+		if !waitReplacementReconciliation(joinCtx, replacementReconcileDone) {
+			log.Warn("orchestrator replacement reconciliation did not join before shutdown deadline; durable operation remains unconfirmed")
+		}
+		cancelJoin()
+	}
 	if usageLimitResumeDone != nil {
 		<-usageLimitResumeDone
 	}

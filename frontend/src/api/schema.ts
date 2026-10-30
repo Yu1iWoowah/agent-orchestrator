@@ -1854,6 +1854,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/orchestrator/replacements/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read safe durable replacement progress and evidence */
+        get: operations["getOrchestratorReplacement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orchestrator/replacements/{operationId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a safe pre-stop operation without interrupting agents */
+        post: operations["cancelOrchestratorReplacement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orchestrator/replacements/{operationId}/diagnose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read operator CAS metadata without raw state */
+        get: operations["diagnoseOrchestratorReplacement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orchestrator/replacements/{operationId}/intake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read canonical queued intake and pending reports without claiming delivery */
+        get: operations["getOrchestratorReplacementIntake"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orchestrator/replacements/{operationId}/prepared": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit the owning source's managed handoff receipt */
+        post: operations["submitOrchestratorReplacementPreparation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orchestrator/replacements/{operationId}/repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Authorize data-only repair from a sealed snapshot with explicit CAS */
+        post: operations["repairOrchestratorReplacement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orchestrator/replacements/{operationId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile the same operation and retained successor */
+        post: operations["retryOrchestratorReplacement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orchestrators": {
         parameters: {
             query?: never;
@@ -2125,6 +2244,23 @@ export interface paths {
         get: operations["getHandoffEvidenceFile"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/orchestrator/replacements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept a durable Claude Code orchestrator handoff */
+        post: operations["replaceOrchestrator"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7615,6 +7751,96 @@ export interface components {
             documentPath?: string;
             sharedDir?: string;
         };
+        OrchestratorReplaceRequest: {
+            operationKey: string;
+            sourceSessionId: string;
+        };
+        OrchestratorReplacement: {
+            attempts: components["schemas"]["ReplacementAttempt"][];
+            cancelCommand?: string;
+            controlAttempts: components["schemas"]["ReplacementControlAttempt"][];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            deadlineAt: string;
+            documentPath?: string;
+            error?: components["schemas"]["ReplacementFailure"];
+            evidence?: components["schemas"]["ReplacementEvidence"];
+            /** Format: date-time */
+            frozenAt?: null | string;
+            id: string;
+            /** Format: date-time */
+            intakeDrainRequestedAt?: null | string;
+            /** Format: date-time */
+            intakeReleasedAt?: null | string;
+            /** Format: int64 */
+            intakeRevision: number;
+            intakeTransfer?: components["schemas"]["ReplacementIntakeTransfer"];
+            notificationReceipts: components["schemas"]["ReplacementNotificationReceipt"][];
+            operationKey: string;
+            operatorGuidance?: string;
+            phase: string;
+            preparation?: components["schemas"]["ReplacementPreparation"];
+            projectId: string;
+            provisioningAttempts: components["schemas"]["ReplacementProvisioningAttempt"][];
+            readCommand: string;
+            resumeEvidence: components["schemas"]["ReplacementResumeEvidence"];
+            resumePhase?: string;
+            retainedRetry?: components["schemas"]["ReplacementRetainedRetry"];
+            retryCommand?: string;
+            /** Format: int64 */
+            revision: number;
+            sharedDir?: string;
+            /** Format: date-time */
+            sourceIntakeReleasedAt?: null | string;
+            /** Format: date-time */
+            sourceRetiredAt?: null | string;
+            sourceSessionId: string;
+            /** Format: date-time */
+            sourceStopIntentAt?: null | string;
+            /** Format: date-time */
+            sourceStoppedAt?: null | string;
+            successorSessionId?: string;
+            /** Format: date-time */
+            updatedAt: string;
+            writerActivation?: components["schemas"]["ReplacementWriterActivation"];
+        };
+        OrchestratorReplacementDiagnostic: {
+            active: boolean;
+            corrupt: boolean;
+            operationId: string;
+            projectId: string;
+            rawDigest: string;
+            /** Format: int64 */
+            revision: number;
+            snapshotDigest?: string;
+            /** Format: int64 */
+            snapshotRevision?: number;
+            sourceSessionId: string;
+        };
+        OrchestratorReplacementDiagnosticResponse: {
+            diagnostic: components["schemas"]["OrchestratorReplacementDiagnostic"];
+        };
+        OrchestratorReplacementIntakeResponse: {
+            intake: components["schemas"]["ReplacementIntake"];
+        };
+        OrchestratorReplacementPreparedRequest: {
+            actor: components["schemas"]["ProjectDocumentActor"];
+            attemptId: string;
+            hash: string;
+            nonce: string;
+            path: string;
+            writeReceiptId: string;
+        };
+        OrchestratorReplacementRepairRequest: {
+            expectedDigest: string;
+            expectedRevision: number;
+            snapshotDigest: string;
+            snapshotRevision: number;
+        };
+        OrchestratorReplacementResponse: {
+            operation: components["schemas"]["OrchestratorReplacement"];
+        };
         OrchestratorResponse: {
             id: string;
             projectId: string;
@@ -8048,6 +8274,202 @@ export interface components {
         };
         ReorderQueuedConversationTurnsRequest: {
             turnIds: string[];
+        };
+        ReplacementAttempt: {
+            /** Format: date-time */
+            endedAt: string;
+            error?: components["schemas"]["ReplacementFailure"];
+            evidence?: components["schemas"]["ReplacementEvidence"];
+            /** Format: date-time */
+            frozenAt?: null | string;
+            id: string;
+            phase: string;
+            preparation?: components["schemas"]["ReplacementPreparation"];
+            /** Format: date-time */
+            sourceIntakeReleasedAt?: null | string;
+        };
+        ReplacementControlAttempt: {
+            /** Format: date-time */
+            archivedAt: string;
+            clientId: string;
+            /** Format: date-time */
+            intentAt: string;
+            kind: string;
+            /** Format: date-time */
+            settledAt?: null | string;
+            state: string;
+            turnId?: string;
+        };
+        ReplacementEvidence: {
+            attemptId: string;
+            /** Format: date-time */
+            capturedAt?: null | string;
+            conversationCutoffs: {
+                [key: string]: number;
+            } | null;
+            directory?: string;
+            handoffHash?: string;
+            handoffPath?: string;
+            manifestHash?: string;
+            manifestPath?: string;
+            nativeCutoffs: components["schemas"]["TranscriptEpochCutoff"][];
+            transcriptHash?: string;
+            transcriptPath?: string;
+        };
+        ReplacementFailure: {
+            code: string;
+            message: string;
+            retryable: boolean;
+        };
+        ReplacementIntake: {
+            /** Format: int64 */
+            intakeRevision: number;
+            messages: components["schemas"]["ReplacementIntakeMessage"][];
+            operationId: string;
+            phase: string;
+            projectId: string;
+            reports: components["schemas"]["ReplacementIntakeReport"][];
+            sourceSessionId: string;
+            successorSessionId?: string;
+        };
+        ReplacementIntakeMessage: {
+            clientMessageId?: string;
+            conversationId: string;
+            deliveryContentJson?: string;
+            id: string;
+            nativeDelivery: string;
+            origin: string;
+            providerReserved: boolean;
+            /** Format: date-time */
+            requestedAt: string;
+            senderDisplayName?: string;
+            senderProjectId?: string;
+            senderSessionId?: string;
+            /** Format: int64 */
+            sequence: number;
+            text: string;
+            turnId: string;
+        };
+        ReplacementIntakeOutput: {
+            kind: string;
+            label?: string;
+            reference: string;
+        };
+        ReplacementIntakeReport: {
+            /** Format: date-time */
+            createdAt: string;
+            deliveryState: string;
+            id: string;
+            message: string;
+            note: string;
+            outputs: components["schemas"]["ReplacementIntakeOutput"][];
+            /** Format: int64 */
+            repeatCount: number;
+            sessionId: string;
+            state: string;
+        };
+        ReplacementIntakeTransfer: {
+            /** Format: int64 */
+            movedMessages: number;
+            /** Format: date-time */
+            recordedAt: string;
+            /** Format: int64 */
+            retargetedMessages: number;
+            sourceConversationIds: string[];
+        };
+        ReplacementNotificationReceipt: {
+            contactId: string;
+            /** Format: date-time */
+            createdAt: string;
+            sessionId: string;
+            state: string;
+        };
+        ReplacementPreparation: {
+            attemptId: string;
+            controlTurnId?: string;
+            /** Format: date-time */
+            deadlineAt: string;
+            /** Format: int64 */
+            intakeRevision: number;
+            /** Format: int64 */
+            leaseEpoch?: number;
+            /** Format: date-time */
+            promptIntentAt?: null | string;
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            submittedAt?: null | string;
+            submittedHash?: string;
+            /** Format: date-time */
+            verifiedAt?: null | string;
+            writeReceiptId?: string;
+        };
+        ReplacementProvisioningAttempt: {
+            /** Format: date-time */
+            failedAt?: null | string;
+            /** Format: date-time */
+            launchIntentAt?: null | string;
+            number: number;
+            /** Format: date-time */
+            reservedAt: string;
+        };
+        ReplacementResumeEvidence: {
+            afterGeneration?: string;
+            afterNativeId?: string;
+            beforeGeneration?: string;
+            beforeNativeId?: string;
+            /** Format: date-time */
+            bootstrapIntentAt?: null | string;
+            /** Format: date-time */
+            bootstrapSettledAt?: null | string;
+            bootstrapTurnId?: string;
+            historyVerified: boolean;
+            /** Format: date-time */
+            probeIntentAt?: null | string;
+            /** Format: date-time */
+            probeSettledAt?: null | string;
+            probeTurnId?: string;
+            resumeGeneration?: string;
+            /** Format: date-time */
+            resumeIntentAt?: null | string;
+            /** Format: date-time */
+            resumedAt?: null | string;
+            /** Format: date-time */
+            startedAt?: string;
+            stopConfirmed: boolean;
+            stopReceipt?: components["schemas"]["ReplacementStopReceipt"];
+            unlaunchedAttempts: components["schemas"]["ReplacementResumeUnlaunched"][];
+            verified: boolean;
+            /** Format: date-time */
+            verifiedAt?: null | string;
+        };
+        ReplacementResumeUnlaunched: {
+            /** Format: date-time */
+            confirmedAt: string;
+            generation: string;
+            /** Format: date-time */
+            intentAt: string;
+        };
+        ReplacementRetainedRetry: {
+            failure: components["schemas"]["ReplacementFailure"];
+            phase: string;
+            /** Format: date-time */
+            requestedAt: string;
+        };
+        ReplacementStopReceipt: {
+            /** Format: date-time */
+            confirmedAt: string;
+            method: string;
+            nativeId: string;
+        };
+        ReplacementWriterActivation: {
+            /** Format: date-time */
+            activatedAt: string;
+            /** Format: int64 */
+            afterEpoch: number;
+            /** Format: int64 */
+            beforeEpoch: number;
+            sessionId: string;
         };
         RepoGitStatus: {
             blockingErrors: string[];
@@ -9172,6 +9594,14 @@ export interface components {
             /** @enum {string} */
             provider?: "github" | "gitlab";
             repo?: string;
+        };
+        TranscriptEpochCutoff: {
+            /** Format: int64 */
+            bytes: number;
+            leafId: string;
+            nativeId: string;
+            schema: string;
+            sha256?: string;
         };
         TriggerReviewRequest: {
             agentAccountId?: string;
@@ -16103,6 +16533,546 @@ export interface operations {
             };
         };
     };
+    getOrchestratorReplacement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelOrchestratorReplacement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    diagnoseOrchestratorReplacement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementDiagnosticResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getOrchestratorReplacementIntake: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementIntakeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    submitOrchestratorReplacementPreparation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrchestratorReplacementPreparedRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    repairOrchestratorReplacement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrchestratorReplacementRepairRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    retryOrchestratorReplacement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     listOrchestrators: {
         parameters: {
             query?: never;
@@ -17408,6 +18378,87 @@ export interface operations {
                 };
                 content: {
                     "application/octet-stream": string;
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    replaceOrchestrator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project identifier (registry key). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrchestratorReplaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrchestratorReplacementResponse"];
                 };
             };
             /** @description Bad Request */

@@ -908,7 +908,20 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			cfg.ControllerReady = s.rebindBranchOnReady(ctx, cfg.ControllerReady, conversation.ID, activeBranch.ID, cfg.ProviderConversationID)
 		}
 	}
-	if (cfg.HistoryMode == ports.ChatHistoryRequired) && liveReconnect {
+	replacementLookup := cfg.ReconnectOnly && cfg.DisableFreshProviderFallback && cfg.HistoryPolicy == domain.SessionInterfaceTransitionHistoryStrict
+	replacementReplay := cfg.Kind == domain.KindOrchestrator && cfg.Harness == domain.HarnessClaudeCode && cfg.HistoryMode == ports.ChatHistoryRequired && cfg.HistoryPolicy == domain.SessionInterfaceTransitionHistoryStrict && cfg.DisableFreshProviderFallback
+	var launchVerifier string
+	if replacementReplay {
+		if proof, ok := conv.(ports.ChatLaunchCapabilityVerifier); ok {
+			launchVerifier = proof.LaunchCapabilityVerifier()
+		}
+		if launchVerifier == "" {
+			_ = cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf("%w: provider launch capability proof unavailable", ports.ErrChatRecoveryInconclusive)
+		}
+	}
+
+	if (cfg.HistoryMode == ports.ChatHistoryRequired) && liveReconnect && !replacementLookup {
 		// A TUI handoff needs a fresh, verified native-history admission. A host
 		// left alive by an unpublished target is not an established Chat owner,
 		// and adopting it must not take the ordinary live-reconnect fast path.
@@ -1072,7 +1085,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			}
 		}
 	}
-	if cfg.ProviderConversationID != "" && cfg.HistoryMode != ports.ChatHistoryDeferred && !liveReconnect {
+	if cfg.ProviderConversationID != "" && cfg.HistoryMode != ports.ChatHistoryDeferred && (!liveReconnect || replacementLookup) {
 		// The provider's native thread is the continuity authority across TUI and
 		// Chat. Import it before the live projector starts so the first notification
 		// cannot appear ahead of the older prompt, tool work, and answer it follows.
@@ -1183,6 +1196,17 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			return nil, err
 		}
 	}
+	if replacementReplay {
+		current, err := s.requireChatSession(ctx, cfg.SessionID)
+		expected := cfg.ExpectedControllerOwner
+		if providerBoundaryID == "" {
+			expected.ControllerGeneration = generation
+		}
+		if err != nil || current.Metadata.BrowserCapabilityVerifier != launchVerifier || current.ControllerOwner() != expected {
+			_ = cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf("%w: provider launch capability no longer matches ready admission", ports.ErrChatRecoveryInconclusive)
+		}
+	}
 	commit, err := notifyControllerReady(
 		cfg, controller, providerBoundary, commitProviderHistory,
 	)
@@ -1238,6 +1262,14 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	controller.settingsObservationOwner = controller.observationOwner(settingsAccount)
 	s.configureAgentSettingsController(controller)
 	controller.initializeAgentSettings(ctx)
+	if replacementReplay {
+		current, err := s.requireChatSession(ctx, cfg.SessionID)
+		if err != nil || current.Metadata.BrowserCapabilityVerifier != launchVerifier || current.ControllerOwner() != cfg.ExpectedControllerOwner {
+			_ = cleanupUnpublishedConversation(conv, false)
+			return nil, fmt.Errorf("%w: replay owner changed after ready publication", ports.ErrChatRecoveryInconclusive)
+		}
+		controller.strictReplacementReplay = &replacementReplayProof{owner: current.ControllerOwner(), capabilityVerifier: launchVerifier}
+	}
 	s.mu.Lock()
 	s.ownerControllers[owner] = controller
 	if owner.Kind == domain.ConversationOwnerSession {

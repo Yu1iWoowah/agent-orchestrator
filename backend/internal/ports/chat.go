@@ -1261,6 +1261,10 @@ type ChatLiveReconnector interface {
 	ReconnectedLive() bool
 }
 
+// ChatLaunchCapabilityVerifier attests the credential inherited by the provider.
+// Missing proof must not be inferred from current session metadata.
+type ChatLaunchCapabilityVerifier interface{ LaunchCapabilityVerifier() string }
+
 // ChatLiveReconnectActivator releases provider replay only after the service
 // has restored the durable active-turn correlation for the same live process.
 type ChatLiveReconnectActivator interface {

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 /**
  * The Chat composer.
@@ -229,9 +230,11 @@ export const ChatComposer = memo(function ChatComposer({
 	savingQueuedEditPending,
 	queuedEditRecovery,
 	commandError,
+	handoffReceipt,
 	notice,
 	queuedDock,
 	onCompact,
+	onHandoff,
 	compacting,
 	compactUnavailable,
 	compactBlocked,
@@ -350,12 +353,15 @@ export const ChatComposer = memo(function ChatComposer({
 	queuedEditRecovery?: boolean;
 	/** A failed send, approval, interrupt, or settings mutation. */
 	commandError?: string;
+	handoffReceipt?: ReactNode;
 	/** A notice attached to the form, below queued messages and input requests. */
 	notice?: ReactNode;
 	/** Queued messages rendered above the composer. */
 	queuedDock?: ReactNode;
 	/** Run AO's built-in `/compact` command instead of sending it to the agent. */
 	onCompact?: () => void | Promise<unknown>;
+	/** Start AO replacement directly, without a provider message or interrupt. */
+	onHandoff?: () => Promise<unknown>;
 	/** The provider is already compacting this conversation. */
 	compacting?: boolean;
 	/** A typed provider refusal from the last compaction attempt. */
@@ -600,18 +606,17 @@ export const ChatComposer = memo(function ChatComposer({
 			!stagedPath && data ? [{ mimeType, data, name }] : []), fileAttachments.preparing);
 	}, [fileAttachments.attachments, fileAttachments.preparing, holdAttachments, onHeldAttachmentsChange]);
 
+	const { t } = useTranslation();
 	const slashCommands = useMemo<ChatSkill[]>(() => {
-		if (!onCompact || compactUnavailable === "This agent cannot compact its history") return skills;
-		return [
-			{
-				name: "compact",
-				displayName: "compact",
-				description: "Summarize earlier history to reclaim context",
-				source: "AO",
-			},
-			...skills.filter((skill) => skill.name !== "compact"),
-		];
-	}, [compactUnavailable, onCompact, skills]);
+		const commands: ChatSkill[] = [];
+		if (onCompact && compactUnavailable !== "This agent cannot compact its history") {
+			commands.push({ name: "compact", displayName: "compact", description: "Summarize earlier history to reclaim context", source: "AO" });
+		}
+		if (onHandoff) {
+			commands.push({ name: "handoff", displayName: t("chat.handoff.command"), description: t("chat.handoff.description"), source: "AO" });
+		}
+		return [...commands, ...skills.filter(skill => !commands.some(command => command.name === skill.name.toLowerCase()))];
+	}, [compactUnavailable, onCompact, onHandoff, skills, t]);
 
 	const suggestionsFor = useCallback((currentTrigger?: ComposerTrigger): Suggestion[] => {
 		if (!currentTrigger || currentTrigger.key === dismissedKeyRef.current) return [];
@@ -1237,7 +1242,7 @@ export const ChatComposer = memo(function ChatComposer({
 			const currentTrigger = snapshot.trigger;
 			if (!currentTrigger) return undefined;
 			if (key === "Enter" && /^\/(btw|side)$/.test(snapshot.text.trim()) && skills.some((skill) => skill.name === snapshot.text.trim().slice(1) && skill.source === "AO")) return undefined;
-			if (key === "Enter" && snapshot.text.trim() === "/compact" && onCompact) {
+			if (key === "Enter" && ((snapshot.text.trim() === "/compact" && onCompact) || (snapshot.text.trim() === "/handoff" && onHandoff))) {
 				return undefined;
 			}
 			const matches = suggestionsFor(currentTrigger);
@@ -1248,7 +1253,7 @@ export const ChatComposer = memo(function ChatComposer({
 			dismissedKeyRef.current = null;
 			return chosen.value;
 		},
-		[onCompact, skills, suggestionsFor],
+		[onCompact, onHandoff, skills, suggestionsFor],
 	);
 
 	function submit(event?: FormEvent, forceSteer?: boolean): Promise<void> {
@@ -1296,6 +1301,29 @@ export const ChatComposer = memo(function ChatComposer({
 		const sendNativeImages = recoveringDelivery?.nativeImages ?? Boolean(nativeImages);
 		setSendError(null);
 		setSteerOutcomeNotice(null);
+
+		if (!recoveringDelivery && !savingQueuedEdit && body === "/handoff" && onHandoff) {
+			if (fileReferences.length || chatReferences.length || fileAttachments.getAttachments().length || fileAttachments.hasPendingReads()) {
+				setSendError("chat.draft.handoffAttachments");
+				return;
+			}
+			if (draftScope && !mutationToken) return;
+			const acceptedRevision = composerRevision.current;
+			let mutationFinished = false;
+			setSubmitting(true);
+			try {
+				await onHandoff();
+				if (composerRevision.current === acceptedRevision) mutationFinished = clearAcceptedDraft(acceptedRevision, mutationToken);
+				setDismissedKey(null);
+				setHighlighted(0);
+			} catch (error) {
+				setSendError(error instanceof Error ? error.message : "chat.draft.handoffFailed");
+			} finally {
+				if (draftScope && mutationToken && !mutationFinished) cancelChatComposerMutation(draftScope, mutationToken);
+				setSubmitting(false);
+			}
+			return;
+		}
 
 		if (!recoveringDelivery && !savingQueuedEdit && body === "/compact" && onCompact) {
 			if (fileReferences.length) { setSendError("chat.draft.fileReferencesCompactUnsupported"); return; }
@@ -1636,7 +1664,7 @@ export const ChatComposer = memo(function ChatComposer({
 			const liveTrigger = liveSnapshot?.trigger;
 			const liveSuggestions = suggestionsFor(liveTrigger);
 			if (liveSuggestions.length > 0) {
-				if (textRef.current.trim() === "/compact" && onCompact) {
+				if ((textRef.current.trim() === "/compact" && onCompact) || (textRef.current.trim() === "/handoff" && onHandoff)) {
 					void submit();
 					return true;
 				}
@@ -1654,7 +1682,7 @@ export const ChatComposer = memo(function ChatComposer({
 			void submit(undefined, wantsSteer);
 			return true;
 		},
-		[canSteerDraft, canSteerNext, fileAttachments, onCompact, pick, suggestionsFor],
+		[canSteerDraft, canSteerNext, fileAttachments, onCompact, onHandoff, pick, suggestionsFor],
 	);
 
 	function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -1831,6 +1859,7 @@ export const ChatComposer = memo(function ChatComposer({
 				onSubmit={(event) => event.preventDefault()}
 				className="cursor-chat-composer relative flex flex-col gap-1.5 px-3 py-3"
 			>
+				{handoffReceipt}
 				{approval}
 				{commandError ? (
 					<p role="alert" className="px-1.5 text-xs leading-snug text-destructive">
@@ -1884,6 +1913,8 @@ export const ChatComposer = memo(function ChatComposer({
 						truncated={trigger?.kind === "file" && filePathsTruncated}
 					/>
 				) : null}
+
+				{handoffReceipt}
 
 				{editingQueuedTurnId ? (
 					<div className="flex items-center justify-between text-xs text-muted-foreground">

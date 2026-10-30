@@ -50,10 +50,9 @@ func TestReplacementRetirementDurableIntentAndCommitSurviveRestart(t *testing.T)
 				t.Fatal("late message was not durably accepted", err)
 			}
 			if loss == "lost coordinator" {
-				var crashed any
-				func() { defer func() { crashed = recover() }(); _, _ = x.service().Advance(ctx, intent.ID) }()
-				if crashed != "lost coordinator after atomic retirement" {
-					t.Fatalf("wrong crash boundary: %v", crashed)
+				assertReplacementPanicQuarantined(t, x.service(), intent.ID)
+				if _, err := x.service().Retry(ctx, intent.ID); err != nil {
+					t.Fatal(err)
 				}
 			} else {
 				result, err := x.service().Advance(ctx, intent.ID)

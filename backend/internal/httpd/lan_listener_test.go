@@ -249,6 +249,10 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 	defer m.Stop(context.Background())
 
 	blocked := []string{
+		"/api/v1/projects/demo/orchestrator/replacements",
+		"/api/v1/projects/demo%2Fnested/orchestrator/replacements",
+		"/api/v1/orchestrator/replacements/op/diagnose",
+		"/api/v1/orchestrator/replacements/op/repair",
 		"/api/v1/awake",
 		"/api/v1/awake/sessions",
 		"/api/v1/awake/settings",

@@ -12,6 +12,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
@@ -29,9 +31,10 @@ const maxDrainedBodyBytes = 4 << 10
 // apiError is the subset of the daemon's JSON error envelope the CLI surfaces.
 // RequestID is surfaced so a failed command can be correlated with daemon logs.
 type apiError struct {
-	Message   string `json:"message"`
-	Code      string `json:"code"`
-	RequestID string `json:"requestId"`
+	Message   string          `json:"message"`
+	Code      string          `json:"code"`
+	RequestID string          `json:"requestId"`
+	Details   json.RawMessage `json:"details"`
 }
 
 type apiResponseError struct {
@@ -89,6 +92,14 @@ func (e apiError) String() string {
 	}
 	if e.RequestID != "" {
 		msg = fmt.Sprintf("%s [request %s]", msg, e.RequestID)
+	}
+	var details struct {
+		OperationID string `json:"operationId"`
+	}
+	if json.Unmarshal(e.Details, &details) == nil {
+		if id, err := uuid.Parse(details.OperationID); err == nil && id != uuid.Nil && id.String() == details.OperationID {
+			msg = fmt.Sprintf("%s [operation %s]", msg, details.OperationID)
+		}
 	}
 	return msg
 }

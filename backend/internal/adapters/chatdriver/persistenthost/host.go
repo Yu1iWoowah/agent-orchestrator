@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 )
@@ -136,11 +137,12 @@ type ACPState struct {
 
 // Transport is one authenticated attachment to a persistent provider host.
 type Transport struct {
-	Stdin         io.WriteCloser
-	Stdout        io.Reader
-	Reconnected   bool
-	NextRequestID int64
-	ACPState      *ACPState
+	LaunchCapabilityVerifier string
+	Stdin                    io.WriteCloser
+	Stdout                   io.Reader
+	Reconnected              bool
+	NextRequestID            int64
+	ACPState                 *ACPState
 }
 
 type hello struct {
@@ -152,11 +154,12 @@ type hello struct {
 }
 
 type helloResponse struct {
-	ProviderStopped bool      `json:"providerStopped,omitempty"`
-	OK              bool      `json:"ok"`
-	Error           string    `json:"error,omitempty"`
-	NextRequestID   int64     `json:"nextRequestId,omitempty"`
-	ACPState        *ACPState `json:"acpState,omitempty"`
+	LaunchCapabilityVerifier string    `json:"launchCapabilityVerifier,omitempty"`
+	ProviderStopped          bool      `json:"providerStopped,omitempty"`
+	OK                       bool      `json:"ok"`
+	Error                    string    `json:"error,omitempty"`
+	NextRequestID            int64     `json:"nextRequestId,omitempty"`
+	ACPState                 *ACPState `json:"acpState,omitempty"`
 }
 
 func hostDir(dataDir, sessionID string) (string, error) {
@@ -485,7 +488,8 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 		}
 	}
 	return &Transport{
-		Stdin: conn, Stdout: reader, Reconnected: reconnected,
+		LaunchCapabilityVerifier: response.LaunchCapabilityVerifier,
+		Stdin:                    conn, Stdout: reader, Reconnected: reconnected,
 		NextRequestID: response.NextRequestID, ACPState: response.ACPState,
 	}, nil
 }
@@ -600,7 +604,9 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confir
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
 		return finishHandshake(err)
 	}
-	if err := finishHandshake(nil); err != nil {
+	handshakeErr := finishHandshake(nil)
+	positiveStop := confirmedOwner != "" && response.OK && response.ProviderStopped
+	if err := handshakeErr; err != nil && !positiveStop {
 		return err
 	}
 	if !response.OK {
@@ -617,6 +623,9 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confir
 	// SIGTERM before SIGKILL. Wait past that, with room for a loaded machine.
 	waitCtx, stop := context.WithTimeout(ctx, 10*time.Second)
 	defer stop()
+	if positiveStop {
+		waitCtx = handshakeCtx
+	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -638,11 +647,14 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confir
 			} else if lockErr != nil {
 				return lockErr
 			}
-		} else if readErr != nil {
+		} else if readErr != nil && !positiveStop {
 			return readErr
 		}
 		select {
 		case <-waitCtx.Done():
+			if positiveStop {
+				return nil
+			} // Cleanup must not erase authenticated stop proof.
 			if windowsPermissionError {
 				return fmt.Errorf("wait for chat host shutdown: %w (descriptor: %w)", waitCtx.Err(), readErr)
 			}
@@ -707,7 +719,8 @@ func Run(ctx context.Context, cfg Config) error {
 	defer func() { _ = os.Remove(path) }()
 
 	h := &host{
-		ctx: ctx, listener: listener, child: child, stdin: stdin, token: token,
+		launchCapabilityVerifier: capabilityVerifierForEnv(cfg.Env),
+		ctx:                      ctx, listener: listener, child: child, stdin: stdin, token: token,
 		detached: make([][]byte, 0, 64), pendingRequests: make(map[string]*pendingRequest),
 		shutdown: make(chan struct{}),
 	}
@@ -785,14 +798,18 @@ func Run(ctx context.Context, cfg Config) error {
 	var runErr error
 	select {
 	case runErr = <-providerDone:
+		h.beginShutdown()
 		reapProvider()
 		cleanupErr = errors.Join(cleanupErr, killProviderProcess(context.WithoutCancel(ctx), child))
 	case <-h.shutdown:
+		h.beginShutdown()
 		stopProvider()
 	case <-ctx.Done():
+		h.beginShutdown()
 		runErr = ctx.Err()
 		stopProvider()
 	case err := <-acceptDone:
+		h.beginShutdown()
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			_ = killProviderProcess(context.WithoutCancel(ctx), child)
 			return err
@@ -834,12 +851,16 @@ func confirmedProviderShutdown(platform string, cleanupErr error, wait func() er
 }
 
 type host struct {
-	ctx      context.Context
-	listener net.Listener
-	child    *exec.Cmd
-	stdin    io.WriteCloser
-	token    string
-	acp      *acpRelay
+	launchCapabilityVerifier string     // Immutable launch evidence, sent only after authentication.
+	admissionMu              sync.Mutex // Serializes stopping with attached-client registration, never data writes.
+	stopping                 atomic.Bool
+	activeClient             atomic.Pointer[hostClient]
+	ctx                      context.Context
+	listener                 net.Listener
+	child                    *exec.Cmd
+	stdin                    io.WriteCloser
+	token                    string
+	acp                      *acpRelay
 
 	mu               sync.Mutex
 	cond             *sync.Cond
@@ -855,6 +876,36 @@ type host struct {
 	quickStop        atomic.Bool // set before shutdown closes; see ShutdownQuick
 	stopConfirmation net.Conn    // authenticated receipt waits for process-tree cleanup
 	finishing        bool        // protected by mu; no new confirmation after cleanup
+}
+
+type hostClient struct{ conn net.Conn }
+
+func capabilityVerifierForEnv(env []string) string {
+	var id, token string
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "AO_SESSION_ID":
+			id = value
+		case "AO_BROWSER_CAPABILITY":
+			token = value
+		}
+	}
+	return domain.BrowserCapabilityVerifier(domain.SessionID(id), token)
+}
+
+// Authentication happens before this admission. Do not take h.mu: replay may
+// hold it while writing to the very connection we must close to make progress.
+func (h *host) beginShutdown() {
+	h.admissionMu.Lock()
+	defer h.admissionMu.Unlock()
+	h.stopping.Store(true)
+	if client := h.activeClient.Load(); client != nil {
+		_ = client.conn.Close()
+	}
 }
 
 type pendingRequest struct {
@@ -873,12 +924,15 @@ func (h *host) accept() error {
 }
 
 func (h *host) handle(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	reader := bufio.NewReader(conn)
 	var request hello
 	if err := json.NewDecoder(reader).Decode(&request); err != nil {
 		_ = conn.Close()
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
+	_ = conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
 	if request.Version != ProtocolVersion {
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrIncompatible.Error()})
 		_ = conn.Close()
@@ -890,6 +944,7 @@ func (h *host) handle(conn net.Conn) {
 		return
 	}
 	if request.Action == "shutdown-confirmed" {
+		h.beginShutdown()
 		h.mu.Lock()
 		if h.finishing || h.stopConfirmation != nil {
 			h.mu.Unlock()
@@ -906,6 +961,7 @@ func (h *host) handle(conn net.Conn) {
 		return // Run owns this connection until process-tree cleanup is verified.
 	}
 	if request.Action == "shutdown" {
+		h.beginShutdown()
 		_ = json.NewEncoder(conn).Encode(helloResponse{OK: true})
 		_ = conn.Close()
 		if request.QuickStop {
@@ -921,26 +977,40 @@ func (h *host) handle(conn net.Conn) {
 	}
 
 	h.mu.Lock()
-	if h.client != nil {
+	if h.client != nil || h.stopping.Load() {
+		h.mu.Unlock()
+		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrAttached.Error()})
+		_ = conn.Close()
+		return
+	}
+	h.admissionMu.Lock()
+	// Shutdown may have won since the first check. Reject before registration
+	// so it cannot close this connection before the ErrAttached reply.
+	if h.stopping.Load() {
+		h.admissionMu.Unlock()
 		h.mu.Unlock()
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrAttached.Error()})
 		_ = conn.Close()
 		return
 	}
 	h.client = conn
+	h.activeClient.Store(&hostClient{conn: conn})
+	h.admissionMu.Unlock()
 	h.clientGeneration++
 	generation := h.clientGeneration
-	response := helloResponse{OK: true, NextRequestID: h.maxRequestID}
+	response := helloResponse{OK: true, NextRequestID: h.maxRequestID, LaunchCapabilityVerifier: h.launchCapabilityVerifier}
 	if h.acp != nil {
 		response.ACPState = h.acp.snapshot()
 	}
 	writeErr := json.NewEncoder(conn).Encode(response)
+	_ = conn.SetWriteDeadline(time.Time{})
+	writer := attachedClientWriter{conn: conn}
 	if writeErr == nil && h.acp != nil {
-		writeErr = h.acp.replayTo(h.ctx, conn)
+		writeErr = h.acp.replayTo(h.ctx, writer)
 	}
 	if writeErr == nil {
 		for _, frame := range h.detached {
-			if _, writeErr = conn.Write(frame); writeErr != nil {
+			if _, writeErr = writer.Write(frame); writeErr != nil {
 				break
 			}
 		}
@@ -953,6 +1023,7 @@ func (h *host) handle(conn net.Conn) {
 		}
 		h.cond.Broadcast()
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
 	h.mu.Unlock()
 	if writeErr != nil {
 		h.detach(conn)
@@ -987,9 +1058,15 @@ func (h *host) handle(conn net.Conn) {
 				}
 			}
 			if readErr == nil && len(clientFrame) > 0 {
-				if _, err := conn.Write(clientFrame); err != nil {
-					readErr = err
+				// Serialize all writes/deadline resets for this attached client.
+				// Otherwise a completed reply can clear a concurrent frame's deadline.
+				h.mu.Lock()
+				if h.client != conn {
+					readErr = io.ErrClosedPipe
+				} else {
+					readErr = writeClientFrame(conn, clientFrame)
 				}
+				h.mu.Unlock()
 			}
 		}
 		if readErr != nil {
@@ -1032,6 +1109,7 @@ func (h *host) detach(conn net.Conn) {
 	h.mu.Lock()
 	if h.client == conn {
 		h.client = nil
+		h.activeClient.Store(nil)
 		h.bufferPendingRequestsLocked()
 	}
 	h.mu.Unlock()
@@ -1053,9 +1131,10 @@ func (h *host) deliverProviderFrameLocked(frame []byte, retainedByACP bool) {
 		h.cond.Wait()
 	}
 	if h.client != nil {
-		if _, writeErr := h.client.Write(frame); writeErr != nil {
+		if writeErr := writeClientFrame(h.client, frame); writeErr != nil {
 			_ = h.client.Close()
 			h.client = nil
+			h.activeClient.Store(nil)
 			h.bufferPendingRequestsLocked()
 			if _, pending := serverRequestID(frame); !pending && !retainedByACP {
 				h.bufferFrameLocked(frame)
@@ -1069,6 +1148,36 @@ func (h *host) deliverProviderFrameLocked(frame []byte, retainedByACP bool) {
 			}
 		}
 	}
+}
+
+// Callers hold h.mu to serialize attached-client writes and deadline resets.
+// A stalled desktop cannot prevent shutdown or another controller attaching.
+func writeClientFrame(conn net.Conn, frame []byte) error {
+	_, err := (attachedClientWriter{conn: conn}).Write(frame)
+	return err
+}
+
+// Replay may legitimately exceed a handshake budget while the client consumes
+// it. Small writes bound the temporary slice without imposing an idle timeout.
+// Data-stream backpressure is not evidence of a dead client. Lifecycle shutdown
+// closes activeClient without taking mu, interrupting any blocked write. Unlike
+// the bounded handshake, a valid attached reader may pause indefinitely.
+type attachedClientWriter struct{ conn net.Conn }
+
+func (w attachedClientWriter) Write(frame []byte) (int, error) {
+	written := 0
+	for len(frame) > 0 {
+		n, err := w.conn.Write(frame[:min(len(frame), 4<<10)])
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n == 0 {
+			return written, io.ErrShortWrite
+		}
+		frame = frame[n:]
+	}
+	return written, nil
 }
 
 // watchPromptStall terminates an in-flight prompt whose adapter went silent.

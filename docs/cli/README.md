@@ -77,6 +77,9 @@ addresses change on restart.
 | `ao session claim-pr [<id>] <pr-ref>` | `POST /api/v1/sessions/{id}/pr/claim`        |
 | `ao pr merge <pr-number> --pr-url <url> --expected-head <sha>` | `POST /api/v1/prs/{id}/merge` |
 | `ao orchestrator ls`                | `GET /api/v1/orchestrators`                    |
+| `ao orchestrator replace` | `POST /api/v1/projects/{id}/orchestrator/replacements` (durable acceptance) |
+| `ao orchestrator replacement get/retry/cancel/prepared/intake` | `GET/POST /api/v1/orchestrator/replacements/{id}[/{action}]` |
+| `ao orchestrator replacement diagnose/repair` | `GET/POST /api/v1/orchestrator/replacements/{id}/{action}` (explicit operator CAS) |
 | `ao send`                           | `POST /api/v1/sessions/{id}/send`              |
 | `ao report ...`                     | `POST /api/v1/reports`                         |
 | `ao preview [url]`                  | `POST /api/v1/sessions/{id}/preview`           |
@@ -424,3 +427,21 @@ Malformed arguments and missing/conflicting scopes exit 2. Daemon/runtime
 errors, provider mismatch, failed transitions and confirmed cancellation exit 1.
 API error codes and request IDs are retained for diagnosis. No credential value
 is accepted as a command-line argument. Quota exhaustion does not rotate accounts.
+
+## Orchestrator handoff
+
+`ao orchestrator replace --project <project-id> --from <session-id>` accepts a
+durable handoff; it does not wait for completion. Keep an explicit
+`--operation-key <canonical-uuid>` to safely reconcile a lost response.
+`ao orchestrator replacement get <operation-id> --json` reads the persisted phase
+and evidence without advancing it; `retry` and `cancel` are phase-gated.
+`replacement intake <operation-id> --json` reads pending messages and worker
+reports without acknowledging or dispatching them.
+
+Local orchestrator Chats also offer the AO-native `/handoff` command and an
+acceptance receipt. Phase 1 supports Claude Code Chat/TUI sources and a Claude
+Code Chat successor only. Preparation, immutable evidence, same-conversation
+stop/resume verification, and writer fencing remain daemon responsibilities.
+Pending notifications prevent completion. See the bundled
+[orchestrator command guide](../../backend/internal/skillassets/using-ao/commands/orchestrator.md)
+for command flags and recovery limits.

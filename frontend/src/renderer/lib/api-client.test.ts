@@ -281,6 +281,14 @@ describe("normalizeApiOperation", () => {
 		);
 	});
 
+	it("removes project and operation identities from handoff telemetry", () => {
+		expect(normalizeApiOperation("POST", "/api/v1/projects/private-project/orchestrator/replacements")).toBe("POST /api/v1/projects/:id/orchestrator/replacements");
+		for (const action of ["", "/retry", "/cancel", "/prepared", "/intake", "/diagnose", "/repair"]) {
+			const method = action === "" || action === "/intake" || action === "/diagnose" ? "GET" : "POST";
+			expect(normalizeApiOperation(method, `/api/v1/orchestrator/replacements/private-operation${action}`)).toBe(`${method} /api/v1/orchestrator/replacements/:id${action}`);
+		}
+	});
+
 	it("normalizes ids for resources a collection heuristic would miss", () => {
 		expect(normalizeApiOperation("GET", "/api/v1/orchestrators/orch-abc")).toBe("GET /api/v1/orchestrators/:id");
 		expect(normalizeApiOperation("POST", "/api/v1/prs/pr-1/merge")).toBe("POST /api/v1/prs/:id/merge");

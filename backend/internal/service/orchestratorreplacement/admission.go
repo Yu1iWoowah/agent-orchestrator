@@ -41,7 +41,7 @@ func (s *Service) accept(ctx context.Context, request Request) (domain.Orchestra
 	}
 	hash := requestHash(request)
 	if existing, found, err := s.deps.Store.GetOrchestratorReplacementByKey(ctx, request.OperationKey); err != nil {
-		return zero, err
+		return zero, s.unverifiedActiveError(ctx, request.ProjectID, err)
 	} else if found {
 		if existing.ProjectID != request.ProjectID || existing.SourceSessionID != request.SourceSessionID || existing.RequestHash != hash {
 			return existing, operationError(domain.ErrReplacementKeyConflict, existing.ID)
@@ -49,7 +49,7 @@ func (s *Service) accept(ctx context.Context, request Request) (domain.Orchestra
 		return existing, rejectionError(existing)
 	}
 	if active, found, err := s.deps.Store.GetActiveOrchestratorReplacement(ctx, request.ProjectID); err != nil {
-		return zero, err
+		return zero, s.unverifiedActiveError(ctx, request.ProjectID, err)
 	} else if found {
 		return active, operationError(domain.ErrReplacementInProgress, active.ID)
 	}
@@ -115,6 +115,17 @@ func (s *Service) accept(ctx context.Context, request Request) (domain.Orchestra
 		return result, operationError(err, result.ID)
 	}
 	return result, rejectionError(result)
+}
+
+func (s *Service) unverifiedActiveError(ctx context.Context, project domain.ProjectID, original error) error {
+	if lookup, ok := s.deps.Store.(interface {
+		ActiveOrchestratorReplacementID(context.Context, domain.ProjectID) (string, error)
+	}); ok {
+		if id, err := lookup.ActiveOrchestratorReplacementID(ctx, project); err == nil && id != "" {
+			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_STATE_UNVERIFIED", "Active replacement cannot be verified; diagnose its operation before authorizing repair", map[string]any{"operationId": id})
+		}
+	}
+	return original
 }
 
 func (s *Service) reject(ctx context.Context, op domain.OrchestratorReplacement, code, message string) (domain.OrchestratorReplacement, error) {

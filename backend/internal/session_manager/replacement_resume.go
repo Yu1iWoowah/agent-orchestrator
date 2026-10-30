@@ -11,6 +11,11 @@ import (
 )
 
 type replacementNativeResumeKey struct{}
+type replacementResumeLookupKey struct{}
+
+type replacementResumeLookup interface {
+	LookupReplacementChatResume(context.Context, domain.SessionID, string, string) (ports.ReplacementResumeObservation, error)
+}
 
 // ResumeReplacementSuccessor reopens only the strongly stopped native thread.
 // Unknown caller/launch gaps require recovery, never another fresh controller.
@@ -47,14 +52,13 @@ func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domai
 	if p == nil || p.StartedAt.IsZero() || !p.StopConfirmed || p.StopReceipt == nil || p.ResumeIntentAt == nil || p.ResumeIntentAt.IsZero() || p.ResumeGeneration == "" || p.ResumeGeneration == p.BeforeOwner.ControllerGeneration || p.ResumedAt != nil || op.Bootstrap == nil || op.Bootstrap.SettledAt == nil {
 		return zero, domain.ErrReplacementStateInvalid
 	}
-	if !allowNew {
-		return zero, ports.ErrChatRecoveryInconclusive
-	}
 	rec, found, err := m.store.GetSession(ctx, op.SuccessorSessionID)
 	if err != nil {
 		return zero, err
 	}
-	if !found || rec.ProjectID != op.ProjectID || rec.Kind != domain.KindOrchestrator || rec.Harness != domain.HarnessClaudeCode || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || rec.ClientRequestID != op.SpawnRequestID || rec.ClientRequestHash != op.SpawnRequestHash || rec.ProvisionState != domain.SessionProvisionReady || rec.ControllerOwner() != p.BeforeOwner || rec.Metadata.BrowserCapabilityVerifier != p.BeforeCapabilityVerifier || p.BeforeNativeID == "" || p.BeforeNativeID != rec.Metadata.ProviderConversationID || !p.StopReceipt.MatchesSource(rec) {
+	before := rec.ControllerOwner() == p.BeforeOwner && rec.Metadata.BrowserCapabilityVerifier == p.BeforeCapabilityVerifier && p.StopReceipt.MatchesSource(rec)
+	pending := !allowNew && op.PendingNativeResumeMatches(rec)
+	if !found || rec.ProjectID != op.ProjectID || rec.Kind != domain.KindOrchestrator || rec.Harness != domain.HarnessClaudeCode || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || rec.ClientRequestID != op.SpawnRequestID || rec.ClientRequestHash != op.SpawnRequestHash || rec.ProvisionState != domain.SessionProvisionReady || !before && !pending || p.BeforeNativeID == "" || p.BeforeNativeID != rec.Metadata.ProviderConversationID {
 		return zero, domain.ErrReplacementSourceChanged
 	}
 	initial := op.SuccessorController
@@ -64,7 +68,7 @@ func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domai
 	if m.chat == nil {
 		return zero, ports.ErrChatUnsupported
 	}
-	if m.chat.HasLiveChatController(rec.ID) {
+	if allowNew && m.chat.HasLiveChatController(rec.ID) {
 		return zero, ports.ErrChatRecoveryInconclusive
 	}
 	source, found, err := m.store.GetSession(ctx, op.SourceSessionID)
@@ -109,19 +113,47 @@ func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domai
 	if !info.IsDir() {
 		return zero, domain.ErrReplacementStateInvalid
 	}
+	if !allowNew && before {
+		if m.chat.HasLiveChatController(rec.ID) {
+			return zero, ports.ErrChatRecoveryInconclusive
+		}
+		// Every replacement launch must persist a rotated capability before
+		// opening a provider. The strongly stopped, unchanged owner proves the
+		// saved intent never crossed that boundary (not merely an absent host).
+		return zero, fmt.Errorf("%w: stopped owner has not crossed capability rotation", ports.ErrChatResumeNotLaunched)
+	}
 	// Reuse ordinary native restore, with required replay and a durably reserved
 	// generation. That mode forbids both explicit and unanswered fresh fallback.
 	ctx = context.WithValue(ctx, replacementNativeResumeKey{}, true)
-	launcherEntered = true
-	resumed, err := m.resumeChatController(ctx, "orchestrator replacement native probe", rec, project, ws, true, false, p.ResumeGeneration, domain.SessionInterfaceTransitionHistoryStrict)
-	if err != nil {
-		return zero, err
+	if allowNew || !m.chat.HasLiveChatController(rec.ID) {
+		if !allowNew {
+			ctx = context.WithValue(ctx, replacementResumeLookupKey{}, true)
+		}
+		launcherEntered = true
+		resumed, err := m.resumeChatController(ctx, "orchestrator replacement native probe", rec, project, ws, true, !allowNew, p.ResumeGeneration, domain.SessionInterfaceTransitionHistoryStrict)
+		if err != nil {
+			return zero, err
+		}
+		if resumed.Mode != RestoreModeNative {
+			return zero, ports.ErrChatRecoveryInconclusive
+		}
 	}
 	current, found, err := m.store.GetSession(ctx, rec.ID)
 	if err != nil {
 		return zero, err
 	}
-	if !found || resumed.Mode != RestoreModeNative || current.IsTerminated || current.Metadata.ProviderConversationID != p.BeforeNativeID || current.Metadata.ControllerGeneration != p.ResumeGeneration || current.Metadata.BrowserCapabilityVerifier == "" || current.Metadata.BrowserCapabilityVerifier == p.BeforeCapabilityVerifier {
+	if !found || current.IsTerminated || current.Metadata.ProviderConversationID != p.BeforeNativeID || current.Metadata.ControllerGeneration != p.ResumeGeneration || current.Metadata.BrowserCapabilityVerifier == "" || current.Metadata.BrowserCapabilityVerifier == p.BeforeCapabilityVerifier {
+		return zero, ports.ErrChatRecoveryInconclusive
+	}
+	lookup, ok := m.chat.(replacementResumeLookup)
+	if !ok {
+		return zero, ports.ErrChatRecoveryInconclusive
+	}
+	observed, err := lookup.LookupReplacementChatResume(ctx, rec.ID, p.ResumeGeneration, p.BeforeNativeID)
+	if err != nil {
+		return zero, err
+	}
+	if !observed.HistoryVerified || observed.ObservedAt.IsZero() || observed.Owner != current.ControllerOwner() || observed.NativeID != p.BeforeNativeID || observed.CapabilityVerifier != current.Metadata.BrowserCapabilityVerifier {
 		return zero, ports.ErrChatRecoveryInconclusive
 	}
 	latest, found, err := reader.GetActiveOrchestratorReplacement(ctx, op.ProjectID)
@@ -176,6 +208,9 @@ func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domai
 // controlled target additionally rechecks its durable intent just before env
 // preparation; worker resumes bypass this project-only coordination boundary.
 func (m *Manager) guardReplacementNativeResumeLaunch(ctx context.Context, rec domain.SessionRecord, generation string) error {
+	if ctx.Value(replacementResumeLookupKey{}) == true {
+		return ports.ErrChatRecoveryInconclusive
+	}
 	if rec.Kind != domain.KindOrchestrator {
 		return nil
 	}

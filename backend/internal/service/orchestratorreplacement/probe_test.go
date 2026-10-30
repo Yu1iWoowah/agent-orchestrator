@@ -86,11 +86,7 @@ func TestReplacementContinuityProbeRequiresAcknowledgedMainCompletion(t *testing
 				return replacement.PreparationDelivery{TurnID: "probe-turn", Owner: op.ResumeEvidence.AfterOwner, NativeID: op.ResumeEvidence.AfterNativeID}, nil
 			}
 			if result == "crash before send" {
-				var crash any
-				func() { defer func() { crash = recover() }(); _, _ = x.service().Advance(ctx, x.operation.ID) }()
-				if crash != "lost probe caller before send" {
-					t.Fatal("wrong probe crash boundary", crash)
-				}
+				assertReplacementPanicQuarantined(t, x.service(), x.operation.ID)
 			}
 			op, err := x.service().Advance(ctx, x.operation.ID)
 			if err != nil {

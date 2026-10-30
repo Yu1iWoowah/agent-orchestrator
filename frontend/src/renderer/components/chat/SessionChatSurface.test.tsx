@@ -167,9 +167,13 @@ vi.mock("./ChatWorkspace", async () => {
 			shellTarget,
 			onSend,
 			composerNotice,
+			onHandoff,
+			handoffReceipt,
 		}: {
 			onSend: typeof sideMocks.workspaceSend;
 			composerNotice?: ReactNode;
+			onHandoff?: () => Promise<unknown>;
+			handoffReceipt?: ReactNode;
 			agentSwitch?: AgentSwitchProps;
 			agentInputDisabled?: boolean;
 			headerActions?: ReactNode;
@@ -202,6 +206,8 @@ vi.mock("./ChatWorkspace", async () => {
 					{snapshot.sessionId ? <div>Mounted {mountedSessionId}</div> : null}
 					{snapshot.sessionId ? <div>Rendered {snapshot.sessionId}</div> : null}
 					{composerNotice}
+					{handoffReceipt}
+					{onHandoff ? <button type="button" onClick={() => { void onHandoff().catch(() => {}); }}>Request AO handoff</button> : null}
 					<div data-testid="remember-available">{String(Boolean(onRememberPermissions))}</div>
 					<div data-testid="turn-settings-available">{String(Boolean(onChooseSettings))}</div>
 					<div data-testid="config-option-error">{configOptionError}</div>
@@ -1363,5 +1369,39 @@ describe("SessionChatSurface startup recovery", () => {
 		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={{ ...session, statusReadiness: "ready" }} /></Wrapper>);
 		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={{ ...session, statusReadiness: "ready" }} /></Wrapper>);
 		expect(conversationRefreshes(invalidate)).toBe(0);
+	});
+});
+
+
+describe("SessionChatSurface orchestrator handoff", () => {
+	it("uses the project operation API and displays its receipt without sending a turn", async () => {
+		window.localStorage.clear();
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const id = "11111111-1111-4111-8111-111111111111";
+		conversationState.snapshot = { ...snapshotFor(session.id), harness: "claude-code" };
+		postMock.mockImplementation((_path, request) => Promise.resolve({ data: { operation: { id, operationKey: request.body.operationKey, projectId: session.workspaceId, sourceSessionId: session.id, phase: "accepted" } }, response: { status: 202 } }));
+		try {
+			render(<Wrapper client={client}><SessionChatSurface session={{ ...session, kind: "orchestrator", provider: "claude-code" }} /></Wrapper>);
+			await userEvent.click(screen.getByRole("button", { name: "Request AO handoff" }));
+			await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Handoff request accepted."));
+			expect(screen.getByRole("status")).toHaveTextContent(`ao orchestrator replacement get ${id} --json`);
+			expect(postMock).toHaveBeenCalledWith("/api/v1/projects/{id}/orchestrator/replacements", expect.objectContaining({ params: { path: { id: session.workspaceId } }, body: expect.objectContaining({ sourceSessionId: session.id }) }));
+			expect(conversationCommandState.send).not.toHaveBeenCalled();
+		} finally { window.localStorage.clear(); client.clear(); }
+	});
+
+	it.each<{ name: string; value: WorkspaceSession; hostId?: string }>([
+		{ name: "worker", value: session },
+		{ name: "non-Claude", value: { ...session, kind: "orchestrator", provider: "codex" } },
+		{ name: "cloud", value: { ...session, kind: "orchestrator", provider: "claude-code", cloud: { orgId: "org-demo" } } },
+		{ name: "terminated", value: { ...session, kind: "orchestrator", provider: "claude-code", isTerminated: true } },
+		{ name: "TUI", value: { ...session, kind: "orchestrator", provider: "claude-code", mode: "tui" } },
+		{ name: "remote", value: { ...session, kind: "orchestrator", provider: "claude-code" }, hostId: "remote-host" },
+	])("does not offer the native operation for $name", ({ value, hostId }) => {
+		conversationState.snapshot = snapshotFor(value.id);
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		render(<Wrapper client={client}><SessionChatSurface session={value} hostId={hostId} /></Wrapper>);
+		expect(screen.queryByRole("button", { name: "Request AO handoff" })).not.toBeInTheDocument();
+		client.clear();
 	});
 });
