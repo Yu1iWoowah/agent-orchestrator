@@ -720,7 +720,7 @@ func (m *Manager) runInterfaceTransition(
 	}
 	if err := m.finishInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionCompleted, "", ""); err != nil {
 		m.logger.Error("interface transition completed but durable completion failed",
-			"sessionID", rec.ID, "transitionID", transition.ID, "error", transitionDetail(transition, "TRANSITION_STATE_FAILED", err.Error()))
+			"sessionID", rec.ID, "transitionID", transition.ID, "error", transitionDetail(transition, "TRANSITION_STATE_FAILED", err.Error()), "errorType", fmt.Sprintf("%T", err))
 		return
 	}
 }
@@ -1510,7 +1510,7 @@ func (m *Manager) retainUnconfirmedTransitionTarget(transition domain.SessionInt
 	// saga would let ordinary restore adopt a target that never passed admission.
 	if err := m.moveInterfaceTransition(transition.ID, domain.SessionInterfaceTransitionTargetStarting,
 		"TARGET_STOP_UNCONFIRMED", "AO could not confirm the target controller stopped. Restart AO to retry shutdown before restoring the original interface. "+cause.Error()); err != nil {
-		m.logger.Error("interface transition: retain unconfirmed target shutdown", "transition", transition.ID, "error", transitionDetail(transition, "TRANSITION_STATE_FAILED", err.Error()))
+		m.logger.Error("interface transition: retain unconfirmed target shutdown", "transition", transition.ID, "error", transitionDetail(transition, "TRANSITION_STATE_FAILED", err.Error()), "errorType", fmt.Sprintf("%T", err))
 		if transition.AccountMove() {
 			return ports.ErrAgentAccountStorageUnavailable
 		}

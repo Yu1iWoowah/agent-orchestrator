@@ -24476,6 +24476,8 @@ components:
       type: object
     SessionInterfaceTransition:
       properties:
+        accountMove:
+          type: boolean
         completedAt:
           format: date-time
           type:

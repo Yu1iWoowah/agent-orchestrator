@@ -118,6 +118,7 @@ func (c *SessionsController) acknowledgeInterfaceTransitionNotice(w http.Respons
 const remoteInterfaceTransitionDetail = "Open this session on the host to view interface switch details."
 
 func sessionInterfaceTransitionView(ctx context.Context, transition domain.SessionInterfaceTransition) SessionInterfaceTransitionView {
+	accountMove := transition.AccountMove()
 	// Listener provenance, never Host/Origin, selects this projection. Work on
 	// the value copy so a mobile read cannot redact the local journal/status.
 	if ports.IsRemoteAccountRequest(ctx) {
@@ -143,7 +144,7 @@ func sessionInterfaceTransitionView(ctx context.Context, transition domain.Sessi
 		ID: transition.ID, SessionID: transition.SessionID,
 		SourceMode: transition.SourceMode, TargetMode: transition.TargetMode,
 		Policy: transition.Policy, HistoryPolicy: transition.HistoryPolicy, Phase: transition.Phase,
-		SourceAccountID: transition.SourceAccountID, TargetAccountID: transition.TargetAccountID,
+		AccountMove: accountMove, SourceAccountID: transition.SourceAccountID, TargetAccountID: transition.TargetAccountID,
 		ErrorCode: transition.ErrorCode, ErrorDetail: transition.ErrorDetail,
 		CreatedAt: transition.CreatedAt, UpdatedAt: transition.UpdatedAt,
 		CompletedAt: completedAt, NoticeAcknowledgedAt: noticeAcknowledgedAt,

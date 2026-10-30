@@ -19,6 +19,7 @@ import { useCloudGate } from "./useCloudGate";
 import {
 	interfaceTransitionHasUnacknowledgedNotice,
 	interfaceTransitionIsActive,
+	interfaceTransitionIsAccountMove,
 	interfaceTransitionNeedsRestart,
 	useSessionInterfaceTransition,
 	type SessionInterfaceContext,
@@ -273,8 +274,9 @@ export function useSessionInterfaceSwitch(sessionId: string, session: WorkspaceS
 	const pendingTarget = switchIntent?.owner === owner ? switchIntent.target : undefined;
 	// An account move keeps the mode. It is not an arrival: the conversation or
 	// terminal on screen stays while the agent restarts under the new account.
-	const accountMoveTarget = activeTransition || settling ? interfaceSwitch.transition?.targetAccountId || undefined : undefined;
-	const optimisticTarget = isCloud || localDrainWaiting || accountMoveTarget || interfaceTransitionNeedsRestart(interfaceSwitch.transition)
+	const accountMoving = (activeTransition || settling) && interfaceTransitionIsAccountMove(interfaceSwitch.transition);
+	const accountMoveTarget = accountMoving ? interfaceSwitch.transition?.targetAccountId || undefined : undefined;
+	const optimisticTarget = isCloud || localDrainWaiting || accountMoving || interfaceTransitionNeedsRestart(interfaceSwitch.transition)
 		? undefined
 		: pendingTarget ?? (interfaceSwitch.starting
 			? interfaceSwitch.startingTarget
@@ -530,6 +532,7 @@ export function useSessionInterfaceSwitch(sessionId: string, session: WorkspaceS
 	</>;
 
 	return {
+		accountMoving,
 		accountMoveTarget,
 		activeTransition,
 		agentInputDisabled: Boolean((interfaceSwitch.starting || activeTransition) && !cloudDrainWaiting && session?.mode === "tui"),

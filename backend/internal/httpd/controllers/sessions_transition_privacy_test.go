@@ -92,6 +92,9 @@ func TestLANTransitionAccountProjection(t *testing.T) {
 				if err := json.Unmarshal(wire["transition"], &got); err != nil {
 					t.Fatal(err)
 				}
+				if string(got["accountMove"]) != "true" {
+					t.Errorf("remote=%t account move became an interface switch: %s", remote, body)
+				}
 				if string(got["id"]) != `"privacy-move"` || string(got["phase"]) != `"recovery_required"` || string(got["errorCode"]) != `"TARGET_STOP_UNCONFIRMED"` {
 					t.Fatalf("projection lost useful switch status: %s", body)
 				}

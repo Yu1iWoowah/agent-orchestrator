@@ -8307,6 +8307,7 @@ export interface components {
             userRequest: string;
         };
         SessionInterfaceTransition: {
+            accountMove?: boolean;
             /** Format: date-time */
             completedAt?: null | string;
             /** Format: date-time */

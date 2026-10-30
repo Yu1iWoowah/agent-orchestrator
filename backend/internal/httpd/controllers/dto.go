@@ -1203,6 +1203,9 @@ type SessionInterfaceTransitionView struct {
 	Policy        domain.SessionInterfaceTransitionPolicy        `json:"policy" enum:"drain,interrupt"`
 	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy `json:"historyPolicy" enum:"strict,provider_history"`
 	Phase         domain.SessionInterfaceTransitionPhase         `json:"phase" enum:"requested,preflighting,draining,source_stopping,source_stopped,target_starting,activating,completed,failed,cancelled,recovery_required"`
+	// AccountMove identifies the handoff even when remote clients cannot see
+	// the local account references. Ordinary interface switches omit it.
+	AccountMove bool `json:"accountMove,omitempty"`
 	// SourceAccountID and TargetAccountID are set when the handoff moves the
 	// agent to another provider account; the mode then stays the same.
 	SourceAccountID      string     `json:"sourceAccountId,omitempty"`
