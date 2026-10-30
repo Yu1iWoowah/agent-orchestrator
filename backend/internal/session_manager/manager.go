@@ -2190,7 +2190,11 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 				return info.Root, &info, errors.Join(err, fmt.Errorf("record prepared workspace worktree %q: %w", wt.RepoName, storeErr))
 			}
 			cleanupCtx, cancel := spawnRollbackContext(ctx)
-			cleanupErr := workspaceProject.DestroyWorkspaceProject(cleanupCtx, info)
+			rec := domain.SessionRecord{ID: id, ProjectID: cfg.ProjectID, Metadata: domain.SessionMetadata{WorkspacePath: info.Root.Path}}
+			cleanupErr := m.checkWorkspaceReclaim(cleanupCtx, rec, info.Worktrees, false)
+			if cleanupErr == nil {
+				cleanupErr = workspaceProject.DestroyWorkspaceProject(cleanupCtx, info)
+			}
 			cancel()
 			if cleanupErr != nil {
 				return info.Root, &info, errors.Join(fmt.Errorf("record workspace worktree %q: %w", wt.RepoName, storeErr), cleanupErr)
@@ -2253,10 +2257,15 @@ func (m *Manager) destroySpawnWorkspace(ctx context.Context, ws ports.WorkspaceI
 	if release, ok := ctx.Value(spawnWorkspaceGateKey{}).(func()); ok {
 		release()
 	}
+	rec := domain.SessionRecord{ID: ws.SessionID, ProjectID: ws.ProjectID, Metadata: domain.SessionMetadata{WorkspacePath: ws.Path}}
+	var rows []ports.WorkspaceRepoInfo
+	if workspaceProject != nil {
+		rows = workspaceProject.Worktrees
+	}
 	release := m.acquireWorkspaceGate(ws.ProjectID)
-	inUse, err := m.isWorkspaceInUse(ctx, ws.ProjectID, ws.Path, ws.SessionID)
+	err := m.checkWorkspaceReclaim(ctx, rec, rows, false)
 	release()
-	if err != nil || inUse {
+	if err != nil {
 		m.logger.Warn("spawn rollback: workspace ownership changed; preserving workspace", "sessionID", ws.SessionID, "error", err)
 		return false
 	}
@@ -2268,7 +2277,7 @@ func (m *Manager) destroySpawnWorkspace(ctx context.Context, ws ports.WorkspaceI
 	defer cancel()
 	release = m.acquireWorkspaceGate(ws.ProjectID)
 	defer release()
-	if inUse, err := m.isWorkspaceInUse(ctx, ws.ProjectID, ws.Path, ws.SessionID); err != nil || inUse {
+	if err := m.checkWorkspaceReclaim(ctx, rec, rows, false); err != nil {
 		m.logger.Warn("spawn rollback: workspace ownership changed; preserving workspace", "sessionID", ws.SessionID, "error", err)
 		return false
 	}
@@ -2764,15 +2773,6 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	} else if abandoned {
 		return KillResult{}, apierr.Conflict("AGENT_SETTINGS_WRITER_UNCONFIRMED", "The session is still vetoed by an unconfirmed native writer; its workspace is retained", nil)
 	}
-	preserveTUIWorkspace := false
-	if active, err := m.hasActiveInterfaceTransition(ctx, id); err != nil {
-		return KillResult{}, fmt.Errorf("kill %s: interface transition: %w", id, err)
-	} else if active {
-		ctx, preserveTUIWorkspace, err = m.prepareTUISettingsKill(ctx, id)
-		if err != nil {
-			return KillResult{}, fmt.Errorf("kill %s: %w", id, err)
-		}
-	}
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return KillResult{}, fmt.Errorf("kill %s: %w", id, err)
@@ -2780,8 +2780,6 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	if !ok {
 		return KillResult{}, nil // already gone: benign race
 	}
-	m.stopPreviewBestEffort(ctx, id)
-	m.destroyBrowserBestEffort(ctx, id)
 	handle := runtimeHandle(rec.Metadata)
 	ws := workspaceInfo(rec)
 
@@ -2793,6 +2791,20 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 		workspaceProjectRows = rows
 		workspaceProject = true
 	}
+	if err := m.preflightWorkspaceReclaim(ctx, rec, workspaceProjectRows, true); err != nil {
+		return KillResult{}, err
+	}
+	preserveTUIWorkspace := false
+	if active, err := m.hasActiveInterfaceTransition(ctx, id); err != nil {
+		return KillResult{}, fmt.Errorf("kill %s: interface transition: %w", id, err)
+	} else if active {
+		ctx, preserveTUIWorkspace, err = m.prepareTUISettingsKill(ctx, id)
+		if err != nil {
+			return KillResult{}, fmt.Errorf("kill %s: %w", id, err)
+		}
+	}
+	m.stopPreviewBestEffort(ctx, id)
+	m.destroyBrowserBestEffort(ctx, id)
 	if err := m.terminateNativeSession(ctx, rec); err != nil {
 		return KillResult{}, fmt.Errorf("kill %s: native session: %w", id, err)
 	}
@@ -2855,6 +2867,9 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 		if err := m.recordTermination(ctx, id, !workspaceProject); err != nil {
 			return KillResult{}, err
 		}
+		if err := m.preflightWorkspaceReclaim(ctx, rec, workspaceProjectRows, false); err != nil {
+			return KillResult{}, err
+		}
 		if backgroundCleanup {
 			project, err := m.loadProject(ctx, rec.ProjectID)
 			if err != nil {
@@ -2897,6 +2912,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 		ctx, cancelWorkspace = context.WithTimeout(context.WithoutCancel(ctx), budget)
 		defer cancelWorkspace()
 	}
+	releaseWorkspace, err := m.beginWorkspaceReclaim(ctx, rec, workspaceProjectRows, false)
+	if err != nil {
+		return KillResult{}, err
+	}
+	defer releaseWorkspace()
 	if workspaceProject {
 		reclaim, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
 		if err != nil {
@@ -2948,6 +2968,13 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	if !ok || rec.IsTerminated {
 		return nil
 	}
+	rows, workspaceProject, rowErr := m.workspaceProjectRows(ctx, rec)
+	if rowErr != nil {
+		return rowErr
+	}
+	if err := m.preflightWorkspaceReclaim(ctx, rec, rows, false); err != nil {
+		return err
+	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)
 	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
@@ -2988,9 +3015,7 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		return fmt.Errorf("retire replacement %s: preserve attachments: %w", id, err)
 	}
 
-	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
-		return fmt.Errorf("retire replacement %s: workspace rows: %w", id, rowErr)
-	} else if ok {
+	if workspaceProject {
 		return m.retireWorkspaceProjectForReplacement(ctx, rec, rows)
 	}
 
@@ -3012,9 +3037,17 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	if err := m.recordTermination(ctx, rec.ID, true); err != nil {
 		return err
 	}
+	if err := m.preflightWorkspaceReclaim(ctx, rec, nil, false); err != nil {
+		return err
+	}
 	m.runReplacementPreRemove(rec.ID, rec.ProjectID, ws.Path)
 	ctx, cancelWorkspace := context.WithTimeout(context.WithoutCancel(ctx), killTeardownBudget)
 	defer cancelWorkspace()
+	releaseWorkspace, err := m.beginWorkspaceReclaim(ctx, rec, nil, false)
+	if err != nil {
+		return err
+	}
+	defer releaseWorkspace()
 	if err := m.workspace.ForceDestroy(ctx, ws); err != nil {
 		if staleWorkspace {
 			m.logger.Warn("retire replacement: stale workspace cleanup failed", "sessionID", id, "path", ws.Path, "error", err)
@@ -3090,9 +3123,17 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 	if err := m.recordTermination(ctx, rec.ID, false); err != nil {
 		return err
 	}
+	if err := m.preflightWorkspaceReclaim(ctx, rec, rows, false); err != nil {
+		return err
+	}
 	m.runReplacementPreRemove(rec.ID, rec.ProjectID, rec.Metadata.WorkspacePath)
 	ctx, cancelWorkspace := context.WithTimeout(context.WithoutCancel(ctx), killTeardownBudget)
 	defer cancelWorkspace()
+	releaseWorkspace, err := m.beginWorkspaceReclaim(ctx, rec, rows, false)
+	if err != nil {
+		return err
+	}
+	defer releaseWorkspace()
 	for i := len(rows) - 1; i >= 0; i-- {
 		if err := m.workspace.ForceDestroy(ctx, workspaceInfoFromRepoInfo(rows[i])); err != nil {
 			if staleRepos[rows[i].RepoName] {
@@ -4085,6 +4126,13 @@ func (m *Manager) SaveAndTeardownAll(ctx context.Context) error {
 // ForceDestroy; if either capture or the DB write fails, ForceDestroy is
 // not called.
 func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionRecord) error {
+	rows, workspaceProject, rowErr := m.workspaceProjectRows(ctx, rec)
+	if rowErr != nil {
+		return rowErr
+	}
+	if err := m.preflightWorkspaceReclaim(ctx, rec, rows, false); err != nil {
+		return err
+	}
 	// Gate shut this session's scoped shell terminals before either branch
 	// below force-removes its worktree. SaveAndTeardownAll only reaches here for
 	// a session with a real workspace, so there is always a worktree to protect.
@@ -4102,9 +4150,7 @@ func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionReco
 		return fmt.Errorf("save %s: preserve attachments: %w", rec.ID, err)
 	}
 
-	if rows, ok, err := m.workspaceProjectRows(ctx, rec); err != nil {
-		return fmt.Errorf("save %s: workspace rows: %w", rec.ID, err)
-	} else if ok {
+	if workspaceProject {
 		return m.saveAndTeardownWorkspaceProject(ctx, rec, rows)
 	}
 
@@ -4152,6 +4198,11 @@ func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionReco
 
 	// 6. Force-remove the worktree (safe: work is captured in step 1 and the
 	// DB write in step 2 is already committed).
+	releaseWorkspace, err := m.beginWorkspaceReclaim(ctx, rec, nil, false)
+	if err != nil {
+		return err
+	}
+	defer releaseWorkspace()
 	if err := m.workspace.ForceDestroy(ctx, ws); err != nil {
 		m.logger.Warn("save-teardown-all: force destroy failed", "sessionID", rec.ID, "error", err)
 	} else {
@@ -4969,6 +5020,11 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 			m.logger.Warn("save-teardown-all: runtime destroy failed", "sessionID", rec.ID, "error", err)
 		}
 	}
+	releaseWorkspace, err := m.beginWorkspaceReclaim(ctx, rec, rows, false)
+	if err != nil {
+		return err
+	}
+	defer releaseWorkspace()
 	rootDestroyed := false
 	for i := len(rows) - 1; i >= 0; i-- {
 		info := workspaceInfoFromRepoInfo(rows[i])
@@ -4985,6 +5041,12 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 }
 
 func (m *Manager) destroyWorkspaceProjectRows(ctx context.Context, rows []ports.WorkspaceRepoInfo) (ports.WorkspaceReclaim, error) {
+	if len(rows) > 0 {
+		rec := domain.SessionRecord{ID: rows[0].SessionID, ProjectID: rows[0].ProjectID, Metadata: domain.SessionMetadata{WorkspacePath: rows[0].Path}}
+		if err := m.checkWorkspaceReclaim(ctx, rec, rows, false); err != nil {
+			return "", err
+		}
+	}
 	touched := false
 	aggregate := ports.WorkspaceReclaimAlreadyAbsent
 	var firstErr error
@@ -5713,7 +5775,7 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 // cleanupWorkspaceUnderGate acquires the per-project workspace gate and then
 // decides whether to tear the workspace down. The gate is what makes the
 // check timely: Spawn and Restore hold the same gate while they allocate a
-// workspace and commit metadata, so isWorkspaceInUse cannot race with an
+// workspace and commit metadata, so the ownership scan cannot race with an
 // in-progress spawn that has not yet written WorkspacePath to the store.
 // User commands run outside the gate; cleanupOne rechecks ownership under it
 // before removal.
@@ -5772,16 +5834,10 @@ func (m *Manager) workspaceRetentionReason(ctx context.Context, id domain.Sessio
 	return ""
 }
 
-// isWorkspaceInUse includes live sessions and terminated sessions whose native
-// writer was never confirmed absent. Must be called under the project's gate.
-func (m *Manager) isWorkspaceInUse(ctx context.Context, projectID domain.ProjectID, workspacePath string, except domain.SessionID) (bool, error) {
-	reason, err := m.workspaceUseReason(ctx, projectID, workspacePath, except)
-	return reason != "", err
-}
-
-// workspaceUseReason also protects an unvetoed predecessor sharing the preserved
-// path. Call before cleanup scripts and again under the gate before removal.
-func (m *Manager) workspaceUseReason(ctx context.Context, projectID domain.ProjectID, workspacePath string, except domain.SessionID) (string, error) {
+// workspaceUseReason is the common ownership scan for cleanup and every reclaim
+// entry. exceptLive permits stopping one's own runtime; exceptWriter is used
+// only by Kill's preflight so its own handoff can be settled without removal.
+func (m *Manager) workspaceUseReason(ctx context.Context, projectID domain.ProjectID, workspacePath string, exceptLive, exceptWriter domain.SessionID) (string, error) {
 	if workspacePath == "" {
 		return "", nil
 	}
@@ -5793,14 +5849,13 @@ func (m *Manager) workspaceUseReason(ctx context.Context, projectID domain.Proje
 		if rec.Metadata.WorkspacePath == "" || normalizeWorkspacePath(rec.Metadata.WorkspacePath) != normalizeWorkspacePath(workspacePath) {
 			continue
 		}
-		if !rec.IsTerminated {
-			if rec.ID != except {
-				return "workspace in use by a live session", nil
+		if rec.ID != exceptWriter {
+			if reason := m.workspaceRetentionReason(ctx, rec.ID); reason != "" {
+				return reason, nil
 			}
-			continue
 		}
-		if reason := m.workspaceRetentionReason(ctx, rec.ID); reason != "" {
-			return reason, nil
+		if !rec.IsTerminated && rec.ID != exceptLive {
+			return "workspace in use by a live session", nil
 		}
 	}
 	return "", nil
@@ -5818,7 +5873,7 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 	{
 		release := m.acquireWorkspaceGate(rec.ProjectID)
 
-		reason, err := m.workspaceUseReason(ctx, rec.ProjectID, ws.Path, "")
+		reason, err := m.workspaceUseReason(ctx, rec.ProjectID, ws.Path, "", "")
 		release()
 		if err != nil {
 			m.logger.Warn("cleanup: workspace ownership check failed", "sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)
@@ -5848,7 +5903,7 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 	defer cancelWorkspace()
 	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
 	defer releaseWorkspaceGate()
-	if reason, err := m.workspaceUseReason(ctx, rec.ProjectID, ws.Path, ""); err != nil {
+	if reason, err := m.workspaceUseReason(ctx, rec.ProjectID, ws.Path, "", ""); err != nil {
 		m.logger.Warn("cleanup: workspace ownership check failed", "sessionID", rec.ID, "error", err)
 		return ports.WorkspaceReclaimRemoved, "workspace teardown failed"
 	} else if reason != "" {

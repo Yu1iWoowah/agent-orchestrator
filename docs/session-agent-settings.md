@@ -91,6 +91,12 @@ an unknown writer does not authorize a retry.
 
 `ao session cleanup` and project teardown skip a vetoed session before runtime
 or workspace cleanup and report `unconfirmed native writer; workspace retained`.
+A live session sharing that path cannot bypass retention through normal Kill,
+RequestKill, replacement retirement or shutdown save. These entries check before
+provider stop, stash or scripts, then hold the project workspace gate while
+rechecking and removing files. Project teardown can therefore refuse with 409
+`AGENT_SETTINGS_WRITER_UNCONFIRMED` before stopping the shared live session.
+Preparation/rollback and multi-repo removal use the same ownership scan.
 A predecessor sharing that path also cannot reclaim it. Cleanup checks the
 active handoff before the veto so terminal intent cannot create a reclamation
 window before journal settlement. If writer status cannot be read, cleanup

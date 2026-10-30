@@ -331,7 +331,7 @@ func (m *Manager) cleanupTaskPreparationRecord(ctx context.Context, rec domain.S
 			return err
 		}
 	} else if ws.Path != "" {
-		if err := m.workspace.Destroy(ctx, ws); err != nil {
+		if err := m.destroyPreparedWorkspace(ctx, ws, nil); err != nil {
 			return err
 		}
 		if err := m.deletePreparedBranches(ctx, ws, nil); err != nil {
@@ -373,6 +373,15 @@ func (m *Manager) requireCompletePreparedWorkspaceProject(ctx context.Context, p
 }
 
 func (m *Manager) destroyPreparedWorkspace(ctx context.Context, ws ports.WorkspaceInfo, project *ports.WorkspaceProjectInfo) error {
+	rec := domain.SessionRecord{ID: ws.SessionID, ProjectID: ws.ProjectID, Metadata: domain.SessionMetadata{WorkspacePath: ws.Path}}
+	var rows []ports.WorkspaceRepoInfo
+	if project != nil {
+		rows = project.Worktrees
+	}
+	if err := m.checkWorkspaceReclaim(ctx, rec, rows, false); err != nil {
+		return err
+	}
+
 	if project == nil {
 		return m.workspace.Destroy(ctx, ws)
 	}
