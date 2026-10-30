@@ -101,3 +101,18 @@ func TestSettingsRestorationValidatesDurablePreferenceNotRetiredTarget(t *testin
 		t.Fatal("new mutation unexpectedly accepted retired target")
 	}
 }
+
+func TestSettingsReplacementRefusalHasConflictCode(t *testing.T) {
+	for _, tc := range []struct {
+		cause error
+		code  string
+	}{{domain.ErrReplacementInProgress, "ORCHESTRATOR_REPLACEMENT_IN_PROGRESS"}, {domain.ErrReplacementSourceRetired, "ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED"}} {
+		t.Run(tc.code, func(t *testing.T) {
+			var api *apierr.Error
+			err := settingsError(fmt.Errorf("private diagnostic: %w", tc.cause))
+			if !errors.As(err, &api) || api.Kind != apierr.KindConflict || api.Code != tc.code {
+				t.Fatalf("replacement refusal became internal failure: %+v", api)
+			}
+		})
+	}
+}

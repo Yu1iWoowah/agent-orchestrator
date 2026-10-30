@@ -2164,11 +2164,13 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		Repos:           childRepos,
 		Assets:          assets,
 	})
-	if err != nil && (cfg.TaskPreparation == "" || len(info.Worktrees) == 0) {
+	if err != nil && len(info.Worktrees) == 0 {
 		return ports.WorkspaceInfo{}, nil, err
 	}
+	// Retained partial worktrees also belong to failed ordinary/fresh-path
+	// spawns. Persist their inventory before the seed rollback can retain them.
 	persistCtx := ctx
-	if cfg.TaskPreparation != "" {
+	if cfg.TaskPreparation != "" || err != nil {
 		var cancel context.CancelFunc
 		persistCtx, cancel = spawnRollbackContext(ctx)
 		defer cancel()

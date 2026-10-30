@@ -1317,3 +1317,48 @@ type tuiVetoReadFailureStore struct{ *sqlite.Store }
 func (tuiVetoReadFailureStore) HasAbandonedTUISettingsWriter(context.Context, domain.SessionID) (bool, error) {
 	return false, errors.New("writer status lookup failed")
 }
+
+type tuiReplacementAdmissionStore struct {
+	*sqlite.Store
+	retired bool
+}
+
+func (s tuiReplacementAdmissionStore) GetActiveOrchestratorReplacement(context.Context, domain.ProjectID) (domain.OrchestratorReplacement, bool, error) {
+	return domain.OrchestratorReplacement{}, !s.retired, nil
+}
+func (s tuiReplacementAdmissionStore) GetRetiredOrchestratorReplacementBySource(context.Context, domain.SessionID) (domain.OrchestratorReplacement, bool, error) {
+	return domain.OrchestratorReplacement{}, s.retired, nil
+}
+
+func TestTUISettingsReplacementAdmissionPrecedesJournalAndRuntime(t *testing.T) {
+	for _, retired := range []bool{false, true} {
+		name, code := "active", "ORCHESTRATOR_REPLACEMENT_IN_PROGRESS"
+		if retired {
+			name, code = "retired", "ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newTUISettingsFixture(t, domain.HarnessCodex)
+			f.rec.Kind = domain.KindOrchestrator
+			if err := f.store.UpdateSession(t.Context(), f.rec); err != nil {
+				t.Fatal(err)
+			}
+			f.m.store = tuiReplacementAdmissionStore{Store: f.store, retired: retired}
+			zero := int64(0)
+			high := domain.AgentEffortSelection("high")
+			op, err := f.control.Change(t.Context(), agentsettings.Caller{}, f.rec.ID, agentsettings.Change{ExpectedRevision: &zero, ApplyMode: domain.AgentSettingsRestart, StopTurn: true, Settings: domain.AgentSettingsPatch{Effort: &high}, IdempotencyKey: "replacement-fence"})
+			if err == nil && op.ID != "" {
+				f.wait(t, op.ID)
+			}
+			var api *apierr.Error
+			if !errors.As(err, &api) || api.Kind != apierr.KindConflict || api.Code != code {
+				t.Errorf("settings bypassed replacement admission or lost 409: op=%+v err=%v", op, err)
+			}
+			if _, found, err := f.store.AgentSettingsOperationByKey(t.Context(), f.rec.ID, "replacement-fence"); err != nil || found {
+				t.Errorf("replacement refusal created settings journal: found=%v err=%v", found, err)
+			}
+			if f.runtime.created != 0 || f.runtime.destroyed != 0 || len(f.runtime.interrupts) != 0 || len(f.agent.restores) != 0 {
+				t.Errorf("replacement refusal touched native writer: create=%d destroy=%d interrupts=%v restores=%d", f.runtime.created, f.runtime.destroyed, f.runtime.interrupts, len(f.agent.restores))
+			}
+		})
+	}
+}

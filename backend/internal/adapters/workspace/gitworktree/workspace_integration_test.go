@@ -1774,3 +1774,221 @@ func TestWorkspaceClaimRevalidatesParentSymlinkAfterRootCheckout(t *testing.T) {
 		t.Fatalf("claim wrote outside managed root: %v", err)
 	}
 }
+
+func TestWorkspaceProjectChildClaimFailureReclaimsNewRoot(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		t.Run(string(kind), func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+			child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+			outside := filepath.Join(tmp, "outside")
+			if err := os.Mkdir(outside, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "packages")); err != nil {
+				if errors.Is(err, os.ErrPermission) {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			runGit(t, git, root, "add", "packages")
+			runGit(t, git, root, "commit", "-m", "record child parent symlink")
+			runGit(t, git, root, "push", "origin", "HEAD:main")
+			asset := filepath.Join(root, "asset-source")
+			if err := os.Mkdir(asset, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(asset, "copied.txt"), []byte("copied asset"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "failed-child", Kind: kind, Branch: "ao/failed-child", RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "packages/api", RepoPath: child, BaseBranch: "main"}}, Assets: []ports.WorkspaceProjectAssetConfig{{RelativePath: "copied", SourcePath: asset}}}
+			path, err := ws.ResolveWorkspacePath(t.Context(), ports.WorkspaceConfig{ProjectID: cfg.ProjectID, SessionID: cfg.SessionID, Kind: kind, Branch: cfg.Branch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ws.CreateWorkspaceProject(t.Context(), cfg)
+			if !errors.Is(err, ErrUnsafePath) || strings.Contains(err.Error(), "workspace asset") {
+				t.Fatalf("expected unsafe child failure after copying valid assets, got %v", err)
+			}
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("failed spawn leaked root and copied assets at %s: %v", path, err)
+			}
+			if records := gitOutput(t, git, root, "worktree", "list", "--porcelain"); strings.Contains(records, path) {
+				t.Errorf("failed spawn leaked root registration: %s", records)
+			}
+			if branches := gitOutput(t, git, root, "for-each-ref", "--format=%(refname)", "refs/heads/"+cfg.Branch); branches != "" {
+				t.Errorf("failed spawn leaked branch: %s", branches)
+			}
+			if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+				t.Errorf("external path changed: %v %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestWorkspaceProjectUsesEmptyChildDirectoryFromNewRootCheckout(t *testing.T) {
+	for _, fresh := range []bool{false, true} {
+		name := "ordinary"
+		if fresh {
+			name = "fresh-path"
+		}
+		t.Run(name, func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+			child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+			childSHA := gitOutput(t, git, child, "rev-parse", "HEAD")
+			runGit(t, git, root, "update-index", "--add", "--cacheinfo", "160000,"+childSHA+",services/api")
+			runGit(t, git, root, "commit", "-m", "record child gitlink")
+			runGit(t, git, root, "push", "origin", "HEAD:main")
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "gitlink", Kind: domain.KindOrchestrator, Branch: "ao/gitlink", FreshBranch: fresh, FreshPath: fresh, RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "services/api", RepoPath: child, BaseBranch: "main"}}}
+			info, err := ws.CreateWorkspaceProject(t.Context(), cfg)
+			if err != nil {
+				t.Fatalf("root checkout's empty gitlink directory must accept child: %v", err)
+			}
+			defer func() { _ = ws.DestroyWorkspaceProject(t.Context(), info) }()
+			if len(info.Worktrees) != 2 || gitOutput(t, git, info.Worktrees[1].Path, "rev-parse", "HEAD") != childSHA {
+				t.Fatalf("child not materialized: %+v", info)
+			}
+		})
+	}
+}
+
+func TestWorkspaceProjectChildFailureDoesNotReturnReplacedRootAsOwned(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := ws.ResolveWorkspacePath(t.Context(), ports.WorkspaceConfig{ProjectID: "proj", SessionID: "replacement", Kind: domain.KindWorker, Branch: "ao/replacement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualRun := ws.run
+	replaced := false
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := actualRun(ctx, binary, args...)
+		if err == nil && !replaced && len(args) > 3 && args[0] == "-C" && args[1] == root && args[2] == "worktree" && args[3] == "add" {
+			replaced = true
+			if err := os.Rename(path, path+".created"); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(path, []byte("unowned replacement"), 0o600); err != nil {
+				return nil, err
+			}
+		}
+		return out, err
+	}
+	info, err := ws.CreateWorkspaceProject(t.Context(), ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "replacement", Kind: domain.KindWorker, Branch: "ao/replacement", RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: child, BaseBranch: "main"}}})
+	if !replaced || err == nil {
+		t.Fatalf("missing replacement fault: replaced=%v err=%v", replaced, err)
+	}
+	if info.Root.Path != "" || len(info.Worktrees) != 0 {
+		t.Errorf("replaced root was returned as a cleanup handle: %+v", info)
+	}
+	if bytes, err := os.ReadFile(path); err != nil || string(bytes) != "unowned replacement" {
+		t.Errorf("replacement changed: %q %v", bytes, err)
+	}
+}
+
+func TestPreparedAddLostReceiptPreservesOwnerReplacedDuringDestroyProbe(t *testing.T) {
+	for _, phase := range []string{"registration", "status-after-move"} {
+		t.Run(phase, func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			repo := setupOriginClone(t, git, filepath.Join(tmp, "repo"))
+			if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("/ignored-owner-data\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, git, repo, "add", ".gitignore")
+			runGit(t, git, repo, "commit", "-m", "ignore owner data")
+			runGit(t, git, repo, "push", "origin", "HEAD:main")
+			replacement := filepath.Join(tmp, "new-owner")
+			runGit(t, git, repo, "worktree", "add", "-b", "owner/replacement", replacement, "main")
+			if err := os.WriteFile(filepath.Join(replacement, "ignored-owner-data"), []byte("new owner must survive"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			replacementIdentity, err := os.Lstat(replacement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := gitOutput(t, git, replacement, "status", "--porcelain"); status != "" {
+				t.Fatalf("replacement must be clean with ignored data: %s", status)
+			}
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "lost-receipt", Kind: domain.KindWorker, Branch: "ao/lost-receipt", FreshBranch: true, BaseBranch: "main"}
+			path, err := ws.ResolveWorkspacePath(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observedPath := path
+			actualRun := ws.run
+			lost, replaced := false, false
+			probes := 0
+			ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+				out, err := actualRun(ctx, binary, args...)
+				command := strings.Join(args, " ")
+				if err == nil && !lost && strings.Contains(command, "worktree add") {
+					lost = true
+					return nil, context.Canceled
+				}
+				if err == nil && lost && strings.Contains(command, "worktree list") {
+					probes++
+					if phase == "registration" && probes == 3 {
+						if err := os.Rename(path, path+".claimed"); err != nil {
+							return nil, err
+						}
+						if err := os.Rename(replacement, path); err != nil {
+							return nil, err
+						}
+						replaced = true
+					}
+				}
+				if phase == "status-after-move" && err == nil && lost && !replaced && len(args) > 2 && args[0] == "-C" && args[2] == "status" && strings.HasPrefix(filepath.Base(filepath.Dir(args[1])), ".rollback-") {
+					observedPath = args[1]
+					if err := os.Rename(observedPath, observedPath+".claimed"); err != nil {
+						return nil, err
+					}
+					if err := os.Rename(replacement, observedPath); err != nil {
+						return nil, err
+					}
+					replaced = true
+				}
+				return out, err
+			}
+			claimed, createErr := ws.Create(t.Context(), cfg)
+			ws.waitForDiscards()
+			ws.sweepDiscarded()
+			ws.waitForDiscards()
+			if !lost || !replaced || createErr == nil {
+				t.Fatalf("fault not exercised: lost=%v replaced=%v probes=%d err=%v", lost, replaced, probes, createErr)
+			}
+			after, statErr := os.Lstat(observedPath)
+			if statErr != nil || !os.SameFile(replacementIdentity, after) {
+				t.Errorf("Destroy removed replacement after its Git probe: Lstat=%v", statErr)
+			}
+			if bytes, err := os.ReadFile(filepath.Join(observedPath, "ignored-owner-data")); err != nil || string(bytes) != "new owner must survive" {
+				t.Errorf("ignored owner data was removed: %q %v", bytes, err)
+			}
+			if claimed.Path != "" {
+				t.Errorf("replacement returned as owned cleanup handle: %+v", claimed)
+			}
+
+		})
+	}
+}

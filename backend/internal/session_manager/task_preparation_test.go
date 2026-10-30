@@ -973,3 +973,35 @@ func TestStartupSafetyDefersInterruptedPreparationGitCleanup(t *testing.T) {
 		t.Fatalf("background retry marked a new async spawn %q, want provisioning", got)
 	}
 }
+
+func TestFailedOrdinarySpawnRetainsPartialWorkspaceInventory(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		t.Run(string(kind), func(t *testing.T) {
+			m, st, rt, base := newManager()
+			project := st.projects["mer"]
+			project.Kind = domain.ProjectKindWorkspace
+			project.Path = "/repo/root"
+			st.projects["mer"] = project
+			st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api", GitStatus: domain.GitStatusReady}}
+			rec := mkLive("mer-1")
+			rec.Kind = kind
+			rec.Metadata.WorkspacePath = ""
+			st.sessions[rec.ID] = rec
+			root := ports.WorkspaceInfo{Path: "/ws/retained", Branch: "ao/retained", BaseSHA: "creation", BaseRef: "main", ProjectID: domain.ProjectID(project.ID), SessionID: rec.ID}
+			base.destroyErr = ports.ErrWorkspaceDirty
+			m.workspace = &partialProjectWorkspace{fakeWorkspace: base, partial: ports.WorkspaceProjectInfo{Root: root, Worktrees: []ports.WorkspaceRepoInfo{{RepoName: domain.RootWorkspaceRepoName, RepoPath: project.Path, Path: root.Path, Branch: root.Branch, BaseSHA: root.BaseSHA, CreationSHA: root.BaseSHA, BaseRef: root.BaseRef, ProjectID: domain.ProjectID(project.ID), SessionID: rec.ID}}}}
+			got, info, err := m.createSessionWorkspace(t.Context(), project, ports.SpawnConfig{ProjectID: domain.ProjectID(project.ID), Kind: kind}, rec.ID, root.Branch, nil)
+			if !errors.Is(err, context.Canceled) || got.Path != root.Path || info == nil || len(st.worktrees[rec.ID]) != 1 {
+				t.Fatalf("ordinary spawn discarded retained inventory: path=%s info=%+v rows=%+v err=%v", got.Path, info, st.worktrees[rec.ID], err)
+			}
+			m.rollbackSeedSpawnWorkspace(t.Context(), rec, got, info, false, false)
+			stored, found := st.sessions[rec.ID]
+			if !found || !stored.IsTerminated || stored.Metadata.WorkspacePath != root.Path || len(st.worktrees[rec.ID]) != 1 {
+				t.Fatalf("seed rollback lost retained ownership: found=%v record=%+v rows=%+v", found, stored, st.worktrees[rec.ID])
+			}
+			if rt.created != 0 || rt.destroyed != 0 {
+				t.Fatal("workspace failure touched runtime")
+			}
+		})
+	}
+}

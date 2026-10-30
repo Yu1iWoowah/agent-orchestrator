@@ -109,6 +109,11 @@ func (m *Manager) validateTUISettings(ctx context.Context, store tuiSettingsStor
 // QueueTUIAgentSettings only admits an explicit same-conversation restart.
 // The physical handoff is created atomically by BeginAgentSettingsOperation.
 func (m *Manager) QueueTUIAgentSettings(ctx context.Context, op domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, op.SessionID)
+	if err != nil {
+		return domain.AgentSettingsOperation{}, err
+	}
+	defer releaseReplacement()
 	store, ok := m.store.(tuiSettingsStore)
 	if !ok || m.tuiSettingsValidator == nil {
 		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsCapabilitiesUnavailable

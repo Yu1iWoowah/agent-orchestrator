@@ -300,6 +300,10 @@ func settingsError(err error) error {
 		return structured
 	}
 	switch {
+	case errors.Is(err, domain.ErrReplacementInProgress):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", nil)
+	case errors.Is(err, domain.ErrReplacementSourceRetired):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED", "This source orchestrator was replaced and cannot be revived", nil)
 	case errors.Is(err, ports.ErrAgentSettingsNativeHistoryUnavailable):
 		return apierr.Conflict("AGENT_SETTINGS_NATIVE_HISTORY_UNAVAILABLE", "The original native conversation cannot be resumed; fresh fallback is disabled", nil)
 	case errors.Is(err, context.Canceled):

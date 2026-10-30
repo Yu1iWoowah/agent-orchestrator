@@ -111,7 +111,13 @@ filesystem orphan is not silently reused. Candidate checks use `Lstat`: any
 existing item, including a dangling symlink, is occupied. Fresh worktree adds
 exclusively claim their new directory before Git runs. Failed-add rollback may
 remove only that attempt's directory while its identity still matches; existing
-or replaced files, symlinks and directories stay untouched. The adapter
+or replaced files, symlinks and directories stay untouched. A multi-repo child
+may use an empty, non-symlink directory produced inside this call's newly claimed
+root checkout (such as a submodule gitlink); a recovered root does not grant that
+ownership. On a child claim failure, ordinary spawns reclaim their newly created
+worktrees and unchanged creation branches. Retained partial inventory is recorded
+before spawn rollback, including failed fresh-path orchestrator spawns. Replaced
+items are excluded from cleanup handles. The adapter
 validates that alternate managed path and refuses to reattach an existing
 allocation; selection, admission and creation share the project workspace gate.
 The old worktree and branch remain untouched. Restore/relaunch of a session
@@ -171,3 +177,16 @@ The provider may reject the native resume; its error is not specialized to
 identify a retired model. AO does not substitute a model or a fresh thread.
 The Claude version gate accepts stable major.minor.patch output; prerelease
 suffixes remain unverified and are rejected.
+
+TUI settings restart admission uses the orchestrator replacement gate before
+creating an operation or interrupting a turn. An active replacement returns 409
+`ORCHESTRATOR_REPLACEMENT_IN_PROGRESS`; a retired source returns 409
+`ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED`.
+
+Creation rollback carries the claimed directory identity through Git registration
+and status probes. A claimed worktree is rechecked at mutation time, moved into a
+private `0700` `.rollback-*` holder and checked again before deletion. An identity
+mismatch preserves the data and clears the owned cleanup handle. Private holders
+with unverified contents are retained outside the automatic `.discarded` sweep;
+normal dirty-worktree refusals still restore the original directory. Claimed
+rollback never falls back to Git's unqualified path-based removal.
