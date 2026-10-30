@@ -3139,7 +3139,8 @@ func (c *Controller) projectUnit(
 	// A lifecycle event and a concurrent Send must agree on whether the root
 	// conversation is busy. Holding the same lock Send/dispatch use closes the
 	// window between the durable projection and the in-memory ownership update.
-	lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventCompacted
+	lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventCompacted ||
+		(event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady)
 	if lifecycle {
 		c.sendMu.Lock()
 	}
