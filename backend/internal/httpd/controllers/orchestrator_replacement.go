@@ -167,7 +167,25 @@ func (c *OrchestratorReplacementController) write(w http.ResponseWriter, r *http
 		envelope.WriteError(w, r, errors.New("replacement service returned an invalid durable receipt"))
 		return
 	}
-	envelope.WriteJSON(w, status, OrchestratorReplacementResponse{Operation: replacementPublicView(op)})
+	view := replacementPublicView(op)
+	if len(op.Notifications) > 0 {
+		if reader, ok := c.Svc.(interface {
+			WorkerNotificationReceipts(context.Context, string) ([]domain.ReplacementNoticeReceipt, error)
+		}); ok {
+			receipts, readErr := reader.WorkerNotificationReceipts(r.Context(), op.ID)
+			if readErr == nil {
+				view.NotificationReceipts, readErr = replacementNoticeViews(op, receipts)
+			}
+			if readErr != nil {
+				envelope.WriteError(w, r, readErr)
+				return
+			}
+		}
+	}
+	if p := op.NotificationCompletion; p != nil {
+		view.NotificationCompletion = &ReplacementNotificationSummaryView{TargetCount: p.TargetCount, AcceptedCount: p.AcceptedCount, SkippedCount: p.SkippedCount, ReceiptHash: p.ReceiptHash, CompletedAt: p.CompletedAt}
+	}
+	envelope.WriteJSON(w, status, OrchestratorReplacementResponse{Operation: view})
 }
 
 func replacementPublicView(op domain.OrchestratorReplacement) OrchestratorReplacementView {

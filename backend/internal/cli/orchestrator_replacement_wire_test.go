@@ -74,7 +74,7 @@ func TestOrchestratorReplacementHTTPCommands(t *testing.T) {
 				if action != "get" {
 					w.WriteHeader(http.StatusAccepted)
 				}
-				fmt.Fprintf(w, `{"operation":{"id":%q,"phase":"accepted","sourceSessionId":"source","resumeEvidence":{"verified":false},"notificationReceipts":[],"error":{"code":"WAITING_SOURCE_IDLE","message":"waiting"}}}`, replacementTestID)
+				fmt.Fprintf(w, `{"operation":{"id":%q,"phase":"accepted","sourceSessionId":"source","resumeEvidence":{"verified":false},"notificationReceipts":[{"sessionId":"worker","state":"accepted","evidenceKind":"chat_queue","messageId":"notice-message"}],"notificationCompletion":{"targetCount":1,"acceptedCount":1,"skippedCount":0,"receiptHash":"receipt-sha"},"error":{"code":"WAITING_SOURCE_IDLE","message":"waiting"}}}`, replacementTestID)
 			}))
 			defer srv.Close()
 			writeRunFileFor(t, cfg, srv)
@@ -92,7 +92,7 @@ func TestOrchestratorReplacementHTTPCommands(t *testing.T) {
 			if err := json.Unmarshal([]byte(out), &got); err != nil {
 				t.Fatalf("not operation JSON: %v / %s", err, out)
 			}
-			if string(got.Operation["id"]) != `"`+replacementTestID+`"` || got.Operation["resumeEvidence"] == nil || got.Operation["notificationReceipts"] == nil || got.Operation["error"] == nil || calls != 1 {
+			if string(got.Operation["id"]) != `"`+replacementTestID+`"` || got.Operation["resumeEvidence"] == nil || got.Operation["notificationReceipts"] == nil || got.Operation["notificationCompletion"] == nil || !strings.Contains(string(got.Operation["notificationReceipts"]), "notice-message") || got.Operation["error"] == nil || calls != 1 {
 				t.Fatalf("durable facts lost or extra requests: %s; calls=%d", out, calls)
 			}
 		})

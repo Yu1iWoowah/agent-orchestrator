@@ -176,6 +176,7 @@ var schemaNames = map[string]string{
 	"ControllersReplacementEvidenceView":                   "ReplacementEvidence",
 	"ControllersReplacementResumeView":                     "ReplacementResumeEvidence",
 	"ControllersReplacementWriterView":                     "ReplacementWriterActivation",
+	"ControllersReplacementNotificationSummaryView":        "ReplacementNotificationSummary",
 	"ControllersReplacementNotificationView":               "ReplacementNotificationReceipt",
 	"ControllersReplacementAttemptView":                    "ReplacementAttempt",
 	"ControllersReplacementProvisioningAttemptView":        "ReplacementProvisioningAttempt",
