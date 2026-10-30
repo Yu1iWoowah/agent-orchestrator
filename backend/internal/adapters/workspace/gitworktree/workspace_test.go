@@ -1122,3 +1122,33 @@ func TestGitWorktreeExitStatusOneHelper(t *testing.T) {
 	}
 	os.Exit(1)
 }
+
+func TestFreshOrchestratorPathUsesValidatedSessionIdentity(t *testing.T) {
+	root := t.TempDir()
+	w, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"p": root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceConfig{ProjectID: "p", SessionID: "p-2", Kind: domain.KindOrchestrator, SessionPrefix: "prefix", FreshPath: true}
+	path, err := w.ResolveWorkspacePath(t.Context(), cfg)
+	want := filepath.Join(w.managedRoot, "p", "orchestrator", "prefix-orchestrator-p-2")
+	if err != nil || path != want {
+		t.Fatalf("fresh plan=%q want=%q err=%v", path, want, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("path planning materialized directory: %v", err)
+	}
+	for _, id := range []domain.SessionID{"", "../escape", "/absolute", `bad\id`} {
+		cfg.SessionID = id
+		if _, err := w.ResolveWorkspacePath(t.Context(), cfg); err == nil {
+			t.Errorf("fresh path accepted invalid identity %q", id)
+		}
+	}
+	cfg.SessionID = "p-2"
+	for _, suffix := range []int{-1, 100} {
+		cfg.FreshPathSuffix = suffix
+		if _, err := w.ResolveWorkspacePath(t.Context(), cfg); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("fresh path accepted invalid suffix %d: %v", suffix, err)
+		}
+	}
+}

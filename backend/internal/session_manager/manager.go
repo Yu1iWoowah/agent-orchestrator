@@ -2090,7 +2090,8 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 			BaseBranch:    baseBranch,
 			BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		}
-		if err := m.checkWorkspaceAdmission(ctx, workspaceCfg); err != nil {
+		workspaceCfg, err := m.admitNewWorkspace(ctx, workspaceCfg)
+		if err != nil {
 			return ports.WorkspaceInfo{}, nil, err
 		}
 		ws, err := m.workspace.Create(ctx, workspaceCfg)
@@ -2101,7 +2102,8 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		}
 		return ws, nil, err
 	}
-	if err := m.checkWorkspaceAdmission(ctx, ports.WorkspaceConfig{ProjectID: cfg.ProjectID, SessionID: id, Kind: cfg.Kind, SessionPrefix: sessionPrefix(project)}); err != nil {
+	workspaceCfg, err := m.admitNewWorkspace(ctx, ports.WorkspaceConfig{ProjectID: cfg.ProjectID, SessionID: id, Kind: cfg.Kind, SessionPrefix: sessionPrefix(project), Branch: branch, FreshBranch: cfg.TaskPreparation != ""})
+	if err != nil {
 		return ports.WorkspaceInfo{}, nil, err
 	}
 	workspaceProject, ok := m.workspace.(ports.WorkspaceProject)
@@ -2139,17 +2141,19 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		})
 	}
 	info, err := workspaceProject.CreateWorkspaceProject(ctx, ports.WorkspaceProjectConfig{
-		ProjectID:     cfg.ProjectID,
-		SessionID:     id,
-		Kind:          cfg.Kind,
-		SessionPrefix: sessionPrefix(project),
-		Branch:        branch,
-		FreshBranch:   cfg.TaskPreparation != "",
-		RootRepoPath:  project.Path,
-		BaseBranch:    project.Config.WorktreeBaseBranch(),
-		BaseRef:       baseRefs[filepath.Clean(project.Path)],
-		Repos:         childRepos,
-		Assets:        assets,
+		ProjectID:       cfg.ProjectID,
+		SessionID:       id,
+		Kind:            cfg.Kind,
+		SessionPrefix:   sessionPrefix(project),
+		Branch:          branch,
+		FreshBranch:     workspaceCfg.FreshBranch,
+		FreshPath:       workspaceCfg.FreshPath,
+		FreshPathSuffix: workspaceCfg.FreshPathSuffix,
+		RootRepoPath:    project.Path,
+		BaseBranch:      project.Config.WorktreeBaseBranch(),
+		BaseRef:         baseRefs[filepath.Clean(project.Path)],
+		Repos:           childRepos,
+		Assets:          assets,
 	})
 	if err != nil && (cfg.TaskPreparation == "" || len(info.Worktrees) == 0) {
 		return ports.WorkspaceInfo{}, nil, err

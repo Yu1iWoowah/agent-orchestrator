@@ -103,12 +103,19 @@ a newly-live session keeps its files and the preparation's cleanup handle.
 Startup cleanup shares the same gate; callers already holding it use the explicit
 under-gate helper.
 
-Spawn and restore resolve the adapter's canonical path without materializing it.
-An abandoned-writer veto on that path returns
-`AGENT_SETTINGS_WRITER_UNCONFIRMED` before Create/Restore or another writer launch;
-the next orchestrator must not reattach the retained worktree. A different path
-without a writer obligation is unaffected. An adapter that cannot project its
-path is rejected if any project writer obligation makes ownership uncertain.
+Spawn and restore resolve the adapter's managed path without materializing it.
+When an orchestrator's canonical directory has a writer obligation, a new spawn
+uses `<prefix>-orchestrator-<session-id>` and a fresh branch instead. Existing
+candidates are skipped with bounded numeric suffixes (`-2` through `-100`), so a
+filesystem orphan is not silently reused. The adapter
+validates that alternate managed path and refuses to reattach an existing
+allocation; selection, admission and creation share the project workspace gate.
+The old worktree and branch remain untouched. Restore/relaunch of a session
+recorded on the retained path still returns
+`AGENT_SETTINGS_WRITER_UNCONFIRMED`; it never silently moves an existing native
+conversation into a new directory. Other paths without obligations are
+unaffected. An adapter that cannot project a safe alternate remains fail-closed;
+unknown ownership is not treated as permission to launch.
 A predecessor sharing that path also cannot reclaim it. Cleanup checks the
 active handoff before the veto so terminal intent cannot create a reclamation
 window before journal settlement. If writer status cannot be read, cleanup

@@ -312,8 +312,8 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 	if info, ok, err := w.existingWorktree(ctx, repo, path, cfg); err != nil {
 		return ports.WorkspaceInfo{}, err
 	} else if ok {
-		if cfg.FreshBranch {
-			return ports.WorkspaceInfo{}, fmt.Errorf("gitworktree: prepared workspace path %q already exists", path)
+		if cfg.FreshBranch || cfg.FreshPath {
+			return ports.WorkspaceInfo{}, fmt.Errorf("gitworktree: fresh workspace path %q already exists", path)
 		}
 		refs, err := w.resolveWorktreeRefsWithBudget(ctx, repo, cfg.Branch, cfg.BaseBranch)
 		if err != nil {
@@ -406,11 +406,13 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 		return ports.WorkspaceProjectInfo{}, err
 	}
 	rootPath, err := w.managedPath(ports.WorkspaceConfig{
-		ProjectID:     cfg.ProjectID,
-		SessionID:     cfg.SessionID,
-		Kind:          cfg.Kind,
-		SessionPrefix: cfg.SessionPrefix,
-		Branch:        firstNonEmpty(cfg.Branch, defaultSessionBranchName(cfg.SessionID)),
+		ProjectID:       cfg.ProjectID,
+		SessionID:       cfg.SessionID,
+		Kind:            cfg.Kind,
+		SessionPrefix:   cfg.SessionPrefix,
+		FreshPath:       cfg.FreshPath,
+		FreshPathSuffix: cfg.FreshPathSuffix,
+		Branch:          firstNonEmpty(cfg.Branch, defaultSessionBranchName(cfg.SessionID)),
 	})
 	if err != nil {
 		return ports.WorkspaceProjectInfo{}, err
@@ -458,6 +460,9 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 		record, ok := findWorktree(records, repo.outputPath)
 		if !ok {
 			continue
+		}
+		if cfg.FreshPath {
+			return ports.WorkspaceProjectInfo{}, fmt.Errorf("gitworktree: fresh workspace path %q already exists", repo.outputPath)
 		}
 		if record.Branch != requestedBranch {
 			return ports.WorkspaceProjectInfo{}, fmt.Errorf(
@@ -2132,12 +2137,14 @@ func validateConfig(cfg ports.WorkspaceConfig) error {
 
 func validateWorkspaceProjectConfig(cfg ports.WorkspaceProjectConfig) error {
 	if err := validateConfig(ports.WorkspaceConfig{
-		ProjectID:     cfg.ProjectID,
-		SessionID:     cfg.SessionID,
-		Kind:          cfg.Kind,
-		SessionPrefix: cfg.SessionPrefix,
-		Branch:        firstNonEmpty(cfg.Branch, defaultSessionBranchName(cfg.SessionID)),
-		BaseBranch:    cfg.BaseBranch,
+		ProjectID:       cfg.ProjectID,
+		SessionID:       cfg.SessionID,
+		Kind:            cfg.Kind,
+		SessionPrefix:   cfg.SessionPrefix,
+		FreshPath:       cfg.FreshPath,
+		FreshPathSuffix: cfg.FreshPathSuffix,
+		Branch:          firstNonEmpty(cfg.Branch, defaultSessionBranchName(cfg.SessionID)),
+		BaseBranch:      cfg.BaseBranch,
 	}); err != nil {
 		return err
 	}
@@ -2185,8 +2192,23 @@ func (w *Workspace) ResolveWorkspacePath(_ context.Context, cfg ports.WorkspaceC
 func (w *Workspace) managedPath(cfg ports.WorkspaceConfig) (string, error) {
 	var path string
 	if cfg.Kind == domain.KindOrchestrator {
-		prefix := resolvedSessionPrefix(cfg)
-		path = filepath.Join(w.managedRoot, string(cfg.ProjectID), "orchestrator", prefix+"-orchestrator")
+		name := resolvedSessionPrefix(cfg) + "-orchestrator"
+		if cfg.FreshPath {
+			if cfg.SessionID == "" {
+				return "", errors.New("gitworktree: fresh orchestrator path requires a session id")
+			}
+			if err := validatePathComponent("session id", string(cfg.SessionID)); err != nil {
+				return "", err
+			}
+			name += "-" + string(cfg.SessionID)
+			if cfg.FreshPathSuffix < 0 || cfg.FreshPathSuffix >= 100 {
+				return "", fmt.Errorf("%w: fresh path suffix is out of range", ErrUnsafePath)
+			}
+			if cfg.FreshPathSuffix > 0 {
+				name += fmt.Sprintf("-%d", cfg.FreshPathSuffix+1)
+			}
+		}
+		path = filepath.Join(w.managedRoot, string(cfg.ProjectID), "orchestrator", name)
 	} else {
 		path = filepath.Join(w.managedRoot, string(cfg.ProjectID), string(cfg.SessionID))
 	}
