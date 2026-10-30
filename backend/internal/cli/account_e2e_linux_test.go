@@ -352,7 +352,7 @@ waiting:
 		}
 	}
 	_ = deadlinePrompt.Stop()
-	if strings.Contains(transcriptOutput, "TOKEN_CANARY") {
+	if strings.Contains(transcriptOutput, "TOKEN_CANARY") || strings.Contains(transcriptOutput, "~") {
 		t.Fatal("native login token printed")
 	}
 	_, _ = terminal.Write([]byte("ABCD-1234"))
@@ -405,7 +405,7 @@ waiting:
 	for chunk := range chunks {
 		transcriptOutput += chunk
 	}
-	if strings.Contains(transcriptOutput, "TOKEN_CANARY") || !strings.Contains(transcriptOutput, "cleanup confirmed") {
+	if (strings.Contains(transcriptOutput, "TOKEN_CANARY") || strings.Contains(transcriptOutput, "~")) || !strings.Contains(transcriptOutput, "cleanup confirmed") {
 		t.Fatalf("unsafe or unconfirmed terminal cancel")
 	}
 	matchCancel := regexp.MustCompile(`Login operation ([a-f0-9-]+)`).FindStringSubmatch(transcriptOutput)

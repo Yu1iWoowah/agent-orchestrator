@@ -383,8 +383,10 @@ it does not automatically stop them. History and past bindings remain traceable.
 Interactive add/login attaches the daemon's login PTY, not a local provider.
 Native prompts and input echo stream immediately, including fragments without a
 newline. ANSI/OSC controls are removed and credential-shaped values are masked
-across frames, including nested/indexed/dotted parameter names; no transcript
-is written by the CLI. Do not paste API keys or tokens into a
+across frames. URL-decoded parameter path segments (including nested/indexed,
+dotted, slash, hyphen and underscore forms) are classified by credential family,
+including authorization, cookie, session and auth fields. Ambiguous encodings
+are hidden at assignment. No transcript is written by the CLI. Do not paste API keys or tokens into a
 subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
 cleanup. If acceptance won the race, it reports that the account was saved.
 If cleanup is unconfirmed, retain the operation reference and reconnect; do not

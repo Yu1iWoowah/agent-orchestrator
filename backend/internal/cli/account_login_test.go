@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -173,46 +174,102 @@ func serveExitedAccountLogin(t *testing.T, w http.ResponseWriter, r *http.Reques
 }
 
 func TestLoginOutputMasksCredentialParameterClassesBeforeValueAcrossFrames(t *testing.T) {
-	const value = "Z9_PRIVATE_TOKEN_CANARY"
-	for name, line := range map[string]string{
-		"token":           "token=" + value + "\r\n",
-		"client-secret":   "client_secret=" + value + "\r\n",
-		"derived-token":   "session_OAuthToken = " + value + "\r\n",
-		"json-secret":     "{\"clientSecret\":\"" + value + "\"}\r\n",
-		"password":        "PASSWORD: " + value + "\r\n",
-		"private-key":     "private_key=" + value + "\r\n",
-		"credential":      "providerCredential=" + value + "\r\n",
-		"url":             "https://example.test/?token=" + value + "\r\n",
-		"encoded-url-key": "https://example.test/?to%6ben=" + value + "\r\n",
-		"nested-index":    "access_token[session]=" + value + "\r\n",
-		"indexed-url":     "https://example.test/?refresh_token[0]=" + value + "\r\n",
-		"dotted-token":    "oauth.token.value=" + value + "\r\n",
-		"quoted-index":    "oauth[\"token\"][\"value\"]=" + value + "\r\n",
-		"nested-key":      "private_key[session]=" + value + "\r\n",
-		"nested-auth":     "authorization.scope=" + value + "\r\n",
-		"ansi":            "to\x1b[32mken\x1b[0m=" + value + "\r\n",
-		"osc":             "\x1b]8;;https://example.test/?token=" + value + "\x1b\\Sign in\x1b]8;;\x1b\\\r\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			var bytesOut bytes.Buffer
-			var bytesOutput accountLoginOutput
+	// These are contract examples, not inputs derived from the classifier.
+	keys := []string{"token", "access_token", "OAuthToken", "secret", "clientSecret", "password", "passwd", "credential", "providerCredential", "apikey", "api_key", "x-api-key", "customEncryptionKey", "private_key", "authorization", "proxy-authorization", "bearer", "cookie", "set-cookie", "session", "auth"}
+	const value = "~PRIVATE_TOKEN_CANARY"
+	encodeAll := func(s string) string {
+		var out strings.Builder
+		for _, c := range []byte(s) {
+			_, _ = fmt.Fprintf(&out, "%%%02X", c)
+		}
+		return out.String()
+	}
+	mixedCase := func(s string) string {
+		var out strings.Builder
+		for i, c := range s {
+			part := string(c)
+			if i%2 == 0 {
+				part = strings.ToUpper(part)
+			} else {
+				part = strings.ToLower(part)
+			}
+			out.WriteString(part)
+		}
+		return out.String()
+	}
+	forms := []struct {
+		name string
+		line func(string) string
+	}{
+		{"assignment", func(k string) string { return k + "=" + value + "\r\n" }},
+		{"json", func(k string) string { return fmt.Sprintf(`{"%s":"%s"}`, k, value) + "\r\n" }},
+		{"nested", func(k string) string { return "headers[" + k + "][0]=" + value + "\r\n" }},
+		{"quoted-index", func(k string) string { return "headers[ \"" + k + "\" ][ 0 ]=" + value + "\r\n" }},
+		{"dotted", func(k string) string { return "request.headers." + k + ".value=" + value + "\r\n" }},
+		{"slash", func(k string) string { return "request/headers/" + k + "/value=" + value + "\r\n" }},
+		{"hyphen", func(k string) string { return "request-" + k + "-value=" + value + "\r\n" }},
+		{"underscore", func(k string) string { return "request_" + k + "_value=" + value + "\r\n" }},
+		{"url-query", func(k string) string { return "https://example.test/?" + k + "=" + value + "\r\n" }},
+		{"url-encoded", func(k string) string {
+			return "https://example.test/?" + url.QueryEscape("headers[ "+k+" ][0]") + "=" + value + "\r\n"
+		}},
+		{"fully-encoded", func(k string) string {
+			return "https://example.test/?" + encodeAll("request.headers."+k+".value") + "=" + value + "\r\n"
+		}},
+		{"ambiguous-encoding", func(k string) string {
+			return "https://example.test/?%ZZ" + encodeAll("headers["+k+"]") + "=" + value + "\r\n"
+		}},
+		{"nested-encoding", func(k string) string {
+			return "https://example.test/?" + url.QueryEscape(encodeAll("headers["+k+"]")) + "=" + value + "\r\n"
+		}},
+		{"header", func(k string) string { return k + ": " + value + "\r\n" }},
+		{"header-bearer", func(k string) string { return k + ": Bearer " + value + "\r\n" }},
+		{"mixed-case", func(k string) string { return mixedCase("headers["+k+"][0]") + "=" + value + "\r\n" }},
+		{"ansi", func(k string) string { return k[:len(k)/2] + "\x1b[32m" + k[len(k)/2:] + "\x1b[0m=" + value + "\r\n" }},
+		{"osc", func(k string) string {
+			return "\x1b]8;;https://example.test/?" + url.QueryEscape(k) + "=" + value + "\x1b\\Sign in\x1b]8;;\x1b\\\r\n"
+		}},
+	}
+	for _, key := range keys {
+		for _, form := range forms {
+			t.Run(key+"/"+form.name, func(t *testing.T) {
+				line := form.line(key)
+				var bytesOut bytes.Buffer
+				var bytesOutput accountLoginOutput
+				for i := range len(line) {
+					bytesOutput.write(&bytesOut, []byte(line[i:i+1]))
+					if strings.Contains(bytesOut.String(), "~") {
+						t.Fatalf("value's first byte escaped at byte %d", i)
+					}
+				}
+				for split := 0; split <= len(line); split++ {
+					var out bytes.Buffer
+					var output accountLoginOutput
+					output.write(&out, []byte(line[:split]))
+					if strings.Contains(out.String(), "~") {
+						t.Fatalf("value prefix escaped before complete frame, split=%d", split)
+					}
+					output.write(&out, []byte(line[split:]))
+					if strings.Contains(out.String(), "~") {
+						t.Fatalf("value escaped, split=%d", split)
+					}
+				}
+			})
+		}
+	}
+	for _, prefix := range []string{"Bearer ", "sk-", "eyJ"} {
+		t.Run("bare-value/"+strings.TrimSpace(prefix), func(t *testing.T) {
+			var out bytes.Buffer
+			var output accountLoginOutput
+			line := prefix + value + "\r\n"
 			for i := range len(line) {
-				bytesOutput.write(&bytesOut, []byte(line[i:i+1]))
-				if strings.Contains(bytesOut.String(), "Z") {
-					t.Fatalf("credential prefix escaped in byte stream at %d", i)
+				output.write(&out, []byte(line[i:i+1]))
+				if strings.Contains(out.String(), "~") {
+					t.Fatalf("bare credential payload escaped at byte %d", i)
 				}
 			}
-			for split := 0; split <= len(line); split++ {
-				var out bytes.Buffer
-				var output accountLoginOutput
-				output.write(&out, []byte(line[:split]))
-				if strings.Contains(out.String(), "Z") {
-					t.Fatalf("credential prefix escaped before complete value, split=%d", split)
-				}
-				output.write(&out, []byte(line[split:]))
-				if strings.Contains(out.String(), "Z") {
-					t.Fatalf("credential value escaped, split=%d", split)
-				}
+			if !strings.Contains(out.String(), "credential output hidden") {
+				t.Fatal("bare value detector was lost")
 			}
 		})
 	}

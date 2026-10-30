@@ -313,21 +313,30 @@ type accountTerminalFrame struct {
 // device authorization codes remain visible so the native login can complete.
 // Classify parameter-name families rather than provider-specific field names.
 func accountCredentialKey(name string) (root, sensitive bool) {
-	if decoded, err := url.QueryUnescape(name); err == nil {
-		name = decoded
+	decoded, err := url.QueryUnescape(name)
+	if err != nil || strings.ContainsRune(decoded, '%') {
+		// An incomplete/ambiguous encoding is not proof of a harmless name.
+		// Do not latch a partial escape, but hide its value at assignment.
+		return false, true
 	}
-	name = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			return r
+	name = strings.ToLower(decoded)
+	separator := func(r rune) bool { return strings.ContainsRune("[] ./-_\"'\t\r\n", r) }
+	fragments := strings.FieldsFunc(name, separator)
+	trailingSeparator := name != "" && separator(rune(name[len(name)-1]))
+	for i, fragment := range fragments {
+		for _, family := range []string{"token", "secret", "password", "passwd", "credential", "apikey", "authorization", "bearer", "cookie", "session", "auth"} {
+			if strings.Contains(fragment, family) {
+				root = true
+			}
 		}
-		return -1
-	}, strings.ToLower(name))
-	for _, family := range []string{"token", "secret", "password", "credential", "apikey"} {
-		if strings.Contains(name, family) {
-			root = true
+		if strings.HasSuffix(fragment, "key") {
+			sensitive = true
+			// A completed *key segment stays sensitive through later path
+			// segments. A prefix like keyboard is not itself a *key name.
+			root = root || i < len(fragments)-1 || trailingSeparator
 		}
 	}
-	return root, root || strings.HasSuffix(name, "key") || name == "authorization"
+	return root, root || sensitive
 }
 
 type accountLoginOutput struct {
@@ -374,8 +383,8 @@ func (w *accountLoginOutput) write(out io.Writer, data []byte) {
 			if w.nameDepth == 0 {
 				w.padding++
 			}
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '%' || r == '.' || r == '[' || r == ']':
-			separator := r == '.' || r == '[' || r == ']'
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '%' || r == '+' || r == '.' || r == '[' || r == ']' || r == '/':
+			separator := r == '.' || r == '[' || r == ']' || r == '/' || r == '-' || r == '_' || r == '+'
 			if w.padding > 0 && !separator {
 				w.resetKey()
 			}
