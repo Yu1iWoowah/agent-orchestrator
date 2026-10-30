@@ -508,20 +508,20 @@ func TestHarnessOnlySameReviewerPreservesPin(t *testing.T) {
 			engine := newEngineForTest(store, store, fakePRs{}, store, launcher)
 			engine.settingsAuthorizer = localReviewerSettingsAuthorization{}
 			engine.models = fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{LastSuccessAt: new(at), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "baseline", IsDefault: true}, {ID: "own-model", Efforts: []string{"high"}, SupportsFast: true}}}}
-			for _, selected := range []domain.ReviewerHarness{harness, ""} {
-				if _, err := engine.SwitchReviewer(ctx, worker.ID, selected, domain.AgentConfig{}); err != nil {
-					t.Fatal(err)
-				}
-				state, err := store.ReviewerAgentSettings(ctx, row.ID)
-				if err != nil || state.Settings == nil || *state.Settings != own || state.Revision != 0 {
-					t.Fatalf("harness-only selection reset own pin: %+v, %v", state, err)
-				}
+			result, err := engine.SwitchReviewer(ctx, worker.ID, harness, domain.AgentConfig{})
+			if err != nil || result.ReviewerHarness != harness {
+				t.Fatalf("explicit same-harness selection: %+v, %v", result, err)
+			}
+			saved, _, err := store.GetSession(ctx, worker.ID)
+			state, stateErr := store.ReviewerAgentSettings(ctx, row.ID)
+			if err != nil || stateErr != nil || saved.ReviewerHarness != harness || state.Settings == nil || *state.Settings != own || state.Revision != 0 {
+				t.Fatalf("harness-only selection changed override/pin: harness=%q state=%+v err=%v/%v", saved.ReviewerHarness, state, err, stateErr)
 			}
 			// A nonempty explicit baseline choice still resets the next-pass pin.
 			if _, err := engine.SwitchReviewer(ctx, worker.ID, harness, domain.AgentConfig{FastMode: domain.AgentFastDefault}); err != nil {
 				t.Fatal(err)
 			}
-			state, err := store.ReviewerAgentSettings(ctx, row.ID)
+			state, err = store.ReviewerAgentSettings(ctx, row.ID)
 			if err != nil || state.Settings == nil || *state.Settings != (domain.AgentSettings{FastMode: domain.AgentFastDefault}) || state.Revision != 1 || launcher.destroyed || launcher.spawned || launcher.restored {
 				t.Fatalf("explicit reset was lost or applied live: %+v launch=%+v err=%v", state, launcher, err)
 			}

@@ -212,26 +212,32 @@ func reviewerPassSelectionChanged(runs []domain.ReviewRun, reviewID string, sele
 // A recovering pass owns its admitted snapshot. Idle reconstruction may use
 // the next-pass preference; neither path consults today's project defaults.
 func (e *Engine) reviewerRestoreSelection(ctx context.Context, review domain.Review, runs []domain.ReviewRun, fallback domain.AgentConfig) (domain.AgentConfig, *domain.AgentSettings, error) {
+	var pinned *domain.AgentSettings
 	for _, run := range runs {
 		if run.ReviewID == review.ID && run.Status == domain.ReviewRunRunning && run.AgentSettings != nil {
-			return reviewerSelectionConfig(fallback, *run.AgentSettings), run.AgentSettings, nil
+			pinned = run.AgentSettings
+			break
 		}
 	}
-	if s, ok := e.store.(ports.ReviewerAgentSettingsStore); ok {
+	if s, ok := e.store.(ports.ReviewerAgentSettingsStore); ok && pinned == nil {
 		state, err := s.ReviewerAgentSettings(ctx, review.ID)
 		if err != nil {
 			return fallback, nil, err
 		}
-		if state.Settings != nil {
-			return reviewerSelectionConfig(fallback, *state.Settings), state.Settings, nil
-		}
+		pinned = state.Settings
+	}
+	if pinned != nil {
+		fallback = reviewerSelectionConfig(fallback, *pinned)
 	}
 	purpose := reviewerCatalogAdmission
 	if strings.TrimSpace(review.AgentSessionID) != "" || strings.TrimSpace(review.ProviderConversationID) != "" {
+		if pinned != nil {
+			return fallback, pinned, nil
+		}
 		purpose = reviewerCatalogRestore
 	}
 	if _, err := e.reviewerModelProof(ctx, review.Harness, fallback, purpose); err != nil {
 		return fallback, nil, err
 	}
-	return fallback, nil, nil
+	return fallback, pinned, nil
 }

@@ -419,15 +419,15 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		if readErr != nil {
 			return TriggerResult{}, readErr
 		}
-		if state.Settings == nil && !overrideConfig.IsZero() {
+		if state.Settings == nil && !overrideConfig.IsZero() && (harness != resolvedHarness || hasConfigOverride) &&
+			(reviewRow.ReviewerHandleID != "" || reviewRow.ReviewerLaunchID != "" || reviewRow.AgentSessionID != "" || reviewRow.ProviderConversationID != "" || len(reviewRunsForReview(runs, reviewRow.ID)) != 0) {
+			// Repeating a saved choice is admission, as is retrying an owner that
+			// has not executed yet. Only an actual change to an executed legacy
+			// reviewer requires mutation support and a recorded preference.
 			if err := reviewerSettingsMutationSupport(harness); err != nil {
 				return TriggerResult{}, err
 			}
-			// Failed initial qualification leaves an account-bound owner, but no
-			// pass or native writer. Retrying it still goes through admission.
-			if reviewRow.ReviewerHandleID != "" || reviewRow.ReviewerLaunchID != "" || reviewRow.AgentSessionID != "" || reviewRow.ProviderConversationID != "" || len(reviewRunsForReview(runs, reviewRow.ID)) != 0 {
-				return TriggerResult{}, ports.ErrAgentSettingsCapabilitiesUnavailable
-			}
+			return TriggerResult{}, ports.ErrAgentSettingsCapabilitiesUnavailable
 		}
 		if state.Settings != nil {
 			selected := *state.Settings
@@ -964,13 +964,16 @@ func (e *Engine) SwitchReviewer(
 	if err != nil {
 		return SessionReviews{}, err
 	}
-	selectedHarness := harness
-	if selectedHarness == "" {
-		selectedHarness = previousSelected
+	selectionWorker := worker
+	selectionWorker.ReviewerHarness, selectionWorker.ReviewerConfig = harness, config
+	selectedHarness, _, err := e.reviewerSelection(ctx, selectionWorker)
+	if err != nil {
+		return SessionReviews{}, err
 	}
 	if reviewRunsContainRunningForHarness(running, selectedHarness) {
 		return SessionReviews{}, ports.ErrAgentSettingsConflict
 	}
+	pinnedSelection := false
 	if settingsStore, supported := e.store.(ports.ReviewerAgentSettingsStore); supported {
 		review, found, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, selectedHarness)
 		if err != nil {
@@ -984,6 +987,7 @@ func (e *Engine) SwitchReviewer(
 			// Legacy reviewers have no recorded preference until their first
 			// admitted pass. Keep saving their worker-level selection below.
 			if state.Settings != nil {
+				pinnedSelection = true
 				next := reviewerSelectionSettings(config)
 				if config.IsZero() {
 					next = *state.Settings
@@ -994,7 +998,7 @@ func (e *Engine) SwitchReviewer(
 						return SessionReviews{}, err
 					}
 				}
-				if selectedHarness == previousSelected {
+				if selectedHarness == previousSelected && harness == worker.ReviewerHarness {
 					return e.listLocked(ctx, workerID, selectedHarness)
 				}
 				// Selecting an existing reviewer does not overwrite its pinned values
@@ -1021,7 +1025,7 @@ func (e *Engine) SwitchReviewer(
 	if err := e.destroyIdleOtherReviewerHandles(ctx, workerID, selected, reviewRows, running); err != nil {
 		return SessionReviews{}, err
 	}
-	if previousSelected == selected && previousConfig != selectedConfig {
+	if !pinnedSelection && previousSelected == selected && previousConfig != selectedConfig {
 		if err := e.resetReviewerRuntimeLocked(ctx, workerID, selected); err != nil {
 			return SessionReviews{}, err
 		}

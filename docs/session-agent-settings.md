@@ -355,6 +355,12 @@ legacy `agentConfig: {"fastMode":"default"}` explicitly resets the whole
 selection to the baseline; the switch never interprets an absent config as
 that choice.
 
+An omitted or empty harness clears the worker's reviewer override and follows
+the current project default. Conflict and pin checks use that resolved target,
+not the previously selected override. Clearing the override still persists when
+both choices currently resolve to the same harness; its pin and native history
+remain unchanged, and later project-default changes can take effect.
+
 The successful receipt is `phase: pinned`, `applyMode: next-pass`. It does not
 claim a provider applied the selection. A running pass or queued/running Chat
 turn conflicts, without stopping the reviewer or changing that pass. A pass
@@ -376,13 +382,20 @@ account-scoped catalog with a last successful discovery that is still fresh,
 even when fast is `default`. Fetched or validated timestamps alone, including
 an idle authentication-required cache, are not successful evidence. Failure of
 this initial qualification rejects admission before saving a preference/pass
-snapshot or launching a reviewer. The account-bound owner left by a failed
-initial qualification can retry the same intent once discovery succeeds, provided
-it still has no pass or native launch history. Existing legacy owners with
-execution history retain their override restrictions.
+snapshot or launching a reviewer. An owner left by failed initial qualification
+can retry or change its initial choice once discovery succeeds, provided it still
+has no pass or native launch history. This includes non-account harnesses and
+retains any established fixed account binding. Repeating the already-resolved
+worker model/mode on an unpinned legacy reviewer is also ordinary admission,
+including the Inspector's repeated config payload. Only an actual change to an
+executed legacy reviewer requires mutation support and a recorded preference.
 A legacy native-history restore keeps its compatibility behavior; restoring
 that history does not qualify the next pass. Without a native conversation ID,
-restore must qualify the selection as a new launch. A launch with no model,
+restore must qualify the selected snapshot or pin as a new launch. A pin alone
+does not prove native history exists: preflight can fail after admission saves
+the pin and pass. Rejection preserves the pin, pass and fixed account. This also
+applies to a running snapshot whose native ID has not yet been recorded and to
+Chat-to-TUI fallback that clears native history. A launch with no model,
 effort or explicit fast choice uses provider defaults without adopting a cached
 catalog selection or claiming provider-effective values.
 
@@ -417,8 +430,10 @@ Other harnesses can launch with fields declared by their adapter, but currently
 lack the fixed U3 account binding required for account-bound next-pass changes.
 Changing an existing pinned reviewer through trigger overrides, switch config
 or the settings API returns `AGENT_SETTINGS_UNSUPPORTED`, rather than reporting
-a temporary catalog outage. This also applies to trigger overrides on an
-unpinned legacy reviewer of those harnesses. A legacy switch/config save still
+a temporary catalog outage. This also applies when a trigger override actually
+changes the resolved choice of an unpinned legacy reviewer with execution
+history. Repeating its saved choice or retrying an unlaunched owner goes through
+normal admission and catalog qualification. A legacy switch/config save still
 records its selection for the first admitted pass; it does not mutate a pin or
 infer an account binding. No change is made to an active pass or its permission
 rules.
