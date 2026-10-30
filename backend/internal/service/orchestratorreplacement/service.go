@@ -14,6 +14,11 @@ import (
 
 // Store retains operation facts independently of the request or coordinator.
 type Store interface {
+	ReleaseReplacementIntake(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
+	RecordReplacementIntakeDrain(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
+	ReplacementWakeFenced(context.Context, domain.SessionID) (bool, error)
+	ReleaseReplacementSourceIntake(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
+	ReadReplacementIntake(context.Context, string) (domain.ReplacementIntake, error)
 	ClearReplacementStopIntent(context.Context, string, int64, ports.ReplacementSourceObservation, time.Time) (domain.OrchestratorReplacement, bool, error)
 	ResetReplacementBeforeStop(context.Context, string, int64, bool, time.Time, time.Time) (domain.OrchestratorReplacement, bool, error)
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
@@ -31,6 +36,8 @@ type Store interface {
 // Runtime preflight resolves the normal launch configuration without starting a
 // controller. Provider actions are added at their verified phase boundaries.
 type Runtime interface {
+	ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (SourceObservation, error)
+	DrainReplacementIntake(context.Context, domain.OrchestratorReplacement) error
 	QuiesceReplacementSource(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
 	PreflightReplacementTarget(context.Context, domain.ProjectRecord) (domain.ReplacementTarget, error)
 	ObserveReplacementSource(context.Context, domain.OrchestratorReplacement) (SourceObservation, error)

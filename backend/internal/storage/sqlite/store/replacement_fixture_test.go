@@ -94,6 +94,9 @@ func SeedReplacementTestFacts(t testing.TB, s *Store, op domain.OrchestratorRepl
 	if err != nil || n != 1 {
 		t.Fatal("fixture CAS", n, err)
 	}
+	if err := s.saveReplacementCheckpoint(context.Background(), s.qw, op.ID); err != nil {
+		t.Fatal(err)
+	}
 	op.Revision++
 	return op
 }

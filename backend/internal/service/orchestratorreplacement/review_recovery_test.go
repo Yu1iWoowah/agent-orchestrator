@@ -193,7 +193,8 @@ func TestReplacementPostIntentConfigChangeRequiresRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if ok, err := x.f.store.UpdateProjectSettings(ctx, p.ID, "renamed after stop intent", p.Config); err != nil || !ok {
+			p.Config.DefaultBranch = "different-launch-base"
+			if ok, err := x.f.store.UpdateProjectSettings(ctx, p.ID, p.DisplayName, p.Config); err != nil || !ok {
 				t.Fatal(ok, err)
 			}
 			op, err := x.service().Advance(ctx, x.operation.ID)

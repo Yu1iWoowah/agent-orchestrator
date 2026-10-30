@@ -225,6 +225,7 @@ type ReplacementTarget struct {
 // OrchestratorReplacement contains durable saga facts. HTTP exposes a separate
 // read DTO, never a dump of internal configuration or control credentials.
 type OrchestratorReplacement struct {
+	Repairs                  []ReplacementRepairReceipt `json:"repairs,omitempty"`
 	SchemaVersion            int                        `json:"schemaVersion"`
 	ID                       string                     `json:"id"`
 	OperationKey             string                     `json:"operationKey"`
@@ -282,10 +283,17 @@ func (op OrchestratorReplacement) CanReleaseSourceIntake() bool {
 	return waiting && op.SourceStopIntentAt == nil && op.SourceStop == nil && op.SourceRetiredAt == nil && op.SuccessorSessionID == ""
 }
 
-// ReplacementProjectFingerprint detects changes to launch rules, hooks, paths
-// and settings without copying environment secrets into an operation read model.
+// ReplacementProjectFingerprint pins paths, repository identity and typed spawn
+// configuration. Display names and registry timestamps are not launch authority;
+// callers separately check that the project is still active.
 func ReplacementProjectFingerprint(p ProjectRecord) (string, error) {
-	b, err := json.Marshal(p)
+	b, err := json.Marshal(struct {
+		ID            string
+		Path          string
+		RepoOriginURL string
+		Kind          ProjectKind
+		Config        ProjectConfig
+	}{ID: p.ID, Path: p.Path, RepoOriginURL: p.RepoOriginURL, Kind: p.Kind.WithDefault(), Config: p.Config})
 	if err != nil {
 		return "", err
 	}

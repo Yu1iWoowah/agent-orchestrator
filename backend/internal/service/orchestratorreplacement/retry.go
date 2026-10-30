@@ -41,7 +41,7 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 		if !cancel && !waiting {
 			return nil
 		}
-		if op.SourceRetiredAt != nil || op.SourceStopIntentAt != nil || op.SourceStop != nil {
+		if op.SourceRetiredAt != nil || op.SourceStopIntentAt != nil || op.SourceStop != nil || len(op.Repairs) > 0 && !op.Repairs[len(op.Repairs)-1].PreStopSnapshot {
 			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_RECOVERY_REQUIRED", "Shutdown intent exists; retain this operation and verify the same native controller before recovery", nil)
 		}
 		if !cancel && op.Phase == domain.ReplacementRecoveryRequired {
@@ -90,7 +90,7 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 			return apierr.Conflict("ORCHESTRATOR_HANDOFF_CONTROL_UNSETTLED", "The previous preparation has a provider reservation; verify its receipt before retry", nil)
 		}
 		if actionErr != nil {
-			return actionErr
+			return checkpointCapacityError(actionErr)
 		}
 		if !applied {
 			return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_CHANGED", "Source, lease or operation changed before reset", nil)

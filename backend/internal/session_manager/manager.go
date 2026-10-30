@@ -399,6 +399,9 @@ type conversationSettingsStore interface {
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
+	replacementGatesMu sync.Mutex
+	replacementGates   map[domain.ProjectID]chan struct{}
+
 	replyLanguage settingssvc.ReplyLanguageSource
 	runtime       runtimeController
 	agents        ports.AgentResolver
@@ -993,6 +996,12 @@ func New(d Deps) *Manager {
 // materialization fails the still-seed row is deleted outright; a later failure
 // parks the row as terminated and rolls back what was built.
 func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	ctx, releaseReplacement, err := m.beginOrchestratorAction(ctx, cfg.ProjectID, cfg.Kind, "")
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, err
+	}
+	defer releaseReplacement()
+
 	if cfg.RequestedOutput == domain.RequestedOutputArtifact && m.artifactDir("") == "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrArtifactOutputUnavailable)
 	}
@@ -2746,6 +2755,11 @@ func (m *Manager) RequestKill(ctx context.Context, id domain.SessionID) (KillRes
 }
 
 func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundCleanup bool) (KillResult, error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return KillResult{}, err
+	}
+	defer releaseReplacement()
 	// Teardown deliberately stops riding the caller's context. Kill runs a
 	// sequence (stop the agent, tear the controller down, mark the row
 	// terminated, drop the worktree) where being cancelled partway leaves a session
@@ -2963,6 +2977,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 // This deliberately does not write a session_worktrees row: those rows are
 // boot-restore markers, and a replaced orchestrator must stay terminated.
 func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer releaseReplacement()
 	if err := m.beginAgentOperation(ctx, id, agentOperationRetire); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrOperationInProgress
@@ -3175,6 +3194,11 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 // runs before any durable session write, so a failure never resurrects the row
 // or destroys the worktree (it may hold the agent's prior work).
 func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (result RestoreResult, err error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	defer releaseReplacement()
 	defer func() { m.logRelaunchFailure("restore", id, err) }()
 	if err := m.beginAgentOperation(ctx, id, agentOperationRestore); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
@@ -3249,6 +3273,11 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 // terminal identity, and provider-native conversation remain available for an
 // exact ResumeAgentWithMode call.
 func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	defer releaseReplacement()
 	if err := m.beginAgentOperation(ctx, id, agentOperationExit); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrAgentExitInProgress
@@ -3478,6 +3507,11 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
 func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	defer releaseReplacement()
 	defer func() { m.logRelaunchFailure("resume agent", id, err) }()
 	if err := m.beginAgentResume(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
@@ -4412,6 +4446,14 @@ func (m *Manager) preserveFailedReconcileRelaunch(ctx context.Context, before do
 // to kill the runtime (e.g. ForceDestroy/Destroy errored after MarkTerminated).
 // Destroy is idempotent, so an already-gone session is a no-op.
 func (m *Manager) reconcileReap(ctx context.Context, rec domain.SessionRecord) error {
+	ctx, releaseReplacement, err := m.beginOrchestratorAction(ctx, rec.ProjectID, rec.Kind, rec.ID)
+	if errors.Is(err, domain.ErrReplacementInProgress) || errors.Is(err, domain.ErrReplacementSourceRetired) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer releaseReplacement()
 	handle := runtimeHandle(rec.Metadata)
 	if handle.ID == "" {
 		return nil
@@ -4658,6 +4700,12 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 // shutdown, acquiring the project workspace gate so cleanup does not tear down
 // its workspace while restore is in progress.
 func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecord) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, rec.ID)
+	if err != nil {
+		m.logger.Warn("restore-all: session ownership could not be admitted; preserving workspace", "sessionID", rec.ID, "error", err)
+		return
+	}
+	defer releaseReplacement()
 	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
 	defer releaseWorkspaceGate()
 
@@ -5303,6 +5351,11 @@ func semanticMessageAccepted(rec domain.SessionRecord, clientMessageID string) b
 
 // InterruptTUI requests cancellation through the session's owned runtime.
 func (m *Manager) InterruptTUI(ctx context.Context, id domain.SessionID) error {
+	ctx, release, err := m.BeginReplacementMutation(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return err
@@ -5324,6 +5377,14 @@ func (m *Manager) InterruptTUI(ctx context.Context, id domain.SessionID) error {
 // retries. Ordinary callers leave it empty; the outbox preserves the key across
 // restart, rollback, and even a second overlapping handoff.
 func (m *Manager) send(ctx context.Context, id domain.SessionID, message, clientMessageID string, options ports.MessageDeliveryOptions) error {
+	ctx, releaseReplacement, queuedReplacement, err := m.queueReplacementTUIInput(ctx, id, message, clientMessageID, options)
+	defer releaseReplacement()
+	if err != nil {
+		return err
+	}
+	if queuedReplacement {
+		return nil
+	}
 	// A controller transition deliberately has a short interval with no writer.
 	// Queue internal/lifecycle sends durably instead of racing either controller
 	// or dropping coordination work; the transition worker drains this outbox
@@ -5349,7 +5410,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		}
 		message = domain.WrapSessionDelivery(deliveryID, message)
 	}
-	message, err := m.prepareOutboundMessage(ctx, id, message)
+	message, err = m.prepareOutboundMessage(ctx, id, message)
 	if err != nil {
 		return err
 	}
@@ -5408,7 +5469,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	// wrote; confirmActive must not press Enter on them. Wall time, like the
 	// terminal gate's lastInputAt.
 	inputBaseline := time.Now()
-	outcome, err := m.messenger.DeliverWithComposerCheck(ctx, id, message, composerBusy, afterWrite)
+	outcome, err := m.deliverTUIPrompt(ctx, m.messenger, id, message, composerBusy, afterWrite)
 	if err != nil {
 		return fmt.Errorf("send %s: %w", id, err)
 	}
@@ -5595,7 +5656,7 @@ func (e deliveryEvidence) accepted(rec domain.SessionRecord) bool {
 func (m *Manager) confirmActive(ctx context.Context, guard *sessionguard.Guard, id domain.SessionID, evidence deliveryEvidence, inputBaseline time.Time) error {
 	return m.confirmActiveWithNudge(ctx, id, evidence, nil, func(nudgeCtx context.Context) (sessionguard.Outcome, error) {
 		accepted := false
-		outcome, err := guard.DeliverWithComposerCheck(nudgeCtx, id, "", func(_ context.Context, rec domain.SessionRecord) (bool, func()) {
+		outcome, err := m.deliverTUIPrompt(nudgeCtx, guard, id, "", func(_ context.Context, rec domain.SessionRecord) (bool, func()) {
 			lastInputAt, release := m.fenceTerminalInput(rec)
 			if release == nil {
 				lastInputAt = m.lastTerminalInputAt(rec)

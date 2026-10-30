@@ -45,6 +45,11 @@ type providerSwitchActivityDetail struct {
 // canonical AO conversation and publishes a new provider branch only after the
 // target has started successfully.
 func (s *Service) SwitchProvider(ctx context.Context, id domain.SessionID, request domain.ProviderSwitchRequest) error {
+	ctx, releaseMutation, err := s.beginReplacementMutation(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
 	unlock, err := s.lockProviderSwitch(ctx, id)
 	if err != nil {
 		return err
@@ -61,6 +66,11 @@ func (s *Service) SwitchProviderAndSend(ctx context.Context, id domain.SessionID
 	if err := validateFileReferenceContent(msg, string(id)); err != nil {
 		return turn, false, err
 	}
+	ctx, releaseMutation, err := s.beginReplacementMutation(ctx, id)
+	if err != nil {
+		return turn, false, err
+	}
+	defer releaseMutation()
 	unlock, err := s.lockProviderSwitch(ctx, id)
 	if err != nil {
 		return turn, false, err

@@ -26,7 +26,7 @@ func (s *Store) ClearReplacementStopIntent(ctx context.Context, id string, revis
 		if err != nil {
 			return err
 		}
-		op, err := decodeReplacement(row)
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}
@@ -77,7 +77,7 @@ func (s *Store) SetReplacementSessionHibernated(ctx context.Context, operation s
 		if err != nil {
 			return err
 		}
-		op, err := decodeReplacement(row)
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}
@@ -119,7 +119,7 @@ func (s *Store) SetReplacementTUIRuntimeReleased(ctx context.Context, operation 
 		if err != nil {
 			return err
 		}
-		op, err := decodeReplacement(row)
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
 		if err != nil {
 			return err
 		}

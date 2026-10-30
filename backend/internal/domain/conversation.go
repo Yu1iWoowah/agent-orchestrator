@@ -695,7 +695,8 @@ type ConversationMessage struct {
 	Continuation bool `json:"continuation,omitempty"`
 	// AuthoredByUser is an intake-only fact used to project user activity when
 	// AO delivered the message as automation. It is not part of the persisted
-	// delivery origin or the conversation API representation.
+	// delivery origin or the conversation API representation. Replacement holds
+	// retain a private author/time receipt until that projection can resume.
 	AuthoredByUser bool `json:"-"`
 	// Streaming is true while more deltas are expected.
 	Streaming bool `json:"streaming"`

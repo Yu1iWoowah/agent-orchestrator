@@ -29,19 +29,34 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 			return err
 		}
 		switch op.Phase {
-		case domain.ReplacementAwaitingSource, domain.ReplacementAwaitingHandoff, domain.ReplacementAwaitingTranscript, domain.ReplacementRecoveryRequired:
+		case domain.ReplacementAwaitingSource, domain.ReplacementAwaitingHandoff, domain.ReplacementAwaitingTranscript:
+			op, err = s.releaseSourceIntake(ctx, op)
+			return err
+		case domain.ReplacementRecoveryRequired:
 			return nil
 		}
 		if op.SourceRetiredAt == nil {
 			if err = s.checkSource(ctx, op); err != nil {
 				op, err = s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, err)
+				if errors.Is(err, domain.ErrReplacementRepairCapacity) {
+					op, err = s.pauseForCapacity(ctx, op, err)
+				}
 				return err
 			}
 		}
 		next, stepErr := s.advance(ctx, op)
 		err = stepErr
-		if err == nil {
+		// A step may commit release before a later receipt fails. Carry its
+		// returned revision into wait's committed-row/CAS revalidation; a
+		// failed save at the old revision still cannot persist mutated facts.
+		if err == nil || next.ID == op.ID && next.Revision > op.Revision {
 			op = next
+		}
+		if errors.Is(err, domain.ErrReplacementRepairCapacity) {
+			// A refused intent was never committed. Pause the unchanged live
+			// source using recovery capacity so ordinary input can continue.
+			op, err = s.pauseForCapacity(ctx, op, stepErr)
+			return err
 		}
 		if errors.Is(err, errNoStopClearPending) {
 			// Quiesce positively reported no stop attempt. Keep the durable
@@ -129,13 +144,39 @@ func (s *Service) save(ctx context.Context, op domain.OrchestratorReplacement) (
 	op.UpdatedAt = s.deps.Now().UTC()
 	changed, err := s.deps.Store.SaveOrchestratorReplacement(ctx, op)
 	if err != nil {
-		return op, err
+		return op, checkpointCapacityError(err)
 	}
 	if !changed {
 		return op, errRevisionChanged
 	}
 	op.Revision++
 	return op, nil
+}
+
+func checkpointCapacityError(err error) error {
+	if !errors.Is(err, domain.ErrReplacementRepairCapacity) {
+		return err
+	}
+	var api *apierr.Error
+	if errors.As(err, &api) && api.Code == "ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY" {
+		return err
+	}
+	return errors.Join(apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY", "Replacement checkpoint capacity is exhausted; inspect the operation's committed recovery facts", nil), err)
+}
+
+func (s *Service) pauseForCapacity(ctx context.Context, op domain.OrchestratorReplacement, cause error) (domain.OrchestratorReplacement, error) {
+	// Advance attempts this once, after an ordinary write was refused.
+	// Always read committed facts; wait itself never retries a write.
+	current, err := s.Get(ctx, op.ID)
+	if err != nil {
+		return op, err
+	}
+	paused := current
+	paused.Phase = domain.ReplacementAwaitingSource
+	if !paused.CanReleaseSourceIntake() {
+		return current, checkpointCapacityError(cause)
+	}
+	return s.wait(ctx, current, paused.Phase, current.Phase, checkpointCapacityError(cause))
 }
 
 func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, phase, resume domain.ReplacementPhase, cause error) (domain.OrchestratorReplacement, error) {
@@ -179,14 +220,14 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 		}
 	}
 	if op.Phase == phase && op.ResumePhase == resume && op.Error != nil && *op.Error == failure {
-		return op, nil
+		return s.releaseSourceIntake(ctx, op)
 	}
 	op.Phase, op.ResumePhase, op.Error = phase, resume, &failure
 	op, err = s.save(ctx, op)
 	if err != nil {
-		return op, err
+		return current, err
 	}
-	return op, nil
+	return s.releaseSourceIntake(ctx, op)
 }
 
 func sourceStopRecoveryRequired(err error) bool {
@@ -259,6 +300,8 @@ func (s *Service) advance(ctx context.Context, op domain.OrchestratorReplacement
 		return s.save(ctx, op)
 	case domain.ReplacementExportingTranscript:
 		return s.export(ctx, op)
+	case domain.ReplacementNotifying:
+		return s.releaseIntake(ctx, op)
 	case domain.ReplacementTranscriptVerified:
 		// This stage ends at verified evidence. It is not operation completion;
 		// retirement and successor dispatch are introduced with the runtime stage.

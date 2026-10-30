@@ -173,39 +173,6 @@ func preserveReplacementSuccessorController(before, after domain.OrchestratorRep
 	return nil
 }
 
-type replacementIntakeReleaseKey struct{}
-
-type replacementIntakeDrainKey struct{}
-
-func preserveReplacementIntakeRelease(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
-	if before.IntakeReleasedAt != nil {
-		if after.IntakeReleasedAt == nil || !before.IntakeReleasedAt.Equal(*after.IntakeReleasedAt) {
-			return domain.ErrReplacementStateInvalid
-		}
-	} else if after.IntakeReleasedAt != nil && ctx.Value(replacementIntakeReleaseKey{}) != q {
-		return domain.ErrReplacementStateInvalid
-	}
-	if before.IntakeDrainRequestedAt != nil {
-		if after.IntakeDrainRequestedAt == nil || !before.IntakeDrainRequestedAt.Equal(*after.IntakeDrainRequestedAt) {
-			return domain.ErrReplacementStateInvalid
-		}
-	} else if after.IntakeDrainRequestedAt != nil && ctx.Value(replacementIntakeDrainKey{}) != q {
-		return domain.ErrReplacementStateInvalid
-	}
-	return nil
-}
-
-func preserveReplacementIntakeTransfer(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
-	if before.IntakeTransfer != nil {
-		if !reflect.DeepEqual(before.IntakeTransfer, after.IntakeTransfer) {
-			return domain.ErrReplacementStateInvalid
-		}
-	} else if after.IntakeTransfer != nil && ctx.Value(replacementIntakeReleaseKey{}) != q {
-		return domain.ErrReplacementStateInvalid
-	}
-	return nil
-}
-
 func validateReplacementResume(op domain.OrchestratorReplacement) error {
 	p := op.ResumeEvidence
 	if p == nil || p.StartedAt.IsZero() {
@@ -280,19 +247,6 @@ func preserveReplacementResume(before, after domain.OrchestratorReplacement) err
 		}
 	}
 	if a.VerifiedAt != nil && !replacementTimesEqual(a.VerifiedAt, b.VerifiedAt) {
-		return domain.ErrReplacementStateInvalid
-	}
-	return nil
-}
-
-type replacementSourceReleaseKey struct{}
-
-func preserveReplacementSourceRelease(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
-	if before.SourceIntakeReleasedAt != nil {
-		if ctx.Value(replacementResetKey{}) != q && !replacementTimesEqual(before.SourceIntakeReleasedAt, after.SourceIntakeReleasedAt) {
-			return domain.ErrReplacementStateInvalid
-		}
-	} else if after.SourceIntakeReleasedAt != nil && ctx.Value(replacementSourceReleaseKey{}) != q {
 		return domain.ErrReplacementStateInvalid
 	}
 	return nil

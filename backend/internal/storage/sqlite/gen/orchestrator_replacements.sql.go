@@ -60,6 +60,23 @@ func (q *Queries) GetActiveOrchestratorReplacement(ctx context.Context, projectI
 	return i, err
 }
 
+const getLatestReplacementRepairSnapshot = `-- name: GetLatestReplacementRepairSnapshot :one
+SELECT operation_id, revision, digest, payload FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? ORDER BY revision DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestReplacementRepairSnapshot(ctx context.Context, operationID string) (OrchestratorReplacementRepairSnapshot, error) {
+	row := q.db.QueryRowContext(ctx, getLatestReplacementRepairSnapshot, operationID)
+	var i OrchestratorReplacementRepairSnapshot
+	err := row.Scan(
+		&i.OperationID,
+		&i.Revision,
+		&i.Digest,
+		&i.Payload,
+	)
+	return i, err
+}
+
 const getOrchestratorReplacement = `-- name: GetOrchestratorReplacement :one
 SELECT id, project_id, source_session_id, operation_key, request_hash, phase, is_active, revision, intake_revision, state_json, created_at, updated_at FROM orchestrator_replacements WHERE id = ?
 `
@@ -105,6 +122,46 @@ func (q *Queries) GetOrchestratorReplacementByKey(ctx context.Context, operation
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
+	return i, err
+}
+
+const getReplacementRepairSnapshot = `-- name: GetReplacementRepairSnapshot :one
+SELECT operation_id, revision, digest, payload FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? AND revision = ?
+`
+
+type GetReplacementRepairSnapshotParams struct {
+	OperationID string
+	Revision    int64
+}
+
+func (q *Queries) GetReplacementRepairSnapshot(ctx context.Context, arg GetReplacementRepairSnapshotParams) (OrchestratorReplacementRepairSnapshot, error) {
+	row := q.db.QueryRowContext(ctx, getReplacementRepairSnapshot, arg.OperationID, arg.Revision)
+	var i OrchestratorReplacementRepairSnapshot
+	err := row.Scan(
+		&i.OperationID,
+		&i.Revision,
+		&i.Digest,
+		&i.Payload,
+	)
+	return i, err
+}
+
+const getReplacementRepairSnapshotUsage = `-- name: GetReplacementRepairSnapshotUsage :one
+SELECT COUNT(*) AS snapshots,
+ CAST(COALESCE(SUM(length(payload)), 0) AS INTEGER) AS payload_bytes
+FROM orchestrator_replacement_repair_snapshots WHERE operation_id = ?
+`
+
+type GetReplacementRepairSnapshotUsageRow struct {
+	Snapshots    int64
+	PayloadBytes int64
+}
+
+func (q *Queries) GetReplacementRepairSnapshotUsage(ctx context.Context, operationID string) (GetReplacementRepairSnapshotUsageRow, error) {
+	row := q.db.QueryRowContext(ctx, getReplacementRepairSnapshotUsage, operationID)
+	var i GetReplacementRepairSnapshotUsageRow
+	err := row.Scan(&i.Snapshots, &i.PayloadBytes)
 	return i, err
 }
 
@@ -171,6 +228,28 @@ func (q *Queries) InsertOrchestratorReplacement(ctx context.Context, arg InsertO
 	return err
 }
 
+const insertReplacementRepairSnapshot = `-- name: InsertReplacementRepairSnapshot :exec
+INSERT INTO orchestrator_replacement_repair_snapshots(operation_id, revision, digest, payload)
+VALUES (?, ?, ?, ?)
+`
+
+type InsertReplacementRepairSnapshotParams struct {
+	OperationID string
+	Revision    int64
+	Digest      string
+	Payload     []byte
+}
+
+func (q *Queries) InsertReplacementRepairSnapshot(ctx context.Context, arg InsertReplacementRepairSnapshotParams) error {
+	_, err := q.db.ExecContext(ctx, insertReplacementRepairSnapshot,
+		arg.OperationID,
+		arg.Revision,
+		arg.Digest,
+		arg.Payload,
+	)
+	return err
+}
+
 const listActiveOrchestratorReplacements = `-- name: ListActiveOrchestratorReplacements :many
 SELECT id, project_id, source_session_id, operation_key, request_hash, phase, is_active, revision, intake_revision, state_json, created_at, updated_at FROM orchestrator_replacements WHERE is_active = 1 ORDER BY created_at, id
 `
@@ -201,6 +280,38 @@ func (q *Queries) ListActiveOrchestratorReplacements(ctx context.Context) ([]Orc
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReplacementIntakeDestinations = `-- name: ListReplacementIntakeDestinations :many
+SELECT DISTINCT c.id FROM orchestrator_replacement_intake_transfers receipt
+JOIN conversations c ON c.id = receipt.target_conversation_id
+JOIN orchestrator_replacements r ON r.id = receipt.operation_id
+WHERE receipt.operation_id = ? AND c.scope = 'project' AND c.project_id = r.project_id
+`
+
+// Accepted receipt lookup does not require the successor to remain the writer.
+// Retained transfer destinations stay restricted to this operation's project.
+func (q *Queries) ListReplacementIntakeDestinations(ctx context.Context, operationID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listReplacementIntakeDestinations, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -284,6 +395,27 @@ func (q *Queries) MoveReplacementQueuedTurn(ctx context.Context, arg MoveReplace
 	return result.RowsAffected()
 }
 
+const recordReplacementHumanIntake = `-- name: RecordReplacementHumanIntake :exec
+INSERT INTO replacement_human_intake_receipts(message_id, interaction_at)
+SELECT m.id, ?1 FROM conversation_messages m
+WHERE m.id = ?2 AND m.role = 'user'
+ AND (EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ OR EXISTS (SELECT 1 FROM conversation_turns t
+ JOIN orchestrator_replacements r ON r.source_session_id = t.handled_by_session_id
+ WHERE t.id = m.turn_id AND json_type(r.state_json, '$.sourceRetiredAt') IS 'text'))
+ON CONFLICT(message_id) DO NOTHING
+`
+
+type RecordReplacementHumanIntakeParams struct {
+	InteractionAt time.Time
+	MessageID     string
+}
+
+func (q *Queries) RecordReplacementHumanIntake(ctx context.Context, arg RecordReplacementHumanIntakeParams) error {
+	_, err := q.db.ExecContext(ctx, recordReplacementHumanIntake, arg.InteractionAt, arg.MessageID)
+	return err
+}
+
 const recordReplacementIntakeTransfer = `-- name: RecordReplacementIntakeTransfer :exec
 INSERT INTO orchestrator_replacement_intake_transfers(
  operation_id, message_id, turn_id, source_conversation_id, source_sequence,
@@ -342,6 +474,52 @@ func (q *Queries) ReplacementWakeFenced(ctx context.Context, sessionID domain.Se
 	return exists, err
 }
 
+const restoreReplacementFromRepairSnapshot = `-- name: RestoreReplacementFromRepairSnapshot :execrows
+UPDATE orchestrator_replacements
+SET project_id = ?1, source_session_id = ?2,
+ operation_key = ?3, request_hash = ?4,
+ phase = 'recovery_required', is_active = 1, revision = ?5,
+ intake_revision = ?6, state_json = ?7,
+ created_at = ?8, updated_at = ?9
+WHERE id = ?10 AND revision = ?11
+`
+
+type RestoreReplacementFromRepairSnapshotParams struct {
+	ProjectID        string
+	SourceSessionID  string
+	OperationKey     string
+	RequestHash      string
+	NewRevision      int64
+	IntakeRevision   int64
+	StateJson        string
+	CreatedAt        string
+	UpdatedAt        string
+	ID               string
+	ExpectedRevision int64
+}
+
+// Only the operator repair path can restore a broken redundant envelope. It
+// never updates sessions, leases, queue rows or publication receipts.
+func (q *Queries) RestoreReplacementFromRepairSnapshot(ctx context.Context, arg RestoreReplacementFromRepairSnapshotParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, restoreReplacementFromRepairSnapshot,
+		arg.ProjectID,
+		arg.SourceSessionID,
+		arg.OperationKey,
+		arg.RequestHash,
+		arg.NewRevision,
+		arg.IntakeRevision,
+		arg.StateJson,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const retireReplacementSession = `-- name: RetireReplacementSession :execrows
 UPDATE sessions SET is_terminated = 1, activity_state = 'exited',
  activity_last_at = ?1, updated_at = ?1
@@ -365,7 +543,7 @@ func (q *Queries) RetireReplacementSession(ctx context.Context, arg RetireReplac
 }
 
 const selectReplacementExcerptTransfer = `-- name: SelectReplacementExcerptTransfer :one
-SELECT m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
+SELECT r.id AS operation_id, m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
  m.sender_session_id, m.sender_project_id, m.sender_display_name, receipt.payload_hash
 FROM orchestrator_replacement_intake_transfers receipt
 JOIN orchestrator_replacements r ON r.id = receipt.operation_id
@@ -399,6 +577,7 @@ type SelectReplacementExcerptTransferParams struct {
 }
 
 type SelectReplacementExcerptTransferRow struct {
+	OperationID         string
 	TurnID              sql.NullString
 	Text                string
 	ClientMessageID     string
@@ -423,6 +602,7 @@ func (q *Queries) SelectReplacementExcerptTransfer(ctx context.Context, arg Sele
 	)
 	var i SelectReplacementExcerptTransferRow
 	err := row.Scan(
+		&i.OperationID,
 		&i.TurnID,
 		&i.Text,
 		&i.ClientMessageID,
@@ -436,11 +616,52 @@ func (q *Queries) SelectReplacementExcerptTransfer(ctx context.Context, arg Sele
 	return i, err
 }
 
+const selectReplacementHumanProjection = `-- name: SelectReplacementHumanProjection :one
+WITH human_inputs AS (
+ SELECT m.id, m.turn_id, m.text, r.interaction_at
+ FROM conversation_messages m JOIN replacement_human_intake_receipts r ON r.message_id = m.id
+ WHERE m.role = 'user'
+ UNION ALL
+ SELECT m.id, m.turn_id, m.text, m.created_at AS interaction_at
+ FROM conversation_messages m WHERE m.role = 'user' AND m.origin = 'human'
+ AND NOT EXISTS (SELECT 1 FROM replacement_human_intake_receipts r WHERE r.message_id = m.id)
+)
+SELECT h.id, h.turn_id, h.text, h.interaction_at
+FROM human_inputs h JOIN conversation_turns t ON t.id = h.turn_id
+WHERE t.handled_by_session_id = ?1 AND t.state = 'queued'
+ AND t.rolled_back_at IS NULL AND t.promoted_to_turn_id IS NULL
+ AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = t.id)
+ORDER BY h.interaction_at DESC, t.requested_at DESC, t.rowid DESC, h.id DESC LIMIT 1
+`
+
+type SelectReplacementHumanProjectionRow struct {
+	ID            string
+	TurnID        sql.NullString
+	Text          string
+	InteractionAt time.Time
+}
+
+// Author/time receipts preserve AuthoredByUser automation. Legacy human-origin
+// rows retain their canonical acceptance time; never infer human intent for
+// legacy automation without a receipt.
+func (q *Queries) SelectReplacementHumanProjection(ctx context.Context, sessionID domain.SessionID) (SelectReplacementHumanProjectionRow, error) {
+	row := q.db.QueryRowContext(ctx, selectReplacementHumanProjection, sessionID)
+	var i SelectReplacementHumanProjectionRow
+	err := row.Scan(
+		&i.ID,
+		&i.TurnID,
+		&i.Text,
+		&i.InteractionAt,
+	)
+	return i, err
+}
+
 const selectReplacementPendingMessages = `-- name: SelectReplacementPendingMessages :many
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.client_message_id,
  m.text, m.delivery_content_json, m.origin,
  m.sender_session_id, m.sender_project_id, m.sender_display_name,
- t.requested_at, t.provider_turn_id, t.promotion_started_at
+ t.requested_at, t.provider_turn_id, t.promotion_started_at, t.provider_input_text,
+ t.started_at, t.completed_at, t.batched_input, t.promoted_to_turn_id
 FROM orchestrator_replacements r
 JOIN conversations c ON c.project_id = r.project_id
 JOIN conversation_turns t ON t.conversation_id = c.id
@@ -478,6 +699,11 @@ type SelectReplacementPendingMessagesRow struct {
 	RequestedAt         time.Time
 	ProviderTurnID      string
 	PromotionStartedAt  sql.NullTime
+	ProviderInputText   string
+	StartedAt           sql.NullTime
+	CompletedAt         sql.NullTime
+	BatchedInput        int64
+	PromotedToTurnID    sql.NullString
 }
 
 // Live pending intake, deliberately independent of frozen transcript cutoffs.
@@ -506,6 +732,11 @@ func (q *Queries) SelectReplacementPendingMessages(ctx context.Context, operatio
 			&i.RequestedAt,
 			&i.ProviderTurnID,
 			&i.PromotionStartedAt,
+			&i.ProviderInputText,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.BatchedInput,
+			&i.PromotedToTurnID,
 		); err != nil {
 			return nil, err
 		}
