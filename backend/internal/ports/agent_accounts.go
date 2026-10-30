@@ -23,6 +23,8 @@ func (*AgentAccountReviewerInUseError) Unwrap() error { return ErrAgentAccountIn
 
 // Agent account errors the API maps to client responses.
 var (
+	ErrAgentAccountScopeInvalid               = errors.New("account_project_scope_invalid")
+	ErrAgentAccountProjectUnknown             = errors.New("account_project_not_found")
 	ErrAgentAccountLegacyIdentityConflict     = errors.New("account_legacy_identity_conflict")
 	ErrAgentAccountLocalOnly                  = errors.New("account_local_only")
 	ErrAgentAccountUnavailableHomeOccupied    = errors.New("account_unavailable_home_occupied")

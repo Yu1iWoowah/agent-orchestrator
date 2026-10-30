@@ -339,6 +339,113 @@ no earlier migration is modified. Downgrading preserves config data; older
 versions do not support canonical claims and may drop this field when saving
 project settings.
 
+
+## Local subscription accounts (Linux)
+
+These commands call the daemon account APIs. They do not open the AO database,
+read provider credentials, or execute a provider binary in the CLI process.
+Claude subscription and ChatGPT sign-in profiles remain on this computer;
+these references cannot be selected over LAN or sent to Cloud.
+
+```bash
+ao account ls --provider codex --refresh --json
+ao account add --provider codex
+ao account add --provider claude
+ao account login <account-id>
+ao account login --operation <operation-id>
+ao account use <account-id> --default
+ao account use <account-id> --project <project-id>
+ao account use <account-id> --project <project-id> --role worker
+ao account use <account-id> --project <project-id> --role reviewer --reviewer claude-code
+ao spawn --project <project-id> --agent codex --account <account-id> --name "Worker"
+ao account use <account-id> --session <session-id> --wait
+ao account use <account-id> --session <session-id> --stop-turn --wait
+ao account logout <account-id>
+ao account rm <account-id>
+```
+
+`use` requires exactly one scope. `--default` applies to the account's provider;
+`--project` alone changes that provider's project default. Role selection changes
+only that role's reference. Reviewer selection always names the configured
+harness with `--reviewer`, never an array position. Project mutations preserve
+other config fields in a daemon transaction. A provider mismatch is rejected.
+Existing sessions and reviewer executions keep their own durable binding when
+any default changes. New work inherits explicit selection, then role, project,
+and global defaults. Explicit device accounts preserve the device login policy.
+
+A session move drains the current turn by default. Only `--stop-turn` authorizes
+interruption. Without `--wait`, the printed transition is pending, not proof of
+completion; `--wait` checks the same durable transition until completed, failed,
+cancelled, or recovery required (up to ten minutes; timing out does not cancel
+the durable handoff). `TARGET_STOP_UNCONFIRMED` ends the wait immediately; use
+**Stop and retry** in the desktop to confirm cleanup. A failed handoff never
+silently chooses another
+account. Removal refuses active owners and prints their non-secret use list;
+it does not automatically stop them. History and past bindings remain traceable.
+
+Interactive add/login attaches the daemon's login PTY, not a local provider.
+Native prompts and input echo stream immediately, including fragments without a
+newline. ANSI/OSC controls are removed and credential-shaped values are masked
+across frames. URL-decoded parameter path segments (including nested/indexed,
+dotted, slash, hyphen and underscore forms) are classified by credential family,
+including authorization, cookie, session and auth fields. Ambiguous encodings
+are hidden at assignment. Names use Unicode case-folding and NFKC normalization;
+non-ASCII or unknown name characters remain sensitive. Recognized sensitive values stay
+hidden across LF, CRLF and CR. A JSON value is hidden until its complete string,
+container or scalar boundary. Other uncertain output stays hidden until a blank
+line or a recognizable login prompt; unrecognized continuation/metadata lines
+may therefore remain hidden. Prompt recognition never ends a JSON string.
+HTTP(S) URLs classify each query parameter name independently; the host, path
+and previous parameter values do not taint the next name. Public OAuth URLs and
+native code-entry prompts remain visible; recognized credential query values stay masked.
+No transcript is written by the CLI. Do not paste API keys or tokens into a
+subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
+cleanup. If acceptance won the race, it reports that the account was saved.
+If cleanup is unconfirmed, retain the operation reference and reconnect; do not
+start a second login for the same operation.
+
+For automation, `--detach --json` starts or reads a **pending** operation reference
+without attaching; it never claims success from HTTP 202. Reconnect with
+`ao account login --operation <id> --no-attach --json` to watch the terminal exit
+without displaying its output. Both modes verify only after a confirmed native
+exit. If verification reports **Not signed in**, the CLI asks the daemon to
+cancel that operation and confirms cleanup before exiting 1. Start a new attempt
+with the printed `ao account add --provider <provider>` or
+`ao account login <account-id>` command. Failed new-account profiles are removed;
+existing account profiles remain available for re-login. If cleanup cannot be
+confirmed, the CLI reports that uncertainty and provides the same `--operation`
+reference to retry cleanup; do not start another login until it is confirmed.
+A completed legacy identity conflict instead directs you to remove the
+conflicting legacy login in Settings > Accounts before starting a new add.
+Temporary
+verification failures are shown on stderr and retried at most three times with
+500ms then 1s backoff, within a two-minute overall verification budget. Account
+storage errors, unsupported modes and a stopped daemon exit immediately with
+repair/start and reconnect instructions. This mode is useful when sign-in is completed in an
+already attached terminal. A disconnect does not create another profile. The daemon
+recovers unfinished operations after restart; a cancelled operation cannot be
+resumed into a new login.
+
+Malformed arguments and missing/conflicting scopes exit 2. Daemon/runtime
+errors, provider mismatch, failed transitions and confirmed cancellation exit 1.
+API error codes and request IDs are retained for diagnosis. No credential value
+is accepted as a command-line argument. Quota exhaustion does not rotate accounts.
+
+### Known limitations of live login output
+
+Terminal credential masking is best-effort. A credential name split by spaces
+(for example `Author ization=...`), or a credential continuation shaped like a
+code-entry prompt, can be displayed without masking. In the audited fake-provider
+cases, exposure was limited to the local terminal display: the corresponding
+API responses, database/WAL, SSE, daemon logs and other inspected files did not
+contain the output-only value. This is scoped evidence, not a guarantee for
+arbitrary provider output.
+
+Run `ao account login` in a private terminal. Do not share its screen or record
+the terminal during sign-in, and do not paste API keys or tokens into this flow.
+Terminal scrollback or external recording may retain visible output even though
+the CLI does not save a transcript.
+
 ## Orchestrator handoff
 
 `ao orchestrator replace --project <project-id> --from <session-id>` accepts a

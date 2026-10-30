@@ -292,6 +292,7 @@ var schemaNames = map[string]string{
 	"ControllersAgentAccountSessionIDParam":                "AgentAccountSessionIDParam",
 	"ControllersAgentAccountListQuery":                     "AgentAccountListQuery",
 	"ControllersAgentAccountUsageQuery":                    "AgentAccountUsageQuery",
+	"ControllersSetProjectAgentAccountRequest":             "SetProjectAgentAccountRequest",
 	"ControllersAgentAccountOperationResponse":             "AgentAccountOperationResponse",
 	"ControllersAgentAccountResponse":                      "AgentAccountResponse",
 	"ControllersAgentAccountsResponse":                     "AgentAccountsResponse",
@@ -2225,6 +2226,11 @@ func agentOperations() []operation {
 			method: http.MethodGet, path: "/api/v1/agents/codex/account-switches/{switchId}", id: "getCodexAccountSwitch", tag: "agents",
 			summary: "Read one durable Codex account switch", pathParams: []any{controllers.CodexAccountSwitchIDParam{}},
 			resps: []respUnit{{http.StatusOK, controllers.CodexAccountSwitchResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPut, path: "/api/v1/agents/accounts/{accountId}/projects/{projectId}", id: "setProjectAgentAccount", tag: "agents",
+			summary: "Set one local project provider or role account without replacing config", pathParams: []any{controllers.AgentAccountProjectParam{}}, reqBody: controllers.SetProjectAgentAccountRequest{},
+			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodGet, path: "/api/v1/agents/accounts", id: "listAgentAccounts", tag: "agents",

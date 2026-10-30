@@ -586,3 +586,19 @@ func (f *lanFakeAgentCatalog) EnsureAgentReadiness(ctx context.Context, id strin
 	}
 	return result.Agents[0], nil
 }
+
+func TestMobileLANBlocksCLIAccountConfigAndLoginReconnect(t *testing.T) {
+	calls := 0
+	lan := NewMobileLAN(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusNoContent) }), "account-host", 0, nil, nil)
+	lan.SetPasswordHash(mobilebridge.HashPassword("fake-account-password"))
+	for _, tc := range []struct{ method, path string }{{"PUT", "/api/v1/agents/accounts/A/projects/p"}, {"GET", "/api/v1/agents/accounts/operations/op-A"}} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"role":"worker"}`))
+		req.Header.Set("Authorization", "Bearer fake-account-password")
+		req.Host = "127.0.0.1"
+		w := httptest.NewRecorder()
+		lan.handler.ServeHTTP(w, req)
+		if w.Code != 404 || calls != 0 {
+			t.Fatalf("private account route %s: %d calls=%d", tc.path, w.Code, calls)
+		}
+	}
+}

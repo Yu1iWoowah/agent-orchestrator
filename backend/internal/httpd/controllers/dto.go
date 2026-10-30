@@ -4225,11 +4225,12 @@ type AppGrantIDParam struct {
 // AgentAccountOperationResponse is a non-secret lifecycle projection. Provider
 // output, profile paths, credential bytes and terminal transcripts are excluded.
 type AgentAccountOperationResponse struct {
-	OperationID string                      `json:"operationId"`
-	AccountID   string                      `json:"accountId"`
-	Provider    domain.AgentAccountProvider `json:"provider"`
-	Action      string                      `json:"action"`
-	Phase       string                      `json:"phase"`
+	TerminalHandleID string                      `json:"terminalHandleId,omitempty" description:"Opaque login PTY handle, only while a login is pending; no profile or transcript."`
+	OperationID      string                      `json:"operationId"`
+	AccountID        string                      `json:"accountId"`
+	Provider         domain.AgentAccountProvider `json:"provider"`
+	Action           string                      `json:"action"`
+	Phase            string                      `json:"phase"`
 	// Outcome is confirmed only when Phase is complete.
 	Outcome         string    `json:"outcome,omitempty"`
 	ReasonCode      string    `json:"reasonCode,omitempty"`
@@ -4248,6 +4249,18 @@ type DocumentContentQuery struct {
 // stop request was sent. False means the session remains fenced.
 type RetryAccountRecoveryResponse struct {
 	Confirmed bool `json:"confirmed"`
+}
+
+// SetProjectAgentAccountRequest mutates one local project account reference.
+type SetProjectAgentAccountRequest struct {
+	Role     string `json:"role,omitempty" enum:"worker,orchestrator,reviewer"`
+	Reviewer string `json:"reviewer,omitempty" description:"Stable configured reviewer harness; required for reviewer role, never an array index."`
+}
+
+// AgentAccountProjectParam identifies a local account and project mutation target.
+type AgentAccountProjectParam struct {
+	AccountID string `path:"accountId"`
+	ProjectID string `path:"projectId"`
 }
 
 // OrchestratorReplaceRequest contains intent, never caller-selected launch configuration.

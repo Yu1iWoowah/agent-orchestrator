@@ -22,6 +22,7 @@ import (
 const maxDisplayNameLen = 100
 
 type spawnOptions struct {
+	account         string
 	project         string
 	standalone      bool
 	harness         string
@@ -44,6 +45,7 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
+	AgentAccountID  string                     `json:"agentAccountId,omitempty"`
 	AgentSettings   *domain.AgentSettingsPatch `json:"agentSettings,omitempty"`
 	ProjectID       string                     `json:"projectId,omitempty"`
 	IssueID         string                     `json:"issueId,omitempty"`
@@ -84,6 +86,10 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			"fresh isolated workspace. Git projects use worktrees; standalone agents use an AO-managed plain directory.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("account") && strings.TrimSpace(opts.account) == "" {
+				return usageError{fmt.Errorf("--account requires a non-empty account ID")}
+			}
+
 			if opts.standalone && strings.TrimSpace(opts.project) != "" {
 				return usageError{fmt.Errorf("--standalone and --project cannot be used together")}
 			}
@@ -174,7 +180,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 
-			if !opts.skipAgentCheck {
+			if !opts.skipAgentCheck && opts.account == "" {
 				if err := ctx.preflightSpawnAgentAuth(cmd.Context(), cmd, opts.harness); err != nil {
 					return err
 				}
@@ -187,6 +193,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			req := spawnRequest{
+				AgentAccountID:  strings.TrimSpace(opts.account),
 				ProjectID:       opts.project,
 				IssueID:         opts.issue,
 				ParentSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
@@ -290,6 +297,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 100 characters)")
 	f.StringVar(&opts.claimPR, "claim-pr", "", "Claim PR ownership metadata only for the spawned session; does not check out the PR branch")
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
+	f.StringVar(&opts.account, "account", "", "Explicit local provider account; omitted inherits daemon selection")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")
 	return cmd
 }
