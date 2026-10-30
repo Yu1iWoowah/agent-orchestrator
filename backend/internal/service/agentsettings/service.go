@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/modelcapabilities"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -29,10 +30,11 @@ const (
 
 // ModelCapabilities lists advertised choices, never inferred model features.
 type ModelCapabilities struct {
-	Model     string          `json:"model"`
-	IsDefault bool            `json:"isDefault"`
-	Efforts   []string        `json:"efforts"`
-	Fast      CapabilityState `json:"fast" enum:"unknown,supported,unsupported"`
+	Model        string          `json:"model"`
+	IsDefault    bool            `json:"isDefault"`
+	Efforts      []string        `json:"efforts"`
+	Fast         CapabilityState `json:"fast" enum:"unknown,supported,unsupported"`
+	effortsKnown bool
 }
 
 // Capabilities ties saved model evidence to its account and owner context.
@@ -174,8 +176,9 @@ func (s *Service) readCapabilities(ctx context.Context, id domain.SessionID) (Sn
 		if model.SupportsFast {
 			fast = CapabilitySupported
 		}
-		efforts := append([]string{}, model.Efforts...)
-		result.Capabilities.Models = append(result.Capabilities.Models, ModelCapabilities{Model: model.ID, IsDefault: model.IsDefault, Efforts: efforts, Fast: fast})
+		evidence, known := modelcapabilities.Efforts(settings.Harness, catalog.Models, model)
+		efforts := append([]string{}, evidence...)
+		result.Capabilities.Models = append(result.Capabilities.Models, ModelCapabilities{Model: model.ID, IsDefault: model.IsDefault, Efforts: efforts, Fast: fast, effortsKnown: known})
 	}
 	return result, nil
 }

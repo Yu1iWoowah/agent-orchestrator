@@ -53,6 +53,9 @@ func (s *Service) ValidateSpawn(ctx context.Context, id domain.SessionID, settin
 		}
 		return settings, fmt.Errorf("%w: model_invalid", ports.ErrAgentSettingsInvalid)
 	}
+	if settings.Effort != "" && !selected.effortsKnown {
+		return settings, fmt.Errorf("%w: effort_unknown", ports.ErrAgentSettingsCapabilitiesUnavailable)
+	}
 	if settings.Effort != "" && !slices.Contains(selected.Efforts, string(settings.Effort)) {
 		if clearInheritedEffort {
 			settings.Effort = ""

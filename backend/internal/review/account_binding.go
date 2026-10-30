@@ -2,9 +2,11 @@ package review
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/modelcapabilities"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -44,19 +46,26 @@ func (e *Engine) validateReviewerModels(ctx context.Context, harness domain.Revi
 		return nil
 	}
 	catalog, err := e.models.ModelCatalog(ctx, string(harness), "", false)
-	if err != nil || catalog.Stale || len(catalog.Models) == 0 || catalog.RefreshState != "" && catalog.RefreshState != "idle" || validateReviewerCatalog(catalog, config) != nil {
+	if err != nil || catalog.Stale || len(catalog.Models) == 0 || catalog.RefreshState != "" && catalog.RefreshState != "idle" || validateReviewerCatalog(harness, catalog, config) != nil {
 		catalog, err = e.models.ModelCatalog(ctx, string(harness), "", true)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: catalog_discovery_failed", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
-	return validateReviewerCatalog(catalog, config)
+	return validateReviewerCatalog(harness, catalog, config)
 }
 
-func validateReviewerCatalog(catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
+func validateReviewerCatalog(harness domain.ReviewerHarness, catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
+	if catalog.Stale || catalog.RefreshState != "" && catalog.RefreshState != "idle" {
+		return ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
 	for _, model := range catalog.Models {
 		if model.ID == config.Model || config.Model == "" && model.IsDefault {
-			if config.Effort != "" && !slices.Contains(model.Efforts, config.Effort) {
+			efforts, known := modelcapabilities.Efforts(domain.AgentHarness(harness), catalog.Models, model)
+			if config.Effort != "" && !known {
+				return ports.ErrAgentSettingsCapabilitiesUnavailable
+			}
+			if config.Effort != "" && !slices.Contains(efforts, config.Effort) {
 				return ports.ErrAgentSettingsUnsupported
 			}
 			return nil
