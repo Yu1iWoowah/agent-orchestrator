@@ -41,26 +41,38 @@ type ReviewerModels interface {
 	CatalogFingerprint(context.Context, string, string) (string, error)
 }
 
+type reviewerCatalogPurpose uint8
+
+const (
+	reviewerCatalogRestore reviewerCatalogPurpose = iota
+	reviewerCatalogAdmission
+	reviewerCatalogMutation
+)
+
 func (e *Engine) validateReviewerModels(ctx context.Context, harness domain.ReviewerHarness, config domain.AgentConfig) error {
-	_, err := e.reviewerModelProof(ctx, harness, config, false)
+	_, err := e.reviewerModelProof(ctx, harness, config, reviewerCatalogAdmission)
 	return err
 }
 
-func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.ReviewerHarness, config domain.AgentConfig, required bool) (string, error) {
-	if err := e.validateReviewerFields(ctx, harness, config, required); err != nil {
+func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.ReviewerHarness, config domain.AgentConfig, purpose reviewerCatalogPurpose) (string, error) {
+	if err := e.validateReviewerFields(ctx, harness, config, purpose == reviewerCatalogMutation); err != nil {
 		return "", err
 	}
 	explicitFast := config.FastMode == domain.AgentFastOn || config.FastMode == domain.AgentFastOff
 	if explicitFast && !domain.AgentHarness(harness).SupportsFastMode() {
 		return "", ports.ErrAgentSettingsUnsupported
 	}
+	// New passes qualify every selected field. Legacy native-history restore
+	// retains its old behavior without turning that cache into admission proof.
+	hasSelection := config.Model != "" || config.Effort != "" || explicitFast
+	requireSuccess := purpose == reviewerCatalogMutation || explicitFast || purpose == reviewerCatalogAdmission && hasSelection
 	if e.models == nil {
-		if explicitFast || required {
+		if requireSuccess {
 			return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 		}
 		return "", nil
 	}
-	if !required && config.Model == "" && config.Effort == "" && !explicitFast {
+	if !requireSuccess && !hasSelection {
 		return "", nil
 	}
 	scope := ""
@@ -72,7 +84,7 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	catalog, err := e.models.ModelCatalog(ctx, string(harness), scope, false)
-	if err != nil || catalog.InputFingerprint != fingerprint || validateReviewerCatalog(catalog, config, required || explicitFast, time.Now()) != nil {
+	if err != nil || catalog.InputFingerprint != fingerprint || validateReviewerCatalog(catalog, config, requireSuccess, time.Now()) != nil {
 		catalog, err = e.models.ModelCatalog(ctx, string(harness), scope, true)
 	}
 	if err != nil {
@@ -84,7 +96,7 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 	if catalog.InputFingerprint != fingerprint {
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
-	if err := validateReviewerCatalog(catalog, config, required || explicitFast, time.Now()); err != nil {
+	if err := validateReviewerCatalog(catalog, config, requireSuccess, time.Now()); err != nil {
 		return "", err
 	}
 	current, err := e.models.CatalogFingerprint(ctx, string(harness), scope)

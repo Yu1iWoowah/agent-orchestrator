@@ -420,7 +420,14 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			return TriggerResult{}, readErr
 		}
 		if state.Settings == nil && !overrideConfig.IsZero() {
-			return TriggerResult{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+			if err := reviewerSettingsMutationSupport(harness); err != nil {
+				return TriggerResult{}, err
+			}
+			// Failed initial qualification leaves an account-bound owner, but no
+			// pass or native writer. Retrying it still goes through admission.
+			if reviewRow.ReviewerHandleID != "" || reviewRow.ReviewerLaunchID != "" || reviewRow.AgentSessionID != "" || reviewRow.ProviderConversationID != "" || len(reviewRunsForReview(runs, reviewRow.ID)) != 0 {
+				return TriggerResult{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+			}
 		}
 		if state.Settings != nil {
 			selected := *state.Settings
@@ -957,12 +964,12 @@ func (e *Engine) SwitchReviewer(
 	if err != nil {
 		return SessionReviews{}, err
 	}
-	if len(running) != 0 {
-		return SessionReviews{}, ports.ErrAgentSettingsConflict
-	}
 	selectedHarness := harness
 	if selectedHarness == "" {
 		selectedHarness = previousSelected
+	}
+	if reviewRunsContainRunningForHarness(running, selectedHarness) {
+		return SessionReviews{}, ports.ErrAgentSettingsConflict
 	}
 	if settingsStore, supported := e.store.(ports.ReviewerAgentSettingsStore); supported {
 		review, found, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, selectedHarness)
@@ -974,25 +981,26 @@ func (e *Engine) SwitchReviewer(
 			if err != nil {
 				return SessionReviews{}, err
 			}
-			if state.Settings == nil {
-				return SessionReviews{}, ports.ErrAgentSettingsCapabilitiesUnavailable
-			}
-			next := reviewerSelectionSettings(config)
-			if config.IsZero() && selectedHarness != previousSelected {
-				next = *state.Settings
-			}
-			if next != *state.Settings {
-				_, err = e.changeReviewerAgentSettings(ctx, review.ID, ReviewerSettingsChange{BaseRevision: state.Revision, IdempotencyKey: e.newID(), Patch: domain.AgentSettingsPatch{Model: &next.Model, Effort: &next.Effort, FastMode: &next.FastMode}}, true)
-				if err != nil {
-					return SessionReviews{}, err
+			// Legacy reviewers have no recorded preference until their first
+			// admitted pass. Keep saving their worker-level selection below.
+			if state.Settings != nil {
+				next := reviewerSelectionSettings(config)
+				if config.IsZero() {
+					next = *state.Settings
 				}
+				if next != *state.Settings {
+					_, err = e.changeReviewerAgentSettings(ctx, review.ID, ReviewerSettingsChange{BaseRevision: state.Revision, IdempotencyKey: e.newID(), Patch: domain.AgentSettingsPatch{Model: &next.Model, Effort: &next.Effort, FastMode: &next.FastMode}}, true)
+					if err != nil {
+						return SessionReviews{}, err
+					}
+				}
+				if selectedHarness == previousSelected {
+					return e.listLocked(ctx, workerID, selectedHarness)
+				}
+				// Selecting an existing reviewer does not overwrite its pinned values
+				// with the previously selected reviewer's worker-level defaults.
+				config = domain.AgentConfig{}
 			}
-			if selectedHarness == previousSelected {
-				return e.listLocked(ctx, workerID, selectedHarness)
-			}
-			// Selecting an existing reviewer does not overwrite its pinned values
-			// with the previously selected reviewer's worker-level defaults.
-			config = domain.AgentConfig{}
 		}
 	}
 	if ok, err := e.store.SetSessionReviewerConfig(ctx, workerID, harness, config, e.clock()); err != nil {
@@ -1010,7 +1018,7 @@ func (e *Engine) SwitchReviewer(
 	if err != nil {
 		return SessionReviews{}, err
 	}
-	if err := e.destroyOtherReviewerHandles(ctx, workerID, selected, reviewRows); err != nil {
+	if err := e.destroyIdleOtherReviewerHandles(ctx, workerID, selected, reviewRows, running); err != nil {
 		return SessionReviews{}, err
 	}
 	if previousSelected == selected && previousConfig != selectedConfig {
@@ -1306,16 +1314,15 @@ func (e *Engine) restoreReviewerLocked(
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	config, pinned, err := e.reviewerRestoreSelection(ctx, reviewRow, previousRuns, config)
+	selectionReview := reviewRow
+	if reviewRow.InterfaceMode == domain.ReviewerInterfaceChat && e.launcher.InterfaceMode(harness) != domain.ReviewerInterfaceChat {
+		// The fallback below starts TUI without the old Chat conversation.
+		selectionReview.AgentSessionID, selectionReview.ProviderConversationID = "", ""
+	}
+	config, pinned, err := e.reviewerRestoreSelection(ctx, selectionReview, previousRuns, config)
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	if pinned == nil {
-		if err := e.validateReviewerModels(ctx, harness, config); err != nil {
-			return RestoreReviewerResult{}, err
-		}
-	}
-
 	launchID := e.newID()
 	// A reviewer being relaunched is no longer "exited". Clear that before the
 	// launch so clients stop offering Restore for a reviewer that is back, while

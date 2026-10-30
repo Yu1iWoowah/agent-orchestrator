@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -28,7 +29,7 @@ func (m *savedReviewerModels) ModelCatalog(_ context.Context, _, _ string, refre
 
 func TestReviewerUsesSavedCatalogBeforeNativeDiscovery(t *testing.T) {
 	for _, stale := range []bool{false, true} {
-		models := &savedReviewerModels{catalog: ports.AgentModelCatalog{InputFingerprint: "saved-fingerprint", Stale: stale, Models: []ports.AgentModelInfo{{ID: "saved-model", Efforts: []string{"high"}}}}}
+		models := &savedReviewerModels{catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "saved-fingerprint", Stale: stale, Models: []ports.AgentModelInfo{{ID: "saved-model", Efforts: []string{"high"}}}}}
 		engine := &Engine{models: models}
 		err := engine.validateReviewerModels(context.Background(), domain.ReviewerCodex, domain.AgentConfig{Model: "saved-model", Effort: "high"})
 		if !stale && (err != nil || len(models.refreshes) != 1 || models.refreshes[0]) {

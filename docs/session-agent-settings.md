@@ -347,6 +347,14 @@ is `default`, `on` or `off`. The CLI reads a revision once when `--if-revision`
 is omitted and never retries a revision conflict automatically. Usage errors
 exit 2; daemon failures exit 1 and preserve the code and request ID.
 
+A switch request with omitted or empty `agentConfig` selects the reviewer
+without changing its saved pin, including when selecting the current harness.
+It is not a reset. Use the revision-qualified settings PATCH with explicit
+model/effort nulls and `fastMode: default` to reset the selection. A nonempty
+legacy `agentConfig: {"fastMode":"default"}` explicitly resets the whole
+selection to the baseline; the switch never interprets an absent config as
+that choice.
+
 The successful receipt is `phase: pinned`, `applyMode: next-pass`. It does not
 claim a provider applied the selection. A running pass or queued/running Chat
 turn conflicts, without stopping the reviewer or changing that pass. A pass
@@ -356,8 +364,27 @@ When an idle live reviewer needs the new selection, the old runtime is stopped
 before the next writer launches with the original native history. An admitted reviewer selection is carried explicitly into Chat start/resume,
 including empty model/effort resets, instead of being overwritten by the previous
 conversation projection. Legacy reviewers without a recorded selection keep their
-existing conversation restore behavior. Fixed reviewer sandbox/tool restrictions
-remain in force.
+existing conversation restore behavior. Selecting a legacy reviewer or saving
+its reviewer config does not require or backfill a preference. Its first admitted
+pass pins that saved config through the normal initialization path. Switching to
+or configuring an idle reviewer leaves another harness's active pass and handle
+alone; changing the selected active reviewer still returns a conflict. Fixed
+reviewer sandbox/tool restrictions remain in force.
+
+Admission of a new pass with model or effort selected requires a matching
+account-scoped catalog with a last successful discovery that is still fresh,
+even when fast is `default`. Fetched or validated timestamps alone, including
+an idle authentication-required cache, are not successful evidence. Failure of
+this initial qualification rejects admission before saving a preference/pass
+snapshot or launching a reviewer. The account-bound owner left by a failed
+initial qualification can retry the same intent once discovery succeeds, provided
+it still has no pass or native launch history. Existing legacy owners with
+execution history retain their override restrictions.
+A legacy native-history restore keeps its compatibility behavior; restoring
+that history does not qualify the next pass. Without a native conversation ID,
+restore must qualify the selection as a new launch. A launch with no model,
+effort or explicit fast choice uses provider defaults without adopting a cached
+catalog selection or claiming provider-effective values.
 
 The Chat composer labels these controls **Next review pass**. It keeps a draft
 until the daemon accepts a pin, shows conflicts beside the action and preserves
@@ -385,6 +412,16 @@ Grants expire after 24 hours; they do not renew in a running provider process.
 | Other harness reconfigure | No generic hot-reconfigure or account binding is inferred from a model launch flag. Missing settings/runtime/account capability remains unsupported or unavailable. |
 | Cursor | Exact variant IDs remain model IDs, never a generic effort or fast choice. |
 | Amp | Native mode remains distinct from effort/fast. Older launch preferences using its mode in the model slot retain launch compatibility; they do not qualify typed effort/fast. |
+
+Other harnesses can launch with fields declared by their adapter, but currently
+lack the fixed U3 account binding required for account-bound next-pass changes.
+Changing an existing pinned reviewer through trigger overrides, switch config
+or the settings API returns `AGENT_SETTINGS_UNSUPPORTED`, rather than reporting
+a temporary catalog outage. This also applies to trigger overrides on an
+unpinned legacy reviewer of those harnesses. A legacy switch/config save still
+records its selection for the first admitted pass; it does not mutate a pin or
+infer an account binding. No change is made to an active pass or its permission
+rules.
 
 The additive reviewer migration leaves every old row unchanged, including
 worker revisions, reviewer bindings and historical run selections (`NULL`). A

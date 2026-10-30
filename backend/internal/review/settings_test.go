@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func TestReviewerDeclaredFieldsMatrixFailsClosed(t *testing.T) {
 						wantSupport = entry.Harness.SupportsFastMode()
 					}
 					// Typed model does not reinterpret Amp's native mode alias.
-					_, err := engine.reviewerModelProof(context.Background(), harness, config, true)
+					_, err := engine.reviewerModelProof(context.Background(), harness, config, reviewerCatalogMutation)
 					if wantSupport && err != nil || !wantSupport && !errors.Is(err, ports.ErrAgentSettingsUnsupported) {
 						t.Fatalf("%s declared=%v: %v", field, wantSupport, err)
 					}
@@ -232,6 +233,13 @@ type fixedReviewerCatalog struct {
 	currentFingerprint string
 }
 
+func successfulReviewerModelCatalog(model string, efforts ...string) fixedReviewerCatalog {
+	return fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{
+		LastSuccessAt: new(time.Now()), InputFingerprint: "current-v1",
+		Models: []ports.AgentModelInfo{{ID: model, IsDefault: true, Efforts: efforts}},
+	}}
+}
+
 func (m fixedReviewerCatalog) ModelCatalog(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
 	return m.catalog, nil
 }
@@ -331,5 +339,192 @@ func TestSwitchExistingReviewerWithoutOverridePreservesItsPreference(t *testing.
 	}
 	if launcher.gotSpec.AgentConfig.Model != string(own.Model) || launcher.gotSpec.AgentConfig.Effort != string(own.Effort) || launcher.gotSpec.AgentConfig.FastMode != own.FastMode {
 		t.Fatalf("restored another reviewer's defaults: %+v", launcher.gotSpec)
+	}
+}
+
+func TestSwitchLegacyReviewerWithoutPreference(t *testing.T) {
+	for _, harness := range []domain.ReviewerHarness{domain.ReviewerCodex, domain.ReviewerClaudeCode} {
+		for _, saveConfig := range []bool{false, true} {
+			t.Run(string(harness)+"/saveConfig="+map[bool]string{false: "false", true: "true"}[saveConfig], func(t *testing.T) {
+				ctx, store, worker := context.Background(), newSQLiteReviewStore(t), liveWorker()
+				worker.ReviewerHarness = domain.ReviewerOpenCode
+				if saveConfig {
+					worker.ReviewerHarness = harness
+				}
+				seedReviewWorker(t, store, worker)
+				at := time.Now().UTC()
+				row := domain.Review{ID: "legacy-review", SessionID: worker.ID, ProjectID: worker.ProjectID, Harness: harness, AgentSessionID: "legacy-native", ReviewerLaunchID: "legacy-launch", CreatedAt: at, UpdatedAt: at}
+				if err := store.UpsertReview(ctx, row); err != nil {
+					t.Fatal(err)
+				}
+				launcher := &fakeLauncher{handle: "legacy-pane", agentSessionID: "legacy-native"}
+				engine := newEngineForTest(store, store, prAt("next-head"), store, launcher)
+				engine.accounts = &pinnedTestReviewAccount{store: store, defaultID: "review-account-A"}
+				engine.models = fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{LastSuccessAt: new(at), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "saved-model", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}}
+				config := domain.AgentConfig{}
+				if saveConfig {
+					config = domain.AgentConfig{Model: "saved-model", Effort: "high", FastMode: domain.AgentFastOff}
+				}
+				if _, err := engine.SwitchReviewer(ctx, worker.ID, harness, config); err != nil {
+					t.Fatalf("legacy reviewer selection: %v", err)
+				}
+				saved, found, err := store.GetSession(ctx, worker.ID)
+				if err != nil || !found || saved.ReviewerHarness != harness || saved.ReviewerConfig != config {
+					t.Fatalf("worker selection not saved: %+v, %v", saved, err)
+				}
+				state, err := store.ReviewerAgentSettings(ctx, row.ID)
+				if err != nil || state.Settings != nil {
+					t.Fatalf("selection must not backfill a legacy pin: %+v, %v", state, err)
+				}
+				if launcher.gotSpec.AgentConfig != config || !saveConfig && launcher.gotSpec.AgentSessionID != row.AgentSessionID {
+					t.Fatalf("legacy restore changed: %+v", launcher.gotSpec)
+				}
+				pass, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
+				if err != nil || !pass.Created {
+					t.Fatalf("first admitted pass: %+v, %v", pass, err)
+				}
+				want := reviewerSelectionSettings(config)
+				state, err = store.ReviewerAgentSettings(ctx, row.ID)
+				if err != nil || state.Settings == nil || *state.Settings != want || state.Revision != 0 || pass.Run.ReviewID != row.ID || pass.Run.AgentSettings == nil || *pass.Run.AgentSettings != want || launcher.gotSpec.PinnedSettings == nil || *launcher.gotSpec.PinnedSettings != want {
+					t.Fatalf("first pass did not pin saved config: state=%+v pass=%+v launch=%+v err=%v", state, pass.Run, launcher.gotSpec, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSwitchReviewerPreservesOtherHarnessActivePass(t *testing.T) {
+	for _, selection := range []domain.ReviewerHarness{domain.ReviewerClaudeCode, domain.ReviewerCodex} {
+		t.Run(string(selection), func(t *testing.T) {
+			worker := liveWorker()
+			worker.ReviewerHarness = selection
+			active := domain.Review{ID: "claude-owner", SessionID: worker.ID, Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "active-pane"}
+			target := domain.Review{ID: "codex-owner", SessionID: worker.ID, Harness: domain.ReviewerCodex, ReviewerHandleID: "idle-pane"}
+			run := domain.ReviewRun{ID: "active-pass", ReviewID: active.ID, SessionID: worker.ID, Harness: active.Harness, Status: domain.ReviewRunRunning}
+			store := &fakeStore{reviews: map[domain.ReviewerHarness]domain.Review{active.Harness: active, target.Harness: target}, runs: []domain.ReviewRun{run}}
+			launcher := &fakeLauncher{alive: true, handle: "new-pane"}
+			engine := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, fakePRs{}, fakeProjects{}, launcher)
+			engine.models = successfulReviewerModelCatalog("next-model")
+			if _, err := engine.SwitchReviewer(context.Background(), worker.ID, target.Harness, domain.AgentConfig{Model: "next-model"}); err != nil {
+				t.Fatalf("idle reviewer blocked by other harness: %v", err)
+			}
+			if len(store.runs) != 1 || store.runs[0] != run || store.reviews[active.Harness] != active || launcher.cancelled || launcher.destroyedHandle == active.ReviewerHandleID {
+				t.Fatalf("other active reviewer changed: store=%+v launcher=%+v", store, launcher)
+			}
+		})
+	}
+}
+
+func TestOtherReviewerOverrideReportsUnsupportedMutation(t *testing.T) {
+	for _, action := range []string{"switch", "trigger", "legacy-trigger"} {
+		t.Run(action, func(t *testing.T) {
+			ctx, store, worker := context.Background(), newSQLiteReviewStore(t), liveWorker()
+			worker.ReviewerHarness = domain.ReviewerCursor
+			seedReviewWorker(t, store, worker)
+			at := time.Now().UTC()
+			row := domain.Review{ID: "cursor-owner", SessionID: worker.ID, ProjectID: worker.ProjectID, Harness: domain.ReviewerCursor, AgentSessionID: "cursor-native", ReviewerLaunchID: "cursor-launch", CreatedAt: at, UpdatedAt: at}
+			if err := store.UpsertReview(ctx, row); err != nil {
+				t.Fatal(err)
+			}
+			initial := domain.AgentSettings{Model: "original-variant", FastMode: domain.AgentFastDefault}
+			if action != "legacy-trigger" {
+				if _, err := store.InitializeReviewerAgentSettings(ctx, row.ID, initial, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			launcher := &fakeLauncher{}
+			engine := newEngineForTest(store, store, prAt("head"), store, launcher)
+			engine.settingsAuthorizer = localReviewerSettingsAuthorization{}
+			engine.models = fixedReviewerCatalog{}
+			var err error
+			config := domain.AgentConfig{Model: "new-variant"}
+			if action == "switch" {
+				_, err = engine.SwitchReviewer(ctx, worker.ID, row.Harness, config)
+			} else {
+				_, err = engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{Config: config})
+			}
+			if !errors.Is(err, ports.ErrAgentSettingsUnsupported) || !strings.Contains(err.Error(), "account-bound next-pass") {
+				t.Fatalf("expected explicit unsupported reviewer mutation, got %v", err)
+			}
+			state, readErr := store.ReviewerAgentSettings(ctx, row.ID)
+			wantNil := action == "legacy-trigger"
+			if readErr != nil || (state.Settings == nil) != wantNil || state.Settings != nil && *state.Settings != initial || state.Revision != 0 || launcher.destroyed || launcher.spawned || launcher.restored {
+				t.Fatalf("unsupported mutation changed reviewer: %+v launch=%+v err=%v", state, launcher, readErr)
+			}
+		})
+	}
+}
+
+func TestNewReviewerDeclaredModelOverrideLaunches(t *testing.T) {
+	for _, entry := range agentregistry.Harnessed() {
+		harness := domain.ReviewerHarness(entry.Harness)
+		if !harness.IsKnown() || harness == domain.ReviewerCodex || harness == domain.ReviewerClaudeCode {
+			continue
+		}
+		spec, err := entry.Agent.GetConfigSpec(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range spec.Fields {
+			if field.Key != "model" {
+				continue
+			}
+			t.Run(string(harness), func(t *testing.T) {
+				ctx, store, worker := context.Background(), newSQLiteReviewStore(t), liveWorker()
+				seedReviewWorker(t, store, worker)
+				launcher := &fakeLauncher{handle: "new-pane", agentSessionID: "new-native"}
+				engine := newEngineForTest(store, store, prAt("head"), store, launcher)
+				engine.agents = reviewerDeclaredAgent{agent: entry.Agent}
+				engine.models = fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "declared-model"}}}}
+				result, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{Harness: harness, Config: domain.AgentConfig{Model: "declared-model"}})
+				if err != nil || !result.Created || result.Run.AgentSettings == nil || result.Run.AgentSettings.Model != "declared-model" || !launcher.spawned || launcher.gotSpec.AgentConfig.Model != "declared-model" {
+					t.Fatalf("new reviewer model override: result=%+v launch=%+v err=%v", result, launcher, err)
+				}
+			})
+		}
+	}
+}
+
+func TestHarnessOnlySameReviewerPreservesPin(t *testing.T) {
+	for _, harness := range []domain.ReviewerHarness{domain.ReviewerCodex, domain.ReviewerClaudeCode} {
+		t.Run(string(harness), func(t *testing.T) {
+			ctx, store, worker := context.Background(), newSQLiteReviewStore(t), liveWorker()
+			worker.ReviewerHarness = harness
+			seedReviewWorker(t, store, worker)
+			at := time.Now().UTC()
+			row := domain.Review{ID: "review-owner", SessionID: worker.ID, ProjectID: worker.ProjectID, Harness: harness, AgentSessionID: "review-native", ReviewerLaunchID: "review-launch", CreatedAt: at, UpdatedAt: at}
+			if err := store.UpsertReview(ctx, row); err != nil {
+				t.Fatal(err)
+			}
+			own := domain.AgentSettings{Model: "own-model", Effort: "high", FastMode: domain.AgentFastOn}
+			if _, err := store.InitializeReviewerAgentSettings(ctx, row.ID, own, at); err != nil {
+				t.Fatal(err)
+			}
+			provider, _ := domain.AgentAccountProviderFor(domain.AgentHarness(harness))
+			if err := store.BindReviewerAgentAccount(ctx, row.ID, domain.ResolvedAgentAccount{AccountID: "reviewer-A", Provider: provider, Source: domain.AgentAccountSourceRole}, at); err != nil {
+				t.Fatal(err)
+			}
+			launcher := &fakeLauncher{}
+			engine := newEngineForTest(store, store, fakePRs{}, store, launcher)
+			engine.settingsAuthorizer = localReviewerSettingsAuthorization{}
+			engine.models = fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{LastSuccessAt: new(at), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "baseline", IsDefault: true}, {ID: "own-model", Efforts: []string{"high"}, SupportsFast: true}}}}
+			for _, selected := range []domain.ReviewerHarness{harness, ""} {
+				if _, err := engine.SwitchReviewer(ctx, worker.ID, selected, domain.AgentConfig{}); err != nil {
+					t.Fatal(err)
+				}
+				state, err := store.ReviewerAgentSettings(ctx, row.ID)
+				if err != nil || state.Settings == nil || *state.Settings != own || state.Revision != 0 {
+					t.Fatalf("harness-only selection reset own pin: %+v, %v", state, err)
+				}
+			}
+			// A nonempty explicit baseline choice still resets the next-pass pin.
+			if _, err := engine.SwitchReviewer(ctx, worker.ID, harness, domain.AgentConfig{FastMode: domain.AgentFastDefault}); err != nil {
+				t.Fatal(err)
+			}
+			state, err := store.ReviewerAgentSettings(ctx, row.ID)
+			if err != nil || state.Settings == nil || *state.Settings != (domain.AgentSettings{FastMode: domain.AgentFastDefault}) || state.Revision != 1 || launcher.destroyed || launcher.spawned || launcher.restored {
+				t.Fatalf("explicit reset was lost or applied live: %+v launch=%+v err=%v", state, launcher, err)
+			}
+		})
 	}
 }

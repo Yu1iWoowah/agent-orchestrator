@@ -1452,6 +1452,8 @@ func TestSwitchReviewerRestartsLivePaneWhenOnlyConfigChanges(t *testing.T) {
 	launcher := &fakeLauncher{alive: true, handle: "codex-pane-2"}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 
+	eng.models = successfulReviewerModelCatalog("gpt-new")
+
 	res, err := eng.SwitchReviewer(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{Model: "gpt-new"})
 	if err != nil {
 		t.Fatalf("SwitchReviewer: %v", err)
@@ -1871,6 +1873,7 @@ func TestTriggerWithPersistedReviewerConfigStillReusesSameCommit(t *testing.T) {
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, handle: "review-mer-1"}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5")
 
 	res, err := trigger(context.Background(), eng, "mer-1", "", domain.AgentConfig{Model: "gpt-5"})
 	if err != nil {
@@ -1898,6 +1901,7 @@ func TestTriggerWithPersistedReviewerConfigAndSameHarnessOverrideStillReusesSame
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, handle: "review-mer-1"}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5")
 
 	res, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5"})
 	if err != nil {
@@ -1948,6 +1952,7 @@ func TestTriggerConfigOnlyOverrideUsesResolvedHarnessAndConfig(t *testing.T) {
 		AgentConfig: domain.AgentConfig{Model: "claude-old"},
 	}}}}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), projects, launcher)
+	eng.models = successfulReviewerModelCatalog("claude-new")
 
 	res, err := trigger(context.Background(), eng, "mer-1", "", domain.AgentConfig{Model: "claude-new"})
 	if err != nil {
@@ -1978,6 +1983,7 @@ func TestTriggerConfigOnlyOverrideMergesResolvedConfig(t *testing.T) {
 		AgentConfig: domain.AgentConfig{Model: "claude-old", Permissions: domain.PermissionModeBypassPermissions},
 	}}}}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), projects, launcher)
+	eng.models = successfulReviewerModelCatalog("claude-new")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", "", domain.AgentConfig{Model: "claude-new"}); err != nil {
 		t.Fatalf("Trigger: %v", err)
@@ -2001,6 +2007,7 @@ func TestTriggerSameHarnessOverrideMergesResolvedConfig(t *testing.T) {
 		AgentConfig: domain.AgentConfig{Model: "claude-old", Permissions: domain.PermissionModeBypassPermissions},
 	}}}}
 	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), projects, launcher)
+	eng.models = successfulReviewerModelCatalog("claude-new")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "claude-new"}); err != nil {
 		t.Fatalf("Trigger: %v", err)
@@ -2044,6 +2051,7 @@ func TestTriggerConfigOverrideRestartsAliveReviewerPane(t *testing.T) {
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, handle: "review-mer-2"}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5-mini")
 
 	res, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5-mini"})
 	if err != nil {
@@ -2082,6 +2090,7 @@ func TestTriggerConfigOverrideRollbackUpsertFailureKeepsReplacementHandleTracked
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, handle: "review-mer-2", destroyErr: errors.New("destroy old failed"), destroyErrCall: 1}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5-mini")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5-mini"}); err == nil || !strings.Contains(err.Error(), "rollback review row") {
 		t.Fatalf("Trigger error = %v, want rollback review row failure", err)
@@ -2108,6 +2117,7 @@ func TestTriggerConfigOverrideDestroyPreviousFailureRestoresOldNativeSessionID(t
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, handle: "review-mer-2", destroyErr: errors.New("destroy old failed"), destroyErrCall: 1}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5-mini")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5-mini"}); err == nil || !strings.Contains(err.Error(), "destroy previous reviewer") {
 		t.Fatalf("Trigger error = %v, want destroy previous reviewer failure", err)
@@ -2133,6 +2143,7 @@ func TestTriggerConfigOverrideFinalUpsertFailurePreservesStoredReviewerHandle(t 
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, handle: "review-mer-2"}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5-mini")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5-mini"}); err == nil || !strings.Contains(err.Error(), "write failed") {
 		t.Fatalf("Trigger error = %v, want final upsert failure", err)
@@ -2159,6 +2170,7 @@ func TestTriggerConfigOverridePreflightFailurePreservesIdleReviewer(t *testing.T
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, preflightErr: errors.New("missing binary")}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha2"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5-mini")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5-mini"}); err == nil || !strings.Contains(err.Error(), "reviewer preflight") {
 		t.Fatalf("Trigger error = %v, want reviewer preflight failure", err)
@@ -2188,6 +2200,7 @@ func TestTriggerConfigOverrideLaunchFailurePreservesIdleReviewer(t *testing.T) {
 	worker.ReviewerConfig = domain.AgentConfig{Model: "gpt-5"}
 	launcher := &fakeLauncher{alive: true, spawnErr: errors.New("create failed")}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha2"), fakeProjects{}, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5-mini")
 
 	if _, err := trigger(context.Background(), eng, "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{Model: "gpt-5-mini"}); err == nil || !strings.Contains(err.Error(), "launch reviewer") {
 		t.Fatalf("Trigger error = %v, want launch failure", err)
@@ -3134,6 +3147,7 @@ func TestChatConfigReplacementStopsOldFenceAndStartsFreshProvider(t *testing.T) 
 			worker.ReviewerHarness = domain.ReviewerCodex
 			worker.ReviewerConfig = domain.AgentConfig{Model: "model-A"}
 			eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+			eng.models = successfulReviewerModelCatalog("model-B", "high")
 			_, err := triggerWithSourceAndMode(context.Background(), eng, worker.ID, domain.ReviewerCodex, domain.AgentConfig{Model: "model-B", Effort: "high"}, domain.ReviewTriggerManual, domain.ReviewerInterfaceChat)
 			if fail {
 				if err == nil {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -64,6 +65,13 @@ func reviewerSelectionSettings(config domain.AgentConfig) domain.AgentSettings {
 		fast = domain.AgentFastDefault
 	}
 	return domain.AgentSettings{Model: domain.AgentModelSelection(config.Model), Effort: domain.AgentEffortSelection(config.Effort), FastMode: fast}
+}
+
+func reviewerSettingsMutationSupport(harness domain.ReviewerHarness) error {
+	if _, supported := domain.AgentAccountProviderFor(domain.AgentHarness(harness)); !supported {
+		return fmt.Errorf("%w: reviewer %q does not support account-bound next-pass settings; its existing preference and pass are unchanged", ports.ErrAgentSettingsUnsupported, harness)
+	}
+	return nil
 }
 
 func (e *Engine) tryLockWorker(id domain.SessionID) (func(), bool) {
@@ -127,6 +135,9 @@ func (e *Engine) changeReviewerAgentSettings(ctx context.Context, reviewID strin
 	if !found || worker.IsTerminated || state.Review.IsArchived {
 		return result, ports.ErrAgentSettingsConflict
 	}
+	if err := reviewerSettingsMutationSupport(state.Review.Harness); err != nil {
+		return result, err
+	}
 	if state.Settings == nil {
 		return result, ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
@@ -181,7 +192,7 @@ func (e *Engine) changeReviewerAgentSettings(ctx context.Context, reviewID strin
 		return result, ports.ErrAgentSettingsConflict
 	}
 	ctx = ports.WithAgentAccount(ctx, account)
-	catalogFingerprint, err := e.reviewerModelProof(ctx, state.Review.Harness, reviewerSelectionConfig(domain.AgentConfig{}, target), true)
+	catalogFingerprint, err := e.reviewerModelProof(ctx, state.Review.Harness, reviewerSelectionConfig(domain.AgentConfig{}, target), reviewerCatalogMutation)
 	if err != nil {
 		return result, err
 	}
@@ -214,6 +225,13 @@ func (e *Engine) reviewerRestoreSelection(ctx context.Context, review domain.Rev
 		if state.Settings != nil {
 			return reviewerSelectionConfig(fallback, *state.Settings), state.Settings, nil
 		}
+	}
+	purpose := reviewerCatalogAdmission
+	if strings.TrimSpace(review.AgentSessionID) != "" || strings.TrimSpace(review.ProviderConversationID) != "" {
+		purpose = reviewerCatalogRestore
+	}
+	if _, err := e.reviewerModelProof(ctx, review.Harness, fallback, purpose); err != nil {
+		return fallback, nil, err
 	}
 	return fallback, nil, nil
 }
