@@ -1649,6 +1649,17 @@ func (s *Store) BindTurnToProvider(ctx context.Context, turnID, providerTurnID s
 	})
 }
 
+// RequeueUnsentTurn preserves input when a deferred driver confirms it lost
+// the start race before sending anything to the provider.
+func (s *Store) RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string) error {
+	_, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	changed, err := s.qw.RequeueUnsentConversationTurn(ctx, gen.RequeueUnsentConversationTurnParams{
+		ID: turnID, ConversationID: conversationID, ProviderTurnID: providerTurnID,
+	})
+	return expectBatchRow("requeue unsent turn", turnID, changed, err)
+}
+
 // SettleTurn records a turn's terminal state. An interrupted turn is not an
 // error and carries no message.
 func (s *Store) SettleTurn(

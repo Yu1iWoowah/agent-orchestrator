@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -146,7 +147,7 @@ func TestClaudeBackgroundWaitsForPreviousPromptSettlement(t *testing.T) {
 	finished := c.promptFinished
 	done := make(chan error, 1)
 	go func() {
-		done <- c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","_meta":{"ao.unprompted":"true"},"message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"next"}}`))
+		done <- c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","_meta":{"ao.unprompted":"true","ao.precedingPromptEventId":"previous-result"},"message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"next"}}`))
 	}()
 	c.mu.Lock()
 	c.activeTurn = ""
@@ -173,7 +174,7 @@ func TestClaudeBackgroundSettlementWaitStopsOnDetach(t *testing.T) {
 	c := &conversation{sessionID: "native", activeTurn: "previous", promptFinished: make(chan struct{}), closing: closing, events: make(chan ports.ChatEvent, 8)}
 	done := make(chan error, 1)
 	go func() {
-		done <- c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","_meta":{"ao.unprompted":"true"},"message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"next"}}`))
+		done <- c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","_meta":{"ao.unprompted":"true","ao.precedingPromptEventId":"previous-result"},"message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"next"}}`))
 	}()
 	select {
 	case err := <-done:
@@ -185,5 +186,142 @@ func TestClaudeBackgroundSettlementWaitStopsOnDetach(t *testing.T) {
 	}
 	if len(c.events) != 0 {
 		t.Fatal("detached controller emitted a new background turn")
+	}
+}
+
+func TestClaudeBackgroundUnpromptedNoiseEmitsCommitCheckpoint(t *testing.T) {
+	c := replayConversation()
+	c.sessionID, c.claudeBackgroundTurns = "native", true
+	for _, frame := range []struct{ method, params string }{
+		{"_claude/sdkMessage", `{"sessionId":"native","_meta":{"ao.unprompted":"true","ao.persistentEventId":"idle"},"message":{"type":"system","subtype":"session_state_changed","state":"idle"}}`},
+		{"session/update", `{"sessionId":"native","_meta":{"ao.unprompted":"true","ao.persistentEventId":"commands"},"update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}`},
+		{"unknown/notification", `{"_meta":{"ao.unprompted":"true","ao.persistentEventId":"unknown"}}`},
+	} {
+		c.handleNotification(frame.method, json.RawMessage(frame.params))
+	}
+	checkpoints := 0
+	for len(c.events) > 0 {
+		e := <-c.events
+		if e.Kind == ports.ChatEventKind("provider.checkpoint") {
+			checkpoints++
+		}
+	}
+	if checkpoints != 3 {
+		t.Fatalf("unprompted noise has %d commit checkpoints, want 3", checkpoints)
+	}
+}
+
+func TestClaudeBackgroundPreparedTurnIsNotOverwritten(t *testing.T) {
+	c := replayConversation()
+	reader, writer := io.Pipe()
+	c.conn = acpsdk.NewClientSideConnection(c, io.Discard, reader)
+	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	c.sessionID = "native"
+	ref, err := c.SendTurn(context.Background(), ports.ChatUserMessage{Text: "AO input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"background"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	// A background cycle wins the wire race. Starting the AO request must be
+	// definitively refused, leaving its input available for a safe queue retry.
+	if err := c.StartDeferredTurn(ref.ProviderTurnID); err == nil {
+		t.Fatal("AO dispatch overwrote the in-flight background turn")
+	}
+	if c.activeTurn != "claude-background:background" || c.backgroundTurn != c.activeTurn {
+		t.Fatalf("background ownership changed: active=%s background=%s", c.activeTurn, c.backgroundTurn)
+	}
+	var update acpsdk.SessionNotification
+	if err := json.Unmarshal([]byte(`{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","messageId":"background-answer","content":{"type":"text","text":"BACKGROUND-OUTPUT"}}}`), &update); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SessionUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for len(c.events) > 0 {
+		e := <-c.events
+		if e.Kind == ports.ChatEventMessageDelta {
+			found = true
+			if e.ProviderTurnID != "claude-background:background" {
+				t.Fatalf("background delta attributed to AO prompt: %+v", e)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("background output was lost")
+	}
+}
+
+func TestClaudeBackgroundTerminalCannotReleaseDifferentTurn(t *testing.T) {
+	c := replayConversation()
+	c.sessionID, c.activeTurn, c.backgroundTurn = "native", "ao-prompt", "claude-background:old"
+	if err := c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","message":{"type":"result","subtype":"success"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if c.activeTurn != "ao-prompt" {
+		t.Fatalf("background result released another turn: %s", c.activeTurn)
+	}
+}
+
+func TestClaudeBackgroundInterruptClearsForNextTurn(t *testing.T) {
+	for _, terminal := range []string{`{"type":"result","subtype":"error","is_error":true}`, `{"type":"system","subtype":"session_state_changed","state":"idle"}`} {
+		t.Run(terminal, func(t *testing.T) {
+			agent := &fakeAgent{}
+			driver := New(Config{Harness: domain.HarnessClaudeCode, ClaudeBackgroundTurns: true, Launch: func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil }}, nil)
+			driver.useTestProcess(fakeSpawn(agent))
+			opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := opened.(*conversation)
+			t.Cleanup(func() { _ = c.Close() })
+			for len(c.events) > 0 {
+				<-c.events
+			}
+			for cycle := 0; cycle < 2; cycle++ {
+				raw := fmt.Sprintf(`{"sessionId":%q,"message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"cycle-%d"}}`, c.sessionID, cycle)
+				if err := c.claudeBackgroundEvent(json.RawMessage(raw)); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Interrupt(context.Background(), c.activeTurn); err != nil {
+					t.Fatalf("cycle %d cannot be stopped: %v", cycle, err)
+				}
+				if err := c.claudeBackgroundEvent(json.RawMessage(fmt.Sprintf(`{"sessionId":%q,"message":%s}`, c.sessionID, terminal))); err != nil {
+					t.Fatal(err)
+				}
+				for len(c.events) > 0 {
+					e := <-c.events
+					if e.Kind == ports.ChatEventTurnCompleted && (e.TurnState != domain.TurnStateInterrupted || e.Err != nil) {
+						t.Errorf("accepted stop classified incorrectly: %+v", e)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeBackgroundLateIdleDoesNotWaitForNewPrompt(t *testing.T) {
+	closing := make(chan struct{})
+	c := replayConversation()
+	c.sessionID, c.activeTurn, c.terminalEventID = "native", "new-ao-prompt", "old-result"
+	c.promptFinished, c.closing = make(chan struct{}), closing
+	done := make(chan error, 1)
+	go func() {
+		done <- c.claudeBackgroundEvent(json.RawMessage(`{"sessionId":"native","_meta":{"ao.unprompted":"true","ao.precedingPromptEventId":"old-result"},"message":{"type":"system","subtype":"session_state_changed","state":"idle"}}`))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(closing)
+		<-done
+		t.Fatal("old idle blocked the new prompt's result reader")
+	}
+	if c.activeTurn != "new-ao-prompt" {
+		t.Fatal("old idle released the new AO prompt")
 	}
 }

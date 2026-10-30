@@ -2079,6 +2079,33 @@ func (q *Queries) ReplaceUntouchedConversationProvider(ctx context.Context, arg 
 	return result.RowsAffected()
 }
 
+const requeueUnsentConversationTurn = `-- name: RequeueUnsentConversationTurn :execrows
+UPDATE conversation_turns
+SET state = 'queued', provider_turn_id = '', started_at = NULL,
+    promotion_started_at = NULL, provider_input_text = ''
+WHERE id = ?1
+  AND conversation_id = ?2
+  AND provider_turn_id = ?3
+  AND state IN ('queued', 'running')
+  AND completed_at IS NULL
+`
+
+type RequeueUnsentConversationTurnParams struct {
+	ID             string
+	ConversationID string
+	ProviderTurnID string
+}
+
+// Only a deferred driver that definitively refused before sending may use this.
+// Keep the original queue position and reject an unexpected provider binding.
+func (q *Queries) RequeueUnsentConversationTurn(ctx context.Context, arg RequeueUnsentConversationTurnParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, requeueUnsentConversationTurn, arg.ID, arg.ConversationID, arg.ProviderTurnID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const reserveQueuedConversationTurnForPromotion = `-- name: ReserveQueuedConversationTurnForPromotion :execrows
 UPDATE conversation_turns
 SET promotion_started_at = ?1

@@ -42,13 +42,15 @@ func (c *conversation) claudeBackgroundEvent(raw json.RawMessage) error {
 	// but its SDK waiter may not yet have released the prior turn. Wait for that
 	// local settlement rather than attributing the new output to the old prompt.
 	finished := c.promptFinished
+	preceding, _ := notification.Meta[persistenthost.ACPPrecedingPromptMetaKey].(string)
+	waitForSettlement := preceding != "" && preceding != c.terminalEventID
 	unprompted := notification.Meta[persistenthost.ACPUnpromptedMetaKey] == "true"
 	if c.proc != nil && c.proc.terminate != nil && !unprompted {
 		c.mu.Unlock()
 		return nil
 	}
 	c.mu.Unlock()
-	if unprompted && finished != nil {
+	if unprompted && waitForSettlement && finished != nil {
 		select {
 		case <-finished:
 		case <-c.closing:
@@ -89,16 +91,27 @@ func (c *conversation) claudeBackgroundEvent(raw json.RawMessage) error {
 	}
 	eventID := stableACPEventID(notification.Meta)
 	if eventID != "" {
-		if c.backgroundTerminalEvents == nil {
-			c.backgroundTerminalEvents = make(map[string]bool)
+		if c.unpromptedReceipts == nil {
+			c.unpromptedReceipts = make(map[string]string)
 		}
-		c.backgroundTerminalEvents[eventID] = true
+		c.unpromptedReceipts[eventID] = eventID
+	}
+	interrupt := c.interrupt
+	if c.activeTurn == id {
+		c.settlingTurn = id
 	}
 	c.mu.Unlock()
 	c.settleOpenItems(id)
+	interruptedLocally := false
+	if interrupt != nil && interrupt.turnID == id {
+		<-interrupt.done
+		interruptedLocally = interrupt.err == nil
+	}
 	state := domain.TurnStateCompleted
 	var failure error
-	if idleWithoutResult {
+	if interruptedLocally {
+		state = domain.TurnStateInterrupted
+	} else if idleWithoutResult {
 		state, failure = domain.TurnStateFailed, errors.New("claude background cycle ended without a result")
 	} else if message.IsError || (message.Subtype != "success" && message.Subtype != "") {
 		state, failure = domain.TurnStateFailed, errors.New("claude background cycle failed")
@@ -107,8 +120,47 @@ func (c *conversation) claudeBackgroundEvent(raw json.RawMessage) error {
 	}
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: id, ProviderEventID: eventID, TurnState: state, Err: failure})
 	c.mu.Lock()
-	c.activeTurn, c.backgroundTurn = "", ""
+	released := c.activeTurn == id
+	if released {
+		c.activeTurn, c.settlingTurn = "", ""
+		if c.interrupt == interrupt {
+			c.interrupt = nil
+		}
+	}
+	if c.backgroundTurn == id {
+		c.backgroundTurn = ""
+	}
 	c.mu.Unlock()
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+	if released {
+		c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+	}
 	return nil
+}
+
+// Unmodeled notifications have no terminal turn receipt. Put their ACK behind
+// all preceding projections; acknowledging from this reader could discard a
+// completed background cycle before the controller has committed it.
+func (c *conversation) checkpointUnprompted(raw json.RawMessage) {
+	var notification struct {
+		Meta map[string]any `json:"_meta"`
+	}
+	if json.Unmarshal(raw, &notification) != nil || notification.Meta[persistenthost.ACPUnpromptedMetaKey] != "true" {
+		return
+	}
+	id := stableACPEventID(notification.Meta)
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.backgroundTurn != "" || c.unpromptedReceipts[id] != "" {
+		c.mu.Unlock()
+		return
+	}
+	if c.unpromptedReceipts == nil {
+		c.unpromptedReceipts = make(map[string]string)
+	}
+	receipt := id + ":checkpoint"
+	c.unpromptedReceipts[receipt] = id
+	c.mu.Unlock()
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventProviderCheckpoint, ProviderEventID: receipt})
 }

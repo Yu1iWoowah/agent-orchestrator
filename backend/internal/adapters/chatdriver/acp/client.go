@@ -605,6 +605,11 @@ func (c *conversation) SessionUpdate(_ context.Context, params acpsdk.SessionNot
 // dispatch, and responses cannot overtake the updates they follow.
 func (c *conversation) handleNotification(method string, params json.RawMessage) bool {
 	var err error
+	defer func() {
+		if err == nil {
+			c.checkpointUnprompted(params)
+		}
+	}()
 	switch method {
 	case "_claude/sdkMessage":
 		if !c.claudeBackgroundTurns {

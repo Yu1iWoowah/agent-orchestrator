@@ -47,7 +47,7 @@ func TestChatHandoffTurnsCreditEachProviderAndKeepRequestsSentThroughAO(t *testi
 		marker(8, domain.HarnessClaudeCode, domain.HarnessKimchi, "b-kimchi"),
 	}
 
-	got := chatHandoffTurns(turns, messages, activities)
+	got := chatHandoffTurns(turns, messages, activities, false)
 	want := []domain.HandoffTurn{
 		{UserRequest: "typed in the app", AgentResponse: "codex answered", Harness: domain.HarnessCodex},
 		{UserRequest: "sent with ao send", AgentResponse: "claude answered", Harness: domain.HarnessClaudeCode},
@@ -59,8 +59,20 @@ func TestChatHandoffTurnsCreditEachProviderAndKeepRequestsSentThroughAO(t *testi
 	}
 
 	// A conversation that never switched cannot say who answered.
-	unswitched := chatHandoffTurns(turns[:1], messages[:2], nil)
+	unswitched := chatHandoffTurns(turns[:1], messages[:2], nil, false)
 	if len(unswitched) != 1 || unswitched[0].Harness != "" {
 		t.Fatalf("unswitched turns = %+v, want one uncredited turn", unswitched)
+	}
+}
+
+func TestChatHandoffDoesNotInventHarnessUserRequest(t *testing.T) {
+	got := chatHandoffTurns(
+		[]domain.ConversationTurn{{ID: "background", State: domain.TurnStateCompleted}},
+		[]domain.ConversationMessage{{TurnID: "background", Role: domain.MessageRoleAssistant, Text: "Background answer", Sequence: 2}},
+		[]domain.ConversationActivity{{TurnID: "background", Kind: domain.ActivityKindSystem, Detail: []byte(`{"event":"harness_triggered"}`)}},
+		false,
+	)
+	if len(got) != 0 {
+		t.Fatalf("provider handoff invented a user request: %+v", got)
 	}
 }

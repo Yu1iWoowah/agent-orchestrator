@@ -36,6 +36,7 @@ func TestFakeHarnessBackgroundProvider(t *testing.T) {
 		write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 	}
 	const native = "background-native"
+	historyPath := filepath.Join(dir, "native-history.json")
 	message := func(text, id string) {
 		notify("session/update", map[string]any{"sessionId": native, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": id, "content": map[string]string{"type": "text", "text": text}}})
 	}
@@ -72,6 +73,17 @@ func TestFakeHarnessBackgroundProvider(t *testing.T) {
 		var request struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
+			Params struct {
+				MessageID string           `json:"messageId"`
+				Prompt    []map[string]any `json:"prompt"`
+				Meta      struct {
+					ClaudeCode struct {
+						Options struct {
+							Tools *[]string `json:"tools"`
+						} `json:"options"`
+					} `json:"claudeCode"`
+				} `json:"_meta"`
+			} `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &request) != nil || len(request.ID) == 0 {
 			continue
@@ -79,14 +91,46 @@ func TestFakeHarnessBackgroundProvider(t *testing.T) {
 		var result any = map[string]any{}
 		switch request.Method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{"sessionCapabilities": map[string]any{"resume": map[string]any{}}}, "authMethods": []any{}}
+			result = map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{"loadSession": true, "sessionCapabilities": map[string]any{"resume": map[string]any{}}}, "authMethods": []any{}}
 		case "session/new", "session/resume":
+			if request.Params.Meta.ClaudeCode.Options.Tools != nil {
+				historyPath = filepath.Join(dir, fmt.Sprintf("side-history-%d.json", os.Getpid()))
+			}
 			result = map[string]string{"sessionId": native}
+		case "session/load":
+			data, err := os.ReadFile(historyPath)
+			if err != nil {
+				os.Exit(2)
+			}
+			var updates []map[string]any
+			if json.Unmarshal(data, &updates) != nil {
+				os.Exit(2)
+			}
+			for _, update := range updates {
+				notify("session/update", map[string]any{"sessionId": native, "update": update})
+			}
 		case "session/prompt":
-			message("AO-PROMPT-COMPLETED", "prompt-"+string(request.ID))
+			answerID := "prompt-" + request.Params.MessageID
+			message("AO-PROMPT-COMPLETED", answerID)
+			var updates []map[string]any
+			if data, err := os.ReadFile(historyPath); err == nil {
+				_ = json.Unmarshal(data, &updates)
+			}
+			for _, content := range request.Params.Prompt {
+				updates = append(updates, map[string]any{"sessionUpdate": "user_message_chunk", "messageId": request.Params.MessageID, "content": content})
+			}
+			updates = append(updates, map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": answerID, "content": map[string]string{"type": "text", "text": "AO-PROMPT-COMPLETED"}})
+			data, _ := json.Marshal(updates)
+			if os.WriteFile(historyPath, data, 0o600) != nil {
+				os.Exit(2)
+			}
 			result = map[string]string{"stopReason": "end_turn"}
 		}
 		write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+		if request.Method == "session/prompt" {
+			notify("_claude/sdkMessage", map[string]any{"sessionId": native, "message": map[string]string{"type": "system", "subtype": "session_state_changed", "state": "idle"}})
+			notify("session/update", map[string]any{"sessionId": native, "update": map[string]any{"sessionUpdate": "available_commands_update", "availableCommands": []any{}}})
+		}
 	}
 	close(done)
 	os.Exit(0)
@@ -181,6 +225,68 @@ func TestHarnessBackgroundReplySurvivesReloadAndDaemonRestart(t *testing.T) {
 	f.daemon.awaitConversation(f.session, 10*time.Second, "ordinary post-background AO prompt", func(s snapshot) bool {
 		return len(s.Turns) == 4 && s.Turns[3].State == "completed" && turnHasAnswer(s, turn, "AO-PROMPT-COMPLETED")
 	})
+}
+
+func (f *harnessBackgroundFixture) awaitEmptyJournals(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		empty := true
+		for _, name := range []string{"acp-prompt.journal", "acp-prompt.journal.unprompted"} {
+			info, err := os.Stat(filepath.Join(f.daemon.dataDir, "chat-hosts", f.session, name))
+			empty = empty && err == nil && info.Size() == 0
+		}
+		if empty {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("completed prompt and trailing idle/commands remain in replay journals")
+}
+
+func TestHarnessBackgroundNativeLoadDoesNotRetainHistory(t *testing.T) {
+	f := newHarnessBackgroundFixture(t)
+	f.awaitEmptyJournals(t)
+	for range 2 {
+		f.daemon.mustCall("POST", "/sessions/"+f.session+"/exit-agent", http.StatusOK, nil, nil)
+		f.daemon.mustCall("POST", "/sessions/"+f.session+"/resume-agent", http.StatusOK, nil, nil)
+		s := f.daemon.awaitConversation(f.session, 15*time.Second, "native history resume", func(s snapshot) bool { return s.Controller == "ready" })
+		if len(s.Turns) != 1 || len(s.Messages) != 2 || strings.Count(s.assistantText(), "AO-PROMPT-COMPLETED") != 1 {
+			t.Fatalf("native history reload duplicated or changed the original turn: %s", describe(s))
+		}
+		f.awaitEmptyJournals(t)
+	}
+}
+
+func TestHarnessBackgroundQueuedPromptKeepsAttributionAcrossRepeatedReplay(t *testing.T) {
+	f := newHarnessBackgroundFixture(t)
+	f.mark(t, "start", 1)
+	f.daemon.awaitConversation(f.session, 10*time.Second, "background before AO intake", func(s snapshot) bool { return len(s.Turns) == 2 && contains(s.assistantText(), "BACKGROUND-1") })
+	_, _ = send(t, f.daemon, f.session, "AO while background runs", "interleaved-queue")
+	for range 2 {
+		f.daemon.stop()
+		f.daemon = startDaemon(t, f.daemon.dataDir)
+		f.daemon.awaitConversation(f.session, 10*time.Second, "background replay", func(s snapshot) bool { return contains(s.assistantText(), "BACKGROUND-1") })
+	}
+	f.mark(t, "finish", 1)
+	f.daemon.awaitConversation(f.session, 20*time.Second, "queued AO after background", func(s snapshot) bool {
+		return len(s.Turns) == 3 && s.Turns[1].State == "completed" && s.Turns[2].State == "completed"
+	})
+	f.mark(t, "start", 2)
+	f.mark(t, "finish", 2)
+	s := f.daemon.awaitConversation(f.session, 10*time.Second, "second background after AO", func(s snapshot) bool { return len(s.Turns) == 4 && s.Turns[3].State == "completed" })
+	if len(s.Messages) != 6 {
+		t.Fatalf("duplicate or synthetic user messages: %s", describe(s))
+	}
+	var history struct {
+		Turns []struct{ UserRequest, AgentResponse string }
+		Total int
+	}
+	f.daemon.mustCall("GET", "/sessions/"+f.session+"/history", http.StatusOK, nil, &history)
+	if history.Total != 4 || len(history.Turns) != 4 || history.Turns[0].AgentResponse != "BACKGROUND-2-COMPLETED" || history.Turns[1].UserRequest != "AO while background runs" || history.Turns[1].AgentResponse != "AO-PROMPT-COMPLETED" || history.Turns[2].AgentResponse != "BACKGROUND-1-COMPLETED" {
+		t.Fatalf("wrong interleaved attribution: %+v", history)
+	}
+	f.awaitEmptyJournals(t)
 }
 
 func TestHarnessBackgroundBrowserFixture(t *testing.T) {

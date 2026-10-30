@@ -15,6 +15,9 @@ const (
 	// ACPEventIDMetaKey identifies one replayable provider event. AO assigns the
 	// value to every durable event derived from that frame.
 	ACPEventIDMetaKey = "ao.persistentEventId"
+	// ACPPrecedingPromptMetaKey names the completed prompt whose SDK waiter
+	// may still be settling when a following unsolicited notification arrives.
+	ACPPrecedingPromptMetaKey = "ao.precedingPromptEventId"
 
 	// promptStallTimeout is how long an in-flight session/prompt may hear
 	// nothing from the adapter, while the adapter is not waiting on the client,
@@ -256,6 +259,13 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 					retained = append(retained, entry)
 				} else if entry.kind == acpReplayCommand {
 					delete(r.commands, entry.key)
+				} else if entry.kind == acpReplayRequest {
+					for providerID, request := range r.serverRequests {
+						if request.requestID == entry.key {
+							request.promptOwned = false
+							r.serverRequests[providerID] = request
+						}
+					}
 				}
 			}
 			r.promptReplay = retained
@@ -317,14 +327,6 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 
 	if method == "session/prompt" && (r.state.ActivePrompt || r.state.PendingResultEventID != "") {
 		return acpClientFrames{client: rpcErrorFrame(id, -32602, "previous ACP prompt is active or not acknowledged")}, nil
-	}
-	if method == "session/new" || method == "session/load" || method == "session/resume" {
-		var params struct {
-			Meta map[string]any `json:"_meta"`
-		}
-		if json.Unmarshal(envelope["params"], &params) == nil {
-			r.state.RetainUnpromptedEvents, _ = params.Meta["ao.retainUnpromptedEvents"].(bool)
-		}
 	}
 	r.nextRequestID++
 	providerID, _ := json.Marshal(r.nextRequestID)
@@ -434,12 +436,12 @@ func (r *acpRelay) providerFrame(
 	if method != "" {
 		if len(id) > 0 && string(id) != "null" {
 			rewritten, key, created := r.providerRequest(envelope, frame)
-			if created && (r.state.ActivePrompt || r.state.RetainUnpromptedEvents) {
+			if created && (r.state.ActivePrompt || r.retainUnprompted()) {
 				r.promptReplay = append(r.promptReplay, acpReplayEntry{kind: acpReplayRequest, key: key, unprompted: !r.state.ActivePrompt})
 			}
 			return rewritten, true, nil
 		}
-		if r.state.ActivePrompt || r.state.RetainUnpromptedEvents {
+		if r.state.ActivePrompt || r.retainUnprompted() {
 			eventID := r.newEventID()
 			injectMeta(envelope, ACPEventIDMetaKey, eventID)
 			unprompted := !r.state.ActivePrompt
@@ -447,6 +449,9 @@ func (r *acpRelay) providerFrame(
 			if unprompted {
 				journal = r.unpromptedJournal
 				injectMeta(envelope, ACPUnpromptedMetaKey, "true")
+				if r.state.PendingResultEventID != "" {
+					injectMeta(envelope, ACPPrecedingPromptMetaKey, r.state.PendingResultEventID)
+				}
 			}
 			rewritten := marshalFrame(envelope, frame)
 			span, err := journal.append(ctx, rewritten)
@@ -556,7 +561,7 @@ func (r *acpRelay) providerRequest(
 	if request.requestID == "" {
 		r.nextInteractionID++
 		request.requestID = fmt.Sprintf("acp-request:%s:%d", r.identity, r.nextInteractionID)
-		request.promptOwned = r.state.ActivePrompt || r.state.RetainUnpromptedEvents
+		request.promptOwned = r.state.ActivePrompt || r.retainUnprompted()
 		request.unprompted = !r.state.ActivePrompt
 		r.serverOrder = append(r.serverOrder, key)
 		created = true
@@ -631,6 +636,16 @@ func (r *acpRelay) captureResponse(request acpClientRequest, envelope map[string
 		r.state.InitialPermissions = params.Meta[ACPInitialPermissionsMetaKey]
 		r.state.InitializeResult = append(json.RawMessage(nil), result...)
 	case "session/new", "session/load", "session/resume", "session/fork":
+		if request.method != "session/fork" {
+			var params struct {
+				Meta map[string]any `json:"_meta"`
+			}
+			if json.Unmarshal(request.params, &params) == nil {
+				if enabled, ok := params.Meta["ao.retainUnpromptedEvents"].(bool); ok {
+					r.state.RetainUnpromptedEvents = enabled
+				}
+			}
+		}
 		var response struct {
 			SessionID string `json:"sessionId"`
 		}
@@ -657,6 +672,21 @@ func (r *acpRelay) captureResponse(request acpClientRequest, envelope map[string
 			}
 		}
 	}
+}
+
+// Session setup can replay the transcript before its response. Those frames
+// belong to history capture, whose deterministic identities must survive reload.
+func (r *acpRelay) retainUnprompted() bool {
+	if !r.state.RetainUnpromptedEvents {
+		return false
+	}
+	for _, request := range r.pending {
+		switch request.method {
+		case "session/new", "session/load", "session/resume":
+			return false
+		}
+	}
+	return true
 }
 
 func (r *acpRelay) newEventID() string {

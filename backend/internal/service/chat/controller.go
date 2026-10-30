@@ -82,6 +82,7 @@ type Store interface {
 	RecordProviderInput(ctx context.Context, turnID, text string) error
 	RecordTurnSettingsSnapshot(context.Context, string, string, []string, domain.AgentSettingsTurnSnapshot) error
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
+	RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error
@@ -2033,6 +2034,9 @@ func (c *Controller) dispatch(
 	c.mu.Unlock()
 	ref, err := c.conv.SendTurn(ctx, msg)
 	if err != nil {
+		if hasDeferredStart && errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+			return c.requeueUnsentTurn(ctx, turnID, "", followers, requestedAt)
+		}
 		failFollowers("batch delivery to provider is uncertain: " + err.Error())
 		c.mu.Lock()
 		if c.dispatchingTurnID == turnID {
@@ -2095,6 +2099,10 @@ func (c *Controller) dispatch(
 	// projected. Eager drivers do not implement this optional interface.
 	if hasDeferredStart {
 		if err := deferred.StartDeferredTurn(ref.ProviderTurnID); err != nil {
+			if errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+				deferred.DiscardDeferredTurn(ref.ProviderTurnID)
+				return c.requeueUnsentTurn(ctx, turnID, ref.ProviderTurnID, followers, requestedAt)
+			}
 			failFollowers("batch provider start is uncertain: " + err.Error())
 			c.mu.Lock()
 			c.pendingTurnID = ""
@@ -2121,6 +2129,26 @@ func (c *Controller) dispatch(
 		State:              domain.TurnStateRunning,
 		RequestedAt:        requestedAt,
 	}, nil
+}
+
+func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID string, followers []string, at time.Time) (domain.ConversationTurn, error) {
+	if err := c.store.RequeueUnsentTurn(ctx, c.conversation.ID, id, providerID); err != nil {
+		return domain.ConversationTurn{}, fmt.Errorf("requeue unsent turn: %w", err)
+	}
+	if len(followers) > 0 {
+		if err := c.store.ReleaseQueuedBatch(ctx, c.conversation.ID, followers); err != nil {
+			return domain.ConversationTurn{}, err
+		}
+	}
+	c.mu.Lock()
+	if c.dispatchingTurnID == id {
+		c.dispatchingTurnID = ""
+	}
+	if providerID != "" && c.pendingTurnID == providerID {
+		c.pendingTurnID, c.ackedTurnID = "", ""
+	}
+	c.mu.Unlock()
+	return c.queuedDispatchReceipt(id, at), nil
 }
 
 func (c *Controller) queuedDispatchReceipt(id string, at time.Time) domain.ConversationTurn {

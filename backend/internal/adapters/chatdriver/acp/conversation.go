@@ -154,11 +154,11 @@ type conversation struct {
 	// historyUserChunkIsMessage: see Config.HistoryUserChunkIsMessage.
 	historyUserChunkIsMessage bool
 	// plansSpanTurns: see Config.PlansSpanTurns.
-	plansSpanTurns           bool
-	claudeBackgroundTurns    bool
-	backgroundTurn           string
-	backgroundTerminalEvents map[string]bool
-	promptFinished           chan struct{}
+	plansSpanTurns        bool
+	claudeBackgroundTurns bool
+	backgroundTurn        string
+	unpromptedReceipts    map[string]string
+	promptFinished        chan struct{}
 	// preamble is standing context attached to the first prompt that actually
 	// reaches the provider. It is the delivery channel for agents that accept no
 	// system-prompt launch flag and ignore session/new _meta but do execute
@@ -488,8 +488,12 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 	c.mu.Lock()
 	busy := c.closed || c.prepared != nil || c.activeTurn != ""
+	backgroundBusy := c.backgroundTurn != ""
 	c.mu.Unlock()
 	if busy {
+		if backgroundBusy {
+			return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
+		}
 		return ports.ChatTurnRef{}, errors.New("ACP conversation already has a turn in flight")
 	}
 	if err := c.applyTurnSettings(ctx, msg.Settings); err != nil {
@@ -501,6 +505,9 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, errConversationClosed
 	}
 	if c.prepared != nil || c.activeTurn != "" {
+		if c.backgroundTurn != "" {
+			return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
+		}
 		return ports.ChatTurnRef{}, errors.New("ACP conversation already has a turn in flight")
 	}
 	id := uuid.NewString()
@@ -730,6 +737,11 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 	if c.prepared == nil || c.prepared.id != providerTurnID {
 		c.mu.Unlock()
 		return errors.New("ACP prepared turn not found")
+	}
+	if c.backgroundTurn != "" {
+		c.prepared = nil
+		c.mu.Unlock()
+		return ports.ErrChatTurnNotSentBusy
 	}
 	turn := *c.prepared
 	c.prepared = nil
@@ -1266,18 +1278,18 @@ func (c *conversation) closeProviderWithProof(terminate, closeSession, replaceme
 func (c *conversation) AcknowledgeProviderEvent(ctx context.Context, providerEventID string) error {
 	c.mu.Lock()
 	terminal := c.terminalEventID
-	background := c.backgroundTerminalEvents[providerEventID]
+	background := c.unpromptedReceipts[providerEventID]
 	c.mu.Unlock()
-	if background && c.proc.terminate != nil {
-		if err := c.conn.NotifyExtension(ctx, persistenthost.ACPUnpromptedAckMethod, map[string]string{"eventId": providerEventID}); err != nil {
+	if background != "" && c.proc != nil && c.proc.terminate != nil {
+		if err := c.conn.NotifyExtension(ctx, persistenthost.ACPUnpromptedAckMethod, map[string]string{"eventId": background}); err != nil {
 			return err
 		}
 		c.mu.Lock()
-		delete(c.backgroundTerminalEvents, providerEventID)
+		delete(c.unpromptedReceipts, providerEventID)
 		c.mu.Unlock()
 		return nil
 	}
-	if providerEventID == "" || providerEventID != terminal || c.proc.terminate == nil {
+	if providerEventID == "" || providerEventID != terminal || c.proc == nil || c.proc.terminate == nil {
 		return nil
 	}
 	return c.conn.NotifyExtension(ctx, persistenthost.ACPPromptAckMethod, map[string]string{

@@ -24,6 +24,10 @@ import (
 // A turn is written to one of the two stores only, so merging never repeats it.
 // A session that has never been in Chat simply has no conversation.
 func (s *Service) SessionTurns(ctx context.Context, id domain.SessionID) ([]domain.HandoffTurn, error) {
+	return s.sessionTurns(ctx, id, true)
+}
+
+func (s *Service) sessionTurns(ctx context.Context, id domain.SessionID, includeHarnessTriggered bool) ([]domain.HandoffTurn, error) {
 	var turns []domain.HandoffTurn
 	conversation, err := s.store.ConversationForSession(ctx, id)
 	switch {
@@ -35,7 +39,7 @@ func (s *Service) SessionTurns(ctx context.Context, id domain.SessionID) ([]doma
 		if readErr != nil {
 			return nil, fmt.Errorf("load conversation %s turns: %w", conversation.ID, readErr)
 		}
-		turns = chatHandoffTurns(rows.Turns, rows.Messages, rows.Activities)
+		turns = chatHandoffTurns(rows.Turns, rows.Messages, rows.Activities, includeHarnessTriggered)
 	}
 	stored, err := s.store.ListTerminalTurns(ctx, id)
 	if err != nil {
@@ -54,7 +58,7 @@ func (s *Service) SessionTurns(ctx context.Context, id domain.SessionID) ([]doma
 // switch marker before it brought in. Turns before the first marker were the
 // first source's. Sequences are the conversation's, so an edit's new branch,
 // whose turns come after the marker of the agent it runs on, is credited too.
-func chatHandoffTurns(turns []domain.ConversationTurn, messages []domain.ConversationMessage, activities []domain.ConversationActivity) []domain.HandoffTurn {
+func chatHandoffTurns(turns []domain.ConversationTurn, messages []domain.ConversationMessage, activities []domain.ConversationActivity, includeHarnessTriggered bool) []domain.HandoffTurn {
 	type marker struct {
 		sequence int64
 		target   domain.AgentHarness
@@ -118,7 +122,7 @@ func chatHandoffTurns(turns []domain.ConversationTurn, messages []domain.Convers
 	}
 	complete := make([]*exchange, 0, len(exchanges))
 	for id, pair := range exchanges {
-		if pair.user == nil && pair.assistant != nil && triggeredTurns[id] {
+		if includeHarnessTriggered && pair.user == nil && pair.assistant != nil && triggeredTurns[id] {
 			pair.user = &domain.ConversationMessage{Text: "[Harness-triggered turn]", Sequence: pair.assistant.Sequence, CreatedAt: pair.assistant.CreatedAt}
 		}
 		if pair.user != nil && pair.assistant != nil && strings.TrimSpace(pair.user.Text) != "" {
@@ -148,7 +152,7 @@ func (s *Service) HandoffNote(ctx context.Context, record domain.SessionRecord, 
 // handoffNoteInput is the note's input without the changed files, which need
 // git and can run while the outgoing provider stops.
 func (s *Service) handoffNoteInput(ctx context.Context, record domain.SessionRecord, target domain.AgentHarness, switchID string) (domain.HandoffNoteInput, error) {
-	turns, err := s.SessionTurns(ctx, record.ID)
+	turns, err := s.sessionTurns(ctx, record.ID, false)
 	if err != nil {
 		return domain.HandoffNoteInput{}, err
 	}

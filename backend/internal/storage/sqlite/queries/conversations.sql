@@ -740,6 +740,18 @@ UPDATE conversation_turns
 SET state = 'running', started_at = COALESCE(started_at, ?)
 WHERE id = ?;
 
+-- Only a deferred driver that definitively refused before sending may use this.
+-- Keep the original queue position and reject an unexpected provider binding.
+-- name: RequeueUnsentConversationTurn :execrows
+UPDATE conversation_turns
+SET state = 'queued', provider_turn_id = '', started_at = NULL,
+    promotion_started_at = NULL, provider_input_text = ''
+WHERE id = sqlc.arg(id)
+  AND conversation_id = sqlc.arg(conversation_id)
+  AND provider_turn_id = sqlc.arg(provider_turn_id)
+  AND state IN ('queued', 'running')
+  AND completed_at IS NULL;
+
 -- name: SettleConversationTurn :exec
 UPDATE conversation_turns
 SET state = ?, error_message = ?, completed_at = COALESCE(completed_at, ?)
