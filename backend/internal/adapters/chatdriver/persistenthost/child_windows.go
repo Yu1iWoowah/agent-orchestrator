@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -28,7 +29,7 @@ func configureProviderProcess(cmd *exec.Cmd) {
 // before its first instruction can spawn descendants. The host is not in the
 // job. Closing it after Run's child.Wait requests termination of descendants
 // whose bridge already exited without interrupting host cleanup.
-func startProviderProcess(cmd *exec.Cmd) (func(), error) {
+func startProviderProcess(cmd *exec.Cmd) (func(bool) error, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create provider job: %w", err)
@@ -44,7 +45,7 @@ func startProviderProcess(cmd *exec.Cmd) (func(), error) {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
-	abort := func(err error) (func(), error) {
+	abort := func(err error) (func(bool) error, error) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		_ = windows.CloseHandle(job)
@@ -63,7 +64,48 @@ func startProviderProcess(cmd *exec.Cmd) (func(), error) {
 	if err := resumeProviderProcess(cmd.Process.Pid); err != nil {
 		return abort(fmt.Errorf("resume provider process: %w", err))
 	}
-	return func() { _ = windows.CloseHandle(job) }, nil
+	var once sync.Once
+	var result error
+	return func(verify bool) error {
+		once.Do(func() {
+			if verify {
+				result = confirmProviderJobStopped(job)
+			}
+			result = errors.Join(result, windows.CloseHandle(job))
+		})
+		return result
+	}, nil
+}
+
+// Layout follows JOBOBJECT_BASIC_ACCOUNTING_INFORMATION in winnt.h:
+// https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information
+type providerJobAccounting struct {
+	TotalUserTime, TotalKernelTime, PeriodUserTime, PeriodKernelTime int64
+	PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses uint32
+}
+
+func confirmProviderJobStopped(job windows.Handle) error {
+	if err := windows.TerminateJobObject(job, 0); err != nil {
+		return err
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var info providerJobAccounting
+		if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+			return err
+		}
+		if info.ActiveProcesses == 0 {
+			return nil
+		}
+		select {
+		case <-deadline.C:
+			return ErrOwnershipInconclusive
+		case <-tick.C:
+		}
+	}
 }
 
 func resumeProviderProcess(pid int) error {

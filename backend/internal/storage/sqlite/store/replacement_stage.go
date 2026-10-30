@@ -76,6 +76,9 @@ func validateReplacementTransition(ctx context.Context, q *gen.Queries, before, 
 	if before.Phase == after.Phase {
 		return nil
 	}
+	if ctx.Value(replacementRetainedRetryKey{}) == q && before.Phase == domain.ReplacementRecoveryRequired && after.Phase == before.ResumePhase {
+		return nil
+	}
 	if before.Phase.Terminal() {
 		return domain.ErrReplacementStateInvalid
 	}

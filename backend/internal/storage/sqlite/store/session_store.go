@@ -92,7 +92,7 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 	var result domain.SessionRecord
 	var beforeOp domain.OrchestratorReplacement
 	fresh := false
-	err := s.inTx(ctx, "create orchestrator session", func(q *gen.Queries) error {
+	err := s.replacementTxLocked(ctx, func(ctx context.Context, q *gen.Queries) error {
 		// The existing INSERT trigger may bind a reserved successor. Verify
 		// its input before that authority and seal its output in the same commit.
 		before, err := q.GetActiveOrchestratorReplacement(ctx, string(rec.ProjectID))
@@ -192,9 +192,9 @@ func (s *Store) SetSessionProvisionedWorkspace(
 	branch, workspacePath, workspaceRepoPath string,
 	now time.Time,
 ) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	rows, err := s.qw.SetSessionProvisionedWorkspace(ctx, gen.SetSessionProvisionedWorkspaceParams{
+	q, release := s.replacementMutationWriter(ctx)
+	defer release()
+	rows, err := q.SetSessionProvisionedWorkspace(ctx, gen.SetSessionProvisionedWorkspaceParams{
 		Branch:            branch,
 		WorkspacePath:     workspacePath,
 		WorkspaceRepoPath: workspaceRepoPath,
@@ -276,9 +276,9 @@ func (s *Store) SetSessionProvisionState(
 	provisionError string,
 	now time.Time,
 ) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	rows, err := s.qw.SetSessionProvisionState(ctx, gen.SetSessionProvisionStateParams{
+	q, release := s.replacementMutationWriter(ctx)
+	defer release()
+	rows, err := q.SetSessionProvisionState(ctx, gen.SetSessionProvisionStateParams{
 		ProvisionState: state.WithDefault(),
 		ProvisionError: provisionError,
 		UpdatedAt:      now,
@@ -302,9 +302,9 @@ func (s *Store) SetSessionProvisionSteps(
 	if err != nil {
 		return fmt.Errorf("encode provision steps for %s: %w", id, err)
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if _, err := s.qw.SetSessionProvisionSteps(ctx, gen.SetSessionProvisionStepsParams{
+	q, release := s.replacementMutationWriter(ctx)
+	defer release()
+	if _, err := q.SetSessionProvisionSteps(ctx, gen.SetSessionProvisionStepsParams{
 		ProvisionSteps: string(raw),
 		UpdatedAt:      now,
 		ID:             id,
@@ -414,6 +414,18 @@ WHERE session_id = ?
 func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if rec.ClientRequestID != "" && rec.Kind == domain.KindOrchestrator && rec.Harness == domain.HarnessClaudeCode && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat && rec.Metadata.ControllerGeneration != "" && rec.Metadata.ProviderConversationID != "" {
+		return s.inTx(ctx, "commit replacement Chat owner", func(q *gen.Queries) error {
+			row, err := q.GetSession(ctx, rec.ID)
+			if err != nil {
+				return err
+			}
+			if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
+				return err
+			}
+			return s.bindReplacementSuccessorController(ctx, q, rowToRecord(row), rec)
+		})
+	}
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
@@ -918,7 +930,7 @@ WHERE id = ?
 
 // GetSession returns the full record for a session, or ok=false if absent.
 func (s *Store) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
-	row, err := s.qr.GetSession(ctx, id)
+	row, err := s.replacementReader(ctx).GetSession(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.SessionRecord{}, false, nil
 	}

@@ -20,6 +20,7 @@ type process struct {
 	stdout    io.Reader
 	stop      func() error
 	terminate func() error
+	hibernate func() error // authenticated post-cleanup receipt, never detach-only
 	// quickStop: the provider answered session/close or never exits on stdin
 	// closing, so a persistent host signals it without the stdin grace.
 	quickStop   atomic.Bool

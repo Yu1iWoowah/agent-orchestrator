@@ -838,7 +838,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		// A target that has not answered yet still needs its standing context, though
 		// the source's turns come before it.
 		unanswered := s.branchUnanswered(ctx, cfg.SessionID, conversation.ID, activeBranch)
-		freshIfMissing = freshIfMissing || unanswered
+		// Required replay certifies continuity of this exact native thread. A
+		// reserved/unanswered branch cannot weaken it into a fresh replacement.
+		freshIfMissing = (freshIfMissing || unanswered) && cfg.HistoryMode != ports.ChatHistoryRequired
 		conv, err = resume(ctx, ports.ChatResumeConfig{
 			SessionID:              hostID,
 			ProviderConversationID: cfg.ProviderConversationID,
@@ -2303,6 +2305,26 @@ func (s *Service) PreflightChat(
 		return err
 	}
 	return capabilityAdmissionError(harness, caps, permissions)
+}
+
+// PreflightReplacementChat also requires native resume before a replacement
+// can retire its source. Probing starts no controller or provider conversation.
+func (s *Service) PreflightReplacementChat(ctx context.Context, harness domain.AgentHarness, permissions ports.PermissionMode) error {
+	driver, err := s.drivers.Driver(harness)
+	if err != nil {
+		return fmt.Errorf("%w: %s has no chat driver", ports.ErrChatUnsupported, harness)
+	}
+	caps, err := s.driverCapabilities(ctx, harness, driver)
+	if err != nil {
+		return err
+	}
+	if err := capabilityAdmissionError(harness, caps, permissions); err != nil {
+		return err
+	}
+	if !caps.Has(ports.ChatCapabilityResume) {
+		return fmt.Errorf("%w: %s cannot resume a native conversation", ports.ErrChatUnsupported, harness)
+	}
+	return nil
 }
 
 // PermissionModes lists, strictest first, the permission modes harness can run a

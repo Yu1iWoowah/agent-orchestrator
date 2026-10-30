@@ -40,11 +40,12 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 		return false
 	}
 	// Pending notices are ordinary work, even if bundled with a phase/fact.
-	if !reflect.DeepEqual(before.Notifications, after.Notifications) {
+	activation := ctx.Value(projectDocumentPublicationKey{}) == q && before.WriterActivation == nil && after.WriterActivation != nil && before.Phase == domain.ReplacementActivatingSharedWriter && after.Phase == domain.ReplacementNotifying
+	if !activation && !reflect.DeepEqual(before.Notifications, after.Notifications) {
 		return false
 	}
 	// These methods read the current row and produce a bounded, authorized
-	// receipt. Retry, pending intents and future 3C producers are not grants.
+	// receipt. Unscoped retries and pending work are never recovery grants.
 	switch {
 	case ctx.Value(replacementResetKey{}) == q:
 		return after.Phase == domain.ReplacementCancelled
@@ -56,6 +57,10 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 		return before.IntakeReleasedAt == nil && after.IntakeReleasedAt != nil && after.IntakeTransfer != nil
 	case ctx.Value(replacementIntakeDrainKey{}) == q:
 		return before.IntakeDrainRequestedAt == nil && after.IntakeDrainRequestedAt != nil
+	case ctx.Value(replacementRetirementKey{}) == q:
+		return before.SourceRetiredAt == nil && after.SourceRetiredAt != nil && before.Phase == domain.ReplacementRetiring && after.Phase == domain.ReplacementStarting
+	case ctx.Value(replacementSpawnAttemptKey{}) == q:
+		return before.SourceRetiredAt != nil && !reflect.DeepEqual(before.SpawnAttempts, after.SpawnAttempts)
 	case ctx.Value(handoffEvidencePublicationKey{}) == q:
 		return before.Transcript != nil && after.Transcript != nil && before.Transcript.Receipt == nil && after.Transcript.Receipt != nil
 	}
@@ -65,6 +70,7 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 	if !capacityPause && before.SourceStopIntentAt == nil && before.SourceStop == nil && before.SourceRetiredAt == nil {
 		return false
 	}
+	retainedPhase := before.ResumePhase
 	before.Revision, after.Revision, before.IntakeRevision, after.IntakeRevision = 0, 0, 0, 0
 	before.UpdatedAt, after.UpdatedAt, before.DeadlineAt, after.DeadlineAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 	before.Error, after.Error, before.ResumePhase, after.ResumePhase = nil, nil, "", ""
@@ -72,6 +78,25 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 	// validateReplacementTransition/Stage already require positive facts for
 	// every phase edge. All non-whitelisted fields must still match below.
 	allowed.Phase = after.Phase
+	if activation {
+		allowed.WriterActivation, allowed.Notifications = after.WriterActivation, after.Notifications
+	}
+	if ctx.Value(replacementRetainedRetryKey{}) == q && before.Phase == domain.ReplacementRecoveryRequired && after.Phase == retainedPhase {
+		allowed.SpawnRetryGeneration = after.SpawnRetryGeneration
+	}
+	if ctx.Value(replacementRuntimeProgressKey{}) == q {
+		if before.Phase == domain.ReplacementStarting && before.SpawnRequestID == "" && before.SpawnRequestHash == "" {
+			allowed.SpawnRequestID, allowed.SpawnRequestHash = after.SpawnRequestID, after.SpawnRequestHash
+			allowed.BootstrapClientID, allowed.ResumeProbeClientID = after.BootstrapClientID, after.ResumeProbeClientID
+		}
+		if before.Phase == domain.ReplacementControllerReady {
+			allowed.Bootstrap = after.Bootstrap
+		}
+		if before.Phase == domain.ReplacementHandoffSettled || before.Phase == domain.ReplacementVerifyingResume {
+			allowed.ResumeEvidence = after.ResumeEvidence
+		}
+	}
+
 	if !capacityPause {
 		if before.SourceStop == nil && after.SourceStop != nil {
 			allowed.SourceStop = after.SourceStop

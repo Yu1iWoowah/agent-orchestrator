@@ -28,6 +28,10 @@ func (s *Service) releaseIntake(ctx context.Context, op domain.OrchestratorRepla
 		if fenced {
 			return op, apierr.Conflict("ORCHESTRATOR_HANDOFF_SUCCESSOR_OWNER_CHANGED", "Activated successor writer lease changed after the queue kick", nil)
 		}
+		if len(op.Notifications) == 0 {
+			op.Phase = domain.ReplacementCompleted
+			return s.save(ctx, op)
+		}
 		return op, nil
 	}
 	if op.IntakeReleasedAt == nil {

@@ -128,7 +128,10 @@ func validateReplacementBootstrap(op domain.OrchestratorReplacement) error {
 	return nil
 }
 
-func preserveReplacementBootstrap(before, after domain.OrchestratorReplacement) error {
+func preserveReplacementBootstrap(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
+	if !reflect.DeepEqual(before.Bootstrap, after.Bootstrap) && ctx.Value(replacementRuntimeProgressKey{}) != q {
+		return domain.ErrReplacementStateInvalid
+	}
 	a, b := before.Bootstrap, after.Bootstrap
 	if a == nil {
 		if b != nil && after.Phase != domain.ReplacementControllerReady {
@@ -213,7 +216,15 @@ func validateReplacementResume(op domain.OrchestratorReplacement) error {
 	return nil
 }
 
-func preserveReplacementResume(before, after domain.OrchestratorReplacement) error {
+// Early native identity observations do not certify any lifecycle action.
+func partialReplacementResume(p *domain.ReplacementResumeEvidence) bool {
+	return p == nil || reflect.DeepEqual(*p, domain.ReplacementResumeEvidence{BeforeNativeID: p.BeforeNativeID, BeforeOwner: p.BeforeOwner, BeforeCapabilityVerifier: p.BeforeCapabilityVerifier})
+}
+
+func preserveReplacementResume(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
+	if !reflect.DeepEqual(before.ResumeEvidence, after.ResumeEvidence) && (!partialReplacementResume(before.ResumeEvidence) || !partialReplacementResume(after.ResumeEvidence)) && ctx.Value(replacementRuntimeProgressKey{}) != q {
+		return domain.ErrReplacementStateInvalid
+	}
 	a, b := before.ResumeEvidence, after.ResumeEvidence
 	if a == nil || a.StartedAt.IsZero() {
 		if b != nil && !b.StartedAt.IsZero() && after.Phase != domain.ReplacementVerifyingResume {
@@ -283,7 +294,7 @@ func preserveReplacementSpawnAttempts(ctx context.Context, q *gen.Queries, befor
 	}
 	if before.SpawnRetryGeneration != after.SpawnRetryGeneration {
 		last, exists := before.LatestSpawnAttempt()
-		if !exists || last.LaunchIntentAt != nil || before.Phase != domain.ReplacementRecoveryRequired || before.ResumePhase != domain.ReplacementStarting || after.Phase != domain.ReplacementStarting || after.SpawnRetryGeneration != before.SpawnRetryGeneration+1 {
+		if ctx.Value(replacementRetainedRetryKey{}) != q || !exists || last.LaunchIntentAt != nil || before.Phase != domain.ReplacementRecoveryRequired || before.ResumePhase != domain.ReplacementStarting || after.Phase != domain.ReplacementStarting || after.SpawnRetryGeneration != before.SpawnRetryGeneration+1 {
 			return domain.ErrReplacementStateInvalid
 		}
 	}

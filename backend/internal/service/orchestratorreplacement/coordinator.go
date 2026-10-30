@@ -142,7 +142,13 @@ func (s *Service) checkSource(ctx context.Context, op domain.OrchestratorReplace
 
 func (s *Service) save(ctx context.Context, op domain.OrchestratorReplacement) (domain.OrchestratorReplacement, error) {
 	op.UpdatedAt = s.deps.Now().UTC()
-	changed, err := s.deps.Store.SaveOrchestratorReplacement(ctx, op)
+	var changed bool
+	var err error
+	if op.SourceStop != nil {
+		changed, err = s.deps.Store.SaveReplacementRuntimeProgress(ctx, op)
+	} else {
+		changed, err = s.deps.Store.SaveOrchestratorReplacement(ctx, op)
+	}
 	if err != nil {
 		return op, checkpointCapacityError(err)
 	}
@@ -225,6 +231,9 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 	op.Phase, op.ResumePhase, op.Error = phase, resume, &failure
 	op, err = s.save(ctx, op)
 	if err != nil {
+		if errors.Is(err, domain.ErrReplacementRepairCapacity) && cause != nil {
+			return current, errors.Join(apierr.Conflict("ORCHESTRATOR_REPLACEMENT_REPAIR_CAPACITY", "Replacement checkpoint capacity is exhausted; original failure: "+cause.Error(), nil), err, cause)
+		}
 		return current, err
 	}
 	return s.releaseSourceIntake(ctx, op)
@@ -300,12 +309,28 @@ func (s *Service) advance(ctx context.Context, op domain.OrchestratorReplacement
 		return s.save(ctx, op)
 	case domain.ReplacementExportingTranscript:
 		return s.export(ctx, op)
-	case domain.ReplacementNotifying:
-		return s.releaseIntake(ctx, op)
 	case domain.ReplacementTranscriptVerified:
-		// This stage ends at verified evidence. It is not operation completion;
-		// retirement and successor dispatch are introduced with the runtime stage.
-		return op, nil
+		if err := s.preflightRetirement(ctx, op); err != nil {
+			return op, err
+		}
+		op.Phase = domain.ReplacementRetiring
+		return s.save(ctx, op)
+	case domain.ReplacementRetiring:
+		return s.retire(ctx, op)
+	case domain.ReplacementStarting:
+		return s.startSuccessor(ctx, op)
+	case domain.ReplacementControllerReady:
+		return s.bootstrap(ctx, op)
+	case domain.ReplacementHandoffSettled:
+		return s.beginResumeVerification(ctx, op)
+	case domain.ReplacementVerifyingResume:
+		return s.verifyResume(ctx, op)
+	case domain.ReplacementActivatingSharedWriter:
+		return s.activateWriter(ctx, op)
+	case domain.ReplacementNotifying:
+		// PR 4 owns worker notification delivery, while verified ordinary intake
+		// can resume without manufacturing notification acceptance/read facts.
+		return s.releaseIntake(ctx, op)
 	case domain.ReplacementFreezingSharedWrites:
 		next, err := s.deps.Documents.FreezeReplacementHandoff(ctx, op.ID, op.Revision)
 		if err != nil {

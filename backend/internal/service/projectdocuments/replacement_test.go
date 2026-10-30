@@ -20,7 +20,7 @@ func replacementIntent(t *testing.T, f fixture) domain.OrchestratorReplacement {
 	if err != nil {
 		t.Fatal(err)
 	}
-	op, _, err := f.db.CreateOrchestratorReplacement(ctx, domain.OrchestratorReplacement{SchemaVersion: 1, ID: "11111111-1111-4111-8111-111111111111", OperationKey: "22222222-2222-4222-8222-222222222222", RequestHash: strings.Repeat("a", 64), ProjectID: "demo", SourceSessionID: f.owner.ID, SourceOwner: f.owner.ControllerOwner(), SourceCapabilityVerifier: f.owner.Metadata.BrowserCapabilityVerifier, SharedDir: info.SharedDir, DocumentPath: info.DocumentPath, Phase: domain.ReplacementAccepted, CreatedAt: now, UpdatedAt: now, DeadlineAt: now.Add(time.Hour)})
+	op, _, err := f.db.CreateOrchestratorReplacement(ctx, domain.OrchestratorReplacement{SchemaVersion: 1, ID: "11111111-1111-4111-8111-111111111111", OperationKey: "22222222-2222-4222-8222-222222222222", RequestHash: strings.Repeat("a", 64), ProjectID: "demo", SourceSessionID: f.owner.ID, SourceOwner: f.owner.ControllerOwner(), SourceCapabilityVerifier: f.owner.Metadata.BrowserCapabilityVerifier, TargetAccountID: "target-account", SharedDir: info.SharedDir, DocumentPath: info.DocumentPath, Phase: domain.ReplacementAccepted, CreatedAt: now, UpdatedAt: now, DeadlineAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}

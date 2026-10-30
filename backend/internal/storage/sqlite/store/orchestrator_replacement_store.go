@@ -134,6 +134,10 @@ func (s *Store) replacementTx(ctx context.Context, fn func(context.Context, *gen
 		return err
 	}
 	defer s.writeMu.Unlock()
+	return s.replacementTxLocked(ctx, fn)
+}
+
+func (s *Store) replacementTxLocked(ctx context.Context, fn func(context.Context, *gen.Queries) error) error {
 	conn, err := s.writeDB.Conn(ctx)
 	if err != nil {
 		return err
@@ -335,10 +339,10 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 		if err := preserveReplacementSpawnAttempts(tx, q, before, op); err != nil {
 			return err
 		}
-		if err := preserveReplacementBootstrap(before, op); err != nil {
+		if err := preserveReplacementBootstrap(tx, q, before, op); err != nil {
 			return err
 		}
-		if err := preserveReplacementResume(before, op); err != nil {
+		if err := preserveReplacementResume(tx, q, before, op); err != nil {
 			return err
 		}
 		if err := preserveReplacementIntakeRelease(tx, q, before, op); err != nil {
@@ -370,6 +374,9 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 			if err := preserveReplacementEvidence(tx, q, before, op); err != nil {
 				return err
 			}
+		}
+		if before.SourceRetiredAt == nil && op.SourceRetiredAt != nil && tx.Value(replacementRetirementKey{}) != q {
+			return domain.ErrReplacementStateInvalid
 		}
 		if before.SourceRetiredAt != nil && (op.SourceRetiredAt == nil || !before.SourceRetiredAt.Equal(*op.SourceRetiredAt)) {
 			return fmt.Errorf("%w: retirement fact is immutable", domain.ErrReplacementStateInvalid)

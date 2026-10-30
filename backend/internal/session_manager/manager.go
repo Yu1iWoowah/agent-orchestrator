@@ -998,7 +998,12 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, err
 	}
 	defer releaseReplacement()
+	return m.spawn(ctx, cfg, nil)
+}
 
+// spawn runs the shared launch pipeline after public admission or a verified,
+// operation-bound successor reservation. It is not an alternate public API.
+func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement *domain.OrchestratorReplacement) (domain.SessionRecord, int, int, error) {
 	if cfg.RequestedOutput == domain.RequestedOutputArtifact && m.artifactDir("") == "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrArtifactOutputUnavailable)
 	}
@@ -1015,6 +1020,18 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	project, err := m.loadProject(ctx, cfg.ProjectID)
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+	}
+	if replacement != nil {
+		if !project.ArchivedAt.IsZero() {
+			return domain.SessionRecord{}, 0, 0, domain.ErrReplacementConfigChanged
+		}
+		fingerprint, err := domain.ReplacementProjectFingerprint(project)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, err
+		}
+		if fingerprint != replacement.ProjectFingerprint {
+			return domain.SessionRecord{}, 0, 0, domain.ErrReplacementConfigChanged
+		}
 	}
 	ctx, cancelBudget := ports.ExtendSpawnRequestBudget(ctx, postCreateBudget(0, project.Config.PostCreate))
 	defer cancelBudget()
@@ -1302,6 +1319,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
+	if replacement != nil {
+		if err := m.checkReplacementSpawnReservation(ctx, *replacement, id); err != nil {
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCreate, err)
+		}
+	}
 	systemPromptFile, err := m.prepareSystemPromptFile(id, cfg.Harness, systemPrompt)
 	if err != nil {
 		m.cleanupArtifactDir(id)
@@ -1394,6 +1416,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// from disk) so the opening prompt is complete before the files land.
 	if asyncChat {
 		started, promptBytes, systemPromptBytes, err := m.beginAsyncChatSpawn(ctx, asyncChatSpawn{
+			replacement:       replacement,
 			cfg:               cfg,
 			project:           project,
 			projectKind:       projectKind,

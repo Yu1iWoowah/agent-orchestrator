@@ -14,13 +14,15 @@ import (
 
 // Store retains operation facts independently of the request or coordinator.
 type Store interface {
-	ReleaseReplacementIntake(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
+	SaveReplacementRuntimeProgress(context.Context, domain.OrchestratorReplacement) (bool, error)
+	RetryRetainedReplacement(context.Context, string, int64, time.Time, time.Time) (domain.OrchestratorReplacement, bool, error)
+	ClearReplacementStopIntent(context.Context, string, int64, ports.ReplacementSourceObservation, time.Time) (domain.OrchestratorReplacement, bool, error)
+	ReadReplacementIntake(context.Context, string) (domain.ReplacementIntake, error)
+	ReleaseReplacementSourceIntake(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
 	RecordReplacementIntakeDrain(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
 	ReplacementWakeFenced(context.Context, domain.SessionID) (bool, error)
-	ReleaseReplacementSourceIntake(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
-	ReadReplacementIntake(context.Context, string) (domain.ReplacementIntake, error)
-	ClearReplacementStopIntent(context.Context, string, int64, ports.ReplacementSourceObservation, time.Time) (domain.OrchestratorReplacement, bool, error)
 	ResetReplacementBeforeStop(context.Context, string, int64, bool, time.Time, time.Time) (domain.OrchestratorReplacement, bool, error)
+	ReleaseReplacementIntake(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error)
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
@@ -36,8 +38,14 @@ type Store interface {
 // Runtime preflight resolves the normal launch configuration without starting a
 // controller. Provider actions are added at their verified phase boundaries.
 type Runtime interface {
-	ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (SourceObservation, error)
 	DrainReplacementIntake(context.Context, domain.OrchestratorReplacement) error
+	EnsureReplacementProbe(context.Context, domain.OrchestratorReplacement, string, bool) (PreparationDelivery, error)
+	ResumeReplacementSuccessor(context.Context, domain.OrchestratorReplacement, bool) (ports.ReplacementResumeObservation, error)
+	QuiesceReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
+	EnsureReplacementBootstrap(context.Context, domain.OrchestratorReplacement, string, bool) (PreparationDelivery, error)
+	ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (SourceObservation, error)
+	EnsureReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (domain.SessionRecord, error)
+	RetireReplacementSource(context.Context, domain.OrchestratorReplacement, ports.ReplacementRetirementProof) (domain.OrchestratorReplacement, error)
 	QuiesceReplacementSource(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
 	PreflightReplacementTarget(context.Context, domain.ProjectRecord) (domain.ReplacementTarget, error)
 	ObserveReplacementSource(context.Context, domain.OrchestratorReplacement) (SourceObservation, error)
@@ -53,6 +61,9 @@ type PreparationDelivery = ports.ReplacementPreparationDelivery
 
 // Documents locates the AO-owned shared root without writing living files.
 type Documents interface {
+	ActivateReplacementWriter(context.Context, string, int64) (domain.OrchestratorReplacement, error)
+	ReadReplacementHandoff(context.Context, string, int64) (projectdocuments.File, error)
+	PrepareReplacementRetirement(context.Context, string, int64, transcriptexport.Output) (projectdocuments.ReplacementRetirementProof, error)
 	PublishReplacementEvidence(context.Context, string, int64, transcriptexport.Output) (domain.OrchestratorReplacement, error)
 	Info(context.Context, domain.ProjectID) (projectdocuments.Info, error)
 	RecordReplacementPreparation(context.Context, string, int64, projectdocuments.ReplacementPreparationInput, func(projectdocuments.File) error) (domain.OrchestratorReplacement, error)

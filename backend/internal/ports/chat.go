@@ -1243,6 +1243,13 @@ type ChatProviderHibernator interface {
 	Hibernate() error
 }
 
+// ChatProviderReplacementHibernator positively confirms the owned provider and
+// its process tree stopped. A prior detach, missing host or unsupported receipt
+// must fail; ordinary best-effort Hibernate is insufficient for replacement.
+type ChatProviderReplacementHibernator interface {
+	HibernateForReplacement() error
+}
+
 // ChatLiveReconnector identifies attachment to the same initialized provider
 // process, as distinct from native resume in a replacement process.
 type ChatLiveReconnector interface {

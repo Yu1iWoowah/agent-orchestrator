@@ -558,6 +558,9 @@ func (m *Manager) resumeChatController(
 		MCPServers:              m.aoMCPServers(rec.Harness, env),
 		ExpectedControllerOwner: rec.ControllerOwner(),
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
+			if err := m.guardReplacementNativeResumeLaunch(launchCtx, rec, controllerGeneration); err != nil {
+				return nil, err
+			}
 			prepared, launchEnv, prepareErr := m.prepareChatControllerEnv(
 				launchCtx, rec, project.Config.Env, expected,
 			)

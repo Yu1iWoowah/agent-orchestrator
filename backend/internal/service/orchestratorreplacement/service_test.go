@@ -31,26 +31,102 @@ func (s *testStore) LoadTranscriptSourceSnapshot(context.Context, domain.Session
 }
 
 type runtime struct {
-	retirements, successors    int
-	quiescences                int
-	quiesce                    func(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
-	prepare                    func(context.Context, domain.OrchestratorReplacement, string, bool) (replacement.PreparationDelivery, error)
-	preflights                 int
-	err                        error
-	preflight                  func()
-	target                     *domain.ReplacementTarget
-	observation                replacement.SourceObservation
-	observationErr             error
-	preparations, observations int
-	prompts                    []string
+	drain  func(context.Context, domain.OrchestratorReplacement) error
+	drains int
+
+	successorObservation    replacement.SourceObservation
+	successorObservationErr error
+	successorObservations   int
+	bootstrap               func(context.Context, domain.OrchestratorReplacement, string, bool) (replacement.PreparationDelivery, error)
+	bootstraps              int
+	successorStop           func(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
+	successorStops          int
+	nativeResume            func(context.Context, domain.OrchestratorReplacement, bool) (ports.ReplacementResumeObservation, error)
+	nativeResumes           int
+	probe                   func(context.Context, domain.OrchestratorReplacement, string, bool) (replacement.PreparationDelivery, error)
+	probes                  int
+
+	successors     int
+	successor      func(context.Context, domain.OrchestratorReplacement) (domain.SessionRecord, error)
+	retirements    int
+	retire         func(context.Context, domain.OrchestratorReplacement, ports.ReplacementRetirementProof) (domain.OrchestratorReplacement, error)
+	quiescences    int
+	quiesce        func(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
+	prepare        func(context.Context, domain.OrchestratorReplacement, string, bool) (replacement.PreparationDelivery, error)
+	preflights     int
+	err            error
+	preflight      func()
+	target         *domain.ReplacementTarget
+	observation    replacement.SourceObservation
+	observationErr error
+	preparations   int
+	observations   int
+	prompts        []string
 }
 
-// The source-only fixture never supplies invented successor evidence.
-func (*runtime) ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
-	return replacement.SourceObservation{}, ports.ErrChatUnsupported
+func (r *runtime) ObserveReplacementSuccessor(context.Context, domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
+	r.successorObservations++
+	return r.successorObservation, r.successorObservationErr
 }
-func (*runtime) DrainReplacementIntake(context.Context, domain.OrchestratorReplacement) error {
-	return ports.ErrChatUnsupported
+
+func (r *runtime) EnsureReplacementBootstrap(ctx context.Context, op domain.OrchestratorReplacement, prompt string, allowNew bool) (replacement.PreparationDelivery, error) {
+	r.bootstraps++
+	if r.bootstrap != nil {
+		return r.bootstrap(ctx, op, prompt, allowNew)
+	}
+	return replacement.PreparationDelivery{}, errors.New("unexpected bootstrap")
+}
+
+func (r *runtime) QuiesceReplacementSuccessor(ctx context.Context, op domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error) {
+	r.successorStops++
+	if r.successorStop != nil {
+		return r.successorStop(ctx, op)
+	}
+	return domain.ReplacementControllerStop{}, errors.New("unexpected successor stop")
+}
+
+func (r *runtime) ResumeReplacementSuccessor(ctx context.Context, op domain.OrchestratorReplacement, allowNew bool) (ports.ReplacementResumeObservation, error) {
+	r.nativeResumes++
+	if r.nativeResume != nil {
+		return r.nativeResume(ctx, op, allowNew)
+	}
+	return ports.ReplacementResumeObservation{}, errors.New("unexpected native resume")
+}
+
+func (r *runtime) EnsureReplacementProbe(ctx context.Context, op domain.OrchestratorReplacement, prompt string, allowNew bool) (replacement.PreparationDelivery, error) {
+	r.probes++
+	if r.probe != nil {
+		return r.probe(ctx, op, prompt, allowNew)
+	}
+	return replacement.PreparationDelivery{}, errors.New("unexpected continuity probe")
+}
+
+func (d *documents) ReadReplacementHandoff(context.Context, string, int64) (projectdocuments.File, error) {
+	return projectdocuments.File{}, errors.New("unexpected bootstrap document read")
+}
+
+func (d *documents) ActivateReplacementWriter(context.Context, string, int64) (domain.OrchestratorReplacement, error) {
+	return domain.OrchestratorReplacement{}, errors.New("unexpected writer activation")
+}
+
+func (r *runtime) EnsureReplacementSuccessor(ctx context.Context, op domain.OrchestratorReplacement) (domain.SessionRecord, error) {
+	r.successors++
+	if r.successor != nil {
+		return r.successor(ctx, op)
+	}
+	return domain.SessionRecord{}, errors.New("unexpected successor start")
+}
+
+func (r *runtime) RetireReplacementSource(ctx context.Context, op domain.OrchestratorReplacement, proof ports.ReplacementRetirementProof) (domain.OrchestratorReplacement, error) {
+	r.retirements++
+	if r.retire != nil {
+		return r.retire(ctx, op, proof)
+	}
+	return domain.OrchestratorReplacement{}, errors.New("unexpected source retirement")
+}
+
+func (d *documents) PrepareReplacementRetirement(context.Context, string, int64, transcriptexport.Output) (projectdocuments.ReplacementRetirementProof, error) {
+	return projectdocuments.ReplacementRetirementProof{}, errors.New("unexpected retirement evidence preparation")
 }
 
 func (r *runtime) ObserveReplacementSource(context.Context, domain.OrchestratorReplacement) (replacement.SourceObservation, error) {
@@ -260,4 +336,12 @@ func TestReplacementValidationHasNoPersistentOrProviderEffects(t *testing.T) {
 	if err != nil || len(ops) != 0 || f.runtime.preflights != 0 || f.docs.calls != 0 || f.store.snapshotReads != 0 {
 		t.Fatal("invalid request reached durable/provider side effect")
 	}
+}
+
+func (r *runtime) DrainReplacementIntake(ctx context.Context, op domain.OrchestratorReplacement) error {
+	r.drains++
+	if r.drain != nil {
+		return r.drain(ctx, op)
+	}
+	return nil
 }

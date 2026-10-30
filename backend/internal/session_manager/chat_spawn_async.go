@@ -14,6 +14,7 @@ import (
 )
 
 type asyncChatSpawn struct {
+	replacement       *domain.OrchestratorReplacement
 	cfg               ports.SpawnConfig
 	project           domain.ProjectRecord
 	projectKind       domain.ProjectKind
@@ -39,7 +40,7 @@ type asyncChatSpawnRun struct {
 func (m *Manager) beginAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) (domain.SessionRecord, int, int, error) {
 	id := in.record.ID
 	rollback := func() {
-		if in.retry {
+		if in.retry || in.replacement != nil {
 			return // the session and its existing queue already belong to the user
 		}
 		if in.preparation == nil {
@@ -50,7 +51,19 @@ func (m *Manager) beginAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) (d
 		m.discardClaimedTaskPreparation(cleanupCtx, in.preparation)
 		cancel()
 	}
-	rec, err := m.setProvisionState(ctx, id, domain.SessionProvisionProvisioning, "")
+	var rec domain.SessionRecord
+	var err error
+	if in.replacement != nil {
+		store, ok := m.store.(replacementSpawnAttemptStore)
+		if !ok {
+			return domain.SessionRecord{}, 0, 0, domain.ErrReplacementStateInvalid
+		}
+		var op domain.OrchestratorReplacement
+		op, rec, err = store.BeginReplacementSpawnAttempt(ctx, in.replacement.ID, id, m.newLaunchID(), m.clock())
+		in.replacement = &op
+	} else {
+		rec, err = m.setProvisionState(ctx, id, domain.SessionProvisionProvisioning, "")
+	}
 	if err != nil {
 		rollback()
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCreate, err)
@@ -117,6 +130,12 @@ const asyncChatSpawnBudget = 10 * time.Minute
 // completeAsyncChatSpawn keeps the visible session and queue on failure.
 func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) {
 	id := in.record.ID
+	if in.replacement != nil {
+		if err := m.checkReplacementSpawnReservation(ctx, *in.replacement, id); err != nil {
+			m.failAsyncChatSpawnForAttempt(ctx, in, err)
+			return
+		}
+	}
 	totalStarted := time.Now()
 	// The naming call is its own provider process. It starts once this
 	// session's provider is up and has its prompt, so it does not compete with
@@ -147,7 +166,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 		}
 	}
 	plan := provisionPlan(in, reusePublishedWorkspace)
-	progress := m.startProvisionProgress(ctx, id, plan)
+	progress := m.startProvisionProgress(ctx, id, plan, in.replacement)
 	if reusePublishedWorkspace {
 		ws = workspaceInfo(in.record)
 		if in.projectKind == domain.ProjectKindWorkspace {
@@ -162,7 +181,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 		ws, workspaceProject, err = m.awaitTaskPreparation(ctx, in.preparation)
 		if err != nil && ctx.Err() != nil {
 			in.preparation.cancel()
-			m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrWorkspaceCreate, err))
+			m.failAsyncChatSpawnForAttempt(ctx, in, wrapSpawnStage(id, ErrWorkspaceCreate, err))
 			// The claimed preparation has no timer or cache entry. Keep owning its
 			// cleanup after the visible session fails, even if Create returns late.
 			<-in.preparation.done
@@ -189,14 +208,18 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	}
 	if err != nil {
 		if ws.Path != "" {
-			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+			if in.replacement == nil {
+				m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+			}
 		}
-		m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrWorkspaceCreate, err))
+		m.failAsyncChatSpawnForAttempt(ctx, in, wrapSpawnStage(id, ErrWorkspaceCreate, err))
 		return
 	}
 	if err := ctx.Err(); err != nil {
-		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
-		m.failAsyncChatSpawn(ctx, id, err)
+		if in.replacement == nil {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "workspace_create", stageStarted)
@@ -204,14 +227,18 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	stageStarted = time.Now()
 	if !reusePublishedWorkspace || slices.Contains(plan, domain.SessionProvisionStepSetup) {
 		if err := m.provisionWorkspace(ctx, in.project, ws.Path); err != nil {
-			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
-			m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrWorkspaceProvision, err))
+			if in.replacement == nil {
+				m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+			}
+			m.failAsyncChatSpawnForAttempt(ctx, in, wrapSpawnStage(id, ErrWorkspaceProvision, err))
 			return
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
-		m.failAsyncChatSpawn(ctx, id, err)
+		if in.replacement == nil {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "workspace_provision", stageStarted)
@@ -223,17 +250,25 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	// that is perfectly fine. It also means an interrupted start leaves a row
 	// that knows which worktree to clean up.
 	stageStarted = time.Now()
-	updated, err := m.store.SetSessionProvisionedWorkspace(
-		ctx, id, ws.Branch, ws.Path, ws.RepoPath, m.clock())
+	var updated bool
+	err = m.publishReplacementSpawn(ctx, in.replacement, id, func(reserved context.Context) error {
+		var err error
+		updated, err = m.store.SetSessionProvisionedWorkspace(reserved, id, ws.Branch, ws.Path, ws.RepoPath, m.clock())
+		return err
+	})
 	if err != nil {
-		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
-		m.failAsyncChatSpawn(ctx, id, err)
+		if in.replacement == nil {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	if !updated || ctx.Err() != nil {
-		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		if in.replacement == nil {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
 		if err := ctx.Err(); err != nil {
-			m.failAsyncChatSpawn(ctx, id, err)
+			m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		}
 		return
 	}
@@ -243,23 +278,40 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	// This also projects opening attachments saved before the early response.
 	stageStarted = time.Now()
 	if err := m.restoreAttachments(ctx, id, ws); err != nil {
-		m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrSpawnAttachments, err))
+		m.failAsyncChatSpawnForAttempt(ctx, in, wrapSpawnStage(id, ErrSpawnAttachments, err))
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "attachment_restore", stageStarted)
 
 	record, err := m.getRecord(ctx, id)
 	if err != nil {
-		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
-		m.failAsyncChatSpawn(ctx, id, err)
+		if in.replacement == nil {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	if err := ctx.Err(); err != nil {
-		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
-		m.failAsyncChatSpawn(ctx, id, err)
+		if in.replacement == nil {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	stageStarted = time.Now()
+	if in.replacement != nil {
+		if err := m.checkReplacementSpawnReservation(ctx, *in.replacement, id); err != nil {
+			m.failAsyncChatSpawnForAttempt(ctx, in, err)
+			return
+		}
+	}
+	if in.replacement != nil {
+		if err := m.markReplacementSpawnLaunch(ctx, *in.replacement, id); err != nil {
+			m.failAsyncChatSpawnForAttempt(ctx, in, err)
+			return
+		}
+	}
+
 	if _, err := m.launchChatController(ctx, chatSpawn{
 		cfg:              in.cfg,
 		project:          in.project,
@@ -274,7 +326,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 		// it together with anything typed while this was starting.
 		promptQueued: true,
 	}); err != nil {
-		m.failAsyncChatSpawn(ctx, id, err)
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	// The agent owns the checkout now; nothing below touches the workspace.
@@ -282,14 +334,17 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	m.logAsyncChatSpawnStage(id, "controller_start", stageStarted)
 	stageStarted = time.Now()
 	if err := m.chat.DrainChatQueue(ctx, id); err != nil {
-		m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err))
+		m.failAsyncChatSpawnForAttempt(ctx, in, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err))
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "queue_drain", stageStarted)
 	taskName, cancelNaming = m.startTaskNaming(in.cfg, in.record, in.project.Config)
 	stageStarted = time.Now()
-	if _, err := m.setProvisionState(ctx, id, domain.SessionProvisionReady, ""); err != nil {
-		m.failAsyncChatSpawn(ctx, id, err)
+	if err := m.publishReplacementSpawn(ctx, in.replacement, id, func(reserved context.Context) error {
+		_, err := m.setProvisionState(reserved, id, domain.SessionProvisionReady, "")
+		return err
+	}); err != nil {
+		m.failAsyncChatSpawnForAttempt(ctx, in, err)
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "mark_ready", stageStarted)
@@ -305,16 +360,20 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 // between them. Updates are best effort; a missed completion can replay a stage
 // on retry.
 type provisionProgress struct {
-	m     *Manager
-	id    domain.SessionID
-	steps []domain.SessionProvisionStep
+	replacement *domain.OrchestratorReplacement
+	m           *Manager
+	id          domain.SessionID
+	steps       []domain.SessionProvisionStep
 }
 
 // startProvisionProgress plans the stages this start will run and marks the
 // first one running. A failed start leaves its stage running; readers treat a
 // running stage on a failed session as the stage that failed.
-func (m *Manager) startProvisionProgress(ctx context.Context, id domain.SessionID, plan []domain.SessionProvisionStepID) *provisionProgress {
+func (m *Manager) startProvisionProgress(ctx context.Context, id domain.SessionID, plan []domain.SessionProvisionStepID, replacement ...*domain.OrchestratorReplacement) *provisionProgress {
 	p := &provisionProgress{m: m, id: id, steps: make([]domain.SessionProvisionStep, len(plan))}
+	if len(replacement) > 0 {
+		p.replacement = replacement[0]
+	}
 	for i, step := range plan {
 		p.steps[i] = domain.SessionProvisionStep{ID: step, Status: domain.SessionProvisionStepPending}
 	}
@@ -350,7 +409,9 @@ func (p *provisionProgress) startNext() {
 }
 
 func (p *provisionProgress) publish(ctx context.Context) {
-	if err := p.m.store.SetSessionProvisionSteps(ctx, p.id, p.steps, p.m.clock()); err != nil {
+	if err := p.m.publishReplacementSpawn(ctx, p.replacement, p.id, func(reserved context.Context) error {
+		return p.m.store.SetSessionProvisionSteps(reserved, p.id, p.steps, p.m.clock())
+	}); err != nil {
 		p.m.logger.Warn("spawn: publish start-up progress", "sessionID", p.id, "error", err)
 	}
 }
