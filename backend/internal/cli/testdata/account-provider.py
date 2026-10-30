@@ -20,9 +20,14 @@ if '--help' in args:print('Fixture provider');sys.exit(0)
 if 'generate-json-schema' in args:
  out=pathlib.Path(args[args.index('--out')+1]);out.mkdir(parents=True,exist_ok=True);(out/'fixture.json').write_text(json.dumps({'enum':['account/read','account/rateLimits/read','account/updated','model/list']}));sys.exit(0)
 if 'login' in args:
- audit('login');print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True)
+ audit('login');print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste authorization code: ',end='',flush=True)
  while not(root/'approve-login').exists():time.sleep(.02)
- home.mkdir(mode=0o700,parents=True,exist_ok=True);(home/'.fixture-identity').write_text((root/'next-identity').read_text());(home/'.fixture-identity').chmod(0o600);credential.write_text(json.dumps({'fakeCredential':'ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','fixtureEmail':(root/'next-identity').read_text().strip()}));credential.chmod(0o600);print('Fake sign-in completed.',flush=True);sys.exit(0)
+ home.mkdir(mode=0o700,parents=True,exist_ok=True);(home/'.fixture-identity').write_text((root/'next-identity').read_text());(home/'.fixture-identity').chmod(0o600);credential.write_text(json.dumps({'fakeCredential':'ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','fixtureEmail':(root/'next-identity').read_text().strip()}));credential.chmod(0o600)
+ if(root/'hold-login').exists():
+  (root/'credential-written').write_text(str(os.getpid()))
+  while(root/'hold-login').exists():time.sleep(.02)
+ (root/'login-finalized').write_text('complete')
+ print('Fake sign-in completed.',end='',flush=True);sys.exit(0)
 if 'logout' in args:audit('logout');credential.unlink(missing_ok=True);sys.exit(0)
 if provider=='claude' and 'status' in args:audit('identity');output({'loggedIn':credential.exists(),'authMethod':'claude.ai','email':email,'subscriptionType':'max'});sys.exit(0)
 if provider=='claude' and '--output-format' in args:

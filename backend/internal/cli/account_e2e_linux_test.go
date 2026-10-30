@@ -183,7 +183,7 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 		}
 	})
 	start()
-	api := func(method, path string, body any) map[string]any {
+	api := func(method, path string, body any, expectedStatus ...int) map[string]any {
 		var input io.Reader
 		if body != nil {
 			b, _ := json.Marshal(body)
@@ -197,7 +197,7 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 		}
 		defer r.Body.Close()
 		data, _ := io.ReadAll(r.Body)
-		if r.StatusCode >= 300 {
+		if (len(expectedStatus) > 0 && r.StatusCode != expectedStatus[0]) || (len(expectedStatus) == 0 && r.StatusCode >= 300) {
 			t.Fatalf("API %s %s: %d %s", method, path, r.StatusCode, data)
 		}
 		if bytes.Contains(data, []byte("TOKEN_CANARY")) {
@@ -245,13 +245,24 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 	if err := os.Chmod(legacyRoot, 0775); err != nil {
 		t.Fatal(err)
 	}
-	conflict, code := runCode("account", "add", "--provider", "codex", "--no-attach")
-	if code != 1 || !strings.Contains(conflict, "AGENT_ACCOUNT_STORAGE_UNAVAILABLE") {
-		t.Fatalf("unsafe legacy root expected503: %d %s", code, conflict)
+	var detached struct {
+		OperationID string `json:"operationId"`
 	}
-	match := regexp.MustCompile(`Login operation ([a-f0-9-]+)`).FindStringSubmatch(conflict)
-	if len(match) != 2 {
-		t.Fatal("missing reconnect reference")
+	if err := json.Unmarshal([]byte(run("account", "add", "--provider", "codex", "--detach", "--json")), &detached); err != nil || detached.OperationID == "" {
+		t.Fatal("missing detached reconnect reference", err)
+	}
+	finalizedDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(finalizedDeadline) {
+		if _, err := os.Stat(filepath.Join(root, "login-finalized")); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// An explicit check preserves the unsafe-root 503 assertion; the CLI now
+	// correctly waits/retries temporary failures instead of exiting on 503.
+	failure := api("POST", "/agents/accounts/login/"+detached.OperationID+"/verify", struct{}{}, http.StatusServiceUnavailable)
+	if failure["code"] != "AGENT_ACCOUNT_STORAGE_UNAVAILABLE" {
+		t.Fatalf("unsafe legacy root lost canonical error: %v", failure)
 	}
 	if err := os.Chmod(legacyRoot, 0700); err != nil {
 		t.Fatal(err)
@@ -259,7 +270,7 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 	legacySnapshot := api("GET", "/agents/codex/accounts", nil)
 	snapshotJSON, _ := json.Marshal(legacySnapshot)
 	t.Logf("safe legacy metadata: %s", snapshotJSON)
-	conflict, code = runCode("account", "login", "--operation", match[1], "--no-attach")
+	conflict, code := runCode("account", "login", "--operation", detached.OperationID, "--no-attach")
 	if code != 1 || !strings.Contains(conflict, "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT") {
 		t.Fatalf("safe legacy root expected canonical conflict: %d %s", code, conflict)
 	}
@@ -270,6 +281,8 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 	// Real CLI terminal + Ctrl+C: no fake native token reaches the terminal,
 	// and cancellation must complete before the process reports cleanup.
 	_ = os.Remove(filepath.Join(root, "approve-login"))
+	_ = os.WriteFile(filepath.Join(root, "hold-login"), nil, 0600)
+	_ = os.WriteFile(filepath.Join(root, "next-identity"), []byte("held@example.test"), 0600)
 	interactive := exec.Command(aoBin, "account", "add", "--provider", "codex")
 	interactive.Env = environ
 	terminal, err := pty.Start(interactive)
@@ -300,7 +313,7 @@ waiting:
 				t.Fatal("interactive login exited before prompt")
 			}
 			transcriptOutput += chunk
-			if strings.Contains(transcriptOutput, "Fake subscription sign-in waiting.") {
+			if strings.Contains(transcriptOutput, "Paste authorization code: ") {
 				break waiting
 			}
 		case <-deadlinePrompt.C:
@@ -313,6 +326,39 @@ waiting:
 	_ = deadlinePrompt.Stop()
 	if strings.Contains(transcriptOutput, "TOKEN_CANARY") {
 		t.Fatal("native login token printed")
+	}
+	_, _ = terminal.Write([]byte("ABCD-1234"))
+	echoDeadline := time.NewTimer(10 * time.Second)
+	for !strings.Contains(transcriptOutput, "ABCD-1234") {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				t.Fatal("login exited before input echo")
+			}
+			transcriptOutput += chunk
+		case <-echoDeadline.C:
+			t.Fatal("input echo without newline was delayed")
+		}
+	}
+	echoDeadline.Stop()
+	_ = os.WriteFile(filepath.Join(root, "approve-login"), nil, 0600)
+	credentialDeadline := time.Now().Add(10 * time.Second)
+	var nativePID int
+	for time.Now().Before(credentialDeadline) {
+		if data, err := os.ReadFile(filepath.Join(root, "credential-written")); err == nil {
+			nativePID, _ = strconv.Atoi(string(data))
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if nativePID == 0 {
+		t.Fatal("native provider did not reach credential-write checkpoint")
+	}
+	// The old 500ms verify loop would accept and terminate this writer.
+	time.Sleep(750 * time.Millisecond)
+	pendingID := regexp.MustCompile(`Login operation ([a-f0-9-]+)`).FindStringSubmatch(transcriptOutput)
+	if len(pendingID) != 2 || api("GET", "/agents/accounts/operations/"+pendingID[1], nil)["phase"] != "pending" || syscall.Kill(nativePID, 0) != nil {
+		t.Fatal("credentials accepted or native terminal closed before native exit")
 	}
 	_, _ = terminal.Write([]byte{3})
 	interactiveDone := make(chan error, 1)
@@ -349,6 +395,8 @@ waiting:
 	if _, err := os.Lstat(filepath.Join(e.dataDir, "agent-accounts", "codex", cancelAccountID)); !os.IsNotExist(err) {
 		t.Fatal("cancelled login left a managed profile")
 	}
+	_ = os.Remove(filepath.Join(root, "hold-login"))
+	_ = os.Remove(filepath.Join(root, "credential-written"))
 	a := add("codex", "A@example.test")
 	d := add("codex", "D@example.test")
 	b := add("claude", "B@example.test")
@@ -464,10 +512,29 @@ waiting:
 	run("session", "exit-agent", id)
 	stop()
 	start()
-	run("session", "resume-agent", id)
 	deadline = time.Now().Add(20 * time.Second)
-	for len(conversations("thread/resume", "D@example.test")) < 2 && time.Now().Before(deadline) {
+	// /readyz only publishes the listener. Wait for startup recovery to
+	// release this session's operation fence before the explicit resume.
+	for {
+		session := api("GET", "/sessions/"+id, nil)["session"].(map[string]any)
+		if session["statusReadiness"] == "ready" {
+			break
+		}
+		if session["statusReadiness"] != "checking" || !time.Now().Before(deadline) {
+			t.Fatalf("startup recovery did not settle: %v", session["statusReadiness"])
+		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	run("session", "resume-agent", id)
+	for time.Now().Before(deadline) {
+		snapshot := api("GET", "/sessions/"+id+"/conversation", nil)
+		if len(conversations("thread/resume", "D@example.test")) >= 2 && snapshot["controller"] == "ready" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if api("GET", "/sessions/"+id+"/conversation", nil)["controller"] != "ready" {
+		t.Fatal("resumed controller did not become ready")
 	}
 	resumed := conversations("thread/resume", "D@example.test")
 	if len(resumed) != 2 || resumed[1] != nativeID {

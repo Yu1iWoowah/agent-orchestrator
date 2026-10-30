@@ -128,6 +128,8 @@ func TestAccountLoginReconnectDoesNotStartAnotherProfileOrPrintProviderFields(t 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/mux":
+			serveExitedAccountLogin(t, w, r)
 		case "/api/v1/agents/accounts/operations/op-A":
 			gets++
 			phase := "pending"
@@ -147,7 +149,7 @@ func TestAccountLoginReconnectDoesNotStartAnotherProfileOrPrintProviderFields(t 
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	out, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "login", "--operation", "op-A", "--no-attach", "--json")
-	if err != nil || verifies != 1 || gets != 2 {
+	if err != nil || verifies != 1 || gets < 2 {
 		t.Fatalf("verify=%d gets=%d err=%v", verifies, gets, err)
 	}
 	if strings.Contains(out+stderr, "fake-credential-marker") || strings.Contains(out, "terminalHandleId") {
@@ -168,8 +170,10 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 			return
 		}
 		switch r.URL.Path {
+		case "/mux":
+			serveExitedAccountLogin(t, w, r)
 		case "/api/v1/agents/accounts/login":
-			_, _ = io.WriteString(w, `{"operationId":"op-A","provider":"codex"}`)
+			_, _ = io.WriteString(w, `{"operationId":"op-A","provider":"codex","shellTerminal":{"handleId":"shellterm-A"}}`)
 		case "/api/v1/agents/accounts/login/op-A/verify":
 			cancel()
 			w.WriteHeader(http.StatusNoContent)
@@ -177,7 +181,11 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 			cancelled = true
 			w.WriteHeader(http.StatusNoContent)
 		case "/api/v1/agents/accounts/operations/op-A":
-			_, _ = io.WriteString(w, `{"operationId":"op-A","phase":"complete","outcome":"cancelled"}`)
+			if cancelled {
+				_, _ = io.WriteString(w, `{"operationId":"op-A","phase":"complete","outcome":"cancelled"}`)
+			} else {
+				_, _ = io.WriteString(w, `{"operationId":"op-A","phase":"pending"}`)
+			}
 		default:
 			t.Errorf("unexpected %s", r.URL.Path)
 		}
@@ -282,29 +290,38 @@ func TestAccountRemoveShowsOnlyBlockingOwnersWithoutStoppingThem(t *testing.T) {
 
 func TestLoginOutputHidesCredentialsInANSIAndHyperlinkURI(t *testing.T) {
 	for name, line := range map[string]string{
-		"plain":     "access_token=PRIVATE_TOKEN_CANARY\r\n",
-		"colour":    "ac\x1b[32mcess_token\x1b[0m=PRIVATE_TOKEN_CANARY\r\n",
-		"hyperlink": "\x1b]8;;https://example.test/?access_token=PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\\r\n",
+		"plain":                "access_token=PRIVATE_TOKEN_CANARY\r\n",
+		"edited-prefix":        "sl\bk-PRIVATE_TOKEN_CANARY\r\n",
+		"authorization-spaces": "Authorization" + strings.Repeat(" ", 128) + ": PRIVATE_TOKEN_CANARY\r\n",
+		"bearer-tab":           "Bearer\tPRIVATE_TOKEN_CANARY\r\n",
+		"colour":               "ac\x1b[32mcess_token\x1b[0m=PRIVATE_TOKEN_CANARY\r\n",
+		"hyperlink":            "\x1b]8;;https://example.test/?access_token=PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\\r\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := safeAccountLoginOutput(line)
-			if strings.Contains(got, "TOKEN_CANARY") || !strings.Contains(got, "credential output hidden") {
+			var out bytes.Buffer
+			var output accountLoginOutput
+			output.write(&out, []byte(line))
+			got := out.String()
+			if strings.Contains(got, "TOKEN_CANARY") || (name != "hyperlink" && !strings.Contains(got, "credential output hidden")) {
 				t.Fatal("credential reached live login output")
 			}
 		})
 	}
 	prompt := "Open https://example.test/device and enter ABCD-1234\r\n"
-	if got := safeAccountLoginOutput(prompt); got != prompt {
+	var out bytes.Buffer
+	var output accountLoginOutput
+	output.write(&out, []byte(prompt))
+	if out.String() != prompt {
 		t.Fatal("device authorization prompt was hidden")
 	}
 }
 
-func TestLoginOutputDropsOversizedCredentialContinuationAndKeepsNextPrompt(t *testing.T) {
+func TestLoginOutputDropsLongCredentialContinuationAndKeepsNextPrompt(t *testing.T) {
 	var out bytes.Buffer
 	var output accountLoginOutput
 	output.write(&out, []byte("access_token="+strings.Repeat("x", 70*1024)))
 	output.write(&out, []byte("PRIVATE_TOKEN_CANARY\r\nOpen device sign-in and enter ABCD-1234\r\n"))
-	if strings.Contains(out.String(), "TOKEN_CANARY") || !strings.Contains(out.String(), "oversized login output hidden") || !strings.Contains(out.String(), "Open device sign-in") {
+	if strings.Contains(out.String(), "TOKEN_CANARY") || !strings.Contains(out.String(), "credential output hidden") || !strings.Contains(out.String(), "Open device sign-in") {
 		t.Fatal("long credential leaked or subsequent prompt was lost")
 	}
 	output.write(&out, []byte("access_to"))

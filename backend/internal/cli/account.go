@@ -188,6 +188,9 @@ func (c *commandContext) waitAccountTransition(ctx context.Context, session stri
 	defer cancel()
 	id := out.Transition.ID
 	for {
+		if out.Transition.Phase != "completed" && out.Transition.ErrorCode == "TARGET_STOP_UNCONFIRMED" {
+			return fmt.Errorf("transition %s: TARGET_STOP_UNCONFIRMED; open the desktop and use Stop and retry", id)
+		}
 		switch out.Transition.Phase {
 		case "completed":
 			return nil
