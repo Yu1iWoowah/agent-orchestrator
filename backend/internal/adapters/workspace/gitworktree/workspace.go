@@ -378,7 +378,33 @@ func (w *Workspace) claimWorktreePath(path string) (os.FileInfo, error) {
 	if err := os.Mkdir(path, 0o750); err != nil {
 		return nil, fmt.Errorf("gitworktree: cannot claim existing or unavailable path %q: %w", path, err)
 	}
-	return os.Lstat(path)
+	return captureWorktreeDirectoryIdentity(path)
+}
+
+// Lstat may defer loading a Windows file ID until SameFile is called. Capture
+// from an open handle now so a later rename cannot make the identity depend on
+// the old path or accidentally identify a replacement at that path.
+func captureWorktreeDirectoryIdentity(path string) (os.FileInfo, error) {
+	entry, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("gitworktree: directory claim changed at %q: %w", path, ports.ErrWorkspaceDirty)
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	identity, statErr := directory.Stat()
+	closeErr := directory.Close()
+	if err := errors.Join(statErr, closeErr); err != nil {
+		return nil, err
+	}
+	if !identity.IsDir() || !os.SameFile(entry, identity) {
+		return nil, fmt.Errorf("gitworktree: directory claim changed at %q: %w", path, ports.ErrWorkspaceDirty)
+	}
+	return identity, nil
 }
 
 // A workspace child may reuse an empty directory created by this call's root
@@ -410,7 +436,7 @@ func (w *Workspace) claimWorkspaceProjectPath(path, root string, rootClaim os.Fi
 				if err := checkWorktreePathClaim(path, item); err != nil {
 					return nil, err
 				}
-				return item, nil
+				return captureWorktreeDirectoryIdentity(path)
 			}
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err

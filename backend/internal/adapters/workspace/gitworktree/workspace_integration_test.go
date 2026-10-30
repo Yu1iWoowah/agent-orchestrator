@@ -1920,8 +1920,13 @@ func TestPreparedAddLostReceiptPreservesOwnerReplacedDuringDestroyProbe(t *testi
 			if err := os.WriteFile(filepath.Join(replacement, "ignored-owner-data"), []byte("new owner must survive"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			replacementIdentity, err := os.Lstat(replacement)
+			replacementHandle, err := os.Open(replacement)
 			if err != nil {
+				t.Fatal(err)
+			}
+			replacementIdentity, statErr := replacementHandle.Stat()
+			closeErr := replacementHandle.Close()
+			if err := errors.Join(statErr, closeErr); err != nil {
 				t.Fatal(err)
 			}
 			if status := gitOutput(t, git, replacement, "status", "--porcelain"); status != "" {
@@ -1989,6 +1994,42 @@ func TestPreparedAddLostReceiptPreservesOwnerReplacedDuringDestroyProbe(t *testi
 				t.Errorf("replacement returned as owned cleanup handle: %+v", claimed)
 			}
 
+		})
+	}
+}
+
+func TestWorktreeCreationIdentityCapturedBeforePathChanges(t *testing.T) {
+	for _, change := range []string{"rename", "replacement"} {
+		t.Run(change, func(t *testing.T) {
+			ws, err := New(Options{ManagedRoot: filepath.Join(t.TempDir(), "managed"), RepoResolver: StaticRepoResolver{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(ws.managedRoot, "claimed")
+			claim, err := ws.claimWorktreePath(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved := path + ".moved"
+			if err := os.Rename(path, moved); err != nil {
+				t.Fatal(err)
+			}
+			if change == "replacement" {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := checkWorktreePathClaim(path, claim); !errors.Is(err, ports.ErrWorkspaceDirty) {
+					t.Fatalf("replacement adopted at first comparison: %v", err)
+				}
+				return
+			}
+			after, err := os.Lstat(moved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(claim, after) {
+				t.Fatal("creation identity was not captured before rename")
+			}
 		})
 	}
 }

@@ -190,3 +190,8 @@ mismatch preserves the data and clears the owned cleanup handle. Private holders
 with unverified contents are retained outside the automatic `.discarded` sweep;
 normal dirty-worktree refusals still restore the original directory. Claimed
 rollback never falls back to Git's unqualified path-based removal.
+
+Creation claims capture directory identity from an open handle before Git runs.
+This also keeps the snapshot stable on Windows, where `Lstat` may defer loading
+the file ID until a later `SameFile` call. The handle is closed before rename;
+identity comparisons still reject replacements and preserve unverified data.
