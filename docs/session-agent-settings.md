@@ -96,7 +96,12 @@ replacement retirement or project teardown. Retention gates file mutation, not
 termination: these paths stop the known runtime and record termination, then skip
 stash, scripts and workspace removal and log the retention reason. They recheck
 under the project workspace gate immediately before any removal. Preparation /
-rollback and multi-repo removal use the same ownership scan.
+rollback and multi-repo removal use the same ownership scan. Cancel and expiry
+hold the project workspace gate through preparation removal, branch deletion and
+cleanup bookkeeping. They wait for an in-flight Restore, then recheck ownership;
+a newly-live session keeps its files and the preparation's cleanup handle.
+Startup cleanup shares the same gate; callers already holding it use the explicit
+under-gate helper.
 
 Spawn and restore resolve the adapter's canonical path without materializing it.
 An abandoned-writer veto on that path returns

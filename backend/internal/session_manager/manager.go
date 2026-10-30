@@ -4492,7 +4492,7 @@ func (m *Manager) ReconcileBackground(ctx context.Context) (resultErr error) {
 		rec, ok, err := m.store.GetSession(ctx, interrupted.ID)
 		if err == nil && ok && !interrupted.CreatedAt.IsZero() && rec.CreatedAt.Equal(interrupted.CreatedAt) &&
 			rec.IsTaskPreparation && !rec.IsTerminated {
-			err = m.cleanupTaskPreparationRecord(ctx, rec)
+			err = m.cleanupTaskPreparationRecordUnderGate(ctx, rec)
 		}
 		releaseWorkspaceGate()
 		if err != nil {
