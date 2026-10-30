@@ -75,12 +75,14 @@ type ReplacementWorkerFYIPayload struct {
 	SHA256  string `json:"sha256"`
 }
 
+// NewWorkerFYIPayload freezes the current version for a new activation.
 func (op OrchestratorReplacement) NewWorkerFYIPayload() *ReplacementWorkerFYIPayload {
 	text := op.workerFYIV0()
 	sum := sha256.Sum256([]byte(text))
 	return &ReplacementWorkerFYIPayload{Version: 1, Text: text, SHA256: hex.EncodeToString(sum[:])}
 }
 
+// ValidFor checks the shipped version, operation binding and content hash.
 func (p ReplacementWorkerFYIPayload) ValidFor(op OrchestratorReplacement) bool {
 	// New template versions must add their own renderer, never edit v0.
 	if p.Version != 1 || p.Text != op.workerFYIV0() {

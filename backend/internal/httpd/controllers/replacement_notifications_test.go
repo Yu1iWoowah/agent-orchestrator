@@ -39,9 +39,10 @@ func TestReplacementHTTPKeepsCommittedResultWhenNoticeReceiptsUnavailable(t *tes
 				(&controllers.OrchestratorReplacementController{Svc: svc}).Register(router)
 				method, path, body := http.MethodPost, "/orchestrator/replacements/"+op.ID+"/"+action, `{}`
 				want := http.StatusAccepted
-				if action == "get" {
+				switch action {
+				case "get":
 					method, path, want = http.MethodGet, "/orchestrator/replacements/"+op.ID, http.StatusOK
-				} else if action == "accept" {
+				case "accept":
 					path, body = "/projects/demo/orchestrator/replacements", `{"sourceSessionId":"source","operationKey":"`+op.OperationKey+`"}`
 				}
 				w := httptest.NewRecorder()

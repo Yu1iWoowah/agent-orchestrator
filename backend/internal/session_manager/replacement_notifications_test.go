@@ -158,11 +158,12 @@ func TestReplacementWorkerFYIRefusesUnverifiedNativeSurface(t *testing.T) {
 					}
 					rt.outputForCall = func(int) string { return frame }
 				}
-				if stage == "before reservation" {
+				switch stage {
+				case "before reservation":
 					unsafe()
-				} else if stage == "after validation" {
+				case "after validation":
 					store.onValidate = unsafe
-				} else {
+				default:
 					store.onBegin = unsafe
 				}
 				_ = m.DeliverReplacementWorkerFYI(context.Background(), store.op, worker.ID)

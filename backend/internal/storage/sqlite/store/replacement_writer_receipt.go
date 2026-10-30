@@ -45,7 +45,7 @@ func validateReplacementWriterActivation(op domain.OrchestratorReplacement) erro
 
 func preserveReplacementWriterActivation(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
 	a, b := before.WriterActivation, after.WriterActivation
-	if !reflect.DeepEqual(before.WorkerFYIPayload, after.WorkerFYIPayload) && !(a == nil && b != nil && ctx.Value(projectDocumentPublicationKey{}) == q) {
+	if !reflect.DeepEqual(before.WorkerFYIPayload, after.WorkerFYIPayload) && (a != nil || b == nil || ctx.Value(projectDocumentPublicationKey{}) != q) {
 		return domain.ErrReplacementStateInvalid
 	}
 	if a == nil {

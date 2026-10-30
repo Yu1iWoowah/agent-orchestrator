@@ -42,16 +42,16 @@ func TestReplacementActivationFreezesWorkerFYIPayload(t *testing.T) {
 		t.Fatal("incorrect frozen payload", payload)
 	}
 	for _, mutation := range []string{"remove", "replace"} {
-		copy := map[string]json.RawMessage{}
+		mutatedSnapshot := map[string]json.RawMessage{}
 		for key, value := range snapshot {
-			copy[key] = value
+			mutatedSnapshot[key] = value
 		}
 		if mutation == "remove" {
-			delete(copy, "workerFYIPayload")
+			delete(mutatedSnapshot, "workerFYIPayload")
 		} else {
-			copy["workerFYIPayload"] = json.RawMessage(`{"version":1,"text":"forged","sha256":"` + payload.SHA256 + `"}`)
+			mutatedSnapshot["workerFYIPayload"] = json.RawMessage(`{"version":1,"text":"forged","sha256":"` + payload.SHA256 + `"}`)
 		}
-		encoded, err := json.Marshal(copy)
+		encoded, err := json.Marshal(mutatedSnapshot)
 		if err != nil {
 			t.Fatal(err)
 		}

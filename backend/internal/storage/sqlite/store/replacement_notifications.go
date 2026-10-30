@@ -345,9 +345,9 @@ func (s *Store) replacementNotificationRetainsSeed(ctx context.Context, q *gen.Q
 	}
 	op, err := s.decodeCheckpointedReplacement(ctx, q, active)
 	if err != nil {
-		// An unverified operation may retain this seed. Preserve its row so
-		// rollback can record positive termination without erasing op facts.
-		return true, nil
+		// Unverified targets mean retain, not deletion failure: rollback must
+		// still record termination through its retained-seed fallback.
+		return true, nil //nolint:nilerr // Decode failure is consumed as a conservative retain decision.
 	}
 	_, retained := noticeTarget(op, id)
 	return retained, nil
