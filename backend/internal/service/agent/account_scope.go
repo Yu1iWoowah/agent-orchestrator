@@ -184,6 +184,7 @@ func (s *Service) LegacyIdentityConflict(ctx context.Context, provider domain.Ag
 		return false, nil
 	}
 	if err := s.codexAccounts.catalog.refresh(); err != nil {
+		s.codexAccounts.catalog.logger.Debug("legacy account metadata unavailable", "reasonCode", legacyCatalogFailureCode(err))
 		return false, ports.ErrAgentAccountStorageUnavailable
 	}
 	records, err := s.codexAccounts.catalog.recordsFor(nil)
@@ -196,4 +197,22 @@ func (s *Service) LegacyIdentityConflict(ctx context.Context, provider domain.Ag
 		}
 	}
 	return false, nil
+}
+
+// Only known classifications may cross the diagnostic boundary. Wrapped OS
+// errors can contain private paths; never log their messages or causes.
+func legacyCatalogFailureCode(err error) string {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		switch current.Error() {
+		case "codex directory has a writable ancestor":
+			return "legacy_catalog_writable_ancestor"
+		case "codex directory has an untrusted owner":
+			return "legacy_catalog_untrusted_owner"
+		case "codex directory has an unsafe ancestor", "path is not a safe directory", "codex directory is unsafe":
+			return "legacy_catalog_unsafe_directory"
+		case "codex directory is not private":
+			return "legacy_catalog_permissions"
+		}
+	}
+	return "legacy_catalog_unavailable"
 }

@@ -582,3 +582,36 @@ func TestConcurrentLoginOperationsCannotSaveSameIdentityTwice(t *testing.T) {
 		t.Fatal("concurrent operations saved the same native identity twice")
 	}
 }
+
+func TestLegacyConflictIsDurableWithSQLiteAndCleansPendingProfile(t *testing.T) {
+	ctx := context.Background()
+	st := sqlitetest.MustOpen(t)
+	root := filepath.Join(t.TempDir(), "accounts")
+	p := &fakeClaude{signedInAs: map[string]string{}}
+	term := &lifecycleTerminals{alive: map[string]bool{}}
+	svc := New(st, []ports.AgentAccountProviderCLI{p}, root, term, nil)
+	svc.SetLegacyIdentityCheck(func(context.Context, domain.AgentAccountProvider, string) (bool, error) { return true, nil })
+	started, err := svc.StartLogin(ctx, domain.AgentAccountProviderClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "claude", started.OperationID)
+	p.signedInAs[home] = "legacy@example.test"
+	for range 2 {
+		_, _, err = svc.VerifyLogin(ctx, started.OperationID)
+		if !errors.Is(err, ports.ErrAgentAccountLegacyIdentityConflict) {
+			t.Fatalf("canonical legacy conflict lost with SQLite: %v", err)
+		}
+	}
+	op, err := svc.Operation(ctx, started.OperationID)
+	if err != nil || op.Phase != "complete" || op.Outcome != "legacy-conflict" {
+		t.Fatalf("journal=%+v err=%v", op, err)
+	}
+	if _, err = os.Lstat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("duplicate profile remains: %v", err)
+	}
+	accounts, err := st.ListAgentAccounts(ctx)
+	if err != nil || len(accounts) != 0 {
+		t.Fatalf("second identity saved: %+v %v", accounts, err)
+	}
+}
