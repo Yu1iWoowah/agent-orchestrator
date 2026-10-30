@@ -1,3 +1,6 @@
+import { AgentAccountPicker } from "./AgentAccountPicker";
+import { agentAccountProviderFor } from "../hooks/useAgentAccounts";
+import { localAccountModelScope } from "../lib/local-account-model-scope";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	TaskComposerView,
@@ -68,6 +71,7 @@ type Project = components["schemas"]["Project"];
 type DelegateAgent = components["schemas"]["DelegateTaskRequest"]["agent"];
 
 type CreateTaskInput = {
+	agentAccountId?: string;
 	clientRequestId?: string;
 	projectId: string;
 	brief: string;
@@ -141,6 +145,7 @@ export type TaskLaunchOptions = {
 
 /** The agent, model and permission parts of a create request, saved so a retry can repeat them exactly. */
 export type LaunchReplay = {
+	agentAccountId?: string;
 	agent?: string;
 	model?: string;
 	effort?: string;
@@ -249,6 +254,7 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 						projectId: input.projectId,
 						brief: input.brief,
 						agent: input.agent,
+								...(input.agentAccountId ? { agentAccountId: input.agentAccountId } : {}),
 						...(input.model ? { model: input.model } : {}),
 						...(input.effort !== undefined ? { effort: input.effort } : {}),
 						...(input.mode ? { mode: input.mode } : {}),
@@ -296,6 +302,7 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 				body: {
 					clientRequestId: input.clientRequestId,
 					kind: "worker",
+			...(input.agentAccountId ? { agentAccountId: input.agentAccountId } : {}),
 					harness: input.agent as components["schemas"]["SpawnSessionRequest"]["harness"],
 					prompt: input.brief,
 					displayName,
@@ -419,17 +426,34 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 	);
 	const defaultWorkerAgent = rememberedAgentIsAvailable ? rememberedAgent : configuredDefaultAgent;
 	const selectedAgent = agent || defaultWorkerAgent;
-	// Model catalogs are device-wide, so every local project reads the one catalog
-	// per agent. opencode in a cloud project is the exception: its catalog depends
-	// on the connected provider, so scope the query by that credential type
-	// (credentialModelScope) to show the models the cloud VM will actually run.
+	const [accountDrafts, setAccountDrafts] = useState<Record<string, string>>({});
+	const accountProvider = agentAccountProviderFor(selectedAgent);
+	const accountDraftKey = `${preferenceContext}:${accountProvider ?? ""}`;
+	const accountId =
+		!hostId && !isCloudProject && accountProvider ? (accountDrafts[accountDraftKey] ?? "") : "";
+	const accountPicker =
+		!hostId && !isCloudProject && accountProvider ? (
+			<AgentAccountPicker
+				harness={selectedAgent}
+				projectId={isStandalone ? "" : projectId}
+				value={accountId}
+				onChange={(value) =>
+					setAccountDrafts((current) => ({ ...current, [accountDraftKey]: value }))
+				}
+				disabled={isSubmitting}
+			/>
+		) : null;
+
+	// Local catalogs follow the project, role and selected account; the daemon
+	// resolves inheritance. Cloud opencode scopes by its connected credential
+	// type to show the models the cloud VM will actually run.
 	const modelScope = useMemo(() => {
 		if (isCloudProject && selectedAgent === "opencode") {
 			const credentialType = connectedCredentialType(cloudConnectionsQuery.data, "opencode");
 			if (credentialType !== "") return credentialModelScope(credentialType);
 		}
-		return "";
-	}, [isCloudProject, selectedAgent, cloudConnectionsQuery.data]);
+		return !isCloudProject && !hostId ? localAccountModelScope(isStandalone ? "" : projectId ?? "", "worker", accountId) : "";
+	}, [isCloudProject, hostId, isStandalone, projectId, accountId, selectedAgent, cloudConnectionsQuery.data]);
 	const defaultWorkerModel =
 		projectConfig?.worker?.agentConfig?.model ?? projectConfig?.agentConfig?.model ?? "";
 	const defaultWorkerMode = projectConfig?.worker?.agentConfig?.mode ?? projectConfig?.agentConfig?.mode ?? "";
@@ -716,12 +740,14 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 				brief,
 				...(replay ? {
 					agent: replay.agent as CreateTaskInput["agent"],
+					agentAccountId: !hostId && !isCloudProject ? replay.agentAccountId : undefined,
 					model: replay.model,
 					effort: replay.effort,
 					mode: replay.mode ?? (isCloudProject ? settings?.defaultSessionMode : undefined),
 					approvalMode: replay.approvalMode,
 				} : {
 					agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
+					agentAccountId: accountId || undefined,
 					model: requestedModel,
 					// Only explicit Codex picks set this; agent changes reset it, and TUI retries preserve it.
 					effort: requestedEffort,
@@ -746,7 +772,13 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 				// A model list that went stale cannot vouch for the effort. Refresh it and
 				// retry once; the same request id cannot create a second session.
 				if (!(err instanceof TaskCreateError) || err.code !== "MODEL_CAPABILITIES_UNAVAILABLE") throw err;
-				await refreshSelectedModels().catch(() => undefined);
+				const retryAgent = createRequest.agent || selectedAgent;
+				const retryScope = !isCloudProject && !hostId
+					? localAccountModelScope(isStandalone ? "" : projectId, "worker", createRequest.agentAccountId)
+					: modelScope;
+				await refreshAgentModels(retryAgent, retryScope, hostId)
+					.then((catalog) => queryClient.setQueryData(agentModelsQueryKey(retryAgent, retryScope, hostId), catalog))
+					.catch(() => undefined);
 				try {
 					sessionId = await createTask(createRequest);
 				} catch (retryErr) {
@@ -842,7 +874,7 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 		});
 		return (agents ? ranked.filter(hostId ? isLaunchableAgent : startsLocally) : ranked).map(({ id, label }) => ({ id, label }));
 	}, [agentCatalog?.agents, cloudAgents, hostId, isCloudProject]);
-	const catalogProjectId = isCloudProject || isStandalone ? "" : projectId ?? "";
+	const catalogProjectId = modelScope;
 	// A pick from the picker's other agents: that agent, with the model and effort chosen
 	// alongside it, if any. Its catalog is cached, since the picker lists its models.
 	const switchAgent = (harness: string, pick: { model?: string; effort?: string } = {}) => {
@@ -901,10 +933,12 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 
 	return {
 		launch,
+		accountPicker,
 		launchFallback,
 		// What a plain send would request right now, to save alongside a send.
 		launchSnapshot: (): LaunchReplay => ({
 			agent: selectedAgent || undefined,
+			agentAccountId: accountId || undefined,
 			model: requestedModel,
 			effort: requestedEffort,
 			approvalMode,
@@ -918,7 +952,7 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 		isCloudProject,
 		canSubmit,
 		isSubmitting,
-		isDirty: modelTouched || effortTouched || attachments.length > 0,
+		isDirty: accountId !== "" || modelTouched || effortTouched || attachments.length > 0,
 		error,
 		remoteLoadError,
 		modelWarning,
@@ -1073,7 +1107,12 @@ export function TaskComposer({
 				onFallbackAction: (brief) => settle(task.launchFallback(brief)),
 				onSubmit: (brief) => settle(task.launch(brief, { interfaceMode: task.submitMode })),
 			}}
-			renderAgentControl={task.renderAgentControl}
+			renderAgentControl={(control) => (
+				<div className="flex min-w-0 flex-wrap items-center gap-2">
+					{task.renderAgentControl(control)}
+					{task.accountPicker}
+				</div>
+			)}
 			renderEffortControl={task.renderEffortControl}
 			renderModelControl={task.renderModelControl}
 			showEffort={task.showEffort}

@@ -1168,9 +1168,34 @@ func (c *conversation) Hibernate() error {
 	return c.closeProvider(true, false)
 }
 
+// HibernateForReplacement requires a post-cleanup receipt from this provider's
+// owned host. An already-consumed close guard cannot turn detach into proof.
+func (c *conversation) HibernateForReplacement() error {
+	if err := c.PreflightHibernateForReplacement(context.Background()); err != nil {
+		return err
+	}
+	return c.closeProviderWithProof(true, false, true)
+}
+
+func (c *conversation) PreflightHibernateForReplacement(ctx context.Context) error {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed || c.proc.hibernate == nil || c.proc.preflightHibernate == nil {
+		return ports.ErrChatRecoveryInconclusive
+	}
+	return c.proc.preflightHibernate(ctx)
+}
+
 func (c *conversation) closeProvider(terminate, closeSession bool) error {
+	return c.closeProviderWithProof(terminate, closeSession, false)
+}
+
+func (c *conversation) closeProviderWithProof(terminate, closeSession, replacement bool) error {
 	var closeErr error
+	invoked := false
 	c.closeOnce.Do(func() {
+		invoked = true
 		c.mu.Lock()
 		c.closed = true
 		close(c.closing)
@@ -1202,11 +1227,18 @@ func (c *conversation) closeProvider(terminate, closeSession bool) error {
 			cancelClose()
 		}
 		if persistent {
-			closeErr = c.proc.terminate()
+			if replacement {
+				closeErr = c.proc.hibernate()
+			} else {
+				closeErr = c.proc.terminate()
+			}
 		} else {
 			closeErr = c.proc.stop()
 		}
 	})
+	if replacement && !invoked {
+		return ports.ErrChatRecoveryInconclusive
+	}
 	return closeErr
 }
 

@@ -15,6 +15,7 @@ import (
 	docs "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/transcriptexport"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 func replacementEvidence(t *testing.T, f fixture, confirmed bool) (domain.OrchestratorReplacement, transcriptexport.Output) {
@@ -84,8 +85,13 @@ func replacementEvidence(t *testing.T, f fixture, confirmed bool) (domain.Orches
 	if confirmed {
 		op.SourceStop = &domain.ReplacementControllerStop{Owner: source.ControllerOwner(), CapabilityVerifier: source.Metadata.BrowserCapabilityVerifier, NativeID: "native-1", Method: "chat-hibernate", ConfirmedAt: now}
 	}
-	if ok, err := f.db.SaveOrchestratorReplacement(ctx, op); err != nil || !ok {
-		t.Fatal(ok, err)
+	if confirmed {
+		if ok, err := f.db.SaveReplacementRuntimeProgress(ctx, op); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+	} else {
+		// Deliberately seed an unconfirmed stop for the document negative test.
+		op = sqlitetest.SeedReplacement(t, f.dbDir, op)
 	}
 	op, _, err = f.db.GetOrchestratorReplacement(ctx, op.ID)
 	if err != nil {

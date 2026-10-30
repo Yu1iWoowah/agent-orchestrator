@@ -183,6 +183,7 @@ func (s *Service) liveViewLeasesLocked(id domain.SessionID) map[string]time.Time
 // developer-mode setting; a version refresh stops a provider still running a
 // replaced harness release so its next start uses the installed one.
 type hibernateOptions struct {
+	replacement    *domain.OrchestratorReplacement
 	versionRefresh bool
 	// forUpdate stops an idle provider so an installer can replace its
 	// executable; the session wakes on its next message or once the update ends.
@@ -195,7 +196,7 @@ type hibernateOptions struct {
 }
 
 func (o hibernateOptions) enabled(s *Service) bool {
-	if o.versionRefresh || o.forUpdate {
+	if o.versionRefresh || o.forUpdate || o.replacement != nil {
 		return true
 	}
 	return s.hibernationEnabled != nil && s.hibernationEnabled()
@@ -205,7 +206,10 @@ func (o hibernateOptions) enabled(s *Service) bool {
 // provider confirms it has no background work.
 func (o hibernateOptions) eligible(s *Service, rec domain.SessionRecord) bool {
 	candidate := rec
-	if (o.forUpdate || o.versionRefresh) && candidate.Kind == domain.KindOrchestrator {
+	if o.replacement != nil && !o.replacement.AllowsChatQuiescence(rec) {
+		return false
+	}
+	if (o.forUpdate || o.versionRefresh || o.replacement != nil) && candidate.Kind == domain.KindOrchestrator {
 		// Idle hibernation keeps orchestrators running. An update or a move to
 		// a new release stops them only to start them again, so they go too,
 		// under the same turn, queue and approval checks.
@@ -251,11 +255,13 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	if !opts.enabled(s) {
 		return false, nil
 	}
-	if err := s.replacementWakeFence(ctx, id); err != nil {
-		if errors.Is(err, domain.ErrReplacementIntakeFenced) {
-			return false, nil
+	if opts.replacement == nil {
+		if err := s.replacementWakeFence(ctx, id); err != nil {
+			if errors.Is(err, domain.ErrReplacementIntakeFenced) {
+				return false, nil
+			}
+			return false, err
 		}
-		return false, err
 	}
 	marker, ok := s.sessions.(hibernationStore)
 	if !ok {
@@ -289,6 +295,18 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	if !ok {
 		gate.unlock()
 		return false, nil
+	}
+	var replacementStop ports.ChatProviderReplacementHibernator
+	if opts.replacement != nil {
+		replacementStop, ok = controller.conv.(ports.ChatProviderReplacementHibernator)
+		if !ok {
+			gate.unlock()
+			return false, ports.ErrChatRecoveryInconclusive
+		}
+		if err := replacementStop.PreflightHibernateForReplacement(ctx); err != nil {
+			gate.unlock()
+			return false, fmt.Errorf("%w: replacement shutdown preflight: %w", domain.ErrReplacementSourceBusy, err)
+		}
 	}
 	// Inventory is provider I/O. Keep hibernation out with an operation count,
 	// while allowing new views, sends and explicit Kill to proceed.
@@ -373,7 +391,21 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	// Persist the intent while intake is fenced. A failed or contested write
 	// leaves the provider alive; a crash during shutdown can finish it on boot.
 	at := s.now()
-	applied, err := marker.SetSessionHibernated(ctx, id, fresh.Revision, &at)
+	var applied bool
+	if opts.replacement != nil {
+		if err := replacementStop.PreflightHibernateForReplacement(ctx); err != nil {
+			controller.sendMu.Unlock()
+			return false, fmt.Errorf("%w: replacement shutdown preflight: %w", domain.ErrReplacementSourceBusy, err)
+		}
+		replacementStore, ok := s.sessions.(replacementHibernationStore)
+		if !ok {
+			controller.sendMu.Unlock()
+			return false, errors.New("replacement hibernation store is unavailable")
+		}
+		applied, err = replacementStore.SetReplacementSessionHibernated(ctx, opts.replacement.ID, opts.replacement.Revision, id, fresh.Revision, at)
+	} else {
+		applied, err = marker.SetSessionHibernated(ctx, id, fresh.Revision, &at)
+	}
 	if err != nil || !applied {
 		controller.sendMu.Unlock()
 		return false, err
@@ -384,7 +416,12 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	controller.mu.Unlock()
 	controller.sendMu.Unlock()
 
-	stopErr := hibernator.Hibernate()
+	var stopErr error
+	if replacementStop != nil {
+		stopErr = replacementStop.HibernateForReplacement()
+	} else {
+		stopErr = hibernator.Hibernate()
+	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if stopErr == nil {
@@ -395,6 +432,11 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 		}
 	}
 	if stopErr != nil {
+		if opts.replacement != nil {
+			// The generic host stopper accepts missing/dead descriptors. It cannot
+			// repair an absent authenticated replacement stop receipt.
+			return false, fmt.Errorf("confirm replacement provider shutdown: %w", stopErr)
+		}
 		// The adapter may have consumed its close-once guard or already sent
 		// shutdown. Complete the same owner's shutdown, preserving queued work
 		// and resume intent instead of reopening intake on a dying provider.

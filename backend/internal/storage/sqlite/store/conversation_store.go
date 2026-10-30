@@ -816,7 +816,7 @@ func (s *Store) commitChatSpawn(
 		if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
 			return fmt.Errorf("commit Chat session owner: %w", err)
 		}
-		return nil
+		return s.bindReplacementSuccessorController(ctx, q, rowToRecord(owner), rec, true)
 	})
 }
 

@@ -21,7 +21,7 @@ import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake } from "./IntakeFields";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
-import { ProjectSettingsEditor, type ProjectAgentPickerProps, type ProjectSettingsDraft } from "./ProjectSettingsEditor";
+import { additionalProjectReviewerHarnesses, ProjectSettingsEditor, type ProjectAgentPickerProps, type ProjectSettingsDraft } from "./ProjectSettingsEditor";
 import { CloudProjectSettingsAdapter } from "./CloudProjectSettingsForm";
 
 type Project = components["schemas"]["Project"];
@@ -145,6 +145,8 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 	const activeOrchestrator = newestActiveOrchestrator(workspace?.sessions ?? []);
 	const intake: TrackerIntakeConfig = config.trackerIntake ?? {};
 	const initialValues: ProjectSettingsDraft = {
+		additionalReviewerHarnesses: (config.reviewers ?? []).slice(1).map((reviewer) => reviewer.harness),
+		...(!hostId ? { accountSettings: { projectId, providers: { ...config.agentAccounts }, worker: config.worker?.agentAccountId ?? "", orchestrator: config.orchestrator?.agentAccountId ?? "", reviewers: Object.fromEntries((config.reviewers ?? []).map((reviewer) => [reviewer.harness, reviewer.agentAccountId ?? ""])) } } : {}),
 		displayName: project.name,
 		defaultBranch: config.defaultBranch ?? DEFAULT_BRANCH_AUTO,
 		sessionPrefix: config.sessionPrefix ?? "",
@@ -183,13 +185,16 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 		const next: ProjectConfig = isScratchProject
 			? {
 					...scratchSupportedConfig(config),
+					agentAccounts: blankToUndefined(Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== ""))),
 					worker: {
 						...config.worker,
+						agentAccountId: values.accountSettings?.worker || undefined,
 						agent: values.workerAgent,
 						agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, values.workerModel, values.workerMode, values.workerEffort, values.workerPermissions),
 					},
 					orchestrator: {
 						...config.orchestrator,
+						agentAccountId: values.accountSettings?.orchestrator || undefined,
 						agent: values.orchestratorAgent,
 						agentConfig: buildRoleAgentConfig(
 							config.orchestrator?.agentConfig,
@@ -206,15 +211,18 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 				}
 			: {
 					...config,
+					agentAccounts: blankToUndefined(Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== ""))),
 					defaultBranch: values.defaultBranch.trim() === DEFAULT_BRANCH_AUTO ? undefined : values.defaultBranch || undefined,
 					sessionPrefix: values.sessionPrefix || undefined,
 					worker: {
 						...config.worker,
+						agentAccountId: values.accountSettings?.worker || undefined,
 						agent: values.workerAgent,
 						agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, values.workerModel, values.workerMode, values.workerEffort, values.workerPermissions),
 					},
 					orchestrator: {
 						...config.orchestrator,
+						agentAccountId: values.accountSettings?.orchestrator || undefined,
 						agent: values.orchestratorAgent,
 						agentConfig: buildRoleAgentConfig(
 							config.orchestrator?.agentConfig,
@@ -232,7 +240,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 						? [
 								{
 									harness: values.reviewerHarness,
-									agentAccountId: existingReviewer?.harness === values.reviewerHarness ? existingReviewer.agentAccountId : undefined,
+									agentAccountId: values.accountSettings?.reviewers[values.reviewerHarness] || undefined,
 									agentConfig: buildRoleAgentConfig(
 										existingReviewerAgentConfig,
 										values.reviewerModel,
@@ -241,6 +249,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 										values.reviewerPermissions,
 									),
 								},
+								...(config.reviewers ?? []).filter((reviewer) => additionalProjectReviewerHarnesses(values).includes(reviewer.harness)).map((reviewer) => ({ ...reviewer, agentAccountId: values.accountSettings?.reviewers[reviewer.harness] || undefined })),
 							]
 						: undefined,
 					trackerIntake: buildIntake(
@@ -311,6 +320,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
 			void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, hostId) });
 			void queryClient.invalidateQueries({ queryKey: hostId ? ["project-config", hostId, projectId] : ["project-config", projectId] });
+			void queryClient.invalidateQueries({ queryKey: ["agent-models"] });
 			void onSaved();
 			if (result.replacementFailure) {
 				if (!hostId) setOrchestratorReplacementError(projectId, result.replacementFailure);
@@ -326,10 +336,10 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 		capabilities={{ workflow: !isScratchProject, sessionPrefix: !isScratchProject, intake: intakeVisible, reviewer: !isScratchProject, requiredAgents: true, workersRequestReview: !isScratchProject }}
 		details={[{ label: t("settings.project.path"), value: project.path, href: hostId ? undefined : `file://${encodeURI(project.path)}` }, { label: t("settings.project.repo"), value: project.repo || "—", href: project.repo ? repositoryHref(project.repo) : undefined }]}
 		workspaceRepos={project.kind === "workspace" ? project.workspaceRepos ?? [] : undefined} repository={project.repo}
-		modelScope={(agent, role) => {
+		modelScope={(agent, role, draft) => {
 			const provider = agent === "codex" ? "codex" : agent === "claude-code" ? "claude" : undefined;
-			const roleAccount = role === "reviewer" ? config.reviewers?.find((reviewer) => reviewer.harness === agent)?.agentAccountId : config[role]?.agentAccountId;
-			return localAccountModelScope(projectId, role, roleAccount || (provider ? config.agentAccounts?.[provider] : undefined));
+			const roleAccount = role === "reviewer" ? draft.accountSettings?.reviewers[agent] : draft.accountSettings?.[role];
+			return localAccountModelScope(projectId, role, roleAccount || (provider ? draft.accountSettings?.providers[provider] : undefined));
 		}} defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
 		reviewerWarning={reviewerTrustWarning} save={save} saveUnchanged onSaveState={onSaveState}
 		modelHostId={hostId}

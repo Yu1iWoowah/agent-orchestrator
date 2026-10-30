@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
@@ -18,28 +20,20 @@ func busySource(context.Context, domain.OrchestratorReplacement) (domain.Replace
 func exhaustOrdinaryRepairHistory(t *testing.T, x *preparedExport) {
 	t.Helper()
 	ctx := context.Background()
-	for i := 0; i < 1200; i++ {
-		op, found, err := x.f.store.GetOrchestratorReplacement(ctx, x.operation.ID)
-		if err != nil || !found {
-			t.Fatal(found, err)
-		}
-		op.Error = &domain.ReplacementFailure{Code: "QUOTA_FIXTURE", Message: fmt.Sprint(i)}
-		applied, err := x.f.store.SaveOrchestratorReplacement(ctx, op)
-		if errors.Is(err, domain.ErrReplacementRepairCapacity) {
-			x.operation, _, err = x.f.store.GetOrchestratorReplacement(ctx, op.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if x.operation.Revision != 1024 {
-				t.Fatalf("metadata spent recovery credits: revision=%d", x.operation.Revision)
-			}
-			return
-		}
-		if err != nil || !applied {
-			t.Fatal(applied, err)
-		}
+	sqlitetest.FillReplacementMetadataHistory(t, x.f.store.dataDir, x.operation.ID, 1024)
+	op, found, err := x.f.store.GetOrchestratorReplacement(ctx, x.operation.ID)
+	if err != nil || !found {
+		t.Fatal(found, err)
 	}
-	t.Fatal("metadata-only saves consumed unbounded checkpoint capacity")
+	op.Error = &domain.ReplacementFailure{Code: "QUOTA_FIXTURE", Message: fmt.Sprint(op.Revision)}
+	applied, err := x.f.store.SaveOrchestratorReplacement(ctx, op)
+	if !errors.Is(err, domain.ErrReplacementRepairCapacity) || applied {
+		t.Fatal("ordinary metadata escaped quota", applied, err)
+	}
+	x.operation, _, err = x.f.store.GetOrchestratorReplacement(ctx, op.ID)
+	if err != nil || x.operation.Revision != 1024 {
+		t.Fatal("quota refusal changed committed row", x.operation.Revision, err)
+	}
 }
 
 func TestReplacementCapacityRefusesNewStopIntentAndStillCancels(t *testing.T) {

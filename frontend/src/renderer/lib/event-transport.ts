@@ -330,7 +330,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(["agent-models", scope.agentId]);
 				}
 				pendingModelCatalogScopes.clear();
-				if (pendingAgentAccounts) { invalidate(["agent-accounts"]); pendingAgentAccounts = false; }
+				if (pendingAgentAccounts) { invalidate(["agent-accounts"]); invalidate(["agent-models"]); pendingAgentAccounts = false; }
 			};
 			// A busy stream must not postpone visible updates until traffic
 			// stops, and the first event after a quiet period must not wait out

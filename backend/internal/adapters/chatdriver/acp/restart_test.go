@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,50 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 )
+
+func TestReplacementHibernateRefusesLegacyHostBeforeDetach(t *testing.T) {
+	cfg, start := restartFixture(t, map[string]string{})
+	cfg.Harness = domain.HarnessClaudeCode
+	cfg.Capabilities = ports.ChatCapabilities{ports.ChatCapabilityResume: true}
+	ctx := context.Background()
+	t.Cleanup(func() { _ = persistenthost.Shutdown(ctx, start.DataDir, string(start.SessionID)) })
+	first, err := New(cfg, nil).Start(ctx, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = nextEvent(t, first.Events())
+	pid := completedProviderPID(t, first)
+	path := filepath.Join(start.DataDir, "chat-hosts", string(start.SessionID), "host.json")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy persistenthost.Descriptor
+	if err := json.Unmarshal(original, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.StopConfirmation = false
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopper := first.(ports.ChatProviderReplacementHibernator)
+	if err := stopper.HibernateForReplacement(); err == nil {
+		t.Fatal("legacy host was accepted for confirmed shutdown")
+	}
+	if next := completedProviderPID(t, first); next != pid {
+		t.Fatal("compatibility refusal lost the original provider", next, pid)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopper.HibernateForReplacement(); err != nil {
+		t.Fatal("preflight refusal consumed the close guard", err)
+	}
+}
 
 func restartFixture(t *testing.T, env map[string]string) (Config, ports.ChatStartConfig) {
 	t.Helper()

@@ -604,6 +604,7 @@ describe("createEventTransport", () => {
 			}));
 			vi.advanceTimersByTime(200);
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agent-accounts"] }, { cancelRefetch: false });
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agent-models"] }, { cancelRefetch: false });
 			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] }, { cancelRefetch: false });
 		} finally { vi.useRealTimers(); }
 	});

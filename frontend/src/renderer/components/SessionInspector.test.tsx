@@ -2152,6 +2152,19 @@ describe("SessionInspector summary reviews", () => {
     }
   };
 
+
+  it.each([undefined, "fake-remote"])("shows reviewer binding only on its local host (%s)", async (hostId) => {
+    const common = commonGetsResponder();
+    const binding = {accountId: "reviewer-private", provider: "codex", label: "reviewer-own@example.test", source: "explicit", available: false};
+    getMock.mockImplementation(async (path: string) => path === "/api/v1/sessions/{sessionId}/reviews"
+      ? {data: {reviewerHandleId: "", reviews: [reviewState(3, "needs_review")], runs: [], activeReviewers: [], reviewerSurface: {mode: "chat", harness: "codex", reviewId: "fake-review", accountBinding: binding}}}
+      : common(path));
+    renderWithQuery(<SessionInspector hostId={hostId} session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+    if (hostId) expect(screen.queryByText(/reviewer-own@example.test/)).not.toBeInTheDocument();
+    else expect(await screen.findByText(/Account: reviewer-own@example.test/)).toHaveTextContent("Account unavailable");
+  });
+
   it("triggers a review and opens the returned reviewer terminal", async () => {
     mockCommonGets([], "", [reviewState(3, "needs_review")]);
     const runningReview = {

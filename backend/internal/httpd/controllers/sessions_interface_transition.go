@@ -150,3 +150,23 @@ func sessionInterfaceTransitionView(ctx context.Context, transition domain.Sessi
 		CompletedAt: completedAt, NoticeAcknowledgedAt: noticeAcknowledgedAt,
 	}
 }
+
+func (c *SessionsController) retryAccountRecovery(w http.ResponseWriter, r *http.Request) {
+	if ports.IsRemoteAccountRequest(r.Context()) {
+		writeAgentAccountError(w, r, ports.ErrAgentAccountLocalOnly)
+		return
+	}
+	service, ok := c.Svc.(interface {
+		RetryAccountRecovery(context.Context, domain.SessionID) (bool, error)
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, http.MethodPost, "/api/v1/sessions/{sessionId}/account-recovery")
+		return
+	}
+	confirmed, err := service.RetryAccountRecovery(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, RetryAccountRecoveryResponse{Confirmed: confirmed})
+}

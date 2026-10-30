@@ -1,3 +1,4 @@
+import { localAccountModelScope } from "../lib/local-account-model-scope";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1838,7 +1839,7 @@ describe("TaskComposer", () => {
 			models: [{ id: "cached-model", label: "GPT Cached", isDefault: true }],
 			allowCustom: false, source: "cli", stale: false, fetchedAt: "2026-10-18T00:00:00Z",
 		};
-		cacheAgentModels(cached, "codex", "");
+		cacheAgentModels(cached, "codex", localAccountModelScope("proj-1", "worker"));
 		const updated = { ...cached, models: [{ id: "fresh-model", label: "GPT Fresh", isDefault: true }] };
 		let finishDB!: (value: { data: typeof cached }) => void;
 		const dbResponse = new Promise<{ data: typeof cached }>((resolve) => { finishDB = resolve; });
@@ -2603,4 +2604,28 @@ describe("useTaskLaunch on the new chat page", () => {
 		// Answered, the send releases it as any send does.
 		expect(h.delete).toHaveBeenCalledWith("/api/v1/task-preparations/{token}", { params: { path: { token: "proj-1-7" } } });
 	});
+});
+
+it("pins an explicit create account in the retry payload even after defaults or the current harness change", async () => {
+ const accounts = [
+  {id:"codex-a",provider:"codex",device:false,signedIn:true,default:true,email:"a@example.test"},
+  {id:"codex-b",provider:"codex",device:false,signedIn:true,default:false,email:"b@example.test"},
+ ];
+ h.get.mockImplementation(async(path:string)=> path==="/api/v1/agents/accounts" ? {data:{accounts}} : path.includes("/models") ? {data:{agentId:"codex",selectionMode:"catalog",models:[],allowCustom:false}} : {data:{status:"ok",project:{agent:"codex",config:{}}}});
+ const delegate = vi.fn().mockResolvedValueOnce({error:{code:"MODEL_CAPABILITIES_UNAVAILABLE"}}).mockResolvedValueOnce({data:{workerId:"created"}});
+ h.post.mockImplementation(async(path:string)=>path==="/api/v1/orchestrators/delegate"?delegate():path==="/api/v1/agents/{agent}/models/refresh"?{data:{agentId:"codex",models:[],allowCustom:false}}:{data:{}});
+ let task!:ReturnType<typeof useTaskLaunch>;
+ function Probe(){task=useTaskLaunch({projectId:"proj-1"});return task.accountPicker;}
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ render(<Wrap queryClient={client}><Probe /></Wrap>);
+ await userEvent.click(await screen.findByRole("button",{name:"Account"}));
+ await userEvent.click(await screen.findByRole("menuitem",{name:"b@example.test"}));
+ const replay=task.launchSnapshot();
+ expect(replay.agentAccountId).toBe("codex-b");
+ await act(async()=>{client.setQueryData(["agent-accounts"],[{...accounts[0],default:false},{...accounts[1],default:true}]);task.agent.onChange("claude-code");});
+ expect(task.launchSnapshot().agentAccountId).toBeUndefined();
+ await act(async()=>{await task.launch("Fake account retry",{replay});});
+ expect(h.post).toHaveBeenCalledWith("/api/v1/orchestrators/delegate",expect.objectContaining({body:expect.objectContaining({agent:"codex",agentAccountId:"codex-b"})}));
+ expect(h.post).toHaveBeenCalledWith("/api/v1/agents/{agent}/models/refresh",expect.objectContaining({params:expect.objectContaining({path:{agent:"codex"},query:expect.objectContaining({projectId:"proj-1",role:"worker",agentAccountId:"codex-b"})})}));
+ expect(delegate).toHaveBeenCalledTimes(2);
 });

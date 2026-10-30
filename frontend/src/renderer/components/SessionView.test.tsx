@@ -101,6 +101,9 @@ const routeBlockerState = vi.hoisted(() => ({
 		| undefined,
 }));
 
+// Account query/state is exercised in SessionAccountControl tests and native desktop acceptance.
+vi.mock("./SessionAccountControl", () => ({ SessionAccountControl: () => null }));
+
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => navigateMock,
 	useBlocker: (options: NonNullable<typeof routeBlockerState.options>) => {
@@ -4317,6 +4320,7 @@ describe("SessionView", () => {
 
 			render(<SessionView sessionId="sess-1" />);
 
+			expect(screen.getAllByRole("button", { name: "Stop and retry recovery" })).toHaveLength(1);
 			const alert = screen.getByRole("status", { name: /^Interface switch needs attention/ });
 			expect(alert).toHaveAttribute("aria-label", expect.stringContaining("Interface switch needs attention"));
 			expect(alert).toHaveAttribute("aria-label", expect.stringContaining(errorDetail));

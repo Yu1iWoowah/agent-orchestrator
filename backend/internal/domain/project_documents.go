@@ -30,13 +30,15 @@ func (c OrchestratorHandoffConfig) Validate() error {
 
 // ProjectDocumentLease persists controller ownership and a hashed writer token.
 type ProjectDocumentLease struct {
-	ReplacementID string                 `json:"replacementId,omitempty"`
-	ClaimVerifier string                 `json:"claimVerifier,omitempty"`
-	SessionID     SessionID              `json:"sessionId"`
-	Owner         SessionControllerOwner `json:"owner"`
-	Epoch         int64                  `json:"epoch"`
-	Frozen        bool                   `json:"frozen"`
-	TokenHash     string                 `json:"tokenHash"`
+	// CapabilityVerifier survives claiming; ClaimVerifier denotes only a pending claim.
+	CapabilityVerifier string                 `json:"capabilityVerifier,omitempty"`
+	ReplacementID      string                 `json:"replacementId,omitempty"`
+	ClaimVerifier      string                 `json:"claimVerifier,omitempty"`
+	SessionID          SessionID              `json:"sessionId"`
+	Owner              SessionControllerOwner `json:"owner"`
+	Epoch              int64                  `json:"epoch"`
+	Frozen             bool                   `json:"frozen"`
+	TokenHash          string                 `json:"tokenHash"`
 }
 
 // ProjectDocumentEntry records one confined file and optional adoption provenance.

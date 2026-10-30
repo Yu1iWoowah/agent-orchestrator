@@ -22,10 +22,18 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 		freshIfMissing bool
 		live           bool
 		wantAccepted   bool
+		required       bool
+		unanswered     bool
+		strict         bool
+		wantFresh      bool
 	}{
-		{name: "allowed", freshIfMissing: true, wantAccepted: true},
+		{name: "allowed", freshIfMissing: true, wantAccepted: true, wantFresh: true},
 		{name: "without proof", freshIfMissing: false},
-		{name: "live provider", freshIfMissing: true, live: true},
+		{name: "live provider", freshIfMissing: true, live: true, wantFresh: true},
+		{name: "replacement forbids explicit fresh", freshIfMissing: true, required: true, strict: true},
+		{name: "replacement forbids unanswered fallback", required: true, unanswered: true, strict: true},
+		{name: "ordinary required retains explicit fresh", freshIfMissing: true, required: true, wantFresh: true, wantAccepted: true},
+		{name: "ordinary required retains unanswered fallback", required: true, unanswered: true, wantFresh: true, wantAccepted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := openStore(t)
@@ -39,9 +47,15 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 			if err := st.UpdateSession(ctx, record); err != nil {
 				t.Fatalf("seed reserved provider handle: %v", err)
 			}
-			if _, err := st.CreateConversation(ctx, "fresh-if-missing-conversation",
-				domain.ConversationScopeProject, testProject, testSession, now); err != nil {
+			conversation, err := st.CreateConversation(ctx, "fresh-if-missing-conversation",
+				domain.ConversationScopeProject, testProject, testSession, now)
+			if err != nil {
 				t.Fatalf("CreateConversation: %v", err)
+			}
+			if tc.unanswered {
+				if err := st.CreateAndActivateConversationBranch(ctx, testSession, domain.ConversationBranch{ID: "unanswered-boundary", ConversationID: conversation.ID, SessionID: testSession, ParentBranchID: conversation.ActiveBranchID, ProviderConversationID: "reserved-provider-thread", CreatedAt: now}, "before-resume", now); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			// A history reader that refuses every replay: importing native history
@@ -54,7 +68,7 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 			}
 			var resumed ports.ChatResumeConfig
 			svc := chatsvc.New(chatsvc.Options{
-				Store: st, Sessions: st,
+				Store: st, Sessions: st, Reader: fullSnapshotReader(st),
 				Drivers: fakeRegistry{driver: fakeDriver{conv: returned, resumeCfg: &resumed}},
 				Log:     slog.New(slog.DiscardHandler),
 				NewID:   func() string { return "fresh-if-missing-generation" },
@@ -62,24 +76,32 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 			})
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 			var ready string
+			historyMode := ports.ChatHistoryImport
+			if tc.required {
+				historyMode = ports.ChatHistoryRequired
+			}
 			_, err = svc.Start(ctx, chatsvc.StartConfig{
 				SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
 				Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
 				ProviderConversationID:             "reserved-provider-thread",
 				FreshIfProviderConversationMissing: tc.freshIfMissing,
-				HistoryMode:                        ports.ChatHistoryImport,
+				DisableFreshProviderFallback:       tc.strict,
+				HistoryMode:                        historyMode,
 				ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 					ready = result.ProviderConversationID
 					return chatsvc.ControllerCommit{Conversation: result.Conversation}, nil
 				},
 			})
 
-			if resumed.FreshIfMissing != tc.freshIfMissing {
-				t.Fatalf("driver FreshIfMissing = %v, want %v", resumed.FreshIfMissing, tc.freshIfMissing)
+			if resumed.FreshIfMissing != tc.wantFresh {
+				t.Fatalf("driver FreshIfMissing = %v, want %v", resumed.FreshIfMissing, tc.wantFresh)
 			}
 			if !tc.wantAccepted {
 				if err == nil || !strings.Contains(err.Error(), "does not match requested handle") {
 					t.Fatalf("Start error = %v, want provider handle mismatch", err)
+				}
+				if ready != "" || svc.HasLiveChatController(testSession) {
+					t.Fatal("mismatched native thread was published as a live controller")
 				}
 				return
 			}

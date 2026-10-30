@@ -16,11 +16,33 @@ func configureProviderProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-func startProviderProcess(cmd *exec.Cmd) (func(), error) {
+func startProviderProcess(cmd *exec.Cmd) (func(bool) error, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return func() {}, nil
+	return func(verify bool) error {
+		if !verify {
+			return nil
+		}
+		deadline := time.NewTimer(2 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			err := syscall.Kill(-cmd.Process.Pid, 0)
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			if err != nil && !errors.Is(err, syscall.EPERM) {
+				return err
+			}
+			select {
+			case <-deadline.C:
+				return ErrOwnershipInconclusive
+			case <-tick.C:
+			}
+		}
+	}, nil
 }
 
 // killProviderProcess asks the provider's process group to exit before it

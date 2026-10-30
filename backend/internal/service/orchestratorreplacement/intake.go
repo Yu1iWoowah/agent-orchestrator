@@ -18,7 +18,7 @@ func (s *Service) releaseIntake(ctx context.Context, op domain.OrchestratorRepla
 		if err != nil {
 			return op, err
 		}
-		if !ok || !found || target.ProjectID != op.ProjectID || target.Kind != domain.KindOrchestrator || target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
+		if !ok || !found || target.ProjectID != op.ProjectID || target.Kind != domain.KindOrchestrator || (target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier) && !op.ActivatedSuccessorMatches(target) {
 			return op, apierr.Conflict("ORCHESTRATOR_HANDOFF_SUCCESSOR_OWNER_CHANGED", "Activated successor ownership changed after the queue kick", nil)
 		}
 		fenced, err := s.deps.Store.ReplacementWakeFenced(ctx, target.ID)
@@ -27,6 +27,10 @@ func (s *Service) releaseIntake(ctx context.Context, op domain.OrchestratorRepla
 		}
 		if fenced {
 			return op, apierr.Conflict("ORCHESTRATOR_HANDOFF_SUCCESSOR_OWNER_CHANGED", "Activated successor writer lease changed after the queue kick", nil)
+		}
+		if len(op.Notifications) == 0 {
+			op.Phase = domain.ReplacementCompleted
+			return s.save(ctx, op)
 		}
 		return op, nil
 	}
@@ -39,6 +43,11 @@ func (s *Service) releaseIntake(ctx context.Context, op domain.OrchestratorRepla
 			return op, err
 		}
 		proof, ok := op.ExpectedSuccessorController()
+		if target, found, err := s.deps.Store.GetSession(ctx, op.SuccessorSessionID); err != nil {
+			return op, err
+		} else if found && op.ActivatedSuccessorMatches(target) {
+			proof.Owner, ok = target.ControllerOwner(), true
+		}
 		if !ok || observed.Owner != proof.Owner || observed.NativeID != proof.Owner.ProviderConversationID || observed.Provenance != domain.NativeThreadMain || observed.ObservedAt.IsZero() {
 			return op, domain.ErrReplacementStateInvalid
 		}
