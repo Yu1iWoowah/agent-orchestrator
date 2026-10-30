@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -22,15 +23,17 @@ vi.mock("./chat/DecisionDialog", () => ({
 		target,
 		onClose,
 		onLocate,
+		onRestoreFocus,
 	}: {
 		target: { title: string; kind: string };
 		onClose: () => void;
 		onLocate: () => void;
+		onRestoreFocus: () => void;
 	}) => (
 		<div role="dialog" aria-label="Decision">
 			<h2>{target.title}</h2>
 			<span>{target.kind}</span>
-			<button onClick={onClose}>Close decision</button>
+			<button onClick={() => { onClose(); onRestoreFocus(); }}>Close decision</button>
 			<button onClick={onLocate}>Original session</button>
 		</div>
 	),
@@ -197,4 +200,29 @@ it("shows unknown sidebar counts when refresh fails and does not navigate", asyn
 		"?",
 	);
 	expect(navigate).not.toHaveBeenCalled();
+});
+
+it.each([
+	{ selected: 1, remaining: [0, 2], focus: 2 },
+	{ selected: 2, remaining: [0, 1], focus: 1 },
+	{ selected: 0, remaining: [], focus: undefined },
+].flatMap((entry) => [false, true].map((afterClose) => ({ ...entry, afterClose }))))("restores list focus after row $selected disappears, after close: $afterClose", async ({ selected, remaining, focus, afterClose }) => {
+	const initial = [0, 1, 2].map((index) => ({ ...item, id: `question:ask-${index}`, questionId: `ask-${index}`, title: `Question ${index}` }));
+	let items = initial;
+	get.mockImplementation(() => Promise.resolve({ data: { items, open: items.length, unread: items.length }, response: { status: 200 } }));
+	show();
+	fireEvent.click(screen.getByRole("button", { name: "Open project attention" }));
+	fireEvent.click(await screen.findByRole("button", { name: new RegExp(`Question ${selected}`) }));
+	await screen.findByRole("dialog", { name: "Decision" });
+	if (!afterClose) {
+		items = remaining.map((index) => initial[index]);
+		await act(async () => { await client.invalidateQueries({ queryKey: ["project-attention", "project"] }); });
+	}
+	fireEvent.click(screen.getByRole("button", { name: "Close decision" }));
+	if (afterClose) {
+		await waitFor(() => expect(screen.getByRole("button", { name: new RegExp(`Question ${selected}`) })).toHaveFocus());
+		items = remaining.map((index) => initial[index]);
+		await act(async () => { await client.invalidateQueries({ queryKey: ["project-attention", "project"] }); });
+	}
+	await waitFor(() => expect(focus === undefined ? screen.getByRole("tabpanel") : screen.getByRole("button", { name: new RegExp(`Question ${focus}`) })).toHaveFocus());
 });

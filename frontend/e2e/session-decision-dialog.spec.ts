@@ -36,8 +36,12 @@ test("grouped decision validates, preserves drafts, and submits one saved receip
 	await row.press("Space");
 	await expect(page.getByRole("dialog").getByRole("checkbox", { name: "Tests", exact: true })).toBeChecked();
 	await page.getByRole("dialog").getByRole("button", { name: "Submit all answers" }).click();
-	await expect(page.getByRole("dialog").getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	await expect(page.getByRole("dialog")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true })).toHaveCount(0);
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await page.getByRole("region", { name: "Awaiting you", exact: true }).getByRole("tab", { name: "History", exact: true }).click();
+	await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).click();
+	await expect(page.getByRole("dialog").getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
 	await expect(page.getByRole("dialog").getByText("Saved · Delivered", { exact: true })).toHaveCount(0);
 	await page.evaluate(() => window.dispatchEvent(new CustomEvent("decision-fixture", { detail: "delivered" })));
 	await expect(page.getByRole("dialog").getByText("Saved · Delivered", { exact: true })).toBeVisible();
@@ -52,6 +56,18 @@ test("409 keeps the old draft as a reference and requires new choices @T0", asyn
 	await expect(page.getByRole("dialog").getByText("Previous draft · version 1 · reference only", { exact: true })).toBeVisible();
 	await expect(page.getByRole("dialog").getByRole("radio", { checked: true })).toHaveCount(0);
 	await expect(page.getByRole("dialog").getByRole("checkbox", { checked: true })).toHaveCount(0);
+});
+
+for (const state of ["answered", "cancelled"]) test(`409 with ${state} source keeps the conflict and submitted draft visible @T0`, async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 1000 });
+	const { dialog } = await openQuestion(page, `?answer=conflict-${state}`);
+	await fillGrouped(page);
+	await dialog.getByRole("button", { name: "Submit all answers" }).click();
+	await expect(dialog.getByText("This request changed or was answered elsewhere. Your previous draft is kept for reference. Reload the latest request.", { exact: true })).toBeVisible();
+	await expect(dialog).toBeVisible();
+	await dialog.getByText("Previous draft · version 1 · reference only", { exact: true }).click();
+	await expect(dialog.getByText(/Other: Verify rollback/)).toBeVisible();
+	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
 });
 
 for (const mode of ["lost", "delay"]) test(`closing during ${mode} response recovers receipt without a second POST @T0`, async ({ page }) => {
@@ -125,7 +141,7 @@ test("offline-host drafts filling persistence do not block a new answer @T0", as
 	const dialog = page.getByRole("dialog");
 	await expect(dialog.getByText("Your draft is kept in this window, but could not be saved for a restart.")).toBeVisible();
 	await dialog.getByRole("button", { name: "Submit all answers" }).click();
-	await expect(dialog.getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	await expect(dialog).toHaveCount(0);
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
 	const values = await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))
 		.map((key) => JSON.parse(localStorage.getItem(key) ?? "null").fields.target.otherText));
@@ -154,6 +170,9 @@ test("a large already-persisted answer submits when its frozen snapshot exceeds 
 	}, "/src/renderer/stores/question-draft-store.ts");
 	expect(submission.phase).toBe("submitting"); expect(submission.available).toBe(false); expect(submission.stored).toEqual(before);
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await expect(dialog).toHaveCount(0);
+	await page.getByRole("region", { name: "Awaiting you", exact: true }).getByRole("tab", { name: "History", exact: true }).click();
+	await page.getByRole("button", { name: "Open decision: Large valid decision", exact: true }).click();
 	await expect(dialog.getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
 	for (let i = 0; i < 4; i++) await expect(dialog.getByRole("textbox", { name: "Other answer: Q", exact: true }).nth(i)).toHaveValue("o".repeat(4000));
 	const remaining = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))

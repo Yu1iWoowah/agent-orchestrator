@@ -110,7 +110,8 @@ export function ProjectAttention({
 	}>();
 	const [readError, setReadError] = useState(false);
 	const rows = useRef(new Map<string, HTMLButtonElement>());
-	const lastRow = useRef<string | undefined>(undefined);
+	const returnRows = useRef<string[]>([]);
+	const removedFocus = useRef<string | undefined>(undefined);
 	const listTitle = useRef<HTMLHeadingElement>(null);
 	const listContent = useRef<HTMLDivElement>(null);
 	const scrollPositions = useRef(new Map<AttentionAudience, number>());
@@ -201,6 +202,25 @@ export function ProjectAttention({
 		setOpen(false);
 		void navigate(sessionNavigateTarget(projectId, item.sessionId, hostId));
 	};
+	const restoreListFocus = () => {
+		requestAnimationFrame(() => {
+			const panel = listContent.current?.querySelector<HTMLElement>(
+				'[role="tabpanel"][data-state="active"]',
+			);
+			if (panel) panel.scrollTop = scrollPositions.current.get(audience) ?? 0;
+			const target = returnRows.current
+				.map((id) => rows.current.get(id))
+				.find((row) => row?.isConnected);
+			const fallback = returnRows.current.length ? panel : undefined;
+			(target ?? fallback ?? listTitle.current)?.focus({ preventScroll: true });
+		});
+	};
+	useEffect(() => {
+		if (open && !selected && removedFocus.current && !rows.current.has(removedFocus.current)) {
+			restoreListFocus();
+		}
+		removedFocus.current = undefined;
+	});
 	if (human.data?.pages[0]?.unsupported) return null;
 	return (
 		<>
@@ -222,17 +242,7 @@ export function ProjectAttention({
 						className="max-h-[calc(100dvh-32px)] max-w-[560px] overflow-hidden"
 						onOpenAutoFocus={(event) => {
 							event.preventDefault();
-							requestAnimationFrame(() => {
-								const panel = listContent.current?.querySelector<HTMLElement>(
-									'[role="tabpanel"][data-state="active"]',
-								);
-								if (panel)
-									panel.scrollTop = scrollPositions.current.get(audience) ?? 0;
-								const target = lastRow.current
-									? rows.current.get(lastRow.current)
-									: undefined;
-								(target ?? listTitle.current)?.focus({ preventScroll: true });
-							});
+							restoreListFocus();
 						}}
 					>
 						<DialogHeader>
@@ -312,12 +322,17 @@ export function ProjectAttention({
 													className="w-full rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
 													ref={(element) => {
 														if (element) rows.current.set(item.id, element);
-														else rows.current.delete(item.id);
+														else {
+															if (rows.current.get(item.id) === document.activeElement) removedFocus.current = item.id;
+															rows.current.delete(item.id);
+														}
 													}}
 													onClick={() => {
 														const target = decisionTarget(item);
 														if (target) {
-															lastRow.current = item.id;
+															const ids = [...items.keys()];
+															const index = ids.indexOf(item.id);
+															returnRows.current = [...ids.slice(index), ...ids.slice(0, index).reverse()];
 															setSelected({ item, target });
 														}
 													}}
@@ -379,11 +394,7 @@ export function ProjectAttention({
 					bounds={bounds}
 					onClose={() => setSelected(undefined)}
 					onLocate={() => goSession(selected.item)}
-					onRestoreFocus={() => {
-						requestAnimationFrame(() => {
-							if (lastRow.current) rows.current.get(lastRow.current)?.focus();
-						});
-					}}
+					onRestoreFocus={restoreListFocus}
 				/>
 			) : null}
 			{readError ? (

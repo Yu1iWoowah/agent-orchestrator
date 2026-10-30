@@ -11,10 +11,14 @@ import { questionSourceQueryOptions } from "../../hooks/useSessionQuestions";
 import { createFullAppI18n } from "../../i18n/all-messages";
 import type { DecisionTarget } from "../../lib/decision-target";
 import { useUiStore } from "../../stores/ui-store";
+import { QuestionAnswerRuntime } from "../../hooks/useQuestionAnswerRecovery";
 
 const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("../../lib/host-clients", () => ({ clientForSessionHost: (host?: string) => ({ GET: (path: string, request: unknown) => get(host, path, request), POST: (path: string, request: unknown) => post(host, path, request) }), labelForHost: () => "Remote computer" }));
 const questionTarget: DecisionTarget = { kind: "agent_question", questionId: "ask-1", title: "Deployment" };
+const savedReceipt = { clientAnswerId: "external-answer", questionVersion: 1,
+	answers: [{ questionKey: "target", selectedOptionIds: ["stage"] }, { questionKey: "checks", selectedOptionIds: ["test"] }],
+	savedAt: "2026-10-29T01:00:00Z", deliveryState: "queued" as const };
 const providerTarget: DecisionTarget = { kind: "provider_approval", activityId: "native", requestId: "rpc-native", conversationId: "conv", branchId: "root", sourceBranchId: "root", title: "Deploy command" };
 const providerPage = { conversationId: "conv", activeBranchId: "root", counts: { open: 1, unread: 1, history: 0 }, hasMoreBefore: false,
 	items: [{ branchId: "root", actionable: true, read: false, activity: { kind: "activity", id: "native", requestId: "rpc-native", activityKind: "approval", status: "pending", sequence: 1, revision: 0, summary: "Deploy command", detail: { message: "Deploying changes the public service.", command: "deploy production" }, createdAt: "2026-10-29T00:00:00Z" } }] };
@@ -31,9 +35,10 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); client.clear(); surface.remove(); });
 
-function Harness({ target = questionTarget, hostId, rect = { left: 16, top: 48, width: 700, height: 600 } }: { target?: DecisionTarget; hostId?: string; rect?: { left: number; top: number; width: number; height: number } }) {
+function Harness({ target = questionTarget, hostId, recover = false, rect = { left: 16, top: 48, width: 700, height: 600 } }: { target?: DecisionTarget; hostId?: string; recover?: boolean; rect?: { left: number; top: number; width: number; height: number } }) {
 	const [open, setOpen] = useState(false); const trigger = useRef<HTMLButtonElement>(null);
 	return <div onKeyDown={(event) => { if (event.key === "Escape") outsideEscape(); }}>
+		{recover ? <QuestionAnswerRuntime /> : null}
 		<button ref={trigger} onClick={() => setOpen(true)}>Open decision</button>
 		<DecisionDialog target={open ? target : undefined} sessionId="session" hostId={hostId} sourceAgent="claude-code" bounds={{ surface, rect }} onClose={() => setOpen(false)} onLocate={locate} onRestoreFocus={() => trigger.current?.focus()} />
 	</div>;
@@ -120,4 +125,102 @@ it("uses Traditional Chinese UI words while retaining agent and session identifi
 	await screen.findByRole("radio", { name: /Staging/ });
 	expect(screen.getByRole("heading", { name: "決策對話方塊" })).toBeVisible(); expect(screen.getByText("推薦")).toBeVisible();
 	expect(screen.getByRole("button", { name: "一起送出答案" })).toBeVisible(); expect(screen.getByText("來源：session · claude-code")).toBeVisible();
+});
+
+it.each([undefined, "remote"])("closes after saving an answer on host %s and restores focus", async (hostId) => {
+	let question = sessionQuestionFixture();
+	get.mockImplementation(() => Promise.resolve({ data: question, response: { status: 200 } }));
+	post.mockImplementation((_host, path, request) => {
+		if (!path.endsWith("/answer")) return Promise.resolve({ response: { status: 204 } });
+		const receipt = { clientAnswerId: request.body.clientAnswerId, questionVersion: request.body.expectedVersion,
+			answers: request.body.answers, savedAt: "2026-10-29T01:00:00Z", deliveryState: "queued" as const };
+		question = { ...question, state: "answered", answer: receipt };
+		return Promise.resolve({ data: receipt, response: { status: 200 } });
+	});
+	show({ hostId }); const user = userEvent.setup();
+	await user.click(screen.getByRole("button", { name: "Open decision" }));
+	await user.click(await screen.findByRole("radio", { name: /Staging/ }));
+	await user.click(screen.getByRole("checkbox", { name: "Tests" }));
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+	await waitFor(() => expect(screen.getByRole("button", { name: "Open decision" })).toHaveFocus());
+	expect(question.state).toBe("answered");
+});
+
+it("keeps a rejected answer open with the selected options and Other text", async () => {
+	post.mockImplementation((_host, path) => Promise.resolve(path.endsWith("/answer")
+		? { error: { code: "QUESTION_INVALID", message: "Please review your answer." }, response: { status: 400 } }
+		: { response: { status: 204 } }));
+	show(); const user = userEvent.setup();
+	await user.click(screen.getByRole("button", { name: "Open decision" }));
+	const group = await screen.findByRole("group", { name: /Where should/ });
+	await user.click(within(group).getByRole("radio", { name: "Other" }));
+	await user.type(screen.getByRole("textbox", { name: "Other answer: Target" }), "Keep this answer");
+	await user.click(screen.getByRole("checkbox", { name: "Tests" }));
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await screen.findByRole("alert");
+	expect(screen.getByRole("dialog")).toBeVisible();
+	expect(screen.getByRole("textbox", { name: "Other answer: Target" })).toHaveValue("Keep this answer");
+	expect(screen.getByRole("checkbox", { name: "Tests" })).toBeChecked();
+	expect(screen.getByRole("button", { name: "Submit all answers" })).toBeEnabled();
+});
+
+it.each(["answered", "cancelled", "expired"] as const)("closes when an open question becomes %s through a source refresh", async (state) => {
+	let question = sessionQuestionFixture({ read: true });
+	get.mockImplementation(() => Promise.resolve({ data: question, response: { status: 200 } }));
+	show(); await userEvent.click(screen.getByRole("button", { name: "Open decision" }));
+	await screen.findByRole("radio", { name: /Staging/ });
+	question = { ...question, state, answer: state === "answered" ? savedReceipt : undefined };
+	await act(async () => { await client.invalidateQueries({ queryKey: questionSourceQueryOptions({ sessionId: "session", questionId: "ask-1" }).queryKey }); });
+	await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it.each(["answered", "cancelled", "expired"] as const)("keeps a %s question opened from history available to read", async (state) => {
+	get.mockResolvedValue({ data: sessionQuestionFixture({ state, answer: state === "answered" ? savedReceipt : undefined }), response: { status: 200 } });
+	show(); await userEvent.click(screen.getByRole("button", { name: "Open decision" }));
+	await screen.findByRole("radio", { name: /Staging/ });
+	expect(screen.getByRole("dialog")).toBeVisible();
+	expect(screen.queryByRole("button", { name: "Submit all answers" })).not.toBeInTheDocument();
+});
+
+it.each([409, 404].flatMap((status) => (["answered", "cancelled", "expired"] as const).map((state) => ({ status, state }))))(
+	"keeps the conflict and submitted draft visible after $status with a $state source", async ({ status, state }) => {
+		let question = sessionQuestionFixture({ read: true });
+		get.mockImplementation(() => Promise.resolve({ data: question, response: { status: 200 } }));
+		post.mockImplementation(() => {
+			question = { ...question, state, answer: state === "answered" ? savedReceipt : undefined };
+			return Promise.resolve({ error: { code: "QUESTION_CHANGED", message: "Answered elsewhere or closed" }, response: { status } });
+		});
+		show(); const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "Open decision" }));
+		await user.click(within(await screen.findByRole("group", { name: /Where should/ })).getByRole("radio", { name: "Other" }));
+		await user.type(screen.getByRole("textbox", { name: "Other answer: Target" }), "Keep my submitted answer");
+		await user.click(screen.getByRole("checkbox", { name: "Tests" }));
+		await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+		await screen.findByText(state === "answered" ? "Saved · Pending delivery" : state === "cancelled" ? "Cancelled" : "Expired", { exact: true });
+		await screen.findByText(/This request changed or was answered elsewhere/);
+		expect(screen.getByRole("dialog")).toBeVisible();
+		await user.click(screen.getByText("Previous draft · version 1 · reference only"));
+		expect(screen.getByText(/Other: Keep my submitted answer/)).toBeVisible();
+	});
+
+it.each(["submitting", "unknown"] as const)("keeps the dialog when another answer arrives while %s", async (phase) => {
+	let question = sessionQuestionFixture({ read: true });
+	get.mockImplementation(() => Promise.resolve({ data: question, response: { status: 200 } }));
+	let finish = () => {};
+	post.mockImplementation(() => phase === "unknown" ? Promise.reject(new TypeError("Lost response")) : new Promise((resolve) => {
+		finish = () => resolve({ error: { code: "QUESTION_CHANGED" }, response: { status: 409 } });
+	}));
+	show({ recover: true }); const user = userEvent.setup();
+	await user.click(screen.getByRole("button", { name: "Open decision" }));
+	await user.click(await screen.findByRole("radio", { name: /Staging/ }));
+	await user.click(screen.getByRole("checkbox", { name: "Tests" }));
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await waitFor(() => expect(Object.values(useQuestionDraftStore.getState().entries)[0]?.phase.state).toBe(phase));
+	question = { ...question, state: "answered", answer: savedReceipt };
+	await act(async () => { await client.invalidateQueries({ queryKey: questionSourceQueryOptions({ sessionId: "session", questionId: "ask-1" }).queryKey }); });
+	await screen.findByText(/This request changed or was answered elsewhere/);
+	expect(screen.getByRole("dialog")).toBeVisible();
+	expect(screen.getByText("Previous draft · version 1 · reference only")).toBeVisible();
+	await act(async () => { finish(); });
 });
