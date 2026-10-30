@@ -33,6 +33,11 @@ WHERE id=sqlc.arg(id) AND spawn_agent_settings_json='' AND is_terminated=0
 -- name: GetAgentSettingsOperation :one
 SELECT * FROM session_agent_settings_operations WHERE session_id=? AND id=?;
 
+-- name: ListAgentSettingsOperations :many
+SELECT * FROM session_agent_settings_operations
+WHERE session_id=sqlc.arg(session_id)
+ORDER BY created_at DESC,id DESC LIMIT sqlc.arg(maximum);
+
 -- name: GetAgentSettingsOperationByKey :one
 SELECT * FROM session_agent_settings_operations WHERE session_id=? AND idempotency_key=?;
 
@@ -114,3 +119,19 @@ WHERE session_id=sqlc.arg(session_id) AND id=sqlc.arg(id)
 SELECT EXISTS(SELECT 1 FROM session_agent_settings_operations
  WHERE session_id=? AND phase='cancelled' AND error_code='AGENT_SETTINGS_SESSION_TERMINATED'
  AND COALESCE(json_extract(request_json,'$.tui.terminationVerified'),0)=0);
+
+-- name: ConfirmAbandonedTUISettingsWriter :execrows
+-- Only the coordinator's exact-generation stop proof may call this CAS.
+UPDATE session_agent_settings_operations
+SET request_json=json_set(request_json,'$.tui.terminationVerified',json('true'),'$.tui.unconfirmedRuntime',json('false')),
+ operation_revision=operation_revision+1,updated_at=sqlc.arg(at)
+WHERE session_agent_settings_operations.session_id=sqlc.arg(session_id) AND session_agent_settings_operations.id=sqlc.arg(id)
+ AND operation_revision=sqlc.arg(expected_version) AND phase='cancelled'
+ AND error_code='AGENT_SETTINGS_SESSION_TERMINATED' AND started_at IS NOT NULL
+ AND json_extract(request_json,'$.tui.targetGeneration') IS NOT NULL
+ AND COALESCE(json_extract(request_json,'$.tui.terminationVerified'),0)=0
+ AND EXISTS(SELECT 1 FROM sessions s WHERE s.id=session_agent_settings_operations.session_id AND s.is_terminated=1 AND s.session_mode='tui');
+
+-- name: InsertAgentSettingsWriterSettlement :exec
+INSERT INTO session_agent_settings_writer_settlements(operation_id,operation_revision,recorded_at,request_id)
+VALUES(?,?,?,?);

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InfiniteQueryObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
+import { InfiniteQueryObserver, QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
+import { createElement } from "react";
+import { act, render } from "@testing-library/react";
 import { computeSseRetryDelayMs } from "./sse-backoff";
+import { agentSettingsQueryKey } from "./agent-settings";
+import { conversationQueryKey } from "../hooks/useConversation";
+import { agentSettingsSelection, agentSettingsSnapshot } from "../test/agent-settings-fixtures";
+import { chatFixtureEmpty } from "./chat-fixture";
 
 const {
 	onStatusMock,
@@ -120,6 +126,72 @@ afterEach(() => {
 });
 
 describe("createEventTransport", () => {
+	it("synchronizes ready composer consumers after settings-only CDC without reloading them for unchanged usage metadata", async () => {
+		vi.useFakeTimers();
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		let model = "committed-model";
+		let revision = 4;
+		const settings = () => agentSettingsSnapshot({ revision, pending: undefined, settings: agentSettingsSelection({ model }) });
+		const conversation = () => ({ pages: [{ ...chatFixtureEmpty, sessionId: "sess-1", controller: { state: "ready" as const }, settings: { model } }], pageParams: [undefined] });
+		const settingsRead = vi.fn(async () => settings());
+		const conversationRead = vi.fn(async () => conversation());
+		function Consumers() {
+			const header = useQuery({ queryKey: agentSettingsQueryKey("sess-1"), queryFn: settingsRead, initialData: settings(), staleTime: Infinity });
+			const composer = useQuery({ queryKey: conversationQueryKey("sess-1"), queryFn: conversationRead, initialData: conversation(), staleTime: Infinity });
+			return createElement("div", null, createElement("span", { "data-testid": "header" }, header.data.settings.model), createElement("span", { "data-testid": "composer" }, composer.data.pages[0].settings.model));
+		}
+		const view = render(createElement(QueryClientProvider, { client, children: createElement(Consumers) }));
+		const disconnect = createEventTransport(client).connect();
+		try {
+			await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+			settingsRead.mockClear(); conversationRead.mockClear();
+			model = "applied-model"; revision++;
+			await act(async () => {
+				cdcSources()[0].emit("session_updated", JSON.stringify({ seq: 1, type: "session_updated", sessionId: "sess-1", payload: { id: "sess-1" } }));
+				await vi.advanceTimersByTimeAsync(200);
+			});
+			expect(view.getByTestId("header")).toHaveTextContent("applied-model");
+			expect(view.getByTestId("composer")).toHaveTextContent("applied-model");
+			expect(conversationRead).toHaveBeenCalledTimes(1);
+			conversationRead.mockClear();
+			await act(async () => {
+				cdcSources()[0].emit("session_updated", JSON.stringify({ seq: 2, type: "session_updated", sessionId: "sess-1", payload: { id: "sess-1" } }));
+				await vi.advanceTimersByTimeAsync(200);
+			});
+			expect(conversationRead).not.toHaveBeenCalled();
+		} finally {
+			disconnect(); view.unmount(); client.clear(); vi.useRealTimers();
+		}
+	});
+	it("targets settings invalidation to the changed session and host", async () => {
+		vi.useFakeTimers();
+		connectedHostsMock.mockReturnValue(["box-a", "box-b"]);
+		baseUrlForHostMock.mockImplementation((hostId) => `http://127.0.0.1:4000/${hostId}`);
+		const client = fakeQueryClient();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			await vi.advanceTimersByTimeAsync(150);
+			vi.mocked(client.invalidateQueries).mockClear();
+			const local = cdcSources()[0];
+			if (!local) throw new Error("Missing local event stub");
+			local.emit("session_updated", JSON.stringify({ seq: 1, type: "session_updated", sessionId: "same", payload: { id: "same" } }));
+			await vi.advanceTimersByTimeAsync(150);
+			expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("other") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same", "box-a") }, { cancelRefetch: false });
+			vi.mocked(client.invalidateQueries).mockClear();
+			const remoteA = EventSourceStub.instances.find((source) => source.url.includes("/box-a/"));
+			if (!remoteA) throw new Error("Missing remote event stub");
+			remoteA.emit("session_updated", JSON.stringify({ seq: 2, type: "session_updated", sessionId: "same", payload: { id: "same" } }));
+			await vi.advanceTimersByTimeAsync(150);
+			expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same", "box-a") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same", "box-b") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same") }, { cancelRefetch: false });
+		} finally {
+			disconnect();
+			vi.useRealTimers();
+		}
+	});
 	it("polls while probing every host, then stops after a delivered stream frame", async () => {
 		vi.useFakeTimers();
 		try {

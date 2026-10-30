@@ -4157,6 +4157,18 @@ type CancelAgentSettingsOperationPayload struct {
 	ExpectedVersion *int64 `json:"expectedVersion" nullable:"false" minimum:"0"`
 }
 
+// SettleAgentSettingsWriterPayload cannot supply or bypass physical stop proof.
+type SettleAgentSettingsWriterPayload struct {
+	ExpectedVersion *int64 `json:"expectedVersion" nullable:"false" minimum:"0"`
+	StopIfAlive     bool   `json:"stopIfAlive,omitempty"`
+}
+
+// AgentSettingsWriterSettlementResponse acknowledges a proven stop, not a resume.
+type AgentSettingsWriterSettlementResponse struct {
+	Operation    domain.AgentSettingsOperation `json:"operation"`
+	WriterStatus string                        `json:"writerStatus" enum:"stopped"`
+}
+
 // AgentSettingsOperationIDParam identifies an operation within its session.
 type AgentSettingsOperationIDParam struct {
 	OperationID string `path:"operationId"`

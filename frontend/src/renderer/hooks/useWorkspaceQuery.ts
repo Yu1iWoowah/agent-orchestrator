@@ -122,6 +122,7 @@ export function toWorkspaceSession(
 		branchNaming: session.branchNaming,
 		staleBinary: session.staleBinary ? { version: session.staleBinary.version, since: session.staleBinary.since, switchFailedAt: session.staleBinary.switchFailedAt ?? undefined } : undefined,
 		isTerminated: session.isTerminated,
+		spawnAgentSettings: session.spawnAgentSettings,
 		workspaceCleanup: session.workspaceCleanup,
 		chatProviderPreserved: session.chatProviderPreserved,
 		terminateOnPrMerge: session.terminateOnPrMerge ?? false,

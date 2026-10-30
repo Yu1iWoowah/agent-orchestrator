@@ -57,6 +57,8 @@ import { ComposerErrorNotice, switchEffort, type PendingAgentSwitch } from "./Ag
 import { AGENT_SWITCH_FAILED } from "./ChatComposer";
 import { useUiStore } from "../../stores/ui-store";
 import { CONTINUE_STOPPED_TURN_PROMPT, ChatWorkspace, continuableTurnId } from "./ChatWorkspace";
+import { AgentSettingsStatus } from "../AgentSettingsStatus";
+import { AgentSettingsSubmission } from "../AgentSettingsSubmission";
 import { startingConversationSnapshot } from "./OrchestratorStartingChat";
 import { hasProviderPermissionMode, withUltracode } from "./TurnSettingsBar";
 
@@ -770,7 +772,12 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 						throw error;
 					}
 				}}
-				commandError={commands.error}
+				commandError={commands.error === commands.settingsChoiceError ? undefined : commands.error}
+				agentSettingsNotice={<>
+					<AgentSettingsSubmission pending={commands.choosingSettings} error={commands.settingsChoiceError} draft={commands.settingsDraft} onRetry={commands.retrySettingsChoice} onDismiss={commands.dismissSettingsChoice} />
+					<AgentSettingsStatus enabled={renderSnapshot.harness === "codex" || renderSnapshot.harness === "claude-code"} hostId={hostId} placement="composer" sessionId={session.id} terminated={session.isTerminated === true} />
+				</>}
+				agentSettingsActivity={<AgentSettingsStatus enabled={renderSnapshot.harness === "codex" || renderSnapshot.harness === "claude-code"} hostId={hostId} placement="timeline" sessionId={session.id} />}
 				agentSwitch={agentSwitch}
 				composerNotice={interfaceSwitch?.errorNotice ?? (switchError ? (
 					<ComposerErrorNotice
