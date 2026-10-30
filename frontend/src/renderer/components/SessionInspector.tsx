@@ -58,6 +58,7 @@ import { latestScriptRun } from "../lib/cloud-script-runs";
 import { ResumeAgentControl } from "./ResumeAgentControl";
 import { SessionBranchSummary } from "./SessionBranchSummary";
 import { SessionAccountSummary } from "./SessionAccountSummary";
+import { SessionAgentSettings } from "./SessionAgentSettings";
 import {
 	sessionScmSummaryQueryKey,
 	useSessionScmSummary,
@@ -435,6 +436,7 @@ const SummaryView = memo(function SummaryView({
 				<>
 					<ActivityTimeline hostId={hostId} prs={prSummaries} session={session} />
 					{hostId || !accountsPreview ? null : <SessionAccountSummary session={session} />}
+					<SessionAgentSettings hostId={hostId} session={session} />
 					<ResumeAgentControl
 						className="w-full"
 						containerClassName="mt-3 border-t border-(--color-border-settings-input) pt-3"

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InfiniteQueryObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { computeSseRetryDelayMs } from "./sse-backoff";
+import { agentSettingsQueryKey } from "./agent-settings";
 
 const {
 	onStatusMock,
@@ -120,6 +121,35 @@ afterEach(() => {
 });
 
 describe("createEventTransport", () => {
+	it("targets settings invalidation to the changed session and host", async () => {
+		vi.useFakeTimers();
+		connectedHostsMock.mockReturnValue(["box-a", "box-b"]);
+		baseUrlForHostMock.mockImplementation((hostId) => `http://127.0.0.1:4000/${hostId}`);
+		const client = fakeQueryClient();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			await vi.advanceTimersByTimeAsync(150);
+			vi.mocked(client.invalidateQueries).mockClear();
+			const local = cdcSources()[0];
+			if (!local) throw new Error("Missing local event stub");
+			local.emit("session_updated", JSON.stringify({ seq: 1, type: "session_updated", sessionId: "same", payload: { id: "same" } }));
+			await vi.advanceTimersByTimeAsync(150);
+			expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("other") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same", "box-a") }, { cancelRefetch: false });
+			vi.mocked(client.invalidateQueries).mockClear();
+			const remoteA = EventSourceStub.instances.find((source) => source.url.includes("/box-a/"));
+			if (!remoteA) throw new Error("Missing remote event stub");
+			remoteA.emit("session_updated", JSON.stringify({ seq: 2, type: "session_updated", sessionId: "same", payload: { id: "same" } }));
+			await vi.advanceTimersByTimeAsync(150);
+			expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same", "box-a") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same", "box-b") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: agentSettingsQueryKey("same") }, { cancelRefetch: false });
+		} finally {
+			disconnect();
+			vi.useRealTimers();
+		}
+	});
 	it("polls while probing every host, then stops after a delivered stream frame", async () => {
 		vi.useFakeTimers();
 		try {

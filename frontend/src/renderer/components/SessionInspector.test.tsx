@@ -19,6 +19,7 @@ import { sessionWorkspaceFilesQueryKey } from "../hooks/useSessionWorkspaceFiles
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
+import { agentSettingsSnapshot } from "../test/agent-settings-fixtures";
 import { useUiStore } from "../stores/ui-store";
 import { useSessionGitActionStore } from "../stores/session-git-action-store";
 import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
@@ -380,6 +381,16 @@ afterEach(() => {
 });
 
 describe("SessionInspector tabs", () => {
+	it("keeps current, pending and provider evidence separate", async () => {
+		renderWithQuery(<SessionInspector session={session([], { provider: "codex", mode: "chat" })} />, undefined, (client) => {
+			client.setQueryData(["session-agent-settings", "sess-1", null], agentSettingsSnapshot());
+		});
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		const panel = await screen.findByRole("region", { name: "Agent settings" });
+		expect(within(within(panel).getByRole("group", { name: "Current selection" })).getByText("committed-model")).toBeVisible();
+		expect(within(within(panel).getByRole("group", { name: "Pending for next turn" })).getByText("pending-model")).toBeVisible();
+		expect(within(within(panel).getByRole("group", { name: "Provider effective values" })).getByText("Not provided")).toBeVisible();
+	});
   it("shows only Browser content without navigation tabs for an orchestrator", () => {
     renderWithQuery(<SessionInspector browserOnly session={session([], { kind: "orchestrator" })} />);
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
@@ -1519,7 +1530,7 @@ describe("SessionInspector Activity section", () => {
       screen.queryByRole("button", { name: "Resume agent" }),
     ).not.toBeInTheDocument();
     expect(
-      activitySectionElement().querySelector(".mt-3.border-t.pt-3:not([data-testid=session-account-summary])"),
+      activitySectionElement().querySelector(".mt-3.border-t.pt-3:not([data-testid=session-account-summary]):not([data-testid=session-agent-settings])"),
     ).not.toBeInTheDocument();
 
     live.unmount();
@@ -1558,7 +1569,7 @@ describe("SessionInspector Activity section", () => {
       screen.queryByRole("button", { name: "Resume agent" }),
     ).not.toBeInTheDocument();
     expect(
-      activitySectionElement().querySelector(".mt-3.border-t.pt-3:not([data-testid=session-account-summary])"),
+      activitySectionElement().querySelector(".mt-3.border-t.pt-3:not([data-testid=session-account-summary]):not([data-testid=session-agent-settings])"),
     ).not.toBeInTheDocument();
   });
 
@@ -4797,7 +4808,7 @@ describe("SessionInspector branch summary", () => {
       body: { message: expect.stringContaining("open a pull request against `main`") },
     });
     expect(await screen.findByRole("button", { name: "Creating PR…" })).toBeDisabled();
-    expect(screen.queryByText(/agent/i)).not.toBeInTheDocument();
+    expect(branch().queryByText(/agent/i)).not.toBeInTheDocument();
   });
 
   it("opens the Files tab from a status row", async () => {

@@ -23,6 +23,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { agentSettingsErrorMessage } from "../lib/agent-settings";
+import { appI18n } from "../i18n";
 import { clientForSessionHost } from "../lib/host-clients";
 import { sessionUiKey } from "../lib/hosts";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
@@ -1355,7 +1357,9 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			resolve.error ||
 			(interruptTargetsCurrentSession && interrupt.error) ||
 			chooseSettings.error
-				? apiErrorMessage(
+				? chooseSettings.error && !sendError && !resolve.error && !(interruptTargetsCurrentSession && interrupt.error)
+					? agentSettingsErrorMessage(chooseSettings.error, appI18n.t("agentSettings.conflict"))
+					: apiErrorMessage(
 							sendError ??
 							resolve.error ??
 							(interruptTargetsCurrentSession ? interrupt.error : undefined) ??
@@ -1618,7 +1622,7 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		setOption: async (optionId: string, value: ChatConfigOptionValue) =>
 			(await mutation.mutateAsync({ optionId, value })).options,
 		pending: mutation.isPending,
-		error: mutation.error || query.error ? apiErrorMessage(mutation.error ?? query.error) : undefined,
+		error: mutation.error || query.error ? agentSettingsErrorMessage(mutation.error ?? query.error, appI18n.t("agentSettings.conflict")) : undefined,
 	};
 }
 

@@ -9,6 +9,51 @@ requested fast for an effective value. In particular, Claude may retain fast
 `on` while its live model does not advertise fast: the receipt reports
 `not_provided` / `provider_not_offered` until a supporting model returns.
 
+## CLI and desktop
+
+```sh
+ao session settings worker-1 --json
+ao session set worker-1 --model default --effort high --fast off --if-revision 4
+ao session set worker-1 --fast on --restart --stop-turn --wait --wait-timeout 2m
+ao session settings-operation operation-id --session worker-1 --json
+```
+
+These commands are HTTP clients. They do not open the database, change provider
+profiles or send terminal commands. Omit a field to retain it; `--model default`
+and `--effort default` (including `""`) explicitly reset it. Fast is `on`, `off`
+or `default`. Account moves remain a separate `ao account use` action. Typed
+resets require a daemon implementing this API; an old daemon's error is shown,
+never silently converted into a legacy spawn option.
+
+Without `--if-revision`, `set` reads the revision once before PATCH. It never
+automatically retries a conflicting mutation. Missing parameters or invalid
+flag combinations exit 2. Daemon errors and failed, cancelled or recovery-required
+results exit 1, preserving the error code and request ID. Inspecting an existing
+failed operation with `settings-operation` succeeds as a read. `--session` is
+required outside AO; inside a session it defaults to `AO_SESSION_ID`.
+
+`--wait` polls the accepted operation. A timeout or interruption does not cancel
+it; the error includes its ID and a reconnect command. Polling can reconnect to
+a restarted daemon via the current run file, without repeating PATCH. A 202
+result means queued, never proof that a provider applied the choice.
+
+The header keeps the committed selection separate from the pending target. The
+composer's existing menus select next-turn settings, with a separate pending
+notice. Inspector's Agent settings includes requested and effective values,
+account label, spawn provenance (labelled as initial resolution), restart needs
+and recent operation history. Only server-qualified orchestrator actors appear
+as orchestrator activities in the timeline. Local operators remain unverified.
+Claude fast `on` with no live fast option displays **Not provided**.
+
+The editor captures its revision when opened. External changes refresh the
+read-only sections without replacing its draft or the message composer. A 409
+stays beside the action with its code/request ID. Managed pending operations or
+already-started local operations must finish before another choice; there is no
+optimistic claim that a rejected choice was saved. A deliberate retry after an
+ambiguous connection failure uses the original payload and idempotency key.
+TUI changes show a restart review; interruption consent is a separate, initially
+unchecked option. Unstarted pending operations can be cancelled with version CAS.
+
 ## Mutations and polling
 
 `PATCH /api/v1/sessions/{sessionId}/agent-settings` requires `expectedRevision`,
@@ -131,9 +176,26 @@ active handoff before the veto so terminal intent cannot create a reclamation
 window before journal settlement. If writer status cannot be read, cleanup
 retains the workspace. Repeated Kill/RequestKill returns 409
 `AGENT_SETTINGS_WRITER_UNCONFIRMED` with an explicit still-vetoed message rather
-than silently acknowledging cleanup. An operator workflow to prove writer
-absence and settle the veto is a PR 5 follow-up consideration; this PR adds no
-such entry.
+than silently acknowledging cleanup.
+
+For a recovery session whose stop failed, Inspector offers **Retry stopping this
+session**, with explicit confirmation. Failure preserves recovery, its workspace
+and the launch fence and reports `AGENT_SETTINGS_WRITER_UNCONFIRMED` without raw
+provider diagnostics. This action stops; it never launches a replacement.
+
+For a terminated session with a retained writer obligation, Inspector offers
+**Check retained writer**. Its HTTP boundary is
+`POST .../agent-settings/operations/{operationId}/settle` with
+`{"expectedVersion": 7, "stopIfAlive": false}`. Only local unverified operators
+may use it; an agent session identity or grant is refused. Optional stop consent
+permits stopping an exactly identified live generation, not an unknown process.
+The coordinator serializes with lifecycle and workspace actions and re-probes
+the source, target and rollback generations. Only conclusive absence of all of
+them permits the version CAS to clear the veto. Unknown, generation mismatch,
+timeout or failed stop keeps the veto. The cancelled settings operation and its
+original attribution remain unchanged; a separate transactionally written
+operator receipt records the stop proof and request ID. No preference, file,
+branch or native conversation moves. Restoring afterwards is a separate action.
 
 ## Errors and authority
 
@@ -158,15 +220,15 @@ as `local_operator_unverified`, not as verified human actions.
 
 ## Delivery boundaries and backout
 
-The dedicated `ao session set/settings/settings-operation` commands, restart
-consent UI, clear busy-menu 409 notices and effective-value presentation belong
-to U4 PR 5. This PR supplies daemon/API semantics without claiming those UI
-flows are delivered. Real provider binaries and paid fast are NOT_RUN without
-isolated account authorization.
+CLI, header, Inspector and composer integration are U4 PR 5. Renderer/Electron
+fake-data coverage is distinct from the coordinator's SQLite/runtime tests and
+does not establish real-provider compatibility. Real provider binaries and paid
+fast are NOT_RUN without isolated account authorization.
 
 Backout disables the new TUI mutation entry while preserving journal,
 preferences and runtime fences. Do not automatically retry a second process.
 The migration refuses downgrade while TUI settings handoff history exists.
+The operator receipt migration also refuses downgrade once a receipt exists.
 Keep the coordinator's startup fence support during backout; do not run an
 older coordinator against an unfinished handoff or delete its journal.
 
@@ -177,6 +239,18 @@ The provider may reject the native resume; its error is not specialized to
 identify a retired model. AO does not substitute a model or a fresh thread.
 The Claude version gate accepts stable major.minor.patch output; prerelease
 suffixes remain unverified and are rejected.
+
+Follow-up in PR 6: optionally moving back to a canonical branch after settlement
+needs a separate dirty/shared/multi-repo ownership workflow; settlement itself
+must not move native history or files. Specialized retired-model resume messages
+need provider-qualified error categories; a failed pinned resume must not infer
+retirement from a network or permission error, substitute a model, or start a
+fresh conversation. Legacy relaunch capability validation also remains separate
+from this UI delivery: applying new-mutation freshness rules there would regress
+the qualified pinned fallback for stale discovery. Fresh mutations retain their
+strict account-scoped validation. The per-session ownership scan's bulk O(N²)
+cost, adapters without an alternate-path resolver, and wiring the currently
+unused SaveAndTeardownAll helper into daemon shutdown are not broadened here.
 
 TUI settings restart admission uses the orchestrator replacement gate before
 creating an operation or interrupting a turn. An active replacement returns 409
