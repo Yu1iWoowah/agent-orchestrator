@@ -2160,7 +2160,7 @@ describe("ProjectSettingsForm", () => {
 				agentAccounts: { codex: "project-A" },
 				worker: { agent: "codex", agentAccountId: "worker-A" },
 				orchestrator: { agent: "claude-code", agentAccountId: "orchestrator-B" },
-				reviewers: [{ harness: "codex", agentAccountId: "reviewer-C" }],
+				reviewers: [{ harness: "codex", agentAccountId: "reviewer-C" }, { harness: "claude-code", agentAccountId: "reviewer-D", agentConfig: {model:"claude-native"} }],
 			},
 		});
 		renderSettings("proj-1", undefined, "agents");
@@ -2176,7 +2176,7 @@ describe("ProjectSettingsForm", () => {
 							agentAccounts: { codex: "project-A" },
 							worker: expect.objectContaining({ agentAccountId: "worker-A" }),
 							orchestrator: expect.objectContaining({ agentAccountId: "orchestrator-B" }),
-							reviewers: [expect.objectContaining({ harness: "codex", agentAccountId: "reviewer-C" })],
+							reviewers: [expect.objectContaining({ harness: "codex", agentAccountId: "reviewer-C" }), expect.objectContaining({harness:"claude-code",agentAccountId:"reviewer-D",agentConfig:{model:"claude-native"}})],
 						}),
 					}),
 				}),

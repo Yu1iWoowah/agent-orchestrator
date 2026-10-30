@@ -101,6 +101,9 @@ const routeBlockerState = vi.hoisted(() => ({
 		| undefined,
 }));
 
+// Account query/state is exercised in SessionAccountControl tests and native desktop acceptance.
+vi.mock("./SessionAccountControl", () => ({ SessionAccountControl: () => null }));
+
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => navigateMock,
 	useBlocker: (options: NonNullable<typeof routeBlockerState.options>) => {

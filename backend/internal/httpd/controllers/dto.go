@@ -3977,8 +3977,9 @@ type AgentAccountUsageQuery struct {
 
 // AgentAccountResponse is one account with its latest readings.
 type AgentAccountResponse struct {
-	ID       string                      `json:"id"`
-	Provider domain.AgentAccountProvider `json:"provider" enum:"claude,codex"`
+	IdentityCheckedAt *time.Time                  `json:"identityCheckedAt,omitempty"`
+	ID                string                      `json:"id"`
+	Provider          domain.AgentAccountProvider `json:"provider" enum:"claude,codex"`
 	// Device marks the computer's own login, which AO launches with the CLI's
 	// config folder untouched.
 	Device    bool       `json:"device"`
@@ -4229,4 +4230,10 @@ type AgentAccountOperationResponse struct {
 type DocumentContentQuery struct {
 	MaxBytes    int64  `query:"maxBytes" minimum:"1" maximum:"52428800" default:"2097152"`
 	Fingerprint string `query:"fingerprint" maxLength:"256"`
+}
+
+// RetryAccountRecoveryResponse reports durable convergence, not merely that a
+// stop request was sent. False means the session remains fenced.
+type RetryAccountRecoveryResponse struct {
+	Confirmed bool `json:"confirmed"`
 }

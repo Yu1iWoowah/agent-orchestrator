@@ -9,7 +9,7 @@ import { BrowserChromeSection } from "./BrowserChromeSection";
 import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { CoderSettingsSection } from "./CoderSettingsSection";
-import { CodexAccountsSection } from "./CodexAccountsSection";
+import { AgentAccountsPage } from "./AgentAccountsPage";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
@@ -20,7 +20,7 @@ import { RemoteHostsSettings } from "./RemoteHostsSettings";
 import { SettingsSection } from "./SettingsSection";
 
 /** The memory window's own blocks, loaded only when the page is opened: it
- * samples the machine every two seconds while it is on screen. */
+	* samples the machine every two seconds while it is on screen. */
 const MemoryDiagnostics = lazy(async () => {
 	const module = await import("../SessionMemoryPanel");
 	return { default: module.MemoryDiagnostics };
@@ -75,15 +75,8 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		label: (t) => t("settings.harness"),
 		render: (_t, titleHidden, { focusAgentId, hostId, harnessView, startLogin, showDiagnostics }) => <HarnessSettingsSection focusAgentId={focusAgentId} {...(hostId ? { hostId } : {})} {...(harnessView ? { initialView: harnessView } : {})} {...(startLogin ? { startLogin } : {})} {...(showDiagnostics ? { showDiagnostics } : {})} titleHidden={titleHidden} />,
 	},
-	{
-		id: "agents",
-		icon: BadgeCheck,
-		label: (t) => t("settings.agents"),
-		// In developer mode, subscription accounts live on each CLI's Harness
-		// Account tab instead.
-		visible: ({ developerMode }) => !developerMode,
-		render: (_t, titleHidden) => <CodexAccountsSection titleHidden={titleHidden} />,
-	},
+	{ id: "accounts", pageOnly: true, icon: BadgeCheck, label: (t) => t("settings.agentAccounts.title"), render: () => <AgentAccountsPage /> },
+	{ id: "agents", icon: BadgeCheck, label: (t) => t("settings.agentAccounts.title"), visible: () => false, render: () => <AgentAccountsPage /> },
 	{
 		id: "billing",
 		icon: CreditCard,
@@ -177,7 +170,7 @@ export function visibleGlobalSettings(context: CatalogContext): SettingsCatalogI
 }
 
 export function globalSettingsItem(section: GlobalSettingsSection, context: CatalogContext): SettingsCatalogItem {
-	return visibleGlobalSettings(context).find((item) => item.id === section) ?? globalSettingsCatalog[0];
+	return visibleGlobalSettings(context).find((item) => item.id === (section === "agents" ? "accounts" : section)) ?? globalSettingsCatalog[0];
 }
 
 export function globalSettingsItemsFor(section: GlobalSettingsSection | "all", context: CatalogContext): SettingsCatalogItem[] {

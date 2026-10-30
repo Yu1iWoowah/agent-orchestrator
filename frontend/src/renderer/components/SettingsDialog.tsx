@@ -11,8 +11,6 @@ import { useCloudOffering } from "../hooks/useCloudOffering";
 import { useRestoreFocusOnClose } from "../hooks/useRestoreFocusOnClose";
 import { useSectionHistory } from "../hooks/useSectionHistory";
 import { SwipeNavigation, type SwipeNavigationActions } from "./SwipeNavigation";
-import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
-import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import { ProjectSettingsForm, type ProjectSettingsSaveState, type ProjectSettingsSection as ProjectFormSection } from "./ProjectSettingsForm";
 import { CloudProjectScriptsSettings, ProjectScriptsSettings } from "./ProjectScriptsSettings";
@@ -224,17 +222,7 @@ function useSettingsLayer(settingsModal: SettingsModal | null) {
 		}
 		if (globalSettingsWasOpen.current) return;
 		globalSettingsWasOpen.current = true;
-		// Warm account management as soon as global Settings opens, regardless of
-		// which page is selected. By the time the user visits Accounts, external
-		// login/logout changes and saved-account observations are already current.
-		void ensureCodexAccounts([], {
-			includeUsage: true,
-			forceAuthentication: true,
-			forceDeviceReconciliation: true,
-		})
-			.then((next) => writeCodexAccounts(queryClient, next, "replace"))
-			.catch(() => undefined);
-		// Same for Mobile: its pairing state and Keep awake are known before the
+		// Warm Mobile so its pairing state and Keep awake are known before the
 		// page is first drawn, so nothing pops in or flips after it opens.
 		void queryClient.prefetchQuery({ queryKey: mobileStatusQueryKey, queryFn: fetchMobileStatus });
 		void queryClient.prefetchQuery({ queryKey: mobileDevicesQueryKey, queryFn: fetchDevices });

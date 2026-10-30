@@ -376,10 +376,7 @@ describe("SettingsDialog", () => {
 
 		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("mobile");
 		expect(screen.getByRole("button", { name: "Mobile" })).toHaveAttribute("data-active", "true");
-		await vi.waitFor(() => expect(postMock).toHaveBeenCalledWith(
-			"/api/v1/agents/codex/accounts/ensure",
-			{ body: { accountIds: [], includeUsage: true, forceAuthentication: true, forceDeviceReconciliation: true } },
-		));
+		expect(postMock).not.toHaveBeenCalled();
 	});
 
 	it("scrolls to and briefly highlights the setting a deep link names", async () => {
@@ -416,7 +413,7 @@ describe("SettingsDialog", () => {
 		expect(form).toHaveTextContent("harness");
 		expect(form).toHaveAttribute("data-focus-agent", "claude-code");
 		expect(screen.getByRole("button", { name: "Harness" })).toHaveAttribute("data-active", "true");
-		expect(screen.getByRole("button", { name: "Subscriptions" })).not.toHaveAttribute("data-active", "true");
+		expect(screen.getByRole("button", { name: "Accounts" })).not.toHaveAttribute("data-active", "true");
 	});
 
 	it("forwards the remote host from a Manage agents action to Harness", async () => {
@@ -438,13 +435,14 @@ describe("SettingsDialog", () => {
 		expect(screen.getByTestId("global-settings-section")).not.toHaveAttribute("data-focus-agent");
 	});
 
-	it("refreshes accounts once when global Settings opens, not when its pages change", async () => {
+	it("does not reconcile device credentials when opening global settings or changing pages", async () => {
 		useUiStore.getState().openGlobalSettings();
 		renderSettingsDialog();
 
-		await vi.waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+		await screen.findByTestId("global-settings-section");
+		expect(postMock).not.toHaveBeenCalled();
 		await userEvent.click(screen.getByRole("button", { name: "Harness" }));
-		expect(postMock).toHaveBeenCalledTimes(1);
+		expect(postMock).not.toHaveBeenCalled();
 	});
 
 	it("mounts dialog chrome before the selected settings form", async () => {
@@ -533,12 +531,12 @@ describe("SettingsDialog", () => {
 		useUiStore.getState().openGlobalSettings("agents");
 		renderSettingsDialog();
 
-		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("agents");
+		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("accounts");
 		expect(screen.getByRole("button", { name: "General" })).toBeEnabled();
 		await userEvent.click(screen.getByRole("button", { name: "Back" }));
 
 		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
-		expect(postMock.mock.calls.map(([path]) => path)).toEqual(["/api/v1/agents/codex/accounts/ensure"]);
+		expect(postMock.mock.calls.map(([path]) => path)).toEqual([]);
 	});
 
 	it("renders inside the page and closes from Escape or Back", async () => {

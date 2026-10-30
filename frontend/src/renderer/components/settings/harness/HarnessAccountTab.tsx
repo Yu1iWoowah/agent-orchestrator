@@ -1,12 +1,11 @@
 import { BookOpen, Check, Copy, ExternalLink, LoaderCircle, LogOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { agentAccountProviderFor, followsSavedAccount } from "../../../hooks/useAgentAccounts";
+import { agentAccountProviderFor, useAgentAccounts } from "../../../hooks/useAgentAccounts";
 import { advisoryInUse, isWaitingForIdleJob, versionLabel, type HarnessInUse, type InstallJob } from "../../../hooks/useHarnessUpdates";
 import { IdleUpdateStatus } from "./HarnessSessionsDialog";
 import type { TerminalSessionState } from "../../../hooks/useTerminalSession";
 import { aoBridge } from "../../../lib/bridge";
 import { cn } from "../../../lib/utils";
-import { useUiStore } from "../../../stores/ui-store";
 import { MiddleTruncatedText } from "../../MiddleTruncatedText";
 import { Button } from "../../ui/button";
 import { AgentAccountsPanel } from "../AgentAccountsSection";
@@ -46,11 +45,11 @@ export function HarnessAccountTab({ details, hostId, authWorkflowActive, copied,
 	// Sessions that must end first turn Update into a way to find them.
 	const blockedBy = advisoryInUse(details.advisory);
 	const updateBlocked = Boolean(blockedBy);
-	// Subscription accounts are a developer-mode preview, for local Claude Code
-	// and Codex. A saved account new tasks start on is listed even without it:
-	// readiness then speaks for that account, not for the CLI's own login.
-	const accountsPreview = useUiStore((state) => state.developerMode);
-	const accountProvider = (accountsPreview || followsSavedAccount(details.readinessAgent)) && !hostId && isInstalled ? agentAccountProviderFor(details.agentId) : null;
+	const provider = !hostId && isInstalled ? agentAccountProviderFor(details.agentId) : null;
+	const accountRows = useAgentAccounts(Boolean(provider));
+	// Keep native device controls available while an older/offline daemon has no
+	// account catalog. Once rows arrive this is the same panel as Accounts.
+	const accountProvider = provider && accountRows.data?.some((account) => account.provider === provider) ? provider : null;
 	// Progress reads as a solid state, not a greyed-out action.
 	const progressAction = <span role="status"><Button type="button" size="sm" variant="secondary" className={cn(ACTION_CLASS, "disabled:opacity-100")} aria-busy="true" disabled><LoaderCircle className="animate-spin" aria-hidden="true" />{details.progressLabel}</Button></span>;
 	const authBusyAction = <Button type="button" size="sm" className={ACTION_CLASS} disabled>

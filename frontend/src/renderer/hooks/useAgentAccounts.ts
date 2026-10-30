@@ -119,6 +119,7 @@ export function useAgentAccountUsage(days = 30) {
 export function useSessionAgentAccounts(sessionId: string | undefined) {
 	return useQuery({
 		queryKey: sessionAccountsKey(sessionId ?? ""),
+		refetchInterval: 15_000,
 		enabled: Boolean(sessionId),
 		queryFn: async () => unwrap(await apiClient.GET("/api/v1/agents/accounts/sessions/{sessionId}", { params: { path: { sessionId: sessionId ?? "" } } })) ?? {},
 	});
@@ -144,8 +145,14 @@ export function useAgentAccountActions() {
 			if (error) throw new Error(agentAccountErrorMessage(error));
 			return unwrap(await apiClient.GET("/api/v1/agents/accounts/operations/{operationId}", { params: { path: { operationId } } }));
 		},
-		makeDefault: async (accountId: string) =>
-			setAccounts(unwrap(await apiClient.POST("/api/v1/agents/accounts/{accountId}/default", { params: { path: { accountId } } })).accounts),
+		logout: async (accountId: string) => {
+			unwrap(await apiClient.POST("/api/v1/agents/accounts/{accountId}/logout", { params: { path: { accountId } } }));
+			await queryClient.invalidateQueries({ queryKey: agentAccountsQueryKey });
+		},
+		makeDefault: async (accountId: string) => {
+			setAccounts(unwrap(await apiClient.POST("/api/v1/agents/accounts/{accountId}/default", { params: { path: { accountId } } })).accounts);
+			await queryClient.invalidateQueries({ queryKey: ["agent-models"] });
+		},
 		remove: async (accountId: string) =>
 			setAccounts(unwrap(await apiClient.DELETE("/api/v1/agents/accounts/{accountId}", { params: { path: { accountId } } })).accounts),
 		useReset: async (accountId: string) => {

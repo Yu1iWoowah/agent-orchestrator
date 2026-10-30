@@ -427,14 +427,13 @@ const SummaryView = memo(function SummaryView({
 	// have no parent/child model and every other session has no children.
 	const showWorkers =
 		session.kind === "orchestrator" && (session.cloud !== undefined || usePreviewData);
-	// Subscription accounts are a developer-mode preview.
-	const accountsPreview = useUiStore((state) => state.developerMode);
+
 	return (
 		<SessionInspectorSummaryView
 			activity={
 				<>
 					<ActivityTimeline hostId={hostId} prs={prSummaries} session={session} />
-					{hostId || !accountsPreview ? null : <SessionAccountSummary session={session} />}
+					{hostId ? null : <SessionAccountSummary session={session} />}
 					<ResumeAgentControl
 						className="w-full"
 						containerClassName="mt-3 border-t border-(--color-border-settings-input) pt-3"
@@ -2571,6 +2570,7 @@ function ReviewPanel({
 						/>
 					</div>
 					)}
+{!hostId && !session.cloud && reviewerSurface?.accountBinding ? <p className="min-w-0 truncate text-xs text-muted-foreground" title={reviewerSurface.accountBinding.label}>{t("settings.agentAccounts.sessionAccount")}: {reviewerSurface.accountBinding.label}{!reviewerSurface.accountBinding.available ? ` · ${t("settings.agentAccounts.bindingUnavailable")}` : ""}</p> : null}
 					{/* Several reviewers can work on one worker at once (an agent may
 					    ask a reviewer other than the selected one). The reviewer tab
 					    shows one at a time, so each live reviewer gets a row to open it
@@ -2580,7 +2580,7 @@ function ReviewPanel({
 								<div className="flex min-h-8 min-w-0 items-center justify-between gap-3 py-1" key={surface.reviewId}>
 									<span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
 										<AgentAvatar className="size-4" decorative provider={surface.harness} />
-										<span className="truncate">{agentLabel(surface.harness)}</span>
+										<span className="truncate">{agentLabel(surface.harness)}{!hostId && !session.cloud && surface.accountBinding ? ` · ${surface.accountBinding.label}${surface.accountBinding.available ? "" : ` · ${t("settings.agentAccounts.bindingUnavailable")}`}` : ""}</span>
 									</span>
 									<Button
 										className="shrink-0 px-1.5 text-xs"

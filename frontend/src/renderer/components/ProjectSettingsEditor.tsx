@@ -1,3 +1,5 @@
+import { AgentAccountPicker } from "./AgentAccountPicker";
+import { agentAccountProviderFor } from "../hooks/useAgentAccounts";
 import { useMutation } from "@tanstack/react-query";
 import { MAX_PROJECT_DISPLAY_NAME_LEN, ProjectSettingsFormView, ProjectSettingsInputRow, ProjectSettingsRow, ProjectSettingsSection, ProjectSettingsValueRow } from "@aoagents/product-ui";
 import { Pencil } from "lucide-react";
@@ -11,6 +13,14 @@ import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Button } from "./ui/button";
 
 export type ProjectSettingsDraft = {
+	accountSettings?: {
+		projectId: string;
+		providers: Partial<Record<"claude" | "codex", string>>;
+		worker: string;
+		orchestrator: string;
+		/** Reviewers are unique per harness; array order is never an identity. */
+		reviewers: Record<string, string>;
+	};
 	displayName: string;
 	defaultBranch: string;
 	sessionPrefix: string;
@@ -85,7 +95,7 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 	repository?: string;
 	renderAgent: (props: ProjectAgentPickerProps) => ReactNode;
 	defaultReviewer?: (draft: ProjectSettingsDraft) => string;
-	modelScope: (agent: string, role: ProjectSettingsRole) => string;
+	modelScope: (agent: string, role: ProjectSettingsRole, draft: ProjectSettingsDraft) => string;
 	/** Self-hosted daemon whose model catalog the role pickers read. */
 	modelHostId?: string;
 	reviewerWarning?: (agent: string) => string | null;
@@ -164,6 +174,7 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 	}, [didSave]);
 	const patch = (values: Partial<ProjectSettingsDraft>) => setDraft((current) => ({ ...current, ...values }));
 	const warning = reviewerWarning?.(draft.reviewerHarness);
+	const accountSettings = draft.accountSettings;
 	return <ProjectSettingsFormView id="project-settings-form" className={`project-settings-form${capabilities.runtimeDefaults ? " cloud-project-settings-form" : ""}`} onSubmit={submit}>
 		<fieldset disabled={disabled || mutation.isPending} className="flex min-w-0 flex-col gap-(--size-settings-section-gap)">
 			{section === "general" ? <>
@@ -187,10 +198,14 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 				</>}
 				{generalExtra}
 			</> : <>
+				{accountSettings ? <ProjectSettingsSection title={t("settings.agentAccounts.projectDefaults")} grouped>
+					{(["claude", "codex"] as const).map((provider) => <ProjectSettingsRow key={provider} label={provider === "claude" ? "Claude Code" : "Codex"}><AgentAccountPicker harness={provider === "claude" ? "claude-code" : "codex"} inheritId="" value={accountSettings?.providers[provider] ?? ""} label={t("settings.agentAccounts.projectDefaults") + ` · ${provider}`} onChange={(value) => setDraft((current) => current.accountSettings ? { ...current, accountSettings: { ...current.accountSettings, providers: { ...current.accountSettings.providers, [provider]: value } } } : current)} /></ProjectSettingsRow>)}
+				</ProjectSettingsSection> : null}
 				{visibleRoles.map((role) => {
 					const fields = roleFields[role];
 					const selectedAgent = draft[fields.agent];
 					const agent = selectedAgent || (role === "reviewer" ? defaultReviewer(draft) : "");
+					const accountProvider = agentAccountProviderFor(agent);
 					// With no reviewer configured, review runs with the worker agent's own
 					// model and effort when that agent is also the reviewer. Show that, and
 					// keep it when the user pins the reviewer by editing one field.
@@ -211,7 +226,7 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 					}));
 					return <ProjectSettingsSection key={role} title={t(`settings.models.${role}Role`)} grouped>
 						<ProjectSettingsRow label={t("settings.project.agent")}><div className="flex min-w-0 flex-wrap items-center justify-end gap-2"><div className="min-w-0">{renderAgent({ disabled: capabilities.lockedAgents, role, draft, value: selectedAgent, invalid: error !== undefined && !selectedAgent, onChange: (value) => setDraft((current) => ({ ...current, [fields.agent]: value, ...(value !== current[fields.agent] ? { [fields.model]: "", [fields.mode]: "", [fields.effort]: "", ...(role === "reviewer" || capabilities.runtimeDefaults ? { [fields.permissions]: "" } : {}) } : {}) })) })}</div>
-						<div className="min-w-0 space-y-1.5"><AgentModelField role={role} agentId={agent} projectId={modelScope(agent, role)} hostId={modelHostId} model={inheritsWorker ? draft.workerModel : draft[fields.model]} mode={draft[fields.mode]} effort={inheritsWorker ? draft.workerEffort : draft[fields.effort]}
+						<div className="min-w-0 space-y-1.5"><AgentModelField role={role} agentId={agent} projectId={modelScope(agent, role, draft)} hostId={modelHostId} model={inheritsWorker ? draft.workerModel : draft[fields.model]} mode={draft[fields.mode]} effort={inheritsWorker ? draft.workerEffort : draft[fields.effort]}
 							allowCustomFallback={capabilities.runtimeDefaults} followCatalogDefaults={!capabilities.runtimeDefaults}
 							supportedEfforts={capabilities.runtimeDefaults ? agent === "codex" ? ["low", "medium", "high", "xhigh", "max"] : agent === "claude-code" ? ["low", "medium", "high", "max"] : undefined : undefined}
 							emptyLabel={capabilities.runtimeDefaults && agent === "" ? t("settings.cloudProject.sessionModel") : undefined}
@@ -219,10 +234,12 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 							onModelChange={(value) => updateConfig(fields.model, value)} onModeChange={(value) => updateConfig(fields.mode, value)} onEffortChange={(value) => updateConfig(fields.effort, value)} onValidityChange={(valid) => setValidity((current) => current[role] === valid ? current : { ...current, [role]: valid })} />
 							{capabilities.runtimeDefaults && agent === "cursor" && <SettingsOptionMenu aria-label={t(`settings.models.${role}Mode`)} value={draft[fields.mode]} triggerClassName="w-fit" options={[{ value: "", label: t("settings.cloudProject.agentMode") }, { value: "plan", label: t("settings.cloudProject.plan") }, { value: "ask", label: t("settings.cloudProject.ask") }]} onChange={(value) => updateConfig(fields.mode, value)} />}
 						</div></div></ProjectSettingsRow>
+						{accountSettings && accountProvider ? <ProjectSettingsRow label={t("settings.agentAccounts.sessionAccount")}><AgentAccountPicker harness={agent} projectId={accountSettings.projectId} role={role} value={role === "reviewer" ? accountSettings.reviewers[agent] ?? "" : accountSettings[role]} inheritId={accountSettings.providers[accountProvider] ?? ""} onChange={(value) => setDraft((current) => !current.accountSettings ? current : { ...current, ...(role === "reviewer" && value && !current.reviewerHarness ? { reviewerHarness: agent } : {}), accountSettings: { ...current.accountSettings, ...(role === "reviewer" ? { reviewers: { ...current.accountSettings.reviewers, [agent]: value } } : { [role]: value }) } })} /></ProjectSettingsRow> : null}
 						<ProjectSettingsRow label={t("settings.project.approval")}><div className="min-w-0"><ProjectRolePermissions role={role} agent={agent} value={draft[fields.permissions]} runtimeDefaults={capabilities.runtimeDefaults} onChange={updatePermissions} /></div></ProjectSettingsRow>
 					</ProjectSettingsSection>;
 				})}
-				{capabilities.requiredAgents && (!draft.workerAgent || !draft.orchestratorAgent) && <p className="px-(--settings-row-inset) text-xs text-error" role="alert">{t("settings.project.agentsRequired")}</p>}
+				{accountSettings ? Object.keys(accountSettings.reviewers).filter((harness) => agentAccountProviderFor(harness) && harness !== (draft.reviewerHarness || defaultReviewer(draft))).map((harness) => <ProjectSettingsSection key={harness} title={`${t("settings.models.reviewerRole")} · ${harness}`} grouped><ProjectSettingsRow label={t("settings.agentAccounts.sessionAccount")}><AgentAccountPicker harness={harness} projectId={accountSettings.projectId} role="reviewer" value={accountSettings.reviewers[harness] ?? ""} inheritId={accountSettings.providers[agentAccountProviderFor(harness) ?? "codex"] ?? ""} onChange={(value) => setDraft((current) => !current.accountSettings ? current : { ...current, accountSettings: { ...current.accountSettings, reviewers: { ...current.accountSettings.reviewers, [harness]: value } } })} /></ProjectSettingsRow></ProjectSettingsSection>) : null}
+ {capabilities.requiredAgents && (!draft.workerAgent || !draft.orchestratorAgent) && <p className="px-(--settings-row-inset) text-xs text-error" role="alert">{t("settings.project.agentsRequired")}</p>}
 				{warning && <p className="px-(--settings-row-inset) text-xs text-warning" role="status">{warning}</p>}
 			</>}
 		</fieldset>
