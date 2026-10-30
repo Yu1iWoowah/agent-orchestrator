@@ -16,30 +16,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
-	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
-
-// Read the production binding history rather than mirroring its current value
-// into the account fake; recovery and the store must see the same commit.
-type sqliteRecoveryAccounts struct {
-	*transitionAccounts
-	db *sqlitestore.Store
-}
-
-func (a sqliteRecoveryAccounts) SessionAccountID(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (string, error) {
-	provider, ok := domain.AgentAccountProviderFor(harness)
-	if !ok {
-		return "", ports.ErrAgentAccountUnknown
-	}
-	account, found, err := a.db.GetSessionAgentAccount(ctx, id, provider)
-	if err != nil {
-		return "", err
-	}
-	if !found {
-		return "", ports.ErrAgentAccountUnknown
-	}
-	return account, nil
-}
 
 func privateRecoveryTmux(t *testing.T) (*tmuxruntime.Runtime, string) {
 	t.Helper()

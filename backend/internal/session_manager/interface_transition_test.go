@@ -3448,3 +3448,17 @@ func (s *transitionStore) RetireAccountTransitionRuntime(_ context.Context, id s
 	}
 	return retired, nil
 }
+
+func (s *transitionStore) MarkAccountRecoveryUnconfirmed(_ context.Context, id, detail string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.transitions[id]
+	if !ok || t.Phase != domain.SessionInterfaceTransitionRecovery || t.TargetRuntimeState == domain.AccountTransitionRuntimeStopped || t.TargetRuntimeState == domain.AccountTransitionRuntimeNotStarted {
+		return false, nil
+	}
+	t.ErrorCode = "TARGET_STOP_UNCONFIRMED"
+	t.ErrorDetail = detail
+	t.UpdatedAt = at
+	s.transitions[id] = t
+	return true, nil
+}

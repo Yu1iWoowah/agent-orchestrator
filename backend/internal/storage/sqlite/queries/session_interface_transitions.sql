@@ -128,3 +128,13 @@ SELECT EXISTS (
  JOIN account_transition_recovery_evidence AS r ON r.id=t.id
  WHERE t.session_id=? AND t.error_code='TARGET_STOP_UNCONFIRMED'
    AND r.retire_without_stop=0 AND r.current_target=0);
+
+-- Diagnostic updates must not rewrite the historical completion or phase.
+-- name: MarkAccountRecoveryUnconfirmed :execrows
+UPDATE session_interface_transitions
+SET error_code='TARGET_STOP_UNCONFIRMED', error_detail=sqlc.arg(error_detail),
+    updated_at=sqlc.arg(updated_at)
+WHERE session_interface_transitions.id=sqlc.arg(id)
+  AND session_interface_transitions.id IN (
+    SELECT r.id FROM account_transition_recovery_evidence AS r
+    WHERE r.retire_without_stop=0 AND r.current_target=0);

@@ -86,3 +86,12 @@ func (s *Store) RetireAccountTransitionRuntime(ctx context.Context, id string, a
 func (s *Store) HasUnconfirmedAccountTransition(ctx context.Context, id domain.SessionID) (bool, error) {
 	return s.qr.HasUnconfirmedAccountTransition(ctx, id)
 }
+
+// MarkAccountRecoveryUnconfirmed updates mutable diagnostic fields without
+// rewriting the recorded completion, phase, or other historical attribution.
+func (s *Store) MarkAccountRecoveryUnconfirmed(ctx context.Context, id, detail string, at time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.MarkAccountRecoveryUnconfirmed(ctx, gen.MarkAccountRecoveryUnconfirmedParams{ID: id, ErrorDetail: detail, UpdatedAt: at})
+	return n > 0, err
+}

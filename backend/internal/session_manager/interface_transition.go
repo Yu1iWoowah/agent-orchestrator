@@ -1843,6 +1843,8 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 		return nil, err
 	}
 	admitted := make(map[domain.SessionID]bool)
+	// Exact deferred recovery may leave sibling obligations unvisited.
+	attempted := make(map[string]bool)
 	for i := range active {
 		transition := &active[i]
 		// Rebuild this session's input/reaper fence before serving or restoring
@@ -1871,6 +1873,7 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 			}
 		}
 		if transition.AccountMove() && transition.Phase == domain.SessionInterfaceTransitionRecovery {
+			attempted[transition.ID] = true
 			if err := m.recoverTerminalAccountTransition(ctx, *transition); err != nil {
 				return nil, err
 			}
@@ -2025,8 +2028,10 @@ func (m *Manager) recoverInterfaceTransitions(ctx context.Context, transitionID 
 				continue
 			}
 			admitted[obligation.SessionID] = false
-			if err := m.markAccountRecoveryUnconfirmed(ctx, obligation); err != nil {
-				return nil, err
+			if attempted[obligation.ID] {
+				if err := m.markAccountRecoveryUnconfirmed(ctx, obligation); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

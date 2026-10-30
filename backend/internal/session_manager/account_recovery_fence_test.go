@@ -12,7 +12,30 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
+
+// Read the production binding history rather than mirroring its current value
+// into the account fake; recovery and the store must see the same commit.
+type sqliteRecoveryAccounts struct {
+	*transitionAccounts
+	db *sqlitestore.Store
+}
+
+func (a sqliteRecoveryAccounts) SessionAccountID(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (string, error) {
+	provider, ok := domain.AgentAccountProviderFor(harness)
+	if !ok {
+		return "", ports.ErrAgentAccountUnknown
+	}
+	account, found, err := a.db.GetSessionAgentAccount(ctx, id, provider)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", ports.ErrAgentAccountUnknown
+	}
+	return account, nil
+}
 
 type orderedRecoveryStore struct {
 	*transitionStore
@@ -47,11 +70,16 @@ func (r blockedRecoveryRuntime) Destroy(ctx context.Context, h ports.RuntimeHand
 }
 
 func TestRecoveryFenceCoversEveryReceiptRegardlessOfOrder(t *testing.T) {
-	for _, reverse := range []bool{false, true} {
-		t.Run(map[bool]string{false: "blocked first", true: "settled first"}[reverse], func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		reverse, exact bool
+	}{
+		{name: "blocked first"}, {name: "settled first", reverse: true}, {name: "exact deferred", exact: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			m, st, rt, _, _, _ := newAccountTransitionManager(t, domain.SessionModeTUI)
-			m.store = orderedRecoveryStore{transitionStore: st, reverse: reverse}
+			m.store = orderedRecoveryStore{transitionStore: st, reverse: tc.reverse}
 			rec := st.sessions["session-1"]
 			rec.Metadata.RuntimeLaunchID = ""
 			st.sessions[rec.ID] = rec
@@ -68,13 +96,26 @@ func TestRecoveryFenceCoversEveryReceiptRegardlessOfOrder(t *testing.T) {
 					t.Error("one receipt reopened input while another was still recovering")
 				}
 			}}
-			if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
+			var err error
+			if tc.exact {
+				_, err = m.recoverInterfaceTransitions(ctx, "a-blocked")
+			} else {
+				_, err = m.recoverInterruptedInterfaceTransitions(ctx)
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 			pending, _, _ := st.GetSessionInterfaceTransition(ctx, "a-blocked")
 			settled, _, _ := st.GetSessionInterfaceTransition(ctx, "b-settled")
-			if !m.SessionMutationInProgress(rec.ID) || pending.TargetRuntimeState != domain.AccountTransitionRuntimeStarted || settled.TargetRuntimeState != domain.AccountTransitionRuntimeStopped || pending.ErrorCode != "TARGET_STOP_UNCONFIRMED" {
+			wantSettled := domain.AccountTransitionRuntimeStopped
+			if tc.exact {
+				wantSettled = domain.AccountTransitionRuntimeStarted
+			}
+			if !m.SessionMutationInProgress(rec.ID) || pending.TargetRuntimeState != domain.AccountTransitionRuntimeStarted || settled.TargetRuntimeState != wantSettled || pending.ErrorCode != "TARGET_STOP_UNCONFIRMED" {
 				t.Fatalf("receipt fences overwrote each other: pending=%+v settled=%+v", pending, settled)
+			}
+			if tc.exact && settled.ErrorCode != "" {
+				t.Errorf("unattempted sibling was called a shutdown failure: %+v", settled)
 			}
 			blocked["a-blocked"] = false
 			if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
@@ -124,15 +165,22 @@ func TestUnconfirmedHistoricalRecoveryIsDurableAndVisible(t *testing.T) {
 	rt.aliveByHandle = map[string]bool{"blocked": true}
 	blocked := map[string]bool{"blocked": true}
 	m.runtime = blockedRecoveryRuntime{transitionRuntime: rt, blocked: blocked}
+	before, _, err := db.GetSessionInterfaceTransition(ctx, move.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
 		t.Fatal(err)
 	}
 	saved, _, _ := db.GetSessionInterfaceTransition(ctx, move.ID)
+	if !saved.CompletedAt.Equal(before.CompletedAt) || !saved.CreatedAt.Equal(before.CreatedAt) {
+		t.Errorf("classification rewrote historical timestamps: before=%+v after=%+v", before, saved)
+	}
 	status, err := m.InterfaceTransitionStatus(ctx, rec.ID)
 	if err != nil || saved.ErrorCode != "TARGET_STOP_UNCONFIRMED" || status.ReasonCode != "TARGET_STOP_UNCONFIRMED" || !m.SessionMutationInProgress(rec.ID) {
 		t.Fatalf("unconfirmed recovery was invisible: saved=%+v status=%+v err=%v", saved, status, err)
 	}
-	if strings.Contains(saved.ErrorDetail+status.Reason, "private-stop-canary") || !strings.Contains(status.Reason, "restart AO") {
+	if strings.Contains(saved.ErrorDetail+status.Reason, "private-stop-canary") || !strings.Contains(status.Reason, "automatically retry") || !strings.Contains(status.Reason, "next time it starts") {
 		t.Fatalf("unsafe or unactionable recovery classification: %s", status.Reason)
 	}
 	blocked["blocked"] = false

@@ -22,6 +22,10 @@ type accountTransitionRetirementStore interface {
 	RetireAccountTransitionRuntime(context.Context, string, time.Time) (bool, error)
 }
 
+type accountTransitionRecoveryStatusStore interface {
+	MarkAccountRecoveryUnconfirmed(context.Context, string, string, time.Time) (bool, error)
+}
+
 func (m *Manager) retireAccountTransitionRuntime(ctx context.Context, id string) (bool, error) {
 	store, ok := m.store.(accountTransitionRetirementStore)
 	if !ok {
@@ -169,7 +173,7 @@ func (m *Manager) recoverTerminalAccountTransition(ctx context.Context, t domain
 	return nil
 }
 
-const accountRecoveryUnconfirmedDetail = "AO could not confirm the old account controller stopped. Stop this session's terminal runtime, then restart AO to retry recovery."
+const accountRecoveryUnconfirmedDetail = "AO could not confirm the old account controller stopped. AO will automatically retry recovery the next time it starts."
 
 // Persist a fixed classification for obligations which remain fenced. This
 // does not broaden the older provider-error paths or record their contents.
@@ -177,11 +181,11 @@ func (m *Manager) markAccountRecoveryUnconfirmed(ctx context.Context, t domain.S
 	if t.ErrorCode == "TARGET_STOP_UNCONFIRMED" && t.ErrorDetail == accountRecoveryUnconfirmedDetail {
 		return nil
 	}
-	store, ok := m.store.(interfaceTransitionStore)
+	store, ok := m.store.(accountTransitionRecoveryStatusStore)
 	if !ok {
 		return ErrInterfaceHandoffUnsupported
 	}
-	changed, err := store.AdvanceSessionInterfaceTransition(ctx, t.ID, t.Phase, t.Phase, t.NativeConversationID, "TARGET_STOP_UNCONFIRMED", accountRecoveryUnconfirmedDetail, m.clock())
+	changed, err := store.MarkAccountRecoveryUnconfirmed(ctx, t.ID, accountRecoveryUnconfirmedDetail, m.clock())
 	if err != nil {
 		return err
 	}

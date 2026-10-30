@@ -534,6 +534,31 @@ func (q *Queries) ListUnsettledAccountTransitions(ctx context.Context) ([]Sessio
 	return items, nil
 }
 
+const markAccountRecoveryUnconfirmed = `-- name: MarkAccountRecoveryUnconfirmed :execrows
+UPDATE session_interface_transitions
+SET error_code='TARGET_STOP_UNCONFIRMED', error_detail=?1,
+    updated_at=?2
+WHERE session_interface_transitions.id=?3
+  AND session_interface_transitions.id IN (
+    SELECT r.id FROM account_transition_recovery_evidence AS r
+    WHERE r.retire_without_stop=0 AND r.current_target=0)
+`
+
+type MarkAccountRecoveryUnconfirmedParams struct {
+	ErrorDetail string
+	UpdatedAt   time.Time
+	ID          string
+}
+
+// Diagnostic updates must not rewrite the historical completion or phase.
+func (q *Queries) MarkAccountRecoveryUnconfirmed(ctx context.Context, arg MarkAccountRecoveryUnconfirmedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markAccountRecoveryUnconfirmed, arg.ErrorDetail, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markSessionInterfaceTransitionMessageDelivered = `-- name: MarkSessionInterfaceTransitionMessageDelivered :execrows
 UPDATE session_interface_transition_messages
 SET delivered_at = ?
