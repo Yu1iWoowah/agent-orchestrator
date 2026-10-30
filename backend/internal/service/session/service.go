@@ -2032,3 +2032,19 @@ func (s *Service) checkExistingAccount(ctx context.Context, existing domain.Sess
 	}
 	return nil
 }
+
+// RetryAccountRecovery retries the host-local failed controller shutdown. A remote
+// client may inspect the anonymous status but cannot mutate local accounts.
+func (s *Service) RetryAccountRecovery(ctx context.Context, id domain.SessionID) (bool, error) {
+	if ports.IsRemoteAccountRequest(ctx) {
+		return false, toAPIError(ports.ErrAgentAccountLocalOnly)
+	}
+	manager, ok := s.manager.(interface {
+		RetryAccountRecovery(context.Context, domain.SessionID) (bool, error)
+	})
+	if !ok {
+		return false, apierr.Conflict("INTERFACE_HANDOFF_UNSUPPORTED", "This build cannot retry account recovery", nil)
+	}
+	confirmed, err := manager.RetryAccountRecovery(ctx, id)
+	return confirmed, toAPIError(err)
+}

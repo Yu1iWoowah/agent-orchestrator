@@ -532,6 +532,7 @@ export function useSessionInterfaceSwitch(sessionId: string, session: WorkspaceS
 	</>;
 
 	return {
+		targetStopUnconfirmed: restartRequiredNotice || interfaceSwitch.status?.reasonCode === "TARGET_STOP_UNCONFIRMED",
 		accountMoving,
 		accountMoveTarget,
 		activeTransition,

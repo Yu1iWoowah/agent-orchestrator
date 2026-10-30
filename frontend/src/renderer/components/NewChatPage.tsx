@@ -375,6 +375,7 @@ export function NewChatPage({ projectId, hostId }: { projectId: string; hostId?:
 				// still once sent, with the agent at the top of the model menu.
 				draftSettings={frozen ? (frozenSettings ? <LaunchSettingsBar {...frozenSettings} /> : null) : (
 					<>
+						{task.accountPicker}
 						<TurnSettingsBar
 							models={barSettings.models}
 							settings={barSettings.settings}

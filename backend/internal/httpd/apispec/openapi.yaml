@@ -7302,6 +7302,58 @@ paths:
       summary: Rename a session display name
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/account-recovery:
+    post:
+      operationId: retryAccountRecovery
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryAccountRecoveryResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Retry shutdown of a fenced local account controller without starting
+        another writer
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/activity:
     post:
       operationId: setSessionActivity
@@ -15941,6 +15993,11 @@ components:
           type: string
         id:
           type: string
+        identityCheckedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         limits:
           $ref: '#/components/schemas/AgentAccountLimits'
         plan:
@@ -24063,6 +24120,13 @@ components:
       - sessionId
       - resumeMode
       - session
+      type: object
+    RetryAccountRecoveryResponse:
+      properties:
+        confirmed:
+          type: boolean
+      required:
+      - confirmed
       type: object
     RetryTurnResponse:
       properties:

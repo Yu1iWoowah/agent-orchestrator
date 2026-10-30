@@ -121,12 +121,13 @@ func (s *Service) SetAgentStopper(stop func(ctx context.Context, accountID strin
 
 // AccountView is an account with its latest readings, as the app shows it.
 type AccountView struct {
-	Account     domain.AgentAccount
-	Default     bool
-	SignedIn    bool
-	IdentityErr string
-	Limits      *domain.AgentAccountLimits
-	LimitsErr   string
+	IdentityCheckedAt *time.Time
+	Account           domain.AgentAccount
+	Default           bool
+	SignedIn          bool
+	IdentityErr       string
+	Limits            *domain.AgentAccountLimits
+	LimitsErr         string
 }
 
 // List returns every account, the computer's own first per provider. refresh
@@ -155,6 +156,10 @@ func (s *Service) List(ctx context.Context, refresh bool) ([]AccountView, error)
 		view := AccountView{Account: account, Default: def == account.ID}
 		if r != nil && account.DisabledAt == nil {
 			view.SignedIn, view.IdentityErr, view.Limits, view.LimitsErr = r.identity.SignedIn, r.identityErr, r.limits, r.limitsErr
+			if r.identityErr == "" {
+				checkedAt := r.at
+				view.IdentityCheckedAt = &checkedAt
+			}
 			if account.Device() {
 				view.Account.Email, view.Account.Plan = r.identity.Email, r.identity.Plan
 			} else if r.identity.Plan != "" {
