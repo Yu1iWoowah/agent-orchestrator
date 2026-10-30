@@ -9,7 +9,7 @@ import { openInspector } from "./support/open-inspector";
 // CI. No daemon, native provider, account credential or paid tier is contacted.
 const test = process.env.AO_E2E_ELECTRON ? base.extend({
 	page: async ({}, use, info) => {
-		const app = await electron.launch({ executablePath: require("electron") as string, args: [path.join(__dirname, "support/electron-shell.cjs")], recordVideo: { dir: info.outputPath("video"), size: { width: 1440, height: 960 } } });
+		const app = await electron.launch({ chromiumSandbox: true, executablePath: require("electron") as string, args: [path.join(__dirname, "support/electron-shell.cjs")], recordVideo: { dir: info.outputPath("video"), size: { width: 1440, height: 960 } } });
 		try {
 			const page = await app.firstWindow();
 			const isolation = await app.evaluate(({ app, BrowserWindow }) => ({
