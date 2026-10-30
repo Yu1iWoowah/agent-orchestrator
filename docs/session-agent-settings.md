@@ -184,10 +184,13 @@ retains the workspace. Repeated Kill/RequestKill returns 409
 `AGENT_SETTINGS_WRITER_UNCONFIRMED` with an explicit still-vetoed message rather
 than silently acknowledging cleanup.
 
-For a recovery session whose stop failed, Inspector offers **Retry stopping this
-session**, with explicit confirmation. Failure preserves recovery, its workspace
-and the launch fence and reports `AGENT_SETTINGS_WRITER_UNCONFIRMED` without raw
-provider diagnostics. This action stops; it never launches a replacement.
+For a live TUI restart operation in recovery, Inspector offers **Archive session**
+through the same archive flow used elsewhere in the app. Confirmation explains
+that this archives the session and removes a clean worktree while keeping its
+branch. An unconfirmed writer retains its workspace and launch veto. Failure
+preserves the error for an explicit retry and rolls back the optimistic session
+list change. This is an archive, not a stop-only action; it never launches a
+replacement. Chat recovery does not offer this TUI-specific exit.
 
 For a terminated session with a retained writer obligation, Inspector offers
 **Check retained writer**. Its HTTP boundary is
@@ -202,6 +205,9 @@ timeout or failed stop keeps the veto. The cancelled settings operation and its
 original attribution remain unchanged; a separate transactionally written
 operator receipt records the stop proof and request ID. No preference, file,
 branch or native conversation moves. Restoring afterwards is a separate action.
+An adapter that loses a noncanonical runtime handle may be unable to establish
+the required generation proof. Settlement then remains unavailable and the
+workspace and launch veto stay in place; there is no manual proof override.
 
 ## Errors and authority
 

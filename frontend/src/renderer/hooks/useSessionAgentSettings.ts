@@ -68,7 +68,6 @@ export function useChangeAgentSettings() {
 type AgentSettingsAction = { sessionId: string; hostId?: string } & (
 	| { kind: "cancel"; operationId: string; version: number }
 	| { kind: "settle"; operationId: string; version: number; stopIfAlive: boolean }
-	| { kind: "stop" }
 );
 
 export function useAgentSettingsAction() {
@@ -76,9 +75,7 @@ export function useAgentSettingsAction() {
 	return useMutation({
 		mutationFn: async (action: AgentSettingsAction) => {
 			const api = clientForSessionHost(action.hostId);
-			const result = action.kind === "stop"
-				? await api.POST("/api/v1/sessions/{sessionId}/kill", { params: { path: { sessionId: action.sessionId } }, signal: AbortSignal.timeout(30_000) })
-				: action.kind === "cancel"
+			const result = action.kind === "cancel"
 					? await api.POST("/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/cancel", {
 						params: { path: { sessionId: action.sessionId, operationId: action.operationId } }, body: { expectedVersion: action.version }, signal: AbortSignal.timeout(15_000),
 					})

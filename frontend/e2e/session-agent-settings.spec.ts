@@ -96,6 +96,10 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 	const emit = async () => page.evaluate((id) => { window.__aoFakeAgent!.setStatus(id, "idle", "idle"); window.__aoFakeAgent!.metadataChanged(id); }, sessionId);
 	return {
 		releaseReads,
+		recover: () => {
+			busy = false;
+			snapshot = { ...snapshot, pending: agentSettingsOperation({ phase: "recovery_required", checkpoint: "applying_model", applyMode: "restart", startedAt: now }) };
+		},
 		requests,
 		patches: () => patches,
 		stopForResume: () => { stopped = true; busy = false; },
@@ -252,4 +256,28 @@ test("settings show loading and unknown and preserve a long-model draft through 
 	await page.screenshot({ path: info.outputPath("long-model-narrow.png"), fullPage: true });
 	const bodyOverflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
 	expect(bodyOverflows).toBe(false);
+});
+
+test("recovery archive explains cleanup and can be cancelled without archiving @T0", async ({ page }, info) => {
+	test.skip(Boolean(process.env.AO_U4_BEFORE), "The original main has no settings recovery control");
+	await page.setViewportSize({ width: 960, height: 720 });
+	const state = await installSettings(page, "tui");
+	state.recover();
+	let archives = 0;
+	page.on("request", (request) => { if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/kill")) archives++; });
+	const inspector = await openSettings(page);
+	const before = Boolean(process.env.AO_U4_RECOVERY_BEFORE);
+	const trigger = inspector.getByRole("button", { name: before ? "Retry stopping this session" : "Archive session", exact: true });
+	await trigger.click();
+	const dialog = page.getByRole("dialog", { name: before ? "Stop this session" : "Are you sure you want to archive this session?" });
+	await expect(dialog).toBeVisible();
+	if (!before) {
+		await expect(dialog).toContainText(/clean worktree will be removed.*branch kept.*unconfirmed writer.*workspace and launch veto/i);
+		await expect(dialog.getByRole("button", { name: "Archive session", exact: true })).toBeVisible();
+	}
+	await page.screenshot({ path: info.outputPath(before ? "recovery-before.png" : "recovery-archive.png"), fullPage: true });
+	await page.keyboard.press("Escape");
+	await expect(dialog).toHaveCount(0);
+	await expect(trigger).toBeFocused();
+	expect(archives).toBe(0);
 });

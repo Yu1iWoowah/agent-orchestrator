@@ -9,8 +9,15 @@ import type { WorkspaceSession } from "../types/workspace";
 import { SessionAgentSettings } from "./SessionAgentSettings";
 import { AgentSettingsStatus } from "./AgentSettingsStatus";
 import { TooltipProvider } from "./ui/tooltip";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { terminateSessionMutationKey } from "../hooks/useTerminateSession";
+import { appI18n } from "../i18n";
 
-const { getMock, patchMock, postMock, connection } = vi.hoisted(() => ({ getMock: vi.fn(), patchMock: vi.fn(), postMock: vi.fn(), connection: { trusted: true } }));
+const { getMock, patchMock, postMock, captureRendererEventMock, connection } = vi.hoisted(() => ({ getMock: vi.fn(), patchMock: vi.fn(), postMock: vi.fn(), captureRendererEventMock: vi.fn(), connection: { trusted: true } }));
+vi.mock("../lib/telemetry", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/telemetry")>(),
+	captureRendererEvent: captureRendererEventMock,
+}));
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, PATCH: patchMock, POST: postMock },
 	getApiBaseUrl: () => "http://127.0.0.1:43791",
@@ -48,6 +55,7 @@ beforeEach(() => {
 		return { data: { operation }, response: new Response(null, { status: 202 }) };
 	});
 	postMock.mockReset();
+	captureRendererEventMock.mockClear();
 });
 afterEach(() => {
 	cleanup();
@@ -160,6 +168,63 @@ describe("Session agent settings intent", () => {
 		expect(await within(dialog).findByText(/writer-request/)).toBeVisible();
 		expect(postMock.mock.calls[0][1].body).toEqual({ expectedVersion: 7, stopIfAlive: true });
 		expect(screen.getByText(/workspace is retained/)).toBeVisible();
+	});
+
+	it.each([
+		{ language: "en", label: "Archive session", title: "Are you sure you want to archive this session?", description: /clean worktree will be removed.*branch kept.*unconfirmed writer.*workspace and launch veto/i },
+		{ language: "zh-TW", label: "封存 session", title: "確定要封存這個 session 嗎？", description: /乾淨的 worktree 會被移除.*branch 會保留.*writer.*workspace.*啟動限制/ },
+	])("explains recovery archive consequences and uses shared archive state ($language)", async ({ language, label, title, description }) => {
+		await act(async () => { await appI18n.changeLanguage(language); });
+		try {
+			server = agentSettingsSnapshot({ restartRequired: true, pending: agentSettingsOperation({ phase: "recovery_required", applyMode: "restart", startedAt: "2026-10-30T09:00:01Z" }) });
+			postMock.mockResolvedValue({ data: { ok: true } });
+			const client = showSession({ mode: "tui" });
+			client.setQueryData(workspaceQueryKey, [{ id: "ws-1", kind: "single_repo", name: "Fake workspace", path: "/fake/workspace", sessions: [{ ...session, mode: "tui" }] }]);
+			await userEvent.click(screen.getByRole("button", { name: appI18n.t("agentSettings.title") }));
+			await userEvent.click(await screen.findByRole("button", { name: label }));
+			const dialog = await screen.findByRole("dialog", { name: title });
+			expect(dialog).toHaveTextContent(description);
+			expect(postMock).not.toHaveBeenCalled();
+			await userEvent.click(within(dialog).getByRole("button", { name: label }));
+			await waitFor(() => expect(client.getMutationCache().find({ mutationKey: terminateSessionMutationKey })?.state.status).toBe("success"));
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", expect.objectContaining({ params: { path: { sessionId: "sess-1" } }, body: undefined }));
+			expect(client.getQueryData(workspaceQueryKey)).toEqual([expect.objectContaining({ sessions: [expect.objectContaining({ id: "sess-1", isTerminated: true })] })]);
+			expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_kill_succeeded", { project_id: "ws-1" });
+		} finally {
+			await act(async () => { await appI18n.changeLanguage("en"); });
+		}
+	});
+
+	it("restores shared session state and offers an explicit retry when recovery archive fails", async () => {
+		server = agentSettingsSnapshot({ restartRequired: true, pending: agentSettingsOperation({ phase: "recovery_required", applyMode: "restart", startedAt: "2026-10-30T09:00:01Z" }) });
+		postMock.mockResolvedValueOnce({ error: { message: "Writer is still unconfirmed" }, response: new Response(null, { status: 409 }) }).mockResolvedValue({ data: { ok: true } });
+		const client = showSession({ mode: "tui" });
+		const workspaces = [{ id: "ws-1", kind: "single_repo", name: "Fake workspace", path: "/fake/workspace", sessions: [{ ...session, mode: "tui" }] }];
+		client.setQueryData(workspaceQueryKey, workspaces);
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Archive session" }));
+		const dialog = screen.getByRole("dialog", { name: "Are you sure you want to archive this session?" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Archive session" }));
+		expect(await within(dialog).findByRole("alert")).toHaveTextContent("Writer is still unconfirmed");
+		expect(client.getQueryData(workspaceQueryKey)).toEqual(workspaces);
+		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_kill_failed", { project_id: "ws-1" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Archive session" }));
+		await waitFor(() => expect(client.getMutationCache().findAll({ mutationKey: terminateSessionMutationKey }).at(-1)?.state.status).toBe("success"));
+		expect(postMock).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([
+		{ mode: "chat", applyMode: "after-turn", isTerminated: false },
+		{ mode: "chat", applyMode: "restart", isTerminated: false },
+		{ mode: "tui", applyMode: "after-turn", isTerminated: false },
+		{ mode: "tui", applyMode: "restart", isTerminated: true },
+	] satisfies { mode: "chat" | "tui"; applyMode: "after-turn" | "restart"; isTerminated: boolean }[])("does not offer recovery archive outside a live TUI restart ($mode, $applyMode, terminated=$isTerminated)", async ({ mode, applyMode, isTerminated }) => {
+		server = agentSettingsSnapshot({ pending: agentSettingsOperation({ phase: "recovery_required", applyMode, startedAt: "2026-10-30T09:00:01Z" }) });
+		showSession({ mode, isTerminated });
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		await screen.findByText("This operation has started. Further choices may return a conflict until it finishes.");
+		expect(screen.queryByRole("button", { name: /Archive session|Retry stopping/ })).not.toBeInTheDocument();
+		expect(postMock).not.toHaveBeenCalled();
 	});
 
 	it("never offers cancellation after a pending operation starts", async () => {

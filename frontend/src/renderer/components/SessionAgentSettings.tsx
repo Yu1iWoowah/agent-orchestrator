@@ -88,7 +88,7 @@ export function SessionAgentSettings({ session, hostId }: { session: WorkspaceSe
 					</dl>
 				</div>
 				{snapshot.writerRecovery && <p className="text-warning [overflow-wrap:anywhere]" role="alert">{t("agentSettings.writerUnconfirmed")}</p>}
-				<AgentSettingsRecovery hostId={hostId} key={`recovery:${hostId ?? "local"}:${session.id}`} sessionId={session.id} snapshot={snapshot} terminated={session.isTerminated === true} />
+				<AgentSettingsRecovery hostId={hostId} key={`recovery:${hostId ?? "local"}:${session.id}`} session={session} snapshot={snapshot} />
 				{Boolean(snapshot.history?.length) && <details className="min-w-0">
 					<summary className="cursor-pointer font-medium">{t("agentSettings.history")}</summary>
 					<ol className="mt-2 divide-y divide-border">
