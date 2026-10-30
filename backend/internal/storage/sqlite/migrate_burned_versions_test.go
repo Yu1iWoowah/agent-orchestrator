@@ -21,6 +21,7 @@ import (
 // produces exactly that class of failure, so this list is append-only.
 var shippedMigrations = map[int64]string{
 	20261030173049692: "20261030173049692_reviewer_agent_settings.sql",
+	20261030101902833: "20261030101902833_agent_account_legacy_conflict_outcome.sql",
 	20261030090402684: "20261030090402684_agent_settings_writer_settlement.sql",
 	20261030061939220: "20261030061939220_replacement_activated_native_writer.sql",
 	20261029232658295: "20261029232658295_account_transition_recovery_evidence.sql",
