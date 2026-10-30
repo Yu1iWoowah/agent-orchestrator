@@ -55,7 +55,7 @@ func (m *Manager) DeliverReplacementWorkerFYI(ctx context.Context, expected doma
 		}
 		// Early read avoids consuming attempts for an ordinary human draft.
 		// The input-lease check repeats this immediately before the write.
-		if m.composerHoldsDraft(ctx, worker, m.lastTerminalInputAt(worker)) {
+		if !m.noticeComposerClear(ctx, worker, m.lastTerminalInputAt(worker)) {
 			return nil
 		}
 	}
@@ -82,10 +82,18 @@ func (m *Manager) DeliverReplacementWorkerFYI(ctx context.Context, expected doma
 			if _, _, _, err := authority.ValidateReplacementWorkerNotice(ctx, op.ID, target, claim.AttemptID, claim.Revision); err != nil {
 				return err
 			}
-			return exact(ctx, current)
+			if err := exact(ctx, current); err != nil {
+				return err
+			}
+			// The fenced probe already settled preceding keystrokes. Do not
+			// reenter the terminal input port while its fence is held.
+			if !m.noticeComposerClear(ctx, current, time.Time{}) {
+				return domain.ErrReplacementSourceBusy
+			}
+			return nil
 		}
 		var outcome sessionguard.Outcome
-		outcome, err = m.messenger.DeliverWithOwnershipCheck(ctx, target, domain.WrapSessionDelivery(claim.NativeDeliveryID(), op.WorkerFYI()), proof, m.composerBusyCheck(), nil)
+		outcome, err = m.messenger.DeliverWithOwnershipCheck(ctx, target, domain.WrapSessionDelivery(claim.NativeDeliveryID(), op.WorkerFYI()), proof, m.noticeComposerBusyCheck(), nil)
 		attempted = outcome == sessionguard.Sent
 	}
 	// A cancelled caller is not evidence that a write was unattempted. Preserve

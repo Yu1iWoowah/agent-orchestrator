@@ -18,6 +18,7 @@ type noticeDeliveryStore struct {
 	begins, finishes int
 	attempted        bool
 	onValidate       func()
+	onBegin          func()
 }
 
 func (s *noticeDeliveryStore) GetOrchestratorReplacement(context.Context, string) (domain.OrchestratorReplacement, bool, error) {
@@ -29,6 +30,10 @@ func (s *noticeDeliveryStore) BeginReplacementWorkerNotice(_ context.Context, id
 	}
 	s.begins++
 	s.receipt = domain.ReplacementNoticeReceipt{OperationID: id, SessionID: target, ContactID: "public-contact", Mode: owner.Mode, Owner: owner, State: domain.ReplacementNoticeUncertain, AttemptID: "private-attempt", Revision: 1}
+	if s.onBegin != nil {
+		s.onBegin()
+		s.onBegin = nil
+	}
 	return s.receipt, true, nil
 }
 func (s *noticeDeliveryStore) FinishReplacementWorkerNotice(_ context.Context, _ string, _ domain.SessionID, _ string, _ int64, attempted bool, _ time.Time) (bool, error) {
@@ -52,13 +57,20 @@ func (s *noticeDeliveryStore) ValidateReplacementWorkerNotice(ctx context.Contex
 	return s.op, rec, s.receipt, err
 }
 func TestReplacementWorkerTUINoticeUsesOneSafeWriteAndNoNudge(t *testing.T) {
-	for _, variant := range []string{"idle", "active", "blocked", "draft", "exited", "terminated", "owner rotation", "write error", "stale operation"} {
+	for _, variant := range []string{"idle", "active", "blocked", "draft", "exited", "terminated", "owner rotation", "write error", "stale operation", "missing input fence", "missing inspector"} {
 		t.Run(variant, func(t *testing.T) {
 			frame := idleTerminalOutput
 			if variant == "draft" {
 				frame = draftTerminalOutput
 			}
 			m, msg := composerSendTestManager(t, frame)
+			m.SetTerminalInputGate(&fencingInputGate{})
+			if variant == "missing input fence" {
+				m.SetTerminalInputGate(nil)
+			}
+			if variant == "missing inspector" {
+				m.agents = singleAgent{transitionAgent{}}
+			}
 			base := m.store.(*fakeStore)
 			worker := base.sessions["s1"]
 			worker.ProjectID, worker.Kind, worker.ProvisionState = "mer", domain.KindWorker, domain.SessionProvisionReady
@@ -115,6 +127,56 @@ func TestReplacementWorkerTUINoticeUsesOneSafeWriteAndNoNudge(t *testing.T) {
 				t.Fatal("FYI changed worker lifecycle", rt)
 			}
 		})
+	}
+}
+
+func TestReplacementWorkerFYIRefusesUnverifiedNativeSurface(t *testing.T) {
+	for _, stage := range []string{"before reservation", "after reservation", "after validation"} {
+		for _, surface := range []string{"native active", "approval", "unknown", "capture failure"} {
+			t.Run(stage+"/"+surface, func(t *testing.T) {
+				m, msg := composerSendTestManager(t, idleTerminalOutput)
+				base := m.store.(*fakeStore)
+				worker := base.sessions["s1"]
+				worker.ProjectID, worker.Kind, worker.ProvisionState = "mer", domain.KindWorker, domain.SessionProvisionReady
+				worker.Metadata.RuntimeLaunchID, worker.Metadata.AgentSessionID, worker.Metadata.AgentSessionIDLaunchID = "launch", "native", "launch"
+				base.sessions[worker.ID] = worker
+				rt := m.runtime.(*transitionRuntime)
+				rt.aliveByHandle = map[string]bool{"h1": true}
+				gate := &fencingInputGate{}
+				m.SetTerminalInputGate(gate)
+				store := &noticeDeliveryStore{fakeStore: base, op: domain.OrchestratorReplacement{ID: "operation", ProjectID: "mer", Phase: domain.ReplacementNotifying, Revision: 1}}
+				m.store = store
+				unsafe := func() {
+					frame := ambiguousTerminalOutput
+					switch surface {
+					case "native active":
+						frame = activeTerminalOutput
+					case "approval":
+						frame = decisionTerminalOutput
+					case "capture failure":
+						rt.styledOutputErr = errors.New("native capture failed")
+					}
+					rt.outputForCall = func(int) string { return frame }
+				}
+				if stage == "before reservation" {
+					unsafe()
+				} else if stage == "after validation" {
+					store.onValidate = unsafe
+				} else {
+					store.onBegin = unsafe
+				}
+				_ = m.DeliverReplacementWorkerFYI(context.Background(), store.op, worker.ID)
+				if len(msg.msgs) != 0 || store.attempted {
+					t.Fatalf("unverified native surface received FYI: writes=%d attempted=%v state=%s", len(msg.msgs), store.attempted, store.receipt.State)
+				}
+				if stage == "before reservation" && store.begins != 0 {
+					t.Fatal("failed native preflight consumed a notice attempt", store.begins)
+				}
+				if gate.held != gate.released || base.sessions[worker.ID].ControllerOwner() != worker.ControllerOwner() || base.sessions[worker.ID].Activity.State != domain.ActivityIdle {
+					t.Fatal("refused FYI changed worker or leaked its input fence", gate)
+				}
+			})
+		}
 	}
 }
 
