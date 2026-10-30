@@ -11,6 +11,7 @@ import { questionSourceQueryOptions } from "../../hooks/useSessionQuestions";
 import { createFullAppI18n } from "../../i18n/all-messages";
 import type { DecisionTarget } from "../../lib/decision-target";
 import { useUiStore } from "../../stores/ui-store";
+import { QuestionAnswerRuntime } from "../../hooks/useQuestionAnswerRecovery";
 
 const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("../../lib/host-clients", () => ({ clientForSessionHost: (host?: string) => ({ GET: (path: string, request: unknown) => get(host, path, request), POST: (path: string, request: unknown) => post(host, path, request) }), labelForHost: () => "Remote computer" }));
@@ -34,9 +35,10 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); client.clear(); surface.remove(); });
 
-function Harness({ target = questionTarget, hostId, rect = { left: 16, top: 48, width: 700, height: 600 } }: { target?: DecisionTarget; hostId?: string; rect?: { left: number; top: number; width: number; height: number } }) {
+function Harness({ target = questionTarget, hostId, recover = false, rect = { left: 16, top: 48, width: 700, height: 600 } }: { target?: DecisionTarget; hostId?: string; recover?: boolean; rect?: { left: number; top: number; width: number; height: number } }) {
 	const [open, setOpen] = useState(false); const trigger = useRef<HTMLButtonElement>(null);
 	return <div onKeyDown={(event) => { if (event.key === "Escape") outsideEscape(); }}>
+		{recover ? <QuestionAnswerRuntime /> : null}
 		<button ref={trigger} onClick={() => setOpen(true)}>Open decision</button>
 		<DecisionDialog target={open ? target : undefined} sessionId="session" hostId={hostId} sourceAgent="claude-code" bounds={{ surface, rect }} onClose={() => setOpen(false)} onLocate={locate} onRestoreFocus={() => trigger.current?.focus()} />
 	</div>;
@@ -179,4 +181,46 @@ it.each(["answered", "cancelled", "expired"] as const)("keeps a %s question open
 	await screen.findByRole("radio", { name: /Staging/ });
 	expect(screen.getByRole("dialog")).toBeVisible();
 	expect(screen.queryByRole("button", { name: "Submit all answers" })).not.toBeInTheDocument();
+});
+
+it.each([409, 404].flatMap((status) => (["answered", "cancelled", "expired"] as const).map((state) => ({ status, state }))))(
+	"keeps the conflict and submitted draft visible after $status with a $state source", async ({ status, state }) => {
+		let question = sessionQuestionFixture({ read: true });
+		get.mockImplementation(() => Promise.resolve({ data: question, response: { status: 200 } }));
+		post.mockImplementation(() => {
+			question = { ...question, state, answer: state === "answered" ? savedReceipt : undefined };
+			return Promise.resolve({ error: { code: "QUESTION_CHANGED", message: "Answered elsewhere or closed" }, response: { status } });
+		});
+		show(); const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "Open decision" }));
+		await user.click(within(await screen.findByRole("group", { name: /Where should/ })).getByRole("radio", { name: "Other" }));
+		await user.type(screen.getByRole("textbox", { name: "Other answer: Target" }), "Keep my submitted answer");
+		await user.click(screen.getByRole("checkbox", { name: "Tests" }));
+		await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+		await screen.findByText(state === "answered" ? "Saved · Pending delivery" : state === "cancelled" ? "Cancelled" : "Expired", { exact: true });
+		await screen.findByText(/This request changed or was answered elsewhere/);
+		expect(screen.getByRole("dialog")).toBeVisible();
+		await user.click(screen.getByText("Previous draft · version 1 · reference only"));
+		expect(screen.getByText(/Other: Keep my submitted answer/)).toBeVisible();
+	});
+
+it.each(["submitting", "unknown"] as const)("keeps the dialog when another answer arrives while %s", async (phase) => {
+	let question = sessionQuestionFixture({ read: true });
+	get.mockImplementation(() => Promise.resolve({ data: question, response: { status: 200 } }));
+	let finish = () => {};
+	post.mockImplementation(() => phase === "unknown" ? Promise.reject(new TypeError("Lost response")) : new Promise((resolve) => {
+		finish = () => resolve({ error: { code: "QUESTION_CHANGED" }, response: { status: 409 } });
+	}));
+	show({ recover: true }); const user = userEvent.setup();
+	await user.click(screen.getByRole("button", { name: "Open decision" }));
+	await user.click(await screen.findByRole("radio", { name: /Staging/ }));
+	await user.click(screen.getByRole("checkbox", { name: "Tests" }));
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await waitFor(() => expect(Object.values(useQuestionDraftStore.getState().entries)[0]?.phase.state).toBe(phase));
+	question = { ...question, state: "answered", answer: savedReceipt };
+	await act(async () => { await client.invalidateQueries({ queryKey: questionSourceQueryOptions({ sessionId: "session", questionId: "ask-1" }).queryKey }); });
+	await screen.findByText(/This request changed or was answered elsewhere/);
+	expect(screen.getByRole("dialog")).toBeVisible();
+	expect(screen.getByText("Previous draft · version 1 · reference only")).toBeVisible();
+	await act(async () => { finish(); });
 });

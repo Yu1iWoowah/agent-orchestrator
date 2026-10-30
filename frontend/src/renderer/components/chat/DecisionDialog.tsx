@@ -11,6 +11,7 @@ import { QuestionNotFound, QuestionsUnavailable, questionSourceQueryOptions, ses
 import { InvalidQuestionResponse } from "../../lib/session-questions";
 import { clientForSessionHost } from "../../lib/host-clients";
 import { QuestionDecisionView } from "./QuestionDecisionView";
+import { questionDraftKey, useQuestionDraftStore } from "../../stores/question-draft-store";
 
 type Lookup = { target: DecisionTarget; scope: string } & (
 	| { state: "loading" }
@@ -136,8 +137,13 @@ function QuestionSourceBody({ sessionId, hostId, questionId, compact, onClose, o
 	useEffect(() => {
 		const previous = previousQuestion.current;
 		previousQuestion.current = question;
-		if (question && previous?.id === question.id && previous.state === "open" && question.state !== "open") onClose();
-	}, [question, onClose]);
+		if (!question || previous?.id !== question.id || previous.state !== "open" || question.state === "open") return;
+		const key = questionDraftKey({ hostId, sessionId: question.originSessionId, questionId: question.id, version: previous.version });
+		const phase = useQuestionDraftStore.getState().entries[key]?.phase;
+		if (phase?.state === "conflict") return;
+		if ((phase?.state === "submitting" || phase?.state === "unknown") && question.answer?.clientAnswerId !== phase.answer.clientAnswerId) return;
+		onClose();
+	}, [question, hostId, onClose]);
 	useEffect(() => {
 		if (!question || query.isError || question.state !== "open" || question.read || seen.current.has(question.version)) return;
 		seen.current.add(question.version);

@@ -58,6 +58,18 @@ test("409 keeps the old draft as a reference and requires new choices @T0", asyn
 	await expect(page.getByRole("dialog").getByRole("checkbox", { checked: true })).toHaveCount(0);
 });
 
+for (const state of ["answered", "cancelled"]) test(`409 with ${state} source keeps the conflict and submitted draft visible @T0`, async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 1000 });
+	const { dialog } = await openQuestion(page, `?answer=conflict-${state}`);
+	await fillGrouped(page);
+	await dialog.getByRole("button", { name: "Submit all answers" }).click();
+	await expect(dialog.getByText("This request changed or was answered elsewhere. Your previous draft is kept for reference. Reload the latest request.", { exact: true })).toBeVisible();
+	await expect(dialog).toBeVisible();
+	await dialog.getByText("Previous draft · version 1 · reference only", { exact: true }).click();
+	await expect(dialog.getByText(/Other: Verify rollback/)).toBeVisible();
+	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+});
+
 for (const mode of ["lost", "delay"]) test(`closing during ${mode} response recovers receipt without a second POST @T0`, async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 1000 });
 	await openQuestion(page, `?answer=${mode}`);
