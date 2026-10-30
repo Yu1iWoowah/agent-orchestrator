@@ -273,7 +273,7 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
-	if got, want := listPanePIDsArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1", "-F", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
+	if got, want := listPanePIDsArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1:", "-F", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("listPanePIDsArgs = %#v, want %#v", got, want)
 	}
 	if got, want := sendKeysLiteralArgs("sess-1", "hello"), []string{"send-keys", "-t", "sess-1", "-l", "hello"}; !reflect.DeepEqual(got, want) {
@@ -993,6 +993,21 @@ func TestDestroyIsIdempotentWhenSessionMissing(t *testing.T) {
 	}
 	if len(fr.calls) != 3 || fr.calls[0].args[0] != "list-panes" || fr.calls[1].args[0] != "set-option" || fr.calls[2].args[0] != "kill-session" {
 		t.Fatalf("calls = %#v, want list-panes, set-option, then kill-session", fr.calls)
+	}
+}
+
+func TestDestroyIsIdempotentWhenNoSuchSession(t *testing.T) {
+	for _, command := range []string{"set-option", "kill-session"} {
+		t.Run(command, func(t *testing.T) {
+			r, _ := newTestRuntime(0)
+			r.runner = &fakeRunnerSelectiveErr{
+				exitErrOn: command,
+				errOutput: []byte("no such session: =review-worker-1:"),
+			}
+			if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "review-worker-1"}); err != nil {
+				t.Fatalf("Destroy already-missing reviewer: %v", err)
+			}
+		})
 	}
 }
 

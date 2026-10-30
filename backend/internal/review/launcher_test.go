@@ -447,6 +447,7 @@ func (f fakeAgentAuthResolver) AuthStatus(context.Context, domain.ReviewerHarnes
 type fakeRuntime struct {
 	createCfg         ports.RuntimeConfig
 	createErr         error
+	destroyErr        error
 	sentMsg           string
 	sentMsgs          []string
 	sentInput         string
@@ -489,7 +490,7 @@ func (f *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) err
 	if !f.created {
 		f.destroyBefore = true
 	}
-	return nil
+	return f.destroyErr
 }
 func (f *fakeRuntime) IsAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
 	return f.alive, nil
@@ -629,6 +630,19 @@ func TestLauncherSpawnReplacesStalePane(t *testing.T) {
 	}
 	if !rt.destroyBefore {
 		t.Fatal("stale pane must be destroyed before the fresh pane is created")
+	}
+}
+
+func TestLauncherSpawnPreservesStalePaneCleanupError(t *testing.T) {
+	want := errors.New("tmux: permission denied")
+	rt := &fakeRuntime{destroyErr: want}
+	l := newTestLauncher(t, &fakeReviewer{}, rt)
+	_, err := l.Spawn(context.Background(), launchSpec())
+	if !errors.Is(err, want) || !strings.Contains(err.Error(), "reviewer replace stale pane") {
+		t.Fatalf("Spawn error = %v, want wrapped cleanup error %v", err, want)
+	}
+	if rt.created {
+		t.Fatal("Spawn created a pane after cleanup failed")
 	}
 }
 
