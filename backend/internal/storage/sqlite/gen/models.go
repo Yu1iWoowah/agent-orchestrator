@@ -636,6 +636,13 @@ type OrchestratorReplacementReleasedSession struct {
 	SessionID   string
 }
 
+type OrchestratorReplacementRepairSnapshot struct {
+	OperationID string
+	Revision    int64
+	Digest      string
+	Payload     []byte
+}
+
 type PR struct {
 	URL                      string
 	SessionID                domain.SessionID
@@ -760,6 +767,11 @@ type ProjectDocumentState struct {
 	ProjectID string
 	Revision  int64
 	StateJson string
+}
+
+type ReplacementHumanIntakeReceipt struct {
+	MessageID     string
+	InteractionAt time.Time
 }
 
 type Report struct {

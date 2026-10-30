@@ -108,6 +108,10 @@ func settledHibernationHarness(t *testing.T, state domain.TurnState, gate ...fun
 }
 
 func hibernationHarnessWith(t *testing.T, state domain.TurnState, configure func(*chatsvc.Options)) (*harness, *hibernationConversation) {
+	return hibernationHarnessForKind(t, state, "", configure)
+}
+
+func hibernationHarnessForKind(t *testing.T, state domain.TurnState, kind domain.SessionKind, configure func(*chatsvc.Options)) (*harness, *hibernationConversation) {
 	t.Helper()
 	conv := &hibernationConversation{fakeConversation: newFakeConversation()}
 	st := openStore(t)
@@ -129,7 +133,11 @@ func hibernationHarnessWith(t *testing.T, state domain.TurnState, configure func
 	configure(&opts)
 	h.svc = chatsvc.New(opts)
 	ctx := context.Background()
-	ctrl, err := h.svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir()})
+	harness := domain.HarnessCodex
+	if kind == domain.KindOrchestrator {
+		harness = domain.HarnessClaudeCode
+	}
+	ctrl, err := h.svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Kind: kind, Harness: harness, WorkspacePath: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

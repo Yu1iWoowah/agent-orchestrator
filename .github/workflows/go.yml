@@ -102,6 +102,10 @@ jobs:
 
   session-store-race:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     defaults:
       run:
         working-directory: backend
@@ -113,8 +117,18 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Test session manager and SQLite store
-        run: go test -race -count=1 -timeout=20m ./internal/session_manager ./internal/storage/sqlite/store
+      - name: Test session manager
+        if: matrix.shard == 0
+        run: go test -race -count=1 -timeout=20m ./internal/session_manager
+
+      - name: Test SQLite store shard
+        # Keep the real 512 MiB history boundary, including its SQLite JSON
+        # guards. Run every Store test once without one aggregate 20m budget.
+        run: |
+          tests=$(go test -race -list . ./internal/storage/sqlite/store | grep -E '^(Test|Example|Fuzz)')
+          selected=$(printf '%s\n' "$tests" | awk -v shard=${{ matrix.shard }} '((NR - 1) % 4) == shard' | paste -sd '|' -)
+          test -n "$selected"
+          go test -race -count=1 -timeout=20m -run "^($selected)$" ./internal/storage/sqlite/store
 
   sqlite-race:
     runs-on: ubuntu-latest

@@ -92,6 +92,11 @@ func (m *Manager) StartAccountTransition(
 	accountID string,
 	policy domain.SessionInterfaceTransitionPolicy,
 ) (domain.SessionInterfaceTransition, error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return domain.SessionInterfaceTransition{}, err
+	}
+	defer releaseReplacement()
 	if !policy.Valid() {
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("transition policy %q is invalid", policy)
 	}

@@ -223,6 +223,14 @@ func TestFailedBatchRetryPreservesEveryProviderInput(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("batch leader = %+v, %v", message, err)
 	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		for _, turn := range s.Turns {
+			if turn.ID == message.TurnID && turn.ProviderTurnID != "" {
+				return true
+			}
+		}
+		return false
+	})
 	turn, err := h.st.TurnByID(ctx, message.TurnID)
 	if err != nil || turn.ProviderInputText != original.Text {
 		t.Fatalf("recorded provider input = %+v, %v", turn, err)

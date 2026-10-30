@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"regexp"
 	"sync"
@@ -129,14 +130,23 @@ func (m *Manager) SetSessionInputLease(lease sessionguard.InputLease) {
 	m.inputLeaseMu.Unlock()
 }
 
-func (m *Manager) acquireSessionInput(id string) (func(), bool) {
+func (m *Manager) acquireSessionInput(ctx context.Context, id string) (func(), error) {
 	m.inputLeaseMu.RLock()
 	lease := m.inputLease
 	m.inputLeaseMu.RUnlock()
 	if lease == nil {
-		return func() {}, true
+		return func() {}, nil
 	}
-	return lease.AcquireSessionInput(domain.SessionID(id))
+	if checked, ok := lease.(interface {
+		AcquireTerminalInput(context.Context, domain.SessionID) (func(), error)
+	}); ok {
+		return checked.AcquireTerminalInput(ctx, domain.SessionID(id))
+	}
+	release, ok := lease.AcquireSessionInput(domain.SessionID(id))
+	if !ok {
+		return nil, errors.New("session input is disabled while an exclusive session operation is in progress")
+	}
+	return release, nil
 }
 
 // NewManager builds a Manager. src opens attach Streams; events feeds the session
@@ -525,14 +535,13 @@ type inputWriter struct {
 type queuedInput struct {
 	a          *attachment
 	raw        []byte
-	release    func()
 	closeAfter bool
 }
 
 // run writes the queue in order. prev is the terminal's retired writer, if it
 // may still be draining; waiting for it keeps keys typed before a close and
 // reopen ahead of keys typed after.
-func (w *inputWriter) run(m *Manager, terminalID string, prev *inputWriter) {
+func (w *inputWriter) run(c *connState, terminalID string, prev *inputWriter) {
 	defer close(w.done)
 	if prev != nil {
 		<-prev.done
@@ -542,7 +551,14 @@ func (w *inputWriter) run(m *Manager, terminalID string, prev *inputWriter) {
 			in.a.close()
 			continue
 		}
-		m.writeInput(terminalID, in.a, in.raw, in.release)
+		// Project admission can wait behind send/spawn/retirement. Keep that
+		// wait on this terminal's writer, never on the multiplexed read loop.
+		release, err := c.mgr.acquireSessionInput(c.ctx, terminalID)
+		if err != nil {
+			c.enqueue(serverMsg{Ch: chTerminal, ID: terminalID, Type: msgError, Error: err.Error()})
+			continue
+		}
+		c.mgr.writeInput(terminalID, in.a, in.raw, release)
 	}
 }
 
@@ -552,7 +568,7 @@ func (c *connState) queueInput(terminalID string, in queuedInput) {
 	w := c.writers[terminalID]
 	if w == nil || w.retired {
 		next := &inputWriter{queue: make(chan queuedInput, inputQueueDepth), done: make(chan struct{})}
-		go next.run(c.mgr, terminalID, w)
+		go next.run(c, terminalID, w)
 		c.writers[terminalID] = next
 		w = next
 	}
@@ -610,19 +626,13 @@ func (c *connState) handleTerminal(msg clientMsg) {
 		if err != nil {
 			return
 		}
-		release, ok := c.mgr.acquireSessionInput(msg.ID)
-		if !ok {
-			c.enqueue(serverMsg{Ch: chTerminal, ID: msg.ID, Type: msgError, Error: "session input is disabled while an exclusive session operation is in progress"})
-			return
-		}
 		// A drain refuses input received while it is held, even if the write
 		// itself would only run after the drain ends.
 		a := c.lookup(msg.ID)
 		if a == nil || c.mgr.inputRefused(msg.ID) {
-			release()
 			return
 		}
-		c.queueInput(msg.ID, queuedInput{a: a, raw: raw, release: release})
+		c.queueInput(msg.ID, queuedInput{a: a, raw: raw})
 	case msgResize:
 		// The client reports the grid it fits to; the manager arbitrates the shared
 		// PTY's size across all viewers and resizes the attach Stream itself (see
@@ -900,6 +910,8 @@ func (c *connState) heartbeatLoop(ctx context.Context, interval time.Duration) {
 }
 
 func (c *connState) cleanup() {
+	// Unblock pending admission before closing/draining writer queues.
+	c.cancel()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()

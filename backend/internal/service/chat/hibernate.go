@@ -98,6 +98,9 @@ func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID s
 		return nil
 	}
 	err = s.wakeHibernated(ctx, id)
+	if errors.Is(err, domain.ErrReplacementIntakeFenced) {
+		err = nil
+	}
 	// A slow native reconnect can outlive one lease interval. Extend this
 	// viewer's lease only if a concurrent leave has not removed it.
 	s.viewMu.Lock()
@@ -247,6 +250,12 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	// stopping the provider in case the setting changes during those reads.
 	if !opts.enabled(s) {
 		return false, nil
+	}
+	if err := s.replacementWakeFence(ctx, id); err != nil {
+		if errors.Is(err, domain.ErrReplacementIntakeFenced) {
+			return false, nil
+		}
+		return false, err
 	}
 	marker, ok := s.sessions.(hibernationStore)
 	if !ok {
@@ -563,6 +572,9 @@ func (s *Service) admitController(ctx context.Context, id domain.SessionID, wake
 }
 
 func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error {
+	if err := s.replacementWakeFence(ctx, id); err != nil {
+		return err
+	}
 	if s.wakeChat == nil {
 		return ErrNoController
 	}
@@ -657,6 +669,12 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 	wakeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	defer cancel()
 	if err := s.wakeChat(wakeCtx, id); err != nil {
+		// Admission may change after the preflight read. Manager's public
+		// resume path returns its own fence errors; preserve them while keeping
+		// view/background wake from treating refusal as provider failure.
+		if errors.Is(err, domain.ErrReplacementInProgress) || errors.Is(err, domain.ErrReplacementSourceRetired) {
+			err = fmt.Errorf("%w: %w", domain.ErrReplacementIntakeFenced, err)
+		}
 		return finish(err)
 	}
 	if !s.HasLiveChatController(id) {
@@ -684,6 +702,9 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 		}()
 		ctx := context.Background()
 		if err := s.wakeHibernated(ctx, id); err != nil {
+			if errors.Is(err, domain.ErrReplacementIntakeFenced) {
+				return
+			}
 			if s.stoppedForUpdate(id) {
 				s.log.Warn("chat session could not wake during a harness update; queued messages kept for its resume", "session", id, "err", err)
 				return

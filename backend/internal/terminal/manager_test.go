@@ -468,8 +468,8 @@ func TestReopenedTerminalsWriterWaitsForTheRetiredOne(t *testing.T) {
 
 	retired := &inputWriter{queue: make(chan queuedInput), done: make(chan struct{}), retired: true}
 	next := &inputWriter{queue: make(chan queuedInput, 1), done: make(chan struct{})}
-	go next.run(mgr, "t1", retired)
-	next.queue <- queuedInput{a: a, raw: []byte("after"), release: func() {}}
+	go next.run(&connState{mgr: mgr, ctx: ctx}, "t1", retired)
+	next.queue <- queuedInput{a: a, raw: []byte("after")}
 	time.Sleep(50 * time.Millisecond)
 	if got := string(pty.writtenBytes()); got != "" {
 		t.Fatalf("new writer wrote %q while the retired one was still draining", got)

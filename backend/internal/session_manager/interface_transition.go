@@ -176,6 +176,12 @@ func (m *Manager) StartInterfaceTransition(
 	policy domain.SessionInterfaceTransitionPolicy,
 	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (domain.SessionInterfaceTransition, error) {
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return domain.SessionInterfaceTransition{}, err
+	}
+	defer releaseReplacement()
+
 	if !target.Valid() {
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("target mode %q is invalid", target)
 	}

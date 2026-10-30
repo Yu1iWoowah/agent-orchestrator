@@ -59,7 +59,8 @@ SELECT EXISTS (
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.client_message_id,
  m.text, m.delivery_content_json, m.origin,
  m.sender_session_id, m.sender_project_id, m.sender_display_name,
- t.requested_at, t.provider_turn_id, t.promotion_started_at
+ t.requested_at, t.provider_turn_id, t.promotion_started_at, t.provider_input_text,
+ t.started_at, t.completed_at, t.batched_input, t.promoted_to_turn_id
 FROM orchestrator_replacements r
 JOIN conversations c ON c.project_id = r.project_id
 JOIN conversation_turns t ON t.conversation_id = c.id
@@ -113,10 +114,18 @@ WHERE id = sqlc.arg(message_id) AND turn_id = sqlc.arg(turn_id)
 -- name: SelectReplacementQueuedEditReceipts :many
 SELECT * FROM conversation_queued_edit_deliveries WHERE conversation_id = ?;
 
+-- Accepted receipt lookup does not require the successor to remain the writer.
+-- Retained transfer destinations stay restricted to this operation's project.
+-- name: ListReplacementIntakeDestinations :many
+SELECT DISTINCT c.id FROM orchestrator_replacement_intake_transfers receipt
+JOIN conversations c ON c.id = receipt.target_conversation_id
+JOIN orchestrator_replacements r ON r.id = receipt.operation_id
+WHERE receipt.operation_id = ? AND c.scope = 'project' AND c.project_id = r.project_id;
+
 -- Check the current project controller and the exact canonical transferred
 -- payload in one read snapshot. This never grants a mutable filesystem read.
 -- name: SelectReplacementExcerptTransfer :one
-SELECT m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
+SELECT r.id AS operation_id, m.turn_id, m.text, m.client_message_id, m.origin, m.delivery_content_json,
  m.sender_session_id, m.sender_project_id, m.sender_display_name, receipt.payload_hash
 FROM orchestrator_replacement_intake_transfers receipt
 JOIN orchestrator_replacements r ON r.id = receipt.operation_id
@@ -145,3 +154,63 @@ SELECT COUNT(*) FROM conversation_messages WHERE turn_id = ?;
 
 -- name: CountReplacementTurnActivities :one
 SELECT COUNT(*) FROM conversation_activities WHERE turn_id = ?;
+
+
+-- name: InsertReplacementRepairSnapshot :exec
+INSERT INTO orchestrator_replacement_repair_snapshots(operation_id, revision, digest, payload)
+VALUES (?, ?, ?, ?);
+
+-- name: GetReplacementRepairSnapshot :one
+SELECT * FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? AND revision = ?;
+
+-- name: GetLatestReplacementRepairSnapshot :one
+SELECT * FROM orchestrator_replacement_repair_snapshots
+WHERE operation_id = ? ORDER BY revision DESC LIMIT 1;
+
+-- name: GetReplacementRepairSnapshotUsage :one
+SELECT COUNT(*) AS snapshots,
+ CAST(COALESCE(SUM(length(payload)), 0) AS INTEGER) AS payload_bytes
+FROM orchestrator_replacement_repair_snapshots WHERE operation_id = ?;
+
+-- Only the operator repair path can restore a broken redundant envelope. It
+-- never updates sessions, leases, queue rows or publication receipts.
+-- name: RestoreReplacementFromRepairSnapshot :execrows
+UPDATE orchestrator_replacements
+SET project_id = sqlc.arg(project_id), source_session_id = sqlc.arg(source_session_id),
+ operation_key = sqlc.arg(operation_key), request_hash = sqlc.arg(request_hash),
+ phase = 'recovery_required', is_active = 1, revision = sqlc.arg(new_revision),
+ intake_revision = sqlc.arg(intake_revision), state_json = sqlc.arg(state_json),
+ created_at = sqlc.arg(created_at), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);
+
+
+-- name: RecordReplacementHumanIntake :exec
+INSERT INTO replacement_human_intake_receipts(message_id, interaction_at)
+SELECT m.id, sqlc.arg(interaction_at) FROM conversation_messages m
+WHERE m.id = sqlc.arg(message_id) AND m.role = 'user'
+ AND (EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = m.turn_id)
+ OR EXISTS (SELECT 1 FROM conversation_turns t
+ JOIN orchestrator_replacements r ON r.source_session_id = t.handled_by_session_id
+ WHERE t.id = m.turn_id AND json_type(r.state_json, '$.sourceRetiredAt') IS 'text'))
+ON CONFLICT(message_id) DO NOTHING;
+
+-- Author/time receipts preserve AuthoredByUser automation. Legacy human-origin
+-- rows retain their canonical acceptance time; never infer human intent for
+-- legacy automation without a receipt.
+-- name: SelectReplacementHumanProjection :one
+WITH human_inputs AS (
+ SELECT m.id, m.turn_id, m.text, r.interaction_at
+ FROM conversation_messages m JOIN replacement_human_intake_receipts r ON r.message_id = m.id
+ WHERE m.role = 'user'
+ UNION ALL
+ SELECT m.id, m.turn_id, m.text, m.created_at AS interaction_at
+ FROM conversation_messages m WHERE m.role = 'user' AND m.origin = 'human'
+ AND NOT EXISTS (SELECT 1 FROM replacement_human_intake_receipts r WHERE r.message_id = m.id)
+)
+SELECT h.id, h.turn_id, h.text, h.interaction_at
+FROM human_inputs h JOIN conversation_turns t ON t.id = h.turn_id
+WHERE t.handled_by_session_id = sqlc.arg(session_id) AND t.state = 'queued'
+ AND t.rolled_back_at IS NULL AND t.promoted_to_turn_id IS NULL
+ AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns held WHERE held.turn_id = t.id)
+ORDER BY h.interaction_at DESC, t.requested_at DESC, t.rowid DESC, h.id DESC LIMIT 1;
