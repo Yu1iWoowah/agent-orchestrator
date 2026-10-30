@@ -43,6 +43,9 @@ func newOrchestratorReplaceCommand(ctx *commandContext) *cobra.Command {
 			}
 			if key == "" {
 				key = uuid.NewString()
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Replacement operation key: %s (replay with --operation-key %s if the response is lost)\n", key, key); err != nil {
+					return err
+				}
 			}
 			if err := replacementUUID(key); err != nil {
 				return err

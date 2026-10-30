@@ -52,7 +52,7 @@ func (c *OrchestratorReplacementController) repair(w http.ResponseWriter, r *htt
 		return
 	}
 	var in OrchestratorReplacementRepairRequest
-	if err := decodeReplacementRequest(r, &in); err != nil || in.ExpectedRevision == nil || in.SnapshotRevision == nil || *in.ExpectedRevision < 0 || *in.SnapshotRevision < 0 || !replacementDigest(in.ExpectedDigest) || !replacementDigest(in.SnapshotDigest) {
+	if err := decodeReplacementRequest(r, &in, false); err != nil || in.ExpectedRevision == nil || in.SnapshotRevision == nil || *in.ExpectedRevision < 0 || *in.SnapshotRevision < 0 || !replacementDigest(in.ExpectedDigest) || !replacementDigest(in.SnapshotDigest) {
 		replacementBadRequest(w, r)
 		return
 	}

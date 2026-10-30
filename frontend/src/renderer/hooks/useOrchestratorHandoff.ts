@@ -48,7 +48,7 @@ function readIntent(storage: Storage, key: string): StoredIntent | undefined {
 export async function acceptOrchestratorHandoff(source: HandoffSource, storage: Storage): Promise<HandoffReceipt> {
 	const key = storageKey(source);
 	const prior = readIntent(storage, key);
-	const intent = prior && prior.receipt?.phase !== "cancelled" && prior.receipt?.phase !== "rejected"
+	const intent = prior && !prior.receipt
 		? prior : { operationKey: crypto.randomUUID() };
 	if (intent !== prior) {
 		try { storage.setItem(key, JSON.stringify(intent)); } catch { throw new HandoffStorageError(); }
@@ -61,7 +61,8 @@ export async function acceptOrchestratorHandoff(source: HandoffSource, storage: 
 		if (response.status >= 400 && response.status < 500) {
 			try { storage.removeItem(key); } catch { /* Keep the prior identity if storage becomes unavailable. */ }
 		}
-		throw new Error(apiErrorMessage(error));
+		const operationId = error?.details?.operationId;
+		throw new Error(`${apiErrorMessage(error)}${validID(operationId) ? ` [operation ${operationId}]` : ""}`);
 	}
 	const accepted = receipt(data.operation);
 	if (!accepted || data.operation.operationKey !== intent.operationKey || data.operation.projectId !== source.projectId || data.operation.sourceSessionId !== source.sourceSessionId) throw new Error("ORCHESTRATOR_HANDOFF_RECEIPT_INVALID");

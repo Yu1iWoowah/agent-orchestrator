@@ -76,7 +76,7 @@ func (s *Service) retryRetainedBoundary(ctx context.Context, op domain.Orchestra
 		}
 		proof, verified := candidate.ExpectedSuccessorController()
 		if verified {
-			if (target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier) && !candidate.ActivatedSuccessorMatches(target) {
+			if (target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier) && !candidate.ActivatedSuccessorMatches(target) && (phase != domain.ReplacementVerifyingResume || !candidate.PendingNativeResumeMatches(target)) {
 				return refuse()
 			}
 		} else if phase != domain.ReplacementStarting || candidate.SuccessorController != nil || target.Metadata.ControllerGeneration != "" || target.Metadata.ProviderConversationID != "" {

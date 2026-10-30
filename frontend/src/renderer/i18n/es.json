@@ -6,7 +6,7 @@
 	"chat.handoff.completed": "Handoff completed.",
 	"chat.handoff.recovery": "Handoff needs recovery.",
 	"chat.handoff.accepted": "Handoff request accepted.",
-	"chat.handoff.statusHint": "Check the operation with this command:",
+	"chat.handoff.statusHint": "Status at the last response. Check current progress with this command:",
 	"chat.handoff.failed": "Could not confirm handoff acceptance: {{reason}}",
 	"chat.draft.handoffAttachments": "Send or remove attachments and references before requesting a handoff.",
 	"chat.draft.handoffFailed": "Could not confirm handoff acceptance. Retry to check the same request.",

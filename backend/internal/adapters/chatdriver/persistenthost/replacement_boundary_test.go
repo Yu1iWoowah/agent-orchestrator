@@ -6,9 +6,13 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 func TestAuthenticatedShutdownInterruptsBlockedReplayWithoutWaitingForMutex(t *testing.T) {
@@ -115,11 +119,81 @@ func TestReplacementPositiveStopReceiptSurvivesHostCleanupDelay(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
+	started := time.Now()
 	if err := ShutdownForReplacement(ctx, dir, "cleanup-delay", "owner", false); err != nil {
 		t.Errorf("positive provider-stop receipt discarded while host descriptor remains: %v", err)
 	}
+	if time.Since(started) < 150*time.Millisecond {
+		t.Fatal("positive receipt skipped bounded host cleanup wait")
+	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHostClientQuietAndPausedReaderRemainAttached(t *testing.T) {
+	for _, mode := range []string{"quiet", "paused-reader"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			server, client := net.Pipe()
+			h := &host{ctx: context.Background(), token: "token", pendingRequests: make(map[string]*pendingRequest)}
+			h.cond = sync.NewCond(&h.mu)
+			done := make(chan struct{})
+			go func() { defer close(done); h.handle(server) }()
+			t.Cleanup(func() { h.beginShutdown(); _ = server.Close(); _ = client.Close(); <-done })
+			if err := json.NewEncoder(client).Encode(hello{Version: ProtocolVersion, Token: "token", Action: "attach"}); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(client)
+			if _, err := reader.ReadBytes('\n'); err != nil {
+				t.Fatal(err)
+			}
+			writeDone := make(chan struct{})
+			write := func() {
+				h.mu.Lock()
+				h.deliverProviderFrameLocked([]byte("one\n"), false)
+				h.mu.Unlock()
+				close(writeDone)
+			}
+			if mode == "paused-reader" {
+				go write()
+			}
+			// Exceed the former production stream-write budget, not a shortened
+			// test timeout. A healthy idle/paused reader is not a dead provider.
+			time.Sleep(31 * time.Second)
+			if mode == "quiet" {
+				go write()
+			}
+			_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if frame, err := reader.ReadString('\n'); err != nil || frame != "one\n" {
+				t.Fatal("healthy stream lost frame", frame, err)
+			}
+			<-writeDone
+			h.mu.Lock()
+			attached, queued := h.client != nil, len(h.detached)
+			h.mu.Unlock()
+			if !attached || queued != 0 {
+				t.Fatal("paused reader detached or duplicated frame", attached, queued)
+			}
+			_ = client.Close()
+			<-done
+			server2, client2 := net.Pipe()
+			done2 := make(chan struct{})
+			go func() { defer close(done2); h.handle(server2) }()
+			t.Cleanup(func() { _ = server2.Close(); _ = client2.Close(); <-done2 })
+			if err := json.NewEncoder(client2).Encode(hello{Version: ProtocolVersion, Token: "token", Action: "attach"}); err != nil {
+				t.Fatal(err)
+			}
+			reader2 := bufio.NewReader(client2)
+			if _, err := reader2.ReadBytes('\n'); err != nil {
+				t.Fatal(err)
+			}
+			go func() { h.mu.Lock(); h.deliverProviderFrameLocked([]byte("two\n"), false); h.mu.Unlock() }()
+			_ = client2.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if frame, err := reader2.ReadString('\n'); err != nil || frame != "two\n" {
+				t.Fatal("reattach duplicated prior frame", frame, err)
+			}
+		})
 	}
 }
 
@@ -174,5 +248,77 @@ func TestStoppingHostRefusesNewAttach(t *testing.T) {
 	<-done
 	if response.OK || h.client != nil || h.activeClient.Load() != nil {
 		t.Fatal("stopping host admitted another client")
+	}
+}
+
+func TestHostAttachLaunchVerifierIsAuthenticatedAndContainsNoToken(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		server, client := net.Pipe()
+		expected := domain.BrowserCapabilityVerifier("source", "launch-secret")
+		h := &host{ctx: context.Background(), token: "control-secret", launchCapabilityVerifier: capabilityVerifierForEnv([]string{"AO_SESSION_ID=source", "AO_BROWSER_CAPABILITY=launch-secret"}), pendingRequests: make(map[string]*pendingRequest)}
+		h.cond = sync.NewCond(&h.mu)
+		done := make(chan struct{})
+		go func() { defer close(done); h.handle(server) }()
+		token := "invalid-token"
+		if authenticated {
+			token = "control-secret"
+		}
+		if err := json.NewEncoder(client).Encode(hello{Version: ProtocolVersion, Token: token, Action: "attach"}); err != nil {
+			t.Fatal(err)
+		}
+		line, err := bufio.NewReader(client).ReadBytes('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response helloResponse
+		if err := json.Unmarshal(line, &response); err != nil {
+			t.Fatal(err)
+		}
+		if authenticated {
+			if !response.OK || response.LaunchCapabilityVerifier != expected {
+				t.Fatal("launch evidence missing", response.OK)
+			}
+		} else if response.OK || response.LaunchCapabilityVerifier != "" {
+			t.Fatal("unauthenticated launch evidence exposed")
+		}
+		if strings.Contains(string(line), "launch-secret") || strings.Contains(string(line), "control-secret") {
+			t.Fatal("raw token exposed in host reply")
+		}
+		_ = client.Close()
+		_ = server.Close()
+		<-done
+	}
+}
+
+func TestLateShutdownBeforeClientRegistrationReturnsAttached(t *testing.T) {
+	server, client := net.Pipe()
+	h := &host{ctx: context.Background(), token: "token", pendingRequests: make(map[string]*pendingRequest)}
+	h.cond = sync.NewCond(&h.mu)
+	h.admissionMu.Lock()
+	var once sync.Once
+	release := func() { once.Do(h.admissionMu.Unlock) }
+	defer release()
+	done := make(chan struct{})
+	go func() { defer close(done); h.handle(server) }()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close(); <-done })
+	if err := json.NewEncoder(client).Encode(hello{Version: ProtocolVersion, Token: "token", Action: "attach"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for h.mu.TryLock() {
+		h.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("attach never reached registration boundary")
+		}
+		runtime.Gosched()
+	}
+	// The authenticated attach passed its first check and is waiting at the
+	// registration lock. Complete shutdown's state transition before admitting it.
+	h.stopping.Store(true)
+	release()
+	_ = client.SetReadDeadline(deadline)
+	var reply helloResponse
+	if err := json.NewDecoder(client).Decode(&reply); err != nil || reply.OK || reply.Error != ErrAttached.Error() {
+		t.Fatal("late stop returned a different refusal", reply, err)
 	}
 }

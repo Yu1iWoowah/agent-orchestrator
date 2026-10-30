@@ -97,7 +97,7 @@ func (s *Store) RetryRetainedReplacement(ctx context.Context, id string, revisio
 				proof.Owner, proof.CapabilityVerifier, verified = t.ControllerOwner(), t.Metadata.BrowserCapabilityVerifier, true
 			}
 			if verified {
-				if t.ControllerOwner() != proof.Owner || t.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
+				if (t.ControllerOwner() != proof.Owner || t.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier) && (phase != domain.ReplacementVerifyingResume || !candidate.PendingNativeResumeMatches(t)) {
 					return domain.ErrReplacementSourceChanged
 				}
 			} else if phase != domain.ReplacementStarting || candidate.SuccessorController != nil || t.Metadata.ControllerGeneration != "" || t.Metadata.ProviderConversationID != "" {

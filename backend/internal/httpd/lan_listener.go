@@ -70,6 +70,7 @@ func NewLANManager(handler http.Handler, state *authState, defaultPort int, log 
 // the request arrived on. So the block below is applied only to the LAN-served
 // handler, outermost (wrapping authMiddleware), independent of any header.
 var lanControlBlockedPrefixes = []string{
+	"/api/v1/orchestrator/replacements",
 	"/api/v1/local-documents",
 	"/api/v1/awake",
 	"/shutdown",
@@ -113,6 +114,10 @@ func isLANControlBlockedRequest(method, path string) bool {
 // beneath it ("/api/v1/mobile/status") but must not catch unrelated siblings
 // such as "/api/v1/mobileapp".
 func isLANControlBlockedPath(path string) bool {
+	projectPath := strings.TrimSuffix(path, "/")
+	if strings.HasPrefix(projectPath, "/api/v1/projects/") && (strings.HasSuffix(projectPath, "/orchestrator/replacements") || strings.Contains(projectPath, "/orchestrator/replacements/")) {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(strings.TrimSuffix(path, "/"), "/preview/server") {
 		return true
 	}

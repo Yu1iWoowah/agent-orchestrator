@@ -1392,10 +1392,11 @@ describe("SessionChatSurface orchestrator handoff", () => {
 
 	it.each<{ name: string; value: WorkspaceSession; hostId?: string }>([
 		{ name: "worker", value: session },
-		{ name: "cloud", value: { ...session, kind: "orchestrator", cloud: { orgId: "org-demo" } } },
-		{ name: "terminated", value: { ...session, kind: "orchestrator", isTerminated: true } },
-		{ name: "TUI", value: { ...session, kind: "orchestrator", mode: "tui" } },
-		{ name: "remote", value: { ...session, kind: "orchestrator" }, hostId: "remote-host" },
+		{ name: "non-Claude", value: { ...session, kind: "orchestrator", provider: "codex" } },
+		{ name: "cloud", value: { ...session, kind: "orchestrator", provider: "claude-code", cloud: { orgId: "org-demo" } } },
+		{ name: "terminated", value: { ...session, kind: "orchestrator", provider: "claude-code", isTerminated: true } },
+		{ name: "TUI", value: { ...session, kind: "orchestrator", provider: "claude-code", mode: "tui" } },
+		{ name: "remote", value: { ...session, kind: "orchestrator", provider: "claude-code" }, hostId: "remote-host" },
 	])("does not offer the native operation for $name", ({ value, hostId }) => {
 		conversationState.snapshot = snapshotFor(value.id);
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

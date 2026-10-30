@@ -1369,7 +1369,11 @@ func Run(buildVersion string) error {
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
 	if replacementReconcileDone != nil {
-		<-replacementReconcileDone
+		joinCtx, cancelJoin := context.WithTimeout(context.Background(), 5*time.Second)
+		if !waitReplacementReconciliation(joinCtx, replacementReconcileDone) {
+			log.Warn("orchestrator replacement reconciliation did not join before shutdown deadline; durable operation remains unconfirmed")
+		}
+		cancelJoin()
 	}
 	if usageLimitResumeDone != nil {
 		<-usageLimitResumeDone

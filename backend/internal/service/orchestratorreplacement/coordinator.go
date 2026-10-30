@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,7 +19,12 @@ var errRevisionChanged = errors.New("replacement revision changed")
 
 // Advance reconciles one durable boundary. It can be called again after caller
 // loss or daemon restart; no phase alone proves a provider action completed.
-func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorReplacement, error) {
+func (s *Service) Advance(ctx context.Context, id string) (result domain.OrchestratorReplacement, resultErr error) {
+	defer func() {
+		if recover() != nil {
+			result, resultErr = s.suspendAfterPanic(ctx, id)
+		}
+	}()
 	op, err := s.Get(ctx, id)
 	if err != nil {
 		return op, err
@@ -91,6 +97,44 @@ func (s *Service) Advance(ctx context.Context, id string) (domain.OrchestratorRe
 		err = run(ctx)
 	}
 	return op, err
+}
+
+func (s *Service) suspendAfterPanic(ctx context.Context, id string) (result domain.OrchestratorReplacement, resultErr error) {
+	cause := apierr.Conflict("ORCHESTRATOR_REPLACEMENT_PANIC", "Replacement step panicked; retained evidence requires operator inspection before retry", nil)
+	// A broken dependency may also panic during quarantine. Keep that from
+	// crashing the daemon; no successful suspension is claimed without a save.
+	defer func() {
+		if recover() != nil {
+			resultErr = cause
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return current, errors.Join(cause, err)
+	}
+	result = current
+	run := func(ctx context.Context) error {
+		latest, err := s.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		result = latest
+		if latest.Phase.Terminal() || latest.Phase == domain.ReplacementRecoveryRequired {
+			return nil
+		}
+		result, err = s.wait(ctx, latest, domain.ReplacementRecoveryRequired, latest.Phase, cause)
+		return err
+	}
+	if s.deps.WithProjectGate != nil {
+		err = s.deps.WithProjectGate(ctx, current.ProjectID, run)
+	} else {
+		unlock := s.lockProject(current.ProjectID)
+		defer unlock()
+		err = run(ctx)
+	}
+	return result, errors.Join(cause, err)
 }
 
 func (s *Service) lockProject(id domain.ProjectID) func() {

@@ -108,6 +108,7 @@ func replacementSuccessorFixture(t *testing.T) (*Manager, *replacementSuccessorS
 	}
 	store := &replacementSuccessorStore{replacementFenceStore: &replacementFenceStore{fakeStore: base, operation: op}}
 	m.store = store
+	chat.resumeStore = store
 	return m, store, chat, deferredBackground(m)
 }
 

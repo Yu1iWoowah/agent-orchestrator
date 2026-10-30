@@ -120,6 +120,37 @@ func TestOrchestratorReplacementKeepsDaemonError(t *testing.T) {
 	}
 }
 
+func TestOrchestratorReplacementFailurePreservesRecoveryIdentities(t *testing.T) {
+	for _, code := range []string{"ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "ORCHESTRATOR_REPLACEMENT_KEY_CONFLICT", "ORCHESTRATOR_HANDOFF_SOURCE_UNSUPPORTED"} {
+		t.Run(code, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var key string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/internal/") {
+					return
+				}
+				var in map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+					t.Error(err)
+				}
+				key = in["operationKey"]
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintf(w, `{"code":%q,"message":"replacement refused","requestId":"request-trace","details":{"operationId":%q,"capability":"must-not-leak"}}`, code, replacementTestID)
+			}))
+			defer srv.Close()
+			writeRunFileFor(t, cfg, srv)
+			out, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "orchestrator", "replace", "--project", "demo", "--from", "source", "--json")
+			if err == nil || !strings.Contains(err.Error(), replacementTestID) || !strings.Contains(err.Error(), code) || !strings.Contains(err.Error(), "request-trace") {
+				t.Fatal("operation identity missing from refusal", err, stderr)
+			}
+			if key == "" || !strings.Contains(stderr, key) || out != "" || strings.Contains(err.Error(), "must-not-leak") {
+				t.Fatal("replay key unavailable or private details leaked", key, out, stderr, err)
+			}
+		})
+	}
+}
+
 func TestOrchestratorReplacementUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"replace"}, {"replace", "--project", "demo"}, {"replace", "--from", "source"},

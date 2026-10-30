@@ -60,7 +60,7 @@ func (c *OrchestratorReplacementController) accept(w http.ResponseWriter, r *htt
 		return
 	}
 	var in OrchestratorReplaceRequest
-	if err := decodeReplacementRequest(r, &in); err != nil {
+	if err := decodeReplacementRequest(r, &in, false); err != nil {
 		replacementBadRequest(w, r)
 		return
 	}
@@ -128,7 +128,7 @@ func (c *OrchestratorReplacementController) action(w http.ResponseWriter, r *htt
 		return
 	}
 	var empty OrchestratorReplacementActionRequest
-	if err := decodeReplacementRequest(r, &empty); err != nil {
+	if err := decodeReplacementRequest(r, &empty, true); err != nil {
 		replacementBadRequest(w, r)
 		return
 	}
@@ -150,7 +150,7 @@ func (c *OrchestratorReplacementController) prepared(w http.ResponseWriter, r *h
 		return
 	}
 	var in OrchestratorReplacementPreparedRequest
-	if err := decodeReplacementRequest(r, &in); err != nil {
+	if err := decodeReplacementRequest(r, &in, false); err != nil {
 		replacementBadRequest(w, r)
 		return
 	}
@@ -190,7 +190,7 @@ func replacementPublicView(op domain.OrchestratorReplacement) OrchestratorReplac
 	if op.Phase == domain.ReplacementRecoveryRequired {
 		view.OperatorGuidance = "Preserve this operation and its immutable evidence. Read the durable facts with readCommand; retryCommand only reconciles the retained boundary and never authorizes a fresh replacement. Do not edit the database, revive the retired source, or clear an uncertain intent. An operator must verify the native runtime before recovery can continue."
 		if p := op.ResumeEvidence; p != nil && p.ResumeIntentAt != nil && p.ResumedAt == nil {
-			view.OperatorGuidance += " The resume intent has no launch confirmation. An absent launch receipt does not prove that no provider is running; Retry remains lookup-only until positive ownership evidence is available."
+			view.OperatorGuidance += " The resume intent has no launch confirmation. Retry checks the persisted pre-launch capability boundary; an unchanged strongly stopped owner can record no-launch evidence. Otherwise it only looks up the reserved owner or reconnects an existing host with strict same-native replay, never starts a provider. Unknown evidence retains the fence."
 		}
 	}
 	if !op.Phase.Terminal() {
@@ -245,7 +245,7 @@ func replacementFailureView(failure *domain.ReplacementFailure) *domain.Replacem
 	if failure == nil {
 		return nil
 	}
-	return &domain.ReplacementFailure{Code: failure.Code, Retryable: failure.Retryable, Message: "The operation is waiting at a durable boundary. Inspect its phase and evidence before retrying."}
+	return &domain.ReplacementFailure{Code: failure.Code, Retryable: failure.Retryable, Message: "Inspect the operation's durable phase and evidence; available controls are listed separately."}
 }
 func replacementPreparationView(p *domain.ReplacementPreparation) *ReplacementPreparationView {
 	if p == nil {
@@ -272,7 +272,7 @@ func replacementEvidenceView(p *domain.ReplacementPreparation, t *domain.Replace
 
 // Replacement control bodies contain identifiers and receipts, never draft or
 // transcript content. Reject trailing values and null before service mutation.
-func decodeReplacementRequest(r *http.Request, out any) error {
+func decodeReplacementRequest(r *http.Request, out any, allowEmpty bool) error {
 	const limit = 64 << 10
 	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
@@ -280,6 +280,11 @@ func decodeReplacementRequest(r *http.Request, out any) error {
 	}
 	if len(raw) > limit {
 		return errors.New("replacement request exceeds control-body limit")
+	}
+	// Retry/cancel have no requestBody in the public schema. A zero-byte body
+	// is their empty argument object; supplied bodies still require strict JSON.
+	if allowEmpty && len(raw) == 0 {
+		return nil
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || raw[0] != '{' {

@@ -50,6 +50,10 @@ func (s *Store) bindReplacementSuccessorController(ctx context.Context, q *gen.Q
 		return nil
 	}
 	if op.SuccessorController != nil {
+		if p := op.ResumeEvidence; publishReady && p != nil && p.ResumeIntentAt != nil && p.ResumedAt == nil && (op.Phase != domain.ReplacementVerifyingResume || ready.Metadata.ControllerGeneration != p.ResumeGeneration || before.Metadata.BrowserCapabilityVerifier != ready.Metadata.BrowserCapabilityVerifier) {
+			return domain.ErrReplacementSourceChanged
+		}
+
 		if publishReady && op.ActivatedSuccessorMatches(ready) && (ready.ControllerOwner() != op.WriterActivation.Owner || ready.Metadata.BrowserCapabilityVerifier != op.WriterActivation.CapabilityVerifier) {
 			return rebindActivatedReplacementWriter(ctx, q, op, before, ready)
 		}

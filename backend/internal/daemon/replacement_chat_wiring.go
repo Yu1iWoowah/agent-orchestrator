@@ -9,6 +9,13 @@ import (
 
 var _ ports.ReplacementChatRuntime = chatLauncher{}
 
+func (c chatLauncher) LookupReplacementChatResume(ctx context.Context, id domain.SessionID, generation, native string) (ports.ReplacementResumeObservation, error) {
+	if err := c.waitForPersistentHostReconcile(ctx); err != nil {
+		return ports.ReplacementResumeObservation{}, err
+	}
+	return c.svc.LookupReplacementChatResume(ctx, id, generation, native)
+}
+
 func (c chatLauncher) PreflightReplacementChat(ctx context.Context, harness domain.AgentHarness, permissions ports.PermissionMode) error {
 	return c.svc.PreflightReplacementChat(ctx, harness, permissions)
 }

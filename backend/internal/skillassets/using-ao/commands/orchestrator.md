@@ -92,10 +92,18 @@ If `recovery_required` retains a resume intent without a launch receipt, inspect
 `resumeEvidence`, `controlAttempts`, `retainedRetry` and `operatorGuidance` in
 `get --json`. `retainedRetry.failure` is the cause recorded when that Retry was
 accepted, not a later polling failure. Retry only reconciles retained ownership;
-absence of a receipt does not prove absence of a live provider. Preserve the
-operation/evidence and have an operator verify the native runtime. Do not clear
-the intent, edit the database, revive the retired source, or start a fresh
-conversation. This interface provides no force-relaunch authority.
+absence of a receipt does not prove absence of a live provider. The same
+`replacement retry <id>` is the restricted recovery entry: after a strongly
+confirmed stop, an unchanged pre-launch capability/owner proves the intent did
+not cross launch admission and records an archived no-launch receipt. Retry
+again to authorize its new attempt. If capability rotated, reconciliation only
+looks up the exact reserved generation or reconnects an existing host with
+required same-native replay; it cannot start a provider or fall back fresh.
+Positive replay/owner evidence lets the operation continue to its probe. Missing
+host, changed owner, incomplete history or unknown evidence preserves the fence.
+Inspect `get --json` after each step. Do not clear the intent, edit the database,
+revive the retired source, or start a fresh conversation. This interface provides
+no force-relaunch authority.
 
 On Unix, positive runtime stop proof covers the AO-owned provider process group,
 not tools that detached into their own groups, workers, or user-managed services.

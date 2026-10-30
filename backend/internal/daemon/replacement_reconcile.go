@@ -28,12 +28,20 @@ func runReplacementReconciliation(ctx context.Context, startup <-chan struct{}, 
 		return
 	case <-startup:
 	}
+	var lastError string
+	var lastLog time.Time
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		if err := reconcile(ctx); err != nil && ctx.Err() == nil {
-			log.Warn("orchestrator replacement reconciliation deferred", "err", err)
+			message := err.Error()
+			if message != lastError || time.Since(lastLog) >= time.Minute {
+				log.Warn("orchestrator replacement reconciliation deferred", "err", err)
+				lastError, lastLog = message, time.Now()
+			}
+		} else if err == nil {
+			lastError = ""
 		}
 		select {
 		case <-ctx.Done():
@@ -43,5 +51,14 @@ func runReplacementReconciliation(ctx context.Context, startup <-chan struct{}, 
 				return
 			}
 		}
+	}
+}
+
+func waitReplacementReconciliation(ctx context.Context, done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }

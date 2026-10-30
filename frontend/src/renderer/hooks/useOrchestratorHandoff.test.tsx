@@ -18,6 +18,13 @@ function acceptNext(phase = "accepted", target = source, operationId = id) {
 beforeEach(() => { mocks.post.mockReset(); window.localStorage.clear(); });
 
 describe("handoff intent and receipt", () => {
+	it("shows the active operation id when a new intent conflicts", async () => {
+		acceptNext();
+		await acceptOrchestratorHandoff(source, window.localStorage);
+		mocks.post.mockResolvedValueOnce({ error: { code: "ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", message: "already active", details: { operationId: id, capability: "never-print" } }, response: new Response(null, { status: 409 }) });
+		await expect(acceptOrchestratorHandoff(source, window.localStorage)).rejects.toThrow(`[operation ${id}]`);
+		expect(mocks.post.mock.calls[0][1].body.operationKey).not.toBe(mocks.post.mock.calls[1][1].body.operationKey);
+	});
 	it("rejects another operation key without replacing the pending retry identity", async () => {
 		mocks.post.mockResolvedValueOnce(accepted("accepted", source, id, "22222222-2222-4222-8222-222222222222"));
 		await expect(acceptOrchestratorHandoff(source, window.localStorage)).rejects.toThrow("ORCHESTRATOR_HANDOFF_RECEIPT_INVALID");
@@ -41,16 +48,16 @@ describe("handoff intent and receipt", () => {
 		expect(second.result.current.receipt?.readCommand).toBe(`ao orchestrator replacement get ${id} --json`);
 	});
 
-	it("replays a known accepted operation without allocating another identity", async () => {
-		acceptNext(); acceptNext("recovery_required");
+	it("starts a new intent after an accepted operation was cancelled outside this view", async () => {
+		acceptNext(); acceptNext("accepted", source, "22222222-2222-4222-8222-222222222222");
 		const first = await acceptOrchestratorHandoff(source, window.localStorage);
 		const firstKey = mocks.post.mock.calls[0][1].body.operationKey;
 		expect(first.id).toBe(id);
 		const view = renderHook(() => useOrchestratorHandoff(source));
 		expect(view.result.current.receipt?.id).toBe(id);
 		await act(async () => { await view.result.current.request(); });
-		expect(mocks.post.mock.calls[1][1].body.operationKey).toBe(firstKey);
-		expect(view.result.current.receipt?.phase).toBe("recovery_required");
+		expect(mocks.post.mock.calls[1][1].body.operationKey).not.toBe(firstKey);
+		expect(view.result.current.receipt?.id).toBe("22222222-2222-4222-8222-222222222222");
 	});
 
 	it("clears a definitive rejection but keeps identity on an unknown server error", async () => {
@@ -73,7 +80,7 @@ describe("handoff intent and receipt", () => {
 		expect(mocks.post).toHaveBeenCalledTimes(2);
 		await acceptOrchestratorHandoff(source, window.localStorage);
 		const keys = mocks.post.mock.calls.map(call => call[1].body.operationKey);
-		expect(keys[0]).toBe(keys[1]);
+		expect(keys[0]).not.toBe(keys[1]);
 		expect(keys[2]).not.toBe(keys[1]);
 	});
 

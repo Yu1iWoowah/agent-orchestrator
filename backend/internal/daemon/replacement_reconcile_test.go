@@ -19,6 +19,19 @@ func TestReplacementReconcileWaitsForStartupAndCancels(t *testing.T) {
 		t.Fatal("replacement ran before startup or after cancellation", calls)
 	}
 }
+
+func TestReplacementShutdownJoinHonorsDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitReplacementReconciliation(ctx, make(chan struct{})) {
+		t.Fatal("claimed join for stuck loop")
+	}
+	done := make(chan struct{})
+	close(done)
+	if !waitReplacementReconciliation(context.Background(), done) {
+		t.Fatal("lost positive join")
+	}
+}
 func TestReplacementReconcileRunsAfterStartupAndSurvivesStepFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -59,5 +72,8 @@ func TestReplacementReconcileRunsAfterStartupAndSurvivesStepFailure(t *testing.T
 	await(done)
 	if !strings.Contains(logs.String(), "transient replacement read failure") {
 		t.Fatal("reconciliation failure not observable")
+	}
+	if strings.Count(logs.String(), "transient replacement read failure") != 1 {
+		t.Fatal("identical reconcile error logged on every tick", logs.String())
 	}
 }

@@ -175,6 +175,55 @@ func TestReplacementHTTPReceiptsExposeSafeDurableFacts(t *testing.T) {
 	}
 }
 
+func TestReplacementHTTPActionsAllowNoBody(t *testing.T) {
+	for _, action := range []string{"retry", "cancel"} {
+		for _, transport := range []string{"nil", "empty", "unknown-length"} {
+			t.Run(action+"/"+transport, func(t *testing.T) {
+				svc := &replacementAPI{op: replacementAPIState()}
+				router := chi.NewRouter()
+				(&controllers.OrchestratorReplacementController{Svc: svc}).Register(router)
+				request := httptest.NewRequest(http.MethodPost, "/orchestrator/replacements/"+replacementAPIID+"/"+action, nil)
+				if transport != "nil" {
+					request = httptest.NewRequest(http.MethodPost, request.URL.String(), strings.NewReader(""))
+				}
+				if transport == "unknown-length" {
+					request.ContentLength = -1
+				}
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, request)
+				if w.Code != http.StatusAccepted || len(svc.calls) != 1 || svc.calls[0] != action+":"+replacementAPIID {
+					t.Fatal("body-free action did not reach service exactly once", w.Code, svc.calls, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestReplacementHTTPActionsStillRejectInvalidBodies(t *testing.T) {
+	for _, action := range []string{"retry", "cancel"} {
+		for name, body := range map[string]string{
+			"unknown-field":   `{"fresh":true}`,
+			"trailing":        `{} {}`,
+			"null":            `null`,
+			"array":           `[]`,
+			"whitespace":      ` `,
+			"oversized":       `{}` + strings.Repeat(" ", 64<<10),
+			"oversized-blank": strings.Repeat(" ", (64<<10)+1),
+		} {
+			t.Run(action+"/"+name, func(t *testing.T) {
+				svc := &replacementAPI{op: replacementAPIState()}
+				router := chi.NewRouter()
+				(&controllers.OrchestratorReplacementController{Svc: svc}).Register(router)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/orchestrator/replacements/"+replacementAPIID+"/"+action, strings.NewReader(body)))
+				if w.Code != http.StatusBadRequest || len(svc.calls) != 0 {
+					t.Fatal("invalid action body reached service", w.Code, svc.calls, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
 func TestReplacementHTTPRejectsInvalidBodiesBeforeService(t *testing.T) {
 	for _, tc := range []struct{ method, path, body string }{
 		{"POST", "/projects/demo/orchestrator/replacements", `{"sourceSessionId":"source","operationKey":"` + replacementAPIID + `","harness":"codex"}`},

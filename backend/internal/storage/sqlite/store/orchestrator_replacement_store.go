@@ -283,6 +283,23 @@ func (s *Store) GetActiveOrchestratorReplacement(ctx context.Context, id domain.
 	})
 }
 
+// ActiveOrchestratorReplacementID locates an operator's fenced row even when
+// its checkpoint cannot be decoded. It grants no authority to change the row.
+func (s *Store) ActiveOrchestratorReplacementID(ctx context.Context, project domain.ProjectID) (string, error) {
+	var id string
+	err := s.replacementRead(ctx, func(tx context.Context, q *gen.Queries) error {
+		row, err := q.GetActiveOrchestratorReplacement(tx, string(project))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err == nil {
+			id = row.ID
+		}
+		return err
+	})
+	return id, err
+}
+
 // ListActiveOrchestratorReplacements discovers work after daemon restart.
 func (s *Store) ListActiveOrchestratorReplacements(ctx context.Context) ([]domain.OrchestratorReplacement, error) {
 	result := []domain.OrchestratorReplacement{}
