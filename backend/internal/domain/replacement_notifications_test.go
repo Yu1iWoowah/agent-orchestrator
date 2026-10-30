@@ -17,3 +17,24 @@ func TestReplacementWorkerFYIEscapesIdentifiersAndLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestReplacementWorkerFYIPayloadKeepsLegacyVersion(t *testing.T) {
+	op := OrchestratorReplacement{ID: "operation", ProjectID: "project", SourceSessionID: "old", SuccessorSessionID: "new"}
+	legacy := "FYI：本專案的 orchestrator 已從 \"old\" 換成 \"new\"。請繼續原本任務；ao report 會依 project 送給目前的 orchestrator。這不是 D，不需 ACK，不變更任務或 PR ownership。\nOperation: operation\n新 orchestrator：ao://sessions/project/new"
+	if op.WorkerFYI() != legacy {
+		t.Fatal("legacy v0 payload changed", op.WorkerFYI())
+	}
+	op.WorkerFYIPayload = op.NewWorkerFYIPayload()
+	if !op.WorkerFYIPayload.ValidFor(op) || op.WorkerFYI() != legacy {
+		t.Fatal("frozen payload differs from its shipped version")
+	}
+	op.WorkerFYIPayload.Text += "altered"
+	if op.WorkerFYIPayload.ValidFor(op) {
+		t.Fatal("changed payload accepted")
+	}
+	op.WorkerFYIPayload = op.NewWorkerFYIPayload()
+	op.WorkerFYIPayload.Version = 999
+	if op.WorkerFYIPayload.ValidFor(op) {
+		t.Fatal("unknown payload version accepted")
+	}
+}

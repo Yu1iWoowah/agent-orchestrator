@@ -132,7 +132,11 @@ positively pre-stop operation may subsequently use Cancel. An uncertain native
 launch on a healthy row cannot be cleared through repair.
 
 Do not downgrade to a version that cannot interpret the durable replacement
-schema while any operation remains active.
+schema while any operation remains active. The same restriction applies to
+completed operations with `notificationCompletion` or `workerFYIPayload`: older
+strict decoders cannot read these facts, including retired-source lookups.
+Keep a compatible build when retaining this history; do not strip fields or
+rewrite the database to make an older build accept it.
 
 ### ao orchestrator replacement intake
 
@@ -172,3 +176,26 @@ Submission alone does not mark preparation verified or activate a writer.
 - `skipped`：有正面 terminated worker 事實，不把未知 liveness 當 terminated。
 
 只有全體目標都有 accepted／skipped 回條，才產生 `notificationCompletion` 的 counts／receipt hash 並完成 operation。targets 與通知歷史保留；不靠清空 pending targets 完成。通知未完成時維持 `notifying`，successor 已 release 的一般 intake 不因此重新被 hold。不要為了處理 uncertain 另送新 key、強寫 completed、清除 receipt 或喚回 retired source。
+
+
+### Worker FYI receipts
+
+`get --json` lists `notificationReceipts` for the fixed activation targets.
+Task preparations are excluded. A hibernated or not-yet-ready Chat worker may
+accept the FYI into its durable queue without waking or interrupting it; delivery
+waits for its next natural controller start. A TUI target requires a positively
+idle native surface and empty composer. Unknown surfaces remain pending. Its
+scoped coordination hook persists acceptance atomically, so a later prompt or
+owner epoch cannot erase that evidence.
+
+`uncertain` is not permission to resend a TUI notice. A positive no-write result
+permits another guarded attempt, with a separate bounded retry allowance for
+each target. `DELIVERY_RETRY_CAPACITY` identifies an exhausted target; other
+targets and positive termination/acceptance receipts can still settle. Do not
+kill workers solely to change this state. Acceptance is not proof of reading
+or an ACK of a D instruction.
+
+If a successful operation response has `notificationReceiptsUnavailable: true`,
+the operation was committed but the auxiliary receipt projection could not be
+read. Use its `readCommand` to read again; do not repeat a mutation with a new
+operation key merely because receipt details are unavailable.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"reflect"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -12,10 +13,13 @@ import (
 func validateReplacementWriterActivation(op domain.OrchestratorReplacement) error {
 	w := op.WriterActivation
 	if w == nil {
-		if len(op.Notifications) != 0 {
+		if len(op.Notifications) != 0 || op.WorkerFYIPayload != nil {
 			return domain.ErrReplacementStateInvalid
 		}
 		return nil
+	}
+	if op.WorkerFYIPayload != nil && !op.WorkerFYIPayload.ValidFor(op) {
+		return domain.ErrReplacementStateInvalid
 	}
 	p := op.ResumeEvidence
 	if op.SourceRetiredAt == nil || op.Preparation == nil || p == nil || p.StartedAt.IsZero() || p.ResumedAt == nil || p.VerifiedAt == nil || p.Probe == nil || p.Probe.SettledAt == nil || w.BeforeEpoch <= 0 || w.BeforeEpoch == math.MaxInt64 || w.BeforeEpoch != op.Preparation.LeaseEpoch || w.AfterEpoch != w.BeforeEpoch+1 || w.Owner != p.AfterOwner || w.CapabilityVerifier != p.AfterCapabilityVerifier || w.ActivatedAt.IsZero() {
@@ -41,6 +45,9 @@ func validateReplacementWriterActivation(op domain.OrchestratorReplacement) erro
 
 func preserveReplacementWriterActivation(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
 	a, b := before.WriterActivation, after.WriterActivation
+	if !reflect.DeepEqual(before.WorkerFYIPayload, after.WorkerFYIPayload) && !(a == nil && b != nil && ctx.Value(projectDocumentPublicationKey{}) == q) {
+		return domain.ErrReplacementStateInvalid
+	}
 	if a == nil {
 		if b == nil {
 			return nil

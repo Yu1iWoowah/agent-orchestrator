@@ -84,7 +84,7 @@ func replacementRecoveryProgress(ctx context.Context, q *gen.Queries, before, af
 		allowed.NotificationCompletion = after.NotificationCompletion
 	}
 	if activation {
-		allowed.WriterActivation, allowed.Notifications = after.WriterActivation, after.Notifications
+		allowed.WriterActivation, allowed.Notifications, allowed.WorkerFYIPayload = after.WriterActivation, after.Notifications, after.WorkerFYIPayload
 	}
 	if ctx.Value(replacementRetainedRetryKey{}) == q && before.Phase == domain.ReplacementRecoveryRequired && after.Phase == retainedPhase {
 		allowed.SpawnRetryGeneration = after.SpawnRetryGeneration

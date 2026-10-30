@@ -318,6 +318,7 @@ type OrchestratorReplacement struct {
 	WriterActivation       *ReplacementWriterActivation       `json:"writerActivation,omitempty"`
 	Notifications          []ReplacementWorkerNotification    `json:"notifications,omitempty"`
 	NotificationCompletion *ReplacementNotificationCompletion `json:"notificationCompletion,omitempty"`
+	WorkerFYIPayload       *ReplacementWorkerFYIPayload       `json:"workerFYIPayload,omitempty"`
 
 	Attempts []ReplacementAttempt `json:"attempts,omitempty"`
 

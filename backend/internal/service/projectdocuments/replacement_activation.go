@@ -92,6 +92,7 @@ func (s *Service) ActivateReplacementWriter(ctx context.Context, operation strin
 				op.Notifications = append(op.Notifications, domain.ReplacementWorkerNotification{SessionID: worker.ID, ContactID: "handoff-notice:" + op.ID + ":" + string(worker.ID), ObservedOwner: worker.ControllerOwner(), State: "pending", CreatedAt: now})
 			}
 		}
+		op.WorkerFYIPayload = op.NewWorkerFYIPayload()
 		op.WriterActivation = &domain.ReplacementWriterActivation{BeforeEpoch: lease.Epoch, AfterEpoch: lease.Epoch + 1, Owner: proof.Owner, CapabilityVerifier: proof.CapabilityVerifier, ActivatedAt: now}
 		state.Lease = &domain.ProjectDocumentLease{ReplacementID: op.ID, SessionID: target.ID, Owner: proof.Owner, Epoch: lease.Epoch + 1, ClaimVerifier: proof.CapabilityVerifier, CapabilityVerifier: proof.CapabilityVerifier}
 		if err := s.save(reserved, op.ProjectID, &state); err != nil {

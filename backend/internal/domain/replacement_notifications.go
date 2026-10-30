@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/url"
@@ -66,8 +67,40 @@ func (p ReplacementNotificationCompletion) ValidFor(op OrchestratorReplacement) 
 	return err == nil && len(digest) == 32 && p.TargetCount > 0 && p.TargetCount == len(op.Notifications) && p.AcceptedCount >= 0 && p.SkippedCount >= 0 && p.AcceptedCount+p.SkippedCount == p.TargetCount && !p.CompletedAt.IsZero()
 }
 
+// ReplacementWorkerFYIPayload freezes the rendered version at activation.
+// Keep every shipped renderer stable, including the nil legacy v0 fallback.
+type ReplacementWorkerFYIPayload struct {
+	Version int    `json:"version"`
+	Text    string `json:"text"`
+	SHA256  string `json:"sha256"`
+}
+
+func (op OrchestratorReplacement) NewWorkerFYIPayload() *ReplacementWorkerFYIPayload {
+	text := op.workerFYIV0()
+	sum := sha256.Sum256([]byte(text))
+	return &ReplacementWorkerFYIPayload{Version: 1, Text: text, SHA256: hex.EncodeToString(sum[:])}
+}
+
+func (p ReplacementWorkerFYIPayload) ValidFor(op OrchestratorReplacement) bool {
+	// New template versions must add their own renderer, never edit v0.
+	if p.Version != 1 || p.Text != op.workerFYIV0() {
+		return false
+	}
+	sum := sha256.Sum256([]byte(p.Text))
+	return p.SHA256 == hex.EncodeToString(sum[:])
+}
+
 // WorkerFYI is system-authored coordination, not a directive or task handoff.
 func (op OrchestratorReplacement) WorkerFYI() string {
+	if op.WorkerFYIPayload != nil {
+		return op.WorkerFYIPayload.Text
+	}
+	return op.workerFYIV0()
+}
+
+// workerFYIV0 is also the pinned renderer for legacy operations without a
+// payload. Never change it when introducing another template version.
+func (op OrchestratorReplacement) workerFYIV0() string {
 	link := "ao://sessions/" + url.PathEscape(string(op.ProjectID)) + "/" + url.PathEscape(string(op.SuccessorSessionID))
 	return fmt.Sprintf("FYI：本專案的 orchestrator 已從 %q 換成 %q。請繼續原本任務；ao report 會依 project 送給目前的 orchestrator。這不是 D，不需 ACK，不變更任務或 PR ownership。\nOperation: %s\n新 orchestrator：%s", op.SourceSessionID, op.SuccessorSessionID, op.ID, link)
 }
