@@ -2478,14 +2478,17 @@ function ReviewPanel({
 
 	return (
 		<Section surface={false} title={t("inspector.review.controls")}>
-				<div className="flex min-w-0 flex-col gap-3">
-					{error ? (
-						<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-xs leading-normal text-error">
-							{apiErrorMessage(error, t("inspector.reviewRequestFailed"))}
+			<div className="flex min-w-0 flex-col gap-3">
+				{error ? (
+					<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-xs leading-normal text-error">
+						{apiErrorMessage(error, t("inspector.reviewRequestFailed"))}
 					</p>
 				) : null}
 				{autoReviewFailure ? (
-					<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-xs leading-normal text-error" role="status">
+					<p
+						className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-xs leading-normal text-error"
+						role="status"
+					>
 						<span className="font-semibold">
 							{t("inspector.autoReview")} {t("inspector.review.failed")}:
 						</span>{" "}
@@ -2510,10 +2513,14 @@ function ReviewPanel({
 				<div className="review-run-controls-container flex min-w-0 flex-col text-xs">
 					{cloud ? (
 						<div className="flex min-h-8 min-w-0 items-center justify-between gap-3 py-1">
-							<span className="min-w-0 text-sm text-settings-label">{t("inspector.selectReviewerAgent")}</span>
+							<span className="min-w-0 text-sm text-settings-label">
+								{t("inspector.selectReviewerAgent")}
+							</span>
 							<div className="flex min-w-0 items-center justify-end gap-1.5">
 								<Select
-									disabled={reviewRunning || isTriggering || isCancelling || isInstallingCloudHarness}
+									disabled={
+										reviewRunning || isTriggering || isCancelling || isInstallingCloudHarness
+									}
 									onValueChange={(harness) => onCloudReviewerHarnessChange?.(harness)}
 									value={cloudReviewerHarness}
 								>
@@ -2549,38 +2556,65 @@ function ReviewPanel({
 							</div>
 						</div>
 					) : (
-					<div className="flex min-h-8 min-w-0 items-center justify-between gap-3 py-1">
-						<span className="min-w-0 text-sm text-settings-label">
-							{t("inspector.selectReviewerAgent")}
-						</span>
-						<ReviewerSelect
-							ariaLabel={t("inspector.selectReviewerAgent")}
-							agents={agentCatalog?.agents}
-							contentAlign="end"
-							defaultHarness={resolvedDefaultHarness}
-							disabled={reviewRunning || autoReviewEnabled || isKilling || isSwitchingReviewer || isTriggering || isCancelling}
-							onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
-							onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", config)}
-							model={reviewerModel}
-							mode={reviewerMode}
-							hostId={hostId}
-							projectId={session.workspaceId}
-							triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 shrink-0 justify-end px-2 text-right text-xs"
-							value={reviewerOverride}
-						/>
-					</div>
+						<div className="flex min-h-8 min-w-0 items-center justify-between gap-3 py-1">
+							<span className="min-w-0 text-sm text-settings-label">
+								{t("inspector.selectReviewerAgent")}
+							</span>
+							<ReviewerSelect
+								ariaLabel={t("inspector.selectReviewerAgent")}
+								agents={agentCatalog?.agents}
+								contentAlign="end"
+								defaultHarness={resolvedDefaultHarness}
+								disabled={
+									reviewRunning ||
+									autoReviewEnabled ||
+									isKilling ||
+									isSwitchingReviewer ||
+									isTriggering ||
+									isCancelling
+								}
+								onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
+								onConfigChange={(harness, config) =>
+									onReviewerOverrideChange(harness as ReviewerHarness | "", config)
+								}
+								model={reviewerModel}
+								mode={reviewerMode}
+								hostId={hostId}
+								projectId={session.workspaceId}
+								triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 shrink-0 justify-end px-2 text-right text-xs"
+								value={reviewerOverride}
+							/>
+						</div>
 					)}
-{!hostId && !session.cloud && reviewerSurface?.accountBinding ? <p className="min-w-0 truncate text-xs text-muted-foreground" title={reviewerSurface.accountBinding.label}>{t("settings.agentAccounts.sessionAccount")}: {reviewerSurface.accountBinding.label}{!reviewerSurface.accountBinding.available ? ` · ${t("settings.agentAccounts.bindingUnavailable")}` : ""}</p> : null}
+					{!hostId && !session.cloud && reviewerSurface?.accountBinding ? (
+						<p
+							className="min-w-0 truncate text-xs text-muted-foreground"
+							title={reviewerSurface.accountBinding.label}
+						>
+							{t("settings.agentAccounts.sessionAccount")}: {reviewerSurface.accountBinding.label}
+							{!reviewerSurface.accountBinding.available
+								? ` · ${t("settings.agentAccounts.bindingUnavailable")}`
+								: ""}
+						</p>
+					) : null}
 					{/* Several reviewers can work on one worker at once (an agent may
 					    ask a reviewer other than the selected one). The reviewer tab
 					    shows one at a time, so each live reviewer gets a row to open it
 					    whenever any of them is not the selected reviewer. */}
 					{activeReviewers.some((surface) => surface.reviewId !== reviewerSurface?.reviewId)
 						? activeReviewers.map((surface) => (
-								<div className="flex min-h-8 min-w-0 items-center justify-between gap-3 py-1" key={surface.reviewId}>
+								<div
+									className="flex min-h-8 min-w-0 items-center justify-between gap-3 py-1"
+									key={surface.reviewId}
+								>
 									<span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
 										<AgentAvatar className="size-4" decorative provider={surface.harness} />
-										<span className="truncate">{agentLabel(surface.harness)}{!hostId && !session.cloud && surface.accountBinding ? ` · ${surface.accountBinding.label}${surface.accountBinding.available ? "" : ` · ${t("settings.agentAccounts.bindingUnavailable")}`}` : ""}</span>
+										<span className="truncate">
+											{agentLabel(surface.harness)}
+											{!hostId && !session.cloud && surface.accountBinding
+												? ` · ${surface.accountBinding.label}${surface.accountBinding.available ? "" : ` · ${t("settings.agentAccounts.bindingUnavailable")}`}`
+												: ""}
+										</span>
 									</span>
 									<Button
 										className="shrink-0 px-1.5 text-xs"
@@ -2610,7 +2644,11 @@ function ReviewPanel({
 							<Button
 								aria-label={primaryReviewActionLabel}
 								className="shrink-0 gap-1 px-1.5 text-xs [&_svg]:size-icon-sm"
-								disabled={reviewRunning ? isCancelling || isKilling || isSwitchingReviewer : runDisabled || autoReviewEnabled}
+								disabled={
+									reviewRunning
+										? isCancelling || isKilling || isSwitchingReviewer
+										: runDisabled || autoReviewEnabled
+								}
 								onClick={reviewRunning ? onCancel : onTrigger}
 								size="sm"
 								type="button"
@@ -2620,31 +2658,34 @@ function ReviewPanel({
 								<span className="review-run-action-label">{primaryReviewActionLabel}</span>
 							</Button>
 							{!cloud ? (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<span className="inline-flex">
-										<Button
-											aria-label={archiveActionLabel}
-											className="shrink-0 [&_svg]:size-icon-sm"
-											disabled={killDisabled}
-											onClick={onKill}
-											size="icon-sm"
-											type="button"
-											variant="ghost"
-										>
-											<Archive aria-hidden="true" />
-										</Button>
-									</span>
-								</TooltipTrigger>
-								<TooltipContent>{archiveActionLabel}</TooltipContent>
-							</Tooltip>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span className="inline-flex">
+											<Button
+												aria-label={archiveActionLabel}
+												className="shrink-0 [&_svg]:size-icon-sm"
+												disabled={killDisabled}
+												onClick={onKill}
+												size="icon-sm"
+												type="button"
+												variant="ghost"
+											>
+												<Archive aria-hidden="true" />
+											</Button>
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>{archiveActionLabel}</TooltipContent>
+								</Tooltip>
 							) : null}
 						</div>
 					</div>
 				</div>
 				{reviewLive ? (
 					<div className="flex items-center gap-2 border-t border-border pt-3">
-						<Loader2 aria-hidden="true" className="size-icon-sm shrink-0 animate-spin text-muted-foreground" />
+						<Loader2
+							aria-hidden="true"
+							className="size-icon-sm shrink-0 animate-spin text-muted-foreground"
+						/>
 						<span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">
 							{isCancelling
 								? t("inspector.review.cancelling")

@@ -429,8 +429,20 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 	const [accountDrafts, setAccountDrafts] = useState<Record<string, string>>({});
 	const accountProvider = agentAccountProviderFor(selectedAgent);
 	const accountDraftKey = `${preferenceContext}:${accountProvider ?? ""}`;
-	const accountId = !hostId && !isCloudProject && accountProvider ? accountDrafts[accountDraftKey] ?? "" : "";
-	const accountPicker = !hostId && !isCloudProject && accountProvider ? <AgentAccountPicker harness={selectedAgent} projectId={isStandalone ? "" : projectId} value={accountId} onChange={(value) => setAccountDrafts((current) => ({ ...current, [accountDraftKey]: value }))} disabled={isSubmitting} /> : null;
+	const accountId =
+		!hostId && !isCloudProject && accountProvider ? (accountDrafts[accountDraftKey] ?? "") : "";
+	const accountPicker =
+		!hostId && !isCloudProject && accountProvider ? (
+			<AgentAccountPicker
+				harness={selectedAgent}
+				projectId={isStandalone ? "" : projectId}
+				value={accountId}
+				onChange={(value) =>
+					setAccountDrafts((current) => ({ ...current, [accountDraftKey]: value }))
+				}
+				disabled={isSubmitting}
+			/>
+		) : null;
 
 	// Local catalogs follow the project, role and selected account; the daemon
 	// resolves inheritance. Cloud opencode scopes by its connected credential
@@ -1095,7 +1107,12 @@ export function TaskComposer({
 				onFallbackAction: (brief) => settle(task.launchFallback(brief)),
 				onSubmit: (brief) => settle(task.launch(brief, { interfaceMode: task.submitMode })),
 			}}
-			renderAgentControl={(control) => <div className="flex min-w-0 flex-wrap items-center gap-2">{task.renderAgentControl(control)}{task.accountPicker}</div>}
+			renderAgentControl={(control) => (
+				<div className="flex min-w-0 flex-wrap items-center gap-2">
+					{task.renderAgentControl(control)}
+					{task.accountPicker}
+				</div>
+			)}
 			renderEffortControl={task.renderEffortControl}
 			renderModelControl={task.renderModelControl}
 			showEffort={task.showEffort}

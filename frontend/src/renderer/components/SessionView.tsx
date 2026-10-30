@@ -1508,9 +1508,15 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 			className="session-topbar-session-chrome workspace-topbar-actions flex shrink-0 items-center"
 			data-compact-session-chrome="false"
 		>
-			{!hostId && session && !session.cloud && interfaceUi.targetStopUnconfirmed ? <AccountRecoveryAction sessionId={session.id} /> : null}
-				{!hostId && session && !session.cloud ? <SessionAccountControl session={session} /> : null}
- {hostId ? <span className="max-w-40 truncate px-3 text-xs text-muted-foreground" title={hostId}>{hostLabel ?? hostId}</span> : null}
+			{!hostId && session && !session.cloud && interfaceUi.targetStopUnconfirmed ? (
+				<AccountRecoveryAction sessionId={session.id} />
+			) : null}
+			{!hostId && session && !session.cloud ? <SessionAccountControl session={session} /> : null}
+			{hostId ? (
+				<span className="max-w-40 truncate px-3 text-xs text-muted-foreground" title={hostId}>
+					{hostLabel ?? hostId}
+				</span>
+			) : null}
 			{/* Who else is here, or Share; only the session's own organization can share it. */}
 			{session?.cloud && session.isTerminated !== true ? (
 				<SessionPeopleControl

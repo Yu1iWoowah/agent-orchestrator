@@ -1,6 +1,17 @@
 import { AppDiagnosticsSettings } from "./AppDiagnosticsSettings";
 import { BrowserIcon, type AppIcon } from "../icons";
-import { Activity, BadgeCheck, Bot, CircleHelp, CreditCard, Keyboard, RefreshCw, Server, Settings2, Smartphone } from "lucide-react";
+import {
+	Activity,
+	BadgeCheck,
+	Bot,
+	CircleHelp,
+	CreditCard,
+	Keyboard,
+	RefreshCw,
+	Server,
+	Settings2,
+	Smartphone,
+} from "lucide-react";
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection, HarnessDiagnosticsRequest } from "../../stores/ui-store";
@@ -20,7 +31,7 @@ import { RemoteHostsSettings } from "./RemoteHostsSettings";
 import { SettingsSection } from "./SettingsSection";
 
 /** The memory window's own blocks, loaded only when the page is opened: it
-	* samples the machine every two seconds while it is on screen. */
+ * samples the machine every two seconds while it is on screen. */
 const MemoryDiagnostics = lazy(async () => {
 	const module = await import("../SessionMemoryPanel");
 	return { default: module.MemoryDiagnostics };
@@ -73,16 +84,43 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "harness",
 		icon: Bot,
 		label: (t) => t("settings.harness"),
-		render: (_t, titleHidden, { focusAgentId, hostId, harnessView, startLogin, showDiagnostics }) => <HarnessSettingsSection focusAgentId={focusAgentId} {...(hostId ? { hostId } : {})} {...(harnessView ? { initialView: harnessView } : {})} {...(startLogin ? { startLogin } : {})} {...(showDiagnostics ? { showDiagnostics } : {})} titleHidden={titleHidden} />,
+		render: (
+			_t,
+			titleHidden,
+			{ focusAgentId, hostId, harnessView, startLogin, showDiagnostics },
+		) => (
+			<HarnessSettingsSection
+				focusAgentId={focusAgentId}
+				{...(hostId ? { hostId } : {})}
+				{...(harnessView ? { initialView: harnessView } : {})}
+				{...(startLogin ? { startLogin } : {})}
+				{...(showDiagnostics ? { showDiagnostics } : {})}
+				titleHidden={titleHidden}
+			/>
+		),
 	},
-	{ id: "accounts", pageOnly: true, icon: BadgeCheck, label: (t) => t("settings.agentAccounts.title"), render: () => <AgentAccountsPage /> },
-	{ id: "agents", icon: BadgeCheck, label: (t) => t("settings.agentAccounts.title"), visible: () => false, render: () => <AgentAccountsPage /> },
+	{
+		id: "accounts",
+		pageOnly: true,
+		icon: BadgeCheck,
+		label: (t) => t("settings.agentAccounts.title"),
+		render: () => <AgentAccountsPage />,
+	},
+	{
+		id: "agents",
+		icon: BadgeCheck,
+		label: (t) => t("settings.agentAccounts.title"),
+		visible: () => false,
+		render: () => <AgentAccountsPage />,
+	},
 	{
 		id: "billing",
 		icon: CreditCard,
 		label: (t) => t("settings.billing.navLabel"),
 		visible: ({ cloudEnabled, selfServeBilling }) => cloudEnabled && selfServeBilling,
-		render: (_t, titleHidden, { singlePage }) => <BillingSection titleHidden={titleHidden || Boolean(singlePage)} />,
+		render: (_t, titleHidden, { singlePage }) => (
+			<BillingSection titleHidden={titleHidden || Boolean(singlePage)} />
+		),
 	},
 	{
 		id: "browserProfiles",
@@ -101,7 +139,9 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: Server,
 		label: (t) => t("settings.coder.navLabel"),
 		visible: ({ cloudEnabled, customCoder }) => cloudEnabled && customCoder,
-		render: (_t, titleHidden, { singlePage }) => <CoderSettingsSection titleHidden={titleHidden || Boolean(singlePage)} />,
+		render: (_t, titleHidden, { singlePage }) => (
+			<CoderSettingsSection titleHidden={titleHidden || Boolean(singlePage)} />
+		),
 	},
 	{
 		id: "remoteHosts",
@@ -128,7 +168,13 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "shortcuts",
 		icon: Keyboard,
 		label: (t) => t("settings.shortcuts"),
-		render: (_t, titleHidden, { singlePage }) => <KeyboardShortcutsContent active bounded={Boolean(singlePage)} titleHidden={titleHidden || Boolean(singlePage)} />,
+		render: (_t, titleHidden, { singlePage }) => (
+			<KeyboardShortcutsContent
+				active
+				bounded={Boolean(singlePage)}
+				titleHidden={titleHidden || Boolean(singlePage)}
+			/>
+		),
 	},
 	{
 		id: "diagnostics",
@@ -169,11 +215,21 @@ export function visibleGlobalSettings(context: CatalogContext): SettingsCatalogI
 	return globalSettingsCatalog.filter((item) => item.visible?.(context) ?? true);
 }
 
-export function globalSettingsItem(section: GlobalSettingsSection, context: CatalogContext): SettingsCatalogItem {
-	return visibleGlobalSettings(context).find((item) => item.id === (section === "agents" ? "accounts" : section)) ?? globalSettingsCatalog[0];
+export function globalSettingsItem(
+	section: GlobalSettingsSection,
+	context: CatalogContext,
+): SettingsCatalogItem {
+	return (
+		visibleGlobalSettings(context).find(
+			(item) => item.id === (section === "agents" ? "accounts" : section),
+		) ?? globalSettingsCatalog[0]
+	);
 }
 
-export function globalSettingsItemsFor(section: GlobalSettingsSection | "all", context: CatalogContext): SettingsCatalogItem[] {
+export function globalSettingsItemsFor(
+	section: GlobalSettingsSection | "all",
+	context: CatalogContext,
+): SettingsCatalogItem[] {
 	return section === "all"
 		? visibleGlobalSettings(context).filter((item) => !item.pageOnly)
 		: [globalSettingsItem(section, context)];
