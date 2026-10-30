@@ -37,6 +37,7 @@ type Workspace struct {
 }
 
 var _ ports.Workspace = (*Workspace)(nil)
+var _ ports.WorkspacePathResolver = (*Workspace)(nil)
 var _ ports.WorkspaceDefaultBranchRefresher = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
@@ -78,6 +79,19 @@ func (w *Workspace) RevertTaskBranch(ctx context.Context, renamed, original port
 		return renamed, errors.New("workspace router: Git adapter does not support task naming")
 	}
 	return namer.RevertTaskBranch(ctx, renamed, original)
+}
+
+// ResolveWorkspacePath delegates read-only planning to the selected adapter.
+func (w *Workspace) ResolveWorkspacePath(ctx context.Context, cfg ports.WorkspaceConfig) (string, error) {
+	adapter, err := w.adapterForProject(ctx, cfg.ProjectID)
+	if err != nil {
+		return "", err
+	}
+	resolver, ok := adapter.(ports.WorkspacePathResolver)
+	if !ok {
+		return "", errors.New("workspace router: adapter cannot resolve a workspace path")
+	}
+	return resolver.ResolveWorkspacePath(ctx, cfg)
 }
 
 // Create delegates session workspace creation to the project-appropriate

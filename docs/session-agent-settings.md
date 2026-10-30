@@ -91,12 +91,19 @@ an unknown writer does not authorize a retry.
 
 `ao session cleanup` and project teardown skip a vetoed session before runtime
 or workspace cleanup and report `unconfirmed native writer; workspace retained`.
-A live session sharing that path cannot bypass retention through normal Kill,
-RequestKill, replacement retirement or shutdown save. These entries check before
-provider stop, stash or scripts, then hold the project workspace gate while
-rechecking and removing files. Project teardown can therefore refuse with 409
-`AGENT_SETTINGS_WRITER_UNCONFIRMED` before stopping the shared live session.
-Preparation/rollback and multi-repo removal use the same ownership scan.
+A live session sharing that path can still be stopped by Kill, RequestKill,
+replacement retirement or project teardown. Retention gates file mutation, not
+termination: these paths stop the known runtime and record termination, then skip
+stash, scripts and workspace removal and log the retention reason. They recheck
+under the project workspace gate immediately before any removal. Preparation /
+rollback and multi-repo removal use the same ownership scan.
+
+Spawn and restore resolve the adapter's canonical path without materializing it.
+An abandoned-writer veto on that path returns
+`AGENT_SETTINGS_WRITER_UNCONFIRMED` before Create/Restore or another writer launch;
+the next orchestrator must not reattach the retained worktree. A different path
+without a writer obligation is unaffected. An adapter that cannot project its
+path is rejected if any project writer obligation makes ownership uncertain.
 A predecessor sharing that path also cannot reclaim it. Cleanup checks the
 active handoff before the veto so terminal intent cannot create a reclamation
 window before journal settlement. If writer status cannot be read, cleanup

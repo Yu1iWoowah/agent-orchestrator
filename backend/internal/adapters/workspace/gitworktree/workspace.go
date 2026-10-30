@@ -125,6 +125,7 @@ type Workspace struct {
 type commandRunner func(ctx context.Context, binary string, args ...string) ([]byte, error)
 
 var _ ports.Workspace = (*Workspace)(nil)
+var _ ports.WorkspacePathResolver = (*Workspace)(nil)
 var _ ports.WorkspaceDefaultBranchRefresher = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
@@ -2173,6 +2174,12 @@ func validatePathComponent(name, value string) error {
 		return fmt.Errorf("%w: %s %q must not be a path-traversal component", ErrUnsafePath, name, value)
 	}
 	return nil
+}
+
+// ResolveWorkspacePath uses the same validated path as Create/Restore and does
+// not attach, create or modify a workspace.
+func (w *Workspace) ResolveWorkspacePath(_ context.Context, cfg ports.WorkspaceConfig) (string, error) {
+	return w.restorePath(cfg)
 }
 
 func (w *Workspace) managedPath(cfg ports.WorkspaceConfig) (string, error) {

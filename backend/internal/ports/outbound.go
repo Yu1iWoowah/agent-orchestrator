@@ -358,6 +358,12 @@ type WorkspacePreparationBranchCleaner interface {
 	DeletePreparedBranch(ctx context.Context, info WorkspaceInfo) error
 }
 
+// WorkspacePathResolver reports the path Create or Restore will use without
+// materializing it. The manager checks durable writer obligations first.
+type WorkspacePathResolver interface {
+	ResolveWorkspacePath(ctx context.Context, cfg WorkspaceConfig) (string, error)
+}
+
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
 	Create(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)

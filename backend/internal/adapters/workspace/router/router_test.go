@@ -36,6 +36,13 @@ type recordingWorkspace struct {
 	path               string
 }
 
+func (w *recordingWorkspace) ResolveWorkspacePath(_ context.Context, cfg ports.WorkspaceConfig) (string, error) {
+	if cfg.Path != "" {
+		return cfg.Path, nil
+	}
+	return w.path, nil
+}
+
 func (w *recordingWorkspace) ResolveDefaultBranch(_ context.Context, _ string, _ string) (ports.WorkspaceDefaultBranch, error) {
 	return ports.WorkspaceDefaultBranch{Remote: "origin", Branch: "main", BaseRef: "refs/remotes/origin/main"}, nil
 }
@@ -206,5 +213,20 @@ func TestRouterPreservesWorkspaceProjectDelegation(t *testing.T) {
 	}
 	if scratch.createCalls != 0 {
 		t.Fatalf("scratch create calls = %d, want 0", scratch.createCalls)
+	}
+}
+
+func TestResolveWorkspacePathDoesNotMaterialize(t *testing.T) {
+	git := &recordingWorkspace{path: "/git/canonical"}
+	scratch := &recordingWorkspace{path: "/scratch/canonical"}
+	w := workspacerouter.New(workspacerouter.Deps{Git: git, Scratch: scratch, Projects: projectStore{projects: map[string]domain.ProjectRecord{"g": {ID: "g"}, "s": {ID: "s", Kind: domain.ProjectKindScratch}}}})
+	for _, tc := range []struct{ project, want string }{{"g", git.path}, {"s", scratch.path}} {
+		path, err := w.ResolveWorkspacePath(t.Context(), ports.WorkspaceConfig{ProjectID: domain.ProjectID(tc.project), SessionID: "next", Kind: domain.KindOrchestrator})
+		if err != nil || path != tc.want {
+			t.Fatalf("project=%s path=%q want=%q err=%v", tc.project, path, tc.want, err)
+		}
+	}
+	if git.createCalls+git.restoreCalls+scratch.createCalls+scratch.restoreCalls != 0 {
+		t.Fatal("path resolution must not materialize either adapter")
 	}
 }

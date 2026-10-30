@@ -57,3 +57,56 @@ func (m *Manager) preflightWorkspaceReclaim(ctx context.Context, rec domain.Sess
 	}
 	return err
 }
+
+// checkWorkspaceAdmission checks the adapter's actual canonical path before it
+// can reattach a preserved worktree. Older adapters without path planning fail
+// closed on any writer obligation in the project instead of guessing a path.
+func (m *Manager) checkWorkspaceAdmission(ctx context.Context, cfg ports.WorkspaceConfig) error {
+	path := cfg.Path
+	if resolver, ok := m.workspace.(ports.WorkspacePathResolver); ok {
+		resolved, err := resolver.ResolveWorkspacePath(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		path = resolved
+	}
+	recs, err := m.cleanupRecords(ctx, cfg.ProjectID)
+	if err != nil {
+		return apierr.Conflict("SESSION_WORKSPACE_STATUS_UNAVAILABLE", "Workspace ownership could not be verified; another launch is not safe", nil)
+	}
+	for _, rec := range recs {
+		if path != "" && (rec.Metadata.WorkspacePath == "" || normalizeWorkspacePath(rec.Metadata.WorkspacePath) != normalizeWorkspacePath(path)) {
+			continue
+		}
+		// A same-session handoff owns its active transition, but even that
+		// owner cannot bypass an abandoned-writer veto after settlement.
+		reason := ""
+		if rec.ID == cfg.SessionID {
+			abandoned, err := m.abandonedTUISettingsWriter(ctx, rec.ID)
+			if err != nil {
+				reason = unavailableTUIWriterWorkspaceReason
+			} else if abandoned {
+				reason = unconfirmedTUIWriterWorkspaceReason
+			}
+		} else {
+			reason = m.workspaceRetentionReason(ctx, rec.ID)
+		}
+		if reason == unavailableTUIWriterWorkspaceReason {
+			return apierr.Conflict("SESSION_WORKSPACE_STATUS_UNAVAILABLE", "Workspace ownership could not be verified; another launch is not safe", nil)
+		}
+		if reason == unconfirmedTUIWriterWorkspaceReason {
+			return apierr.Conflict("AGENT_SETTINGS_WRITER_UNCONFIRMED", "Cannot launch in a retained workspace: "+reason, nil)
+		}
+		if reason != "" {
+			return apierr.Conflict("SESSION_WORKSPACE_IN_USE", "Cannot launch in a retained workspace: "+reason, nil)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) restoreAdmittedWorkspace(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	if err := m.checkWorkspaceAdmission(ctx, cfg); err != nil {
+		return ports.WorkspaceInfo{}, err
+	}
+	return m.workspace.Restore(ctx, cfg)
+}

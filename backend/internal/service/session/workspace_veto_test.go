@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -131,21 +130,18 @@ func TestSharedAbandonedWriterBlocksLiveSessionWorkspaceTeardown(t *testing.T) {
 			case "shutdown-save":
 				err = manager.SaveAndTeardownAll(ctx)
 			}
-			if action != "shutdown-save" {
-				var blocked *apierr.Error
-				if !errors.As(err, &blocked) || blocked.Code != "AGENT_SETTINGS_WRITER_UNCONFIRMED" {
-					t.Errorf("teardown must report the shared writer veto: %v", err)
-				}
-			} else if err != nil {
-				t.Fatal(err)
+			if err != nil {
+				t.Fatalf("retained workspace must not prevent stopping the live session: %v", err)
 			}
+			wantStopped := action != "shutdown-save"
+
 			data, readErr := os.ReadFile(marker)
-			if readErr != nil || string(data) != "unknown writer data" || ws.destroyed != 0 || ws.stashed != 0 || rt.destroyed != 0 || !rt.alive["unknown-target"] || rt.created != 0 {
+			if readErr != nil || string(data) != "unknown writer data" || ws.destroyed != 0 || ws.stashed != 0 || (wantStopped && rt.destroyed < 1) || (!wantStopped && rt.destroyed != 0) || !rt.alive["unknown-target"] || rt.created != 0 {
 				t.Fatalf("shared veto bypassed: action=%s Destroy=%d Stash=%d runtimeDestroy=%d unknownAlive=%v newCreate=%d file=%q readErr=%v", action, ws.destroyed, ws.stashed, rt.destroyed, rt.alive["unknown-target"], rt.created, data, readErr)
 			}
 			live, _, err := st.GetSession(ctx, sibling.ID)
-			if err != nil || live.IsTerminated {
-				t.Fatalf("shared-veto preflight had side effects: terminated=%v err=%v", live.IsTerminated, err)
+			if err != nil || live.IsTerminated != wantStopped || rt.alive["live-runtime"] == wantStopped {
+				t.Fatalf("workspace retention must preserve stop intent: terminated=%v runtimeAlive=%v wantStopped=%v err=%v", live.IsTerminated, rt.alive["live-runtime"], wantStopped, err)
 			}
 		})
 	}
