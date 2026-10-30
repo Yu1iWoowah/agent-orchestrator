@@ -36,8 +36,12 @@ test("grouped decision validates, preserves drafts, and submits one saved receip
 	await row.press("Space");
 	await expect(page.getByRole("dialog").getByRole("checkbox", { name: "Tests", exact: true })).toBeChecked();
 	await page.getByRole("dialog").getByRole("button", { name: "Submit all answers" }).click();
-	await expect(page.getByRole("dialog").getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	await expect(page.getByRole("dialog")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true })).toHaveCount(0);
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await page.getByRole("region", { name: "Awaiting you", exact: true }).getByRole("tab", { name: "History", exact: true }).click();
+	await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).click();
+	await expect(page.getByRole("dialog").getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
 	await expect(page.getByRole("dialog").getByText("Saved · Delivered", { exact: true })).toHaveCount(0);
 	await page.evaluate(() => window.dispatchEvent(new CustomEvent("decision-fixture", { detail: "delivered" })));
 	await expect(page.getByRole("dialog").getByText("Saved · Delivered", { exact: true })).toBeVisible();
@@ -125,7 +129,7 @@ test("offline-host drafts filling persistence do not block a new answer @T0", as
 	const dialog = page.getByRole("dialog");
 	await expect(dialog.getByText("Your draft is kept in this window, but could not be saved for a restart.")).toBeVisible();
 	await dialog.getByRole("button", { name: "Submit all answers" }).click();
-	await expect(dialog.getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	await expect(dialog).toHaveCount(0);
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
 	const values = await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))
 		.map((key) => JSON.parse(localStorage.getItem(key) ?? "null").fields.target.otherText));
@@ -154,6 +158,9 @@ test("a large already-persisted answer submits when its frozen snapshot exceeds 
 	}, "/src/renderer/stores/question-draft-store.ts");
 	expect(submission.phase).toBe("submitting"); expect(submission.available).toBe(false); expect(submission.stored).toEqual(before);
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await expect(dialog).toHaveCount(0);
+	await page.getByRole("region", { name: "Awaiting you", exact: true }).getByRole("tab", { name: "History", exact: true }).click();
+	await page.getByRole("button", { name: "Open decision: Large valid decision", exact: true }).click();
 	await expect(dialog.getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
 	for (let i = 0; i < 4; i++) await expect(dialog.getByRole("textbox", { name: "Other answer: Q", exact: true }).nth(i)).toHaveValue("o".repeat(4000));
 	const remaining = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((key) => key.startsWith("ao.question.drafts.v2:"))

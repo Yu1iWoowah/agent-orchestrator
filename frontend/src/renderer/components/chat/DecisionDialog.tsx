@@ -132,6 +132,12 @@ function QuestionSourceBody({ sessionId, hostId, questionId, compact, onClose, o
 	const seen = useRef(new Set<number>());
 	const [readError, setReadError] = useState(false);
 	const question = query.data;
+	const previousQuestion = useRef(question);
+	useEffect(() => {
+		const previous = previousQuestion.current;
+		previousQuestion.current = question;
+		if (question && previous?.id === question.id && previous.state === "open" && question.state !== "open") onClose();
+	}, [question, onClose]);
 	useEffect(() => {
 		if (!question || query.isError || question.state !== "open" || question.read || seen.current.has(question.version)) return;
 		seen.current.add(question.version);

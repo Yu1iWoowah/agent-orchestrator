@@ -19,11 +19,9 @@ test("project user decisions stay separate from coordination reports and answer 
 	await dialog.getByRole("checkbox", { name: "Tests", exact: true }).check();
 	await dialog.getByRole("button", { name: "Submit all answers" }).click();
 	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
-	await expect(
-		dialog.getByText("Saved · Pending delivery", { exact: false }),
-	).toBeVisible();
-	await page.keyboard.press("Escape");
+	await expect(page.getByRole("dialog", { name: "Decision", exact: true })).toHaveCount(0);
 	await expect(page.getByRole("tab", { name: /Awaiting you 1/ })).toBeVisible();
+	await expect(page.getByRole("button", { name: /Choose a deployment target/ })).toHaveCount(0);
 	await page.getByRole("tab", { name: "Orchestrator reports" }).click();
 	await expect(
 		page.getByText("Answer state unknown · report delivery: acknowledged"),
