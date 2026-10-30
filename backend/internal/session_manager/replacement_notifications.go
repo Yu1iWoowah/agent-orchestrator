@@ -42,8 +42,19 @@ func (m *Manager) DeliverReplacementWorkerFYI(ctx context.Context, expected doma
 	if worker.Kind != domain.KindWorker || worker.ProjectID != op.ProjectID {
 		return domain.ErrReplacementSourceChanged
 	}
-	if worker.IsTerminated || worker.HibernatedAt != nil || worker.ProvisionState != domain.SessionProvisionReady {
+	if worker.IsTerminated || worker.IsTaskPreparation {
 		return nil
+	}
+	if worker.HibernatedAt != nil || worker.ProvisionState != domain.SessionProvisionReady {
+		if domain.NormalizeSessionMode(worker.Mode) != domain.SessionModeChat {
+			return nil
+		}
+		queue, ok := m.store.(ports.ReplacementDormantWorkerNoticeQueue)
+		if !ok {
+			return ports.ErrChatUnsupported
+		}
+		_, err := queue.QueueDormantReplacementWorkerNotice(ctx, op.ID, op.Revision, target, worker.ControllerOwner(), m.clock())
+		return err
 	}
 	if domain.NormalizeSessionMode(worker.Mode) == domain.SessionModeTUI {
 		if worker.Activity.State != domain.ActivityIdle {

@@ -71,3 +71,9 @@ type ReplacementWorkerNoticeStore interface {
 	FinishReplacementWorkerNotice(context.Context, string, domain.SessionID, string, int64, bool, time.Time) (bool, error)
 	ValidateReplacementWorkerNotice(context.Context, string, domain.SessionID, string, int64) (domain.OrchestratorReplacement, domain.SessionRecord, domain.ReplacementNoticeReceipt, error)
 }
+
+// ReplacementDormantWorkerNoticeQueue admits fixed FYI text directly to a
+// dormant worker's canonical queue. It cannot wake or dispatch a provider.
+type ReplacementDormantWorkerNoticeQueue interface {
+	QueueDormantReplacementWorkerNotice(context.Context, string, int64, domain.SessionID, domain.SessionControllerOwner, time.Time) (bool, error)
+}
