@@ -189,6 +189,19 @@ beforeEach(() => {
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
 });
 
+it("shows a settings conflict beside the legacy picker with its request ID", async () => {
+	getMock.mockResolvedValue({ data: undefined });
+	patchMock.mockResolvedValue({ error: { code: "AGENT_SETTINGS_CONFLICT", message: "pending owner", requestId: "picker-request" } });
+	apiErrorCodeMock.mockReturnValue("AGENT_SETTINGS_CONFLICT");
+	apiErrorMessageMock.mockReturnValue("pending owner");
+	const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+	act(() => { result.current.chooseSettings({ model: "next-model" }); });
+	await waitFor(() => expect(result.current.error).toContain("picker-request"));
+	expect(result.current.error).toContain("AGENT_SETTINGS_CONFLICT");
+	expect(result.current.error).toContain("wait");
+	expect(patchMock).toHaveBeenCalledTimes(1);
+});
+
 it("renders a retained-history boundary between exchanges from the daemon snapshot", async () => {
 	getMock.mockResolvedValue({ data: {
 		...WIRE, controller: "ready", turns: [], modelReroute: undefined, account: undefined,

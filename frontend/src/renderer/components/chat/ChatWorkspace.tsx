@@ -461,6 +461,8 @@ export interface ChatWorkspaceProps {
 	 */
 	onContinueTurn?: () => Promise<unknown> | void;
 	commandError?: string;
+	agentSettingsNotice?: ReactNode;
+	agentSettingsActivity?: ReactNode;
 	onResumeAgent?: () => void | Promise<unknown>;
 	resumingAgent?: boolean;
 	resumeError?: string;
@@ -766,6 +768,8 @@ function ChatWorkspaceContent({
 	onInterrupt,
 	onContinueTurn,
 	commandError,
+	agentSettingsNotice,
+	agentSettingsActivity,
 	onResumeAgent,
 	resumingAgent,
 	resumeError,
@@ -1957,6 +1961,7 @@ function ChatWorkspaceContent({
 								<Timeline
 							onAddToSideChat={onAddToSideChat}
 									workerUpdates={sessionRole === "orchestrator"}
+									settingsActivity={agentSettingsActivity}
 									annotationNavigationRef={annotationNavigationRef}
 									key={draftScopeKey}
 									snapshot={transcriptSnapshot}
@@ -2041,6 +2046,7 @@ function ChatWorkspaceContent({
 										placement={conversationEmpty ? "below" : "above"}
 										active={!workspaceActiveTabKey && !reviewerActive && !shellActive}
 									/>
+									{agentSettingsNotice}
 									<ChatComposer
 										notice={composerNotice}
 										onSelectAnnotation={navigateToAnnotation}
@@ -2709,6 +2715,7 @@ const CHAT_INITIAL_VIEWPORT_HEIGHT = 800;
  * this behavior while keeping its own composer.
  */
 export function Timeline({
+	settingsActivity,
 	onAddToSideChat,
 	onAddToChat,
 	onForeignAnnotation,
@@ -2744,6 +2751,7 @@ export function Timeline({
 	workerUpdates = false,
 	openingStartedAt,
 }: {
+	settingsActivity?: ReactNode;
 	onAddToSideChat?: ChatWorkspaceProps["onAddToSideChat"];
 	/** Replaces the default "Add to chat" (write to this draft scope's composer). */
 	onAddToChat?: (excerpt: ChatDraftExcerptReference) => void;
@@ -4227,7 +4235,7 @@ export function Timeline({
 	}
 
 	if (timelineItems.length === 0 && !messageEdit && !turn && !showStartup) {
-		return null;
+		return settingsActivity ?? null;
 	}
 
 	return (
@@ -4273,6 +4281,7 @@ export function Timeline({
 				style={virtualized ? { overflowAnchor: "none" } : undefined}
 			>
 				<div ref={scrollContent} className={cn("mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4.5", revealTranscript && "chat-transcript-reveal")}>
+					{settingsActivity}
 					{annotationNavigationError ? <p role="status" className="text-xs text-muted-foreground">{annotationNavigationError}</p> : null}
 					{hasOlder ? (
 						<div className="flex justify-center pb-1">

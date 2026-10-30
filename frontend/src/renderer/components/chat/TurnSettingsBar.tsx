@@ -450,8 +450,8 @@ export function TurnSettingsBar({
 								currentHarness={harness}
 								current={current}
 								agentSwitch={agentSwitch}
-								// Stays usable while a pick is saved; overlapping saves are written in order.
-								disabled={disabled || rememberPermissionsPending}
+								// A choice is not accepted until the daemon responds.
+								disabled={disabled || configPending || rememberPermissionsPending}
 								// Only an agent that sends back its own settings has any to load; AO's would just flicker.
 								loading={configPending && !nativeModelMenu}
 								loadingModels={modelsLoading}

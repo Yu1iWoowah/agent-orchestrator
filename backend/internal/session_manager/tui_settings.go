@@ -723,7 +723,7 @@ func (m *Manager) prepareTUISettingsKill(ctx context.Context, id domain.SessionI
 	for _, handle := range []string{op.TUI.SourceRuntimeHandle, op.TUI.TargetRuntimeHandle, op.TUI.RollbackRuntimeHandle} {
 		if handle != "" {
 			if err := m.stopSourceControllerConclusive(domain.SessionRecord{ID: id, Mode: domain.SessionModeTUI, Metadata: domain.SessionMetadata{RuntimeHandleID: handle}}); err != nil {
-				return ctx, false, err
+				return ctx, false, apierr.Conflict("AGENT_SETTINGS_WRITER_UNCONFIRMED", "Native writer could not be confirmed stopped; recovery and workspace are retained. Retry stopping this session before checking the writer again.", nil)
 			}
 		}
 	}

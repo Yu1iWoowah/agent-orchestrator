@@ -30,6 +30,10 @@ type AgentSettingsControl interface {
 	ReadForCaller(context.Context, agentsettings.Caller, domain.SessionID) (agentsettings.Snapshot, error)
 }
 
+type agentSettingsWriterSettler interface {
+	SettleWriter(context.Context, agentsettings.Caller, domain.SessionID, string, int64, bool) (domain.AgentSettingsOperation, error)
+}
+
 // AgentSettingsController exposes preferences, capabilities and settings operations.
 type AgentSettingsController struct {
 	Svc     AgentSettingsReader
@@ -42,6 +46,7 @@ func (c *AgentSettingsController) Register(r chi.Router) {
 	r.Patch("/sessions/{sessionId}/agent-settings", c.change)
 	r.Get("/sessions/{sessionId}/agent-settings/operations/{operationId}", c.operation)
 	r.Post("/sessions/{sessionId}/agent-settings/operations/{operationId}/cancel", c.cancel)
+	r.Post("/sessions/{sessionId}/agent-settings/operations/{operationId}/settle", c.settleWriter)
 }
 func (c *AgentSettingsController) read(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
@@ -147,4 +152,23 @@ func (c *AgentSettingsController) cancel(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, AgentSettingsOperationResponse{Operation: op})
+}
+
+func (c *AgentSettingsController) settleWriter(w http.ResponseWriter, r *http.Request) {
+	control, ok := c.Control.(agentSettingsWriterSettler)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/settle")
+		return
+	}
+	var in SettleAgentSettingsWriterPayload
+	if err := decodeAgentSettingsBody(w, r, &in); err != nil || in.ExpectedVersion == nil || *in.ExpectedVersion < 0 {
+		envelope.WriteAPIError(w, r, 400, "bad_request", "AGENT_SETTINGS_INVALID", "expectedVersion is required; writer absence cannot be asserted by the caller", nil)
+		return
+	}
+	op, err := control.SettleWriter(r.Context(), settingsCaller(r), domain.SessionID(chi.URLParam(r, "sessionId")), chi.URLParam(r, "operationId"), *in.ExpectedVersion, in.StopIfAlive)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, AgentSettingsWriterSettlementResponse{Operation: op, WriterStatus: "stopped"})
 }

@@ -995,6 +995,14 @@ type SessionAgentSettingsOperation struct {
 	ErrorCode              string
 }
 
+type SessionAgentSettingsWriterSettlement struct {
+	OperationID       string
+	OperationRevision int64
+	ActorKind         string
+	RecordedAt        time.Time
+	RequestID         string
+}
+
 type SessionArtifactVersion struct {
 	SessionID    domain.SessionID
 	Path         string

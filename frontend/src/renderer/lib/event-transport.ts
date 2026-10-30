@@ -7,7 +7,7 @@ import { setEventsConnectionState } from "./events-connection";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
-import { conversationQueryKey, conversationQueryRoot, conversationSettled, refreshRemoteConversation } from "../hooks/useConversation";
+import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey, conversationQueryRoot, conversationSettled, refreshRemoteConversation } from "../hooks/useConversation";
 import {
 	reviewerConversationQueryKey,
 	reviewerConversationQueryRoot,
@@ -19,6 +19,7 @@ import type { components } from "../../api/schema";
 import { editorHandoffQueryKey, editorHandoffQueryRoot } from "../hooks/useEditorHandoff";
 import { baseUrlForHost, connectedHosts, subscribeConnectedHosts } from "./host-clients";
 import { probeRemoteSse } from "./remote-sse-probe";
+import { agentSettingsQueryKey, agentSettingsQueryRoot, type AgentSettingsSnapshot } from "./agent-settings";
 
 export type EventTransport = {
 	connect: () => () => void;
@@ -84,6 +85,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const pendingReviewerConversations = new Set<string>();
 			const pendingReviewSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
+			const pendingAgentSettingsSessions = new Set<string>();
 			const pendingEditorHandoffSessions = new Set<string>();
 			let pendingAgentAccounts = false;
 			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
@@ -141,18 +143,19 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			};
 			// Do not repeatedly cancel a slow fetch under continuous CDC traffic. A
 			// key receives at most one in-flight refresh and one queued catch-up.
-			const refreshes = new Map<string, { dirty: boolean }>();
-			const invalidate = (queryKey: QueryKey) => {
+			const refreshes = new Map<string, { dirty: boolean; onRefreshed?: () => void }>();
+			const invalidate = (queryKey: QueryKey, onRefreshed?: () => void) => {
 				if (disposed) return;
 				const key = JSON.stringify(queryKey);
 				const running = refreshes.get(key);
 				if (running) {
 					running.dirty = true;
+					running.onRefreshed ??= onRefreshed;
 					return;
 				}
 				// A fetch from polling/mounting may already predate this event. Wait
 				// for it, then refresh once so joining its promise cannot lose the event.
-				const state = { dirty: queryClient.isFetching({ queryKey, type: "active" }) > 0 };
+				const state = { dirty: queryClient.isFetching({ queryKey, type: "active" }) > 0, onRefreshed };
 				// An inactive Chat hover prefetch cannot refresh itself after this event.
 				// Cancel it without interrupting unrelated imperative queries.
 				if (queryKey[0] === conversationQueryRoot[0] && queryClient.isFetching({ queryKey, type: "inactive" }) > 0) {
@@ -161,9 +164,30 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				refreshes.set(key, state);
 				const settled = () => {
 					refreshes.delete(key);
-					if (state.dirty && !disposed) invalidate(queryKey);
+					if (!disposed) state.onRefreshed?.();
+					if (state.dirty && !disposed) invalidate(queryKey, state.onRefreshed);
 				};
 				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
+			};
+			const refreshAgentSettings = (sessionId: string, hostId?: string) => {
+				const key = agentSettingsQueryKey(sessionId, hostId);
+				const stamp = () => {
+					const snapshot = queryClient.getQueryData<AgentSettingsSnapshot>(key);
+					const latest = snapshot?.history?.[0];
+					return snapshot ? JSON.stringify([snapshot.revision, snapshot.pending?.id, latest?.id, latest?.phase]) : undefined;
+				};
+				let previous = stamp();
+				invalidate(key, () => {
+					const next = stamp();
+					if (next === undefined || next === previous) return;
+					previous = next;
+					// Settings triggers carry only an id. Refresh the projection after
+					// its authoritative read changes, not for unchanged usage metadata.
+					if (hostId) refreshRemoteConversationOnce(hostId, sessionId);
+					else invalidate(conversationQueryKey(sessionId));
+					invalidate(conversationConfigOptionsQueryKey(sessionId, hostId));
+					invalidate(conversationModelsQueryKey(sessionId, hostId));
+				});
 			};
 			const refreshRemote = (hostId: string, reconnect = false, attention = true) => {
 				invalidate(["remote-session-attention", hostId]);
@@ -174,6 +198,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				invalidate(["project-config", hostId]);
 				if (reconnect) invalidate(["remote-conversation", hostId]);
 				if (reconnect) invalidate(["reviewer-conversation", hostId]);
+				if (reconnect) invalidate(agentSettingsQueryRoot(hostId));
 				invalidate(["session-scm-summary", hostId]);
 				invalidate(["session-reviews", hostId]);
 				invalidate(["session-usage", hostId]);
@@ -192,6 +217,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				refreshRemote(hostId, true);
 				connection.pollTimer = setInterval(() => {
 					refreshRemote(hostId);
+					invalidate(agentSettingsQueryRoot(hostId));
 					invalidate(["reviewer-conversation", hostId]);
 				}, 2_000);
 				connection.close = probeRemoteSse(
@@ -204,6 +230,9 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						try {
 							const decoded = JSON.parse(String((event as MessageEvent).data)) as { projectId?: unknown; type?: unknown; sessionId?: unknown; payload?: { conversationId?: unknown; reviewId?: unknown } };
 							const project = attentionProjectEvent(decoded);
+							if ((decoded.type === "session_updated" || decoded.type === "session_created") && typeof decoded.sessionId === "string" && decoded.sessionId && typeof decoded.payload?.conversationId !== "string") {
+								refreshAgentSettings(decoded.sessionId, hostId);
+							}
 							if (project === true) invalidate(["remote-project-attention", hostId]);
 							else if (project) invalidate(["remote-project-attention", hostId, project]);
 							if (typeof decoded.sessionId === "string" && typeof decoded.payload?.conversationId === "string" && typeof decoded.payload.reviewId !== "string") {
@@ -274,6 +303,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(["session-reviews"]);
 					invalidate(["session-interface-transition"]);
 					invalidate(["agent-models"]);
+					invalidate(agentSettingsQueryRoot());
 					allEventScopedCachesInvalidationPending = false;
 				}
 				if (allEditorHandoffsInvalidationPending) {
@@ -310,6 +340,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(["session-interface-transition", sessionId]);
 				}
 				pendingInterfaceTransitionSessions.clear();
+				for (const sessionId of pendingAgentSettingsSessions) {
+					refreshAgentSettings(sessionId);
+				}
+				pendingAgentSettingsSessions.clear();
+				if (pendingModelCatalogScopes.size > 0) invalidate(agentSettingsQueryRoot());
 				for (const scope of pendingModelCatalogScopes.values()) {
 					// Catalogs are device-wide: pickers key them by agent, not by the
 					// project the event names, so refresh every view of this agent
@@ -415,6 +450,9 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							pendingReviewSessions.add(decoded.sessionId);
 						}
 						if (payload?.kind === "agent_accounts") { pendingAgentAccounts = true; accountOnly = true; }
+						if ((decoded.type === "session_updated" || decoded.type === "session_created") && typeof decoded.sessionId === "string" && decoded.sessionId && typeof payload?.conversationId !== "string") {
+							pendingAgentSettingsSessions.add(decoded.sessionId);
+						}
 						if (payload?.kind === "model_catalog" && typeof payload.agentId === "string" && typeof payload.projectId === "string") {
 							pendingModelCatalogScopes.set(`${payload.agentId}\0${payload.projectId}`, {
 								agentId: payload.agentId,
@@ -619,6 +657,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				pendingConversationSessions.clear();
 				pendingReviewSessions.clear();
 				pendingInterfaceTransitionSessions.clear();
+				pendingAgentSettingsSessions.clear();
 				pendingModelCatalogScopes.clear();
 				refreshes.clear();
 				if (retryTimer) clearTimeout(retryTimer);
