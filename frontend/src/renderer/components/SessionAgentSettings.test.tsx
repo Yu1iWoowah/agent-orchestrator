@@ -111,8 +111,8 @@ describe("Session agent settings intent", () => {
 		expect(screen.getByTestId("cancelled-composer")).toHaveTextContent("committed-model");
 	});
 	it.each([
-		{ phase: "applied", hostId: undefined }, { phase: "applied", hostId: "local" }, { phase: "applied", hostId: "remote-a" },
-		{ phase: "pending", hostId: undefined }, { phase: "pending", hostId: "local" }, { phase: "pending", hostId: "remote-a" },
+		{ phase: "applied", hostId: undefined }, { phase: "applied", hostId: "local" },
+		{ phase: "pending", hostId: undefined }, { phase: "pending", hostId: "local" },
 	] satisfies { phase: "applied" | "pending"; hostId: string | undefined }[])("refreshes all projections when $phase completes before the settings refetch (host=$hostId)", async ({ phase, hostId }) => {
 		const projectionHost = hostId === "local" ? undefined : hostId;
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

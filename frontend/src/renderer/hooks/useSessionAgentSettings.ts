@@ -6,7 +6,7 @@ import { agentSettingsQueryKey } from "../lib/agent-settings";
 import { clientForSessionHost } from "../lib/host-clients";
 import { appI18n } from "../i18n";
 import { isLocal } from "../lib/hosts";
-import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey } from "./useConversation";
+import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey, refreshRemoteConversation } from "./useConversation";
 
 export function useSessionAgentSettings({ sessionId, hostId, enabled = true }: {
 	sessionId?: string;
@@ -52,7 +52,9 @@ async function refreshSettingsViews(client: QueryClient, target: { sessionId: st
 	// cancellation invalidates every projection even if CDC sees a stable stamp.
 	const hostId = target.hostId && !isLocal(target.hostId) ? target.hostId : undefined;
 	await Promise.all([
-		client.invalidateQueries({ queryKey: conversationQueryKey(target.sessionId, hostId) }),
+		hostId
+			? refreshRemoteConversation(client, target.sessionId, hostId).catch(() => {})
+			: client.invalidateQueries({ queryKey: conversationQueryKey(target.sessionId) }),
 		client.invalidateQueries({ queryKey: conversationModelsQueryKey(target.sessionId, hostId) }),
 		client.invalidateQueries({ queryKey: conversationConfigOptionsQueryKey(target.sessionId, hostId) }),
 	]);

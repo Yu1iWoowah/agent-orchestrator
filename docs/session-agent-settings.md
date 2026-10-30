@@ -81,6 +81,9 @@ settings read settles. This does not depend on a later CDC observing a change:
 an immediate applied response, or a pending response already applied by the
 refetch, may have filled the settings cache before the event arrives. Local host
 aliases use the same projection keys; other hosts are left unchanged.
+Remote refreshes fetch only the live conversation page and retain loaded history.
+A remote read failure leaves the accepted settings mutation successful and uses
+the existing conversation refresh error state.
 
 English and Traditional Chinese have explicit UI copy. Other locale catalogs
 currently carry explicit English fallbacks for these new keys; they are not
