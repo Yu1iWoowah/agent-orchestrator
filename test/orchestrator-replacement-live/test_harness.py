@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -93,6 +94,69 @@ class IsolationHarnessTests(unittest.TestCase):
         self.assertEqual(manifest["permissions"], {"stable": False, "realProvider": False, "paidLive": False})
         self.assertEqual(manifest["prerequisites"]["account"], "NOT_PROVIDED")
         self.assertEqual(manifest["prerequisites"]["budget"], "NOT_AUTHORIZED")
+        self.assertFalse(self.root.exists())
+
+    def test_dry_run_accepts_another_session_scratch(self):
+        module = self.load()
+        home = pathlib.Path(module.pwd.getpwuid(os.getuid()).pw_dir)
+        root = home / ".ao/scratch" / ("88-" + module.uuid.uuid4().hex[:4]) / "dry-only"
+        with mock.patch.object(module.subprocess, "Popen", side_effect=AssertionError("dry run launched")):
+            result = module.run(root, "http://127.0.0.1:52969", "dry-run")
+        self.assertEqual(result["mode"], "dry-run")
+        self.assertFalse(root.exists())
+
+    def test_fake_uses_configured_go_binary(self):
+        module = self.load()
+        binary = pathlib.Path(self.tmp.name) / "tools/go"
+        binary.parent.mkdir()
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        binary.chmod(0o700)
+        process = mock.Mock(pid=4321)
+        process.wait.return_value = process.poll.return_value = 0
+        with mock.patch.dict(os.environ, {"GO_BINARY": str(binary)}), mock.patch.object(module.os, "getloadavg", return_value=(0, 0, 0)), mock.patch.object(module.subprocess, "check_output", return_value="uptime fixture"), mock.patch.object(module.subprocess, "Popen", return_value=process) as launch, mock.patch.object(module, "start_time", return_value="fixture-identity"):
+            result = module.run(self.root, "http://127.0.0.1:52969", "fake")
+        self.assertEqual(launch.call_args.args[0][0], str(binary))
+        self.assertEqual(result["execution"]["goBinary"], str(binary))
+        self.assertTrue(launch.call_args.kwargs["env"]["PATH"].startswith(str(binary.parent) + os.pathsep))
+
+    def test_configured_load_limit_refuses_before_root_or_launch(self):
+        module = self.load()
+        process = mock.Mock(pid=4321)
+        process.wait.return_value = process.poll.return_value = 0
+        with mock.patch.dict(os.environ, {"AO_REPLACEMENT_MAX_LOAD": "1"}), mock.patch.object(module.os, "getloadavg", return_value=(1.5, 0, 0)), mock.patch.object(module.subprocess, "check_output", return_value="uptime fixture"), mock.patch.object(module.subprocess, "Popen", return_value=process) as launch, mock.patch.object(module, "start_time", return_value="fixture-identity"):
+            with self.assertRaises(ValueError):
+                module.run(self.root, "http://127.0.0.1:52969", "fake")
+            launch.assert_not_called()
+        self.assertFalse(self.root.exists())
+
+    def test_cli_accepts_toolchain_and_load_options_without_launch(self):
+        result = self.invoke("--go", "go", "--max-load", "2.5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["execution"]["maxLoad"], 2.5)
+        self.assertFalse(self.root.exists())
+
+    def test_invalid_load_limits_are_refused(self):
+        module = self.load()
+        for value in ("0", "-1", "nan", "inf", "invalid"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"AO_REPLACEMENT_MAX_LOAD": value}), self.assertRaises(ValueError):
+                module.run(self.root, "http://127.0.0.1:52969", "dry-run")
+        self.assertFalse(self.root.exists())
+
+    def test_missing_go_is_refused_before_creating_lab(self):
+        module = self.load()
+        missing = pathlib.Path(self.tmp.name) / "missing/go"
+        with mock.patch.dict(os.environ, {"GO_BINARY": str(missing)}), mock.patch.object(module.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(ValueError, "not found"):
+                module.run(self.root, "http://127.0.0.1:52969", "fake")
+            launch.assert_not_called()
+        self.assertFalse(self.root.exists())
+
+    def test_non_go_command_is_refused_before_launch(self):
+        module = self.load()
+        with mock.patch.dict(os.environ, {"GO_BINARY": sys.executable}), mock.patch.object(module.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(ValueError, "Go toolchain"):
+                module.run(self.root, "http://127.0.0.1:52969", "fake")
+            launch.assert_not_called()
         self.assertFalse(self.root.exists())
 
 

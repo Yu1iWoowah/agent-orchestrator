@@ -3,9 +3,12 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import pwd
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,9 +35,9 @@ def validate_paths(root, daemon_url):
     try:
         relative = root.relative_to(scratch)
     except ValueError as exc:
-        raise ValueError("lab must be beneath the user's .ao/scratch/7-* directory") from exc
-    if len(relative.parts) < 2 or not relative.parts[0].startswith("7-"):
-        raise ValueError("lab must have a session-owned scratch parent")
+        raise ValueError("lab must be beneath the user's .ao/scratch directory") from exc
+    if len(relative.parts) < 2:
+        raise ValueError("lab must have a named scratch parent")
     for home in (actual_home, pathlib.Path.home()):
         for stable in (home / ".ao" / "data", home / ".ao" / "electron"):
             if root == stable or stable in root.parents:
@@ -85,12 +88,25 @@ def stop_owned_group(process, identity):
         process.wait(timeout=5)
 
 
-def run_fake(root, paths):
+def execution_options(go_binary, max_load):
+    requested = str(go_binary or os.environ.get("GO_BINARY", "go"))
+    if not re.fullmatch(r"go(?:\d+(?:\.\d+){1,2})?(?:\.exe)?", pathlib.Path(requested).name):
+        raise ValueError("--go/GO_BINARY must name a Go toolchain executable")
+    limit = float(max_load if max_load is not None else os.environ.get("AO_REPLACEMENT_MAX_LOAD", os.cpu_count() or 1))
+    if not math.isfinite(limit) or limit <= 0:
+        raise ValueError("--max-load/AO_REPLACEMENT_MAX_LOAD must be finite and positive")
+    return {"goBinary": shutil.which(requested) or requested, "maxLoad": limit}
+
+
+def run_fake(root, paths, execution):
     if sys.platform != "linux":
         raise ValueError("fake runner currently requires Linux process identity checks")
+    go_binary = shutil.which(execution["goBinary"])
+    if go_binary is None:
+        raise ValueError("Go toolchain not found; configure --go or GO_BINARY")
     print(subprocess.check_output(["uptime"], text=True).strip(), file=sys.stderr)
-    if os.getloadavg()[0] >= 32:
-        raise ValueError("W4 load >=32; wait before starting the fake test group")
+    if os.getloadavg()[0] >= execution["maxLoad"]:
+        raise ValueError("load reached the configured limit; wait before starting the fake test group")
     os.umask(0o022)
     root.mkdir(mode=0o700)  # No reuse or overwrite of an earlier lab/evidence.
     for name, path in paths.items():
@@ -99,8 +115,8 @@ def run_fake(root, paths):
             if path.stat().st_mode & 0o777 != 0o700:
                 raise ValueError("private isolation directory is not 0700")
     home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-    env = {"PATH": "/usr/local/go/bin:/usr/bin:/bin", "HOME": str(paths["home"]), "TMPDIR": str(paths["tmp"]), "GOTMPDIR": str(paths["tmp"]), "TMUX_TMPDIR": str(paths["tmux"]), "GOMODCACHE": str(home / "go/pkg/mod"), "GOCACHE": str(home / ".cache/go-build"), "GOMAXPROCS": "8", "GOENV": "off", "GOPROXY": "off", "GOSUMDB": "off", "GOTOOLCHAIN": "local", "TZ": "UTC"}
-    command = ["/usr/local/go/bin/go", "test", "-p", "8", "-count=1", "-run", FAKE_TESTS, "./internal/service/orchestratorreplacement", "./internal/service/chat", "./internal/session_manager"]
+    env = {"PATH": os.pathsep.join((str(pathlib.Path(go_binary).parent), os.defpath)), "HOME": str(paths["home"]), "TMPDIR": str(paths["tmp"]), "GOTMPDIR": str(paths["tmp"]), "TMUX_TMPDIR": str(paths["tmux"]), "GOMODCACHE": os.environ.get("GOMODCACHE", str(home / "go/pkg/mod")), "GOCACHE": os.environ.get("GOCACHE", str(home / ".cache/go-build")), "GOMAXPROCS": "8", "GOENV": "off", "GOPROXY": "off", "GOSUMDB": "off", "GOTOOLCHAIN": "local", "TZ": "UTC"}
+    command = [go_binary, "test", "-p", "8", "-count=1", "-run", FAKE_TESTS, "./internal/service/orchestratorreplacement", "./internal/service/chat", "./internal/session_manager"]
     backend = pathlib.Path(__file__).resolve().parents[2] / "backend"
     with (root / "fake-tests.log").open("x") as log:
         process = subprocess.Popen(command, cwd=backend, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -127,16 +143,18 @@ def run_fake(root, paths):
     return {"status": "PASS" if code == 0 else "FAIL", "command": command, "log": str(root / "fake-tests.log")}, [registry]
 
 
-def run(root, daemon_url, mode):
+def run(root, daemon_url, mode, go_binary=None, max_load=None):
     if mode not in ("dry-run", "fake"):
         raise ValueError("4B live is not authorized: no test account or paid budget (A-Q20=C, A-Q21=C)")
     root, paths = validate_paths(root, daemon_url)
+    execution = execution_options(go_binary, max_load)
     key = str(uuid.uuid4())
     cases = [{"id": name, "sourceMode": source, "successorMode": "chat", "liveStatus": "NOT_RUN", "reason": "4B/account/budget not authorized"} for name, source in CASES]
     manifest = {"schemaVersion": 1, "mode": mode, "operationKey": key, "subjects": subjects(key), "isolation": {"root": str(root), "paths": {name: str(path) for name, path in paths.items()}, "daemonURL": daemon_url}, "permissions": {"stable": False, "realProvider": False, "paidLive": False}, "cases": cases, "caseSHA256": hashlib.sha256(canonical(cases)).hexdigest(), "providerCalls": 0, "prerequisites": {"account": "NOT_PROVIDED", "budget": "NOT_AUTHORIZED", "nativeProfile": "NOT_CHECKED", "electron": "NOT_RUN"}, "acceptance": {"A15": "NOT_RUN", "A23": "NOT_RUN"}, "cleanupRegistry": [], "fakeValidation": {"status": "NOT_RUN"}}
     validate_manifest(manifest)
+    manifest["execution"] = execution
     if mode == "fake":
-        manifest["fakeValidation"], manifest["cleanupRegistry"] = run_fake(root, paths)
+        manifest["fakeValidation"], manifest["cleanupRegistry"] = run_fake(root, paths, execution)
         with (root / "manifest.json").open("x") as out:
             json.dump(manifest, out, indent=2)
     return manifest
@@ -147,9 +165,11 @@ def main():
     parser.add_argument("--lab-root", type=pathlib.Path, required=True)
     parser.add_argument("--daemon-url", default="http://127.0.0.1:52969")
     parser.add_argument("--mode", choices=("dry-run", "fake", "live"), default="dry-run")
+    parser.add_argument("--go", help="Go executable; defaults to GO_BINARY or go on PATH")
+    parser.add_argument("--max-load", type=float, help="positive load limit; defaults to AO_REPLACEMENT_MAX_LOAD or CPU count")
     args = parser.parse_args()
     try:
-        manifest = run(args.lab_root, args.daemon_url, args.mode)
+        manifest = run(args.lab_root, args.daemon_url, args.mode, args.go, args.max_load)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

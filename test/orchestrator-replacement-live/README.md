@@ -4,11 +4,14 @@
 
 ## 先檢查隔離規劃
 
-`--lab-root` 必須位於使用者的 `~/.ao/scratch/7-*/` 下面，不能是 stable data、Electron state 或任何 symlink alias。每次使用新的 lab 子目錄。daemon URL 只接受專用的 `127.0.0.1` port；拒絕 port 3001 與繼承的 `AO_PORT`。本輪即使 URL 有效也不連線。
+`--lab-root` 必須位於使用者的 `~/.ao/scratch/<named-parent>/` 下面，不能是 stable data、Electron state 或任何 symlink alias。parent 不綁定特定 session；請依專案規則使用自己的短名 scratch。每次使用新的 lab 子目錄。daemon URL 只接受專用的 `127.0.0.1` port；拒絕 port 3001 與繼承的 `AO_PORT`。本輪即使 URL 有效也不連線。
 
 ```bash
+umask 022
+lab_owner="${AO_SESSION_ID##*-}"
+lab_parent="$(mktemp -d "$HOME/.ao/scratch/${lab_owner:-local}-XXXX")"
 python3 test/orchestrator-replacement-live/harness.py \
-  --lab-root "$HOME/.ao/scratch/7-example/replacement-lab"
+  --lab-root "$lab_parent/replacement-lab"
 ```
 
 預設 dry-run 只輸出 JSON，不建立 lab 或啟動程序。manifest 包含固定六格的 SHA256、新規劃的 lab subject IDs、隔離 HOME／data／runfile／Electron／Claude config 路徑、usage 前置條件與 cleanup registry。不能指定現有 project／source／worker IDs。所有 live 格及 A15／A23 保持 `NOT_RUN`；這不是帳號或 native profile 能力檢查。
@@ -19,11 +22,13 @@ python3 test/orchestrator-replacement-live/harness.py \
 
 ```bash
 python3 test/orchestrator-replacement-live/harness.py \
-  --lab-root "$HOME/.ao/scratch/7-example/replacement-fake" \
+  --lab-root "$lab_parent/replacement-fake" \
   --mode fake
 ```
 
 Linux fake runner 只執行三個固定的 Go fixture tests：coordinator 的 gate 外通知與 lost reply、busy Chat queue 去重、TUI 單次受保護寫入。它設定 private HOME／TMPDIR／TMUX_TMPDIR、清除繼承的 AO/provider 環境，使用既有 Go cache，禁止下載 toolchain／module。它不接受任意 command 或 test selector。
+
+Go 預設取自 `PATH` 的 `go`，可用 `--go /path/to/go` 或 `GO_BINARY` 指定 Go toolchain；不存在時 fake 在建立 lab 前拒絕。load 上限預設為 CPU 數，可用 `--max-load` 或 `AO_REPLACEMENT_MAX_LOAD` 設定有限正數。這不取代專案節流：主機規則較嚴格時要採更低上限，不得用參數繞過。manifest 保存實際 toolchain 選擇與 load 設定；dry-run 不執行 toolchain。仍只允許固定的三個 fixtures，不提供 live／任意命令入口。
 
 結果留在新 lab 的 `fake-tests.log` 與 `manifest.json`，不覆寫舊證據。registry 記錄該次 Go test PID／start time／exit code。timeout 只處理已驗證的自身 process group，不按名稱廣泛 kill。fixture 的資源由各測試 cleanup；Go process exit 不能替代真 provider tree 的停止證明。
 
