@@ -7867,7 +7867,10 @@ export interface components {
             /** Format: int64 */
             intakeRevision: number;
             intakeTransfer?: components["schemas"]["ReplacementIntakeTransfer"];
+            notificationCompletion?: components["schemas"]["ReplacementNotificationSummary"];
             notificationReceipts: components["schemas"]["ReplacementNotificationReceipt"][];
+            /** @description Receipt evidence could not be read. The operation result remains durable; use readCommand to retry the read. */
+            notificationReceiptsUnavailable?: boolean;
             operationKey: string;
             operatorGuidance?: string;
             phase: string;
@@ -8469,11 +8472,30 @@ export interface components {
             sourceConversationIds: string[];
         };
         ReplacementNotificationReceipt: {
+            /** Format: date-time */
+            attemptStartedAt?: null | string;
             contactId: string;
+            conversationId?: string;
             /** Format: date-time */
             createdAt: string;
+            errorCode?: string;
+            evidenceKind?: string;
+            messageId?: string;
+            mode?: string;
             sessionId: string;
+            /** Format: date-time */
+            settledAt?: null | string;
+            /** @description Delivery evidence only: pending, uncertain, accepted, or skipped; never read or acted. */
             state: string;
+            turnId?: string;
+        };
+        ReplacementNotificationSummary: {
+            acceptedCount: number;
+            /** Format: date-time */
+            completedAt: string;
+            receiptHash: string;
+            skippedCount: number;
+            targetCount: number;
         };
         ReplacementPreparation: {
             attemptId: string;

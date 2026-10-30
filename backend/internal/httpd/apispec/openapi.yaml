@@ -23679,10 +23679,16 @@ components:
           type: integer
         intakeTransfer:
           $ref: '#/components/schemas/ReplacementIntakeTransfer'
+        notificationCompletion:
+          $ref: '#/components/schemas/ReplacementNotificationSummary'
         notificationReceipts:
           items:
             $ref: '#/components/schemas/ReplacementNotificationReceipt'
           type: array
+        notificationReceiptsUnavailable:
+          description: Receipt evidence could not be read. The operation result remains
+            durable; use readCommand to retry the read.
+          type: boolean
         operationKey:
           type: string
         operatorGuidance:
@@ -25161,20 +25167,64 @@ components:
       type: object
     ReplacementNotificationReceipt:
       properties:
+        attemptStartedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         contactId:
+          type: string
+        conversationId:
           type: string
         createdAt:
           format: date-time
           type: string
+        errorCode:
+          type: string
+        evidenceKind:
+          type: string
+        messageId:
+          type: string
+        mode:
+          type: string
         sessionId:
           type: string
+        settledAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         state:
+          description: 'Delivery evidence only: pending, uncertain, accepted, or skipped;
+            never read or acted.'
+          type: string
+        turnId:
           type: string
       required:
       - sessionId
       - contactId
       - state
       - createdAt
+      type: object
+    ReplacementNotificationSummary:
+      properties:
+        acceptedCount:
+          type: integer
+        completedAt:
+          format: date-time
+          type: string
+        receiptHash:
+          type: string
+        skippedCount:
+          type: integer
+        targetCount:
+          type: integer
+      required:
+      - targetCount
+      - acceptedCount
+      - skippedCount
+      - receiptHash
+      - completedAt
       type: object
     ReplacementPreparation:
       properties:

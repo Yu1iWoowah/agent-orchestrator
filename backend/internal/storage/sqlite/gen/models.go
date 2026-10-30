@@ -631,6 +631,24 @@ type OrchestratorReplacementIntakeTransfer struct {
 	TransferredAt              time.Time
 }
 
+type OrchestratorReplacementNotice struct {
+	OperationID string
+	SessionID   string
+	ContactID   string
+	State       string
+	Revision    int64
+	StateJson   string
+	UpdatedAt   string
+}
+
+type OrchestratorReplacementNoticeHistory struct {
+	OperationID string
+	SessionID   string
+	Sequence    int64
+	StateJson   string
+	RecordedAt  string
+}
+
 type OrchestratorReplacementReleasedSession struct {
 	OperationID string
 	SessionID   string

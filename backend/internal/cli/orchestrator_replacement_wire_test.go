@@ -11,6 +11,28 @@ import (
 
 const replacementTestID = "11111111-1111-4111-8111-111111111111"
 
+func TestReplacementGetPreservesUnavailableNotificationReceipts(t *testing.T) {
+	cfg := setConfigEnv(t)
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			return
+		}
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/orchestrator/replacements/"+replacementTestID {
+			t.Error("receipt read unexpectedly became a mutation", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"operation":{"id":%q,"phase":"notifying","notificationReceipts":[],"notificationReceiptsUnavailable":true}}`, replacementTestID)
+	}))
+	defer srv.Close()
+	writeRunFileFor(t, cfg, srv)
+	out, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "orchestrator", "replacement", "get", replacementTestID, "--json")
+	if err != nil || calls != 1 || !strings.Contains(out, `"notificationReceiptsUnavailable": true`) {
+		t.Fatal("CLI lost secondary ledger unavailability", calls, out, stderr, err)
+	}
+}
+
 func TestReplacementRepairCLIRequiresExplicitCAS(t *testing.T) {
 	cfg := setConfigEnv(t)
 	calls := 0
@@ -74,7 +96,7 @@ func TestOrchestratorReplacementHTTPCommands(t *testing.T) {
 				if action != "get" {
 					w.WriteHeader(http.StatusAccepted)
 				}
-				fmt.Fprintf(w, `{"operation":{"id":%q,"phase":"accepted","sourceSessionId":"source","resumeEvidence":{"verified":false},"notificationReceipts":[],"error":{"code":"WAITING_SOURCE_IDLE","message":"waiting"}}}`, replacementTestID)
+				fmt.Fprintf(w, `{"operation":{"id":%q,"phase":"accepted","sourceSessionId":"source","resumeEvidence":{"verified":false},"notificationReceipts":[{"sessionId":"worker","state":"accepted","evidenceKind":"chat_queue","messageId":"notice-message"}],"notificationCompletion":{"targetCount":1,"acceptedCount":1,"skippedCount":0,"receiptHash":"receipt-sha"},"error":{"code":"WAITING_SOURCE_IDLE","message":"waiting"}}}`, replacementTestID)
 			}))
 			defer srv.Close()
 			writeRunFileFor(t, cfg, srv)
@@ -92,7 +114,7 @@ func TestOrchestratorReplacementHTTPCommands(t *testing.T) {
 			if err := json.Unmarshal([]byte(out), &got); err != nil {
 				t.Fatalf("not operation JSON: %v / %s", err, out)
 			}
-			if string(got.Operation["id"]) != `"`+replacementTestID+`"` || got.Operation["resumeEvidence"] == nil || got.Operation["notificationReceipts"] == nil || got.Operation["error"] == nil || calls != 1 {
+			if string(got.Operation["id"]) != `"`+replacementTestID+`"` || got.Operation["resumeEvidence"] == nil || got.Operation["notificationReceipts"] == nil || got.Operation["notificationCompletion"] == nil || !strings.Contains(string(got.Operation["notificationReceipts"]), "notice-message") || got.Operation["error"] == nil || calls != 1 {
 				t.Fatalf("durable facts lost or extra requests: %s; calls=%d", out, calls)
 			}
 		})

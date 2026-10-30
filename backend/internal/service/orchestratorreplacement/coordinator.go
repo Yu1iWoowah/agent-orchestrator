@@ -92,9 +92,14 @@ func (s *Service) Advance(ctx context.Context, id string) (result domain.Orchest
 	if s.deps.WithProjectGate != nil {
 		err = s.deps.WithProjectGate(ctx, op.ProjectID, run)
 	} else {
-		unlock := s.lockProject(op.ProjectID)
-		defer unlock()
-		err = run(ctx)
+		func() {
+			unlock := s.lockProject(op.ProjectID)
+			defer unlock()
+			err = run(ctx)
+		}()
+	}
+	if err == nil && op.Phase == domain.ReplacementNotifying && op.IntakeDrainRequestedAt != nil && len(op.Notifications) > 0 {
+		return s.reconcileNotifications(ctx, op)
 	}
 	return op, err
 }

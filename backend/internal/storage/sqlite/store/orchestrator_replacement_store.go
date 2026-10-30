@@ -92,6 +92,9 @@ func validateReplacement(op domain.OrchestratorReplacement) error {
 	if err := validateReplacementResume(op); err != nil {
 		return err
 	}
+	if op.NotificationCompletion != nil && (!op.NotificationCompletion.ValidFor(op) || op.Phase != domain.ReplacementCompleted && op.Phase != domain.ReplacementRecoveryRequired) {
+		return domain.ErrReplacementStateInvalid
+	}
 	if err := validateReplacementWriterActivation(op); err != nil {
 		return err
 	}
@@ -382,6 +385,9 @@ func (s *Store) SaveOrchestratorReplacement(ctx context.Context, op domain.Orche
 			return err
 		}
 		if err := preserveReplacementIntakeTransfer(tx, q, before, op); err != nil {
+			return err
+		}
+		if err := preserveReplacementNotificationCompletion(tx, q, before, op); err != nil {
 			return err
 		}
 		if err := preserveReplacementWriterActivation(tx, q, before, op); err != nil {
