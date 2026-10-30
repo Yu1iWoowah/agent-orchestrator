@@ -669,7 +669,7 @@ func TestTriggerPersistsChatModeBeforeCreatingReviewerConversation(t *testing.T)
 	if started.BatchID == "" || started.BatchID != result.Run.BatchID {
 		t.Fatalf("reviewer batch = %q, want %q", started.BatchID, result.Run.BatchID)
 	}
-	if started.Model != "gpt-6-sol" || started.Effort != "high" || started.FastMode != domain.AgentFastOn {
+	if started.PinnedSettings == nil || result.Run.AgentSettings == nil || *started.PinnedSettings != *result.Run.AgentSettings || started.Model != "gpt-6-sol" || started.Effort != "high" || started.FastMode != domain.AgentFastOn {
 		t.Fatalf("reviewer Chat config: model=%q effort=%q", started.Model, started.Effort)
 	}
 	review, ok, err := store.GetReviewBySessionAndHarness(ctx, worker.ID, domain.ReviewerCodex)

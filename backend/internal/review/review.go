@@ -1223,7 +1223,7 @@ func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker d
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{ReviewSessionID: review.ID, LaunchID: launchID, WorkerID: worker.ID, ProjectID: worker.ProjectID, ProjectEnv: projectEnv, Harness: review.Harness, AgentConfig: config, WorkspacePath: worker.Metadata.WorkspacePath, AgentSessionID: review.AgentSessionID, ProviderConversationID: review.ProviderConversationID, RequireNativeHistory: pinned && (review.AgentSessionID != "" || review.ProviderConversationID != ""), PreviousRuns: previousRuns, InterfaceMode: review.InterfaceMode})
+	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{ReviewSessionID: review.ID, LaunchID: launchID, WorkerID: worker.ID, ProjectID: worker.ProjectID, ProjectEnv: projectEnv, Harness: review.Harness, AgentConfig: config, WorkspacePath: worker.Metadata.WorkspacePath, AgentSessionID: review.AgentSessionID, ProviderConversationID: review.ProviderConversationID, PinnedSettings: pinned, RequireNativeHistory: pinned != nil && (review.AgentSessionID != "" || review.ProviderConversationID != ""), PreviousRuns: previousRuns, InterfaceMode: review.InterfaceMode})
 	if err != nil {
 		return RestoreReviewerResult{}, fmt.Errorf("restore reviewer: %w", err)
 	}
@@ -1310,7 +1310,7 @@ func (e *Engine) restoreReviewerLocked(
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	if !pinned {
+	if pinned == nil {
 		if err := e.validateReviewerModels(ctx, harness, config); err != nil {
 			return RestoreReviewerResult{}, err
 		}
@@ -1369,6 +1369,7 @@ func (e *Engine) restoreReviewerLocked(
 		ProjectEnv:           projectEnv,
 		Harness:              harness,
 		AgentConfig:          config,
+		PinnedSettings:       pinned,
 		WorkspacePath:        worker.Metadata.WorkspacePath,
 		AgentSessionID:       agentSessionID,
 		RequireNativeHistory: harness == domain.ReviewerCodex && strings.TrimSpace(agentSessionID) != "",
@@ -1540,6 +1541,7 @@ func reviewLaunchSpec(
 		ProjectID:       worker.ProjectID,
 		Harness:         harness,
 		AgentConfig:     config,
+		PinnedSettings:  run.AgentSettings,
 		WorkspacePath:   worker.Metadata.WorkspacePath,
 		AgentSessionID:  agentSessionID,
 		PreviousRuns:    nil,

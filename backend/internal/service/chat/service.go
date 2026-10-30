@@ -347,6 +347,10 @@ const claudeAutoCompactWindowEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 
 func cloneStartConfig(cfg StartConfig) StartConfig {
 	cloned := cfg
+	if cfg.ReviewerSettings != nil {
+		selection := *cfg.ReviewerSettings
+		cloned.ReviewerSettings = &selection
+	}
 	if cfg.AwakeReconnectTarget != nil {
 		target := *cfg.AwakeReconnectTarget
 		cloned.AwakeReconnectTarget = &target
@@ -411,6 +415,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 // provider-switch saga. Callers must hold the typed controller gate.
 func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller, error) {
 	owner := conversationOwner(cfg)
+	if cfg.ReviewerSettings != nil && (owner.Kind != domain.ConversationOwnerReview || cfg.ReviewerSettings.Validate() != nil) {
+		return nil, ports.ErrAgentSettingsInvalid
+	}
 	if owner.Kind == domain.ConversationOwnerReview {
 		cfg.ReadOnly = true
 	}
@@ -770,28 +777,35 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.Env = cloneStartConfig(cfg).Env
 		cfg.Env[claudeAutoCompactWindowEnv] = fmt.Sprint(tokens)
 	}
+	// A frozen reviewer pass owns its settings even while resuming the same
+	// native history. Nil keeps legacy/worker conversation restore semantics.
+	if selection := cfg.ReviewerSettings; selection != nil {
+		cfg.Model, cfg.Effort, cfg.FastMode = string(selection.Model), string(selection.Effort), selection.FastMode
+	}
 	// Conversation settings are durable user choices. Restore the selected
 	// model when rebuilding a controller after a daemon restart; the caller's
 	// session default must not silently replace it.
-	if cfg.ProviderConversationID != "" && conversation.Settings.Model != "" {
+	if cfg.ReviewerSettings == nil && cfg.ProviderConversationID != "" && conversation.Settings.Model != "" {
 		cfg.Model = conversation.Settings.Model
 	}
-	if cfg.ProviderConversationID != "" {
+	if cfg.ReviewerSettings == nil && cfg.ProviderConversationID != "" {
 		cfg.Effort = conversation.Settings.ReasoningEffort
 	}
-	if cfg.ProviderConversationID != "" {
+	if cfg.ReviewerSettings == nil && cfg.ProviderConversationID != "" {
 		cfg.FastMode = conversation.Settings.AgentFastMode
 	}
 	if cfg.FastMode == "" {
 		cfg.FastMode = domain.AgentFastDefault
 	}
-	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
+	if cfg.ReviewerSettings == nil && cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
 		cfg.Permissions = conversation.Settings.ApprovalMode
 	}
 	if cfg.ProviderConversationID == "" {
 		if err := capabilityAdmissionError(cfg.Harness, caps, cfg.Permissions); err != nil {
 			return nil, err
 		}
+	}
+	if cfg.ProviderConversationID == "" || cfg.ReviewerSettings != nil {
 		conversation.Settings.Model = cfg.Model
 		conversation.Settings.ReasoningEffort = cfg.Effort
 		conversation.Settings.AgentFastMode = cfg.FastMode

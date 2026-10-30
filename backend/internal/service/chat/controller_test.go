@@ -7263,3 +7263,96 @@ func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing
 		t.Fatalf("ancestor branch = %+v, want the recorded handle untouched", keptSource)
 	}
 }
+
+func TestReviewerResumeUsesPinnedSelectionInsteadOfPreviousConversation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target domain.AgentSettings
+		pinned bool
+	}{
+		{"next selection", domain.AgentSettings{Model: "next-review-model", Effort: "high", FastMode: domain.AgentFastOn}, true},
+		{"explicit defaults", domain.AgentSettings{FastMode: domain.AgentFastDefault}, true},
+		{"legacy conversation", domain.AgentSettings{Model: "caller-default", Effort: "high", FastMode: domain.AgentFastOn}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			ctx := context.Background()
+			now := time.Now().UTC()
+			owner := domain.ReviewConversationOwner("pinned-review")
+			if err := st.UpsertReview(ctx, domain.Review{ID: owner.ID, SessionID: testSession, ProjectID: testProject, Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			var resumed ports.ChatResumeConfig
+			var counter atomic.Uint64
+			first := newFakeConversation()
+			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: first}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("pinned-initial-%d", counter.Add(1)) }})
+			cfg := chatsvc.StartConfig{Owner: owner, SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), Permissions: ports.PermissionModeAuto, Model: "previous-review-model", Effort: "low", FastMode: domain.AgentFastOff}
+			if _, err := svc.Start(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.ConversationForReview(ctx, owner.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.StopForOwner(ctx, owner); err != nil {
+				t.Fatal(err)
+			}
+			next := newFakeConversation()
+			replacement := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: next, resumeCfg: &resumed}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("pinned-replacement-%d", counter.Add(1)) }})
+			t.Cleanup(func() { _ = replacement.StopForOwner(context.Background(), owner) })
+			cfg.ProviderConversationID = first.ProviderConversationID()
+			if cfg.ProviderConversationID == "" {
+				t.Fatal("Fixture needs native history")
+			}
+			cfg.Model, cfg.Effort, cfg.FastMode = string(tc.target.Model), string(tc.target.Effort), tc.target.FastMode
+			if tc.pinned {
+				cfg.ReviewerSettings = &tc.target
+			}
+			if _, err := replacement.Start(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			want := tc.target
+			if !tc.pinned {
+				want = domain.AgentSettings{Model: "previous-review-model", Effort: "low", FastMode: domain.AgentFastOff}
+			}
+			if !resumed.ReadOnly || resumed.Permissions != ports.PermissionModeAuto || resumed.ProviderConversationID != cfg.ProviderConversationID || resumed.Model != string(want.Model) || resumed.Effort != string(want.Effort) || resumed.FastMode != want.FastMode {
+				t.Fatalf("resume replaced frozen preference: got=%+v want=%+v", resumed, want)
+			}
+			current, err := st.ConversationForReview(ctx, owner.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			savedFast := current.Settings.AgentFastMode
+			if savedFast == "" {
+				savedFast = domain.AgentFastDefault
+			}
+			if current.Settings.FastMode != (want.FastMode == domain.AgentFastOn) || current.Settings.Model != string(want.Model) || current.Settings.ReasoningEffort != string(want.Effort) || savedFast != want.FastMode {
+				t.Fatalf("stored reviewer projection=%+v want=%+v", current.Settings, want)
+			}
+			worker, err := st.ConversationForSession(ctx, testSession)
+			if err != nil && !errors.Is(err, domain.ErrNoConversation) {
+				t.Fatal(err)
+			}
+			if err == nil && worker.Settings.Model == string(tc.target.Model) && tc.target.Model != "" {
+				t.Fatalf("reviewer selection leaked to worker: %+v", worker.Settings)
+			}
+		})
+	}
+}
+
+func TestWorkerCannotUseReviewerPinnedSelection(t *testing.T) {
+	st := openStore(t)
+	var starts int
+	driver := fakeDriver{conv: newFakeConversation(), start: func(ports.ChatStartConfig) (ports.ChatConversation, error) {
+		starts++
+		return newFakeConversation(), nil
+	}}
+	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: driver}, Log: slog.New(slog.DiscardHandler)})
+	selection := domain.AgentSettings{Model: "reviewer-only", FastMode: domain.AgentFastOff}
+	_, err := svc.Start(context.Background(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), ReviewerSettings: &selection})
+	if !errors.Is(err, ports.ErrAgentSettingsInvalid) || starts != 0 {
+		t.Fatalf("worker accepted reviewer preference: starts=%d err=%v", starts, err)
+	}
+	if _, err := st.ConversationForSession(context.Background(), testSession); !errors.Is(err, domain.ErrNoConversation) {
+		t.Fatalf("invalid reviewer handoff changed worker: %v", err)
+	}
+}

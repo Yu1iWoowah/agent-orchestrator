@@ -200,20 +200,20 @@ func reviewerPassSelectionChanged(runs []domain.ReviewRun, reviewID string, sele
 
 // A recovering pass owns its admitted snapshot. Idle reconstruction may use
 // the next-pass preference; neither path consults today's project defaults.
-func (e *Engine) reviewerRestoreSelection(ctx context.Context, review domain.Review, runs []domain.ReviewRun, fallback domain.AgentConfig) (domain.AgentConfig, bool, error) {
+func (e *Engine) reviewerRestoreSelection(ctx context.Context, review domain.Review, runs []domain.ReviewRun, fallback domain.AgentConfig) (domain.AgentConfig, *domain.AgentSettings, error) {
 	for _, run := range runs {
 		if run.ReviewID == review.ID && run.Status == domain.ReviewRunRunning && run.AgentSettings != nil {
-			return reviewerSelectionConfig(fallback, *run.AgentSettings), true, nil
+			return reviewerSelectionConfig(fallback, *run.AgentSettings), run.AgentSettings, nil
 		}
 	}
 	if s, ok := e.store.(ports.ReviewerAgentSettingsStore); ok {
 		state, err := s.ReviewerAgentSettings(ctx, review.ID)
 		if err != nil {
-			return fallback, false, err
+			return fallback, nil, err
 		}
 		if state.Settings != nil {
-			return reviewerSelectionConfig(fallback, *state.Settings), true, nil
+			return reviewerSelectionConfig(fallback, *state.Settings), state.Settings, nil
 		}
 	}
-	return fallback, false, nil
+	return fallback, nil, nil
 }

@@ -182,7 +182,7 @@ func TestReviewerNextPassPinsItsOwnSelectionAndAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Run.AgentSettings == nil || *second.Run.AgentSettings != op.Target || second.Run.ReviewID != first.Run.ReviewID || launcher.gotSpec.AgentConfig.Model != "review-two" || launcher.gotSpec.AgentConfig.FastMode != domain.AgentFastOn {
+	if second.Run.AgentSettings == nil || *second.Run.AgentSettings != op.Target || launcher.gotSpec.PinnedSettings == nil || *launcher.gotSpec.PinnedSettings != op.Target || second.Run.ReviewID != first.Run.ReviewID || launcher.gotSpec.AgentConfig.Model != "review-two" || launcher.gotSpec.AgentConfig.FastMode != domain.AgentFastOn {
 		t.Fatalf("next pass = %+v, launch=%+v", second.Run, launcher.gotSpec)
 	}
 	bound, found, err := store.GetReviewerAgentAccount(ctx, first.Run.ReviewID, domain.AgentAccountProviderCodex)
@@ -198,7 +198,7 @@ func TestReviewerNextPassPinsItsOwnSelectionAndAccount(t *testing.T) {
 	if _, err = engine.RestoreReviewer(ctx, worker.ID); err != nil {
 		t.Fatal(err)
 	}
-	if !launcher.restored || launcher.gotSpec.AgentConfig.Model != "review-two" || launcher.gotSpec.AgentConfig.FastMode != domain.AgentFastOn || launcher.gotSpec.AgentSessionID != "review-native" {
+	if !launcher.restored || launcher.gotSpec.PinnedSettings == nil || *launcher.gotSpec.PinnedSettings != op.Target || launcher.gotSpec.AgentConfig.Model != "review-two" || launcher.gotSpec.AgentConfig.FastMode != domain.AgentFastOn || launcher.gotSpec.AgentSessionID != "review-native" {
 		t.Fatalf("cold pass restore changed pinned settings/history: %+v", launcher.gotSpec)
 	}
 }

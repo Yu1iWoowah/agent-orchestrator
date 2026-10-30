@@ -353,8 +353,11 @@ turn conflicts, without stopping the reviewer or changing that pass. A pass
 atomically records its selection/revision when admitted. Recovery uses that
 pass snapshot; later project defaults do not replace it or reselect its account.
 When an idle live reviewer needs the new selection, the old runtime is stopped
-before the next writer launches with the original native history. Fixed
-reviewer sandbox/tool restrictions remain in force.
+before the next writer launches with the original native history. An admitted reviewer selection is carried explicitly into Chat start/resume,
+including empty model/effort resets, instead of being overwritten by the previous
+conversation projection. Legacy reviewers without a recorded selection keep their
+existing conversation restore behavior. Fixed reviewer sandbox/tool restrictions
+remain in force.
 
 The Chat composer labels these controls **Next review pass**. It keeps a draft
 until the daemon accepts a pin, shows conflicts beside the action and preserves
