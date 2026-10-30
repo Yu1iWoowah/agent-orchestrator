@@ -9,6 +9,7 @@ import { verifiedSettingsActor, type AgentSettingsSelection } from "../lib/agent
 import type { WorkspaceSession } from "../types/workspace";
 import { AgentSettingsEditor } from "./AgentSettingsEditor";
 import { AgentSettingsRecovery } from "./AgentSettingsRecovery";
+import { AgentSettingsFailure } from "./AgentSettingsFailure";
 import { isLocal } from "../lib/hosts";
 
 function SettingsValue({ label, children }: { label: string; children: ReactNode }) {
@@ -65,6 +66,7 @@ export function SessionAgentSettings({ session, hostId }: { session: WorkspaceSe
 			</div>}
 			{snapshot && <>
 				{!session.isTerminated && <AgentSettingsEditor hostId={hostId} key={`${hostId ?? "local"}:${session.id}`} sessionId={session.id} snapshot={snapshot} />}
+				<AgentSettingsFailure hostId={hostId} sessionId={session.id} snapshot={snapshot} terminated={session.isTerminated === true} />
 				<SelectionGroup label={t("agentSettings.current")} settings={snapshot.settings} />
 				<dl className="space-y-1 text-muted-foreground">
 					<SettingsValue label={t("agentSettings.account")}>{snapshot.capabilities.accountId ? remote ? snapshot.capabilities.accountId : accountLabel(snapshot.capabilities.accountId) : t("agentSettings.unknown")}</SettingsValue>

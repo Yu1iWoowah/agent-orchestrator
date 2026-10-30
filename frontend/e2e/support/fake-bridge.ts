@@ -478,6 +478,8 @@ export type FakeAgentOptions = {
 	workers?: FakeWorker[];
 	/** Persist the fixture project's disclosure as expanded before the app mounts. */
 	expandProject?: boolean;
+	/** Keep Chromium's EventSource for tests with an actual isolated SSE listener. */
+	nativeEvents?: boolean;
 };
 
 /**
@@ -554,11 +556,12 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 	const platform = opts.platform ?? null;
 	const workers = opts.workers ?? [];
 	const expandProject = opts.expandProject ?? false;
+	const nativeEvents = opts.nativeEvents ?? false;
 	// Renderer reload does not create a new daemon session incarnation.
 	const nowIso = new Date().toISOString();
 
 	await page.addInitScript(
-		({ version, daemonPort, projectId, projectName, platform, workers, nowIso, expandProject }) => {
+		({ version, daemonPort, projectId, projectName, platform, workers, nowIso, expandProject, nativeEvents }) => {
 			try {
 				if (expandProject) {
 					const key = "ao.sidebar.expanded-projects";
@@ -746,7 +749,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					}
 				}
 			}
-			(window as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
+			if (!nativeEvents) (window as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
 
 			const emit = (match: string, type: string, data?: string) => {
 				for (const es of state.eventSources) {
@@ -1347,6 +1350,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
-		{ version, daemonPort, projectId, projectName, platform, workers, nowIso, expandProject },
+		{ version, daemonPort, projectId, projectName, platform, workers, nowIso, expandProject, nativeEvents },
 	);
 }

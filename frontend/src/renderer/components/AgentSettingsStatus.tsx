@@ -1,14 +1,15 @@
 import { useTranslation } from "react-i18next";
 import { useSessionAgentSettings } from "../hooks/useSessionAgentSettings";
 import { verifiedSettingsActor, type AgentSettingsSelection } from "../lib/agent-settings";
+import { AgentSettingsFailure } from "./AgentSettingsFailure";
 
 function selectionText(selection: AgentSettingsSelection, fallback: string) {
 	return `${selection.model || fallback} · ${selection.effort || fallback} · fast ${selection.fastMode}`;
 }
 
 /** All placements share the scoped cache. No requested value is an effective receipt. */
-export function AgentSettingsStatus({ sessionId, hostId, enabled, placement }: {
-	sessionId: string; hostId?: string; enabled: boolean; placement: "header" | "composer" | "timeline";
+export function AgentSettingsStatus({ sessionId, hostId, enabled, placement, terminated = false }: {
+	sessionId: string; hostId?: string; enabled: boolean; placement: "header" | "composer" | "timeline"; terminated?: boolean;
 }) {
 	const { t } = useTranslation();
 	const query = useSessionAgentSettings({ sessionId, hostId, enabled });
@@ -27,12 +28,12 @@ export function AgentSettingsStatus({ sessionId, hostId, enabled, placement }: {
 			</li>)}
 		</ol>;
 	}
-	if (placement === "composer" && !snapshot.pending) return null;
-	return <div aria-label={t(placement === "header" ? "agentSettings.summary" : "agentSettings.pending")} className="min-w-0 shrink-0 space-y-1 px-3 py-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]" data-testid={`agent-settings-${placement}`}>
+	return <div aria-label={t(placement === "header" ? "agentSettings.summary" : "agentSettings.pending")} className={`min-w-0 shrink-0 space-y-1 text-xs text-muted-foreground [overflow-wrap:anywhere] ${placement === "header" || snapshot.pending ? "px-3 py-1.5" : ""}`} data-testid={`agent-settings-${placement}`}>
 		{placement === "header" && <>
 			<p className="truncate" title={selectionText(snapshot.settings, fallback)}>{t("agentSettings.current")}: {selectionText(snapshot.settings, fallback)}</p>
 			<p>{t("agentSettings.fastEffective")}: {snapshot.effective.fastMode.state === "known" ? snapshot.effective.fastMode.value || fallback : t(snapshot.effective.fastMode.state === "not_provided" ? "agentSettings.notProvided" : "agentSettings.unknown")}</p>
 		</>}
 		{snapshot.pending && <p role="status">{t(snapshot.pending.applyMode === "restart" ? "agentSettings.pendingRestart" : "agentSettings.pending")}: {selectionText(snapshot.pending.target, fallback)}</p>}
+		<AgentSettingsFailure hostId={hostId} sessionId={sessionId} snapshot={snapshot} terminated={terminated} />
 	</div>;
 }

@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useChangeAgentSettings, type AgentSettingsChangeIntent } from "../hooks/useSessionAgentSettings";
 import { apiErrorCode } from "../lib/api-client";
-import { agentSettingsErrorMessage, settingsDraftPatch, type AgentSettingsSelection, type AgentSettingsSnapshot } from "../lib/agent-settings";
+import { agentSettingsErrorMessage, rebaseAgentSettingsSelection, settingsDraftPatch, type AgentSettingsSelection, type AgentSettingsSnapshot } from "../lib/agent-settings";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { OptionMenu, OptionMenuContent, OptionMenuItem, OptionMenuTrigger } from "./ui/option-menu";
 
@@ -26,13 +26,14 @@ function SettingMenu({ label, value, choices, disabled, onChange }: {
 }
 
 /** Draft state starts only on an explicit edit. CDC updates never reset it. */
-export function AgentSettingsEditor({ snapshot, sessionId, hostId }: {
+export function AgentSettingsEditor({ snapshot, sessionId, hostId, retry }: {
 	snapshot: AgentSettingsSnapshot; sessionId: string; hostId?: string;
+	retry?: { selection: AgentSettingsSelection; onClose: () => void };
 }) {
 	const { t } = useTranslation();
 	const change = useChangeAgentSettings();
-	const [draft, setDraft] = useState<{ selection: AgentSettingsSelection; baseline: AgentSettingsSelection; revision: number }>();
-	const [open, setOpen] = useState(false);
+	const [draft, setDraft] = useState<{ selection: AgentSettingsSelection; baseline: AgentSettingsSelection; revision: number } | undefined>(() => retry ? { selection: { ...retry.selection }, baseline: { ...snapshot.settings }, revision: snapshot.revision } : undefined);
+	const [open, setOpen] = useState(Boolean(retry));
 	const [reviewRestart, setReviewRestart] = useState(false);
 	const [stopTurn, setStopTurn] = useState(false);
 	const intent = useRef<AgentSettingsChangeIntent | undefined>(undefined);
@@ -41,6 +42,10 @@ export function AgentSettingsEditor({ snapshot, sessionId, hostId }: {
 	const error = change.error ? agentSettingsErrorMessage(change.error, t("agentSettings.conflict")) : undefined;
 	const restart = Boolean(snapshot.restartRequired);
 	const model = snapshot.capabilities.models.find((candidate) => candidate.model === draft?.selection.model || (!draft?.selection.model && candidate.isDefault));
+	function changeOpen(next: boolean) {
+		setOpen(next);
+		if (!next) retry?.onClose();
+	}
 	function edit(field: keyof AgentSettingsSelection, value: string) {
 		if (!draft) return;
 		intent.current = undefined;
@@ -55,30 +60,25 @@ export function AgentSettingsEditor({ snapshot, sessionId, hostId }: {
 		} };
 		try {
 			await change.mutateAsync(intent.current);
-			setOpen(false);
+			changeOpen(false);
 		} catch { /* Keep the captured draft, revision and intent for explicit retry. */ }
 	}
 	return <>
-		<button className="rounded-md border border-border px-2 py-1.5 text-xs hover:bg-interactive-hover focus-visible:outline-2 focus-visible:outline-accent/50" type="button" onClick={() => {
+		{!retry && <button className="rounded-md border border-border px-2 py-1.5 text-xs hover:bg-interactive-hover focus-visible:outline-2 focus-visible:outline-accent/50" type="button" onClick={() => {
 			setDraft({ selection: { ...snapshot.settings }, baseline: { ...snapshot.settings }, revision: snapshot.revision });
 			intent.current = undefined;
 			setReviewRestart(false); setStopTurn(false); change.reset(); setOpen(true);
-		}}>{t("agentSettings.edit")}</button>
+		}}>{t("agentSettings.edit")}</button>}
 		<ConfirmDialog open={open} title={t(reviewRestart ? "agentSettings.restartTitle" : "agentSettings.changeTitle")}
 			description={t(reviewRestart ? "agentSettings.restartDescription" : "agentSettings.changeDescription")}
 			confirmLabel={t(change.error && !apiErrorCode(change.error) ? "agentSettings.retry" : reviewRestart ? "agentSettings.confirmRestart" : restart ? "agentSettings.reviewRestart" : "agentSettings.apply")}
-			confirmDisabled={!dirty} busy={change.isPending} error={error} onConfirm={() => { void submit(); }} onOpenChange={setOpen}>
+			confirmDisabled={!dirty} busy={change.isPending} error={error} onConfirm={() => { void submit(); }} onOpenChange={changeOpen}>
 			{draft && <div className="min-w-0 space-y-3">
 				{draft.revision !== snapshot.revision && <div className="space-y-2 text-caption">
 					<p className="text-warning" role="status">{t("agentSettings.draftChanged")}</p>
 					<p className="text-settings-muted [overflow-wrap:anywhere]">{t("agentSettings.current")}: {snapshot.settings.model || t("agentSettings.providerDefault")} / {snapshot.settings.effort || t("agentSettings.providerDefault")} / {t("agentSettings.fast")} {snapshot.settings.fastMode}</p>
 					<button className="underline" disabled={change.isPending} onClick={() => {
-						const changes = settingsDraftPatch(draft.baseline, draft.selection);
-						setDraft({ baseline: { ...snapshot.settings }, revision: snapshot.revision, selection: {
-							model: changes.model === undefined ? snapshot.settings.model : changes.model ?? "",
-							effort: changes.effort === undefined ? snapshot.settings.effort : changes.effort ?? "",
-							fastMode: changes.fastMode ?? snapshot.settings.fastMode,
-						} });
+						setDraft({ baseline: { ...snapshot.settings }, revision: snapshot.revision, selection: rebaseAgentSettingsSelection(draft.baseline, draft.selection, snapshot.settings) });
 						intent.current = undefined; change.reset();
 					}} type="button">{t("agentSettings.useLatestRevision")}</button>
 				</div>}

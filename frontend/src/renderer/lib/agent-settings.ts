@@ -7,6 +7,12 @@ export type AgentSettingsSelection = components["schemas"]["AgentSettings"];
 export type AgentSettingsOperation = components["schemas"]["AgentSettingsOperation"];
 export type AgentSettingsPatch = components["schemas"]["AgentSettingsPatch"];
 
+/** History is newest first. A newer result supersedes an older failure. */
+export function latestAgentSettingsFailure(snapshot: AgentSettingsSnapshot): AgentSettingsOperation | undefined {
+	const latest = snapshot.history?.[0];
+	return !snapshot.pending && latest?.phase === "failed" && latest.sessionId === snapshot.sessionId ? latest : undefined;
+}
+
 export function agentSettingsErrorMessage(error: unknown, conflictMessage: string): string {
 	const code = apiErrorCode(error);
 	return [code === "AGENT_SETTINGS_CONFLICT" ? conflictMessage : undefined, apiErrorMessage(error), code, apiErrorRequestId(error)].filter(Boolean).join(" · ");
@@ -36,5 +42,14 @@ export function settingsDraftPatch(before: AgentSettingsSelection, next: AgentSe
 		...(before.model === next.model ? {} : { model: next.model || null }),
 		...(before.effort === next.effort ? {} : { effort: next.effort || null }),
 		...(before.fastMode === next.fastMode ? {} : { fastMode: next.fastMode }),
+	};
+}
+
+export function rebaseAgentSettingsSelection(before: AgentSettingsSelection, selected: AgentSettingsSelection, current: AgentSettingsSelection): AgentSettingsSelection {
+	const changes = settingsDraftPatch(before, selected);
+	return {
+		model: changes.model === undefined ? current.model : changes.model ?? "",
+		effort: changes.effort === undefined ? current.effort : changes.effort ?? "",
+		fastMode: changes.fastMode ?? current.fastMode,
 	};
 }

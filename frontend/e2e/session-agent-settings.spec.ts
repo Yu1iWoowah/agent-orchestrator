@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer, type ServerResponse } from "node:http";
 import { _electron as electron, expect, test as base, type Page } from "@playwright/test";
 import { agentSettingsOperation, agentSettingsSelection, agentSettingsSnapshot } from "../src/renderer/test/agent-settings-fixtures";
 import type { components } from "../src/api/schema";
@@ -46,23 +47,29 @@ const now = new Date().toISOString();
 const longTitle = "Isolated settings validation — retain the unsent message and current turn — ".repeat(4);
 const longModel = `isolated-model-${"long-provider-model-name-".repeat(12)}`;
 
-async function installSettings(page: Page, mode: "chat" | "tui", harness = "codex", options: { pauseReads?: boolean; unknownEffective?: boolean; theme?: "dark" | "light" } = {}) {
+async function installSettings(page: Page, mode: "chat" | "tui", harness = "codex", options: { pauseReads?: boolean; unknownEffective?: boolean; theme?: "dark" | "light"; idle?: boolean; realCdcPort?: number } = {}) {
 	let snapshot = agentSettingsSnapshot({ pending: undefined, restartRequired: mode === "tui" });
 	snapshot.capabilities.models.push({ model: longModel, isDefault: false, efforts: ["low", "high"], fast: "supported" });
 	if (options.unknownEffective) snapshot.effective = { model: { state: "unknown", reason: "observation_unavailable" }, effort: { state: "unknown", reason: "observation_unavailable" }, fastMode: { state: "unknown", reason: "observation_unavailable" } };
 	let releaseReads: () => void = () => {};
 	const readBarrier = options.pauseReads ? new Promise<void>((resolve) => { releaseReads = resolve; }) : Promise.resolve();
-	let busy = true;
+	let busy = !options.idle;
+	let conversationReads = 0;
 	let stopped = false;
 	let resumedFast: string | undefined;
 	let offline = false;
 	let conflict = false;
 	let patches = 0;
+	let legacyBarrier: Promise<void> = Promise.resolve();
+	let releaseLegacy = () => {};
+	let legacyRefused = false;
+	const legacyRequests: components["schemas"]["ConversationTurnSettingsPayload"][] = [];
 	const requests: components["schemas"]["ChangeSessionAgentSettingsPayload"][] = [];
 	await page.addInitScript((theme) => localStorage.setItem("ao.theme", theme), options.theme ?? "dark");
-	await installFakeAgent(page, { daemonPort: 43791, workers: [{ id: sessionId, title: longTitle, provider: harness, mode, activity: "active", createdAt: now }] });
+	await installFakeAgent(page, { daemonPort: options.realCdcPort ?? 43791, nativeEvents: Boolean(options.realCdcPort), workers: [{ id: sessionId, title: longTitle, provider: harness, mode, activity: options.idle ? "idle" : "active", createdAt: now }] });
 	await page.route("**/api/v1/**", async (route) => {
 		const request = route.request(), url = new URL(request.url()), routePath = url.pathname;
+		if (options.realCdcPort && routePath === "/api/v1/events" && url.port === String(options.realCdcPort)) { await route.continue(); return; }
 		if (routePath.endsWith("/agent-settings")) {
 			if (offline) { await route.abort("connectionfailed"); return; }
 			if (request.method() === "PATCH") {
@@ -73,14 +80,27 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 					await route.fulfill({ status: 409, json: { error: "conflict", code: "AGENT_SETTINGS_CONFLICT", message: "A managed operation or started operation owns this session; retry after it finishes.", requestId: "electron-conflict" } }); return;
 				}
 				const target = { model: body.settings.model === undefined ? snapshot.settings.model : body.settings.model ?? "", effort: body.settings.effort === undefined ? snapshot.settings.effort : body.settings.effort ?? "", fastMode: body.settings.fastMode ?? snapshot.settings.fastMode };
-				snapshot = { ...snapshot, pending: agentSettingsOperation({ target, applyMode: body.applyMode ?? "after-turn", stopTurn: body.stopTurn }) };
+				snapshot = { ...snapshot, pending: agentSettingsOperation({ id: `settings-op-${patches}`, target, applyMode: body.applyMode ?? "after-turn", stopTurn: body.stopTurn }) };
 				await route.fulfill({ status: 202, json: { operation: snapshot.pending } }); return;
 			}
 			await readBarrier;
 			await route.fulfill({ json: snapshot }); return;
 		}
 		if (routePath.endsWith("/conversation")) {
+			conversationReads++;
 			await route.fulfill({ json: { conversationId: "settings-conversation", sessionId, harness, mode: "chat", controller: stopped ? "stopped" : busy ? "busy" : "ready", settings: { model: snapshot.pending?.target.model ?? snapshot.settings.model, reasoningEffort: snapshot.pending?.target.effort ?? snapshot.settings.effort, fastMode: snapshot.settings.fastMode === "on" }, oldestSequence: 1, latestSequence: 1, hasMoreBefore: false, turns: busy ? [{ id: "turn-1", state: "running", requestedAt: now, startedAt: now }] : [], messages: [{ kind: "message", id: "user-1", turnId: "turn-1", sequence: 1, revision: 0, role: "user", origin: "human", text: "Keep working while I choose the next settings.", streaming: false, createdAt: now }], activities: [] } }); return;
+		}
+		if (routePath.endsWith("/conversation/settings") && request.method() === "PATCH") {
+			const body: components["schemas"]["ConversationTurnSettingsPayload"] = request.postDataJSON();
+			legacyRequests.push(body);
+			await legacyBarrier;
+			if (legacyRefused) {
+				await route.fulfill({ status: 409, json: { code: "AGENT_SETTINGS_CONFLICT", message: "Wait for the managed operation", requestId: "legacy-choice-request" } }); return;
+			}
+			const target = agentSettingsSelection({ model: body.model ?? "", effort: body.reasoningEffort ?? "", fastMode: body.fastMode === undefined ? snapshot.settings.fastMode : body.fastMode ? "on" : "off" });
+			snapshot = { ...snapshot, pending: agentSettingsOperation({ id: `legacy-op-${legacyRequests.length}`, target }) };
+			await route.fulfill({ json: { ...body, model: target.model, reasoningEffort: target.effort, fastMode: target.fastMode === "on" } });
+			await emit(); return;
 		}
 		if (routePath.endsWith("/resume-agent")) { resumedFast = snapshot.settings.fastMode; stopped = false; await route.fulfill({ json: { sessionId, mode: "native" } }); return; }
 		if (routePath.endsWith("/conversation/models")) { await route.fulfill({ json: { models: snapshot.capabilities.models.map((model) => ({ id: model.model, displayName: model.model, default: model.isDefault, efforts: model.efforts, supportsFast: true })), selected: { model: snapshot.settings.model } } }); return; }
@@ -101,7 +121,17 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 			snapshot = { ...snapshot, pending: agentSettingsOperation({ phase: "recovery_required", checkpoint: "applying_model", applyMode: "restart", startedAt: now }) };
 		},
 		requests,
+		conversationReads: () => conversationReads,
+		legacyRequests,
+		holdChoice: () => { legacyBarrier = new Promise<void>((resolve) => { releaseLegacy = resolve; }); },
+		releaseChoice: (refuse: boolean) => { legacyRefused = refuse; releaseLegacy(); legacyBarrier = Promise.resolve(); },
 		patches: () => patches,
+		fail: async () => {
+			if (!snapshot.pending) throw new Error("No pending settings");
+			const failed = { ...snapshot.pending, phase: "failed" as const, checkpoint: "restored" as const, errorCategory: "provider" as const, errorCode: "AGENT_SETTINGS_FAILED", requestId: `failed-request-${patches}` };
+			snapshot = { ...snapshot, pending: undefined, history: [failed, ...snapshot.history ?? []] };
+			busy = false; await emit();
+		},
 		stopForResume: () => { stopped = true; busy = false; },
 		resumedFast: () => resumedFast,
 		apply: async () => {
@@ -161,7 +191,8 @@ test("settings preserve the busy turn, drafts, fast resume and conflict evidence
 	await page.screenshot({ path: info.outputPath("busy-pending-dark.png"), fullPage: true });
 	await state.apply();
 	await expect(inspector.getByRole("group", { name: "Current selection" })).toContainText("pending-model");
-	await expect(page.getByTestId("agent-settings-composer")).toHaveCount(0);
+	await expect(page.getByTestId("agent-settings-composer").getByRole("status")).toHaveCount(0);
+	await expect(page.getByTestId("agent-settings-composer").getByRole("alert")).toHaveCount(0);
 	await page.screenshot({ path: info.outputPath("applied-dark.png"), fullPage: true });
 	state.stopForResume();
 	await page.reload();
@@ -280,4 +311,152 @@ test("recovery archive explains cleanup and can be cancelled without archiving @
 	await expect(dialog).toHaveCount(0);
 	await expect(trigger).toBeFocused();
 	expect(archives).toBe(0);
+});
+
+test("failed settings stay visible beside actions with review retry and keep-current choices @T0", async ({ page }, info) => {
+	test.skip(Boolean(process.env.AO_U4_BEFORE), "The original main has no settings controls");
+	await page.setViewportSize({ width: 1440, height: 960 });
+	const state = await installSettings(page, "chat");
+	const inspector = await openSettings(page);
+	const message = page.getByLabel("Message the agent", { exact: true });
+	await message.fill("Keep this unsent message when settings fail");
+	await inspector.getByRole("button", { name: "Edit agent settings" }).click();
+	let editor = page.getByRole("dialog", { name: "Change agent settings" });
+	await editor.getByRole("button", { name: /^Model:/ }).click();
+	await page.getByRole("menuitem", { name: "pending-model", exact: true }).click();
+	await editor.getByRole("button", { name: "Apply settings" }).click();
+	const composer = page.getByTestId("agent-settings-composer");
+	await expect(composer.getByRole("status")).toContainText("pending-model");
+	await state.fail();
+	const before = Boolean(process.env.AO_U4_FAILURE_BEFORE);
+	if (before) {
+		await expect(composer.getByRole("status")).toHaveCount(0);
+		await expect(page.getByTestId("agent-settings-header").getByRole("alert")).toHaveCount(0);
+		await page.screenshot({ path: info.outputPath("failed-before-hidden.png"), fullPage: true });
+		return;
+	}
+	for (const surface of [page.getByTestId("agent-settings-header"), composer, inspector]) {
+		await expect(surface.getByRole("alert")).toContainText("AGENT_SETTINGS_FAILED");
+		await expect(surface.getByRole("alert")).toContainText("The provider could not apply the requested settings.");
+	}
+	await expect(composer.getByRole("alert")).toContainText("failed-request-1");
+	await expect(inspector.getByRole("group", { name: "Current selection" })).toContainText("committed-model");
+	expect(await inspector.getByText("Recent settings changes", { exact: true }).locator("..").getAttribute("open")).toBeNull();
+	await expect(message).toHaveText("Keep this unsent message when settings fail");
+	await page.screenshot({ path: info.outputPath("failed-visible.png"), fullPage: true });
+	await composer.getByRole("button", { name: "Review and retry" }).click();
+	editor = page.getByRole("dialog", { name: "Change agent settings" });
+	await expect(editor.getByRole("button", { name: /^Model:/ })).toContainText("pending-model");
+	expect(state.patches()).toBe(1);
+	await page.screenshot({ path: info.outputPath("failed-retry-review.png"), fullPage: true });
+	await editor.getByRole("button", { name: "Apply settings" }).click();
+	await expect.poll(() => state.patches()).toBe(2);
+	expect(state.requests[1].settings).toEqual(state.requests[0].settings);
+	await state.fail();
+	await expect(composer.getByRole("alert")).toContainText("failed-request-2");
+	await composer.getByRole("button", { name: "Keep current settings" }).click();
+	for (const surface of [page.getByTestId("agent-settings-header"), composer, inspector]) await expect(surface.getByRole("alert")).toHaveCount(0);
+	expect(state.patches()).toBe(2);
+	await expect(message).toHaveText("Keep this unsent message when settings fail");
+	await page.screenshot({ path: info.outputPath("failed-dismissed.png"), fullPage: true });
+});
+
+test("composer waits for acceptance and preserves a rejected choice for retry @T0", async ({ page }, info) => {
+	test.skip(Boolean(process.env.AO_U4_BEFORE), "The original main capture predates these settings controls");
+	await page.setViewportSize({ width: 1440, height: 960 });
+	const state = await installSettings(page, "chat");
+	state.holdChoice();
+	await openSettings(page);
+	const message = page.getByLabel("Message the agent", { exact: true });
+	await message.fill("Do not lose this draft while the picker waits");
+	const picker = page.getByRole("group", { name: "Turn settings", exact: true });
+	const trigger = picker.locator('[data-shortcut-target="model-picker"]');
+	await trigger.click();
+	await page.getByRole("menuitem", { name: /^Model/ }).first().hover();
+	await page.getByRole("menu").getByText("pending-model", { exact: true }).last().click();
+	await page.keyboard.press("Escape");
+	await page.keyboard.press("Escape");
+	await expect(page.getByRole("menu")).toHaveCount(0);
+	await expect.poll(() => state.legacyRequests.length).toBe(1);
+	const before = Boolean(process.env.AO_U4_SUBMISSION_BEFORE);
+	if (before) {
+		await expect(trigger).toContainText("pending-model");
+		await page.screenshot({ path: info.outputPath("submission-before-optimistic.png"), fullPage: true });
+		state.releaseChoice(true);
+		return;
+	}
+	await expect(trigger).toContainText("committed-model");
+	await expect(page.getByTestId("agent-settings-header")).toContainText("Current selection: committed-model");
+	await expect(page.getByTestId("agent-settings-composer").getByRole("status")).toHaveCount(0);
+	await expect(page.getByTestId("agent-settings-submission")).toContainText("Submitting settings; not accepted yet");
+	await expect(page.getByTestId("agent-settings-submission")).not.toContainText("pending-model");
+	await page.screenshot({ path: info.outputPath("submission-waiting.png"), fullPage: true });
+	state.releaseChoice(true);
+	const rejected = page.getByTestId("agent-settings-submission");
+	await expect(rejected).toContainText("Settings choice was not accepted");
+	await expect(rejected).toContainText("legacy-choice-request");
+	await expect(rejected).toContainText("pending-model");
+	await expect(trigger).toContainText("committed-model");
+	await expect(message).toHaveText("Do not lose this draft while the picker waits");
+	await page.screenshot({ path: info.outputPath("submission-rejected.png"), fullPage: true });
+	state.releaseChoice(false);
+	await rejected.getByRole("button", { name: "Retry sending" }).click();
+	await expect.poll(() => state.legacyRequests.length).toBe(2);
+	await expect(page.getByTestId("agent-settings-composer").getByRole("status")).toContainText("pending-model");
+	await expect(message).toHaveText("Do not lose this draft while the picker waits");
+	await page.screenshot({ path: info.outputPath("submission-accepted.png"), fullPage: true });
+});
+
+test("idle applied settings synchronize the composer through native SSE CDC @T0", async ({ page }, info) => {
+	test.skip(Boolean(process.env.AO_U4_BEFORE), "The original main has no settings controls");
+	const peers = new Set<ServerResponse>();
+	const server = createServer((request, response) => {
+		if (!request.url?.startsWith("/api/v1/events")) { response.writeHead(404).end(); return; }
+		response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*" });
+		response.flushHeaders();
+		response.write("event: cursor\ndata: 0\n\n");
+		peers.add(response); request.on("close", () => peers.delete(response));
+	});
+	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("Missing isolated SSE listener");
+		const state = await installSettings(page, "chat", "codex", { idle: true, realCdcPort: address.port });
+		await page.setViewportSize({ width: 1440, height: 960 });
+		const inspector = await openSettings(page);
+		await expect.poll(() => peers.size).toBe(1);
+		await expect.poll(state.conversationReads).toBeGreaterThanOrEqual(2);
+		const picker = page.getByRole("group", { name: "Turn settings", exact: true }).locator('[data-shortcut-target="model-picker"]');
+		await expect(picker).toContainText("committed-model");
+		const message = page.getByLabel("Message the agent", { exact: true });
+		await message.fill("Preserve this draft across real CDC");
+		await inspector.getByRole("button", { name: "Edit agent settings" }).click();
+		const editor = page.getByRole("dialog", { name: "Change agent settings" });
+		await editor.getByRole("button", { name: /^Model:/ }).click();
+		await page.getByRole("menuitem", { name: "pending-model", exact: true }).click();
+		await editor.getByRole("button", { name: "Apply settings" }).click();
+		await expect(page.getByTestId("agent-settings-composer").getByRole("status")).toContainText("pending-model");
+		const readsBefore = state.conversationReads();
+		await state.apply();
+		const frame = { seq: 1, projectId: "fake-proj", type: "session_updated", sessionId, payload: { id: sessionId } };
+		for (const response of peers) response.write(`id: 1\nevent: session_updated\ndata: ${JSON.stringify(frame)}\n\n`);
+		await expect(page.getByTestId("agent-settings-header")).toContainText("Current selection: pending-model");
+		await expect(inspector.getByRole("group", { name: "Current selection" })).toContainText("pending-model");
+		const before = Boolean(process.env.AO_U4_CDC_BEFORE);
+		if (before) {
+			await expect(picker).toContainText("committed-model");
+			expect(state.conversationReads()).toBe(readsBefore);
+		} else {
+			await expect(picker).toContainText("pending-model");
+			expect(state.conversationReads()).toBeGreaterThan(readsBefore);
+		}
+		await expect(message).toHaveText("Preserve this draft across real CDC");
+		await page.screenshot({ path: info.outputPath(before ? "cdc-before-stale.png" : "cdc-synchronized.png"), fullPage: true });
+		await mkdir(info.outputDir, { recursive: true });
+		await writeFile(info.outputPath("native-cdc-receipt.json"), JSON.stringify({ source: "native EventSource over real HTTP SSE; remaining API/provider data are fake", peers: peers.size, frame, readsBefore, readsAfter: state.conversationReads(), header: await page.getByTestId("agent-settings-header").innerText(), picker: await picker.innerText() }, null, 2));
+	} finally {
+		for (const response of peers) response.end();
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	}
 });

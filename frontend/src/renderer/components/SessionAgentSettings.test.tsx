@@ -78,7 +78,125 @@ async function editModel() {
 	return dialog;
 }
 
+function showSettingsSurfaces() {
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	clients.push(client);
+	render(<QueryClientProvider client={client}><TooltipProvider>
+		<AgentSettingsStatus enabled placement="header" sessionId="sess-1" />
+		<AgentSettingsStatus enabled placement="composer" sessionId="sess-1" />
+		<SessionAgentSettings session={session} />
+	</TooltipProvider></QueryClientProvider>);
+	return client;
+}
+
 describe("Session agent settings intent", () => {
+	it("keeps accepted-to-failed results visible beside every action and reviews the original selection before a new retry", async () => {
+		const client = showSettingsSurfaces();
+		const editor = await editModel();
+		await userEvent.click(within(editor).getByRole("button", { name: "Apply settings" }));
+		const composer = screen.getByTestId("agent-settings-composer");
+		await within(composer).findByRole("status");
+		const accepted = server.pending;
+		expect(accepted).toBeDefined();
+		if (!accepted) throw new Error("The fixture must accept the first change");
+		server = agentSettingsSnapshot({ revision: 6, settings: agentSettingsSelection({ effort: "high" }), pending: undefined, history: [{ ...accepted, phase: "failed", checkpoint: "restored", errorCode: "AGENT_SETTINGS_FAILED", errorCategory: "provider", requestId: "failed-request" }] });
+		act(() => { client.setQueryData(agentSettingsQueryKey("sess-1"), server); });
+		for (const surface of [screen.getByTestId("agent-settings-header"), composer, screen.getByRole("region", { name: "Agent settings" })]) {
+			const alert = await within(surface).findByRole("alert");
+			expect(alert).toHaveTextContent("AGENT_SETTINGS_FAILED");
+			expect(alert).toHaveTextContent("failed-request");
+			expect(alert).toHaveTextContent("The provider could not apply the requested settings.");
+		}
+		expect(screen.getByText("Recent settings changes").closest("details")).not.toHaveAttribute("open");
+		expect(within(composer).queryByRole("status")).not.toBeInTheDocument();
+		expect(patchMock).toHaveBeenCalledTimes(1);
+		await userEvent.click(within(composer).getByRole("button", { name: "Review and retry" }));
+		const retry = screen.getByRole("dialog", { name: "Change agent settings" });
+		expect(within(retry).getByRole("button", { name: /^Model/ })).toHaveTextContent("pending-model");
+		expect(within(retry).getByRole("button", { name: /^Effort/ })).toHaveTextContent("high");
+		expect(patchMock).toHaveBeenCalledTimes(1);
+		await userEvent.click(within(retry).getByRole("button", { name: "Apply settings" }));
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(2));
+		expect(patchMock.mock.calls[1][1].body.expectedRevision).toBe(6);
+		expect(patchMock.mock.calls[1][1].body.settings).toEqual({ model: "pending-model" });
+		expect(patchMock.mock.calls[1][1].headers["Idempotency-Key"]).not.toBe(patchMock.mock.calls[0][1].headers["Idempotency-Key"]);
+	});
+
+	it("dismisses a failed notice across placements without mutating history, and shows a later failure", async () => {
+		const failure = agentSettingsOperation({ phase: "failed", errorCode: "AGENT_SETTINGS_FAILED" });
+		server = agentSettingsSnapshot({ pending: undefined, history: [failure] });
+		const client = showSettingsSurfaces();
+		const header = await screen.findByTestId("agent-settings-header");
+		await within(header).findByRole("alert");
+		await userEvent.click(within(header).getByRole("button", { name: "Keep current settings" }));
+		expect(screen.queryAllByRole("alert")).toHaveLength(0);
+		expect(server.history).toEqual([failure]);
+		expect(patchMock).not.toHaveBeenCalled();
+		expect(postMock).not.toHaveBeenCalled();
+		act(() => { client.setQueryData(agentSettingsQueryKey("sess-1"), { ...server, revision: 7 }); });
+		expect(screen.queryAllByRole("alert")).toHaveLength(0);
+		server = { ...server, history: [{ ...failure, id: "later-failure", requestId: "later-request" }, failure] };
+		act(() => { client.setQueryData(agentSettingsQueryKey("sess-1"), server); });
+		expect(await within(header).findByRole("alert")).toHaveTextContent("later-request");
+	});
+
+	it("preserves a retry draft when another controller completes an operation", async () => {
+		server = agentSettingsSnapshot({ pending: undefined, history: [agentSettingsOperation({ phase: "failed", errorCategory: "provider" })] });
+		const client = showSettingsSurfaces();
+		const composer = await screen.findByTestId("agent-settings-composer");
+		await userEvent.click(await within(composer).findByRole("button", { name: "Review and retry" }));
+		const dialog = screen.getByRole("dialog", { name: "Change agent settings" });
+		server = agentSettingsSnapshot({ revision: 7, pending: undefined, settings: agentSettingsSelection({ model: "external-model" }), history: [agentSettingsOperation({ id: "newer-applied", phase: "applied" }), ...server.history ?? []] });
+		act(() => { client.setQueryData(agentSettingsQueryKey("sess-1"), server); });
+		await within(dialog).findByText("Settings changed elsewhere. Your draft is preserved; applying it still checks the revision you began editing.");
+		expect(within(dialog).getByRole("button", { name: /^Model/ })).toHaveTextContent("pending-model");
+		expect(screen.queryAllByRole("alert")).toHaveLength(0);
+		expect(patchMock).not.toHaveBeenCalled();
+		await userEvent.keyboard("{Escape}");
+	});
+
+	it("keeps failure dismissal scoped to its host even with equal session IDs", async () => {
+		server = agentSettingsSnapshot({ pending: undefined, history: [agentSettingsOperation({ phase: "failed" })] });
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		clients.push(client);
+		render(<QueryClientProvider client={client}><AgentSettingsStatus enabled hostId="host-a" placement="header" sessionId="sess-1" /><AgentSettingsStatus enabled hostId="host-b" placement="composer" sessionId="sess-1" /></QueryClientProvider>);
+		const header = await screen.findByTestId("agent-settings-header");
+		const composer = await screen.findByTestId("agent-settings-composer");
+		await within(composer).findByRole("alert");
+		await userEvent.click(within(header).getByRole("button", { name: "Keep current settings" }));
+		expect(within(header).queryByRole("alert")).not.toBeInTheDocument();
+		expect(within(composer).getByRole("alert")).toBeVisible();
+	});
+
+	it("requires fresh stop-turn consent when reviewing a failed TUI intent", async () => {
+		server = agentSettingsSnapshot({ revision: 8, restartRequired: true, pending: undefined, history: [agentSettingsOperation({ phase: "failed", applyMode: "restart", stopTurn: true })] });
+		showSession({ mode: "tui" });
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Review and retry" }));
+		const editor = screen.getByRole("dialog", { name: "Change agent settings" });
+		expect(within(editor).getByRole("button", { name: /^Model/ })).toHaveTextContent("pending-model");
+		await userEvent.click(within(editor).getByRole("button", { name: "Review restart" }));
+		const confirmation = screen.getByRole("dialog", { name: "Restart this session" });
+		expect(within(confirmation).getByRole("checkbox", { name: "Allow stopping the current turn" })).not.toBeChecked();
+		await userEvent.click(within(confirmation).getByRole("button", { name: "Confirm restart" }));
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock.mock.calls[0][1].body).toMatchObject({ expectedRevision: 8, applyMode: "restart", stopTurn: false, settings: { model: "pending-model", effort: "high", fastMode: "on" } });
+	});
+	it("shows the failed reason and next actions in Traditional Chinese", async () => {
+		await act(async () => { await appI18n.changeLanguage("zh-TW"); });
+		try {
+			server = agentSettingsSnapshot({ pending: undefined, history: [agentSettingsOperation({ phase: "failed", errorCode: "AGENT_SETTINGS_FAILED", errorCategory: "provider" })] });
+			showSession();
+			await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+			const alert = await screen.findByRole("alert");
+			expect(alert).toHaveTextContent("設定變更失敗");
+			expect(alert).toHaveTextContent("Provider 無法套用要求的設定。");
+			expect(within(alert).getByRole("button", { name: "檢視並重試" })).toBeVisible();
+			expect(within(alert).getByRole("button", { name: "保留目前設定" })).toBeVisible();
+		} finally {
+			await act(async () => { await appI18n.changeLanguage("en"); });
+		}
+	});
 	it("does not bypass local daemon readiness through the local host alias", async () => {
 		connection.trusted = false;
 		showSession({}, "local");

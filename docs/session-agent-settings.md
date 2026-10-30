@@ -54,6 +54,29 @@ ambiguous connection failure uses the original payload and idempotency key.
 TUI changes show a restart review; interruption consent is a separate, initially
 unchecked option. Unstarted pending operations can be cancelled with version CAS.
 
+An accepted request can still fail after queuing. When pending clears with a
+failed result, header, composer and Inspector keep a visible failure notice with
+its category, stable error code, operation and request IDs. **Review and retry**
+opens the original changes against the latest committed revision, preserving
+other controllers' untouched fields. It submits a new idempotent request only
+after confirmation; replaying the completed operation's old key would only read
+that failed result. TUI stop-turn consent is requested again. **Keep current
+settings** dismisses the notice locally across those views without changing
+preferences or journal history. A later failure appears again; an external
+result never resets an already-open retry draft.
+The composer also keeps an unaccepted PATCH separate from both committed and
+pending settings. While sending, it keeps the confirmed label and briefly
+disables that picker, showing only a submitting notice. A rejection preserves
+the selection and error/request ID beside the picker. Explicit retry reapplies
+only the original changed fields against the latest snapshot, preserving other
+controllers' later changes; dismissing keeps current settings. Only a daemon
+response may project an accepted choice, with the separate pending notice.
+Settings CDC may contain only the session ID. After its authoritative read
+changes revision, pending operation or latest result, the transport refreshes
+that session's conversation, model and config-option projections. Ordinary
+metadata with unchanged settings does not reload a ready Chat. These reads
+preserve the mounted conversation and unsent drafts.
+
 English and Traditional Chinese have explicit UI copy. Other locale catalogs
 currently carry explicit English fallbacks for these new keys; they are not
 claimed as completed translations. Effective observation reasons are available

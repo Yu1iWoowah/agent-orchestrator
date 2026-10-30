@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InfiniteQueryObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
+import { InfiniteQueryObserver, QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
+import { createElement } from "react";
+import { act, render } from "@testing-library/react";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import { agentSettingsQueryKey } from "./agent-settings";
+import { conversationQueryKey } from "../hooks/useConversation";
+import { agentSettingsSelection, agentSettingsSnapshot } from "../test/agent-settings-fixtures";
+import { chatFixtureEmpty } from "./chat-fixture";
 
 const {
 	onStatusMock,
@@ -121,6 +126,43 @@ afterEach(() => {
 });
 
 describe("createEventTransport", () => {
+	it("synchronizes ready composer consumers after settings-only CDC without reloading them for unchanged usage metadata", async () => {
+		vi.useFakeTimers();
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		let model = "committed-model";
+		let revision = 4;
+		const settings = () => agentSettingsSnapshot({ revision, pending: undefined, settings: agentSettingsSelection({ model }) });
+		const conversation = () => ({ pages: [{ ...chatFixtureEmpty, sessionId: "sess-1", controller: { state: "ready" as const }, settings: { model } }], pageParams: [undefined] });
+		const settingsRead = vi.fn(async () => settings());
+		const conversationRead = vi.fn(async () => conversation());
+		function Consumers() {
+			const header = useQuery({ queryKey: agentSettingsQueryKey("sess-1"), queryFn: settingsRead, initialData: settings(), staleTime: Infinity });
+			const composer = useQuery({ queryKey: conversationQueryKey("sess-1"), queryFn: conversationRead, initialData: conversation(), staleTime: Infinity });
+			return createElement("div", null, createElement("span", { "data-testid": "header" }, header.data.settings.model), createElement("span", { "data-testid": "composer" }, composer.data.pages[0].settings.model));
+		}
+		const view = render(createElement(QueryClientProvider, { client, children: createElement(Consumers) }));
+		const disconnect = createEventTransport(client).connect();
+		try {
+			await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+			settingsRead.mockClear(); conversationRead.mockClear();
+			model = "applied-model"; revision++;
+			await act(async () => {
+				cdcSources()[0].emit("session_updated", JSON.stringify({ seq: 1, type: "session_updated", sessionId: "sess-1", payload: { id: "sess-1" } }));
+				await vi.advanceTimersByTimeAsync(200);
+			});
+			expect(view.getByTestId("header")).toHaveTextContent("applied-model");
+			expect(view.getByTestId("composer")).toHaveTextContent("applied-model");
+			expect(conversationRead).toHaveBeenCalledTimes(1);
+			conversationRead.mockClear();
+			await act(async () => {
+				cdcSources()[0].emit("session_updated", JSON.stringify({ seq: 2, type: "session_updated", sessionId: "sess-1", payload: { id: "sess-1" } }));
+				await vi.advanceTimersByTimeAsync(200);
+			});
+			expect(conversationRead).not.toHaveBeenCalled();
+		} finally {
+			disconnect(); view.unmount(); client.clear(); vi.useRealTimers();
+		}
+	});
 	it("targets settings invalidation to the changed session and host", async () => {
 		vi.useFakeTimers();
 		connectedHostsMock.mockReturnValue(["box-a", "box-b"]);
