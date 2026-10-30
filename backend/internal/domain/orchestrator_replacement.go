@@ -12,6 +12,8 @@ import (
 const MaxReplacementHandoffBytes = 128 << 10
 
 var (
+	// ErrReplacementNoticeCapacity preserves terminal receipt space after retry churn.
+	ErrReplacementNoticeCapacity = errors.New("replacement notice retry capacity exhausted")
 	// ErrReplacementKeyConflict rejects a reused key with different intent.
 	ErrReplacementKeyConflict = errors.New("replacement operation key conflicts")
 	// ErrReplacementInProgress protects the project's active replacement.
@@ -313,8 +315,10 @@ type OrchestratorReplacement struct {
 	SuccessorController *ReplacementSuccessorController `json:"successorController,omitempty"`
 	Bootstrap           *ReplacementBootstrap           `json:"bootstrap,omitempty"`
 
-	WriterActivation *ReplacementWriterActivation    `json:"writerActivation,omitempty"`
-	Notifications    []ReplacementWorkerNotification `json:"notifications,omitempty"`
+	WriterActivation       *ReplacementWriterActivation       `json:"writerActivation,omitempty"`
+	Notifications          []ReplacementWorkerNotification    `json:"notifications,omitempty"`
+	NotificationCompletion *ReplacementNotificationCompletion `json:"notificationCompletion,omitempty"`
+	WorkerFYIPayload       *ReplacementWorkerFYIPayload       `json:"workerFYIPayload,omitempty"`
 
 	Attempts []ReplacementAttempt `json:"attempts,omitempty"`
 

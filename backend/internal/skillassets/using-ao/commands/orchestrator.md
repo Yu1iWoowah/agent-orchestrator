@@ -134,6 +134,8 @@ launch on a healthy row cannot be cleared through repair.
 Do not downgrade to a version that cannot interpret the durable replacement
 schema while any operation remains active.
 
+已完成的 operation 若含 `notificationCompletion` 或 `workerFYIPayload`，同樣不能降版到不相容的 build：舊版 strict decoder 無法讀取這些 facts，包含 retired source 的查詢路徑。保留這些歷史時須使用相容版本；不要刪除欄位或改寫資料庫來迎合舊版。
+
 ### ao orchestrator replacement intake
 
 ```bash
@@ -161,3 +163,21 @@ ao orchestrator replacement prepared <operation-id> \
 
 It requires the owning source's `AO_SESSION_ID` and `AO_BROWSER_CAPABILITY`.
 Submission alone does not mark preparation verified or activate a writer.
+
+### Worker FYI notification receipts
+
+`replacement get <operation-id> --json` 的 `notificationReceipts` 是逐筆持久化的通知證據：
+
+- `pending`：尚無正面 delivery 證據；busy／blocked／draft／exited 不代表已送達。
+- `uncertain`：可能已寫入或仍在處理，但沒有足夠回條。TUI 不盲重送；同 canonical conversation 的 Chat 使用原 ContactID 去重。
+- `accepted`：Chat 已有 canonical automation message，或 TUI 有相符 runtime/native 的私有 coordination checkpoint。不代表已讀、已執行或 D 的 ACK。
+- `skipped`：有正面 terminated worker 事實，不把未知 liveness 當 terminated。
+
+只有全體目標都有 accepted／skipped 回條，才產生 `notificationCompletion` 的 counts／receipt hash 並完成 operation。targets 與通知歷史保留；不靠清空 pending targets 完成。通知未完成時維持 `notifying`，successor 已 release 的一般 intake 不因此重新被 hold。不要為了處理 uncertain 另送新 key、強寫 completed、清除 receipt 或喚回 retired source。
+
+
+activation 排除 task preparation。hibernated 或尚未 ready 的 Chat worker 可先將 FYI 原子排入 durable queue，等下次自然喚醒才派送，不主動 wake 或 interrupt。TUI 必須取得正面 native idle 與 empty composer 證據；未知畫面保持 pending。相符的 coordination hook 與接受回條在同一筆交易保存，後續 prompt 或 owner epoch 不會抹掉證據。
+
+正面 no-write 結果才允許再次 guarded attempt；每個目標有獨立、有界的 retry 額度。`DELIVERY_RETRY_CAPACITY` 表示該目標額度已用滿，不影響其他目標或正面 accepted／terminated 回條收尾。不要只為改變通知狀態而 kill worker。
+
+若成功回應帶有 `notificationReceiptsUnavailable: true`，代表 operation 已提交，但附帶的 receipt projection 暫時無法讀取。使用回應中的 `readCommand` 重讀；不要因缺少回條細節就以新 operation key 重送 mutation。

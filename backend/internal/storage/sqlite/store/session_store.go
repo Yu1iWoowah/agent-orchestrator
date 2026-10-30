@@ -379,7 +379,8 @@ func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID,
 	return rows > 0, nil
 }
 
-// DeleteTaskPreparation removes only a row that has not been claimed.
+// DeleteTaskPreparation removes only a row that has not been claimed. An old
+// replacement target retains its hidden row and positive termination evidence.
 func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -388,6 +389,32 @@ func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) 
 		return false, fmt.Errorf("begin delete task preparation %s: %w", id, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	q := s.qw.WithTx(tx)
+	row, err := q.GetSession(ctx, id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read task preparation %s: %w", id, err)
+	}
+	if err == nil && row.IsTaskPreparation {
+		retained, err := s.replacementNotificationRetainsSeed(ctx, q, id)
+		if err != nil {
+			return false, fmt.Errorf("verify task preparation notification target %s: %w", id, err)
+		}
+		if retained {
+			// All preparation cleanup callers ignore deleted=false, unlike
+			// seed rollback. Record termination here, in the same transaction.
+			if !row.IsTerminated {
+				rec := rowToRecord(row)
+				rec.IsTerminated, rec.UpdatedAt = true, time.Now().UTC()
+				if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
+					return false, fmt.Errorf("terminate retained task preparation %s: %w", id, err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return false, fmt.Errorf("commit retained task preparation %s: %w", id, err)
+			}
+			return false, nil
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM change_log
 WHERE session_id = ?
@@ -593,7 +620,7 @@ func (s *Store) UpdateSessionFromActivitySignal(
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, gen.UpdateSessionFromActivitySignalParams{
+	params := gen.UpdateSessionFromActivitySignalParams{
 		ActivityState:                    activity.State,
 		ActivityLastAt:                   activity.LastActivityAt,
 		FirstSignalAt:                    timeToNullTime(rec.FirstSignalAt),
@@ -620,11 +647,34 @@ func (s *Store) UpdateSessionFromActivitySignal(
 		ExpectedSessionMode:              domain.NormalizeSessionMode(rec.Mode),
 		ExpectedRuntimeLaunchID:          rec.Metadata.RuntimeLaunchID,
 		ExpectedControllerGeneration:     rec.Metadata.ControllerGeneration,
-	})
-	if err != nil {
-		return false, fmt.Errorf("update session %s from activity signal: %w", rec.ID, err)
 	}
-	return rows > 0, nil
+	if !isReplacementNoticeCheckpoint(rec) {
+		rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, params)
+		if err != nil {
+			return false, fmt.Errorf("update session %s from activity signal: %w", rec.ID, err)
+		}
+		return rows > 0, nil
+	}
+	changed := false
+	err := s.inTx(ctx, "update session from activity signal", func(q *gen.Queries) error {
+		rows, err := q.UpdateSessionFromActivitySignal(ctx, params)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return nil
+		}
+		actual, err := q.GetSession(ctx, rec.ID)
+		if err != nil {
+			return err
+		}
+		if err := recordReplacementNoticeCheckpoint(ctx, q, rowToRecord(actual)); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed && err == nil, err
 }
 
 // RecordSessionLatestUserPrompt persists pane-delivered user direction without
@@ -883,7 +933,16 @@ func (s *Store) DeleteSession(ctx context.Context, id domain.SessionID) (bool, e
 	if err != nil {
 		return false, fmt.Errorf("delete seed session: probe seed state for %s: %w", id, err)
 	}
+	if isSeed {
+		retained, err := s.replacementNotificationRetainsSeed(ctx, q, id)
+		if err != nil {
+			return false, fmt.Errorf("delete seed session: verify notification target: %w", err)
+		}
+		isSeed = !retained
+	}
 	if !isSeed {
+		// An activation target retains its row for the caller's existing
+		// MarkTerminated fallback. Absence cannot become skipped evidence.
 		// Commit the empty tx so we don't leak a transaction. Critically, do
 		// NOT touch change_log here — for a live session that contains real
 		// session_created / session_updated CDC events.

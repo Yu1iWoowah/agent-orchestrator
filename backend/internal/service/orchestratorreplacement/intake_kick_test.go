@@ -22,6 +22,19 @@ type intakeCoordinatorStore struct {
 	releases, kicks               int
 }
 
+// This kick-only fixture has no delivery evidence; notification ledger tests
+// exercise the real SQLite producer rather than minting success here.
+func (s *intakeCoordinatorStore) ReconcileReplacementNotificationReceipts(context.Context, string, int64, time.Time) (domain.OrchestratorReplacement, bool, error) {
+	return s.op, false, nil
+}
+func (s *intakeCoordinatorStore) ReplacementWorkerNoticeReceipts(context.Context, string) ([]domain.ReplacementNoticeReceipt, error) {
+	result := make([]domain.ReplacementNoticeReceipt, 0, len(s.op.Notifications))
+	for _, n := range s.op.Notifications {
+		result = append(result, domain.ReplacementNoticeReceipt{OperationID: s.op.ID, SessionID: n.SessionID, ContactID: n.ContactID, State: domain.ReplacementNoticePending, CreatedAt: n.CreatedAt})
+	}
+	return result, nil
+}
+
 func (s *intakeCoordinatorStore) GetOrchestratorReplacement(_ context.Context, id string) (domain.OrchestratorReplacement, bool, error) {
 	return s.op, id == s.op.ID, nil
 }

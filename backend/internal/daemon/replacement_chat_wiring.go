@@ -64,3 +64,7 @@ func (c chatLauncher) EnsureReplacementChatProbe(ctx context.Context, op domain.
 func (c chatLauncher) QueueReplacementIntake(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (domain.ConversationTurn, error) {
 	return c.svc.QueueReplacementIntake(ctx, id, msg)
 }
+
+func (c chatLauncher) DeliverReplacementChatWorkerFYI(ctx context.Context, id string, target domain.SessionID, attempt string, revision int64) error {
+	return c.svc.DeliverReplacementChatWorkerFYI(ctx, id, target, attempt, revision)
+}

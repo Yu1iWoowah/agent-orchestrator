@@ -32,6 +32,7 @@ func (s *Service) releaseIntake(ctx context.Context, op domain.OrchestratorRepla
 			op.Phase = domain.ReplacementCompleted
 			return s.save(ctx, op)
 		}
+		// Notification reconciliation and transport run after the project gate.
 		return op, nil
 	}
 	if op.IntakeReleasedAt == nil {

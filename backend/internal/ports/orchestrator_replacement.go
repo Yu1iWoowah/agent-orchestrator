@@ -63,3 +63,17 @@ type ReplacementChatRuntime interface {
 	EnsureReplacementChatProbe(context.Context, domain.OrchestratorReplacement, string, bool) (ReplacementPreparationDelivery, error)
 	QueueReplacementIntake(context.Context, domain.SessionID, ChatUserMessage) (domain.ConversationTurn, error)
 }
+
+// ReplacementWorkerNoticeStore is the internal delivery authority. Attempts
+// never authorize arbitrary text, targets, or generic accepted receipts.
+type ReplacementWorkerNoticeStore interface {
+	BeginReplacementWorkerNotice(context.Context, string, int64, domain.SessionID, domain.SessionControllerOwner, time.Time) (domain.ReplacementNoticeReceipt, bool, error)
+	FinishReplacementWorkerNotice(context.Context, string, domain.SessionID, string, int64, bool, time.Time) (bool, error)
+	ValidateReplacementWorkerNotice(context.Context, string, domain.SessionID, string, int64) (domain.OrchestratorReplacement, domain.SessionRecord, domain.ReplacementNoticeReceipt, error)
+}
+
+// ReplacementDormantWorkerNoticeQueue admits fixed FYI text directly to a
+// dormant worker's canonical queue. It cannot wake or dispatch a provider.
+type ReplacementDormantWorkerNoticeQueue interface {
+	QueueDormantReplacementWorkerNotice(context.Context, string, int64, domain.SessionID, domain.SessionControllerOwner, time.Time) (bool, error)
+}

@@ -4314,6 +4314,10 @@ type OrchestratorReplacementView struct {
 	RetryCommand         string                               `json:"retryCommand,omitempty"`
 	CancelCommand        string                               `json:"cancelCommand,omitempty"`
 
+	NotificationCompletion *ReplacementNotificationSummaryView `json:"notificationCompletion,omitempty"`
+	// A secondary ledger failure does not invalidate the durable operation.
+	NotificationReceiptsUnavailable bool `json:"notificationReceiptsUnavailable,omitempty" description:"Receipt evidence could not be read. The operation result remains durable; use readCommand to retry the read."`
+
 	// IntakeDrainRequestedAt records a queue kick, not delivery or reading.
 	IntakeDrainRequestedAt *time.Time                        `json:"intakeDrainRequestedAt,omitempty"`
 	SourceIntakeReleasedAt *time.Time                        `json:"sourceIntakeReleasedAt,omitempty"`
@@ -4393,10 +4397,27 @@ type ReplacementWriterView struct {
 
 // ReplacementNotificationView preserves acceptance as distinct from reading or acting.
 type ReplacementNotificationView struct {
-	SessionID domain.SessionID `json:"sessionId"`
-	ContactID string           `json:"contactId"`
-	State     string           `json:"state"`
-	CreatedAt time.Time        `json:"createdAt"`
+	SessionID        domain.SessionID   `json:"sessionId"`
+	ContactID        string             `json:"contactId"`
+	State            string             `json:"state" description:"Delivery evidence only: pending, uncertain, accepted, or skipped; never read or acted."`
+	Mode             domain.SessionMode `json:"mode,omitempty"`
+	CreatedAt        time.Time          `json:"createdAt"`
+	AttemptStartedAt *time.Time         `json:"attemptStartedAt,omitempty"`
+	SettledAt        *time.Time         `json:"settledAt,omitempty"`
+	EvidenceKind     string             `json:"evidenceKind,omitempty"`
+	ConversationID   string             `json:"conversationId,omitempty"`
+	MessageID        string             `json:"messageId,omitempty"`
+	TurnID           string             `json:"turnId,omitempty"`
+	ErrorCode        string             `json:"errorCode,omitempty"`
+}
+
+// ReplacementNotificationSummaryView contains no private delivery authority.
+type ReplacementNotificationSummaryView struct {
+	TargetCount   int       `json:"targetCount"`
+	AcceptedCount int       `json:"acceptedCount"`
+	SkippedCount  int       `json:"skippedCount"`
+	ReceiptHash   string    `json:"receiptHash"`
+	CompletedAt   time.Time `json:"completedAt"`
 }
 
 // ReplacementAttemptView retains safe previous preparation and evidence facts.

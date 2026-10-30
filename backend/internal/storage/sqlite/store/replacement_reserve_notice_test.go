@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	fixturestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestReplacementReserveRejectsPendingNotifications(t *testing.T) {
@@ -23,13 +24,11 @@ func TestReplacementReserveRejectsPendingNotifications(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// Pending work is valid under the ordinary budget; only recovery
-			// credits are unavailable to it. Retain this existing notice too.
+			// Seed the activation target as a sealed fixture. Generic saves no
+			// longer add targets, even with ordinary budget remaining.
 			control := f.op
 			control.Notifications = []domain.ReplacementWorkerNotification{{SessionID: f.worker.ID, ContactID: "handoff-notice:" + control.ID + ":" + string(f.worker.ID), ObservedOwner: f.worker.ControllerOwner(), State: "pending", CreatedAt: time.Now().UTC()}}
-			if saved, err := f.st.SaveOrchestratorReplacement(ctx, control); err != nil || !saved {
-				t.Fatal("ordinary budget rejected valid pending work", saved, err)
-			}
+			fixturestore.SeedReplacementTestFacts(t, f.st, control)
 			for i := 0; i < 1100; i++ {
 				op, _, err := f.st.GetOrchestratorReplacement(ctx, f.op.ID)
 				if err != nil {
@@ -61,8 +60,8 @@ func TestReplacementReserveRejectsPendingNotifications(t *testing.T) {
 				saved, err := f.st.SaveOrchestratorReplacement(ctx, op)
 				if saved {
 					accepted++
-				} else if !errors.Is(err, domain.ErrReplacementRepairCapacity) {
-					t.Fatal("unexpected notification refusal", err)
+				} else if !errors.Is(err, domain.ErrReplacementStateInvalid) {
+					t.Fatal("unexpected notification target mutation refusal", err)
 				}
 				if change == "phase and pending" {
 					break
