@@ -279,3 +279,37 @@ func TestAccountRemoveShowsOnlyBlockingOwnersWithoutStoppingThem(t *testing.T) {
 		t.Fatalf("err=%v stderr=%s", err, stderr)
 	}
 }
+
+func TestLoginOutputHidesCredentialsInANSIAndHyperlinkURI(t *testing.T) {
+	for name, line := range map[string]string{
+		"plain":     "access_token=PRIVATE_TOKEN_CANARY\r\n",
+		"colour":    "ac\x1b[32mcess_token\x1b[0m=PRIVATE_TOKEN_CANARY\r\n",
+		"hyperlink": "\x1b]8;;https://example.test/?access_token=PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := safeAccountLoginOutput(line)
+			if strings.Contains(got, "TOKEN_CANARY") || !strings.Contains(got, "credential output hidden") {
+				t.Fatal("credential reached live login output")
+			}
+		})
+	}
+	prompt := "Open https://example.test/device and enter ABCD-1234\r\n"
+	if got := safeAccountLoginOutput(prompt); got != prompt {
+		t.Fatal("device authorization prompt was hidden")
+	}
+}
+
+func TestLoginOutputDropsOversizedCredentialContinuationAndKeepsNextPrompt(t *testing.T) {
+	var out bytes.Buffer
+	var output accountLoginOutput
+	output.write(&out, []byte("access_token="+strings.Repeat("x", 70*1024)))
+	output.write(&out, []byte("PRIVATE_TOKEN_CANARY\r\nOpen device sign-in and enter ABCD-1234\r\n"))
+	if strings.Contains(out.String(), "TOKEN_CANARY") || !strings.Contains(out.String(), "oversized login output hidden") || !strings.Contains(out.String(), "Open device sign-in") {
+		t.Fatal("long credential leaked or subsequent prompt was lost")
+	}
+	output.write(&out, []byte("access_to"))
+	output.write(&out, []byte("ken=PRIVATE_TOKEN_CANARY\r\n"))
+	if strings.Contains(out.String(), "TOKEN_CANARY") {
+		t.Fatal("credential split across frames reached output")
+	}
+}

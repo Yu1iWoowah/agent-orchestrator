@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -218,6 +219,51 @@ type accountTerminalFrame struct {
 // device authorization codes remain visible so the native login can complete.
 var loginCredentialLine = regexp.MustCompile(`(?i)(access[_ -]?token|refresh[_ -]?token|id[_ -]?token|api[_ -]?key|authorization\s*:|bearer\s|sk-[A-Za-z0-9_-]{12}|eyJ[A-Za-z0-9_-]+\.)`)
 
+// safeAccountLoginOutput classifies a completed line before the live PTY output.
+func safeAccountLoginOutput(line string) string {
+	// OSC stripping removes hyperlink URIs that may contain credentials.
+	// Check raw controls as well as colour-split visible text.
+	if loginCredentialLine.MatchString(line) || loginCredentialLine.MatchString(ansi.Strip(line)) {
+		return "\r\n[credential output hidden]\r\n"
+	}
+	return line
+}
+
+type accountLoginOutput struct {
+	pending    strings.Builder
+	discarding bool
+}
+
+func (w *accountLoginOutput) write(out io.Writer, data []byte) {
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, '\n')
+		complete := end >= 0
+		if complete {
+			end++
+		} else {
+			end = len(data)
+		}
+		part := data[:end]
+		data = data[end:]
+		if !w.discarding {
+			if w.pending.Len()+len(part) > 64*1024 {
+				w.pending.Reset()
+				w.discarding = true
+				_, _ = io.WriteString(out, "\r\n[oversized login output hidden]\r\n")
+			} else {
+				w.pending.Write(part)
+			}
+		}
+		if complete {
+			if !w.discarding {
+				_, _ = io.WriteString(out, safeAccountLoginOutput(w.pending.String()))
+			}
+			w.pending.Reset()
+			w.discarding = false
+		}
+	}
+}
+
 func (c *commandContext) attachAccountLogin(ctx context.Context, cancel context.CancelFunc, id string, in *os.File, out io.Writer) (func(), error) {
 	if id == "" {
 		return nil, fmt.Errorf("login terminal unavailable; use --no-attach to verify")
@@ -267,7 +313,7 @@ func (c *commandContext) attachAccountLogin(ctx context.Context, cancel context.
 	}
 	go func() {
 		defer close(done)
-		var pending strings.Builder
+		var output accountLoginOutput
 		for {
 			var f accountTerminalFrame
 			if err := wsjson.Read(attachCtx, conn, &f); err != nil {
@@ -281,27 +327,7 @@ func (c *commandContext) attachAccountLogin(ctx context.Context, cancel context.
 				if e != nil {
 					continue
 				}
-				pending.Write(data)
-				if pending.Len() > 64*1024 {
-					pending.Reset()
-					_, _ = io.WriteString(out, "\r\n[oversized login output hidden]\r\n")
-					continue
-				}
-				for {
-					value := pending.String()
-					n := strings.IndexByte(value, '\n')
-					if n < 0 {
-						break
-					}
-					line := value[:n+1]
-					pending.Reset()
-					pending.WriteString(value[n+1:])
-					if loginCredentialLine.MatchString(ansi.Strip(line)) {
-						_, _ = io.WriteString(out, "\r\n[credential output hidden]\r\n")
-					} else {
-						_, _ = io.WriteString(out, line)
-					}
-				}
+				output.write(out, data)
 			}
 			if f.Type == "exited" || f.Type == "error" {
 				return
