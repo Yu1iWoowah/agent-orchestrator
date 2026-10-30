@@ -56,9 +56,6 @@ func (e *Engine) validateReviewerModels(ctx context.Context, harness domain.Revi
 }
 
 func validateReviewerCatalog(harness domain.ReviewerHarness, catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
-	if catalog.Stale || catalog.RefreshState != "" && catalog.RefreshState != "idle" {
-		return ports.ErrAgentSettingsCapabilitiesUnavailable
-	}
 	for _, model := range catalog.Models {
 		if model.ID == config.Model || config.Model == "" && model.IsDefault {
 			efforts, known := modelcapabilities.Efforts(domain.AgentHarness(harness), catalog.Models, model)

@@ -1850,10 +1850,6 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	if selected != nil {
 		efforts, effortsKnown = modelcapabilities.Efforts(cfg.Harness, catalog.Models, *selected)
 	}
-	if selected != nil && resolved.Effort != "" && !effortsKnown {
-		return ports.AgentConfig{}, fmt.Errorf("%w for model %q", ports.ErrModelCapabilitiesUnavailable, modelID)
-	}
-
 	if modelChangedWithoutExplicitEffort {
 		if selected == nil || !containsString(efforts, base.Effort) {
 			resolved.Effort = ""
@@ -1862,7 +1858,7 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	if resolved.Effort == "" {
 		return resolved, nil
 	}
-	if catalog.Stale || selected == nil {
+	if catalog.Stale || selected == nil || !effortsKnown {
 		return ports.AgentConfig{}, fmt.Errorf("%w for model %q", ports.ErrModelCapabilitiesUnavailable, modelID)
 	}
 	if resolved.Effort != "" && !containsString(efforts, resolved.Effort) {

@@ -14080,6 +14080,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/RestoreReviewResponse'
           description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -14098,6 +14104,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
       summary: Restore a worker's reviewer terminal session
       tags:
       - reviews
@@ -14232,6 +14244,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/TriggerReviewResponse'
           description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -14250,6 +14268,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
       summary: Trigger a code review of a worker's PR
       tags:
       - reviews

@@ -28,7 +28,9 @@ const (
 	CapabilityUnsupported CapabilityState = "unsupported"
 )
 
-// ModelCapabilities lists advertised choices, never inferred model features.
+// ModelCapabilities exposes qualified effort evidence, including Claude alias
+// choices resolved from canonical family IDs. Empty Efforts alone does not
+// distinguish unknown alias evidence from a concrete model accepting no effort.
 type ModelCapabilities struct {
 	Model        string          `json:"model"`
 	IsDefault    bool            `json:"isDefault"`

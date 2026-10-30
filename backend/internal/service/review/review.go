@@ -56,6 +56,10 @@ func reviewErrorKind(err error) string {
 		return "conflict"
 	case errors.Is(err, ports.ErrAgentBinaryNotFound):
 		return "agent_unavailable"
+	case errors.Is(err, ports.ErrAgentSettingsUnsupported):
+		return "invalid"
+	case errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable):
+		return "unavailable"
 	}
 	kind, _ := telemetrymeta.ErrorKindAndCode(err)
 	return kind
