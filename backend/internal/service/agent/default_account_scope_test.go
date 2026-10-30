@@ -1,13 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -142,5 +148,65 @@ func TestConfiguredUnavailableDefaultDoesNotFallBackToDeviceReadiness(t *testing
 	observation, handled := svc.savedDefaultAuthentication(context.Background(), "codex")
 	if !handled || observation.State != domain.AgentAuthenticationUnknown || observation.Account != nil {
 		t.Fatalf("unavailable managed default fell back to device: %+v handled=%v", observation, handled)
+	}
+}
+
+func TestDeviceDefaultSharesWarmReadiness(t *testing.T) {
+	adapter := &readinessTestAgent{resolve: func(context.Context) (string, error) { return "/fake/codex", nil }, auth: func(context.Context) (ports.AgentAuthStatus, error) { return ports.AgentAuthStatusAuthorized, nil }}
+	svc := newService([]agentregistry.HarnessAgent{readinessHarness("codex", "Codex", adapter)}, nil, nil)
+	svc.SetAccountExecution(deviceAccountExecution{t: t}, nil)
+	svc.readiness.authenticationCheck = svc.authenticationWithAccount
+	<-svc.WarmReadiness()
+	ctx := ports.WithAgentAccount(context.Background(), domain.ResolvedAgentAccount{AccountID: "device-codex", Provider: domain.AgentAccountProviderCodex})
+	got, err := svc.EnsureAgentReadiness(ctx, "codex", domain.AgentReadinessPurposeLaunch)
+	if err != nil || got.Authentication.State != domain.AgentAuthenticationAuthorized || adapter.authCalls.Load() != 1 {
+		t.Fatalf("warm observation was not reused: calls=%d %+v %v", adapter.authCalls.Load(), got, err)
+	}
+}
+
+func TestLegacyIdentityConflictLoadsSavedMetadataWithoutChangingCredentials(t *testing.T) {
+	for _, signedOut := range []bool{false, true} {
+		t.Run(fmt.Sprint("signedOut=", signedOut), func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "legacy")
+			pending := filepath.Join(t.TempDir(), "pending")
+			catalog := newCodexAccountCatalog(root, nil)
+			email := "fake-legacy@example.invalid"
+			record := commitTestAccount(t, catalog, pending, "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{Email: &email, Method: domain.CodexAuthMethodChatGPT, Authentication: domain.AgentAuthenticationAuthorized})
+			credential := filepath.Join(record.Home, codexCredentialFilename)
+			if signedOut {
+				if err := os.Remove(credential); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, readErr := os.ReadFile(credential)
+			beforeInfo, statErr := os.Lstat(credential)
+			svc := newService(nil, nil, nil)
+			svc.codexAccounts = newCodexAccountManager(context.Background(), root, pending, "", "", nil, nil)
+			for range 2 {
+				conflict, err := svc.LegacyIdentityConflict(context.Background(), domain.AgentAccountProviderCodex, strings.ToUpper(email))
+				if err != nil || !conflict {
+					t.Fatalf("saved legacy identity was missed: %t %v", conflict, err)
+				}
+			}
+			after, afterReadErr := os.ReadFile(credential)
+			afterInfo, afterStatErr := os.Lstat(credential)
+			if signedOut {
+				if !errors.Is(afterReadErr, os.ErrNotExist) || !errors.Is(afterStatErr, os.ErrNotExist) {
+					t.Fatal("signed-out legacy credential recreated")
+				}
+			} else if readErr != nil || statErr != nil || afterReadErr != nil || afterStatErr != nil || !bytes.Equal(before, after) || beforeInfo.Mode() != afterInfo.Mode() {
+				t.Fatal("legacy credential content/mode changed")
+			}
+		})
+	}
+}
+
+func TestDeviceReadinessUnknownHarnessKeepsAPIErrorContract(t *testing.T) {
+	svc := newService(nil, nil, nil)
+	ctx := ports.WithAgentAccount(context.Background(), domain.ResolvedAgentAccount{AccountID: "device-codex", Provider: domain.AgentAccountProviderCodex})
+	_, err := svc.EnsureAgentReadiness(ctx, "unknown-harness", domain.AgentReadinessPurposeLaunch)
+	var api *apierr.Error
+	if !errors.As(err, &api) || api.Code != "UNKNOWN_AGENT_ID" {
+		t.Fatalf("device path changed unknown harness error: %v", err)
 	}
 }

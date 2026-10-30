@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 // This is a fake U3 public launch interface, not a managed-account integration.
@@ -48,7 +49,7 @@ func TestPreparedSpawnSettingsWithBoundAccount(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				ctx := context.Background()
 				now := time.Now()
-				st, err := sqlite.Open(t.TempDir())
+				st, err := sqlitetest.Open(t.TempDir())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -120,7 +121,7 @@ func TestSpawnSettingsIntegrationRejectsUnqualifiedEvidenceBeforeLaunch(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now()
-			st, err := sqlite.Open(t.TempDir())
+			st, err := sqlitetest.Open(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}

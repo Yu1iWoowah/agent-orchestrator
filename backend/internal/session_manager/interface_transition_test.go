@@ -182,8 +182,26 @@ func (s *transitionStore) createSessionInterfaceTransitionLocked(rec domain.Sess
 			return existing, false, nil
 		}
 	}
+	if rec.AccountMove() && rec.TargetRuntimeState == "" {
+		rec.TargetRuntimeState = domain.AccountTransitionRuntimeNotStarted
+	}
 	s.transitions[rec.ID] = rec
 	return rec, true, nil
+}
+
+func (s *transitionStore) RecordAccountTransitionRuntime(_ context.Context, id string, state domain.AccountTransitionRuntimeState, launchID, handleID string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.transitions[id]
+	if !ok || !rec.AccountMove() || (rec.Phase != domain.SessionInterfaceTransitionTargetStarting && rec.Phase != domain.SessionInterfaceTransitionRecovery && rec.Phase != domain.SessionInterfaceTransitionActivating) {
+		return false, nil
+	}
+	rec.TargetRuntimeState = state
+	rec.TargetRuntimeLaunchID = launchID
+	rec.TargetRuntimeHandleID = handleID
+	rec.UpdatedAt = at
+	s.transitions[id] = rec
+	return true, nil
 }
 
 func (s *transitionStore) GetSessionInterfaceTransition(_ context.Context, id string) (domain.SessionInterfaceTransition, bool, error) {
@@ -3270,7 +3288,7 @@ func TestRecoverInterruptedClaudeTUIToChatPreservesPoisonedCheckpointThroughResu
 type failingProbeTransitionAgent struct{ transitionAgent }
 
 func (failingProbeTransitionAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
-	return false, errors.New("transcript root unreadable")
+	return false, errors.New("transcript root unreadable: fake-credential-canary /fake/private/profile")
 }
 
 func TestInterfaceTransitionStatusReportsUnverifiedWhenInspectionFails(t *testing.T) {
@@ -3294,8 +3312,8 @@ func TestInterfaceTransitionStatusReportsUnverifiedWhenInspectionFails(t *testin
 	if _, err := manager.StartInterfaceTransition(
 		context.Background(), "session-1", domain.SessionModeChat, domain.SessionInterfaceTransitionDrain,
 		domain.SessionInterfaceTransitionHistoryStrict,
-	); err == nil || !strings.Contains(err.Error(), "transcript root unreadable") {
-		t.Fatalf("StartInterfaceTransition error = %v, want inspection failure", err)
+	); !errors.Is(err, ErrNativeConversationUnverified) || strings.Contains(err.Error(), "canary") || strings.Contains(err.Error(), "/fake/") {
+		t.Fatalf("StartInterfaceTransition error = %v, want safe unverified-history classification", err)
 	}
 }
 
@@ -3387,4 +3405,60 @@ func TestInterfaceTransitionAgyFailsWhenSourceDatabaseMissing(t *testing.T) {
 	if status.ReasonCode != "NATIVE_SESSION_MISSING" {
 		t.Fatalf("status.ReasonCode = %q, want NATIVE_SESSION_MISSING", status.ReasonCode)
 	}
+}
+
+func (s *transitionStore) ListUnsettledAccountTransitions(context.Context) ([]domain.SessionInterfaceTransition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.SessionInterfaceTransition
+	for _, t := range s.transitions {
+		if t.AccountMove() && t.Phase == domain.SessionInterfaceTransitionRecovery && t.TargetRuntimeState != domain.AccountTransitionRuntimeNotStarted && t.TargetRuntimeState != domain.AccountTransitionRuntimeStopped {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// The real SQL projection is exercised by the SQLite/tmux matrix. This narrow
+// fake supplies the same legacy/generation/completed evidence to unit tests.
+func (s *transitionStore) RetireAccountTransitionRuntime(_ context.Context, id string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.transitions[id]
+	if !ok {
+		return false, nil
+	}
+	if t.TargetRuntimeState == domain.AccountTransitionRuntimeStopped {
+		return true, nil
+	}
+	if t.Phase != domain.SessionInterfaceTransitionRecovery {
+		return false, nil
+	}
+	rec := s.sessions[t.SessionID]
+	retired := !rec.IsTerminated && (t.TargetRuntimeState == "" || t.TargetRuntimeState == domain.AccountTransitionRuntimeStarted && t.TargetRuntimeLaunchID != "" && rec.Metadata.RuntimeLaunchID != "" && rec.Metadata.RuntimeLaunchID != t.TargetRuntimeLaunchID)
+	for _, later := range s.transitions {
+		if later.SessionID == t.SessionID && later.CreatedAt.After(t.CreatedAt) && later.Phase == domain.SessionInterfaceTransitionCompleted {
+			retired = true
+		}
+	}
+	if retired {
+		t.TargetRuntimeState = domain.AccountTransitionRuntimeStopped
+		t.UpdatedAt = at
+		s.transitions[id] = t
+	}
+	return retired, nil
+}
+
+func (s *transitionStore) MarkAccountRecoveryUnconfirmed(_ context.Context, id, detail string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.transitions[id]
+	if !ok || t.Phase != domain.SessionInterfaceTransitionRecovery || t.TargetRuntimeState == domain.AccountTransitionRuntimeStopped || t.TargetRuntimeState == domain.AccountTransitionRuntimeNotStarted {
+		return false, nil
+	}
+	t.ErrorCode = "TARGET_STOP_UNCONFIRMED"
+	t.ErrorDetail = detail
+	t.UpdatedAt = at
+	s.transitions[id] = t
+	return true, nil
 }

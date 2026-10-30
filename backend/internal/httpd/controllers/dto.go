@@ -1203,6 +1203,9 @@ type SessionInterfaceTransitionView struct {
 	Policy        domain.SessionInterfaceTransitionPolicy        `json:"policy" enum:"drain,interrupt"`
 	HistoryPolicy domain.SessionInterfaceTransitionHistoryPolicy `json:"historyPolicy" enum:"strict,provider_history"`
 	Phase         domain.SessionInterfaceTransitionPhase         `json:"phase" enum:"requested,preflighting,draining,source_stopping,source_stopped,target_starting,activating,completed,failed,cancelled,recovery_required"`
+	// AccountMove identifies the handoff even when remote clients cannot see
+	// the local account references. Ordinary interface switches omit it.
+	AccountMove bool `json:"accountMove,omitempty"`
 	// SourceAccountID and TargetAccountID are set when the handoff moves the
 	// agent to another provider account; the mode then stays the same.
 	SourceAccountID      string     `json:"sourceAccountId,omitempty"`
@@ -3992,6 +3995,24 @@ type AgentAccountResponse struct {
 // AgentAccountsResponse is the body of GET /agents/accounts.
 type AgentAccountsResponse struct {
 	Accounts []AgentAccountResponse `json:"accounts"`
+}
+
+// AgentAccountUsageOwnersResponse lists the local executions affected by removal.
+type AgentAccountUsageOwnersResponse struct {
+	Owners []domain.AgentAccountUsageOwner `json:"owners"`
+}
+
+// RebuildReviewerAccountRequest creates a new conversation after the old reviewer
+// was explicitly stopped and archived. It never changes an active pass's account.
+type RebuildReviewerAccountRequest struct {
+	AccountID string `json:"accountId" minLength:"1" maxLength:"200" description:"Explicit account for a fresh reviewer execution. The previous conversation and binding remain historical; the next trigger starts a new native conversation."`
+}
+
+// RebuildReviewerAccountResponse identifies a new execution without exposing profiles.
+type RebuildReviewerAccountResponse struct {
+	ReviewID  string           `json:"reviewId"`
+	SessionID domain.SessionID `json:"sessionId"`
+	AccountID string           `json:"accountId"`
 }
 
 // StartAgentAccountLoginRequest asks to add an account of a provider.

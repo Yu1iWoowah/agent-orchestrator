@@ -1,7 +1,7 @@
 -- name: UpsertReview :exec
 INSERT INTO review (id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (session_id, harness) DO UPDATE SET
+ON CONFLICT DO UPDATE SET
     project_id = excluded.project_id,
     pr_url = excluded.pr_url,
     reviewer_handle_id = excluded.reviewer_handle_id,
@@ -17,11 +17,13 @@ ON CONFLICT (session_id, harness) DO UPDATE SET
 
 -- name: GetReviewBySession :one
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1;
+FROM review AS r WHERE r.session_id = ?
+ AND NOT EXISTS(SELECT 1 FROM review AS newer WHERE newer.session_id=r.session_id AND newer.harness=r.harness
+  AND (newer.is_archived<r.is_archived OR newer.is_archived=r.is_archived AND newer.rowid>r.rowid)) ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1;
 
 -- name: GetReviewBySessionAndHarness :one
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE session_id = ? AND harness = ?;
+FROM review WHERE session_id = ? AND harness = ? ORDER BY is_archived ASC,rowid DESC LIMIT 1;
 
 -- name: GetReviewByID :one
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
@@ -29,7 +31,9 @@ FROM review WHERE id = ?;
 
 -- name: ListReviewsBySession :many
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC;
+FROM review AS r WHERE r.session_id = ?
+ AND NOT EXISTS(SELECT 1 FROM review AS newer WHERE newer.session_id=r.session_id AND newer.harness=r.harness
+  AND (newer.is_archived<r.is_archived OR newer.is_archived=r.is_archived AND newer.rowid>r.rowid)) ORDER BY updated_at DESC, created_at DESC, id DESC;
 
 -- name: ListLiveReviewerHandles :many
 -- Every review row that currently owns a live TUI reviewer pane, across the
@@ -193,3 +197,21 @@ WHERE status = 'running' AND verdict = '' AND batch_id != ''
 -- name: ArchiveReviewsBySession :exec
 UPDATE review SET is_archived = TRUE, reviewer_handle_id = '', reviewer_launch_id = '',
     controller_generation = '', reviewer_activity_state = 'exited', updated_at = ? WHERE session_id = ?;
+
+-- A rebuild is a new immutable execution, never a binding rewrite. The path's
+-- old ID is the CAS predecessor; replay cannot create another fresh owner.
+-- name: InsertReviewerAccountExecution :one
+INSERT INTO review(id,session_id,project_id,harness,pr_url,reviewer_handle_id,agent_session_id,
+ reviewer_activity_state,reviewer_launch_id,interface_mode,provider_conversation_id,
+ controller_generation,controller_error,is_archived,created_at,updated_at)
+SELECT sqlc.arg(new_id),r.session_id,r.project_id,r.harness,r.pr_url,'','',
+ 'exited','',r.interface_mode,'','','',0,sqlc.arg(created_at),sqlc.arg(created_at)
+FROM review AS r
+WHERE r.id=sqlc.arg(previous_id) AND r.is_archived=1
+ AND r.reviewer_handle_id='' AND r.reviewer_launch_id='' AND r.controller_generation=''
+ AND r.rowid=(SELECT MAX(latest.rowid) FROM review AS latest WHERE latest.session_id=r.session_id AND latest.harness=r.harness)
+ AND NOT EXISTS(SELECT 1 FROM review AS current WHERE current.session_id=r.session_id AND current.harness=r.harness AND current.is_archived=0)
+ AND NOT EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.session_id=r.session_id AND pass.harness=r.harness AND pass.status='running')
+RETURNING id,session_id,project_id,harness,pr_url,reviewer_handle_id,agent_session_id,
+ reviewer_activity_state,reviewer_launch_id,interface_mode,provider_conversation_id,
+ controller_generation,controller_error,is_archived,created_at,updated_at;

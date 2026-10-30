@@ -96,7 +96,7 @@ func (m *Manager) refreshStaleTerminal(ctx context.Context, store staleTerminalS
 	}
 	// Hold the harness like any launch, so an update cannot replace the binary
 	// while the new process starts.
-	releaseHarness, err := m.beginHarnessUse(current.Harness)
+	releaseHarness, err := m.beginBoundHarnessUse(ctx, current)
 	if err != nil {
 		return nil
 	}

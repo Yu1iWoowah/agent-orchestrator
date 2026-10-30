@@ -56,7 +56,11 @@ func (s *Service) CachedReadiness(ctx context.Context) (Readiness, error) {
 // EnsureReadiness waits for the checks required by purpose. Empty agentIDs
 // selects all supported harnesses.
 func (s *Service) EnsureReadiness(ctx context.Context, agentIDs []string, purpose domain.AgentReadinessPurpose) (Readiness, error) {
-	items, err := s.readiness.Ensure(ctx, agentIDs, purpose)
+	return s.ensureReadinessWith(ctx, s.readiness, agentIDs, purpose)
+}
+
+func (s *Service) ensureReadinessWith(ctx context.Context, coordinator *readinessCoordinator, agentIDs []string, purpose domain.AgentReadinessPurpose) (Readiness, error) {
+	items, err := coordinator.Ensure(ctx, agentIDs, purpose)
 	if err != nil {
 		var unsupported unsupportedAgentError
 		if errors.As(err, &unsupported) {
@@ -85,6 +89,9 @@ func (s *Service) EnsureInstallationReadiness(ctx context.Context) (Readiness, e
 // EnsureAgentReadiness is the narrow service boundary used by launch paths.
 func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purpose domain.AgentReadinessPurpose) (domain.AgentReadinessSnapshot, error) {
 	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+		if _, exists := s.agent(agentID); !exists {
+			return domain.AgentReadinessSnapshot{}, apierr.Invalid("UNKNOWN_AGENT_ID", "Unknown agent adapter: "+agentID, map[string]any{"agentId": agentID})
+		}
 		provider, supported := domain.AgentAccountProviderFor(domain.AgentHarness(agentID))
 		if !supported || selected.Provider != provider {
 			return domain.AgentReadinessSnapshot{}, ports.ErrAgentAccountProviderMismatch
@@ -92,11 +99,23 @@ func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purp
 		if selected.Managed() {
 			return s.EnsureAgentAccountReadiness(ctx, agentID, purpose, selected.AccountID)
 		}
-		items, err := s.deviceReadiness.Ensure(ctx, []string{agentID}, purpose)
+		coordinator := s.deviceReadiness
+		// Both coordinators own their probe context. Only reuse the warmed
+		// global observation when its metadata resolves to this same device.
+		// Unknown/managed defaults keep the device cache isolated.
+		if s.accountExecution == nil && s.savedDefaultSignIn == nil {
+			coordinator = s.readiness
+		} else if s.accountExecution != nil {
+			global, err := s.accountExecution.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{Harness: domain.AgentHarness(agentID)})
+			if err == nil && global.AccountID == selected.AccountID {
+				coordinator = s.readiness
+			}
+		}
+		result, err := s.ensureReadinessWith(ctx, coordinator, []string{agentID}, purpose)
 		if err != nil {
 			return domain.AgentReadinessSnapshot{}, err
 		}
-		got := items[0]
+		got := result.Agents[0]
 		got.AccountBinding = &selected
 		return got, nil
 	}

@@ -442,8 +442,10 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	const interfaceContext = hostId ?? (session ? session.cloud ?? null : cloudOrgId && projectId ? { orgId: cloudOrgId } : undefined);
 	const interfaceUi = useSessionInterfaceSwitch(sessionId, session, interfaceContext);
 	const accountLabel = useAgentAccountLabel(Boolean(interfaceUi.accountMoveTarget));
-	const accountSwitchingLabel = interfaceUi.accountMoveTarget
-		? t("settings.agentAccounts.switching", { email: accountLabel(interfaceUi.accountMoveTarget) })
+	const accountSwitchingLabel = interfaceUi.accountMoving
+		? interfaceUi.accountMoveTarget
+			? t("settings.agentAccounts.switching", { email: accountLabel(interfaceUi.accountMoveTarget) })
+			: t("settings.agentAccounts.switchingAccount")
 		: undefined;
 	// Reading a cloud session counts as using it, so it is not idle-paused
 	// under someone who is watching the agent work.
@@ -2028,7 +2030,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 									controllerResumeError={!hostId && autoResume.variables === sessionId && autoResume.isError
 										? apiErrorMessage(autoResume.error) : undefined}
 									controllerTransitioning={interfaceUi.controllerTransitioning}
-									accountMoving={Boolean(interfaceUi.accountMoveTarget)}
+									accountMoving={interfaceUi.accountMoving}
 									arriving={interfaceUi.optimisticTarget === "chat"}
 									agentResuming={quietResume}
 									newWorkDisabled={interfaceUi.newWorkDisabled}
