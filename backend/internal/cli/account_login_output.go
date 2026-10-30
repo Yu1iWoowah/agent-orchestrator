@@ -192,6 +192,7 @@ type accountLoginOutput struct {
 	continuation bool
 	lastCR       bool
 	candidate    string
+	promptLine   string
 }
 
 func (w *accountLoginOutput) resetKey() {
@@ -211,6 +212,7 @@ func (w *accountLoginOutput) endSecret() {
 	w.jsonValueExpected = false
 	w.jsonKeyPending = false
 	w.candidate = ""
+	w.promptLine = ""
 	w.lineStart = false
 	w.continuation = false
 	w.lineContent = false
@@ -339,6 +341,16 @@ func (w *accountLoginOutput) urlRune(out *strings.Builder, r rune) bool {
 }
 
 func (w *accountLoginOutput) visibleRune(out *strings.Builder, r rune) {
+	// Public code-entry instructions may contain punctuation/parentheses.
+	// Recognize the complete bounded instruction, not its last word as a key.
+	if len(w.promptLine) <= 256 {
+		w.promptLine += string(r)
+	}
+	if r == ':' && w.jsonDepth == 0 && w.urlPart == loginURLNone && len(w.promptLine) <= 256 && recognizedCodePrompt(w.promptLine) {
+		w.resetKey()
+		out.WriteRune(r)
+		return
+	}
 	if w.urlRune(out, r) {
 		return
 	}
@@ -408,10 +420,16 @@ func (w *accountLoginOutput) visibleRune(out *strings.Builder, r rune) {
 // A hidden opaque line is never guessed to be a new public field. Recovery is
 // limited to an empty line or a recognizable interactive prompt. Indented
 // lines remain continuations. Ordinary visible prompts are never buffered.
+func recognizedCodePrompt(s string) bool {
+	s = strings.TrimSpace(cases.Fold().String(norm.NFKC.String(s)))
+	command := strings.HasPrefix(s, "paste ") || strings.HasPrefix(s, "enter ") || strings.HasPrefix(s, "please enter ")
+	return command && strings.Contains(s, "code") && (strings.HasSuffix(s, ":") || strings.HasSuffix(s, " >"))
+}
+
 func recognizedLoginPrompt(s string) bool {
 	s = cases.Fold().String(norm.NFKC.String(s))
-	if strings.HasPrefix(s, "paste ") || strings.HasPrefix(s, "enter ") || strings.HasPrefix(s, "please enter ") {
-		return strings.Contains(s, "code:") || strings.Contains(s, "code :") || (strings.Contains(s, "code") && strings.HasSuffix(s, " >"))
+	if recognizedCodePrompt(s) {
+		return true
 	}
 	if strings.HasPrefix(s, "open ") || strings.HasPrefix(s, "visit ") || strings.HasPrefix(s, "go to ") {
 		return strings.Contains(s, "https://") || strings.Contains(s, "device sign-in")
@@ -475,6 +493,7 @@ func (w *accountLoginOutput) consumeRune(out *strings.Builder, r rune) {
 	}
 }
 func (w *accountLoginOutput) newline(out *strings.Builder, r rune) {
+	w.promptLine = ""
 	// A folded value is no longer a single URL token. Keep it hidden using the
 	// opaque continuation rules rather than trusting a later '&' as recovery.
 	w.urlPart = loginURLNone

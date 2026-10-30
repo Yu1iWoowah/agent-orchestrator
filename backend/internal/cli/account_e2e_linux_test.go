@@ -352,13 +352,21 @@ waiting:
 		}
 	}
 	_ = deadlinePrompt.Stop()
+	for name, public := range map[string]string{
+		"audit-auth-device":   "Open https://auth.example.test/device?user_code=D4_PUBLIC_CODE_83157",
+		"audit-parenthetical": "  D4_PUBLIC_CODE_83157",
+	} {
+		if !strings.Contains(transcriptOutput, public) {
+			t.Errorf("%s public login code hidden", name)
+		}
+	}
 	for _, public := range []string{
 		"https://claude.ai/oauth/authorize?code=true&client_id=x&response_type=code&redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile&code_challenge=x&code_challenge_method=S256&state=x",
 		"https://auth.openai.com/oauth/authorize?response_type=code&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&code_challenge=x&code_challenge_method=S256&state=x",
 		"Paste code here if prompted > ",
 	} {
 		if !strings.Contains(transcriptOutput, public) {
-			t.Fatal("public OAuth URL or native Claude prompt was truncated")
+			t.Error("public OAuth URL or native Claude prompt was truncated")
 		}
 	}
 	if strings.Contains(transcriptOutput, "TOKEN_CANARY") || strings.Contains(transcriptOutput, "~") {

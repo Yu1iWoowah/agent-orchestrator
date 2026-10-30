@@ -23,6 +23,10 @@ if 'generate-json-schema' in args:
 if provider=='codex' and 'login' in args and args[args.index('login')+1:][:1]==['status']:
  audit('login-status');print('Logged in using ChatGPT' if credential.is_file() else 'Not logged in',file=sys.stderr,flush=True);sys.exit(0 if credential.is_file() else 1)
 if 'login' in args:
+ # Original audit D4 readability controls, with one unique public code.
+ for line in ('Open https://auth.example.test/device?user_code=D4_PUBLIC_CODE_83157\r\n','Enter your one-time code (expires in 15 minutes):\r\n  D4_PUBLIC_CODE_83157\r\n'):
+  for part in (line[:len(line)//2],line[len(line)//2:]):
+   os.write(1,part.encode());time.sleep(.001)
  # Public fake OAuth inputs must stay usable when host/path or previous values
  # contain credential-family words. Never use real authorization data.
  for address in ('https://claude.ai/oauth/authorize?code=true&client_id=x&response_type=code&redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile&code_challenge=x&code_challenge_method=S256&state=x','https://auth.openai.com/oauth/authorize?response_type=code&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&code_challenge=x&code_challenge_method=S256&state=x'):

@@ -390,14 +390,14 @@ across frames. URL-decoded parameter path segments (including nested/indexed,
 dotted, slash, hyphen and underscore forms) are classified by credential family,
 including authorization, cookie, session and auth fields. Ambiguous encodings
 are hidden at assignment. Names use Unicode case-folding and NFKC normalization;
-non-ASCII or unknown name characters remain sensitive. Sensitive values stay
+non-ASCII or unknown name characters remain sensitive. Recognized sensitive values stay
 hidden across LF, CRLF and CR. A JSON value is hidden until its complete string,
 container or scalar boundary. Other uncertain output stays hidden until a blank
 line or a recognizable login prompt; unrecognized continuation/metadata lines
 may therefore remain hidden. Prompt recognition never ends a JSON string.
 HTTP(S) URLs classify each query parameter name independently; the host, path
 and previous parameter values do not taint the next name. Public OAuth URLs and
-native code-entry prompts remain visible; credential query values stay masked.
+native code-entry prompts remain visible; recognized credential query values stay masked.
 No transcript is written by the CLI. Do not paste API keys or tokens into a
 subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
 cleanup. If acceptance won the race, it reports that the account was saved.
@@ -430,6 +430,21 @@ Malformed arguments and missing/conflicting scopes exit 2. Daemon/runtime
 errors, provider mismatch, failed transitions and confirmed cancellation exit 1.
 API error codes and request IDs are retained for diagnosis. No credential value
 is accepted as a command-line argument. Quota exhaustion does not rotate accounts.
+
+### Known limitations of live login output
+
+Terminal credential masking is best-effort. A credential name split by spaces
+(for example `Author ization=...`), or a credential continuation shaped like a
+code-entry prompt, can be displayed without masking. In the audited fake-provider
+cases, exposure was limited to the local terminal display: the corresponding
+API responses, database/WAL, SSE, daemon logs and other inspected files did not
+contain the output-only value. This is scoped evidence, not a guarantee for
+arbitrary provider output.
+
+Run `ao account login` in a private terminal. Do not share its screen or record
+the terminal during sign-in, and do not paste API keys or tokens into this flow.
+Terminal scrollback or external recording may retain visible output even though
+the CLI does not save a transcript.
 
 ## Orchestrator handoff
 

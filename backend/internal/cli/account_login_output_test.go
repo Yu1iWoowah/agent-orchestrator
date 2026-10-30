@@ -228,6 +228,33 @@ func TestLoginOutputPreservesOAuthURLsPromptsAndEcho(t *testing.T) {
 	}
 }
 
+func TestLoginOutputAuditD4PublicCodesRemainReadable(t *testing.T) {
+	for name, line := range map[string]string{
+		"auth-device":   "Open https://auth.example.test/device?user_code=ABCD-1234\r\n",
+		"parenthetical": "Enter your one-time code (expires in 15 minutes):\r\n  ABCD-1234\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			var output accountLoginOutput
+			for i := range len(line) {
+				output.write(&out, []byte(line[i:i+1]))
+				if out.String() != line[:i+1] {
+					t.Fatalf("public code/instruction hidden: got %q", out.String())
+				}
+			}
+			for split := 0; split <= len(line); split++ {
+				out.Reset()
+				output = accountLoginOutput{}
+				output.write(&out, []byte(line[:split]))
+				output.write(&out, []byte(line[split:]))
+				if out.String() != line {
+					t.Fatalf("public code/instruction hidden at split %d: got %q", split, out.String())
+				}
+			}
+		})
+	}
+}
+
 func TestLoginOutputURLQueryNamesHaveIndependentCredentialBoundaries(t *testing.T) {
 	for _, prefix := range []string{
 		"https://auth.example.test/oauth/authorize?redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcallback&",
