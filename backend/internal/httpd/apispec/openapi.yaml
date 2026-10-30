@@ -4858,6 +4858,403 @@ paths:
       summary: Stream notification changes
       tags:
       - notifications
+  /api/v1/orchestrator/replacements/{operationId}:
+    get:
+      operationId: getOrchestratorReplacement
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read safe durable replacement progress and evidence
+      tags:
+      - projects
+  /api/v1/orchestrator/replacements/{operationId}/cancel:
+    post:
+      operationId: cancelOrchestratorReplacement
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel a safe pre-stop operation without interrupting agents
+      tags:
+      - projects
+  /api/v1/orchestrator/replacements/{operationId}/diagnose:
+    get:
+      operationId: diagnoseOrchestratorReplacement
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementDiagnosticResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read operator CAS metadata without raw state
+      tags:
+      - projects
+  /api/v1/orchestrator/replacements/{operationId}/intake:
+    get:
+      operationId: getOrchestratorReplacementIntake
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementIntakeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read canonical queued intake and pending reports without claiming delivery
+      tags:
+      - projects
+  /api/v1/orchestrator/replacements/{operationId}/prepared:
+    post:
+      operationId: submitOrchestratorReplacementPreparation
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorReplacementPreparedRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Submit the owning source's managed handoff receipt
+      tags:
+      - projects
+  /api/v1/orchestrator/replacements/{operationId}/repair:
+    post:
+      operationId: repairOrchestratorReplacement
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorReplacementRepairRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Authorize data-only repair from a sealed snapshot with explicit CAS
+      tags:
+      - projects
+  /api/v1/orchestrator/replacements/{operationId}/retry:
+    post:
+      operationId: retryOrchestratorReplacement
+      parameters:
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Reconcile the same operation and retained successor
+      tags:
+      - projects
   /api/v1/orchestrators:
     get:
       operationId: listOrchestrators
@@ -5945,6 +6342,69 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Download hash-verified immutable handoff evidence
+      tags:
+      - projects
+  /api/v1/projects/{id}/orchestrator/replacements:
+    post:
+      operationId: replaceOrchestrator
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorReplaceRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorReplacementResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Accept a durable Claude Code orchestrator handoff
       tags:
       - projects
   /api/v1/projects/{id}/permissions:
@@ -22724,6 +23184,232 @@ components:
         sharedDir:
           type: string
       type: object
+    OrchestratorReplaceRequest:
+      properties:
+        operationKey:
+          type: string
+        sourceSessionId:
+          type: string
+      required:
+      - sourceSessionId
+      - operationKey
+      type: object
+    OrchestratorReplacement:
+      properties:
+        attempts:
+          items:
+            $ref: '#/components/schemas/ReplacementAttempt'
+          type: array
+        cancelCommand:
+          type: string
+        controlAttempts:
+          items:
+            $ref: '#/components/schemas/ReplacementControlAttempt'
+          type: array
+        createdAt:
+          format: date-time
+          type: string
+        deadlineAt:
+          format: date-time
+          type: string
+        documentPath:
+          type: string
+        error:
+          $ref: '#/components/schemas/ReplacementFailure'
+        evidence:
+          $ref: '#/components/schemas/ReplacementEvidence'
+        frozenAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        intakeDrainRequestedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        intakeReleasedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        intakeRevision:
+          format: int64
+          type: integer
+        intakeTransfer:
+          $ref: '#/components/schemas/ReplacementIntakeTransfer'
+        notificationReceipts:
+          items:
+            $ref: '#/components/schemas/ReplacementNotificationReceipt'
+          type: array
+        operationKey:
+          type: string
+        operatorGuidance:
+          type: string
+        phase:
+          type: string
+        preparation:
+          $ref: '#/components/schemas/ReplacementPreparation'
+        projectId:
+          type: string
+        provisioningAttempts:
+          items:
+            $ref: '#/components/schemas/ReplacementProvisioningAttempt'
+          type: array
+        readCommand:
+          type: string
+        resumeEvidence:
+          $ref: '#/components/schemas/ReplacementResumeEvidence'
+        resumePhase:
+          type: string
+        retainedRetry:
+          $ref: '#/components/schemas/ReplacementRetainedRetry'
+        retryCommand:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        sharedDir:
+          type: string
+        sourceIntakeReleasedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        sourceRetiredAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        sourceSessionId:
+          type: string
+        sourceStopIntentAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        sourceStoppedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        successorSessionId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+        writerActivation:
+          $ref: '#/components/schemas/ReplacementWriterActivation'
+      required:
+      - revision
+      - intakeRevision
+      - controlAttempts
+      - id
+      - operationKey
+      - projectId
+      - sourceSessionId
+      - phase
+      - createdAt
+      - updatedAt
+      - deadlineAt
+      - resumeEvidence
+      - notificationReceipts
+      - attempts
+      - provisioningAttempts
+      - readCommand
+      type: object
+    OrchestratorReplacementDiagnostic:
+      properties:
+        active:
+          type: boolean
+        corrupt:
+          type: boolean
+        operationId:
+          type: string
+        projectId:
+          type: string
+        rawDigest:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        snapshotDigest:
+          type: string
+        snapshotRevision:
+          format: int64
+          type: integer
+        sourceSessionId:
+          type: string
+      required:
+      - operationId
+      - projectId
+      - sourceSessionId
+      - revision
+      - active
+      - rawDigest
+      - corrupt
+      type: object
+    OrchestratorReplacementDiagnosticResponse:
+      properties:
+        diagnostic:
+          $ref: '#/components/schemas/OrchestratorReplacementDiagnostic'
+      required:
+      - diagnostic
+      type: object
+    OrchestratorReplacementIntakeResponse:
+      properties:
+        intake:
+          $ref: '#/components/schemas/ReplacementIntake'
+      required:
+      - intake
+      type: object
+    OrchestratorReplacementPreparedRequest:
+      properties:
+        actor:
+          $ref: '#/components/schemas/ProjectDocumentActor'
+        attemptId:
+          type: string
+        hash:
+          type: string
+        nonce:
+          type: string
+        path:
+          type: string
+        writeReceiptId:
+          type: string
+      required:
+      - actor
+      - attemptId
+      - nonce
+      - path
+      - hash
+      - writeReceiptId
+      type: object
+    OrchestratorReplacementRepairRequest:
+      properties:
+        expectedDigest:
+          type: string
+        expectedRevision:
+          type: integer
+        snapshotDigest:
+          type: string
+        snapshotRevision:
+          type: integer
+      required:
+      - expectedRevision
+      - expectedDigest
+      - snapshotRevision
+      - snapshotDigest
+      type: object
+    OrchestratorReplacementResponse:
+      properties:
+        operation:
+          $ref: '#/components/schemas/OrchestratorReplacement'
+      required:
+      - operation
+      type: object
     OrchestratorResponse:
       properties:
         id:
@@ -23780,6 +24466,474 @@ components:
           type: array
       required:
       - turnIds
+      type: object
+    ReplacementAttempt:
+      properties:
+        endedAt:
+          format: date-time
+          type: string
+        error:
+          $ref: '#/components/schemas/ReplacementFailure'
+        evidence:
+          $ref: '#/components/schemas/ReplacementEvidence'
+        frozenAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        phase:
+          type: string
+        preparation:
+          $ref: '#/components/schemas/ReplacementPreparation'
+        sourceIntakeReleasedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - id
+      - phase
+      - endedAt
+      type: object
+    ReplacementControlAttempt:
+      properties:
+        archivedAt:
+          format: date-time
+          type: string
+        clientId:
+          type: string
+        intentAt:
+          format: date-time
+          type: string
+        kind:
+          type: string
+        settledAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        state:
+          type: string
+        turnId:
+          type: string
+      required:
+      - kind
+      - clientId
+      - state
+      - archivedAt
+      - intentAt
+      type: object
+    ReplacementEvidence:
+      properties:
+        attemptId:
+          type: string
+        capturedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        conversationCutoffs:
+          additionalProperties:
+            format: int64
+            type: integer
+          type:
+          - object
+          - "null"
+        directory:
+          type: string
+        handoffHash:
+          type: string
+        handoffPath:
+          type: string
+        manifestHash:
+          type: string
+        manifestPath:
+          type: string
+        nativeCutoffs:
+          items:
+            $ref: '#/components/schemas/TranscriptEpochCutoff'
+          type: array
+        transcriptHash:
+          type: string
+        transcriptPath:
+          type: string
+      required:
+      - attemptId
+      - conversationCutoffs
+      - nativeCutoffs
+      type: object
+    ReplacementFailure:
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        retryable:
+          type: boolean
+      required:
+      - code
+      - message
+      - retryable
+      type: object
+    ReplacementIntake:
+      properties:
+        intakeRevision:
+          format: int64
+          type: integer
+        messages:
+          items:
+            $ref: '#/components/schemas/ReplacementIntakeMessage'
+          type: array
+        operationId:
+          type: string
+        phase:
+          type: string
+        projectId:
+          type: string
+        reports:
+          items:
+            $ref: '#/components/schemas/ReplacementIntakeReport'
+          type: array
+        sourceSessionId:
+          type: string
+        successorSessionId:
+          type: string
+      required:
+      - operationId
+      - projectId
+      - sourceSessionId
+      - phase
+      - intakeRevision
+      - messages
+      - reports
+      type: object
+    ReplacementIntakeMessage:
+      properties:
+        clientMessageId:
+          type: string
+        conversationId:
+          type: string
+        deliveryContentJson:
+          type: string
+        id:
+          type: string
+        nativeDelivery:
+          type: string
+        origin:
+          type: string
+        providerReserved:
+          type: boolean
+        requestedAt:
+          format: date-time
+          type: string
+        senderDisplayName:
+          type: string
+        senderProjectId:
+          type: string
+        senderSessionId:
+          type: string
+        sequence:
+          format: int64
+          type: integer
+        text:
+          type: string
+        turnId:
+          type: string
+      required:
+      - id
+      - conversationId
+      - turnId
+      - sequence
+      - text
+      - origin
+      - requestedAt
+      - providerReserved
+      - nativeDelivery
+      type: object
+    ReplacementIntakeOutput:
+      properties:
+        kind:
+          type: string
+        label:
+          type: string
+        reference:
+          type: string
+      required:
+      - kind
+      - reference
+      type: object
+    ReplacementIntakeReport:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        deliveryState:
+          type: string
+        id:
+          type: string
+        message:
+          type: string
+        note:
+          type: string
+        outputs:
+          items:
+            $ref: '#/components/schemas/ReplacementIntakeOutput'
+          type: array
+        repeatCount:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        state:
+          type: string
+      required:
+      - id
+      - sessionId
+      - state
+      - note
+      - message
+      - createdAt
+      - deliveryState
+      - repeatCount
+      - outputs
+      type: object
+    ReplacementIntakeTransfer:
+      properties:
+        movedMessages:
+          format: int64
+          type: integer
+        recordedAt:
+          format: date-time
+          type: string
+        retargetedMessages:
+          format: int64
+          type: integer
+        sourceConversationIds:
+          items:
+            type: string
+          type: array
+      required:
+      - retargetedMessages
+      - movedMessages
+      - sourceConversationIds
+      - recordedAt
+      type: object
+    ReplacementNotificationReceipt:
+      properties:
+        contactId:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        sessionId:
+          type: string
+        state:
+          type: string
+      required:
+      - sessionId
+      - contactId
+      - state
+      - createdAt
+      type: object
+    ReplacementPreparation:
+      properties:
+        attemptId:
+          type: string
+        controlTurnId:
+          type: string
+        deadlineAt:
+          format: date-time
+          type: string
+        intakeRevision:
+          format: int64
+          type: integer
+        leaseEpoch:
+          format: int64
+          type: integer
+        promptIntentAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        startedAt:
+          format: date-time
+          type: string
+        submittedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        submittedHash:
+          type: string
+        verifiedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        writeReceiptId:
+          type: string
+      required:
+      - intakeRevision
+      - startedAt
+      - deadlineAt
+      - attemptId
+      type: object
+    ReplacementProvisioningAttempt:
+      properties:
+        failedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        launchIntentAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        number:
+          type: integer
+        reservedAt:
+          format: date-time
+          type: string
+      required:
+      - number
+      - reservedAt
+      type: object
+    ReplacementResumeEvidence:
+      properties:
+        afterGeneration:
+          type: string
+        afterNativeId:
+          type: string
+        beforeGeneration:
+          type: string
+        beforeNativeId:
+          type: string
+        bootstrapIntentAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        bootstrapSettledAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        bootstrapTurnId:
+          type: string
+        historyVerified:
+          type: boolean
+        probeIntentAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        probeSettledAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        probeTurnId:
+          type: string
+        resumeGeneration:
+          type: string
+        resumeIntentAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        resumedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        startedAt:
+          format: date-time
+          type: string
+        stopConfirmed:
+          type: boolean
+        stopReceipt:
+          $ref: '#/components/schemas/ReplacementStopReceipt'
+        unlaunchedAttempts:
+          items:
+            $ref: '#/components/schemas/ReplacementResumeUnlaunched'
+          type: array
+        verified:
+          type: boolean
+        verifiedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+      required:
+      - unlaunchedAttempts
+      - stopConfirmed
+      - historyVerified
+      - verified
+      type: object
+    ReplacementResumeUnlaunched:
+      properties:
+        confirmedAt:
+          format: date-time
+          type: string
+        generation:
+          type: string
+        intentAt:
+          format: date-time
+          type: string
+      required:
+      - generation
+      - intentAt
+      - confirmedAt
+      type: object
+    ReplacementRetainedRetry:
+      properties:
+        failure:
+          $ref: '#/components/schemas/ReplacementFailure'
+        phase:
+          type: string
+        requestedAt:
+          format: date-time
+          type: string
+      required:
+      - phase
+      - failure
+      - requestedAt
+      type: object
+    ReplacementStopReceipt:
+      properties:
+        confirmedAt:
+          format: date-time
+          type: string
+        method:
+          type: string
+        nativeId:
+          type: string
+      required:
+      - nativeId
+      - method
+      - confirmedAt
+      type: object
+    ReplacementWriterActivation:
+      properties:
+        activatedAt:
+          format: date-time
+          type: string
+        afterEpoch:
+          format: int64
+          type: integer
+        beforeEpoch:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - beforeEpoch
+      - afterEpoch
+      - activatedAt
       type: object
     RepoGitStatus:
       properties:
@@ -26620,6 +27774,25 @@ components:
           type: string
         repo:
           type: string
+      type: object
+    TranscriptEpochCutoff:
+      properties:
+        bytes:
+          format: int64
+          type: integer
+        leafId:
+          type: string
+        nativeId:
+          type: string
+        schema:
+          type: string
+        sha256:
+          type: string
+      required:
+      - nativeId
+      - schema
+      - bytes
+      - leafId
       type: object
     TriggerReviewRequest:
       properties:

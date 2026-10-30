@@ -36,6 +36,9 @@ const (
 	startupTimeout   = 10 * time.Second
 	// Host hello is local control-plane I/O and must not stall daemon recovery.
 	handshakeTimeout = time.Second
+	// Streaming may pause behind the durable projector. Shutdown does not wait
+	// for this idle budget: beginShutdown closes the exact attached connection.
+	clientWriteTimeout = 30 * time.Second
 	// A stopped provider gets providerStdinGrace (providerQuickGrace for a quick
 	// stop) to exit on stdin closing, then SIGTERM, then a kill at the deadline.
 	providerStdinGrace   = time.Second
@@ -600,7 +603,14 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confir
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
 		return finishHandshake(err)
 	}
-	if err := finishHandshake(nil); err != nil {
+	handshakeErr := finishHandshake(nil)
+	if confirmedOwner != "" && response.OK && response.ProviderStopped {
+		// This authenticated response is emitted only after process-tree cleanup.
+		// Host descriptor/lock removal is separate housekeeping; its delay must
+		// not discard a positive stop receipt and make a retry guess ownership.
+		return nil
+	}
+	if err := handshakeErr; err != nil {
 		return err
 	}
 	if !response.OK {
@@ -785,14 +795,18 @@ func Run(ctx context.Context, cfg Config) error {
 	var runErr error
 	select {
 	case runErr = <-providerDone:
+		h.beginShutdown()
 		reapProvider()
 		cleanupErr = errors.Join(cleanupErr, killProviderProcess(context.WithoutCancel(ctx), child))
 	case <-h.shutdown:
+		h.beginShutdown()
 		stopProvider()
 	case <-ctx.Done():
+		h.beginShutdown()
 		runErr = ctx.Err()
 		stopProvider()
 	case err := <-acceptDone:
+		h.beginShutdown()
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			_ = killProviderProcess(context.WithoutCancel(ctx), child)
 			return err
@@ -834,12 +848,14 @@ func confirmedProviderShutdown(platform string, cleanupErr error, wait func() er
 }
 
 type host struct {
-	ctx      context.Context
-	listener net.Listener
-	child    *exec.Cmd
-	stdin    io.WriteCloser
-	token    string
-	acp      *acpRelay
+	stopping     atomic.Bool
+	activeClient atomic.Pointer[hostClient]
+	ctx          context.Context
+	listener     net.Listener
+	child        *exec.Cmd
+	stdin        io.WriteCloser
+	token        string
+	acp          *acpRelay
 
 	mu               sync.Mutex
 	cond             *sync.Cond
@@ -855,6 +871,17 @@ type host struct {
 	quickStop        atomic.Bool // set before shutdown closes; see ShutdownQuick
 	stopConfirmation net.Conn    // authenticated receipt waits for process-tree cleanup
 	finishing        bool        // protected by mu; no new confirmation after cleanup
+}
+
+type hostClient struct{ conn net.Conn }
+
+// Authentication happens before this admission. Do not take h.mu: replay may
+// hold it while writing to the very connection we must close to make progress.
+func (h *host) beginShutdown() {
+	h.stopping.Store(true)
+	if client := h.activeClient.Load(); client != nil {
+		_ = client.conn.Close()
+	}
 }
 
 type pendingRequest struct {
@@ -873,12 +900,15 @@ func (h *host) accept() error {
 }
 
 func (h *host) handle(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	reader := bufio.NewReader(conn)
 	var request hello
 	if err := json.NewDecoder(reader).Decode(&request); err != nil {
 		_ = conn.Close()
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
+	_ = conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
 	if request.Version != ProtocolVersion {
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrIncompatible.Error()})
 		_ = conn.Close()
@@ -890,6 +920,7 @@ func (h *host) handle(conn net.Conn) {
 		return
 	}
 	if request.Action == "shutdown-confirmed" {
+		h.beginShutdown()
 		h.mu.Lock()
 		if h.finishing || h.stopConfirmation != nil {
 			h.mu.Unlock()
@@ -906,6 +937,7 @@ func (h *host) handle(conn net.Conn) {
 		return // Run owns this connection until process-tree cleanup is verified.
 	}
 	if request.Action == "shutdown" {
+		h.beginShutdown()
 		_ = json.NewEncoder(conn).Encode(helloResponse{OK: true})
 		_ = conn.Close()
 		if request.QuickStop {
@@ -921,13 +953,22 @@ func (h *host) handle(conn net.Conn) {
 	}
 
 	h.mu.Lock()
-	if h.client != nil {
+	if h.client != nil || h.stopping.Load() {
 		h.mu.Unlock()
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrAttached.Error()})
 		_ = conn.Close()
 		return
 	}
 	h.client = conn
+	h.activeClient.Store(&hostClient{conn: conn})
+	// Cover shutdown racing the preceding stopping check and registration.
+	if h.stopping.Load() {
+		h.client = nil
+		h.activeClient.Store(nil)
+		h.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	h.clientGeneration++
 	generation := h.clientGeneration
 	response := helloResponse{OK: true, NextRequestID: h.maxRequestID}
@@ -935,12 +976,14 @@ func (h *host) handle(conn net.Conn) {
 		response.ACPState = h.acp.snapshot()
 	}
 	writeErr := json.NewEncoder(conn).Encode(response)
+	_ = conn.SetWriteDeadline(time.Time{})
+	writer := boundedClientWriter{conn: conn, timeout: clientWriteTimeout}
 	if writeErr == nil && h.acp != nil {
-		writeErr = h.acp.replayTo(h.ctx, conn)
+		writeErr = h.acp.replayTo(h.ctx, writer)
 	}
 	if writeErr == nil {
 		for _, frame := range h.detached {
-			if _, writeErr = conn.Write(frame); writeErr != nil {
+			if _, writeErr = writer.Write(frame); writeErr != nil {
 				break
 			}
 		}
@@ -953,6 +996,7 @@ func (h *host) handle(conn net.Conn) {
 		}
 		h.cond.Broadcast()
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
 	h.mu.Unlock()
 	if writeErr != nil {
 		h.detach(conn)
@@ -987,9 +1031,15 @@ func (h *host) handle(conn net.Conn) {
 				}
 			}
 			if readErr == nil && len(clientFrame) > 0 {
-				if _, err := conn.Write(clientFrame); err != nil {
-					readErr = err
+				// Serialize all writes/deadline resets for this attached client.
+				// Otherwise a completed reply can clear a concurrent frame's deadline.
+				h.mu.Lock()
+				if h.client != conn {
+					readErr = io.ErrClosedPipe
+				} else {
+					readErr = writeClientFrame(conn, clientFrame)
 				}
+				h.mu.Unlock()
 			}
 		}
 		if readErr != nil {
@@ -1032,6 +1082,7 @@ func (h *host) detach(conn net.Conn) {
 	h.mu.Lock()
 	if h.client == conn {
 		h.client = nil
+		h.activeClient.Store(nil)
 		h.bufferPendingRequestsLocked()
 	}
 	h.mu.Unlock()
@@ -1053,9 +1104,10 @@ func (h *host) deliverProviderFrameLocked(frame []byte, retainedByACP bool) {
 		h.cond.Wait()
 	}
 	if h.client != nil {
-		if _, writeErr := h.client.Write(frame); writeErr != nil {
+		if writeErr := writeClientFrame(h.client, frame); writeErr != nil {
 			_ = h.client.Close()
 			h.client = nil
+			h.activeClient.Store(nil)
 			h.bufferPendingRequestsLocked()
 			if _, pending := serverRequestID(frame); !pending && !retainedByACP {
 				h.bufferFrameLocked(frame)
@@ -1069,6 +1121,41 @@ func (h *host) deliverProviderFrameLocked(frame []byte, retainedByACP bool) {
 			}
 		}
 	}
+}
+
+// Callers hold h.mu to serialize attached-client writes and deadline resets.
+// A stalled desktop cannot prevent shutdown or another controller attaching.
+func writeClientFrame(conn net.Conn, frame []byte) error {
+	_, err := (boundedClientWriter{conn: conn, timeout: clientWriteTimeout}).Write(frame)
+	return err
+}
+
+// Replay may legitimately exceed a handshake budget while the client consumes
+// it. Bound each socket write, rather than timing out the complete replay. Small
+// chunks also let a large journal span refresh its deadline as bytes progress.
+type boundedClientWriter struct {
+	conn    net.Conn
+	timeout time.Duration
+}
+
+func (w boundedClientWriter) Write(frame []byte) (int, error) {
+	defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	written := 0
+	for len(frame) > 0 {
+		if err := w.conn.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
+			return written, err
+		}
+		n, err := w.conn.Write(frame[:min(len(frame), 4<<10)])
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n == 0 {
+			return written, io.ErrShortWrite
+		}
+		frame = frame[n:]
+	}
+	return written, nil
 }
 
 // watchPromptStall terminates an in-flight prompt whose adapter went silent.

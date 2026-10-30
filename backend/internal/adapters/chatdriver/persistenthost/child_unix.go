@@ -21,6 +21,10 @@ func startProviderProcess(cmd *exec.Cmd) (func(bool) error, error) {
 		return nil, err
 	}
 	return func(verify bool) error {
+		// This proves only the AO-owned provider PGID. Tools that deliberately
+		// create another process group are outside this runtime boundary, as are
+		// workers and user services; replacement fences the retired AO owner and
+		// never broadens cleanup into a process-tree scan or a global kill.
 		if !verify {
 			return nil
 		}
