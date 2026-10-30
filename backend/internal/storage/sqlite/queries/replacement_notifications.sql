@@ -28,7 +28,7 @@ SELECT * FROM orchestrator_replacement_notice_history WHERE operation_id=? AND s
 -- not compete with retry churn or the operation's lifecycle checkpoints.
 -- name: CountReplacementWorkerNoticeRetries :one
 SELECT COUNT(*) FROM orchestrator_replacement_notice_history
-WHERE operation_id=? AND json_extract(state_json,'$.state') NOT IN ('accepted','skipped');
+WHERE operation_id=? AND session_id=? AND json_extract(state_json,'$.state') NOT IN ('accepted','skipped');
 
 -- A worker may have changed branch/harness. More than one match is an error,
 -- never permission to pick one or send with another client identity.
@@ -39,4 +39,10 @@ JOIN conversation_turns t ON t.id=m.turn_id AND t.conversation_id=c.id
 WHERE c.scope='session' AND c.session_id=sqlc.arg(session_id) AND c.project_id=sqlc.arg(project_id)
  AND m.role='user' AND m.origin='automation' AND m.client_message_id=sqlc.arg(contact_id)
  AND m.text=sqlc.arg(expected_text) AND t.handled_by_session_id=sqlc.arg(session_id)
+LIMIT 2;
+
+-- name: FindReplacementWorkerNoticeAttempt :many
+SELECT * FROM orchestrator_replacement_notices
+WHERE session_id=sqlc.arg(session_id) AND state='uncertain'
+ AND json_extract(state_json,'$.attemptId')=sqlc.arg(attempt_id)
 LIMIT 2;

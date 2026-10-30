@@ -38,16 +38,64 @@ func (q *Queries) AppendReplacementWorkerNoticeHistory(ctx context.Context, arg 
 
 const countReplacementWorkerNoticeRetries = `-- name: CountReplacementWorkerNoticeRetries :one
 SELECT COUNT(*) FROM orchestrator_replacement_notice_history
-WHERE operation_id=? AND json_extract(state_json,'$.state') NOT IN ('accepted','skipped')
+WHERE operation_id=? AND session_id=? AND json_extract(state_json,'$.state') NOT IN ('accepted','skipped')
 `
+
+type CountReplacementWorkerNoticeRetriesParams struct {
+	OperationID string
+	SessionID   string
+}
 
 // Delivery retries have their own bounded budget. Positive final receipts do
 // not compete with retry churn or the operation's lifecycle checkpoints.
-func (q *Queries) CountReplacementWorkerNoticeRetries(ctx context.Context, operationID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countReplacementWorkerNoticeRetries, operationID)
+func (q *Queries) CountReplacementWorkerNoticeRetries(ctx context.Context, arg CountReplacementWorkerNoticeRetriesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countReplacementWorkerNoticeRetries, arg.OperationID, arg.SessionID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const findReplacementWorkerNoticeAttempt = `-- name: FindReplacementWorkerNoticeAttempt :many
+SELECT operation_id, session_id, contact_id, state, revision, state_json, updated_at FROM orchestrator_replacement_notices
+WHERE session_id=?1 AND state='uncertain'
+ AND json_extract(state_json,'$.attemptId')=?2
+LIMIT 2
+`
+
+type FindReplacementWorkerNoticeAttemptParams struct {
+	SessionID string
+	AttemptID string
+}
+
+func (q *Queries) FindReplacementWorkerNoticeAttempt(ctx context.Context, arg FindReplacementWorkerNoticeAttemptParams) ([]OrchestratorReplacementNotice, error) {
+	rows, err := q.db.QueryContext(ctx, findReplacementWorkerNoticeAttempt, arg.SessionID, arg.AttemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrchestratorReplacementNotice{}
+	for rows.Next() {
+		var i OrchestratorReplacementNotice
+		if err := rows.Scan(
+			&i.OperationID,
+			&i.SessionID,
+			&i.ContactID,
+			&i.State,
+			&i.Revision,
+			&i.StateJson,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLatestReplacementWorkerNoticeHistory = `-- name: GetLatestReplacementWorkerNoticeHistory :one

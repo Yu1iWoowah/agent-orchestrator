@@ -14,6 +14,9 @@ CREATE TABLE orchestrator_replacement_notices (
  CHECK (json_extract(state_json,'$.state') IS state)
 );
 
+CREATE INDEX replacement_notice_attempt ON orchestrator_replacement_notices
+(session_id,json_extract(state_json,'$.attemptId')) WHERE state='uncertain';
+
 CREATE TABLE orchestrator_replacement_notice_history (
  operation_id TEXT NOT NULL,
  session_id TEXT NOT NULL,

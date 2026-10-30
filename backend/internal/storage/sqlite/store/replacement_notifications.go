@@ -17,6 +17,10 @@ import (
 
 type replacementNoticeCompletionKey struct{}
 
+// Each target owns its bounded retry budget; one guarded worker cannot spend
+// another worker's allowance. Positive outcomes always have separate capacity.
+const replacementNoticeRetryLimit = 68
+
 func noticePayloadHash(op domain.OrchestratorReplacement) string {
 	sum := sha256.Sum256([]byte(op.WorkerFYI()))
 	return hex.EncodeToString(sum[:])
@@ -31,21 +35,17 @@ func noticeTarget(op domain.OrchestratorReplacement, id domain.SessionID) (domai
 	return domain.ReplacementWorkerNotification{}, false
 }
 
-func decodeNotice(ctx context.Context, q *gen.Queries, op domain.OrchestratorReplacement, row gen.OrchestratorReplacementNotice) (domain.ReplacementNoticeReceipt, error) {
+func decodeStoredNotice(ctx context.Context, q *gen.Queries, row gen.OrchestratorReplacementNotice) (domain.ReplacementNoticeReceipt, error) {
 	var receipt domain.ReplacementNoticeReceipt
 	decoder := json.NewDecoder(strings.NewReader(row.StateJson))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&receipt); err != nil {
 		return receipt, err
 	}
-	if !validNoticeReceipt(receipt) {
+	if !validNoticeReceipt(receipt) || row.OperationID != receipt.OperationID || row.SessionID != string(receipt.SessionID) || row.ContactID != receipt.ContactID || row.State != string(receipt.State) {
 		return receipt, domain.ErrReplacementStateInvalid
 	}
-	target, found := noticeTarget(op, receipt.SessionID)
-	if !found || receipt.OperationID != op.ID || row.OperationID != op.ID || row.SessionID != string(receipt.SessionID) || receipt.ContactID != target.ContactID || row.ContactID != receipt.ContactID || row.State != string(receipt.State) || receipt.PayloadHash != noticePayloadHash(op) || !receipt.CreatedAt.Equal(target.CreatedAt) {
-		return receipt, domain.ErrReplacementStateInvalid
-	}
-	history, err := q.GetLatestReplacementWorkerNoticeHistory(ctx, gen.GetLatestReplacementWorkerNoticeHistoryParams{OperationID: op.ID, SessionID: string(receipt.SessionID)})
+	history, err := q.GetLatestReplacementWorkerNoticeHistory(ctx, gen.GetLatestReplacementWorkerNoticeHistoryParams{OperationID: receipt.OperationID, SessionID: string(receipt.SessionID)})
 	if errors.Is(err, sql.ErrNoRows) {
 		return receipt, domain.ErrReplacementStateInvalid
 	}
@@ -56,6 +56,18 @@ func decodeNotice(ctx context.Context, q *gen.Queries, op domain.OrchestratorRep
 		return receipt, domain.ErrReplacementStateInvalid
 	}
 	receipt.Revision = row.Revision
+	return receipt, nil
+}
+
+func decodeNotice(ctx context.Context, q *gen.Queries, op domain.OrchestratorReplacement, row gen.OrchestratorReplacementNotice) (domain.ReplacementNoticeReceipt, error) {
+	receipt, err := decodeStoredNotice(ctx, q, row)
+	if err != nil {
+		return receipt, err
+	}
+	target, found := noticeTarget(op, receipt.SessionID)
+	if !found || receipt.OperationID != op.ID || row.OperationID != op.ID || row.SessionID != string(receipt.SessionID) || receipt.ContactID != target.ContactID || row.ContactID != receipt.ContactID || row.State != string(receipt.State) || receipt.PayloadHash != noticePayloadHash(op) || !receipt.CreatedAt.Equal(target.CreatedAt) {
+		return receipt, domain.ErrReplacementStateInvalid
+	}
 	return receipt, nil
 }
 
@@ -261,10 +273,6 @@ func (s *Store) ReplacementWorkerNoticeReceipts(ctx context.Context, id string) 
 		if err != nil {
 			return err
 		}
-		retries, err := q.CountReplacementWorkerNoticeRetries(tx, id)
-		if err != nil {
-			return err
-		}
 		for _, target := range op.Notifications {
 			receipt := domain.ReplacementNoticeReceipt{OperationID: id, SessionID: target.SessionID, ContactID: target.ContactID, State: domain.ReplacementNoticePending, CreatedAt: target.CreatedAt, PayloadHash: noticePayloadHash(op)}
 			row, err := q.GetReplacementWorkerNotice(tx, gen.GetReplacementWorkerNoticeParams{OperationID: id, SessionID: string(target.SessionID)})
@@ -274,7 +282,11 @@ func (s *Store) ReplacementWorkerNoticeReceipts(ctx context.Context, id string) 
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			if receipt.State == domain.ReplacementNoticePending && retries >= int64(4*len(op.Notifications)+64) {
+			retries, err := q.CountReplacementWorkerNoticeRetries(tx, gen.CountReplacementWorkerNoticeRetriesParams{OperationID: id, SessionID: string(target.SessionID)})
+			if err != nil {
+				return err
+			}
+			if receipt.State == domain.ReplacementNoticePending && retries >= replacementNoticeRetryLimit {
 				receipt.ErrorCode = "DELIVERY_RETRY_CAPACITY"
 			}
 			result = append(result, receipt)

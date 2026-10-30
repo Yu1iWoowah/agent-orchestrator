@@ -620,7 +620,7 @@ func (s *Store) UpdateSessionFromActivitySignal(
 	activity := normalActivity(rec.Activity, rec.UpdatedAt)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, gen.UpdateSessionFromActivitySignalParams{
+	params := gen.UpdateSessionFromActivitySignalParams{
 		ActivityState:                    activity.State,
 		ActivityLastAt:                   activity.LastActivityAt,
 		FirstSignalAt:                    timeToNullTime(rec.FirstSignalAt),
@@ -647,11 +647,34 @@ func (s *Store) UpdateSessionFromActivitySignal(
 		ExpectedSessionMode:              domain.NormalizeSessionMode(rec.Mode),
 		ExpectedRuntimeLaunchID:          rec.Metadata.RuntimeLaunchID,
 		ExpectedControllerGeneration:     rec.Metadata.ControllerGeneration,
-	})
-	if err != nil {
-		return false, fmt.Errorf("update session %s from activity signal: %w", rec.ID, err)
 	}
-	return rows > 0, nil
+	if !isReplacementNoticeCheckpoint(rec) {
+		rows, err := s.qw.UpdateSessionFromActivitySignal(ctx, params)
+		if err != nil {
+			return false, fmt.Errorf("update session %s from activity signal: %w", rec.ID, err)
+		}
+		return rows > 0, nil
+	}
+	changed := false
+	err := s.inTx(ctx, "update session from activity signal", func(q *gen.Queries) error {
+		rows, err := q.UpdateSessionFromActivitySignal(ctx, params)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return nil
+		}
+		actual, err := q.GetSession(ctx, rec.ID)
+		if err != nil {
+			return err
+		}
+		if err := recordReplacementNoticeCheckpoint(ctx, q, rowToRecord(actual)); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed && err == nil, err
 }
 
 // RecordSessionLatestUserPrompt persists pane-delivered user direction without

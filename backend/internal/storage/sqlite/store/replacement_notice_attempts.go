@@ -89,12 +89,12 @@ func (s *Store) BeginReplacementWorkerNotice(ctx context.Context, id string, rev
 			// The same canonical conversation owns the unique ContactID across
 			// controller epochs. Rebind the private attempt, never the queue key.
 		}
-		count, err := q.CountReplacementWorkerNoticeRetries(tx, id)
+		count, err := q.CountReplacementWorkerNoticeRetries(tx, gen.CountReplacementWorkerNoticeRetriesParams{OperationID: id, SessionID: string(targetID)})
 		if err != nil {
 			return err
 		}
 		// Terminal receipts have reserved capacity outside this retry budget.
-		if count >= int64(4*len(op.Notifications)+64) {
+		if count >= replacementNoticeRetryLimit {
 			return domain.ErrReplacementNoticeCapacity
 		}
 		if result.Revision == 0 {
@@ -140,20 +140,10 @@ func (s *Store) FinishReplacementWorkerNotice(ctx context.Context, id string, ta
 		if receipt.AttemptID != attemptID || receipt.Revision != revision || receipt.State != domain.ReplacementNoticeUncertain || receipt.OutcomeRecordedAt != nil {
 			return nil
 		}
-		if op.Phase != domain.ReplacementNotifying || op.IntakeDrainRequestedAt == nil {
-			return nil
-		}
-		if _, _, err := verifiedReplacementIntakeWriter(tx, q, op); err != nil {
-			return err
-		}
+		// This callback records the outcome of an already authorized attempt,
+		// not new delivery authority. Retain positive no-write even after the
+		// operation or worker changes; Begin/Validate still fence new writes.
 		if !attempted {
-			worker, err := q.GetSession(tx, targetID)
-			if err != nil {
-				return err
-			}
-			if rowToRecord(worker).ControllerOwner() != receipt.Owner {
-				return nil
-			}
 			receipt.State, receipt.ErrorCode = domain.ReplacementNoticePending, "DELIVERY_NOT_ATTEMPTED"
 		} else {
 			receipt.State, receipt.ErrorCode = domain.ReplacementNoticeUncertain, "DELIVERY_UNCONFIRMED"
