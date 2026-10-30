@@ -23,6 +23,11 @@ if 'generate-json-schema' in args:
 if provider=='codex' and 'login' in args and args[args.index('login')+1:][:1]==['status']:
  audit('login-status');print('Logged in using ChatGPT' if credential.is_file() else 'Not logged in',file=sys.stderr,flush=True);sys.exit(0 if credential.is_file() else 1)
 if 'login' in args:
+ # Public fake OAuth inputs must stay usable when host/path or previous values
+ # contain credential-family words. Never use real authorization data.
+ for address in ('https://claude.ai/oauth/authorize?code=true&client_id=x&response_type=code&redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile&code_challenge=x&code_challenge_method=S256&state=x','https://auth.openai.com/oauth/authorize?response_type=code&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&code_challenge=x&code_challenge_method=S256&state=x'):
+  for part in (address[:len(address)//2],address[len(address)//2:]+'\r\n'):
+   os.write(1,part.encode());time.sleep(.001)
  # Original audit D3 Unicode and multiline counterexamples, independently delimited.
  for prefix,suffix in [('headers[ToKen]=',''),('request.headers.APIKey=',''),('headers[Authorİzation]=',''),('Authorization: Basic\r\n ','') ,('Authorization:\r\n\t',''),('{"headers":{"Authorization":\n "','"}}')]:
   for part in (prefix,'~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',suffix+'\r\n\r\n'):
@@ -32,7 +37,7 @@ if 'login' in args:
   for name in ('headers['+key+'][0]','request.headers.'+key,urllib.parse.quote('headers[ '+key+' ][0]',safe='')):
    for part in (name[:len(name)//2],name[len(name)//2:]+'=','~','ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','\r\n\r\n'):
     os.write(1,part.encode());time.sleep(.001)
- audit('login');print('access_token[session]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('https://example.test/?refresh_token[0]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('oauth.token.value=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste authorization code: ',end='',flush=True)
+ audit('login');print('access_token[session]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('https://example.test/?refresh_token[0]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('oauth.token.value=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste code here if prompted > ',end='',flush=True);print('Paste authorization code: ',end='',flush=True)
  while not(root/'approve-login').exists():time.sleep(.02)
  if(root/'decline-login').exists():print('Fake sign-in declined.',flush=True);sys.exit(1)
  home.mkdir(mode=0o700,parents=True,exist_ok=True);(home/'.fixture-identity').write_text((root/'next-identity').read_text());(home/'.fixture-identity').chmod(0o600);credential.write_text(json.dumps({'fakeCredential':'ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','fixtureEmail':(root/'next-identity').read_text().strip()}));credential.chmod(0o600)

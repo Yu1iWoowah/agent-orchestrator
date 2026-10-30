@@ -57,6 +57,17 @@ const (
 	loginHiddenJSON
 )
 
+type loginURLPart uint8
+
+const (
+	loginURLNone loginURLPart = iota
+	loginURLFirstSlash
+	loginURLSecondSlash
+	loginURLBody
+	loginURLName
+	loginURLValue
+)
+
 type loginJSONKind uint8
 
 const (
@@ -157,8 +168,9 @@ func (v *loginJSONValue) consume(r rune) loginJSONStep {
 }
 
 type accountLoginOutput struct {
-	parser *ansi.Parser
-	mode   loginOutputMode
+	parser  *ansi.Parser
+	mode    loginOutputMode
+	urlPart loginURLPart
 
 	// A name is retained until its grammar boundary, including JSON keys.
 	key       string
@@ -190,6 +202,7 @@ func (w *accountLoginOutput) resetKey() {
 }
 func (w *accountLoginOutput) endSecret() {
 	w.mode = loginVisible
+	w.urlPart = loginURLNone
 	w.secret = loginJSONValue{}
 	w.resetKey()
 	w.jsonQuoted = false
@@ -262,10 +275,78 @@ func (w *accountLoginOutput) trackJSON(r rune) {
 		w.jsonValueExpected = true
 	}
 }
+
+// A recognized HTTP(S) URL has explicit component boundaries. Only query
+// names enter the name classifier; host/path and previous values cannot taint
+// the next name. Unknown non-URL text and JSON keep their stricter grammar.
+func (w *accountLoginOutput) urlRune(out *strings.Builder, r rune) bool {
+	if w.urlPart == loginURLNone {
+		if r != ':' || w.jsonDepth != 0 || (!strings.EqualFold(w.key, "https") && !strings.EqualFold(w.key, "http")) {
+			return false
+		}
+		w.resetKey()
+		w.urlPart = loginURLFirstSlash
+		out.WriteRune(r)
+		return true
+	}
+	if unicode.IsSpace(r) || strings.ContainsRune("\"'<>", r) {
+		if w.urlPart != loginURLName {
+			w.resetKey()
+		}
+		w.urlPart = loginURLNone
+		return false
+	}
+	if w.urlPart == loginURLFirstSlash || w.urlPart == loginURLSecondSlash {
+		if r != '/' {
+			w.urlPart = loginURLNone
+			return false
+		}
+		w.urlPart++
+		out.WriteRune(r)
+		return true
+	}
+	if (r == '?' && w.urlPart == loginURLBody) || (r == '&' && w.urlPart != loginURLBody) || r == '#' {
+		w.resetKey()
+		w.urlPart = loginURLName
+		out.WriteRune(r)
+		return true
+	}
+	if w.urlPart == loginURLName {
+		if r != '=' {
+			return false
+		}
+		_, sensitive := accountCredentialKey(w.key)
+		w.urlPart = loginURLValue
+		if w.keyRoot || sensitive {
+			w.hide(out)
+		} else {
+			w.resetKey()
+			out.WriteRune(r)
+		}
+		return true
+	}
+	// Value-shaped credentials are still suppressed even under a public name.
+	w.key += string(r)
+	if len(w.key) > 3 {
+		w.key = w.key[len(w.key)-3:]
+	}
+	if strings.EqualFold(w.key, "sk-") || w.key == "eyJ" {
+		w.hide(out)
+	} else {
+		out.WriteRune(r)
+	}
+	return true
+}
+
 func (w *accountLoginOutput) visibleRune(out *strings.Builder, r rune) {
-	w.trackJSON(r)
+	if w.urlRune(out, r) {
+		return
+	}
+	if w.urlPart == loginURLNone {
+		w.trackJSON(r)
+	}
 	switch {
-	case r == '=' || r == ':':
+	case r == '=' || (r == ':' && w.urlPart != loginURLName):
 		_, sensitive := accountCredentialKey(w.key)
 		if w.keyRoot || sensitive {
 			w.hide(out)
@@ -330,7 +411,7 @@ func (w *accountLoginOutput) visibleRune(out *strings.Builder, r rune) {
 func recognizedLoginPrompt(s string) bool {
 	s = cases.Fold().String(norm.NFKC.String(s))
 	if strings.HasPrefix(s, "paste ") || strings.HasPrefix(s, "enter ") || strings.HasPrefix(s, "please enter ") {
-		return strings.Contains(s, "code:") || strings.Contains(s, "code :")
+		return strings.Contains(s, "code:") || strings.Contains(s, "code :") || (strings.Contains(s, "code") && strings.HasSuffix(s, " >"))
 	}
 	if strings.HasPrefix(s, "open ") || strings.HasPrefix(s, "visit ") || strings.HasPrefix(s, "go to ") {
 		return strings.Contains(s, "https://") || strings.Contains(s, "device sign-in")
@@ -382,12 +463,21 @@ func (w *accountLoginOutput) consumeRune(out *strings.Builder, r rune) {
 			w.lineStart = false
 		}
 	case loginHidden:
-		w.hiddenRune(out, r)
+		if w.urlPart == loginURLValue && (r == '&' || r == '#') {
+			w.endSecret()
+			w.urlPart = loginURLName
+			out.WriteRune(r)
+		} else {
+			w.hiddenRune(out, r)
+		}
 	default:
 		w.visibleRune(out, r)
 	}
 }
 func (w *accountLoginOutput) newline(out *strings.Builder, r rune) {
+	// A folded value is no longer a single URL token. Keep it hidden using the
+	// opaque continuation rules rather than trusting a later '&' as recovery.
+	w.urlPart = loginURLNone
 	// A native PTY with ONLCR expands CRLF into CRCRLF. Repeated carriage
 	// returns still address the same line; they are not an empty line proving
 	// that a folded credential ended. A bare CR can advance once, but cannot

@@ -395,6 +395,9 @@ hidden across LF, CRLF and CR. A JSON value is hidden until its complete string,
 container or scalar boundary. Other uncertain output stays hidden until a blank
 line or a recognizable login prompt; unrecognized continuation/metadata lines
 may therefore remain hidden. Prompt recognition never ends a JSON string.
+HTTP(S) URLs classify each query parameter name independently; the host, path
+and previous parameter values do not taint the next name. Public OAuth URLs and
+native code-entry prompts remain visible; credential query values stay masked.
 No transcript is written by the CLI. Do not paste API keys or tokens into a
 subscription login. Ctrl+C asks the daemon to cancel and waits for confirmed
 cleanup. If acceptance won the race, it reports that the account was saved.

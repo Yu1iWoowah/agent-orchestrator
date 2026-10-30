@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+const fakeClaudeAuthorizeURL = "https://claude.ai/oauth/authorize?code=true&client_id=x&response_type=code&redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile&code_challenge=x&code_challenge_method=S256&state=x"
+const fakeCodexAuthorizeURL = "https://auth.openai.com/oauth/authorize?response_type=code&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&code_challenge=x&code_challenge_method=S256&state=x"
+
 func assertPrivateLoginStream(t *testing.T, line string) {
 	t.Helper()
 	const prompt = "\r\n\r\nPaste authorization code: "
@@ -171,6 +174,7 @@ func TestLoginOutputReadablePromptsAfterConcealment(t *testing.T) {
 		"Open https://example.test/device?user_code=ABCD-1234",
 		"Authentication URL: https://example.test/device",
 		"Paste authorization code: ",
+		"Paste code here if prompted > ",
 		"Enter code: ",
 		"Please enter the code: ",
 		"Session status: ready",
@@ -187,5 +191,71 @@ func TestLoginOutputReadablePromptsAfterConcealment(t *testing.T) {
 				t.Fatal("safe prompt lost or previous value escaped")
 			}
 		})
+	}
+}
+
+func TestLoginOutputPreservesOAuthURLsPromptsAndEcho(t *testing.T) {
+	for name, address := range map[string]string{
+		"claude": fakeClaudeAuthorizeURL,
+		"codex":  fakeCodexAuthorizeURL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			line := address + "\r\nPaste code here if prompted > "
+			check := func(t *testing.T, parts ...string) {
+				t.Helper()
+				var output accountLoginOutput
+				var out bytes.Buffer
+				for _, part := range parts {
+					output.write(&out, []byte(part))
+				}
+				if out.String() != line {
+					t.Fatalf("OAuth URL/prompt truncated: got %q", out.String())
+				}
+				output.write(&out, []byte("ABCD-1234"))
+				if out.String() != line+"ABCD-1234" {
+					t.Fatal("OAuth prompt input echo was hidden or delayed")
+				}
+			}
+			parts := make([]string, len(line))
+			for i := range len(line) {
+				parts[i] = line[i : i+1]
+			}
+			check(t, parts...)
+			for split := 0; split <= len(line); split++ {
+				check(t, line[:split], line[split:])
+			}
+		})
+	}
+}
+
+func TestLoginOutputURLQueryNamesHaveIndependentCredentialBoundaries(t *testing.T) {
+	for _, prefix := range []string{
+		"https://auth.example.test/oauth/authorize?redirect_uri=https%3A%2F%2Fplatform.example%2Foauth%2Fcallback&",
+		"https://example.test/device?scope=org%3Acreate_api_key+user%3Aprofile&",
+		"https://example.test/?",
+	} {
+		for _, name := range []string{"access_token", "refresh_token[0]", "oauth.token.value", "client_secret", "headers%5BAuthorization%5D", "ToKen", "未知名稱", "opaque%"} {
+			t.Run(prefix+name, func(t *testing.T) {
+				line := prefix + name + "=~PRIVATE_QUERY_CANARY&public=visible"
+				assertPrivateLoginStream(t, line)
+				var output accountLoginOutput
+				var out bytes.Buffer
+				output.write(&out, []byte(line))
+				if !strings.HasSuffix(out.String(), "&public=visible") {
+					t.Fatal("a previous credential value tainted the next public query name")
+				}
+			})
+		}
+	}
+}
+
+func TestLoginOutputURLKeepsValuePatternsAndUncertainContinuationsHidden(t *testing.T) {
+	for _, line := range []string{
+		"https://example.test/?public=sk-~PRIVATE_VALUE",
+		"https://example.test/?public=eyJ~PRIVATE_VALUE",
+		"https://example.test/?access_token=\r\n ~PRIVATE_VALUE&public=~STILL_PRIVATE",
+		"https://example.test/?Authorization \t=~PRIVATE_VALUE",
+	} {
+		t.Run(line, func(t *testing.T) { assertPrivateLoginStream(t, line) })
 	}
 }
