@@ -224,7 +224,7 @@ func (r *acpRelay) clearPromptReplay() {
 	r.promptReplay = retained
 	commands := r.commandOrder[:0]
 	for _, id := range r.commandOrder {
-		if r.commands[id].unprompted {
+		if command := r.commands[id]; command.unprompted && command.promptOwned {
 			commands = append(commands, id)
 		} else {
 			delete(r.commands, id)

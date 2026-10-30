@@ -745,7 +745,7 @@ WHERE id = ?;
 -- name: RequeueUnsentConversationTurn :execrows
 UPDATE conversation_turns
 SET state = 'queued', provider_turn_id = '', started_at = NULL,
-    promotion_started_at = NULL, provider_input_text = ''
+    promotion_started_at = NULL, provider_input_text = '', agent_settings_snapshot_json = ''
 WHERE id = sqlc.arg(id)
   AND conversation_id = sqlc.arg(conversation_id)
   AND provider_turn_id = sqlc.arg(provider_turn_id)
@@ -1234,7 +1234,7 @@ LIMIT 1;
 -- owned; requested_at is deliberately untouched.
 -- name: ReleaseQueuedConversationTurnPromotion :execrows
 UPDATE conversation_turns
-SET promotion_started_at = NULL
+SET promotion_started_at = NULL, agent_settings_snapshot_json = ''
 WHERE id = sqlc.arg(id)
   AND conversation_id = sqlc.arg(conversation_id)
   AND state = 'queued'

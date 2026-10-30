@@ -127,3 +127,32 @@ func TestACPRelayBackgroundAckPreservesNextCycleAndPrompt(t *testing.T) {
 		t.Fatalf("committed background journal not released: %q", frames)
 	}
 }
+
+func TestACPRelayPromptResetDropsAcknowledgedBackgroundCommand(t *testing.T) {
+	for _, ackBeforeCommand := range []bool{false, true} {
+		t.Run(fmt.Sprint(ackBeforeCommand), func(t *testing.T) {
+			relay := newTestACPRelay(t)
+			relay.state.RetainUnpromptedEvents = true
+			request, _ := relayProviderFrame(t, relay, []byte(`{"id":"approval","method":"session/request_permission","params":{}}`), 1, true)
+			if ackBeforeCommand {
+				terminal, _ := relayProviderFrame(t, relay, []byte(`{"method":"terminal","params":{}}`), 1, true)
+				ack, _ := json.Marshal(map[string]any{"method": ACPUnpromptedAckMethod, "params": map[string]string{"eventId": frameMetaString(t, terminal, ACPEventIDMetaKey)}})
+				relayClientFrame(t, relay, ack, 1)
+			}
+			command, _ := json.Marshal(map[string]any{"id": 10, "method": ACPInteractionCommandMethod, "params": map[string]any{"requestId": frameMetaString(t, request, ACPRequestIDMetaKey), "kind": "approval", "decision": map[string]string{"id": "allow"}}})
+			relayClientFrame(t, relay, command, 1)
+			relayClientFrame(t, relay, []byte(`{"id":"approval","result":{"outcome":"cancelled"}}`), 1)
+			if frames := relayReplayFrames(t, relay); len(frames) != 1 || !bytes.Contains(frames[0], []byte(ACPInteractionCommandMethod)) {
+				t.Fatalf("command not replayable before prompt reset: %q", frames)
+			}
+			relayClientFrame(t, relay, []byte(`{"id":11,"method":"session/prompt","params":{}}`), 2)
+			frames := relayReplayFrames(t, relay)
+			if ackBeforeCommand && len(frames) != 0 {
+				t.Fatalf("acknowledged background command replays forever: %q", frames)
+			}
+			if !ackBeforeCommand && (len(frames) != 1 || !bytes.Contains(frames[0], []byte(ACPInteractionCommandMethod))) {
+				t.Fatalf("unacknowledged command lost at prompt reset: %q", frames)
+			}
+		})
+	}
+}

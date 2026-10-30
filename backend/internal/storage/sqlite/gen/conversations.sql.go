@@ -1993,7 +1993,7 @@ func (q *Queries) RejectConversationSteerDelivery(ctx context.Context, arg Rejec
 
 const releaseQueuedConversationTurnPromotion = `-- name: ReleaseQueuedConversationTurnPromotion :execrows
 UPDATE conversation_turns
-SET promotion_started_at = NULL
+SET promotion_started_at = NULL, agent_settings_snapshot_json = ''
 WHERE id = ?1
   AND conversation_id = ?2
   AND state = 'queued'
@@ -2082,7 +2082,7 @@ func (q *Queries) ReplaceUntouchedConversationProvider(ctx context.Context, arg 
 const requeueUnsentConversationTurn = `-- name: RequeueUnsentConversationTurn :execrows
 UPDATE conversation_turns
 SET state = 'queued', provider_turn_id = '', started_at = NULL,
-    promotion_started_at = NULL, provider_input_text = ''
+    promotion_started_at = NULL, provider_input_text = '', agent_settings_snapshot_json = ''
 WHERE id = ?1
   AND conversation_id = ?2
   AND provider_turn_id = ?3

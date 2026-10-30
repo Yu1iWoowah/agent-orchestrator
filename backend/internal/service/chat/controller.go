@@ -82,7 +82,7 @@ type Store interface {
 	RecordProviderInput(ctx context.Context, turnID, text string) error
 	RecordTurnSettingsSnapshot(context.Context, string, string, []string, domain.AgentSettingsTurnSnapshot) error
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
-	RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string) error
+	RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string, followers []string) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error
@@ -260,6 +260,9 @@ type Controller struct {
 	// activeTurn maps a provider turn id to AO's turn id for the turn currently
 	// in flight, so a completion can be attributed without a round trip.
 	pendingTurnID string
+	// A definite pre-send refusal may outlive the completion that triggered drain.
+	// Retry when the provider releases ownership and announces readiness.
+	retryUnsentOnReady bool
 	// dispatchedApproval is the approval mode the latest turn was sent with,
 	// the one its sandbox runs under; settings hold the next turn's. Unset
 	// until this controller sends a turn.
@@ -2029,6 +2032,7 @@ func (c *Controller) dispatch(
 
 	c.mu.Lock()
 	c.dispatchingTurnID = turnID
+	c.retryUnsentOnReady = false
 	c.settingsDispatchSnapshot = settingsSnapshot
 	c.dispatchedApproval, c.hasDispatchedApproval = msg.Settings.Approval, true
 	c.mu.Unlock()
@@ -2132,14 +2136,6 @@ func (c *Controller) dispatch(
 }
 
 func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID string, followers []string, at time.Time) (domain.ConversationTurn, error) {
-	if err := c.store.RequeueUnsentTurn(ctx, c.conversation.ID, id, providerID); err != nil {
-		return domain.ConversationTurn{}, fmt.Errorf("requeue unsent turn: %w", err)
-	}
-	if len(followers) > 0 {
-		if err := c.store.ReleaseQueuedBatch(ctx, c.conversation.ID, followers); err != nil {
-			return domain.ConversationTurn{}, err
-		}
-	}
 	c.mu.Lock()
 	if c.dispatchingTurnID == id {
 		c.dispatchingTurnID = ""
@@ -2147,6 +2143,24 @@ func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID strin
 	if providerID != "" && c.pendingTurnID == providerID {
 		c.pendingTurnID, c.ackedTurnID = "", ""
 	}
+	c.mu.Unlock()
+	// The provider definitively sent nothing. Restore durable queue ownership
+	// even if the caller disconnects, without holding sendMu indefinitely.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := c.store.RequeueUnsentTurn(cleanupCtx, c.conversation.ID, id, providerID, followers); err != nil {
+		reason := "unsent input could not be requeued: " + err.Error()
+		settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelSettle()
+		settleErr := c.store.SettleTurnByID(settleCtx, id, domain.TurnStateFailed, reason, c.now())
+		var followersErr error
+		if len(followers) > 0 {
+			followersErr = c.store.FailQueuedBatch(settleCtx, c.conversation.ID, followers, reason, c.now())
+		}
+		return domain.ConversationTurn{}, fmt.Errorf("requeue unsent turn: %w", errors.Join(err, settleErr, followersErr))
+	}
+	c.mu.Lock()
+	c.retryUnsentOnReady = true
 	c.mu.Unlock()
 	return c.queuedDispatchReceipt(id, at), nil
 }
@@ -3300,6 +3314,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 		c.compactionPending = false
 		c.pendingTurnID = ""
 		c.dispatchingTurnID = ""
+		c.retryUnsentOnReady = false
 		if c.ackedTurnID == event.ProviderTurnID {
 			c.ackedTurnID = ""
 		}
@@ -3786,8 +3801,15 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if event.ControllerState != ports.ChatControllerReady || c.pendingTurnID == "" {
 			c.state = event.ControllerState
 		}
+		retryUnsent := event.ControllerState == ports.ChatControllerReady && c.pendingTurnID == "" && !c.compactionPending && c.retryUnsentOnReady
+		if retryUnsent {
+			c.retryUnsentOnReady = false
+		}
 		suppressStoppedActivity := c.suppressStoppedActivity
 		c.mu.Unlock()
+		if retryUnsent {
+			_ = c.drainLocked(ctx, true)
+		}
 		if event.ControllerState == ports.ChatControllerStopped && !suppressStoppedActivity {
 			c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 		}
