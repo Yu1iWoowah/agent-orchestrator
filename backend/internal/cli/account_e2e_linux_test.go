@@ -342,6 +342,13 @@ waiting:
 	if cancelState["phase"] != "complete" || cancelState["outcome"] != "cancelled" {
 		t.Fatalf("cancel not durable: %v", cancelState)
 	}
+	cancelAccountID, _ := cancelState["accountId"].(string)
+	if cancelAccountID == "" {
+		t.Fatal("cancel operation lost profile identity")
+	}
+	if _, err := os.Lstat(filepath.Join(e.dataDir, "agent-accounts", "codex", cancelAccountID)); !os.IsNotExist(err) {
+		t.Fatal("cancelled login left a managed profile")
+	}
 	a := add("codex", "A@example.test")
 	d := add("codex", "D@example.test")
 	b := add("claude", "B@example.test")
@@ -367,6 +374,10 @@ waiting:
 	cfg := api("GET", "/projects/accounts", nil)["project"].(map[string]any)["config"].(map[string]any)
 	if cfg["worker"].(map[string]any)["agentAccountId"] != a || cfg["orchestrator"].(map[string]any)["agentAccountId"] != b || cfg["reviewers"].([]any)[0].(map[string]any)["agentAccountId"] != c {
 		t.Fatalf("A/B/C role mismatch: %v", cfg)
+	}
+	mismatchOut, mismatchCode := runCode("spawn", "--standalone", "--agent", "codex", "--account", b, "--name", "Fake provider mismatch")
+	if mismatchCode != 1 || !strings.Contains(mismatchOut, "AGENT_ACCOUNT_PROVIDER_MISMATCH") || !strings.Contains(mismatchOut, "[request ") {
+		t.Fatalf("provider mismatch lost exit/code/request ID: %d %s", mismatchCode, mismatchOut)
 	}
 	run("spawn", "--project", "accounts", "--agent", "codex", "--mode", "chat", "--name", "Fake account worker", "--prompt", "Fake preserved history")
 	sessions := api("GET", "/sessions", nil)["sessions"].([]any)
@@ -422,6 +433,25 @@ waiting:
 		t.Fatalf("worker identity/conversation not confirmed: %v", startedConversations)
 	}
 	nativeID := startedConversations[0]
+	run("spawn", "--project", "accounts", "--kind", "orchestrator", "--mode", "tui", "--name", "Fake account orchestrator", "--prompt", "Fake orchestrator isolation")
+	var orchestratorID string
+	for _, item := range api("GET", "/sessions", nil)["sessions"].([]any) {
+		session := item.(map[string]any)
+		if session["kind"] == "orchestrator" {
+			orchestratorID = session["id"].(string)
+		}
+	}
+	if orchestratorID == "" || api("GET", "/agents/accounts/sessions/"+orchestratorID, nil)["claude"] != b {
+		t.Fatal("orchestrator did not bind B")
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for len(conversations("terminal", "B@example.test")) == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(conversations("terminal", "B@example.test")) == 0 {
+		t.Fatal("orchestrator did not execute as B")
+	}
+	run("session", "kill", orchestratorID)
 
 	run("account", "use", d, "--session", id, "--wait")
 	if binding() != d {
@@ -454,6 +484,9 @@ waiting:
 	}
 	run("session", "kill", id)
 	run("account", "rm", d)
+	run("account", "logout", b)
+	run("account", "rm", b)
+	run("account", "rm", c)
 	run("account", "ls", "--json")
 	streamCtx, streamCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 	streamReq, _ := http.NewRequestWithContext(streamCtx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/v1/events?after=0", e.port), nil)
