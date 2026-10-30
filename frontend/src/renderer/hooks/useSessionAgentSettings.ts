@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
 import { useSyncExternalStore } from "react";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "../lib/api-client";
@@ -6,6 +6,7 @@ import { agentSettingsQueryKey } from "../lib/agent-settings";
 import { clientForSessionHost } from "../lib/host-clients";
 import { appI18n } from "../i18n";
 import { isLocal } from "../lib/hosts";
+import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey } from "./useConversation";
 
 export function useSessionAgentSettings({ sessionId, hostId, enabled = true }: {
 	sessionId?: string;
@@ -45,6 +46,18 @@ export type AgentSettingsChangeIntent = {
 	body: components["schemas"]["ChangeSessionAgentSettingsPayload"];
 };
 
+async function refreshSettingsViews(client: QueryClient, target: { sessionId: string; hostId?: string }) {
+	await client.invalidateQueries({ queryKey: agentSettingsQueryKey(target.sessionId, target.hostId) });
+	// The snapshot may already be applied before its CDC arrives. A write or
+	// cancellation invalidates every projection even if CDC sees a stable stamp.
+	const hostId = target.hostId && !isLocal(target.hostId) ? target.hostId : undefined;
+	await Promise.all([
+		client.invalidateQueries({ queryKey: conversationQueryKey(target.sessionId, hostId) }),
+		client.invalidateQueries({ queryKey: conversationModelsQueryKey(target.sessionId, hostId) }),
+		client.invalidateQueries({ queryKey: conversationConfigOptionsQueryKey(target.sessionId, hostId) }),
+	]);
+}
+
 /** Retry is an explicit user action, with the original key and captured CAS. */
 export function useChangeAgentSettings() {
 	const client = useQueryClient();
@@ -61,7 +74,7 @@ export function useChangeAgentSettings() {
 			return data.operation;
 		},
 		retry: false,
-		onSettled: (_data, _error, intent) => client.invalidateQueries({ queryKey: agentSettingsQueryKey(intent.sessionId, intent.hostId) }),
+		onSettled: (_data, _error, intent) => refreshSettingsViews(client, intent),
 	});
 }
 
@@ -87,6 +100,6 @@ export function useAgentSettingsAction() {
 			return result.data;
 		},
 		retry: false,
-		onSettled: (_data, _error, action) => client.invalidateQueries({ queryKey: agentSettingsQueryKey(action.sessionId, action.hostId) }),
+		onSettled: (_data, _error, action) => refreshSettingsViews(client, action),
 	});
 }

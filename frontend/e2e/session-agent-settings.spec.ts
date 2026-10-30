@@ -47,7 +47,7 @@ const now = new Date().toISOString();
 const longTitle = "Isolated settings validation — retain the unsent message and current turn — ".repeat(4);
 const longModel = `isolated-model-${"long-provider-model-name-".repeat(12)}`;
 
-async function installSettings(page: Page, mode: "chat" | "tui", harness = "codex", options: { pauseReads?: boolean; unknownEffective?: boolean; theme?: "dark" | "light"; idle?: boolean; realCdcPort?: number } = {}) {
+async function installSettings(page: Page, mode: "chat" | "tui", harness = "codex", options: { pauseReads?: boolean; unknownEffective?: boolean; theme?: "dark" | "light"; idle?: boolean; immediateApplied?: boolean; realCdcPort?: number } = {}) {
 	let snapshot = agentSettingsSnapshot({ pending: undefined, restartRequired: mode === "tui" });
 	snapshot.capabilities.models.push({ model: longModel, isDefault: false, efforts: ["low", "high"], fast: "supported" });
 	if (options.unknownEffective) snapshot.effective = { model: { state: "unknown", reason: "observation_unavailable" }, effort: { state: "unknown", reason: "observation_unavailable" }, fastMode: { state: "unknown", reason: "observation_unavailable" } };
@@ -55,6 +55,7 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 	const readBarrier = options.pauseReads ? new Promise<void>((resolve) => { releaseReads = resolve; }) : Promise.resolve();
 	let busy = !options.idle;
 	let conversationReads = 0;
+	let settingsReads = 0;
 	let stopped = false;
 	let resumedFast: string | undefined;
 	let offline = false;
@@ -80,15 +81,18 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 					await route.fulfill({ status: 409, json: { error: "conflict", code: "AGENT_SETTINGS_CONFLICT", message: "A managed operation or started operation owns this session; retry after it finishes.", requestId: "electron-conflict" } }); return;
 				}
 				const target = { model: body.settings.model === undefined ? snapshot.settings.model : body.settings.model ?? "", effort: body.settings.effort === undefined ? snapshot.settings.effort : body.settings.effort ?? "", fastMode: body.settings.fastMode ?? snapshot.settings.fastMode };
-				snapshot = { ...snapshot, pending: agentSettingsOperation({ id: `settings-op-${patches}`, target, applyMode: body.applyMode ?? "after-turn", stopTurn: body.stopTurn }) };
-				await route.fulfill({ status: 202, json: { operation: snapshot.pending } }); return;
+				const operation = agentSettingsOperation({ id: `settings-op-${patches}`, target, applyMode: body.applyMode ?? "after-turn", stopTurn: body.stopTurn, phase: options.immediateApplied ? "applied" : "pending" });
+				snapshot = options.immediateApplied
+					? { ...snapshot, settings: target, revision: snapshot.revision + 1, pending: undefined, history: [operation], effective: { model: { state: "known", value: target.model }, effort: { state: "known", value: target.effort }, fastMode: { state: "known", value: target.fastMode } } }
+					: { ...snapshot, pending: operation };
+				await route.fulfill({ status: options.immediateApplied ? 200 : 202, json: { operation } }); return;
 			}
 			await readBarrier;
-			await route.fulfill({ json: snapshot }); return;
+			await route.fulfill({ json: snapshot }); settingsReads++; return;
 		}
 		if (routePath.endsWith("/conversation")) {
 			conversationReads++;
-			await route.fulfill({ json: { conversationId: "settings-conversation", sessionId, harness, mode: "chat", controller: stopped ? "stopped" : busy ? "busy" : "ready", settings: { model: snapshot.pending?.target.model ?? snapshot.settings.model, reasoningEffort: snapshot.pending?.target.effort ?? snapshot.settings.effort, fastMode: snapshot.settings.fastMode === "on" }, oldestSequence: 1, latestSequence: 1, hasMoreBefore: false, turns: busy ? [{ id: "turn-1", state: "running", requestedAt: now, startedAt: now }] : [], messages: [{ kind: "message", id: "user-1", turnId: "turn-1", sequence: 1, revision: 0, role: "user", origin: "human", text: "Keep working while I choose the next settings.", streaming: false, createdAt: now }], activities: [] } }); return;
+			await route.fulfill({ json: { conversationId: "settings-conversation", sessionId, harness, mode: "chat", controller: stopped ? "stopped" : busy ? "busy" : "ready", settings: { model: options.idle ? snapshot.settings.model : snapshot.pending?.target.model ?? snapshot.settings.model, reasoningEffort: options.idle ? snapshot.settings.effort : snapshot.pending?.target.effort ?? snapshot.settings.effort, fastMode: snapshot.settings.fastMode === "on" }, oldestSequence: 1, latestSequence: 1, hasMoreBefore: false, turns: busy ? [{ id: "turn-1", state: "running", requestedAt: now, startedAt: now }] : [], messages: [{ kind: "message", id: "user-1", turnId: "turn-1", sequence: 1, revision: 0, role: "user", origin: "human", text: "Keep working while I choose the next settings.", streaming: false, createdAt: now }], activities: [] } }); return;
 		}
 		if (routePath.endsWith("/conversation/settings") && request.method() === "PATCH") {
 			const body: components["schemas"]["ConversationTurnSettingsPayload"] = request.postDataJSON();
@@ -122,6 +126,7 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 		},
 		requests,
 		conversationReads: () => conversationReads,
+		settingsReads: () => settingsReads,
 		legacyRequests,
 		holdChoice: () => { legacyBarrier = new Promise<void>((resolve) => { releaseLegacy = resolve; }); },
 		releaseChoice: (refuse: boolean) => { legacyRefused = refuse; releaseLegacy(); legacyBarrier = Promise.resolve(); },
@@ -407,7 +412,8 @@ test("composer waits for acceptance and preserves a rejected choice for retry @T
 	await page.screenshot({ path: info.outputPath("submission-accepted.png"), fullPage: true });
 });
 
-test("idle applied settings synchronize the composer through native SSE CDC @T0", async ({ page }, info) => {
+for (const timing of ["deferred", "immediate"] as const) {
+test(`idle ${timing} applied settings synchronize the composer through native SSE CDC @T0`, async ({ page }, info) => {
 	test.skip(Boolean(process.env.AO_U4_BEFORE), "The original main has no settings controls");
 	const peers = new Set<ServerResponse>();
 	const server = createServer((request, response) => {
@@ -421,11 +427,12 @@ test("idle applied settings synchronize the composer through native SSE CDC @T0"
 	try {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("Missing isolated SSE listener");
-		const state = await installSettings(page, "chat", "codex", { idle: true, realCdcPort: address.port });
+		const state = await installSettings(page, "chat", "codex", { idle: true, immediateApplied: timing === "immediate", realCdcPort: address.port });
 		await page.setViewportSize({ width: 1440, height: 960 });
 		const inspector = await openSettings(page);
 		await expect.poll(() => peers.size).toBe(1);
 		await expect.poll(state.conversationReads).toBeGreaterThanOrEqual(2);
+		const readsInitial = state.conversationReads();
 		const picker = page.getByRole("group", { name: "Turn settings", exact: true }).locator('[data-shortcut-target="model-picker"]');
 		await expect(picker).toContainText("committed-model");
 		const message = page.getByLabel("Message the agent", { exact: true });
@@ -435,28 +442,40 @@ test("idle applied settings synchronize the composer through native SSE CDC @T0"
 		await editor.getByRole("button", { name: /^Model:/ }).click();
 		await page.getByRole("menuitem", { name: "pending-model", exact: true }).click();
 		await editor.getByRole("button", { name: "Apply settings" }).click();
-		await expect(page.getByTestId("agent-settings-composer").getByRole("status")).toContainText("pending-model");
+		await expect(editor).toHaveCount(0);
+		const before = Boolean(process.env.AO_U4_CDC_BEFORE || (process.env.AO_U4_IMMEDIATE_BEFORE && timing === "immediate"));
+		if (timing === "immediate") {
+			await expect(page.getByTestId("agent-settings-header")).toContainText("Current selection: pending-model");
+			await expect(picker).toContainText(before ? "committed-model" : "pending-model");
+			if (!before) expect(state.conversationReads()).toBeGreaterThan(readsInitial);
+		} else {
+			await expect(page.getByTestId("agent-settings-composer").getByRole("status")).toContainText("pending-model");
+			await expect(picker).toContainText("committed-model");
+		}
 		const readsBefore = state.conversationReads();
-		await state.apply();
+		if (timing === "deferred") await state.apply();
+		const settingsBeforeCdc = state.settingsReads();
 		const frame = { seq: 1, projectId: "fake-proj", type: "session_updated", sessionId, payload: { id: sessionId } };
 		for (const response of peers) response.write(`id: 1\nevent: session_updated\ndata: ${JSON.stringify(frame)}\n\n`);
+		await expect.poll(state.settingsReads).toBeGreaterThan(settingsBeforeCdc);
 		await expect(page.getByTestId("agent-settings-header")).toContainText("Current selection: pending-model");
 		await expect(inspector.getByRole("group", { name: "Current selection" })).toContainText("pending-model");
-		const before = Boolean(process.env.AO_U4_CDC_BEFORE);
 		if (before) {
 			await expect(picker).toContainText("committed-model");
 			expect(state.conversationReads()).toBe(readsBefore);
 		} else {
 			await expect(picker).toContainText("pending-model");
-			expect(state.conversationReads()).toBeGreaterThan(readsBefore);
+			if (timing === "deferred") expect(state.conversationReads()).toBeGreaterThan(readsBefore);
+			else expect(state.conversationReads()).toBeGreaterThan(readsInitial);
 		}
 		await expect(message).toHaveText("Preserve this draft across real CDC");
-		await page.screenshot({ path: info.outputPath(before ? "cdc-before-stale.png" : "cdc-synchronized.png"), fullPage: true });
+		await page.screenshot({ path: info.outputPath(`${timing}-${before ? "cdc-before-stale" : "cdc-synchronized"}.png`), fullPage: true });
 		await mkdir(info.outputDir, { recursive: true });
-		await writeFile(info.outputPath("native-cdc-receipt.json"), JSON.stringify({ source: "native EventSource over real HTTP SSE; remaining API/provider data are fake", peers: peers.size, frame, readsBefore, readsAfter: state.conversationReads(), header: await page.getByTestId("agent-settings-header").innerText(), picker: await picker.innerText() }, null, 2));
+		await writeFile(info.outputPath("native-cdc-receipt.json"), JSON.stringify({ timing, readsInitial, readsAfterMutation: readsBefore, settingsBeforeCdc, settingsAfterCdc: state.settingsReads(), source: "native EventSource over real HTTP SSE; remaining API/provider data are fake", peers: peers.size, frame, readsBefore, readsAfter: state.conversationReads(), header: await page.getByTestId("agent-settings-header").innerText(), picker: await picker.innerText() }, null, 2));
 	} finally {
 		for (const response of peers) response.end();
 		server.closeAllConnections();
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 	}
 });
+}

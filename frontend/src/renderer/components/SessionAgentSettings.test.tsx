@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import { TooltipProvider } from "./ui/tooltip";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { terminateSessionMutationKey } from "../hooks/useTerminateSession";
 import { appI18n } from "../i18n";
+import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey } from "../hooks/useConversation";
 
 const { getMock, patchMock, postMock, captureRendererEventMock, connection } = vi.hoisted(() => ({ getMock: vi.fn(), patchMock: vi.fn(), postMock: vi.fn(), captureRendererEventMock: vi.fn(), connection: { trusted: true } }));
 vi.mock("../lib/telemetry", async (importOriginal) => ({
@@ -90,6 +91,58 @@ function showSettingsSurfaces() {
 }
 
 describe("Session agent settings intent", () => {
+	it("restores the confirmed composer projection when cancellation is read before its CDC", async () => {
+		server = agentSettingsSnapshot();
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		clients.push(client);
+		function Composer() {
+			const query = useQuery({ queryKey: conversationQueryKey("sess-1"), queryFn: async () => server.settings.model, initialData: "pending-model", staleTime: Infinity });
+			return <span data-testid="cancelled-composer">{query.data}</span>;
+		}
+		postMock.mockImplementation(async () => {
+			const operation = agentSettingsOperation({ phase: "cancelled" });
+			server = agentSettingsSnapshot({ pending: undefined, history: [operation] });
+			return { data: { operation } };
+		});
+		render(<QueryClientProvider client={client}><TooltipProvider><SessionAgentSettings session={session} /><Composer /></TooltipProvider></QueryClientProvider>);
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Cancel pending settings" }));
+		await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel pending settings" })).not.toBeInTheDocument());
+		expect(screen.getByTestId("cancelled-composer")).toHaveTextContent("committed-model");
+	});
+	it.each([
+		{ phase: "applied", hostId: undefined }, { phase: "applied", hostId: "local" }, { phase: "applied", hostId: "remote-a" },
+		{ phase: "pending", hostId: undefined }, { phase: "pending", hostId: "local" }, { phase: "pending", hostId: "remote-a" },
+	] satisfies { phase: "applied" | "pending"; hostId: string | undefined }[])("refreshes all projections when $phase completes before the settings refetch (host=$hostId)", async ({ phase, hostId }) => {
+		const projectionHost = hostId === "local" ? undefined : hostId;
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		clients.push(client);
+		const readConversation = vi.fn(async () => server.settings.model);
+		const readModels = vi.fn(async () => server.settings.model);
+		const readOptions = vi.fn(async () => server.settings.model);
+		const otherRead = vi.fn(async () => "other-model");
+		function Projections() {
+			const conversation = useQuery({ queryKey: conversationQueryKey("sess-1", projectionHost), queryFn: readConversation, initialData: "committed-model", staleTime: Infinity });
+			const models = useQuery({ queryKey: conversationModelsQueryKey("sess-1", projectionHost), queryFn: readModels, initialData: "committed-model", staleTime: Infinity });
+			const options = useQuery({ queryKey: conversationConfigOptionsQueryKey("sess-1", projectionHost), queryFn: readOptions, initialData: "committed-model", staleTime: Infinity });
+			useQuery({ queryKey: conversationQueryKey("sess-1", "unrelated-host"), queryFn: otherRead, initialData: "other-model", staleTime: Infinity });
+			return <div><span data-testid="primary-model">{conversation.data}</span><span data-testid="models-projection">{models.data}</span><span data-testid="options-projection">{options.data}</span></div>;
+		}
+		patchMock.mockImplementation(async () => {
+			const operation = agentSettingsOperation({ phase, target: agentSettingsSelection({ model: "pending-model" }) });
+			server = agentSettingsSnapshot({ revision: 5, pending: undefined, settings: operation.target, history: [{ ...operation, phase: "applied" }] });
+			return { data: { operation }, response: new Response(null, { status: phase === "applied" ? 200 : 202 }) };
+		});
+		render(<QueryClientProvider client={client}><TooltipProvider><SessionAgentSettings hostId={hostId} session={session} /><Projections /></TooltipProvider></QueryClientProvider>);
+		const editor = await editModel();
+		await userEvent.click(within(editor).getByRole("button", { name: "Apply settings" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+		expect(screen.getByRole("group", { name: "Current selection" })).toHaveTextContent("pending-model");
+		expect(screen.getByTestId("primary-model")).toHaveTextContent("pending-model");
+		expect(screen.getByTestId("models-projection")).toHaveTextContent("pending-model");
+		expect(screen.getByTestId("options-projection")).toHaveTextContent("pending-model");
+		expect(otherRead).not.toHaveBeenCalled();
+	});
 	it("keeps accepted-to-failed results visible beside every action and reviews the original selection before a new retry", async () => {
 		const client = showSettingsSurfaces();
 		const editor = await editModel();

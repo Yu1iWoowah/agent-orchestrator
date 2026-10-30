@@ -76,6 +76,11 @@ changes revision, pending operation or latest result, the transport refreshes
 that session's conversation, model and config-option projections. Ordinary
 metadata with unchanged settings does not reload a ready Chat. These reads
 preserve the mounted conversation and unsent drafts.
+Settings writes and cancellation also refresh those projections after their
+settings read settles. This does not depend on a later CDC observing a change:
+an immediate applied response, or a pending response already applied by the
+refetch, may have filled the settings cache before the event arrives. Local host
+aliases use the same projection keys; other hosts are left unchanged.
 
 English and Traditional Chinese have explicit UI copy. Other locale catalogs
 currently carry explicit English fallbacks for these new keys; they are not
