@@ -5,22 +5,29 @@ import type { components } from "../src/api/schema";
 import { installFakeAgent } from "./support/fake-bridge";
 import { openInspector } from "./support/open-inspector";
 
+declare global {
+	interface Window {
+		__aoSettingsSandboxProof?: { rendererSandbox: boolean; contextIsolated: boolean };
+	}
+}
+
 // Native Electron uses the same deterministic HTTP/SSE boundaries as renderer
 // CI. No daemon, native provider, account credential or paid tier is contacted.
 const test = process.env.AO_E2E_ELECTRON ? base.extend({
 	page: async ({}, use, info) => {
-		const app = await electron.launch({ chromiumSandbox: true, executablePath: require("electron") as string, args: [path.join(__dirname, "support/electron-shell.cjs")], recordVideo: { dir: info.outputPath("video"), size: { width: 1440, height: 960 } } });
+		const app = await electron.launch({ chromiumSandbox: true, executablePath: require("electron") as string, args: [path.join(__dirname, "support/settings-electron.cjs")], recordVideo: { dir: info.outputPath("video"), size: { width: 1440, height: 960 } } });
 		try {
 			const page = await app.firstWindow();
-			const isolation = await app.evaluate(({ app, BrowserWindow }) => ({
+			const isolation = await app.evaluate(({ app }) => ({
 				electron: process.versions.electron,
 				userData: app.getPath("userData"),
 				noSandbox: app.commandLine.hasSwitch("no-sandbox"),
-				rendererSandbox: BrowserWindow.getAllWindows()[0]?.webContents.getLastWebPreferences().sandbox,
 			}));
+			const renderer = await page.evaluate(() => window.__aoSettingsSandboxProof);
 			expect(isolation.noSandbox).toBe(false);
-			expect(isolation.rendererSandbox).toBe(true);
-			await info.attach("electron-isolation", { body: Buffer.from(JSON.stringify(isolation, null, 2)), contentType: "application/json" });
+			expect(renderer?.rendererSandbox).toBe(true);
+			expect(renderer?.contextIsolated).toBe(true);
+			await info.attach("electron-isolation", { body: Buffer.from(JSON.stringify({ ...isolation, ...renderer }, null, 2)), contentType: "application/json" });
 			page.on("pageerror", (error) => console.error("Electron renderer error:", error.message));
 			page.on("console", (message) => { if (message.type() === "error" && !message.text().includes("Failed to load resource")) console.error("Electron console:", message.text()); });
 			await page.bringToFront(); await use(page);
