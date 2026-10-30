@@ -29,7 +29,7 @@ func TestReviewerDeclaredFieldsMatrixFailsClosed(t *testing.T) {
 			for _, field := range spec.Fields {
 				fields[field.Key] = true
 			}
-			engine := &Engine{agents: reviewerDeclaredAgent{agent: entry.Agent}, models: fixedReviewerCatalog{catalog: ports.AgentModelCatalog{InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "model-variant", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}}}
+			engine := &Engine{agents: reviewerDeclaredAgent{agent: entry.Agent}, models: fixedReviewerCatalog{catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "model-variant", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}}}
 			for _, field := range []string{"model", "effort", "fast"} {
 				t.Run(field, func(t *testing.T) {
 					config := domain.AgentConfig{}
@@ -83,7 +83,7 @@ func TestReviewerCatalogProofUsesItsBoundAccountScope(t *testing.T) {
 	for _, id := range []string{"device-codex", "managed-reviewer-A"} {
 		t.Run(id, func(t *testing.T) {
 			ctx := ports.WithAgentAccount(context.Background(), domain.ResolvedAgentAccount{AccountID: id, Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceRole})
-			engine := &Engine{models: scopedReviewerCatalog{accountID: id, fixedReviewerCatalog: fixedReviewerCatalog{currentFingerprint: "qualified-" + id, catalog: ports.AgentModelCatalog{InputFingerprint: "qualified-" + id, Models: []ports.AgentModelInfo{{ID: "review-model", SupportsFast: true}}}}}}
+			engine := &Engine{models: scopedReviewerCatalog{accountID: id, fixedReviewerCatalog: fixedReviewerCatalog{currentFingerprint: "qualified-" + id, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "qualified-" + id, Models: []ports.AgentModelInfo{{ID: "review-model", SupportsFast: true}}}}}}
 			if err := engine.validateReviewerModels(ctx, domain.ReviewerCodex, domain.AgentConfig{Model: "review-model", FastMode: domain.AgentFastOn}); err != nil {
 				t.Fatalf("bound account proof failed: %v", err)
 			}
@@ -97,7 +97,7 @@ func TestReviewerRejectsCatalogEffortWithoutAdapterWire(t *testing.T) {
 		adapter ports.Agent
 	}{{domain.ReviewerCursor, cursor.New()}, {domain.ReviewerAmp, amp.New()}} {
 		t.Run(string(tc.harness), func(t *testing.T) {
-			engine := &Engine{models: fixedReviewerCatalog{catalog: ports.AgentModelCatalog{InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "native-variant", Efforts: []string{"high"}}}}}}
+			engine := &Engine{models: fixedReviewerCatalog{catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "native-variant", Efforts: []string{"high"}}}}}}
 			// The production resolver supplies the adapter's declared field spec.
 			engine.agents = reviewerDeclaredAgent{agent: tc.adapter}
 			err := engine.validateReviewerModels(context.Background(), tc.harness, domain.AgentConfig{Model: "native-variant", Effort: "high"})
@@ -153,7 +153,7 @@ func TestReviewerNextPassPinsItsOwnSelectionAndAccount(t *testing.T) {
 	engine.settingsAuthorizer = localReviewerSettingsAuthorization{}
 	accounts := &pinnedTestReviewAccount{store: store, defaultID: "account-A"}
 	engine.accounts = accounts
-	engine.models = fixedReviewerCatalog{currentFingerprint: "same-input", catalog: ports.AgentModelCatalog{InputFingerprint: "same-input", Models: []ports.AgentModelInfo{{ID: "review-one", Efforts: []string{"low"}, SupportsFast: true}, {ID: "review-two", Efforts: []string{"high"}, SupportsFast: true}}}}
+	engine.models = fixedReviewerCatalog{currentFingerprint: "same-input", catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "same-input", Models: []ports.AgentModelInfo{{ID: "review-one", Efforts: []string{"low"}, SupportsFast: true}, {ID: "review-two", Efforts: []string{"high"}, SupportsFast: true}}}}
 	first, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestRequestedReviewerFastModeReachesItsLauncher(t *testing.T) {
 			worker.ReviewerConfig = domain.AgentConfig{Model: "previous-reviewer-model"}
 			launcher := &fakeLauncher{handle: "reviewer-pane"}
 			engine := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("head-1"), fakeProjects{}, launcher)
-			engine.models = fixedReviewerCatalog{catalog: ports.AgentModelCatalog{InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "requested-reviewer-model", SupportsFast: true}}}}
+			engine.models = fixedReviewerCatalog{catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "requested-reviewer-model", SupportsFast: true}}}}
 			_, err := trigger(context.Background(), engine, worker.ID, domain.ReviewerCodex, domain.AgentConfig{Model: "requested-reviewer-model", FastMode: mode})
 			if err != nil {
 				t.Fatal(err)
@@ -247,7 +247,7 @@ func (m fixedReviewerCatalog) CatalogFingerprint(ctx context.Context, _, _ strin
 }
 
 func TestReviewerFastRequiresQualifiedModelEvidence(t *testing.T) {
-	fresh := ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "review-model", IsDefault: true, SupportsFast: true}}}
+	fresh := ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), Models: []ports.AgentModelInfo{{ID: "review-model", IsDefault: true, SupportsFast: true}}}
 	for _, tc := range []struct {
 		name    string
 		harness domain.ReviewerHarness
@@ -257,13 +257,13 @@ func TestReviewerFastRequiresQualifiedModelEvidence(t *testing.T) {
 	}{
 		{name: "supported on", mode: domain.AgentFastOn, catalog: fresh},
 		{name: "supported off", mode: domain.AgentFastOff, catalog: fresh},
-		{name: "no fast on", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "review-model"}}}, want: ports.ErrAgentSettingsUnsupported},
-		{name: "off remains standard", mode: domain.AgentFastOff, catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "review-model"}}}},
-		{name: "stale after refresh", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{Stale: true, Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
-		{name: "refresh failure", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{RefreshError: "discovery unavailable", Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
-		{name: "queued", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{RefreshState: "queued", Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
-		{name: "refreshing", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{RefreshState: "refreshing", Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
-		{name: "unknown custom model", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{AllowCustom: true}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "no fast on", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), Models: []ports.AgentModelInfo{{ID: "review-model"}}}, want: ports.ErrAgentSettingsUnsupported},
+		{name: "off remains standard", mode: domain.AgentFastOff, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), Models: []ports.AgentModelInfo{{ID: "review-model"}}}},
+		{name: "stale after refresh", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), Stale: true, Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "refresh failure", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), RefreshError: "discovery unavailable", Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "queued", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), RefreshState: "queued", Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "refreshing", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), RefreshState: "refreshing", Models: fresh.Models}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "unknown custom model", mode: domain.AgentFastOn, catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), AllowCustom: true}, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
 		{name: "Amp mode is not fast", harness: domain.ReviewerAmp, mode: domain.AgentFastOn, catalog: fresh, want: ports.ErrAgentSettingsUnsupported},
 		{name: "Amp has no fast off", harness: domain.ReviewerAmp, mode: domain.AgentFastOff, catalog: fresh, want: ports.ErrAgentSettingsUnsupported},
 	} {
@@ -291,7 +291,7 @@ func TestReviewerFastRequiresQualifiedModelEvidence(t *testing.T) {
 func TestReviewerFastRejectsChangedDiscoveryInputsBeforeRefresh(t *testing.T) {
 	for _, input := range []string{"binary-v2", "account-B"} {
 		t.Run(input, func(t *testing.T) {
-			catalog := ports.AgentModelCatalog{InputFingerprint: "old-input", Models: []ports.AgentModelInfo{{ID: "review-model", SupportsFast: true}}}
+			catalog := ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "old-input", Models: []ports.AgentModelInfo{{ID: "review-model", SupportsFast: true}}}
 			engine := &Engine{models: fixedReviewerCatalog{catalog: catalog, currentFingerprint: input}}
 			ctx := ports.WithAgentAccount(context.Background(), domain.ResolvedAgentAccount{AccountID: "account-B", Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceRole})
 			if err := engine.validateReviewerModels(ctx, domain.ReviewerCodex, domain.AgentConfig{Model: "review-model", FastMode: domain.AgentFastOn}); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) {

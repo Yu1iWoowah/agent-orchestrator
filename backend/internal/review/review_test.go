@@ -660,7 +660,7 @@ func TestTriggerPersistsChatModeBeforeCreatingReviewerConversation(t *testing.T)
 	chat := sqliteReviewChatController{store: store, started: &started}
 	launcher := NewLauncher(singleReviewerResolver{reviewer: chatReviewAdapter{}}, &fakeRuntime{}, t.TempDir(), WithReviewerChat(chat))
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
-	eng.models = fixedReviewerCatalog{catalog: ports.AgentModelCatalog{InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "gpt-6-sol", Efforts: []string{"high"}, SupportsFast: true}}}}
+	eng.models = fixedReviewerCatalog{catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "current-v1", Models: []ports.AgentModelInfo{{ID: "gpt-6-sol", Efforts: []string{"high"}, SupportsFast: true}}}}
 
 	result, err := trigger(ctx, eng, worker.ID, domain.ReviewerCodex, domain.AgentConfig{Model: "gpt-6-sol", Effort: "high", FastMode: domain.AgentFastOn})
 	if err != nil {

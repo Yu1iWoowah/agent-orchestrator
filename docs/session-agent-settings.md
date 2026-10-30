@@ -379,7 +379,7 @@ Grants expire after 24 hours; they do not renew in a running provider process.
 
 | Surface | Declared support and limits |
 | --- | --- |
-| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Native fake-wire contracts also retain fixed reviewer permissions. |
+| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Strict/fast proof requires the last successful discovery to remain fresh under the catalog owner’s calendar-day rule; fetched/validated timestamps alone do not qualify. Native fake-wire contracts also retain fixed reviewer permissions. |
 | Existing reviewer next-pass mutation | Stable review owner with recorded preference, fixed U3 binding and complete native/generation identity. Active passes conflict. Legacy unknown preferences are not reconstructed from worker settings. |
 | Other reviewer launch adapters | Only fields declared by the adapter config spec and accepted by its catalog. Catalog variants alone do not declare effort or fast support. |
 | Other harness reconfigure | No generic hot-reconfigure or account binding is inferred from a model launch flag. Missing settings/runtime/account capability remains unsupported or unavailable. |

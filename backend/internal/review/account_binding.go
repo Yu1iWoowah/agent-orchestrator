@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -71,7 +72,7 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	catalog, err := e.models.ModelCatalog(ctx, string(harness), scope, false)
-	if err != nil || catalog.InputFingerprint != fingerprint || validateReviewerCatalog(catalog, config) != nil {
+	if err != nil || catalog.InputFingerprint != fingerprint || validateReviewerCatalog(catalog, config, required || explicitFast, time.Now()) != nil {
 		catalog, err = e.models.ModelCatalog(ctx, string(harness), scope, true)
 	}
 	if err != nil {
@@ -83,7 +84,7 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 	if catalog.InputFingerprint != fingerprint {
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
-	if err := validateReviewerCatalog(catalog, config); err != nil {
+	if err := validateReviewerCatalog(catalog, config, required || explicitFast, time.Now()); err != nil {
 		return "", err
 	}
 	current, err := e.models.CatalogFingerprint(ctx, string(harness), scope)
@@ -126,7 +127,10 @@ func (e *Engine) validateReviewerFields(ctx context.Context, harness domain.Revi
 	return nil
 }
 
-func validateReviewerCatalog(catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
+func validateReviewerCatalog(catalog ports.AgentModelCatalog, config domain.AgentConfig, requireSuccess bool, now time.Time) error {
+	if requireSuccess && (catalog.LastSuccessAt == nil || domain.AgentModelCatalogNeedsRevalidation(*catalog.LastSuccessAt, now)) {
+		return ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
 	if catalog.Stale || catalog.RefreshError != "" || catalog.RefreshState != "" && catalog.RefreshState != "idle" {
 		return ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
