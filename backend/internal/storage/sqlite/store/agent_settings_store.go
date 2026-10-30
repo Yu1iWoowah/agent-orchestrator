@@ -17,21 +17,23 @@ import (
 // settingsRequest excludes timestamps, generated operation IDs, and phase from
 // the idempotency identity. It contains only non-secret, validated input.
 type settingsRequest struct {
-	BaseRevision           int64                         `json:"baseRevision"`
-	Source                 domain.AgentSettings          `json:"source"`
-	Target                 domain.AgentSettings          `json:"target"`
-	AccountID              string                        `json:"accountId"`
-	Generation             string                        `json:"generation"`
-	Actor                  domain.AgentSettingsActor     `json:"actor"`
-	ApplyMode              domain.AgentSettingsApplyMode `json:"applyMode"`
-	ProviderConversationID string                        `json:"providerConversationId"`
-	BranchID               string                        `json:"branchId"`
-	Authority              domain.AgentSettingsAuthority `json:"authority,omitempty"`
-	RequestFingerprint     string                        `json:"requestFingerprint,omitempty"`
+	TUI                    *domain.AgentSettingsTUIHandoff `json:"tui,omitempty"`
+	StopTurn               bool                            `json:"stopTurn,omitempty"`
+	BaseRevision           int64                           `json:"baseRevision"`
+	Source                 domain.AgentSettings            `json:"source"`
+	Target                 domain.AgentSettings            `json:"target"`
+	AccountID              string                          `json:"accountId"`
+	Generation             string                          `json:"generation"`
+	Actor                  domain.AgentSettingsActor       `json:"actor"`
+	ApplyMode              domain.AgentSettingsApplyMode   `json:"applyMode"`
+	ProviderConversationID string                          `json:"providerConversationId"`
+	BranchID               string                          `json:"branchId"`
+	Authority              domain.AgentSettingsAuthority   `json:"authority,omitempty"`
+	RequestFingerprint     string                          `json:"requestFingerprint,omitempty"`
 }
 
 func requestForSettings(op domain.AgentSettingsOperation) settingsRequest {
-	return settingsRequest{op.BaseRevision, op.Source, op.Target, op.AccountID, op.ControllerGeneration, op.Actor, op.ApplyMode, op.ProviderConversationID, op.BranchID, op.Authority, op.RequestFingerprint}
+	return settingsRequest{op.TUI, op.StopTurn, op.BaseRevision, op.Source, op.Target, op.AccountID, op.ControllerGeneration, op.Actor, op.ApplyMode, op.ProviderConversationID, op.BranchID, op.Authority, op.RequestFingerprint}
 }
 
 // SessionAgentSettings reads preferences and owner context from one snapshot.
@@ -44,7 +46,7 @@ func (s *Store) SessionAgentSettings(ctx context.Context, id domain.SessionID) (
 	if row.SessionMode == domain.SessionModeChat {
 		generation = row.ControllerGeneration
 	}
-	return domain.SessionAgentSettings{SessionID: id, Harness: row.Harness, AccountID: row.AccountID, OwnerGeneration: generation, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID, IsTerminated: row.IsTerminated, Settings: domain.AgentSettings{Model: domain.AgentModelSelection(row.Model), Effort: domain.AgentEffortSelection(row.Effort), FastMode: domain.AgentFastMode(row.AgentFastMode)}, Revision: row.AgentSettingsRevision}, nil
+	return domain.SessionAgentSettings{Mode: row.SessionMode, SessionID: id, Harness: row.Harness, AccountID: row.AccountID, OwnerGeneration: generation, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID, IsTerminated: row.IsTerminated, Settings: domain.AgentSettings{Model: domain.AgentModelSelection(row.Model), Effort: domain.AgentEffortSelection(row.Effort), FastMode: domain.AgentFastMode(row.AgentFastMode)}, Revision: row.AgentSettingsRevision}, nil
 }
 
 func settingsStoreError(err error) error {
@@ -64,7 +66,8 @@ func decodeSettingsOperation(row gen.SessionAgentSettingsOperation) (domain.Agen
 		Phase: domain.AgentSettingsPhase(row.Phase), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		ApplyMode: domain.AgentSettingsApplyMode(row.ApplyMode), Checkpoint: domain.AgentSettingsCheckpoint(row.Checkpoint), Version: row.OperationRevision,
 		ErrorCategory: domain.AgentSettingsErrorCategory(row.ErrorCategory), ErrorCode: row.ErrorCode, RequestID: row.RequestID, ProviderConversationID: row.ProviderConversationID, BranchID: row.BranchID}
-	op.Authority, op.RequestFingerprint = req.Authority, req.RequestFingerprint
+	op.Authority, op.RequestFingerprint, op.StopTurn = req.Authority, req.RequestFingerprint, req.StopTurn
+	op.TUI = req.TUI
 	if row.StartedAt.Valid {
 		op.StartedAt = &row.StartedAt.Time
 	}
@@ -72,7 +75,9 @@ func decodeSettingsOperation(row gen.SessionAgentSettingsOperation) (domain.Agen
 		op.FinishedAt = &row.FinishedAt.Time
 	}
 	if row.RecoveryJson != "" {
-		if err := json.Unmarshal([]byte(row.RecoveryJson), &op.Recovery); err != nil {
+		var err error
+		op.Recovery, err = decodeSettingsRecovery(row.RecoveryJson)
+		if err != nil {
 			return domain.AgentSettingsOperation{}, fmt.Errorf("decode settings recovery: %w", err)
 		}
 	}
@@ -108,6 +113,9 @@ func (s *Store) AgentSettingsOperationByKey(ctx context.Context, id domain.Sessi
 }
 
 func validateSettingsOperation(op domain.AgentSettingsOperation) error {
+	if op.TUI != nil || op.StopTurn && op.ApplyMode != domain.AgentSettingsRestart {
+		return ports.ErrAgentSettingsInvalid
+	}
 	if (op.ApplyMode != domain.AgentSettingsAfterTurn && op.ApplyMode != domain.AgentSettingsRestart) || op.Version != 0 || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil || op.FinishedAt != nil || op.ErrorCategory != "" || op.ErrorCode != "" || op.Recovery != nil || op.Execution != nil {
 		return fmt.Errorf("invalid initial agent settings journal")
 	}
@@ -183,6 +191,7 @@ func beginAgentSettingsOperationTx(ctx context.Context, q *gen.Queries, op domai
 		if op.BranchID == "" {
 			op.BranchID = existing.BranchID
 		}
+		op.TUI = existing.TUI
 		if requestForSettings(existing) != requestForSettings(op) {
 			return result, ports.ErrAgentSettingsConflict
 		}
@@ -210,6 +219,11 @@ func beginAgentSettingsOperationTx(ctx context.Context, q *gen.Queries, op domai
 	if !settingsOwnerMatches(current, op) {
 		return result, ports.ErrAgentSettingsConflict
 	}
+	if op.ApplyMode == domain.AgentSettingsRestart {
+		if err := prepareTUISettingsHandoff(ctx, q, &op); err != nil {
+			return result, err
+		}
+	}
 	raw, err := json.Marshal(requestForSettings(op))
 	if err != nil {
 		return result, err
@@ -225,6 +239,11 @@ func beginAgentSettingsOperationTx(ctx context.Context, q *gen.Queries, op domai
 	if err := q.InsertAgentSettingsAudit(ctx, gen.InsertAgentSettingsAuditParams{OperationID: op.ID, Phase: "pending", RecordedAt: op.CreatedAt, RequestID: op.RequestID}); err != nil {
 		return result, err
 	}
+	if op.TUI != nil {
+		if err := insertTUISettingsHandoff(ctx, q, op); err != nil {
+			return result, err
+		}
+	}
 	result = op
 	result.Phase = domain.AgentSettingsPending
 	result.UpdatedAt = op.CreatedAt
@@ -232,7 +251,7 @@ func beginAgentSettingsOperationTx(ctx context.Context, q *gen.Queries, op domai
 }
 
 func settingsOwnerMatches(row gen.GetSessionAgentSettingsRow, op domain.AgentSettingsOperation) bool {
-	if op.Execution != nil {
+	if op.Execution != nil && op.TUI == nil {
 		return op.Execution.Revision == op.BaseRevision && op.Execution.Plan.Source == op.Source && op.Execution.Plan.Target == op.Target &&
 			op.Execution.Owner.AccountID == op.AccountID && op.Execution.Owner.ProviderConversationID == op.ProviderConversationID && op.Execution.Owner.BranchID == op.BranchID &&
 			settingsRecoveryMatches(row, domain.AgentSettingsRecovery{Owner: op.Execution.Owner, Revision: op.BaseRevision, Settings: op.Source})
@@ -240,6 +259,9 @@ func settingsOwnerMatches(row gen.GetSessionAgentSettingsRow, op domain.AgentSet
 	generation := row.RuntimeLaunchID
 	if row.SessionMode == "chat" {
 		generation = row.ControllerGeneration
+	}
+	if op.TUI != nil && row.SessionMode == domain.SessionModeTUI && generation == op.TUI.TargetGeneration {
+		generation = op.ControllerGeneration
 	}
 	return !row.IsTerminated && row.AgentSettingsRevision == op.BaseRevision && row.Model == string(op.Source.Model) && row.Effort == string(op.Source.Effort) && row.AgentFastMode == string(op.Source.FastMode) && generation == op.ControllerGeneration && row.AccountID == op.AccountID && row.ProviderConversationID == op.ProviderConversationID && row.BranchID == op.BranchID
 }
@@ -273,6 +295,9 @@ func (s *Store) CommitAgentSettingsOperation(ctx context.Context, id domain.Sess
 		if err != nil {
 			return settingsStoreError(err)
 		}
+		if op.TUI != nil && (op.Execution == nil || op.Checkpoint != domain.AgentSettingsVerified || current.RuntimeLaunchID != op.TUI.TargetGeneration) {
+			return ports.ErrAgentSettingsConflict
+		}
 		if !settingsOwnerMatches(current, op) {
 			phase := domain.AgentSettingsFailed
 			if op.StartedAt != nil {
@@ -288,6 +313,9 @@ func (s *Store) CommitAgentSettingsOperation(ctx context.Context, id domain.Sess
 		generation := op.ControllerGeneration
 		if op.Execution != nil {
 			generation = op.Execution.Owner.ControllerGeneration
+		}
+		if op.TUI != nil {
+			generation = op.TUI.TargetGeneration
 		}
 		changed, err := q.CommitSessionAgentSettings(ctx, gen.CommitSessionAgentSettingsParams{Model: string(op.Target.Model), Effort: string(op.Target.Effort), FastMode: string(op.Target.FastMode), ID: id, ExpectedRevision: op.BaseRevision, SourceModel: string(op.Source.Model), SourceEffort: string(op.Source.Effort), SourceFastMode: string(op.Source.FastMode), ExpectedGeneration: generation})
 		if err != nil {

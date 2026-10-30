@@ -7526,6 +7526,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
         "500":
           content:
             application/json:
@@ -7538,6 +7544,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
       summary: Read durable agent preferences and saved capability evidence without
         waking the provider
       tags:
@@ -7629,7 +7641,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
-      summary: Queue a revision-checked settings operation; accepted is not completion
+      summary: Queue revision-checked settings; TUI requires applyMode restart, stopTurn
+        explicitly permits interruption; accepted is not completion
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}:
@@ -16693,6 +16706,8 @@ components:
           type:
           - "null"
           - string
+        stopTurn:
+          type: boolean
         target:
           $ref: '#/components/schemas/AgentSettings'
         updatedAt:
@@ -18677,6 +18692,8 @@ components:
           type: integer
         settings:
           $ref: '#/components/schemas/AgentSettingsPatch'
+        stopTurn:
+          type: boolean
       required:
       - expectedRevision
       - settings
@@ -24348,6 +24365,8 @@ components:
           $ref: '#/components/schemas/AgentSettingsEffective'
         pending:
           $ref: '#/components/schemas/AgentSettingsOperation'
+        restartRequired:
+          type: boolean
         revision:
           format: int64
           type: integer

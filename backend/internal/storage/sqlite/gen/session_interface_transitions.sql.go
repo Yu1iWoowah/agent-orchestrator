@@ -25,7 +25,7 @@ WHERE id = ?2
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
           created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 `
 
 type AcknowledgeSessionInterfaceTransitionNoticeParams struct {
@@ -57,6 +57,7 @@ func (q *Queries) AcknowledgeSessionInterfaceTransitionNotice(ctx context.Contex
 		&i.TargetRuntimeLaunchID,
 		&i.TargetRuntimeHandleID,
 		&i.TargetRuntimeState,
+		&i.SettingsOperationID,
 	)
 	return i, err
 }
@@ -128,10 +129,10 @@ const getActiveSessionInterfaceTransition = `-- name: GetActiveSessionInterfaceT
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE session_id = ?
-  AND phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
+  AND (phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR (phase='recovery_required' AND settings_operation_id<>''))
 ORDER BY created_at DESC
 LIMIT 1
 `
@@ -159,6 +160,7 @@ func (q *Queries) GetActiveSessionInterfaceTransition(ctx context.Context, sessi
 		&i.TargetRuntimeLaunchID,
 		&i.TargetRuntimeHandleID,
 		&i.TargetRuntimeState,
+		&i.SettingsOperationID,
 	)
 	return i, err
 }
@@ -167,7 +169,7 @@ const getLatestSessionInterfaceTransition = `-- name: GetLatestSessionInterfaceT
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE session_id = ?
 ORDER BY created_at DESC, rowid DESC
@@ -200,6 +202,7 @@ func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessi
 		&i.TargetRuntimeLaunchID,
 		&i.TargetRuntimeHandleID,
 		&i.TargetRuntimeState,
+		&i.SettingsOperationID,
 	)
 	return i, err
 }
@@ -208,7 +211,7 @@ const getSessionInterfaceTransition = `-- name: GetSessionInterfaceTransition :o
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE id = ?
 `
@@ -236,6 +239,7 @@ func (q *Queries) GetSessionInterfaceTransition(ctx context.Context, id string) 
 		&i.TargetRuntimeLaunchID,
 		&i.TargetRuntimeHandleID,
 		&i.TargetRuntimeState,
+		&i.SettingsOperationID,
 	)
 	return i, err
 }
@@ -260,12 +264,12 @@ INSERT INTO session_interface_transitions (
     id, session_id, source_mode, target_mode, policy, history_policy, phase,
     native_conversation_id, error_code, error_detail,
     created_at, updated_at, completed_at, notice_acknowledged_at,
-    source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL, ?11, ?12, '', '', CASE WHEN ?12<>'' THEN 'not_started' ELSE '' END)
+    source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL, ?11, ?12, '', '', CASE WHEN ?12<>'' THEN 'not_started' ELSE '' END, ?13)
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
           created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 `
 
 type InsertSessionInterfaceTransitionParams struct {
@@ -281,6 +285,7 @@ type InsertSessionInterfaceTransitionParams struct {
 	UpdatedAt            time.Time
 	SourceAccountID      string
 	TargetAccountID      string
+	SettingsOperationID  string
 }
 
 func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg InsertSessionInterfaceTransitionParams) (SessionInterfaceTransition, error) {
@@ -297,6 +302,7 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 		arg.UpdatedAt,
 		arg.SourceAccountID,
 		arg.TargetAccountID,
+		arg.SettingsOperationID,
 	)
 	var i SessionInterfaceTransition
 	err := row.Scan(
@@ -319,6 +325,7 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 		&i.TargetRuntimeLaunchID,
 		&i.TargetRuntimeHandleID,
 		&i.TargetRuntimeState,
+		&i.SettingsOperationID,
 	)
 	return i, err
 }
@@ -327,9 +334,9 @@ const listActiveSessionInterfaceTransitions = `-- name: ListActiveSessionInterfa
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
-WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
+WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR (phase='recovery_required' AND settings_operation_id<>'')
 ORDER BY created_at
 `
 
@@ -362,6 +369,7 @@ func (q *Queries) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]
 			&i.TargetRuntimeLaunchID,
 			&i.TargetRuntimeHandleID,
 			&i.TargetRuntimeState,
+			&i.SettingsOperationID,
 		); err != nil {
 			return nil, err
 		}
@@ -380,9 +388,9 @@ const listDeliverableSessionInterfaceTransitions = `-- name: ListDeliverableSess
 SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase,
        t.native_conversation_id, t.error_code, t.error_detail,
        t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy,
-       t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state
+       t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id
 FROM session_interface_transitions AS t
-WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required')
+WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required') AND NOT (t.phase='recovery_required' AND t.settings_operation_id<>'')
   AND EXISTS (
       SELECT 1
       FROM session_interface_transition_messages AS m
@@ -420,6 +428,7 @@ func (q *Queries) ListDeliverableSessionInterfaceTransitions(ctx context.Context
 			&i.TargetRuntimeLaunchID,
 			&i.TargetRuntimeHandleID,
 			&i.TargetRuntimeState,
+			&i.SettingsOperationID,
 		); err != nil {
 			return nil, err
 		}
@@ -485,7 +494,7 @@ func (q *Queries) ListPendingSessionInterfaceTransitionMessages(ctx context.Cont
 }
 
 const listUnsettledAccountTransitions = `-- name: ListUnsettledAccountTransitions :many
-SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state FROM session_interface_transitions AS t
+SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id FROM session_interface_transitions AS t
 JOIN account_transition_recovery_evidence AS r ON r.id=t.id
 WHERE r.current_target=0
 ORDER BY t.created_at,t.id
@@ -520,6 +529,7 @@ func (q *Queries) ListUnsettledAccountTransitions(ctx context.Context) ([]Sessio
 			&i.TargetRuntimeLaunchID,
 			&i.TargetRuntimeHandleID,
 			&i.TargetRuntimeState,
+			&i.SettingsOperationID,
 		); err != nil {
 			return nil, err
 		}

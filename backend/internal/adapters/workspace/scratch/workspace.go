@@ -23,6 +23,7 @@ type Workspace struct {
 }
 
 var _ ports.Workspace = (*Workspace)(nil)
+var _ ports.WorkspacePathResolver = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
 var _ ports.WorkspaceReclaimer = (*Workspace)(nil)
 
@@ -143,6 +144,12 @@ func (w *Workspace) ObserveWorkspace(_ context.Context, info ports.WorkspaceInfo
 		return ports.WorkspaceObservation{}, err
 	}
 	return ports.WorkspaceObservation{Path: path}, nil
+}
+
+// ResolveWorkspacePath uses the same validated path as Create/Restore and does
+// not attach, create or modify a workspace.
+func (w *Workspace) ResolveWorkspacePath(_ context.Context, cfg ports.WorkspaceConfig) (string, error) {
+	return w.restorePath(cfg)
 }
 
 func (w *Workspace) managedPath(cfg ports.WorkspaceConfig) (string, error) {

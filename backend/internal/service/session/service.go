@@ -1709,6 +1709,8 @@ func mapSessionError(err error) error {
 			"The agent is already exiting", nil)
 	case errors.Is(err, sessionmanager.ErrOperationInProgress):
 		return apierr.Conflict("SESSION_OPERATION_IN_PROGRESS", "Another operation is already running on this session", nil)
+	case errors.Is(err, ports.ErrAgentSettingsConflict):
+		return apierr.Conflict("AGENT_SETTINGS_CONFLICT", "A settings operation or controller handoff is already active", nil)
 	case errors.Is(err, sessionmanager.ErrInterfaceTransitionInProgress):
 		return apierr.Conflict("INTERFACE_TRANSITION_IN_PROGRESS",
 			"This session is already switching interfaces", nil)

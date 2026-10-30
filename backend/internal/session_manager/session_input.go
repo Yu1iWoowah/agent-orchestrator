@@ -95,7 +95,7 @@ func (m *Manager) SessionMutationInProgress(id domain.SessionID) bool {
 func (m *Manager) agentOperationActiveLocked(id domain.SessionID) bool {
 	_, ok := m.agentOperations[id]
 	_, deferred := m.deferredInterfaceRecovery[id]
-	return ok || deferred
+	return ok || deferred || m.tuiSettingsFences[id] != ""
 }
 
 // beginAgentOperation closes input admission before waiting for already-issued
@@ -110,7 +110,9 @@ func (m *Manager) beginAgentOperation(ctx context.Context, id domain.SessionID, 
 	var drained <-chan struct{}
 	for {
 		m.agentOpMu.Lock()
-		if m.agentOperationActiveLocked(id) {
+		recoveringTUI := m.tuiSettingsFences[id] != "" && m.agentOperations[id] == "" &&
+			(kind == agentOperationResume || kind == agentOperationKill)
+		if m.agentOperationActiveLocked(id) && !recoveringTUI {
 			current := m.agentOperations[id]
 			m.agentOpMu.Unlock()
 			if current != agentOperationHibernate || kind == agentOperationHibernate {

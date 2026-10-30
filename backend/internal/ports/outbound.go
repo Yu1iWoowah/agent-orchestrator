@@ -368,6 +368,12 @@ type WorkspacePreparationBranchCleaner interface {
 	DeletePreparedBranch(ctx context.Context, info WorkspaceInfo) error
 }
 
+// WorkspacePathResolver reports the path Create or Restore will use without
+// materializing it. The manager checks durable writer obligations first.
+type WorkspacePathResolver interface {
+	ResolveWorkspacePath(ctx context.Context, cfg WorkspaceConfig) (string, error)
+}
+
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
 	Create(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)
@@ -563,6 +569,13 @@ type WorkspaceConfig struct {
 	// FreshBranch never checks out a leftover local branch for a new
 	// speculative task; a collision gets a new suffixed branch instead.
 	FreshBranch bool
+	// FreshPath uses a session-specific orchestrator directory when the
+	// canonical directory still belongs to an unconfirmed writer. It must
+	// never reattach an existing directory. The returned Path is durable.
+	FreshPath bool
+	// FreshPathSuffix selects a later candidate within that session namespace.
+	// Zero uses the base directory; positive n appends -(n+1).
+	FreshPathSuffix int
 	// BaseBranch is the explicitly configured branch new session branches are
 	// created from. Empty asks the workspace adapter to resolve an authoritative
 	// repository default; it must never infer from the checked-out branch.
@@ -597,13 +610,15 @@ type WorkspaceInfo struct {
 // WorkspaceProjectConfig describes a multi-repo workspace session. RootRepoPath
 // and child RepoPath values are absolute paths to the canonical repositories.
 type WorkspaceProjectConfig struct {
-	ProjectID     domain.ProjectID
-	SessionID     domain.SessionID
-	Kind          domain.SessionKind
-	SessionPrefix string
-	Branch        string
-	FreshBranch   bool
-	RootRepoPath  string
+	ProjectID       domain.ProjectID
+	SessionID       domain.SessionID
+	Kind            domain.SessionKind
+	SessionPrefix   string
+	Branch          string
+	FreshBranch     bool
+	FreshPath       bool
+	FreshPathSuffix int
+	RootRepoPath    string
 	// BaseBranch applies only to RootRepoPath. Empty asks the workspace adapter
 	// to resolve that repository's default independently from every child.
 	BaseBranch string

@@ -45,6 +45,8 @@ type AgentConfig struct {
 // AgentLaunchOptions are choices a terminal agent only reads when it starts.
 // AO stores them with the session so a later restart launches it the same way.
 type AgentLaunchOptions struct {
+	// NativeServiceTier is qualified reconfigure wire, never a durable preference.
+	NativeServiceTier string `json:"-"`
 	// FastMode starts the agent on its faster tier (Codex).
 	FastMode bool `json:"fastMode,omitempty"`
 	// FastModeOff starts Codex on its standard tier even where its config or the

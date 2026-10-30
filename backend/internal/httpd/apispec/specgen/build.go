@@ -1628,12 +1628,12 @@ func shellTerminalOperations() []operation {
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/agent-settings", id: "getSessionAgentSettings", tag: "sessions",
 			summary:    "Read durable agent preferences and saved capability evidence without waking the provider",
 			pathParams: []any{controllers.SessionIDParam{}},
-			resps:      []respUnit{{http.StatusOK, controllers.SessionAgentSettingsResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+			resps:      []respUnit{{http.StatusOK, controllers.SessionAgentSettingsResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 
 		{
 			method: http.MethodPatch, path: "/api/v1/sessions/{sessionId}/agent-settings", id: "changeSessionAgentSettings", tag: "sessions",
-			summary:    "Queue a revision-checked settings operation; accepted is not completion",
+			summary:    "Queue revision-checked settings; TUI requires applyMode restart, stopTurn explicitly permits interruption; accepted is not completion",
 			pathParams: []any{controllers.SessionIDParam{}, controllers.AgentSettingsCallerHeaders{}, controllers.AgentSettingsIdempotencyHeader{}},
 			reqBody:    controllers.ChangeSessionAgentSettingsPayload{},
 			resps:      append([]respUnit{{http.StatusOK, controllers.AgentSettingsOperationResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}, respUnit{http.StatusAccepted, controllers.AgentSettingsOperationResponse{}}),

@@ -114,21 +114,16 @@ func (c *Controller) scheduleLegacySettings(ctx context.Context, settings domain
 	return c.setManualControls(ctx, settings)
 }
 
-func (c *Controller) scheduleLegacyConfigOption(ctx context.Context, id string, value ports.ChatConfigOptionValue, release func()) (bool, error) {
-	mutator := c.agentSettingsMutator()
-	if mutator == nil {
-		if settingsIdentityPresent(ctx) {
-			return true, apierr.Forbidden("AGENT_SETTINGS_TARGET_DENIED", "This target has no managed settings scheduler")
-		}
-		return false, nil
-	}
+// legacyConfigOptionPatch parses supported controls before the service releases
+// its work lease. Scheduling must not count the request itself as provider work.
+func (c *Controller) legacyConfigOptionPatch(ctx context.Context, id string, value ports.ChatConfigOptionValue) (domain.AgentSettingsPatch, bool, error) {
 	p := domain.AgentSettingsPatch{}
 	configID := id
 	if configID != "model" && configID != "effort" && configID != "fast" {
 		if configurer, ok := c.conv.(ports.ChatConfigOptionController); ok {
 			options, err := configurer.ListConfigOptions(ctx)
 			if err != nil {
-				return true, err
+				return p, true, err
 			}
 			for _, option := range options {
 				if option.ID == id {
@@ -166,11 +161,9 @@ func (c *Controller) scheduleLegacyConfigOption(ctx context.Context, id string, 
 		p.FastMode = &fast
 	default:
 		if settingsIdentityPresent(ctx) {
-			return true, apierr.Forbidden("AGENT_SETTINGS_PERMISSION_DENIED", "Settings grants cannot change other provider controls")
+			return p, true, apierr.Forbidden("AGENT_SETTINGS_PERMISSION_DENIED", "Settings grants cannot change other provider controls")
 		}
-		return false, nil
+		return p, false, nil
 	}
-	release()
-	_, err := mutator.ChangeAgentSettings(ctx, c.sessionID, p, c)
-	return true, err
+	return p, true, nil
 }

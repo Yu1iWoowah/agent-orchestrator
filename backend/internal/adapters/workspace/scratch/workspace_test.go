@@ -169,3 +169,27 @@ func TestWorkspaceDestroyReclaimReportsAlreadyAbsentDirectory(t *testing.T) {
 		t.Fatalf("reclaim = %q, want %q", reclaim, ports.WorkspaceReclaimAlreadyAbsent)
 	}
 }
+
+func TestResolveWorkspacePathDoesNotCreateDirectory(t *testing.T) {
+	ws, err := scratch.New(scratch.Options{ManagedRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceConfig{ProjectID: "p", SessionID: "p-1", Kind: domain.KindOrchestrator}
+	path, err := ws.ResolveWorkspacePath(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("planning created workspace directory: %v", err)
+	}
+	created, err := ws.Create(t.Context(), cfg)
+	if err != nil || created.Path != path {
+		t.Fatalf("planned=%q materialized=%q err=%v", path, created.Path, err)
+	}
+	cfg.Path = path
+	restored, err := ws.ResolveWorkspacePath(t.Context(), cfg)
+	if err != nil || restored != path {
+		t.Fatalf("restore plan=%q want=%q err=%v", restored, path, err)
+	}
+}

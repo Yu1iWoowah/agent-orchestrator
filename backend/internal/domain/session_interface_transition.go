@@ -89,6 +89,7 @@ func (p SessionInterfaceTransitionPhase) Terminal() bool {
 // explains an in-progress gap where the old controller has stopped and the new
 // one is not ready yet.
 type SessionInterfaceTransition struct {
+	SettingsOperationID  string                                  `json:"settingsOperationId,omitempty"`
 	ID                   string                                  `json:"id"`
 	SessionID            SessionID                               `json:"sessionId"`
 	SourceMode           SessionMode                             `json:"sourceMode" enum:"chat,tui"`
@@ -128,7 +129,9 @@ const (
 )
 
 // Active reports whether this row still owns the session's handoff gate.
-func (t SessionInterfaceTransition) Active() bool { return !t.Phase.Terminal() }
+func (t SessionInterfaceTransition) Active() bool {
+	return !t.Phase.Terminal() || t.SettingsOperationID != "" && t.Phase == SessionInterfaceTransitionRecovery
+}
 
 // AccountMove reports a handoff to another provider account in the same mode.
 func (t SessionInterfaceTransition) AccountMove() bool { return t.TargetAccountID != "" }

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 )
@@ -2592,22 +2593,38 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
-	var releaseOnce sync.Once
-	releaseWork := func() { releaseOnce.Do(release) }
-	defer releaseWork()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
 	}
-	if scheduled, err := controller.scheduleLegacyConfigOption(ctx, configID, value, releaseWork); scheduled {
+	mutator := controller.agentSettingsMutator()
+	if mutator == nil && settingsIdentityPresent(ctx) {
+		return nil, apierr.Forbidden("AGENT_SETTINGS_TARGET_DENIED", "This target has no managed settings scheduler")
+	}
+	if mutator != nil {
+		patch, scheduled, err := controller.legacyConfigOptionPatch(ctx, configID, value)
 		if err != nil {
 			return nil, err
 		}
-		options, err := configurer.ListConfigOptions(ctx)
-		if err != nil {
-			return nil, err
+		if scheduled {
+			// The durable CAS and controller handoff fence replacement. Like
+			// QueueAgentSettings, release this request's work before quiescence.
+			release()
+			release = nil
+			if _, err := mutator.ChangeAgentSettings(ctx, id, patch, controller); err != nil {
+				return nil, err
+			}
+			options, err := configurer.ListConfigOptions(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return controller.projectedLegacyOptions(ctx, options)
 		}
-		return controller.projectedLegacyOptions(ctx, options)
 	}
 	if record.Harness == domain.HarnessCopilot {
 		if err := copilotConfigOptionAllowed(configID, value); err != nil {

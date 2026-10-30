@@ -1616,3 +1616,539 @@ func run(t *testing.T, binary string, args ...string) {
 		t.Fatalf("%s %s: %v\n%s", binary, strings.Join(args, " "), err, out)
 	}
 }
+
+func TestPreparedAddFailureDoesNotClaimPreexistingItems(t *testing.T) {
+	for _, mode := range []string{"single", "multi"} {
+		for _, item := range []string{"dangling-symlink", "file", "empty-directory"} {
+			t.Run(mode+"/"+item, func(t *testing.T) {
+				git := requireGit(t)
+				tmp := t.TempDir()
+				repo := setupOriginClone(t, git, filepath.Join(tmp, "repo"))
+				ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "candidate", Kind: domain.KindWorker, Branch: "ao/candidate", FreshBranch: true, BaseBranch: "main"}
+				path, err := ws.ResolveWorkspacePath(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				switch item {
+				case "dangling-symlink":
+					err = os.Symlink("missing-target", path)
+					if errors.Is(err, os.ErrPermission) {
+						t.Skipf("symlinks unavailable: %v", err)
+					}
+				case "file":
+					err = os.WriteFile(path, []byte("original"), 0o600)
+				case "empty-directory":
+					err = os.Mkdir(path, 0o700)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				actualRun := ws.run
+				ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+					if strings.Contains(strings.Join(args, " "), "worktree add") {
+						return nil, context.Canceled
+					}
+					return actualRun(ctx, binary, args...)
+				}
+				var claimed ports.WorkspaceInfo
+				var createErr error
+				if mode == "single" {
+					claimed, createErr = ws.Create(t.Context(), cfg)
+				} else {
+					var out ports.WorkspaceProjectInfo
+					out, createErr = ws.CreateWorkspaceProject(t.Context(), ports.WorkspaceProjectConfig{ProjectID: cfg.ProjectID, SessionID: cfg.SessionID, Kind: cfg.Kind, Branch: cfg.Branch, FreshBranch: true, RootRepoPath: repo, BaseBranch: "main"})
+					claimed = out.Root
+				}
+				after, statErr := os.Lstat(path)
+				if createErr == nil || statErr != nil || !os.SameFile(before, after) || claimed.Path != "" {
+					t.Fatalf("failed add must not own or remove prior item: item=%s info=%+v createErr=%v Lstat=%v", item, claimed, createErr, statErr)
+				}
+				switch item {
+				case "dangling-symlink":
+					if target, err := os.Readlink(path); err != nil || target != "missing-target" {
+						t.Fatalf("symlink changed: target=%q err=%v", target, err)
+					}
+				case "file":
+					if data, err := os.ReadFile(path); err != nil || string(data) != "original" {
+						t.Fatalf("file changed: %q %v", data, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPreparedAddFailurePreservesReplacementIdentity(t *testing.T) {
+	for _, item := range []string{"dangling-symlink", "file", "empty-directory"} {
+		t.Run(item, func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			repo := setupOriginClone(t, git, filepath.Join(tmp, "repo"))
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "replaced", Kind: domain.KindWorker, Branch: "ao/replaced", FreshBranch: true, BaseBranch: "main"}
+			path, err := ws.ResolveWorkspacePath(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var replacement os.FileInfo
+			actualRun := ws.run
+			ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+				if !strings.Contains(strings.Join(args, " "), "worktree add") {
+					return actualRun(ctx, binary, args...)
+				}
+				// The old implementation had not reserved the directory; emulate
+				// Git making it before a concurrent owner replaces the path.
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.Rename(path, path+".created"); err != nil {
+					return nil, err
+				}
+				switch item {
+				case "dangling-symlink":
+					err = os.Symlink("missing-target", path)
+				case "file":
+					err = os.WriteFile(path, []byte("new owner"), 0o600)
+				case "empty-directory":
+					err = os.Mkdir(path, 0o700)
+				}
+				if err != nil {
+					return nil, err
+				}
+				replacement, err = os.Lstat(path)
+				if err != nil {
+					return nil, err
+				}
+				return nil, context.Canceled
+			}
+			claimed, createErr := ws.Create(t.Context(), cfg)
+			after, statErr := os.Lstat(path)
+			if replacement == nil || createErr == nil || statErr != nil || !os.SameFile(replacement, after) || claimed.Path != "" {
+				t.Fatalf("rollback removed or adopted replacement: item=%s claimed=%+v createErr=%v Lstat=%v", item, claimed, createErr, statErr)
+			}
+		})
+	}
+}
+
+func TestWorkspaceClaimRevalidatesParentSymlinkAfterRootCheckout(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	outside := filepath.Join(tmp, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "packages")); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	runGit(t, git, repo, "add", "packages")
+	runGit(t, git, repo, "commit", "-m", "add symlink boundary fixture")
+	runGit(t, git, repo, "push", "origin", "HEAD:main")
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ws.CreateWorkspaceProject(t.Context(), ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "boundary", Kind: domain.KindWorker, Branch: "ao/boundary", FreshBranch: true, RootRepoPath: repo, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "packages/api", RepoPath: child, BaseBranch: "main"}}})
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Errorf("claim must reject parent symlink introduced by checkout: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "api")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("claim wrote outside managed root: %v", err)
+	}
+}
+
+func TestWorkspaceProjectChildClaimFailureReclaimsNewRoot(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		t.Run(string(kind), func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+			child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+			outside := filepath.Join(tmp, "outside")
+			if err := os.Mkdir(outside, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "packages")); err != nil {
+				if errors.Is(err, os.ErrPermission) {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			runGit(t, git, root, "add", "packages")
+			runGit(t, git, root, "commit", "-m", "record child parent symlink")
+			runGit(t, git, root, "push", "origin", "HEAD:main")
+			asset := filepath.Join(root, "asset-source")
+			if err := os.Mkdir(asset, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(asset, "copied.txt"), []byte("copied asset"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "failed-child", Kind: kind, Branch: "ao/failed-child", RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "packages/api", RepoPath: child, BaseBranch: "main"}}, Assets: []ports.WorkspaceProjectAssetConfig{{RelativePath: "copied", SourcePath: asset}}}
+			path, err := ws.ResolveWorkspacePath(t.Context(), ports.WorkspaceConfig{ProjectID: cfg.ProjectID, SessionID: cfg.SessionID, Kind: kind, Branch: cfg.Branch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ws.CreateWorkspaceProject(t.Context(), cfg)
+			if !errors.Is(err, ErrUnsafePath) || strings.Contains(err.Error(), "workspace asset") {
+				t.Fatalf("expected unsafe child failure after copying valid assets, got %v", err)
+			}
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("failed spawn leaked root and copied assets at %s: %v", path, err)
+			}
+			if records := gitOutput(t, git, root, "worktree", "list", "--porcelain"); strings.Contains(records, path) {
+				t.Errorf("failed spawn leaked root registration: %s", records)
+			}
+			if branches := gitOutput(t, git, root, "for-each-ref", "--format=%(refname)", "refs/heads/"+cfg.Branch); branches != "" {
+				t.Errorf("failed spawn leaked branch: %s", branches)
+			}
+			if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+				t.Errorf("external path changed: %v %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestWorkspaceProjectUsesEmptyChildDirectoryFromNewRootCheckout(t *testing.T) {
+	for _, fresh := range []bool{false, true} {
+		name := "ordinary"
+		if fresh {
+			name = "fresh-path"
+		}
+		t.Run(name, func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+			child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+			childSHA := gitOutput(t, git, child, "rev-parse", "HEAD")
+			runGit(t, git, root, "update-index", "--add", "--cacheinfo", "160000,"+childSHA+",services/api")
+			runGit(t, git, root, "commit", "-m", "record child gitlink")
+			runGit(t, git, root, "push", "origin", "HEAD:main")
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "gitlink", Kind: domain.KindOrchestrator, Branch: "ao/gitlink", FreshBranch: fresh, FreshPath: fresh, RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "services/api", RepoPath: child, BaseBranch: "main"}}}
+			info, err := ws.CreateWorkspaceProject(t.Context(), cfg)
+			if err != nil {
+				t.Fatalf("root checkout's empty gitlink directory must accept child: %v", err)
+			}
+			defer func() { _ = ws.DestroyWorkspaceProject(t.Context(), info) }()
+			if len(info.Worktrees) != 2 || gitOutput(t, git, info.Worktrees[1].Path, "rev-parse", "HEAD") != childSHA {
+				t.Fatalf("child not materialized: %+v", info)
+			}
+		})
+	}
+}
+
+func TestWorkspaceProjectChildFailureDoesNotReturnReplacedRootAsOwned(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := ws.ResolveWorkspacePath(t.Context(), ports.WorkspaceConfig{ProjectID: "proj", SessionID: "replacement", Kind: domain.KindWorker, Branch: "ao/replacement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualRun := ws.run
+	replaced := false
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := actualRun(ctx, binary, args...)
+		if err == nil && !replaced && len(args) > 3 && args[0] == "-C" && args[1] == root && args[2] == "worktree" && args[3] == "add" {
+			replaced = true
+			if err := os.Rename(path, path+".created"); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(path, []byte("unowned replacement"), 0o600); err != nil {
+				return nil, err
+			}
+		}
+		return out, err
+	}
+	info, err := ws.CreateWorkspaceProject(t.Context(), ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "replacement", Kind: domain.KindWorker, Branch: "ao/replacement", RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: child, BaseBranch: "main"}}})
+	if !replaced || err == nil {
+		t.Fatalf("missing replacement fault: replaced=%v err=%v", replaced, err)
+	}
+	if info.Root.Path != "" || len(info.Worktrees) != 0 {
+		t.Errorf("replaced root was returned as a cleanup handle: %+v", info)
+	}
+	if bytes, err := os.ReadFile(path); err != nil || string(bytes) != "unowned replacement" {
+		t.Errorf("replacement changed: %q %v", bytes, err)
+	}
+}
+
+func TestPreparedAddLostReceiptPreservesOwnerReplacedDuringDestroyProbe(t *testing.T) {
+	for _, phase := range []string{"registration", "status-after-move"} {
+		t.Run(phase, func(t *testing.T) {
+			git := requireGit(t)
+			tmp := t.TempDir()
+			repo := setupOriginClone(t, git, filepath.Join(tmp, "repo"))
+			if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("/ignored-owner-data\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, git, repo, "add", ".gitignore")
+			runGit(t, git, repo, "commit", "-m", "ignore owner data")
+			runGit(t, git, repo, "push", "origin", "HEAD:main")
+			replacement := filepath.Join(tmp, "new-owner")
+			runGit(t, git, repo, "worktree", "add", "-b", "owner/replacement", replacement, "main")
+			if err := os.WriteFile(filepath.Join(replacement, "ignored-owner-data"), []byte("new owner must survive"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			replacementHandle, err := os.Open(replacement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacementIdentity, statErr := replacementHandle.Stat()
+			closeErr := replacementHandle.Close()
+			if err := errors.Join(statErr, closeErr); err != nil {
+				t.Fatal(err)
+			}
+			if status := gitOutput(t, git, replacement, "status", "--porcelain"); status != "" {
+				t.Fatalf("replacement must be clean with ignored data: %s", status)
+			}
+			ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "lost-receipt", Kind: domain.KindWorker, Branch: "ao/lost-receipt", FreshBranch: true, BaseBranch: "main"}
+			path, err := ws.ResolveWorkspacePath(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observedPath := path
+			actualRun := ws.run
+			lost, replaced := false, false
+			probes := 0
+			ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+				out, err := actualRun(ctx, binary, args...)
+				command := strings.Join(args, " ")
+				if err == nil && !lost && strings.Contains(command, "worktree add") {
+					lost = true
+					return nil, context.Canceled
+				}
+				if err == nil && lost && strings.Contains(command, "worktree list") {
+					probes++
+					if phase == "registration" && probes == 3 {
+						if err := os.Rename(path, path+".claimed"); err != nil {
+							return nil, err
+						}
+						if err := os.Rename(replacement, path); err != nil {
+							return nil, err
+						}
+						replaced = true
+					}
+				}
+				if phase == "status-after-move" && err == nil && lost && !replaced && len(args) > 2 && args[0] == "-C" && args[2] == "status" && strings.HasPrefix(filepath.Base(filepath.Dir(args[1])), ".rollback-") {
+					observedPath = args[1]
+					if err := os.Rename(observedPath, observedPath+".claimed"); err != nil {
+						return nil, err
+					}
+					if err := os.Rename(replacement, observedPath); err != nil {
+						return nil, err
+					}
+					replaced = true
+				}
+				return out, err
+			}
+			claimed, createErr := ws.Create(t.Context(), cfg)
+			ws.waitForDiscards()
+			ws.sweepDiscarded()
+			ws.waitForDiscards()
+			if !lost || !replaced || createErr == nil {
+				t.Fatalf("fault not exercised: lost=%v replaced=%v probes=%d err=%v", lost, replaced, probes, createErr)
+			}
+			after, statErr := os.Lstat(observedPath)
+			if statErr != nil || !os.SameFile(replacementIdentity, after) {
+				t.Errorf("Destroy removed replacement after its Git probe: Lstat=%v", statErr)
+			}
+			if bytes, err := os.ReadFile(filepath.Join(observedPath, "ignored-owner-data")); err != nil || string(bytes) != "new owner must survive" {
+				t.Errorf("ignored owner data was removed: %q %v", bytes, err)
+			}
+			if claimed.Path != "" {
+				t.Errorf("replacement returned as owned cleanup handle: %+v", claimed)
+			}
+
+		})
+	}
+}
+
+func TestWorktreeCreationIdentityCapturedBeforePathChanges(t *testing.T) {
+	for _, change := range []string{"rename", "replacement"} {
+		t.Run(change, func(t *testing.T) {
+			ws, err := New(Options{ManagedRoot: filepath.Join(t.TempDir(), "managed"), RepoResolver: StaticRepoResolver{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(ws.managedRoot, "claimed")
+			claim, err := ws.claimWorktreePath(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved := path + ".moved"
+			if err := os.Rename(path, moved); err != nil {
+				t.Fatal(err)
+			}
+			if change == "replacement" {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := checkWorktreePathClaim(path, claim); !errors.Is(err, ports.ErrWorkspaceDirty) {
+					t.Fatalf("replacement adopted at first comparison: %v", err)
+				}
+				return
+			}
+			after, err := os.Lstat(moved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(claim, after) {
+				t.Fatal("creation identity was not captured before rename")
+			}
+		})
+	}
+}
+
+func newChildClaimFailureWorkspace(t *testing.T) (*Workspace, ports.WorkspaceProjectConfig) {
+	t.Helper()
+	git := requireGit(t)
+	tmp := t.TempDir()
+	root := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	child := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	for name, contents := range map[string]string{"api": "tracked child placeholder", ".gitignore": "/ignored-owner-data\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, git, root, "add", "api", ".gitignore")
+	runGit(t, git, root, "commit", "-m", "add child claim fixture")
+	runGit(t, git, root, "push", "origin", "HEAD:main")
+	source := filepath.Join(root, "copied-source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "marker.txt"), []byte("copied by failed spawn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceProjectConfig{ProjectID: "proj", SessionID: "child-failure", Kind: domain.KindOrchestrator, Branch: "ao/child-failure", RootRepoPath: root, BaseBranch: "main", Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: child, BaseBranch: "main"}}, Assets: []ports.WorkspaceProjectAssetConfig{{RelativePath: "copied", SourcePath: source}}}
+	return ws, cfg
+}
+
+func TestDestroyChildRollbackPreservesOwnerReplacedAfterPrune(t *testing.T) {
+	ws, cfg := newChildClaimFailureWorkspace(t)
+	replacement := filepath.Join(t.TempDir(), "replacement")
+	runGit(t, ws.binary, cfg.RootRepoPath, "worktree", "add", "-b", "owner/replacement", replacement, "main")
+	if err := os.WriteFile(filepath.Join(replacement, "ignored-owner-data"), []byte("new rollback owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitOutput(t, ws.binary, replacement, "status", "--porcelain"); status != "" {
+		t.Fatalf("replacement is not clean: %s", status)
+	}
+	handle, err := os.Open(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, statErr := handle.Stat()
+	closeErr := handle.Close()
+	if err := errors.Join(statErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	inner := ws.run
+	swapped := false
+	staged := ""
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := inner(ctx, binary, args...)
+		if err == nil && !swapped && strings.Contains(strings.Join(args, " "), "worktree prune") {
+			// Observe the actual staged root on both implementations. The fault must
+			// still execute when the fixed code uses a private holder instead of trash.
+			trash, globErr := filepath.Glob(filepath.Join(ws.discardedRoot(), "*"))
+			if globErr != nil {
+				return nil, globErr
+			}
+			private, globErr := filepath.Glob(filepath.Join(ws.managedRoot, ".rollback-*", "worktree"))
+			if globErr != nil {
+				return nil, globErr
+			}
+			for _, candidate := range append(trash, private...) {
+				marker, readErr := os.ReadFile(filepath.Join(candidate, "copied", "marker.txt"))
+				if readErr != nil || string(marker) != "copied by failed spawn" {
+					continue
+				}
+				if err := os.Rename(candidate, candidate+".claimed"); err != nil {
+					return nil, err
+				}
+				if err := os.Rename(replacement, candidate); err != nil {
+					return nil, err
+				}
+				staged = candidate
+				swapped = true
+				break
+			}
+		}
+		return out, err
+	}
+	remaining, createErr := ws.CreateWorkspaceProject(t.Context(), cfg)
+	ws.waitForDiscards()
+	ws.sweepDiscarded()
+	ws.waitForDiscards()
+	if !swapped || createErr == nil {
+		t.Fatalf("late prune fault not exercised: swapped=%v error=%v", swapped, createErr)
+	}
+	after, statErr := os.Lstat(staged)
+	if statErr != nil || !os.SameFile(identity, after) {
+		t.Errorf("child rollback deleted replacement: swapped=%v Lstat=%v", swapped, statErr)
+	}
+	if marker, err := os.ReadFile(filepath.Join(staged, "ignored-owner-data")); err != nil || string(marker) != "new rollback owner" {
+		t.Errorf("child rollback deleted new owner data: %q %v", marker, err)
+	}
+	if remaining.Root.Path != "" || len(remaining.Worktrees) != 0 {
+		t.Errorf("unverified rollback returned owned inventory: %+v", remaining)
+	}
+}
+
+func TestWorkspaceProjectFreshPathRetainsCopiedAssetsOnChildFailure(t *testing.T) {
+	ws, cfg := newChildClaimFailureWorkspace(t)
+	cfg.FreshPath, cfg.FreshBranch = true, true
+	remaining, err := ws.CreateWorkspaceProject(t.Context(), cfg)
+	if err == nil || remaining.Root.Path == "" || len(remaining.Worktrees) != 1 || remaining.Worktrees[0].CreationSHA == "" {
+		t.Fatalf("dirty partial lost its durable inventory: %+v %v", remaining, err)
+	}
+	if marker, err := os.ReadFile(filepath.Join(remaining.Root.Path, "copied", "marker.txt")); err != nil || string(marker) != "copied by failed spawn" {
+		t.Fatalf("copied asset was discarded: %q %v", marker, err)
+	}
+	if refs := gitOutput(t, ws.binary, cfg.RootRepoPath, "for-each-ref", "--format=%(refname)", "refs/heads/"+remaining.Root.Branch); refs == "" {
+		t.Fatal("retained root lost its branch")
+	}
+	if marker, err := os.ReadFile(filepath.Join(cfg.Assets[0].SourcePath, "marker.txt")); err != nil || string(marker) != "copied by failed spawn" {
+		t.Fatalf("canonical source changed: %q %v", marker, err)
+	}
+}

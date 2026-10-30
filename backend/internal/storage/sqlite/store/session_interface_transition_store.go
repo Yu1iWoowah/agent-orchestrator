@@ -465,7 +465,7 @@ func (s *Store) MarkSessionInterfaceTransitionMessageDelivered(
 
 func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.SessionInterfaceTransition {
 	return domain.SessionInterfaceTransition{
-		ID: row.ID, SessionID: row.SessionID,
+		ID: row.ID, SessionID: row.SessionID, SettingsOperationID: row.SettingsOperationID,
 		SourceMode: row.SourceMode, TargetMode: row.TargetMode,
 		Policy: row.Policy, HistoryPolicy: row.HistoryPolicy, Phase: row.Phase,
 		NativeConversationID: row.NativeConversationID,

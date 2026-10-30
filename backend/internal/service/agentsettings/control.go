@@ -20,11 +20,15 @@ import (
 // Change preserves patch presence and the caller's CAS. Generated IDs,
 // request IDs and credentials do not form its idempotency identity.
 type Change struct {
-	ExpectedRevision *int64                        `json:"expectedRevision" nullable:"false" minimum:"0"`
-	Settings         domain.AgentSettingsPatch     `json:"settings"`
-	ApplyMode        domain.AgentSettingsApplyMode `json:"applyMode,omitempty" enum:"after-turn,restart"`
-	IdempotencyKey   string                        `json:"-"`
-	RequestID        string                        `json:"-"`
+	ExpectedRevision *int64                    `json:"expectedRevision" nullable:"false" minimum:"0"`
+	Settings         domain.AgentSettingsPatch `json:"settings"`
+	// Restart explicitly consents to a same-native-conversation TUI restart.
+	ApplyMode domain.AgentSettingsApplyMode `json:"applyMode,omitempty" enum:"after-turn,restart"`
+	// StopTurn permits interrupting a running turn, only with restart consent.
+	// It never authorizes answering a pending approval.
+	StopTurn       bool   `json:"stopTurn,omitempty"`
+	IdempotencyKey string `json:"-"`
+	RequestID      string `json:"-"`
 }
 
 // ControlStore supplies durable ownership and settings operation evidence.
@@ -42,6 +46,13 @@ type SettingsRuntime interface {
 	CancelAgentSettings(context.Context, domain.SessionID, string, int64) (domain.AgentSettingsOperation, error)
 }
 
+// TUISettingsRuntime owns the native-process handoff. Restart consent never
+// routes a terminal through the Chat controller or a cross-provider switch.
+type TUISettingsRuntime interface {
+	QueueTUIAgentSettings(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error)
+	CancelTUIAgentSettings(context.Context, domain.SessionID, string, int64) (domain.AgentSettingsOperation, error)
+}
+
 // Control is the shared authorization/CAS/provider boundary for all mutation
 // transports. It owns no provider setters and cannot manufacture a runtime.
 type Control struct {
@@ -49,6 +60,7 @@ type Control struct {
 	store      ControlStore
 	authorizer *Authorizer
 	runtime    SettingsRuntime
+	tui        TUISettingsRuntime
 	now        func() time.Time
 }
 
@@ -57,8 +69,13 @@ func NewControl(core *Service, store ControlStore, authorizer *Authorizer, runti
 	if now == nil {
 		now = time.Now
 	}
-	return &Control{core: core, store: store, authorizer: authorizer, runtime: runtime, now: now}
+	c := &Control{core: core, store: store, authorizer: authorizer, runtime: runtime, now: now}
+	c.tui, _ = runtime.(TUISettingsRuntime)
+	return c
 }
+
+// SetTUIRuntime wires the terminal coordinator before the API opens.
+func (c *Control) SetTUIRuntime(runtime TUISettingsRuntime) { c.tui = runtime }
 
 // ChangeAgentSettings adapts pre-CAS manual menus into the same scheduler. It
 // never changes project defaults, writes session metadata separately or claims
@@ -91,7 +108,7 @@ func (c *Control) ChangeAgentSettings(ctx context.Context, id domain.SessionID, 
 		result, err := c.change(ctx, caller, id, Change{ExpectedRevision: &current.Revision, Settings: patch, IdempotencyKey: key, RequestID: reqid.FromContext(ctx)}, enqueue, previous)
 		var structured *apierr.Error
 		if caller != (Caller{}) || !errors.As(err, &structured) || structured.Code != "AGENT_SETTINGS_CONFLICT" {
-			return result, err
+			return result, settingsError(err)
 		}
 	}
 	return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsConflict)
@@ -115,13 +132,17 @@ func (c *Control) Change(ctx context.Context, caller Caller, id domain.SessionID
 	if c.runtime != nil {
 		enqueue = c.runtime.QueueAgentSettings
 	}
-	return c.change(ctx, caller, id, in, enqueue, nil)
+	op, err := c.change(ctx, caller, id, in, enqueue, nil)
+	return op, settingsError(err)
 }
 
 func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID, in Change, enqueue func(context.Context, domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error), previous *domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
 	var empty domain.AgentSettingsOperation
 	if in.ApplyMode == "" {
 		in.ApplyMode = domain.AgentSettingsAfterTurn
+	}
+	if in.StopTurn && in.ApplyMode != domain.AgentSettingsRestart {
+		return empty, apierr.Invalid("AGENT_SETTINGS_INVALID", "stopTurn requires restart", nil)
 	}
 	if in.ExpectedRevision == nil || *in.ExpectedRevision < 0 || !validGrantText(in.IdempotencyKey) || len(in.RequestID) > 256 || strings.ContainsAny(in.RequestID, "\r\n\x00") || in.Settings == (domain.AgentSettingsPatch{}) || (in.ApplyMode != domain.AgentSettingsAfterTurn && in.ApplyMode != domain.AgentSettingsRestart) {
 		return empty, apierr.Invalid("AGENT_SETTINGS_INVALID", "A settings patch, expectedRevision and idempotency key are required", nil)
@@ -136,7 +157,8 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 		Patch     domain.AgentSettingsPatch
 		Mode      domain.AgentSettingsApplyMode
 		Actor     domain.AgentSettingsActor
-	}{id, *in.ExpectedRevision, in.Settings, in.ApplyMode, accepted.Actor})
+		StopTurn  bool `json:"StopTurn,omitempty"`
+	}{id, *in.ExpectedRevision, in.Settings, in.ApplyMode, accepted.Actor, in.StopTurn})
 	if err != nil {
 		return empty, settingsError(ports.ErrAgentSettingsInvalid)
 	}
@@ -155,7 +177,15 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 	if rec.IsTerminated {
 		return empty, apierr.Conflict("AGENT_SETTINGS_CONFLICT", "The session is terminated", nil)
 	}
-	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || in.ApplyMode != domain.AgentSettingsAfterTurn {
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI {
+		if in.ApplyMode != domain.AgentSettingsRestart {
+			return empty, apierr.Conflict("AGENT_SETTINGS_RESTART_REQUIRED", "This session requires an explicit restart workflow", nil)
+		}
+		if c.tui == nil {
+			return empty, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
+		}
+		enqueue = c.tui.QueueTUIAgentSettings
+	} else if in.ApplyMode != domain.AgentSettingsAfterTurn {
 		return empty, apierr.Conflict("AGENT_SETTINGS_RESTART_REQUIRED", "This session requires an explicit restart workflow", nil)
 	}
 	current, err := c.store.SessionAgentSettings(ctx, id)
@@ -192,6 +222,7 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 		return empty, settingsError(err)
 	}
 	op := domain.AgentSettingsOperation{ID: uuid.NewString(), SessionID: id, IdempotencyKey: in.IdempotencyKey, BaseRevision: current.Revision, Source: current.Settings, Target: target, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID, Actor: accepted.Actor, Authority: accepted.Authority, RequestFingerprint: fingerprint, CreatedAt: c.now(), RequestID: in.RequestID, ApplyMode: in.ApplyMode}
+	op.StopTurn = in.StopTurn
 	if enqueue == nil {
 		return empty, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
@@ -216,7 +247,7 @@ func (c *Control) acceptedRetry(ctx context.Context, id domain.SessionID, key, f
 // Operation reads durable progress after checking the current caller scope.
 func (c *Control) Operation(ctx context.Context, caller Caller, id domain.SessionID, operationID string) (domain.AgentSettingsOperation, error) {
 	if _, _, err := c.target(ctx, caller, id); err != nil {
-		return domain.AgentSettingsOperation{}, err
+		return domain.AgentSettingsOperation{}, settingsError(err)
 	}
 	op, err := c.store.AgentSettingsOperation(ctx, id, operationID)
 	return op, settingsError(err)
@@ -225,25 +256,33 @@ func (c *Control) Operation(ctx context.Context, caller Caller, id domain.Sessio
 // ReadForCaller qualifies access before reading preferences and observations.
 func (c *Control) ReadForCaller(ctx context.Context, caller Caller, id domain.SessionID) (Snapshot, error) {
 	if _, _, err := c.target(ctx, caller, id); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, settingsError(err)
 	}
-	return c.core.Read(ctx, id)
+	result, err := c.core.Read(ctx, id)
+	return result, settingsError(err)
 }
 
 // Cancel terminates an unstarted intent using the caller scope and version CAS.
 func (c *Control) Cancel(ctx context.Context, caller Caller, id domain.SessionID, operationID string, version int64) (domain.AgentSettingsOperation, error) {
 	_, accepted, err := c.target(ctx, caller, id)
 	if err != nil {
-		return domain.AgentSettingsOperation{}, err
+		return domain.AgentSettingsOperation{}, settingsError(err)
+	}
+	operation, err := c.store.AgentSettingsOperation(ctx, id, operationID)
+	if err != nil {
+		return domain.AgentSettingsOperation{}, settingsError(err)
 	}
 	if accepted.Actor.Kind == domain.AgentSettingsActorOrchestrator {
-		op, err := c.store.AgentSettingsOperation(ctx, id, operationID)
-		if err != nil {
-			return domain.AgentSettingsOperation{}, settingsError(err)
-		}
-		if op.Actor != accepted.Actor {
+		if operation.Actor != accepted.Actor {
 			return domain.AgentSettingsOperation{}, apierr.Forbidden("AGENT_SETTINGS_CANCEL_DENIED", "Managed callers may only cancel their own settings operation")
 		}
+	}
+	if operation.ApplyMode == domain.AgentSettingsRestart {
+		if c.tui == nil {
+			return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
+		}
+		op, err := c.tui.CancelTUIAgentSettings(ctx, id, operationID, version)
+		return op, settingsError(err)
 	}
 	if c.runtime == nil {
 		return domain.AgentSettingsOperation{}, settingsError(ports.ErrAgentSettingsCapabilitiesUnavailable)
@@ -261,6 +300,16 @@ func settingsError(err error) error {
 		return structured
 	}
 	switch {
+	case errors.Is(err, domain.ErrReplacementInProgress):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", "Project already has an active orchestrator replacement", nil)
+	case errors.Is(err, domain.ErrReplacementSourceRetired):
+		return apierr.Conflict("ORCHESTRATOR_REPLACEMENT_SOURCE_RETIRED", "This source orchestrator was replaced and cannot be revived", nil)
+	case errors.Is(err, ports.ErrAgentSettingsNativeHistoryUnavailable):
+		return apierr.Conflict("AGENT_SETTINGS_NATIVE_HISTORY_UNAVAILABLE", "The original native conversation cannot be resumed; fresh fallback is disabled", nil)
+	case errors.Is(err, context.Canceled):
+		return apierr.Conflict("AGENT_SETTINGS_REQUEST_CANCELLED", "The settings request was cancelled; query its operation before retrying", nil)
+	case errors.Is(err, context.DeadlineExceeded):
+		return apierr.Unavailable("AGENT_SETTINGS_REQUEST_TIMEOUT", "The settings request deadline expired; query its operation before retrying")
 	case errors.Is(err, ports.ErrAgentSettingsConflict):
 		return apierr.Conflict("AGENT_SETTINGS_CONFLICT", "Settings changed or another operation is active", nil)
 	case errors.Is(err, ports.ErrAgentSettingsNotFound):
@@ -290,6 +339,9 @@ func (c *Control) selectionProof(ctx context.Context, id domain.SessionID, setti
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	current, err := c.core.catalogInputs.CatalogFingerprint(ctx, string(snapshot.Harness), ports.AccountModelCatalogScope(snapshot.AccountID))
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	if err != nil || current == "" || current != snapshot.catalogFingerprint {
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
@@ -322,7 +374,10 @@ func (c *Control) ValidateAgentSettings(ctx context.Context, op domain.AgentSett
 	if err != nil {
 		return domain.AgentSettingsQualification{}, err
 	}
-	if !ok || rec.IsTerminated {
+	// Ordinary Restore validates an already committed TUI preference while
+	// its row is still terminated. This never admits a new mutation.
+	restoringCommittedTUI := restoring && rec.Mode == domain.SessionModeTUI && op.Phase == domain.AgentSettingsApplied
+	if !ok || rec.IsTerminated && !restoringCommittedTUI {
 		return domain.AgentSettingsQualification{}, ports.ErrAgentSettingsConflict
 	}
 	current, err := c.store.SessionAgentSettings(ctx, op.SessionID)
@@ -339,6 +394,10 @@ func (c *Control) ValidateAgentSettings(ctx context.Context, op domain.AgentSett
 			return domain.AgentSettingsQualification{}, err
 		}
 	}
-	fingerprint, err := c.selectionProof(ctx, op.SessionID, op.Target, rec.Harness == domain.HarnessClaudeCode)
+	selection := op.Target
+	if restoring {
+		selection = current.Settings
+	}
+	fingerprint, err := c.selectionProof(ctx, op.SessionID, selection, rec.Harness == domain.HarnessClaudeCode)
 	return domain.AgentSettingsQualification{InputFingerprint: fingerprint, PolicyVersion: policy}, err
 }

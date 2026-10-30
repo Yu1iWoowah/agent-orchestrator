@@ -16,7 +16,7 @@ import (
 
 // PinAgentSettingsExecution saves a qualified non-secret preimage before the
 // first provider action. Only the generation may differ from the original
-// request, and only a complete current Chat owner can execute or recover it.
+// request. Recovery requires a complete Chat owner or a linked TUI handoff.
 func (s *Store) PinAgentSettingsExecution(ctx context.Context, id domain.SessionID, operationID string, expectedVersion int64, execution domain.AgentSettingsExecution, at time.Time) (domain.AgentSettingsOperation, error) {
 	if at.IsZero() || expectedVersion < 0 || execution.Revision < 0 || execution.Plan.Source.Validate() != nil || execution.Plan.Target.Validate() != nil || execution.Qualification.InputFingerprint == "" || execution.Qualification.PolicyVersion == "" {
 		return domain.AgentSettingsOperation{}, ports.ErrAgentSettingsInvalid
@@ -47,7 +47,7 @@ func (s *Store) PinAgentSettingsExecution(ctx context.Context, id domain.Session
 		if err != nil {
 			return settingsStoreError(err)
 		}
-		if execution.Owner.AccountID != op.AccountID || execution.Owner.ProviderConversationID != op.ProviderConversationID || execution.Owner.BranchID != op.BranchID || execution.Revision != op.BaseRevision || !settingsRecoveryMatches(current, domain.AgentSettingsRecovery{Owner: execution.Owner, Revision: execution.Revision, Settings: op.Source}) {
+		if execution.Owner.AccountID != op.AccountID || execution.Owner.ProviderConversationID != op.ProviderConversationID || execution.Owner.BranchID != op.BranchID || execution.Revision != op.BaseRevision || !settingsOperationRecoveryMatches(current, op, domain.AgentSettingsRecovery{Owner: execution.Owner, Revision: execution.Revision, Settings: op.Source}) {
 			return ports.ErrAgentSettingsConflict
 		}
 		if execution.Plan.Protocol == "" || execution.Plan.Before.Model == "" || execution.Plan.ProviderConversationID != execution.Owner.ProviderConversationID || execution.Plan.Source != op.Source || execution.Plan.Target != op.Target {

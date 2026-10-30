@@ -2611,7 +2611,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Queue a revision-checked settings operation; accepted is not completion */
+        /** Queue revision-checked settings; TUI requires applyMode restart, stopTurn explicitly permits interruption; accepted is not completion */
         patch: operations["changeSessionAgentSettings"];
         trace?: never;
     };
@@ -5375,6 +5375,7 @@ export interface components {
             source: components["schemas"]["AgentSettings"];
             /** Format: date-time */
             startedAt?: null | string;
+            stopTurn?: boolean;
             target: components["schemas"]["AgentSettings"];
             /** Format: date-time */
             updatedAt: string;
@@ -6106,6 +6107,7 @@ export interface components {
             applyMode?: "after-turn" | "restart";
             expectedRevision: number;
             settings: components["schemas"]["AgentSettingsPatch"];
+            stopTurn?: boolean;
         };
         ChatAgentPermissionModes: {
             agent: string;
@@ -8256,6 +8258,7 @@ export interface components {
             currentTurn?: components["schemas"]["AgentSettingsTurnSnapshot"];
             effective: components["schemas"]["AgentSettingsEffective"];
             pending?: components["schemas"]["AgentSettingsOperation"];
+            restartRequired?: boolean;
             /** Format: int64 */
             revision: number;
             sessionId: string;
@@ -19315,6 +19318,15 @@ export interface operations {
                     "application/json": components["schemas"]["APIError"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -19326,6 +19338,15 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

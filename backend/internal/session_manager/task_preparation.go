@@ -115,7 +115,7 @@ func (m *Manager) createTaskPreparation(ctx context.Context, prep *taskPreparati
 		cleanupCtx, cancel := spawnRollbackContext(ctx)
 		var cleanupErr error
 		if ws.Path != "" || workspaceProject != nil && len(workspaceProject.Worktrees) > 0 {
-			cleanupErr = m.destroyPreparedWorkspace(cleanupCtx, ws, workspaceProject)
+			cleanupErr = m.destroyPreparedWorkspaceUnderGate(cleanupCtx, ws, workspaceProject)
 		}
 		if cleanupErr == nil {
 			cleanupErr = m.deletePreparedBranches(cleanupCtx, ws, workspaceProject)
@@ -229,13 +229,20 @@ func (m *Manager) scheduleTaskPreparationCleanup(token domain.TaskPreparationTok
 }
 
 func (m *Manager) cleanupTaskPreparation(ctx context.Context, prep *taskPreparation) error {
+	// A failed Spawn may hand us its already-held workspace gate. Release that
+	// lease before waiting/reacquiring, as ordinary spawn rollback does.
+	if release, ok := ctx.Value(spawnWorkspaceGateKey{}).(func()); ok {
+		release()
+	}
 	select {
 	case <-prep.done:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	releaseWorkspaceGate := m.acquireWorkspaceGate(domain.ProjectID(prep.project.ID))
+	defer releaseWorkspaceGate()
 	if prep.workspace.Path != "" || prep.workspaceProject != nil && len(prep.workspaceProject.Worktrees) > 0 {
-		if err := m.destroyPreparedWorkspace(ctx, prep.workspace, prep.workspaceProject); err != nil {
+		if err := m.destroyPreparedWorkspaceUnderGate(ctx, prep.workspace, prep.workspaceProject); err != nil {
 			return err
 		}
 	}
@@ -299,6 +306,21 @@ func (m *Manager) CleanupInterruptedTaskPreparations(ctx context.Context) error 
 }
 
 func (m *Manager) cleanupTaskPreparationRecord(ctx context.Context, rec domain.SessionRecord) error {
+	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
+	defer releaseWorkspaceGate()
+	current, ok, err := m.store.GetSession(ctx, rec.ID)
+	if err != nil {
+		return err
+	}
+	if !ok || !current.IsTaskPreparation || (!rec.CreatedAt.IsZero() && !current.CreatedAt.Equal(rec.CreatedAt)) {
+		return nil
+	}
+	return m.cleanupTaskPreparationRecordUnderGate(ctx, current)
+}
+
+// cleanupTaskPreparationRecordUnderGate also serves startup reconciliation,
+// which has already taken the gate and reread this preparation's identity.
+func (m *Manager) cleanupTaskPreparationRecordUnderGate(ctx context.Context, rec domain.SessionRecord) error {
 	ws := workspaceInfo(rec)
 	ws.BaseSHA = rec.Metadata.DiffBaseSHA
 	rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
@@ -324,14 +346,14 @@ func (m *Manager) cleanupTaskPreparationRecord(ctx context.Context, rec domain.S
 			return err
 		}
 		workspaceProject := &ports.WorkspaceProjectInfo{Worktrees: infos}
-		if err := m.destroyPreparedWorkspace(ctx, ws, workspaceProject); err != nil {
+		if err := m.destroyPreparedWorkspaceUnderGate(ctx, ws, workspaceProject); err != nil {
 			return err
 		}
 		if err := m.deletePreparedBranches(ctx, ws, workspaceProject); err != nil {
 			return err
 		}
 	} else if ws.Path != "" {
-		if err := m.workspace.Destroy(ctx, ws); err != nil {
+		if err := m.destroyPreparedWorkspaceUnderGate(ctx, ws, nil); err != nil {
 			return err
 		}
 		if err := m.deletePreparedBranches(ctx, ws, nil); err != nil {
@@ -372,7 +394,18 @@ func (m *Manager) requireCompletePreparedWorkspaceProject(ctx context.Context, p
 	return nil
 }
 
-func (m *Manager) destroyPreparedWorkspace(ctx context.Context, ws ports.WorkspaceInfo, project *ports.WorkspaceProjectInfo) error {
+// destroyPreparedWorkspaceUnderGate requires the project workspace gate, held
+// through branch deletion and cleanup bookkeeping by its callers.
+func (m *Manager) destroyPreparedWorkspaceUnderGate(ctx context.Context, ws ports.WorkspaceInfo, project *ports.WorkspaceProjectInfo) error {
+	rec := domain.SessionRecord{ID: ws.SessionID, ProjectID: ws.ProjectID, Metadata: domain.SessionMetadata{WorkspacePath: ws.Path}}
+	var rows []ports.WorkspaceRepoInfo
+	if project != nil {
+		rows = project.Worktrees
+	}
+	if err := m.checkWorkspaceReclaim(ctx, rec, rows, false); err != nil {
+		return err
+	}
+
 	if project == nil {
 		return m.workspace.Destroy(ctx, ws)
 	}

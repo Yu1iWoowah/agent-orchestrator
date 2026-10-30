@@ -1029,6 +1029,7 @@ type SessionInterfaceTransition struct {
 	TargetRuntimeLaunchID string
 	TargetRuntimeHandleID string
 	TargetRuntimeState    string
+	SettingsOperationID   string
 }
 
 type SessionInterfaceTransitionMessage struct {

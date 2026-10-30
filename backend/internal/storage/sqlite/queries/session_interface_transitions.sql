@@ -3,18 +3,18 @@ INSERT INTO session_interface_transitions (
     id, session_id, source_mode, target_mode, policy, history_policy, phase,
     native_conversation_id, error_code, error_detail,
     created_at, updated_at, completed_at, notice_acknowledged_at,
-    source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL, sqlc.arg(source_account_id), sqlc.arg(target_account_id), '', '', CASE WHEN sqlc.arg(target_account_id)<>'' THEN 'not_started' ELSE '' END)
+    source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL, sqlc.arg(source_account_id), sqlc.arg(target_account_id), '', '', CASE WHEN sqlc.arg(target_account_id)<>'' THEN 'not_started' ELSE '' END, sqlc.arg(settings_operation_id))
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
           created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state;
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id;
 
 -- name: GetSessionInterfaceTransition :one
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE id = ?;
 
@@ -22,10 +22,10 @@ WHERE id = ?;
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE session_id = ?
-  AND phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
+  AND (phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR (phase='recovery_required' AND settings_operation_id<>''))
 ORDER BY created_at DESC
 LIMIT 1;
 
@@ -33,7 +33,7 @@ LIMIT 1;
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE session_id = ?
 -- Tests and injected clocks can assign multiple sagas the same timestamp.
@@ -46,18 +46,18 @@ LIMIT 1;
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
-WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
+WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR (phase='recovery_required' AND settings_operation_id<>'')
 ORDER BY created_at;
 
 -- name: ListDeliverableSessionInterfaceTransitions :many
 SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase,
        t.native_conversation_id, t.error_code, t.error_detail,
        t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy,
-       t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state
+       t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id
 FROM session_interface_transitions AS t
-WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required')
+WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required') AND NOT (t.phase='recovery_required' AND t.settings_operation_id<>'')
   AND EXISTS (
       SELECT 1
       FROM session_interface_transition_messages AS m
@@ -83,7 +83,7 @@ WHERE id = sqlc.arg(id)
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
           created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state;
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id;
 
 -- name: EnqueueSessionInterfaceTransitionMessage :exec
 INSERT INTO session_interface_transition_messages (

@@ -597,6 +597,13 @@ func Run(buildVersion string) error {
 	agentSettingsSvc.SetCatalogFingerprintSource(agentSvc)
 	agentSettingsSvc.SetObservationSource(chatSvc)
 	settingsControl := agentsettings.NewControl(agentSettingsSvc, store, agentsettings.NewAuthorizer(store, settingsGrantAuthority, time.Now), chatSvc, time.Now)
+	if tui, ok := sessMgr.(interface {
+		agentsettings.TUISettingsRuntime
+		SetTUIAgentSettingsValidator(ports.ChatAgentSettingsValidator)
+	}); ok {
+		settingsControl.SetTUIRuntime(tui)
+		tui.SetTUIAgentSettingsValidator(settingsControl)
+	}
 	chatSvc.SetAgentSettingsMutator(settingsControl)
 	chatSvc.SetAgentSettingsValidator(settingsControl)
 	chatSvc.SetAgentSettingsGrantEnvironment(settingsGrantEnv)
