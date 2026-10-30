@@ -91,6 +91,7 @@ var (
 
 // Descriptor is the private connection record published by a running host.
 type Descriptor struct {
+	StopConfirmation     bool      `json:"stopConfirmation,omitempty"`
 	Version              int       `json:"version"`
 	SessionID            string    `json:"sessionId"`
 	Protocol             Protocol  `json:"protocol,omitempty"`
@@ -151,10 +152,11 @@ type hello struct {
 }
 
 type helloResponse struct {
-	OK            bool      `json:"ok"`
-	Error         string    `json:"error,omitempty"`
-	NextRequestID int64     `json:"nextRequestId,omitempty"`
-	ACPState      *ACPState `json:"acpState,omitempty"`
+	ProviderStopped bool      `json:"providerStopped,omitempty"`
+	OK              bool      `json:"ok"`
+	Error           string    `json:"error,omitempty"`
+	NextRequestID   int64     `json:"nextRequestId,omitempty"`
+	ACPState        *ACPState `json:"acpState,omitempty"`
 }
 
 func hostDir(dataDir, sessionID string) (string, error) {
@@ -515,18 +517,49 @@ func HostPID(dataDir, sessionID string) (int, bool) {
 // Missing/dead hosts are harmless; unknown live owners fail closed.
 // The protocol acknowledgement only confirms that shutdown was requested.
 func Shutdown(ctx context.Context, dataDir, sessionID string) error {
-	return shutdown(ctx, dataDir, sessionID, false)
+	return shutdown(ctx, dataDir, sessionID, false, "")
 }
 
 // ShutdownQuick is Shutdown for a provider that gains nothing from the stdin
 // grace (session closed, or deaf to stdin). An older host waits the full grace.
 func ShutdownQuick(ctx context.Context, dataDir, sessionID string) error {
-	return shutdown(ctx, dataDir, sessionID, true)
+	return shutdown(ctx, dataDir, sessionID, true, "")
 }
 
-func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error {
+// ShutdownForReplacement requires a matching live host and a post-cleanup
+// authenticated receipt. A missing descriptor or an older host is not proof.
+func ShutdownForReplacement(ctx context.Context, dataDir, sessionID, owner string, quick bool) error {
+	if owner == "" {
+		return ErrIncompatible
+	}
+	return shutdown(ctx, dataDir, sessionID, quick, owner)
+}
+
+// CheckReplacementShutdown verifies support without detaching or stopping a
+// provider. In particular, hosts surviving an AO upgrade may lack the receipt.
+func CheckReplacementShutdown(ctx context.Context, dataDir, sessionID, owner string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d, err := readDescriptor(dataDir, sessionID)
 	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotRunning
+	}
+	if err != nil {
+		return err
+	}
+	if owner == "" || d.Version != ProtocolVersion || !d.StopConfirmation || d.OwnershipFingerprint != owner {
+		return ErrIncompatible
+	}
+	return nil
+}
+
+func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confirmedOwner string) error {
+	d, err := readDescriptor(dataDir, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		if confirmedOwner != "" {
+			return ErrNotRunning
+		}
 		return nil
 	}
 	if err != nil {
@@ -535,18 +568,32 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error 
 	if d.Version != ProtocolVersion {
 		return ErrIncompatible
 	}
-	handshakeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	if confirmedOwner != "" && (!d.StopConfirmation || d.OwnershipFingerprint != confirmedOwner) {
+		return ErrIncompatible
+	}
+	budget := handshakeTimeout
+	if confirmedOwner != "" {
+		budget = 10 * time.Second
+	}
+	handshakeCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(handshakeCtx, "tcp", d.Address)
 	if err != nil {
 		if !processalive.Alive(d.PID) {
+			if confirmedOwner != "" {
+				return ErrNotRunning
+			}
 			return nil
 		}
 		return err
 	}
 	defer func() { _ = conn.Close() }()
 	finishHandshake := bindConnToContext(handshakeCtx, conn)
-	if err := json.NewEncoder(conn).Encode(hello{Version: ProtocolVersion, Token: d.Token, Action: "shutdown", QuickStop: quick}); err != nil {
+	action := "shutdown"
+	if confirmedOwner != "" {
+		action = "shutdown-confirmed"
+	}
+	if err := json.NewEncoder(conn).Encode(hello{Version: ProtocolVersion, Token: d.Token, Action: action, QuickStop: quick}); err != nil {
 		return finishHandshake(err)
 	}
 	var response helloResponse
@@ -557,7 +604,13 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error 
 		return err
 	}
 	if !response.OK {
+		if confirmedOwner != "" {
+			return ErrOwnershipInconclusive
+		}
 		return errors.New(response.Error)
+	}
+	if confirmedOwner != "" && !response.ProviderStopped {
+		return ErrOwnershipInconclusive
 	}
 	// The host's own shutdown can take about 6 s: 3 s for the provider to exit
 	// once stdin closes, a 1 s reap, and 2 s for its process group to exit on
@@ -569,6 +622,9 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool) error 
 	for {
 		current, readErr := readDescriptor(dataDir, sessionID)
 		if readErr == nil && current.Token != d.Token {
+			if confirmedOwner != "" {
+				return ErrOwnershipInconclusive
+			}
 			return nil // A new owner could only publish after the old lock released.
 		}
 		// On Windows an open descriptor handle can leave host.json pending
@@ -635,10 +691,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	// The job owns descendants even if the direct provider exits first. Close
 	// it before releasing the host lock so Shutdown follows the kill request.
-	defer closeProviderTree()
+	defer func() { _ = closeProviderTree(false) }()
 
 	d := Descriptor{
-		Version: ProtocolVersion, SessionID: cfg.SessionID, Protocol: cfg.Protocol,
+		StopConfirmation: true,
+		Version:          ProtocolVersion, SessionID: cfg.SessionID, Protocol: cfg.Protocol,
 		OwnershipFingerprint: cfg.OwnershipFingerprint,
 		Address:              listener.Addr().String(), Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC(),
 	}
@@ -685,6 +742,7 @@ func Run(ctx context.Context, cfg Config) error {
 		case <-time.After(time.Second):
 		}
 	}
+	var cleanupErr error
 	stopProvider := func() {
 		_ = stdin.Close()
 		deadline := time.After(providerStopDeadline)
@@ -698,12 +756,12 @@ func Run(ctx context.Context, cfg Config) error {
 			// process tree is the ownership boundary, so explicit shutdown reaps
 			// any descendant that did not follow stdin closure.
 			reapProvider()
-			_ = killProviderProcess(context.WithoutCancel(ctx), child)
+			cleanupErr = errors.Join(cleanupErr, killProviderProcess(context.WithoutCancel(ctx), child))
 			return
 		case <-time.After(grace):
 		}
 		// Some agents (Cursor) ignore stdin closing and only exit on a signal.
-		_ = terminateProviderProcess(child)
+		cleanupErr = errors.Join(cleanupErr, terminateProviderProcess(child))
 		// The provider's output can stay open after it exits when a helper it
 		// started inherited the pipe, so its own exit also ends the wait.
 		exited := time.NewTicker(100 * time.Millisecond)
@@ -722,13 +780,13 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		}
 		reapProvider()
-		_ = killProviderProcess(context.WithoutCancel(ctx), child)
+		cleanupErr = errors.Join(cleanupErr, killProviderProcess(context.WithoutCancel(ctx), child))
 	}
 	var runErr error
 	select {
 	case runErr = <-providerDone:
 		reapProvider()
-		_ = killProviderProcess(context.WithoutCancel(ctx), child)
+		cleanupErr = errors.Join(cleanupErr, killProviderProcess(context.WithoutCancel(ctx), child))
 	case <-h.shutdown:
 		stopProvider()
 	case <-ctx.Done():
@@ -741,8 +799,38 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 	_ = listener.Close()
-	_ = wait()
+	h.mu.Lock()
+	h.finishing = true
+	confirmation := h.stopConfirmation
+	h.mu.Unlock()
+	if confirmation != nil {
+		response := confirmedProviderShutdown(runtime.GOOS, cleanupErr, wait, closeProviderTree)
+		_ = confirmation.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+		_ = json.NewEncoder(confirmation).Encode(response)
+		_ = confirmation.Close()
+	} else {
+		_ = wait()
+	}
 	return runErr
+}
+
+func confirmedProviderShutdown(platform string, cleanupErr error, wait func() error, closeTree func(bool) error) helloResponse {
+	if platform == "windows" {
+		// Successful verification proves zero active processes and a closed
+		// Job Object. Process-handle errors cannot invalidate that proof.
+		if err := closeTree(true); err != nil {
+			return helloResponse{}
+		}
+		_ = wait()
+		return helloResponse{OK: true, ProviderStopped: true}
+	}
+	waitErr := wait()
+	cleanupErr = errors.Join(cleanupErr, closeTree(true))
+	var exitErr *exec.ExitError
+	if waitErr != nil && !errors.As(waitErr, &exitErr) {
+		cleanupErr = errors.Join(cleanupErr, waitErr)
+	}
+	return helloResponse{OK: cleanupErr == nil, ProviderStopped: cleanupErr == nil}
 }
 
 type host struct {
@@ -765,6 +853,8 @@ type host struct {
 	shutdown         chan struct{}
 	shutdownOnce     sync.Once
 	quickStop        atomic.Bool // set before shutdown closes; see ShutdownQuick
+	stopConfirmation net.Conn    // authenticated receipt waits for process-tree cleanup
+	finishing        bool        // protected by mu; no new confirmation after cleanup
 }
 
 type pendingRequest struct {
@@ -798,6 +888,22 @@ func (h *host) handle(conn net.Conn) {
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrUnauthorized.Error()})
 		_ = conn.Close()
 		return
+	}
+	if request.Action == "shutdown-confirmed" {
+		h.mu.Lock()
+		if h.finishing || h.stopConfirmation != nil {
+			h.mu.Unlock()
+			_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrOwnershipInconclusive.Error()})
+			_ = conn.Close()
+			return
+		}
+		h.stopConfirmation = conn
+		h.mu.Unlock()
+		if request.QuickStop {
+			h.quickStop.Store(true)
+		}
+		h.shutdownOnce.Do(func() { close(h.shutdown) })
+		return // Run owns this connection until process-tree cleanup is verified.
 	}
 	if request.Action == "shutdown" {
 		_ = json.NewEncoder(conn).Encode(helloResponse{OK: true})

@@ -136,6 +136,15 @@ UPDATE sessions
 SET runtime_released_launch_id = sqlc.arg(launch_id)
 WHERE id = sqlc.arg(id) AND runtime_launch_id = sqlc.arg(launch_id);
 
+-- name: ClearUnattemptedReplacementTUIRelease :execrows
+-- The managed no-stop path checks operation and owner in the same transaction.
+UPDATE sessions
+SET runtime_released_launch_id = ''
+WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision)
+  AND runtime_launch_id = sqlc.arg(launch_id)
+  AND runtime_released_launch_id = sqlc.arg(launch_id)
+  AND is_terminated = 0;
+
 -- name: UpdateSessionArtifactOutput :execrows
 -- Narrow write for lifecycle.Manager.ReconcileSessionOutputType: touches only
 -- the two output-derivation columns. A full read-then-UpdateSession write here

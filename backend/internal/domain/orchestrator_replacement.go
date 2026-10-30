@@ -91,6 +91,41 @@ type ReplacementFailure struct {
 	Retryable bool   `json:"retryable"`
 }
 
+// ReplacementRetainedRetry authorizes reconciliation of one unchanged durable
+// boundary. Repeating the same unresolved read does not create another receipt.
+// A real fact change ends this exception; unknown launches remain lookup-only.
+type ReplacementRetainedRetry struct {
+	Phase       ReplacementPhase   `json:"phase"`
+	FactsSHA256 string             `json:"factsSHA256"`
+	Failure     ReplacementFailure `json:"failure"`
+	RequestedAt time.Time          `json:"requestedAt"`
+}
+
+// ReplacementReconciliationHash excludes retry scheduling/error metadata, never
+// provider, ownership, control-attempt, publication or intake facts.
+func ReplacementReconciliationHash(op OrchestratorReplacement) (string, error) {
+	op.RetainedRetry = nil
+	op.Phase, op.ResumePhase, op.Error = "", "", nil
+	op.UpdatedAt, op.DeadlineAt = time.Time{}, time.Time{}
+	data, err := json.Marshal(op)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ReplacementControlAttempt retains a failed read-only control receipt. A new
+// attempt never overwrites the old prompt, nonce or accepted turn identity.
+type ReplacementControlAttempt struct {
+	Kind       string                      `json:"kind"`
+	ClientID   string                      `json:"clientId"`
+	State      TurnState                   `json:"state"`
+	ArchivedAt time.Time                   `json:"archivedAt"`
+	Bootstrap  *ReplacementBootstrap       `json:"bootstrap,omitempty"`
+	Probe      *ReplacementContinuityProbe `json:"probe,omitempty"`
+}
+
 // ReplacementSuccessorController binds the first committed native owner to the
 // verifier prepared for that launch. Generic operation saves cannot assign it.
 type ReplacementSuccessorController struct {
@@ -135,6 +170,13 @@ type ReplacementWorkerNotification struct {
 	CreatedAt     time.Time              `json:"createdAt"`
 }
 
+// ReplacementResumeUnlaunched preserves a generation refused before launcher entry.
+type ReplacementResumeUnlaunched struct {
+	Generation  string    `json:"generation"`
+	IntentAt    time.Time `json:"intentAt"`
+	ConfirmedAt time.Time `json:"confirmedAt"`
+}
+
 // ReplacementResumeEvidence retains observations from one controlled probe.
 type ReplacementResumeEvidence struct {
 	BeforeCapabilityVerifier string                 `json:"beforeCapabilityVerifier,omitempty"`
@@ -147,11 +189,12 @@ type ReplacementResumeEvidence struct {
 	HistoryVerified          bool                   `json:"historyVerified"`
 	VerifiedAt               *time.Time             `json:"verifiedAt,omitempty"`
 
-	StartedAt        time.Time                  `json:"startedAt,omitempty"`
-	StopReceipt      *ReplacementControllerStop `json:"stopReceipt,omitempty"`
-	ResumeIntentAt   *time.Time                 `json:"resumeIntentAt,omitempty"`
-	ResumeGeneration string                     `json:"resumeGeneration,omitempty"`
-	ResumedAt        *time.Time                 `json:"resumedAt,omitempty"`
+	StartedAt          time.Time                     `json:"startedAt,omitempty"`
+	StopReceipt        *ReplacementControllerStop    `json:"stopReceipt,omitempty"`
+	ResumeIntentAt     *time.Time                    `json:"resumeIntentAt,omitempty"`
+	ResumeGeneration   string                        `json:"resumeGeneration,omitempty"`
+	ResumedAt          *time.Time                    `json:"resumedAt,omitempty"`
+	UnlaunchedAttempts []ReplacementResumeUnlaunched `json:"unlaunchedAttempts,omitempty"`
 
 	Probe *ReplacementContinuityProbe `json:"probe,omitempty"`
 }
@@ -225,45 +268,47 @@ type ReplacementTarget struct {
 // OrchestratorReplacement contains durable saga facts. HTTP exposes a separate
 // read DTO, never a dump of internal configuration or control credentials.
 type OrchestratorReplacement struct {
-	Repairs                  []ReplacementRepairReceipt `json:"repairs,omitempty"`
-	SchemaVersion            int                        `json:"schemaVersion"`
-	ID                       string                     `json:"id"`
-	OperationKey             string                     `json:"operationKey"`
-	RequestHash              string                     `json:"requestHash"`
-	ProjectID                ProjectID                  `json:"projectId"`
-	SourceSessionID          SessionID                  `json:"sourceSessionId"`
-	SourceOwner              SessionControllerOwner     `json:"sourceOwner"`
-	SourceCapabilityVerifier string                     `json:"sourceCapabilityVerifier,omitempty"`
-	SourceStopIntentAt       *time.Time                 `json:"sourceStopIntentAt,omitempty"`
-	SourceStop               *ReplacementControllerStop `json:"sourceStop,omitempty"`
-	SourceRetiredAt          *time.Time                 `json:"sourceRetiredAt,omitempty"`
-	ProjectFingerprint       string                     `json:"projectFingerprint,omitempty"`
-	TargetAgentConfig        AgentConfig                `json:"targetAgentConfig,omitempty"`
-	TargetAccountID          string                     `json:"targetAccountId,omitempty"`
-	SharedDir                string                     `json:"sharedDir,omitempty"`
-	DocumentPath             string                     `json:"documentPath,omitempty"`
-	Preparation              *ReplacementPreparation    `json:"preparation,omitempty"`
-	FrozenAt                 *time.Time                 `json:"frozenAt,omitempty"`
-	Transcript               *ReplacementTranscript     `json:"transcript,omitempty"`
-	SuccessorSessionID       SessionID                  `json:"successorSessionId,omitempty"`
-	SpawnRequestID           string                     `json:"spawnRequestId,omitempty"`
-	SpawnRequestHash         string                     `json:"spawnRequestHash,omitempty"`
-	SpawnRetryGeneration     int64                      `json:"spawnRetryGeneration,omitempty"`
-	SpawnAttempts            []ReplacementSpawnAttempt  `json:"spawnAttempts,omitempty"`
-	BootstrapClientID        string                     `json:"bootstrapClientId,omitempty"`
-	ResumeProbeClientID      string                     `json:"resumeProbeClientId,omitempty"`
-	IntakeReleasedAt         *time.Time                 `json:"intakeReleasedAt,omitempty"`
-	IntakeDrainRequestedAt   *time.Time                 `json:"intakeDrainRequestedAt,omitempty"`
-	SourceIntakeReleasedAt   *time.Time                 `json:"sourceIntakeReleasedAt,omitempty"`
-	Phase                    ReplacementPhase           `json:"phase"`
-	ResumePhase              ReplacementPhase           `json:"resumePhase,omitempty"`
-	Error                    *ReplacementFailure        `json:"error,omitempty"`
-	ResumeEvidence           *ReplacementResumeEvidence `json:"resumeEvidence,omitempty"`
-	CreatedAt                time.Time                  `json:"createdAt"`
-	UpdatedAt                time.Time                  `json:"updatedAt"`
-	DeadlineAt               time.Time                  `json:"deadlineAt"`
-	Revision                 int64                      `json:"-"`
-	IntakeRevision           int64                      `json:"-"`
+	Repairs                  []ReplacementRepairReceipt  `json:"repairs,omitempty"`
+	SchemaVersion            int                         `json:"schemaVersion"`
+	ID                       string                      `json:"id"`
+	OperationKey             string                      `json:"operationKey"`
+	RequestHash              string                      `json:"requestHash"`
+	ProjectID                ProjectID                   `json:"projectId"`
+	SourceSessionID          SessionID                   `json:"sourceSessionId"`
+	SourceOwner              SessionControllerOwner      `json:"sourceOwner"`
+	SourceCapabilityVerifier string                      `json:"sourceCapabilityVerifier,omitempty"`
+	SourceStopIntentAt       *time.Time                  `json:"sourceStopIntentAt,omitempty"`
+	SourceStop               *ReplacementControllerStop  `json:"sourceStop,omitempty"`
+	SourceRetiredAt          *time.Time                  `json:"sourceRetiredAt,omitempty"`
+	ProjectFingerprint       string                      `json:"projectFingerprint,omitempty"`
+	TargetAgentConfig        AgentConfig                 `json:"targetAgentConfig,omitempty"`
+	TargetAccountID          string                      `json:"targetAccountId,omitempty"`
+	SharedDir                string                      `json:"sharedDir,omitempty"`
+	DocumentPath             string                      `json:"documentPath,omitempty"`
+	Preparation              *ReplacementPreparation     `json:"preparation,omitempty"`
+	FrozenAt                 *time.Time                  `json:"frozenAt,omitempty"`
+	Transcript               *ReplacementTranscript      `json:"transcript,omitempty"`
+	SuccessorSessionID       SessionID                   `json:"successorSessionId,omitempty"`
+	SpawnRequestID           string                      `json:"spawnRequestId,omitempty"`
+	SpawnRequestHash         string                      `json:"spawnRequestHash,omitempty"`
+	SpawnRetryGeneration     int64                       `json:"spawnRetryGeneration,omitempty"`
+	SpawnAttempts            []ReplacementSpawnAttempt   `json:"spawnAttempts,omitempty"`
+	RetainedRetry            *ReplacementRetainedRetry   `json:"retainedRetry,omitempty"`
+	ControlAttempts          []ReplacementControlAttempt `json:"controlAttempts,omitempty"`
+	BootstrapClientID        string                      `json:"bootstrapClientId,omitempty"`
+	ResumeProbeClientID      string                      `json:"resumeProbeClientId,omitempty"`
+	IntakeReleasedAt         *time.Time                  `json:"intakeReleasedAt,omitempty"`
+	IntakeDrainRequestedAt   *time.Time                  `json:"intakeDrainRequestedAt,omitempty"`
+	SourceIntakeReleasedAt   *time.Time                  `json:"sourceIntakeReleasedAt,omitempty"`
+	Phase                    ReplacementPhase            `json:"phase"`
+	ResumePhase              ReplacementPhase            `json:"resumePhase,omitempty"`
+	Error                    *ReplacementFailure         `json:"error,omitempty"`
+	ResumeEvidence           *ReplacementResumeEvidence  `json:"resumeEvidence,omitempty"`
+	CreatedAt                time.Time                   `json:"createdAt"`
+	UpdatedAt                time.Time                   `json:"updatedAt"`
+	DeadlineAt               time.Time                   `json:"deadlineAt"`
+	Revision                 int64                       `json:"-"`
+	IntakeRevision           int64                       `json:"-"`
 
 	SuccessorController *ReplacementSuccessorController `json:"successorController,omitempty"`
 	Bootstrap           *ReplacementBootstrap           `json:"bootstrap,omitempty"`
@@ -338,4 +383,12 @@ func (stop ReplacementControllerStop) MatchesSource(rec SessionRecord) bool {
 		return stop.Method == "tui-fenced-stop" && rec.Activity.State == ActivityExited && rec.Metadata.RuntimeReleasedLaunchID != "" && rec.Metadata.RuntimeReleasedLaunchID == rec.Metadata.RuntimeLaunchID && stop.NativeID == rec.Metadata.AgentSessionID
 	}
 	return false
+}
+
+// ActivatedSuccessorMatches identifies a continuation of the activated native
+// conversation. Callers must additionally verify the current writer lease.
+// The initial activation receipt remains immutable across controller restarts.
+func (op OrchestratorReplacement) ActivatedSuccessorMatches(rec SessionRecord) bool {
+	w := op.WriterActivation
+	return w != nil && op.Phase == ReplacementNotifying && !rec.IsTerminated && rec.ID == op.SuccessorSessionID && rec.ProjectID == op.ProjectID && rec.Kind == KindOrchestrator && rec.Mode == SessionModeChat && rec.Harness == HarnessClaudeCode && rec.Metadata.ProviderConversationID != "" && rec.Metadata.ProviderConversationID == w.Owner.ProviderConversationID && rec.Metadata.ControllerGeneration != "" && rec.Metadata.BrowserCapabilityVerifier != "" && rec.ClientRequestID == op.SpawnRequestID && rec.ClientRequestHash == op.SpawnRequestHash
 }

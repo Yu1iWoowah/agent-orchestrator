@@ -79,7 +79,7 @@ func (m *Manager) beginReplacementInput(ctx context.Context, id domain.SessionID
 	allowed := active && found && !current.IsTerminated && current.ProjectID == op.ProjectID && current.Kind == domain.KindOrchestrator
 	source := op.CanReleaseSourceIntake() && op.SourceIntakeReleasedAt != nil && current.ID == op.SourceSessionID && current.ControllerOwner() == op.SourceOwner && current.Metadata.BrowserCapabilityVerifier == op.SourceCapabilityVerifier
 	proof, verified := op.ExpectedSuccessorController()
-	target := op.Phase == domain.ReplacementNotifying && op.IntakeReleasedAt != nil && op.WriterActivation != nil && verified && current.ID == op.SuccessorSessionID && current.ControllerOwner() == proof.Owner && current.Metadata.BrowserCapabilityVerifier == proof.CapabilityVerifier
+	target := op.Phase == domain.ReplacementNotifying && op.IntakeReleasedAt != nil && op.WriterActivation != nil && verified && current.ID == op.SuccessorSessionID && (current.ControllerOwner() == proof.Owner && current.Metadata.BrowserCapabilityVerifier == proof.CapabilityVerifier || op.ActivatedSuccessorMatches(current))
 	if !allowed || !source && !target {
 		return fail(domain.ErrReplacementInProgress)
 	}
@@ -163,4 +163,47 @@ func (m *Manager) deliverTUIPrompt(ctx context.Context, guard *sessionguard.Guar
 		return guard.DeliverWithComposerCheck(ctx, id, text, composer, after)
 	}
 	return guard.DeliverWithOwnershipCheck(ctx, id, text, proof, composer, after)
+}
+
+// Only an activated successor may use ordinary native wake during replacement.
+func (m *Manager) beginReplacementResume(ctx context.Context, id domain.SessionID) (context.Context, func(), error) {
+	locked, release, err := m.beginReplacementSessionAction(ctx, id)
+	if !errors.Is(err, domain.ErrReplacementInProgress) {
+		return locked, release, err
+	}
+	rec, found, readErr := m.store.GetSession(ctx, id)
+	if readErr != nil {
+		return ctx, func() {}, readErr
+	}
+	reader, ok := m.store.(replacementAdmissionReader)
+	if !ok || !found {
+		return ctx, func() {}, err
+	}
+	op, active, readErr := reader.GetActiveOrchestratorReplacement(ctx, rec.ProjectID)
+	if readErr != nil {
+		return ctx, func() {}, readErr
+	}
+	if !active || !op.ActivatedSuccessorMatches(rec) {
+		return ctx, func() {}, err
+	}
+	locked, release, err = m.acquireOrchestratorGate(ctx, rec.ProjectID)
+	if err != nil {
+		return ctx, func() {}, err
+	}
+	checker, ok := m.store.(interface {
+		ReplacementActivatedOwner(context.Context, string, domain.SessionRecord) (bool, error)
+	})
+	if !ok {
+		release()
+		return ctx, func() {}, domain.ErrReplacementInProgress
+	}
+	matches, err := checker.ReplacementActivatedOwner(locked, op.ID, rec)
+	if err != nil || !matches {
+		release()
+		if err == nil {
+			err = domain.ErrReplacementInProgress
+		}
+		return ctx, func() {}, err
+	}
+	return context.WithValue(locked, replacementNativeResumeKey{}, true), release, nil
 }

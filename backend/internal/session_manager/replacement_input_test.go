@@ -12,7 +12,7 @@ import (
 )
 
 func TestReplacementTerminalInputRefusesSourceButKeepsWorkerAndInternalLease(t *testing.T) {
-	f := newReplacementTUIFixture(t)
+	f := newReplacementInputTUIFixture(t)
 	if release, err := f.manager.AcquireTerminalInput(context.Background(), f.op.SourceSessionID); !errors.Is(err, domain.ErrReplacementIntakeFenced) {
 		if release != nil {
 			release()
@@ -47,7 +47,7 @@ func (c *replacementIntakeChat) QueueReplacementIntake(_ context.Context, id dom
 func TestReplacementTUIOrdinarySendQueuesButReportAndInterruptRemainDeferred(t *testing.T) {
 	for _, action := range []string{"ordinary", "retired", "semantic report", "interrupt"} {
 		t.Run(action, func(t *testing.T) {
-			f := newReplacementTUIFixture(t)
+			f := newReplacementInputTUIFixture(t)
 			chat := &replacementIntakeChat{recordingLauncher: &recordingLauncher{}}
 			f.manager.chat = chat
 			if action == "retired" {
@@ -85,7 +85,7 @@ func TestReplacementTUIOrdinarySendQueuesButReportAndInterruptRemainDeferred(t *
 }
 
 func TestReplacementAdmissionWaitsUntilAdmittedTerminalWriteReleases(t *testing.T) {
-	f := newReplacementTUIFixture(t)
+	f := newReplacementInputTUIFixture(t)
 	f.store.operation.Phase = domain.ReplacementCompleted
 	release, err := f.manager.AcquireTerminalInput(context.Background(), f.op.SourceSessionID)
 	if err != nil {
@@ -108,11 +108,11 @@ func TestReplacementAdmissionWaitsUntilAdmittedTerminalWriteReleases(t *testing.
 func TestReplacementInputReleaseAdmitsOnlyCurrentOwnerAndLease(t *testing.T) {
 	for _, change := range []string{"current", "marker missing", "generation", "capability", "lease"} {
 		t.Run(change, func(t *testing.T) {
-			f := newReplacementTUIFixture(t)
+			f := newReplacementInputTUIFixture(t)
 			now := time.Now().UTC()
 			f.store.operation.Phase = domain.ReplacementAwaitingSource
 			f.store.operation.SourceIntakeReleasedAt = &now
-			wrapped := &replacementSourceInputStore{replacementTUIStore: f.store}
+			wrapped := &replacementSourceInputStore{replacementInputTUIStore: f.store}
 			f.manager.store = wrapped
 			switch change {
 			case "marker missing":
@@ -162,7 +162,7 @@ func TestReplacementInputReleaseAdmitsOnlyCurrentOwnerAndLease(t *testing.T) {
 }
 
 type replacementSourceInputStore struct {
-	*replacementTUIStore
+	*replacementInputTUIStore
 	fenced bool
 }
 
@@ -183,11 +183,11 @@ func (s *disappearingReplacementInputStore) GetSession(ctx context.Context, id d
 	return s.replacementSourceInputStore.GetSession(ctx, id)
 }
 func TestReplacementReleasedInputFailsClosedWhenSourceDisappears(t *testing.T) {
-	f := newReplacementTUIFixture(t)
+	f := newReplacementInputTUIFixture(t)
 	now := time.Now().UTC()
 	f.store.operation.Phase = domain.ReplacementAwaitingSource
 	f.store.operation.SourceIntakeReleasedAt = &now
-	f.manager.store = &disappearingReplacementInputStore{replacementSourceInputStore: &replacementSourceInputStore{replacementTUIStore: f.store}}
+	f.manager.store = &disappearingReplacementInputStore{replacementSourceInputStore: &replacementSourceInputStore{replacementInputTUIStore: f.store}}
 	release, err := f.manager.AcquireTerminalInput(context.Background(), f.op.SourceSessionID)
 	if release != nil {
 		release()
@@ -199,16 +199,16 @@ func TestReplacementReleasedInputFailsClosedWhenSourceDisappears(t *testing.T) {
 
 // Intake tests need only durable facts and fake pane/runtime boundaries. Native
 // transcript parsing and stop/resume producers belong to 3C, not this fixture.
-type replacementTUIStore struct{ *replacementFenceStore }
-type replacementTUIFixture struct {
+type replacementInputTUIStore struct{ *replacementFenceStore }
+type replacementInputTUIFixture struct {
 	manager   *Manager
-	store     *replacementTUIStore
+	store     *replacementInputTUIStore
 	runtime   *fakeRuntime
 	messenger *fakeMessenger
 	op        domain.OrchestratorReplacement
 }
 
-func newReplacementTUIFixture(t *testing.T) replacementTUIFixture {
+func newReplacementInputTUIFixture(t *testing.T) replacementInputTUIFixture {
 	t.Helper()
 	m, base, rt, _ := newManager()
 	source := pastStartupGate(mkLive("mer-1"))
@@ -217,12 +217,12 @@ func newReplacementTUIFixture(t *testing.T) replacementTUIFixture {
 	source.Metadata.AgentSessionID, source.Metadata.BrowserCapabilityVerifier = "11111111-1111-4111-8111-111111111111", "source-verifier"
 	base.sessions[source.ID] = source
 	op := domain.OrchestratorReplacement{ID: "22222222-2222-4222-8222-222222222222", ProjectID: source.ProjectID, SourceSessionID: source.ID, SourceOwner: source.ControllerOwner(), SourceCapabilityVerifier: source.Metadata.BrowserCapabilityVerifier, Phase: domain.ReplacementPreparingHandoff, Revision: 4}
-	store := &replacementTUIStore{&replacementFenceStore{fakeStore: base, operation: op}}
+	store := &replacementInputTUIStore{&replacementFenceStore{fakeStore: base, operation: op}}
 	messenger := &fakeMessenger{}
 	m.store = store
 	m.agents = singleAgent{&semanticSignalingAgent{}}
 	m.messenger = sessionguard.New(store, messenger, m.logger)
 	m.messenger.SetInputLease(m)
 	m.messenger.SetStartupSignalGate(m.harnessStartupSignalGatesInput)
-	return replacementTUIFixture{m, store, rt, messenger, op}
+	return replacementInputTUIFixture{m, store, rt, messenger, op}
 }

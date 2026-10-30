@@ -32,7 +32,8 @@ func (s *intakeCoordinatorStore) GetProject(_ context.Context, id string) (domai
 	return s.project, id == s.project.ID, nil
 }
 func (s *intakeCoordinatorStore) ReplacementWakeFenced(context.Context, domain.SessionID) (bool, error) {
-	return s.fenced, nil
+	proof, ok := s.op.ExpectedSuccessorController()
+	return s.fenced || !ok || s.target.ControllerOwner() != proof.Owner || s.target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier, nil
 }
 func (s *intakeCoordinatorStore) SaveOrchestratorReplacement(_ context.Context, op domain.OrchestratorReplacement) (bool, error) {
 	if op.Revision != s.op.Revision {

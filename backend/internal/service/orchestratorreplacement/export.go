@@ -3,6 +3,7 @@ package orchestratorreplacement
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -26,6 +27,11 @@ func (s *Service) export(ctx context.Context, op domain.OrchestratorReplacement)
 		if op.SourceStopIntentAt == nil {
 			if !s.deps.Now().Before(op.DeadlineAt) {
 				return s.wait(ctx, op, domain.ReplacementAwaitingSource, op.Phase, apierr.Conflict("ORCHESTRATOR_HANDOFF_SOURCE_IDLE_TIMEOUT", "Source did not become quiescent before the deadline", nil))
+			}
+			// Busy is a positive no-stop receipt. Persisted UpdatedAt provides a
+			// bounded retry delay across coordinator restart without new snapshots.
+			if op.Error != nil && op.Error.Code == "ORCHESTRATOR_HANDOFF_SOURCE_BUSY" && s.deps.Now().Before(op.UpdatedAt.Add(5*time.Second)) {
+				return op, nil
 			}
 			now := s.deps.Now().UTC()
 			op.SourceStopIntentAt = &now

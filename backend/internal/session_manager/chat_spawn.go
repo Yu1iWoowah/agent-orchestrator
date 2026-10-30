@@ -558,6 +558,9 @@ func (m *Manager) resumeChatController(
 		MCPServers:              m.aoMCPServers(rec.Harness, env),
 		ExpectedControllerOwner: rec.ControllerOwner(),
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
+			if err := m.guardReplacementNativeResumeLaunch(launchCtx, rec, controllerGeneration); err != nil {
+				return nil, err
+			}
 			prepared, launchEnv, prepareErr := m.prepareChatControllerEnv(
 				launchCtx, rec, project.Config.Env, expected,
 			)
@@ -577,9 +580,10 @@ func (m *Manager) resumeChatController(
 		// Ordinary resumes allocate a fresh generation. Switch recovery reuses
 		// the saga's reserved generation until delivery is durably settled so a
 		// second restart can still prove exact target ownership.
-		ControllerGeneration: controllerGeneration,
-		HistoryMode:          historyMode,
-		HistoryPolicy:        historyPolicy,
+		ControllerGeneration:         controllerGeneration,
+		DisableFreshProviderFallback: ctx.Value(replacementNativeResumeKey{}) == true,
+		HistoryMode:                  historyMode,
+		HistoryPolicy:                historyPolicy,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path

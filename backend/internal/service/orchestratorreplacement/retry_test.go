@@ -114,6 +114,12 @@ func TestReplacementPreStopRetryCancelArchiveAndFence(t *testing.T) {
 				if readErr != nil || !reflect.DeepEqual(beforeWorker, afterWorker) {
 					t.Fatal("action changed worker", readErr)
 				}
+				if action == "retry" && change == "stop intent" {
+					if err != nil || current.Phase != domain.ReplacementExportingTranscript || current.SourceStopIntentAt == nil || current.SourceStop != nil || current.Revision != op.Revision+1 || len(current.Attempts) != len(op.Attempts) || !reflect.DeepEqual(beforeState, state) {
+						t.Fatal("retained retry changed stop intent/lease/archive", current.Phase, err)
+					}
+					return
+				}
 				allowed := change == "current" || action == "cancel" && change != "stop intent"
 				if !allowed {
 					if err == nil || current.Revision != op.Revision || !reflect.DeepEqual(beforeState, state) {

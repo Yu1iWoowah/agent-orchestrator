@@ -57,7 +57,7 @@ func preserveReplacementWriterActivation(ctx context.Context, q *gen.Queries, be
 			return err
 		}
 		lease := state.Lease
-		if lease == nil || lease.Frozen || lease.SessionID != after.SuccessorSessionID || lease.Owner != b.Owner || lease.Epoch != b.AfterEpoch || lease.ClaimVerifier != b.CapabilityVerifier || lease.TokenHash != "" || lease.ReplacementID != after.ID {
+		if lease == nil || lease.Frozen || lease.SessionID != after.SuccessorSessionID || lease.Owner != b.Owner || lease.Epoch != b.AfterEpoch || lease.CapabilityVerifier != b.CapabilityVerifier || lease.ClaimVerifier != b.CapabilityVerifier || lease.TokenHash != "" || lease.ReplacementID != after.ID {
 			return domain.ErrReplacementStateInvalid
 		}
 		return nil
