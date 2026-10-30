@@ -900,6 +900,12 @@ func (d *Driver) connectProcess(
 		}
 		return persistenthost.Shutdown(shutdownCtx, cfg.DataDir, string(cfg.SessionID))
 	})
+	proc.hibernate = persistentTerminate(gate, transport.Stdin, &proc.quickStop, func(shutdownCtx context.Context, quick bool) error {
+		return persistenthost.ShutdownForReplacement(shutdownCtx, cfg.DataDir, string(cfg.SessionID), identity, quick)
+	})
+	proc.preflightHibernate = func(checkCtx context.Context) error {
+		return persistenthost.CheckReplacementShutdown(checkCtx, cfg.DataDir, string(cfg.SessionID), identity)
+	}
 	return proc, nil
 }
 

@@ -43,6 +43,18 @@ func TestConfigureProviderProcessPreservesHiddenAttributes(t *testing.T) {
 	}
 }
 
+func TestWindowsKillProviderAlreadyReaped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := killProviderProcess(ctx, cmd); err != nil {
+		t.Fatal("already reaped provider was treated as a cleanup failure", err)
+	}
+}
+
 func TestWindowsProviderBridge(t *testing.T) {
 	if os.Getenv("AO_WINDOWS_JOB_BRIDGE") != "1" {
 		return

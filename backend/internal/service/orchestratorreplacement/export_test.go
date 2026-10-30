@@ -89,6 +89,9 @@ func (x *preparedExport) advanceUntil(t *testing.T, done func(domain.Orchestrato
 			t.Fatalf("advance phase=%s err=%v failure=%+v", next.Phase, err, next.Error)
 		}
 	}
+	if done(x.operation) {
+		return
+	}
 	t.Fatal("export boundary did not converge", x.operation.Phase)
 }
 
@@ -369,12 +372,12 @@ type crashAfterSourceStopStore struct {
 	crash bool
 }
 
-func (s *crashAfterSourceStopStore) SaveOrchestratorReplacement(ctx context.Context, op domain.OrchestratorReplacement) (bool, error) {
+func (s *crashAfterSourceStopStore) SaveReplacementRuntimeProgress(ctx context.Context, op domain.OrchestratorReplacement) (bool, error) {
 	if s.crash && op.SourceStop != nil {
 		s.crash = false
 		panic("lost coordinator after provider stop")
 	}
-	return s.Store.SaveOrchestratorReplacement(ctx, op)
+	return s.Store.SaveReplacementRuntimeProgress(ctx, op)
 }
 
 func TestReplacementExportRecoversSourceStopBeforeReceiptSave(t *testing.T) {

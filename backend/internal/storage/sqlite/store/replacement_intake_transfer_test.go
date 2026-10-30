@@ -129,6 +129,12 @@ func newCanonicalIntakeFixture(t *testing.T, promoting, activated bool) intakeTr
 		t.Fatal(err)
 	}
 	branch := domain.ConversationBranch{ID: "target-native-branch", ConversationID: target.ID, SessionID: writer.ID, ParentBranchID: target.ActiveBranchID, ProviderScopeID: "target-native-branch", ProviderConversationID: writer.Metadata.ProviderConversationID, Strategy: domain.ConversationBranchStrategyNative, ForkAfterSequence: target.LatestSequence, CreatedAt: at}
+	op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.Phase = domain.ReplacementNotifying
+	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	if err := st.CommitChatSpawn(ctx, writer, branch); err != nil {
 		t.Fatal(err)
 	}
@@ -136,12 +142,6 @@ func newCanonicalIntakeFixture(t *testing.T, promoting, activated bool) intakeTr
 	if err != nil {
 		t.Fatal(err)
 	}
-	op, _, err = st.GetOrchestratorReplacement(ctx, op.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	op.Phase = domain.ReplacementNotifying
-	op = fixturestore.SeedReplacementTestFacts(t, st, op)
 	state := domain.ProjectDocumentState{Lease: &domain.ProjectDocumentLease{SessionID: writer.ID, Owner: writer.ControllerOwner(), Epoch: op.WriterActivation.AfterEpoch, ReplacementID: op.ID, ClaimVerifier: writer.Metadata.BrowserCapabilityVerifier}}
 	if saved, err := st.SaveProjectDocumentState(ctx, op.ProjectID, state); err != nil || !saved {
 		t.Fatal(saved, err)

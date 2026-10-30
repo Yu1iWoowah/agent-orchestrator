@@ -1,10 +1,22 @@
 package ports
 
 import (
+	"context"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+// ReplacementRetirementProof is supplied by the document service after full
+// evidence verification. Check must perform bounded stability comparisons only.
+// It is an internal dependency, never an HTTP-supplied assertion.
+type ReplacementRetirementProof interface {
+	OperationID() string
+	OperationRevision() int64
+	Source() domain.SessionRecord
+	DocumentRevision() int64
+	Check(context.Context) error
+}
 
 // ReplacementSourceObservation identifies the controller and concrete control
 // turn facts. Unknown provenance never establishes successful preparation.
@@ -26,4 +38,28 @@ type ReplacementPreparationDelivery struct {
 	Owner     domain.SessionControllerOwner
 	NativeID  string
 	Uncertain bool
+}
+
+// ReplacementResumeObservation certifies an operation-owned required replay.
+// The verifier is an internal hash, never a raw launch capability or an API DTO.
+type ReplacementResumeObservation struct {
+	Owner              domain.SessionControllerOwner
+	NativeID           string
+	CapabilityVerifier string
+	HistoryVerified    bool
+	ObservedAt         time.Time
+}
+
+// ReplacementChatRuntime is the optional production bridge for controlled
+// handoff turns and observations. Merely supporting ordinary Chat is insufficient.
+type ReplacementChatRuntime interface {
+	PreflightReplacementChat(context.Context, domain.AgentHarness, PermissionMode) error
+	ObserveReplacementChatSource(context.Context, domain.OrchestratorReplacement) (ReplacementSourceObservation, error)
+	EnsureReplacementChatPreparation(context.Context, domain.OrchestratorReplacement, string, bool) (ReplacementPreparationDelivery, error)
+	QuiesceReplacementChatSource(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
+	ObserveReplacementChatSuccessor(context.Context, domain.OrchestratorReplacement) (ReplacementSourceObservation, error)
+	EnsureReplacementChatBootstrap(context.Context, domain.OrchestratorReplacement, string, bool) (ReplacementPreparationDelivery, error)
+	QuiesceReplacementChatSuccessor(context.Context, domain.OrchestratorReplacement) (domain.ReplacementControllerStop, error)
+	EnsureReplacementChatProbe(context.Context, domain.OrchestratorReplacement, string, bool) (ReplacementPreparationDelivery, error)
+	QueueReplacementIntake(context.Context, domain.SessionID, ChatUserMessage) (domain.ConversationTurn, error)
 }

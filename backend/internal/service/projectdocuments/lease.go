@@ -38,7 +38,10 @@ func (s *Service) validate(ctx context.Context, id domain.ProjectID, a Actor, g 
 		return rec, err
 	}
 	lease := state.Lease
-	if lease == nil || lease.SessionID != rec.ID || lease.Owner != rec.ControllerOwner() || lease.Epoch != g.Epoch || subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(g.Token)))) != 1 || g.Token == "" {
+	// Legacy leases have no verifier, so also bind the grant to the capability
+	// authorized above instead of accepting a prior controller's bearer grant.
+	expected := grantFor(id, a, g.Epoch)
+	if lease == nil || lease.SessionID != rec.ID || lease.Owner != rec.ControllerOwner() || lease.CapabilityVerifier != "" && lease.CapabilityVerifier != rec.Metadata.BrowserCapabilityVerifier || lease.Epoch != g.Epoch || subtle.ConstantTimeCompare([]byte(g.Token), []byte(expected.Token)) != 1 || subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(g.Token)))) != 1 || g.Token == "" {
 		return rec, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "The writer lease is stale or invalid")
 	}
 	if lease.Frozen && !allowFrozen {
@@ -68,6 +71,21 @@ func (s *Service) Acquire(ctx context.Context, id domain.ProjectID, a Actor) (Gr
 	if lease := state.Lease; lease != nil {
 		if lease.Frozen {
 			return Grant{}, conflict("PROJECT_DOCUMENT_LEASE_FROZEN", "Project documents are frozen")
+		}
+		if lease.ReplacementID != "" && (lease.Owner != rec.ControllerOwner() || lease.CapabilityVerifier != "" && lease.CapabilityVerifier != rec.Metadata.BrowserCapabilityVerifier) {
+			reader, ok := s.store.(interface {
+				GetOrchestratorReplacement(context.Context, string) (domain.OrchestratorReplacement, bool, error)
+			})
+			if !ok {
+				return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Replacement writer continuation is not verified")
+			}
+			op, found, err := reader.GetOrchestratorReplacement(ctx, lease.ReplacementID)
+			if err != nil {
+				return Grant{}, err
+			}
+			if !found || op.ProjectID != id || !op.Phase.Terminal() {
+				return Grant{}, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "Active replacement writer must be published before claiming its lease")
+			}
 		}
 		if lease.SessionID != rec.ID && (lease.TokenHash != "" || lease.ClaimVerifier != "" || lease.ReplacementID != "") {
 			previous, ok, err := s.store.GetSession(ctx, lease.SessionID)

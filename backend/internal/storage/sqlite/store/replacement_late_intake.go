@@ -166,7 +166,9 @@ func verifiedReplacementIntakeWriter(ctx context.Context, q *gen.Queries, op dom
 		return target, conversation, err
 	}
 	target = rowToRecord(row)
-	if target.ProjectID != op.ProjectID || target.Kind != domain.KindOrchestrator || target.Mode != domain.SessionModeChat || target.Harness != domain.HarnessClaudeCode || target.ClientRequestID != op.SpawnRequestID || target.ClientRequestHash != op.SpawnRequestHash || target.HibernatedAt != nil || target.ProvisionState != domain.SessionProvisionReady || target.ControllerOwner() != proof.Owner || target.Metadata.BrowserCapabilityVerifier != proof.CapabilityVerifier {
+	initialOwner := target.ControllerOwner() == proof.Owner && target.Metadata.BrowserCapabilityVerifier == proof.CapabilityVerifier
+	continuation := op.ActivatedSuccessorMatches(target) || op.Phase == domain.ReplacementCompleted && target.Metadata.ProviderConversationID == op.WriterActivation.Owner.ProviderConversationID
+	if target.ProjectID != op.ProjectID || target.Kind != domain.KindOrchestrator || target.Mode != domain.SessionModeChat || target.Harness != domain.HarnessClaudeCode || target.ClientRequestID != op.SpawnRequestID || target.ClientRequestHash != op.SpawnRequestHash || target.HibernatedAt != nil || target.ProvisionState != domain.SessionProvisionReady || target.IsTerminated || target.Metadata.ControllerGeneration == "" || target.Metadata.BrowserCapabilityVerifier == "" || !initialOwner && !continuation {
 		return fail()
 	}
 	document, err := q.GetProjectDocumentState(ctx, string(op.ProjectID))
@@ -178,7 +180,7 @@ func verifiedReplacementIntakeWriter(ctx context.Context, q *gen.Queries, op dom
 		return target, conversation, err
 	}
 	lease := state.Lease
-	if lease == nil || lease.Frozen || lease.ReplacementID != op.ID || lease.Epoch != op.WriterActivation.AfterEpoch || lease.SessionID != target.ID || lease.Owner != proof.Owner || (lease.ClaimVerifier != proof.CapabilityVerifier && (lease.ClaimVerifier != "" || lease.TokenHash == "")) {
+	if lease == nil || lease.Frozen || lease.ReplacementID != op.ID || lease.Epoch != op.WriterActivation.AfterEpoch || lease.SessionID != target.ID || lease.Owner != target.ControllerOwner() || replacementLeaseCapability(op, lease) != target.Metadata.BrowserCapabilityVerifier || (lease.ClaimVerifier != target.Metadata.BrowserCapabilityVerifier && (lease.ClaimVerifier != "" || lease.TokenHash == "")) {
 		return fail()
 	}
 	matched, err := projectDocumentWriterMatches(ctx, q, op.ProjectID, target, document.Revision, false)

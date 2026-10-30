@@ -86,6 +86,13 @@ func replacementTimesEqual(a, b *time.Time) bool {
 
 func preserveReplacementEvidence(ctx context.Context, q *gen.Queries, before, after domain.OrchestratorReplacement) error {
 	invalid := fmt.Errorf("%w: captured evidence facts are immutable", domain.ErrReplacementStateInvalid)
+	if before.SourceStop == nil && after.SourceStop != nil && ctx.Value(replacementRuntimeProgressKey{}) != q {
+		return invalid
+	}
+	if after.Transcript != nil && after.Transcript.CapturedAt != nil && (before.Transcript == nil || before.Transcript.CapturedAt == nil) && ctx.Value(replacementRuntimeProgressKey{}) != q {
+		return invalid
+	}
+
 	if before.FrozenAt == nil && after.FrozenAt != nil && ctx.Value(replacementFreezeKey{}) != q {
 		return invalid
 	}
