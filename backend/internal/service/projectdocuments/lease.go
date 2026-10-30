@@ -38,7 +38,10 @@ func (s *Service) validate(ctx context.Context, id domain.ProjectID, a Actor, g 
 		return rec, err
 	}
 	lease := state.Lease
-	if lease == nil || lease.SessionID != rec.ID || lease.Owner != rec.ControllerOwner() || lease.CapabilityVerifier != "" && lease.CapabilityVerifier != rec.Metadata.BrowserCapabilityVerifier || lease.Epoch != g.Epoch || subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(g.Token)))) != 1 || g.Token == "" {
+	// Legacy leases have no verifier, so also bind the grant to the capability
+	// authorized above instead of accepting a prior controller's bearer grant.
+	expected := grantFor(id, a, g.Epoch)
+	if lease == nil || lease.SessionID != rec.ID || lease.Owner != rec.ControllerOwner() || lease.CapabilityVerifier != "" && lease.CapabilityVerifier != rec.Metadata.BrowserCapabilityVerifier || lease.Epoch != g.Epoch || subtle.ConstantTimeCompare([]byte(g.Token), []byte(expected.Token)) != 1 || subtle.ConstantTimeCompare([]byte(lease.TokenHash), []byte(hash([]byte(g.Token)))) != 1 || g.Token == "" {
 		return rec, apierr.Forbidden("PROJECT_DOCUMENT_LEASE_INVALID", "The writer lease is stale or invalid")
 	}
 	if lease.Frozen && !allowFrozen {

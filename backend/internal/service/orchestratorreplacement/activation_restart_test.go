@@ -247,3 +247,93 @@ func TestReplacementCompletedLeaseStillAllowsOrdinaryControllerRenewal(t *testin
 		t.Fatal("completed lease was retained as an active reservation", err)
 	}
 }
+
+func TestReplacementClaimedLegacyLeaseRejectsCapabilityOnlyWriteBeforeReady(t *testing.T) {
+	for _, legacy := range []bool{true, false} {
+		name := "current format"
+		if legacy {
+			name = "upgraded claimed legacy lease"
+		}
+		t.Run(name, func(t *testing.T) {
+			x := activationCoordinatorFixture(t)
+			ctx := context.Background()
+			op, err := x.service().Advance(ctx, x.operation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			op, err = x.service().Advance(ctx, op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := docs.New(docs.Deps{Store: x.f.store.Store, DataDir: x.documentDataDir, Capabilities: restartCapability{target: op.SuccessorSessionID}})
+			original := docs.Actor{SessionID: op.SuccessorSessionID, Capability: "successor-secret"}
+			oldGrant, err := service.Acquire(ctx, op.ProjectID, original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if legacy {
+				// c13 stored a claimed token without capabilityVerifier. Preserve
+				// all other managed facts to emulate that valid upgrade format.
+				state, err := x.f.store.GetProjectDocumentState(ctx, op.ProjectID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.Lease.CapabilityVerifier = ""
+				if saved, err := x.f.store.SaveProjectDocumentState(ctx, op.ProjectID, state); err != nil || !saved {
+					t.Fatal(saved, err)
+				}
+			}
+			before, err := service.Read(ctx, op.ProjectID, op.DocumentPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err = service.Write(ctx, op.ProjectID, docs.WriteInput{Actor: original, Lease: oldGrant, Path: op.DocumentPath, ExpectedHash: before.Hash, Content: "authorized before capability rotation"})
+			if err != nil {
+				t.Fatal("unchanged legacy writer was not usable", err)
+			}
+			target, _, err := x.f.store.GetSession(ctx, op.SuccessorSessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target.Metadata.BrowserCapabilityVerifier = "next-verifier"
+			if err := x.f.store.UpdateSession(ctx, target); err != nil {
+				t.Fatal(err)
+			}
+			if fenced, err := x.f.store.ReplacementWakeFenced(ctx, target.ID); err != nil || !fenced {
+				t.Fatal("unpublished capability released intake", fenced, err)
+			}
+			actor := docs.Actor{SessionID: target.ID, Capability: "next-secret"}
+			if _, err := service.Acquire(ctx, op.ProjectID, actor); err == nil {
+				t.Fatal("unpublished capability acquired the legacy writer")
+			}
+			state, err := x.f.store.GetProjectDocumentState(ctx, op.ProjectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, writeErr := service.Write(ctx, op.ProjectID, docs.WriteInput{Actor: actor, Lease: oldGrant, Path: op.DocumentPath, ExpectedHash: before.Hash, Content: "unpublished capability used old grant"})
+			after, err := service.Read(ctx, op.ProjectID, op.DocumentPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Hash != before.Hash || after.Content != before.Content {
+				t.Fatalf("unpublished capability changed living file using old grant: err=%v content=%q", writeErr, after.Content)
+			}
+			code(t, writeErr, "PROJECT_DOCUMENT_LEASE_INVALID")
+			afterState, err := x.f.store.GetProjectDocumentState(ctx, op.ProjectID)
+			if err != nil || !reflect.DeepEqual(state, afterState) {
+				t.Fatal("rejected write changed lease or author receipt", err)
+			}
+			lc := lifecycle.New(x.f.store.Store, nil)
+			if err := lc.MarkSpawned(ctx, target.ID, target.Metadata); err != nil {
+				t.Fatal(err)
+			}
+			grant, err := service.Acquire(ctx, op.ProjectID, actor)
+			if err != nil || grant.Epoch != oldGrant.Epoch || grant.Token == oldGrant.Token {
+				t.Fatal("verified ready did not issue a new same-epoch grant", grant.Epoch, err)
+			}
+			if _, err := service.Write(ctx, op.ProjectID, docs.WriteInput{Actor: actor, Lease: grant, Path: op.DocumentPath, ExpectedHash: before.Hash, Content: "verified current writer"}); err != nil {
+				t.Fatal("verified ready writer could not publish", err)
+			}
+		})
+	}
+}
