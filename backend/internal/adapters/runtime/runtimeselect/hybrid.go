@@ -242,3 +242,22 @@ func (r *hybridRuntime) CreateCommand(ctx context.Context, cfg ports.RuntimeConf
 	}
 	return h, nil
 }
+
+// StopSessionRuntimes resolves both adapter namespaces. A Create may have fallen
+// back before its routed handle was saved, so checking just one backend would
+// mistake a live writer on the other for absence. The caller fences the session.
+func (r *hybridRuntime) StopSessionRuntimes(ctx context.Context, id domain.SessionID) error {
+	if id == "" {
+		return ports.ErrRuntimeProbeInconclusive
+	}
+	var failures []error
+	for _, backend := range []routedBackend{r.legacy, r.direct} {
+		stopper, ok := backend.(ports.SessionRuntimeStopper)
+		if !ok {
+			failures = append(failures, ports.ErrRuntimeProbeInconclusive)
+			continue
+		}
+		failures = append(failures, stopper.StopSessionRuntimes(ctx, id))
+	}
+	return errors.Join(failures...)
+}

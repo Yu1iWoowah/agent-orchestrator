@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty/ptyregistry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/procmem"
 )
@@ -688,3 +689,12 @@ type processKiller interface {
 // The real defaultOSProcessFinder is in pidalive_unix.go / pidalive_windows.go
 // (same files that provide pidAlive).
 var osProcessFinder = defaultOSProcessFinder
+
+// StopSessionRuntimes uses the same adapter-owned key as Create. Destroy only
+// succeeds after shutdown or conclusive absence; uncertain probes remain errors.
+func (r *Runtime) StopSessionRuntimes(ctx context.Context, id domain.SessionID) error {
+	if id == "" {
+		return ports.ErrRuntimeProbeInconclusive
+	}
+	return r.Destroy(ctx, ports.RuntimeHandle{ID: string(id)})
+}

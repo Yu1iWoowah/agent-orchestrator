@@ -200,6 +200,18 @@ func (l *agentLauncher) accountEnv(ctx context.Context, spec LaunchSpec) (map[st
 	return l.accounts.ReviewerLaunchEnv(ctx, spec.ReviewSessionID, domain.AgentHarness(spec.Harness))
 }
 
+func (l *agentLauncher) beginAccountUse(ctx context.Context, spec LaunchSpec) (func(), error) {
+	guard, ok := l.accounts.(ports.AgentAccountUseGuard)
+	if !ok {
+		return func() {}, nil
+	}
+	selected, err := l.accounts.ResolveReviewerAccount(ctx, spec.ReviewSessionID, ports.AgentAccountResolutionRequest{Harness: domain.AgentHarness(spec.Harness)})
+	if err != nil {
+		return nil, err
+	}
+	return guard.AcquireAccountUses(ctx, selected.AccountID)
+}
+
 // WithAgentAuth lets reviewer preflight reuse the agent auth catalog for the
 // same harness. Reviewer-specific auth probes must not be stricter than the
 // normal agent's local auth status.
@@ -543,6 +555,11 @@ func truncateReviewHistoryBody(body string) string {
 }
 
 func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (LaunchResult, error) {
+	release, err := l.beginAccountUse(ctx, spec)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	defer release()
 	inv, err := l.prepareInvocation(ctx, spec, true)
 	if err != nil {
 		return LaunchResult{}, err
@@ -560,6 +577,11 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (LaunchResul
 }
 
 func (l *agentLauncher) RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error) {
+	release, err := l.beginAccountUse(ctx, spec)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	defer release()
 	inv, err := l.prepareIdleInvocation(ctx, spec)
 	if err != nil {
 		return LaunchResult{}, err

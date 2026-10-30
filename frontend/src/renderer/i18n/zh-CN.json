@@ -3542,7 +3542,7 @@
 	"settings.defaultSandbox.adminOnly": "只有组织管理员可以更改此设置。",
 	"settings.defaultSandbox.saveFailed": "无法保存默认沙盒。请重试。",
 	"settings.agentAccounts.cleanupScheduled": "此账号已停用，清理已排定。使用此账号的 agents 停止后，AO 会自动重试。你也可以先停止 agents 再重试，提前完成清理。",
-	"settings.agentAccounts.cleanupScheduledReviewer": "清理已安排。审查者 {{reviewId}} 仍在使用此账号，请先停止或归档该审查者，再重试。",
+	"settings.agentAccounts.cleanupScheduledReviewer": "已安排清理。{{name}} 的审查者仍在使用此账号。请停止或归档该审查者后重试。",
 	"settings.agentAccounts.unavailableHomeOccupied": "AO 保留的 unavailable 账号目录已被占用，或无法安全检查。请停止相关子工具，检查并移出 AO 账号存储空间中 .unavailable 内的数据后重试。AO 只会自动移除空的保留文件夹。",
 	"settings.agentAccounts.storageUnsafe": "账号存储空间不安全。请检查文件夹权限与符号链接后重试。",
 	"settings.agentAccounts.storageUnavailable": "账号存储空间暂时不可用。请稍后重试。",
@@ -3558,7 +3558,7 @@
 	"settings.agentAccounts.refresh": "刷新限额",
 	"settings.agentAccounts.signedOut": "已退出登录",
 	"settings.agentAccounts.remove": "移除账户",
-	"settings.agentAccounts.removeDescription": "AO 会停止使用 {{email}} 的智能体，退出该账户并删除其文件夹。已停止的会话在你打开时会使用默认账户继续。之后你可以在其摘要中把它移到其他账户。",
+	"settings.agentAccounts.removeDescription": "使用此账号的任务停止后，退出 {{email}} 并移除其私有配置。历史与账号绑定会保留。恢复旧任务时必须明确选择账号，不会改用默认登录。",
 	"settings.agentAccounts.loginTitle": "登录 {{provider}}",
 	"settings.agentAccounts.checkSignIn": "检查登录",
 	"settings.agentAccounts.loginAlreadySaved": "登录已完成，账号已保存。",
@@ -3857,5 +3857,9 @@
 	"decision.scopeLimits": "Limits",
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
-	"decision.older": "Load older questions"
+	"decision.older": "Load older questions",
+	"settings.agentAccounts.inUse": "此账号仍在使用中。请先停止或交接使用此账号的 session 与 reviewer，再重试。账号尚未变更。",
+	"settings.agentAccounts.reviewerOwner": "审查者",
+	"settings.agentAccounts.openPR": "打开 PR",
+	"settings.agentAccounts.legacyIdentityConflict": "旧版设备账号目录已保存此身份。请在设置中选择保留哪个登录；AO 尚未更改旧登录。"
 }

@@ -3626,7 +3626,7 @@
 	"settings.defaultSandbox.adminOnly": "Somente administradores da organização podem alterar isso.",
 	"settings.defaultSandbox.saveFailed": "Não foi possível salvar o sandbox padrão. Tente novamente.",
 	"settings.agentAccounts.cleanupScheduled": "Esta conta está desativada e a limpeza está agendada. O AO tentará novamente quando seus agentes pararem. Você também pode pará-los e tentar novamente para concluir antes.",
-	"settings.agentAccounts.cleanupScheduledReviewer": "A limpeza está agendada. O revisor {{reviewId}} ainda está usando esta conta. Pare ou arquive esse revisor e tente novamente.",
+	"settings.agentAccounts.cleanupScheduledReviewer": "Limpeza agendada. O revisor de {{name}} ainda usa esta conta. Pare ou arquive esse revisor e tente novamente.",
 	"settings.agentAccounts.unavailableHomeOccupied": "O diretório de contas unavailable reservado pelo AO está ocupado ou não pode ser inspecionado com segurança. Pare as ferramentas filhas relacionadas, revise e mova os dados para fora de .unavailable no armazenamento de contas do AO e tente novamente. O AO só remove automaticamente pastas reservadas vazias.",
 	"settings.agentAccounts.storageUnsafe": "O armazenamento da conta não é seguro. Verifique as permissões das pastas e os links simbólicos e tente novamente.",
 	"settings.agentAccounts.storageUnavailable": "O armazenamento da conta está temporariamente indisponível. Tente novamente mais tarde.",
@@ -3642,7 +3642,7 @@
 	"settings.agentAccounts.refresh": "Atualizar limites",
 	"settings.agentAccounts.signedOut": "Desconectado",
 	"settings.agentAccounts.remove": "Remover conta",
-	"settings.agentAccounts.removeDescription": "O AO para os agentes que usam {{email}}, desconecta a conta e apaga a pasta dela. Uma sessão parada continua com a conta padrão quando você a abre. Depois, você pode movê-la para outra conta no Resumo dela.",
+	"settings.agentAccounts.removeDescription": "Saia de {{email}} e remova seu perfil privado após parar os usuários ativos. O histórico e os vínculos são mantidos. Para retomar uma sessão antiga, escolha uma conta explicitamente; o login padrão não será usado.",
 	"settings.agentAccounts.loginTitle": "Entrar no {{provider}}",
 	"settings.agentAccounts.checkSignIn": "Verificar login",
 	"settings.agentAccounts.loginAlreadySaved": "O login foi concluído. Sua conta foi salva.",
@@ -3945,5 +3945,9 @@
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
-	"decision.questionCount_many": "{{count}} questions"
+	"decision.questionCount_many": "{{count}} questions",
+	"settings.agentAccounts.inUse": "Esta conta está em uso. Pare ou transfira as sessões e os revisores que a utilizam e tente novamente. A conta não foi alterada.",
+	"settings.agentAccounts.reviewerOwner": "Revisor",
+	"settings.agentAccounts.openPR": "Abrir PR",
+	"settings.agentAccounts.legacyIdentityConflict": "Esta identidade já está salva no catálogo antigo de contas do dispositivo. Escolha qual login manter nas configurações; o AO não alterou o login antigo."
 }

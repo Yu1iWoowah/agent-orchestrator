@@ -2,7 +2,7 @@ import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { agentAccountName, agentAccountProviderFor, useAgentAccountActions, useAgentAccountLabel, useAgentAccounts, useSessionAgentAccounts } from "../hooks/useAgentAccounts";
-import { interfaceTransitionIsActive, useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
+import { interfaceTransitionIsActive, interfaceTransitionIsAccountMove, useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import type { WorkspaceSession } from "../types/workspace";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AccountLimits } from "./settings/AgentAccountsSection";
@@ -22,7 +22,7 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 	const { transition } = useSessionInterfaceTransitionStatus(provider ? session.id : undefined);
 	const [message, setMessage] = useState("");
 	const [confirming, setConfirming] = useState<string | null>(null);
-	const accountMove = transition?.targetAccountId ? transition : undefined;
+	const accountMove = interfaceTransitionIsAccountMove(transition) ? transition : undefined;
 	const moving = interfaceTransitionIsActive(accountMove);
 	const settledPhase = accountMove && !moving ? accountMove.phase : undefined;
 
@@ -59,8 +59,10 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 	};
 
 	const status = moving
-		? t("settings.agentAccounts.switching", { email: label(accountMove?.targetAccountId) })
-		: settledPhase === "completed" && accountMove?.targetAccountId === currentId && !messagedSinceMove
+		? accountMove?.targetAccountId
+			? t("settings.agentAccounts.switching", { email: label(accountMove.targetAccountId) })
+			: t("settings.agentAccounts.switchingAccount")
+		: settledPhase === "completed" && accountMove?.targetAccountId && accountMove.targetAccountId === currentId && !messagedSinceMove
 			? t("settings.agentAccounts.moved", { from: label(accountMove?.sourceAccountId), to: label(currentId) })
 			: settledPhase === "failed" || settledPhase === "recovery_required"
 				? accountMove?.errorDetail || t("settings.agentAccounts.switchFailed")

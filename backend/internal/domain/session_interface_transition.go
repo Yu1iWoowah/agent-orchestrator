@@ -100,15 +100,33 @@ type SessionInterfaceTransition struct {
 	NativeConversationID string                                  `json:"nativeConversationId,omitempty"`
 	// SourceAccountID and TargetAccountID are set when the handoff moves the
 	// agent to another provider account; the mode then stays the same.
-	SourceAccountID      string    `json:"sourceAccountId,omitempty"`
-	TargetAccountID      string    `json:"targetAccountId,omitempty"`
-	ErrorCode            string    `json:"errorCode,omitempty"`
-	ErrorDetail          string    `json:"errorDetail,omitempty"`
-	CreatedAt            time.Time `json:"createdAt"`
-	UpdatedAt            time.Time `json:"updatedAt"`
-	CompletedAt          time.Time `json:"completedAt,omitempty"`
-	NoticeAcknowledgedAt time.Time `json:"noticeAcknowledgedAt,omitempty"`
+	SourceAccountID string `json:"sourceAccountId,omitempty"`
+	TargetAccountID string `json:"targetAccountId,omitempty"`
+	// Runtime receipts fence each tentative TUI controller's Create/metadata
+	// gap, including a source restart after confirmed target shutdown.
+	// They are daemon-only ownership facts, not renderer state or paths.
+	TargetRuntimeLaunchID string                        `json:"-"`
+	TargetRuntimeHandleID string                        `json:"-"`
+	TargetRuntimeState    AccountTransitionRuntimeState `json:"-"`
+	ErrorCode             string                        `json:"errorCode,omitempty"`
+	ErrorDetail           string                        `json:"errorDetail,omitempty"`
+	CreatedAt             time.Time                     `json:"createdAt"`
+	UpdatedAt             time.Time                     `json:"updatedAt"`
+	CompletedAt           time.Time                     `json:"completedAt,omitempty"`
+	NoticeAcknowledgedAt  time.Time                     `json:"noticeAcknowledgedAt,omitempty"`
 }
+
+// AccountTransitionRuntimeState records evidence about a tentative native writer.
+// An empty legacy value means unknown, never proof that Create had no effect.
+type AccountTransitionRuntimeState string
+
+// Native runtime receipt states, from no effect to confirmed shutdown.
+const (
+	AccountTransitionRuntimeNotStarted AccountTransitionRuntimeState = "not_started"
+	AccountTransitionRuntimeReserved   AccountTransitionRuntimeState = "reserved"
+	AccountTransitionRuntimeStarted    AccountTransitionRuntimeState = "started"
+	AccountTransitionRuntimeStopped    AccountTransitionRuntimeState = "stopped"
+)
 
 // Active reports whether this row still owns the session's handoff gate.
 func (t SessionInterfaceTransition) Active() bool {

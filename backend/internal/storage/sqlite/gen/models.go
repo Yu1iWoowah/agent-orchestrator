@@ -12,6 +12,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+type AccountTransitionRecoveryEvidence struct {
+	ID                string
+	RetireWithoutStop int64
+	CurrentTarget     int64
+}
+
 type AgentAccount struct {
 	ID                   string
 	Provider             string
@@ -1004,23 +1010,26 @@ type SessionHarnessRelease struct {
 }
 
 type SessionInterfaceTransition struct {
-	ID                   string
-	SessionID            domain.SessionID
-	SourceMode           domain.SessionMode
-	TargetMode           domain.SessionMode
-	Policy               domain.SessionInterfaceTransitionPolicy
-	Phase                domain.SessionInterfaceTransitionPhase
-	NativeConversationID string
-	ErrorCode            string
-	ErrorDetail          string
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	CompletedAt          sql.NullTime
-	NoticeAcknowledgedAt sql.NullTime
-	HistoryPolicy        domain.SessionInterfaceTransitionHistoryPolicy
-	SourceAccountID      string
-	TargetAccountID      string
-	SettingsOperationID  string
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
 }
 
 type SessionInterfaceTransitionMessage struct {

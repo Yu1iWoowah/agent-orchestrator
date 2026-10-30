@@ -93,3 +93,24 @@ it("sends inspector policy and review mutations to the selected host with equal 
 	await waitFor(() => expect(mutations).toContain("POST http://127.0.0.1:4000/api/v1/sessions/same-session/resume-agent"));
 	resumeView.unmount();
 });
+
+
+it("identifies a remote account move after account IDs are redacted", async () => {
+	remoteConnect.mockResolvedValue({ hostId: "box-a", label: "Box A", url: "http://box-a:3001", base: "http://127.0.0.1:4000" });
+	vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+		const url = new URL(input instanceof Request ? input.url : String(input));
+		if (url.pathname.endsWith("/interface-transition")) return Response.json({ supported: true, transition: {
+			id: "redacted-move", sessionId: "same-session", sourceMode: "chat", targetMode: "chat",
+			policy: "drain", historyPolicy: "strict", phase: "target_starting", accountMove: true,
+			createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:01Z",
+		} });
+		if (url.pathname.endsWith("/reviews")) return Response.json({ reviews: [], runs: [] });
+		if (url.pathname.endsWith("/pr")) return Response.json({ prs: [] });
+		return Response.json({});
+	}));
+	await connectHost("http://box-a:3001");
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	const stopped = { ...session("box-a"), status: "exited" as const, activity: { state: "exited" as const, lastActivityAt: "2026-09-28T00:00:00Z" } };
+	render(<QueryClientProvider client={client}><TooltipProvider><SessionInspector hostId="box-a" session={stopped} /></TooltipProvider></QueryClientProvider>);
+	expect(await screen.findByText("Switching account")).toBeInTheDocument();
+});

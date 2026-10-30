@@ -1056,7 +1056,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		cfg.AgentAccountID = cfg.ResolvedAccount.AccountID
 		ctx = ports.WithAgentAccount(ctx, *cfg.ResolvedAccount)
 	}
-	releaseHarness, err := m.beginHarnessUse(cfg.Harness)
+	releaseHarness, err := m.beginHarnessAndAccountUse(ctx, cfg.Harness, cfg.AgentAccountID)
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 	}
@@ -3222,7 +3222,7 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (res
 	if !ok {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, ErrNotFound)
 	}
-	releaseHarness, err := m.beginHarnessUse(rec.Harness)
+	releaseHarness, err := m.beginBoundHarnessUse(ctx, rec)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
 	}
@@ -3560,7 +3560,7 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 	if starting {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrResumeInProgress)
 	}
-	releaseHarness, err := m.beginHarnessUse(rec.Harness)
+	releaseHarness, err := m.beginBoundHarnessUse(ctx, rec)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
@@ -3771,6 +3771,18 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	} else if abandoned {
 		return RestoreResult{}, apierr.Conflict("AGENT_SETTINGS_WRITER_UNCONFIRMED", "A terminated settings operation still has an unconfirmed native writer; another launch is not safe", nil)
 	}
+	// Reconcile, interface/provider switches and ordinary restore share this
+	// native boundary. Hold the profile across Prepare/Create/owner publication.
+	accountID, accountErr := m.boundAccountForUse(ctx, rec)
+	if accountErr != nil {
+		return RestoreResult{}, accountErr
+	}
+	releaseAccount, accountErr := m.beginAccountUses(ctx, accountID)
+	if accountErr != nil {
+		return RestoreResult{}, accountErr
+	}
+	defer releaseAccount()
+
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.
@@ -3975,6 +3987,10 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		Argv:          argv,
 		Env:           env,
 	}
+	if err := m.recordAccountRuntime(ctx, domain.AccountTransitionRuntimeReserved, launchID, ""); err != nil {
+		m.cleanupSystemPromptDir(rec.ID)
+		return RestoreResult{}, relaunchFailed("record runtime intent", err)
+	}
 	var handle ports.RuntimeHandle
 	launchState, _ := ctx.Value(tuiSettingsLaunchKey{}).(*tuiSettingsLaunch)
 	if launchState != nil {
@@ -4008,6 +4024,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			}
 		}
 	}
+	err = m.accountRuntimeCreated(ctx, launchID, handle, err)
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, relaunchFailed("runtime", fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, agentlaunch.RedactError(redactSettingsGrantError(err, env), project.Config.Env)))

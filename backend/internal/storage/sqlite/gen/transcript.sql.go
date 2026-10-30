@@ -130,7 +130,7 @@ func (q *Queries) SelectTranscriptConversations(ctx context.Context, sessionID *
 }
 
 const selectTranscriptInterfaceTransitions = `-- name: SelectTranscriptInterfaceTransitions :many
-SELECT id, session_id, source_mode, target_mode, policy, phase, native_conversation_id, error_code, error_detail, created_at, updated_at, completed_at, notice_acknowledged_at, history_policy, source_account_id, target_account_id, settings_operation_id FROM session_interface_transitions WHERE session_id=?1 ORDER BY created_at,id
+SELECT id, session_id, source_mode, target_mode, policy, phase, native_conversation_id, error_code, error_detail, created_at, updated_at, completed_at, notice_acknowledged_at, history_policy, source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id FROM session_interface_transitions WHERE session_id=?1 ORDER BY created_at,id
 `
 
 func (q *Queries) SelectTranscriptInterfaceTransitions(ctx context.Context, sessionID domain.SessionID) ([]SessionInterfaceTransition, error) {
@@ -159,6 +159,9 @@ func (q *Queries) SelectTranscriptInterfaceTransitions(ctx context.Context, sess
 			&i.HistoryPolicy,
 			&i.SourceAccountID,
 			&i.TargetAccountID,
+			&i.TargetRuntimeLaunchID,
+			&i.TargetRuntimeHandleID,
+			&i.TargetRuntimeState,
 			&i.SettingsOperationID,
 		); err != nil {
 			return nil, err

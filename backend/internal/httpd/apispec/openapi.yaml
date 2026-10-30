@@ -820,6 +820,48 @@ paths:
       summary: Spend one Codex usage-limit reset of an account
       tags:
       - agents
+  /api/v1/agents/accounts/{accountId}/usage-owners:
+    get:
+      operationId: getAgentAccountUsageOwners
+      parameters:
+      - description: Agent account identifier; device-claude and device-codex are
+          this computer's own logins.
+        in: path
+        name: accountId
+        required: true
+        schema:
+          description: Agent account identifier; device-claude and device-codex are
+            this computer's own logins.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentAccountUsageOwnersResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: List local sessions, reviewers and transitions affected by account
+        removal
+      tags:
+      - agents
   /api/v1/agents/accounts/login:
     post:
       operationId: startAgentAccountLogin
@@ -986,6 +1028,64 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
       summary: Read non-secret durable account lifecycle progress
+      tags:
+      - agents
+  /api/v1/agents/accounts/reviewers/{reviewId}/rebuild:
+    post:
+      operationId: rebuildReviewerAccount
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebuildReviewerAccountRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RebuildReviewerAccountResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Create a fresh account-bound execution after explicitly archiving a
+        reviewer
       tags:
       - agents
   /api/v1/agents/accounts/sessions/{sessionId}:
@@ -15891,6 +15991,46 @@ components:
       - tokens
       - costNanos
       type: object
+    AgentAccountUsageOwner:
+      properties:
+        blocking:
+          type: boolean
+        harness:
+          type: string
+        kind:
+          enum:
+          - session
+          - reviewer
+          - transition
+          type: string
+        prUrl:
+          type: string
+        projectId:
+          type: string
+        reviewId:
+          type: string
+        sessionId:
+          type: string
+        sessionName:
+          type: string
+        transitionId:
+          type: string
+      required:
+      - kind
+      - projectId
+      - sessionId
+      - harness
+      - blocking
+      type: object
+    AgentAccountUsageOwnersResponse:
+      properties:
+        owners:
+          items:
+            $ref: '#/components/schemas/AgentAccountUsageOwner'
+          type: array
+      required:
+      - owners
+      type: object
     AgentAccountUsageResponse:
       properties:
         days:
@@ -23409,6 +23549,31 @@ components:
       - expectedVersion
       - payload
       type: object
+    RebuildReviewerAccountRequest:
+      properties:
+        accountId:
+          description: Explicit account for a fresh reviewer execution. The previous
+            conversation and binding remain historical; the next trigger starts a
+            new native conversation.
+          maxLength: 200
+          minLength: 1
+          type: string
+      required:
+      - accountId
+      type: object
+    RebuildReviewerAccountResponse:
+      properties:
+        accountId:
+          type: string
+        reviewId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - reviewId
+      - sessionId
+      - accountId
+      type: object
     RegisterPushDeviceRequest:
       properties:
         deviceName:
@@ -24330,6 +24495,8 @@ components:
       type: object
     SessionInterfaceTransition:
       properties:
+        accountMove:
+          type: boolean
         completedAt:
           format: date-time
           type:

@@ -19,6 +19,9 @@ func (s *Service) ResolveReviewerAccount(ctx context.Context, id string, in port
 	if !supported {
 		return s.ResolveAccount(ctx, in)
 	}
+	if err := s.currentReviewerExecution(ctx, id); err != nil {
+		return domain.ResolvedAgentAccount{}, err
+	}
 	store, ok := s.store.(ports.ReviewerAgentAccountStore)
 	if !ok || id == "" {
 		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountStorageUnavailable
@@ -70,6 +73,9 @@ func (s *Service) ReviewerLaunchEnv(ctx context.Context, id string, harness doma
 	p, supported := domain.AgentAccountProviderFor(harness)
 	if !supported {
 		return nil, nil
+	}
+	if err := s.currentReviewerExecution(ctx, id); err != nil {
+		return nil, err
 	}
 	store, ok := s.store.(ports.ReviewerAgentAccountStore)
 	if !ok || id == "" {

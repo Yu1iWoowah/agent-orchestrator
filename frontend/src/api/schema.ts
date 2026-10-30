@@ -294,6 +294,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/accounts/{accountId}/usage-owners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List local sessions, reviewers and transitions affected by account removal */
+        get: operations["getAgentAccountUsageOwners"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/accounts/login": {
         parameters: {
             query?: never;
@@ -356,6 +373,23 @@ export interface paths {
         get: operations["getAgentAccountOperation"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/accounts/reviewers/{reviewId}/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a fresh account-bound execution after explicitly archiving a reviewer */
+        post: operations["rebuildReviewerAccount"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5068,6 +5102,21 @@ export interface components {
             /** Format: int64 */
             tokens: number;
         };
+        AgentAccountUsageOwner: {
+            blocking: boolean;
+            harness: string;
+            /** @enum {string} */
+            kind: "session" | "reviewer" | "transition";
+            prUrl?: string;
+            projectId: string;
+            reviewId?: string;
+            sessionId: string;
+            sessionName?: string;
+            transitionId?: string;
+        };
+        AgentAccountUsageOwnersResponse: {
+            owners: components["schemas"]["AgentAccountUsageOwner"][];
+        };
         AgentAccountUsageResponse: {
             days: number;
             usage: components["schemas"]["AgentAccountUsageRow"][];
@@ -7885,6 +7934,15 @@ export interface components {
             expectedVersion: number;
             payload: components["schemas"]["AttentionQuestionPayload"];
         };
+        RebuildReviewerAccountRequest: {
+            /** @description Explicit account for a fresh reviewer execution. The previous conversation and binding remain historical; the next trigger starts a new native conversation. */
+            accountId: string;
+        };
+        RebuildReviewerAccountResponse: {
+            accountId: string;
+            reviewId: string;
+            sessionId: string;
+        };
         RegisterPushDeviceRequest: {
             /** @description Human-friendly device label. */
             deviceName?: string;
@@ -8252,6 +8310,7 @@ export interface components {
             userRequest: string;
         };
         SessionInterfaceTransition: {
+            accountMove?: boolean;
             /** Format: date-time */
             completedAt?: null | string;
             /** Format: date-time */
@@ -10442,6 +10501,56 @@ export interface operations {
             };
         };
     };
+    getAgentAccountUsageOwners: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent account identifier; device-claude and device-codex are this computer's own logins. */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentAccountUsageOwnersResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     startAgentAccountLogin: {
         parameters: {
             query?: never;
@@ -10641,6 +10750,78 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    rebuildReviewerAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RebuildReviewerAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RebuildReviewerAccountResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

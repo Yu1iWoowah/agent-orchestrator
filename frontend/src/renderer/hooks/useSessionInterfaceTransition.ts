@@ -144,6 +144,12 @@ const cancellablePhases = new Set<SessionInterfaceTransition["phase"]>([
 
 const nativeSessionReadinessPoll = 1_000;
 
+// New hosts expose the kind without local account IDs. Retain compatibility
+// with older hosts which only exposed the target reference.
+export function interfaceTransitionIsAccountMove(transition?: SessionInterfaceTransition): boolean {
+	return transition?.accountMove ?? Boolean(transition?.targetAccountId);
+}
+
 export function interfaceTransitionIsActive(transition?: SessionInterfaceTransition): boolean {
 	return Boolean(transition && activePhases.has(transition.phase));
 }

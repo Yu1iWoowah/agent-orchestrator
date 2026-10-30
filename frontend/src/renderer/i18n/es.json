@@ -3626,7 +3626,7 @@
 	"settings.defaultSandbox.adminOnly": "Solo los administradores de la organización pueden cambiar esto.",
 	"settings.defaultSandbox.saveFailed": "No se pudo guardar el sandbox predeterminado. Inténtalo de nuevo.",
 	"settings.agentAccounts.cleanupScheduled": "Esta cuenta está desactivada y la limpieza está programada. AO volverá a intentarlo cuando se detengan sus agentes. También puedes detenerlos y reintentar para terminar antes.",
-	"settings.agentAccounts.cleanupScheduledReviewer": "La limpieza está programada. El revisor {{reviewId}} sigue usando esta cuenta. Detén o archiva ese revisor y vuelve a intentarlo.",
+	"settings.agentAccounts.cleanupScheduledReviewer": "Limpieza programada. El revisor de {{name}} aún usa esta cuenta. Detén o archiva ese revisor y vuelve a intentarlo.",
 	"settings.agentAccounts.unavailableHomeOccupied": "El directorio de cuentas unavailable reservado por AO está ocupado o no se puede inspeccionar de forma segura. Detén las herramientas secundarias relacionadas, revisa y mueve los datos fuera de .unavailable en el almacenamiento de cuentas de AO y vuelve a intentarlo. AO solo elimina automáticamente las carpetas reservadas vacías.",
 	"settings.agentAccounts.storageUnsafe": "El almacenamiento de la cuenta no es seguro. Revisa los permisos de las carpetas y los enlaces simbólicos y vuelve a intentarlo.",
 	"settings.agentAccounts.storageUnavailable": "El almacenamiento de la cuenta no está disponible temporalmente. Inténtalo más tarde.",
@@ -3642,7 +3642,7 @@
 	"settings.agentAccounts.refresh": "Actualizar límites",
 	"settings.agentAccounts.signedOut": "Sesión cerrada",
 	"settings.agentAccounts.remove": "Quitar cuenta",
-	"settings.agentAccounts.removeDescription": "AO detiene los agentes que usan {{email}}, cierra su sesión y borra su carpeta. Una sesión detenida continúa con la cuenta predeterminada cuando la abres. Después puedes moverla a otra cuenta en su Resumen.",
+	"settings.agentAccounts.removeDescription": "Cierra la sesión de {{email}} y elimina su perfil privado cuando se detengan sus usuarios activos. Se conservan el historial y las vinculaciones. Para reanudar una sesión antigua debes elegir una cuenta explícitamente; no se usará la predeterminada.",
 	"settings.agentAccounts.loginTitle": "Iniciar sesión en {{provider}}",
 	"settings.agentAccounts.checkSignIn": "Comprobar inicio de sesión",
 	"settings.agentAccounts.loginAlreadySaved": "Se completó el inicio de sesión. Tu cuenta se guardó.",
@@ -3945,5 +3945,9 @@
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
 	"decision.older": "Load older questions",
-	"decision.questionCount_many": "{{count}} questions"
+	"decision.questionCount_many": "{{count}} questions",
+	"settings.agentAccounts.inUse": "Esta cuenta está en uso. Detén o transfiere las sesiones y revisores que la usan y vuelve a intentarlo. La cuenta no se ha modificado.",
+	"settings.agentAccounts.reviewerOwner": "Revisor",
+	"settings.agentAccounts.openPR": "Abrir PR",
+	"settings.agentAccounts.legacyIdentityConflict": "Esta identidad ya está guardada en el catálogo antiguo de cuentas del dispositivo. Elige qué inicio de sesión conservar en Configuración; AO no ha cambiado el anterior."
 }

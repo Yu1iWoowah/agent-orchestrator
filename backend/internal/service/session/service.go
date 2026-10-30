@@ -1663,6 +1663,12 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("PR_NOT_OPEN", "PR is not open", nil)
 	case errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied):
 		return apierr.Conflict("AGENT_ACCOUNT_UNAVAILABLE_HOME_OCCUPIED", ports.AgentAccountUnavailableHomeOccupiedMessage, map[string]any{"reasonCode": "account_unavailable_home_occupied", "retryable": true})
+	case errors.Is(err, ports.ErrAgentAccountInUse):
+		return apierr.Conflict("AGENT_ACCOUNT_IN_USE", "The account is being used by another operation. Wait for it to finish, then retry.", map[string]any{"reasonCode": "account_in_use", "retryable": true})
+	case errors.Is(err, ports.ErrAgentAccountOperationBusy):
+		return apierr.Conflict("AGENT_ACCOUNT_OPERATION_BUSY", "An account operation is in progress. Complete or cancel sign-in in Settings, then retry.", map[string]any{"reasonCode": "account_operation_busy", "retryable": true})
+	case errors.Is(err, ports.ErrAgentAccountChanged):
+		return apierr.Conflict("AGENT_ACCOUNT_CHANGED", "The execution account changed. Refresh the session and retry.", map[string]any{"reasonCode": "account_changed", "retryable": true})
 	case errors.Is(err, ports.ErrAgentAccountLocalOnly):
 		return apierr.Forbidden("AGENT_ACCOUNT_LOCAL_ONLY", "Local accounts can only be selected from this computer.")
 	case errors.Is(err, ports.ErrAgentAccountStorageUnsafe):

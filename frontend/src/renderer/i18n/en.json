@@ -3541,7 +3541,7 @@
 	"settings.defaultSandbox.adminOnly": "Only organization admins can change this.",
 	"settings.defaultSandbox.saveFailed": "Couldn't save the default sandbox. Try again.",
 	"settings.agentAccounts.cleanupScheduled": "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. You can stop them and retry to finish sooner.",
-	"settings.agentAccounts.cleanupScheduledReviewer": "Cleanup is scheduled. Reviewer {{reviewId}} is still using this account. Stop or archive that reviewer, then retry.",
+	"settings.agentAccounts.cleanupScheduledReviewer": "Cleanup is scheduled. The reviewer for {{name}} is still using this account. Stop or archive that reviewer, then retry.",
 	"settings.agentAccounts.unavailableHomeOccupied": "AO’s reserved unavailable account directory is occupied or cannot be safely inspected. Stop related child tools, review and move any data out of .unavailable under AO account storage, then retry. AO only removes empty reserved folders automatically.",
 	"settings.agentAccounts.storageUnsafe": "Account storage is unsafe. Check folder permissions and symbolic links, then retry.",
 	"settings.agentAccounts.storageUnavailable": "Account storage is temporarily unavailable. Retry later.",
@@ -3557,7 +3557,7 @@
 	"settings.agentAccounts.refresh": "Refresh limits",
 	"settings.agentAccounts.signedOut": "Signed out",
 	"settings.agentAccounts.remove": "Remove account",
-	"settings.agentAccounts.removeDescription": "AO stops the agents that run on {{email}}, signs it out and deletes its folder. A stopped session continues on the default account when you open it. You can then move it to another account in its Summary.",
+	"settings.agentAccounts.removeDescription": "Sign out {{email}} and remove its private profile after its active users stop. History and account bindings are retained. Resuming an old session will require an explicit account choice; it will not use the default login.",
 	"settings.agentAccounts.loginTitle": "Sign in to {{provider}}",
 	"settings.agentAccounts.checkSignIn": "Check sign-in",
 	"settings.agentAccounts.loginAlreadySaved": "Sign-in completed. Your account was saved.",
@@ -3856,5 +3856,9 @@
 	"decision.scopeLimits": "Limits",
 	"decision.scopeEvidence": "Evidence",
 	"decision.open": "Open decision: {{title}}",
-	"decision.older": "Load older questions"
+	"decision.older": "Load older questions",
+	"settings.agentAccounts.inUse": "This account is in use. Stop or hand off the sessions and reviewers using it, then retry. The account has not been changed.",
+	"settings.agentAccounts.reviewerOwner": "Reviewer",
+	"settings.agentAccounts.openPR": "Open PR",
+	"settings.agentAccounts.legacyIdentityConflict": "This identity is already saved in the legacy device account catalog. Choose which login to keep in Settings; AO has not changed the old login."
 }

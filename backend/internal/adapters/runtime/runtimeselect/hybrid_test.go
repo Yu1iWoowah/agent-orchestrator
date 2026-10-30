@@ -3,6 +3,7 @@ package runtimeselect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
@@ -325,5 +326,37 @@ func TestHybridRuntimeRestartCanFallBackToTmux(t *testing.T) {
 	}
 	if !reflect.DeepEqual(legacy.calls, []string{"create:session-1"}) {
 		t.Fatalf("legacy calls = %v", legacy.calls)
+	}
+}
+
+type sessionShutdownBackend struct {
+	*fakeBackend
+	err error
+}
+
+func (f *sessionShutdownBackend) StopSessionRuntimes(ctx context.Context, id domain.SessionID) error {
+	f.record("shutdown-session", ports.RuntimeHandle{ID: string(id)})
+	return f.err
+}
+func TestHybridSessionShutdownCoversFallbackAndPropagatesUncertainty(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprint(unknown), func(t *testing.T) {
+			marker := errors.New("registry unavailable")
+			legacy := &sessionShutdownBackend{fakeBackend: &fakeBackend{}}
+			direct := &sessionShutdownBackend{fakeBackend: &fakeBackend{}}
+			if unknown {
+				direct.err = marker
+			}
+			r := newHybridRuntime(legacy, direct, nil, "Linux")
+			err := r.StopSessionRuntimes(context.Background(), "owned-session")
+			if (err != nil) != unknown || unknown && !errors.Is(err, marker) {
+				t.Fatalf("uncertain stop lost: %v", err)
+			}
+			for _, backend := range []*sessionShutdownBackend{legacy, direct} {
+				if !reflect.DeepEqual(backend.calls, []string{"shutdown-session"}) || backend.handles[0].ID != "owned-session" {
+					t.Fatalf("wrong shutdown namespace: %v %v", backend.calls, backend.handles)
+				}
+			}
+		})
 	}
 }

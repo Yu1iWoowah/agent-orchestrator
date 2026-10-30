@@ -37,7 +37,7 @@ import {
 	X,
 } from "lucide-react";
 import type { components } from "../../api/schema";
-import { interfaceTransitionIsActive, useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
+import { interfaceTransitionIsActive, interfaceTransitionIsAccountMove, useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import { reviewerConversationQueryKey } from "../hooks/useReviewerConversation";
 import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
@@ -1172,7 +1172,7 @@ function ActivityTimeline({ hostId, prs, session }: { hostId?: string; prs: Sess
 	// is not the session ending, so the move stands in for "Exited" meanwhile.
 	// The session's own host: a remote session's id means nothing to the local daemon.
 	const { transition } = useSessionInterfaceTransitionStatus(session.cloud ? undefined : session.id, hostId);
-	const accountMoving = Boolean(transition?.targetAccountId) && interfaceTransitionIsActive(transition);
+	const accountMoving = interfaceTransitionIsAccountMove(transition) && interfaceTransitionIsActive(transition);
 	const activityView = accountMoving
 		? { ...getAgentActivityView({ state: "active", lastActivityAt: transition?.updatedAt ?? "" }), label: appI18n.t("settings.agentAccounts.switchingAccount") }
 		: getAgentActivityView(session.activity);

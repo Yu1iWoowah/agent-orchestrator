@@ -137,6 +137,8 @@ func (s *Service) configuredDefaultAuthentication(ctx context.Context, harness d
 	if !supported {
 		return domain.AgentAuthenticationObservation{}, false
 	}
+	// Defensive only: production coordinators probe with their own unscoped
+	// context. Never pass a per-account request context into the shared cache.
 	selected, scoped := ports.AgentAccountFromContext(ctx)
 	var err error
 	if scoped {
@@ -168,4 +170,30 @@ func (s *Service) configuredDefaultAuthentication(ctx context.Context, harness d
 	}
 	observation.Diagnostics = []domain.AgentAuthDiagnostic{domain.NewAgentAuthDiagnostic("agent_account", "saved_default_account")}
 	return observation, true
+}
+
+// LegacyIdentityConflict refreshes only saved legacy descriptors and file metadata.
+// It never probes auth, reads credential bytes, or changes the device selection.
+// Signed-out entries also count: only an explicit legacy removal resolves a
+// known duplicate, rather than making two independently refreshable copies.
+func (s *Service) LegacyIdentityConflict(ctx context.Context, provider domain.AgentAccountProvider, email string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if provider != domain.AgentAccountProviderCodex || s.codexAccounts == nil || email == "" {
+		return false, nil
+	}
+	if err := s.codexAccounts.catalog.refresh(); err != nil {
+		return false, ports.ErrAgentAccountStorageUnavailable
+	}
+	records, err := s.codexAccounts.catalog.recordsFor(nil)
+	if err != nil {
+		return false, ports.ErrAgentAccountStorageUnavailable
+	}
+	for _, record := range records {
+		if record.Snapshot.AccountEmail != nil && strings.EqualFold(*record.Snapshot.AccountEmail, email) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

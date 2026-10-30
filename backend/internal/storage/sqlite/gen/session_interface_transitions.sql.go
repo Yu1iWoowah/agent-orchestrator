@@ -25,7 +25,7 @@ WHERE id = ?2
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
           created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, settings_operation_id
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 `
 
 type AcknowledgeSessionInterfaceTransitionNoticeParams struct {
@@ -54,6 +54,9 @@ func (q *Queries) AcknowledgeSessionInterfaceTransitionNotice(ctx context.Contex
 		&i.HistoryPolicy,
 		&i.SourceAccountID,
 		&i.TargetAccountID,
+		&i.TargetRuntimeLaunchID,
+		&i.TargetRuntimeHandleID,
+		&i.TargetRuntimeState,
 		&i.SettingsOperationID,
 	)
 	return i, err
@@ -126,7 +129,7 @@ const getActiveSessionInterfaceTransition = `-- name: GetActiveSessionInterfaceT
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, settings_operation_id
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE session_id = ?
   AND (phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR (phase='recovery_required' AND settings_operation_id<>''))
@@ -154,6 +157,9 @@ func (q *Queries) GetActiveSessionInterfaceTransition(ctx context.Context, sessi
 		&i.HistoryPolicy,
 		&i.SourceAccountID,
 		&i.TargetAccountID,
+		&i.TargetRuntimeLaunchID,
+		&i.TargetRuntimeHandleID,
+		&i.TargetRuntimeState,
 		&i.SettingsOperationID,
 	)
 	return i, err
@@ -163,7 +169,7 @@ const getLatestSessionInterfaceTransition = `-- name: GetLatestSessionInterfaceT
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, settings_operation_id
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE session_id = ?
 ORDER BY created_at DESC, rowid DESC
@@ -193,6 +199,9 @@ func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessi
 		&i.HistoryPolicy,
 		&i.SourceAccountID,
 		&i.TargetAccountID,
+		&i.TargetRuntimeLaunchID,
+		&i.TargetRuntimeHandleID,
+		&i.TargetRuntimeState,
 		&i.SettingsOperationID,
 	)
 	return i, err
@@ -202,7 +211,7 @@ const getSessionInterfaceTransition = `-- name: GetSessionInterfaceTransition :o
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, settings_operation_id
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE id = ?
 `
@@ -227,9 +236,27 @@ func (q *Queries) GetSessionInterfaceTransition(ctx context.Context, id string) 
 		&i.HistoryPolicy,
 		&i.SourceAccountID,
 		&i.TargetAccountID,
+		&i.TargetRuntimeLaunchID,
+		&i.TargetRuntimeHandleID,
+		&i.TargetRuntimeState,
 		&i.SettingsOperationID,
 	)
 	return i, err
+}
+
+const hasUnconfirmedAccountTransition = `-- name: HasUnconfirmedAccountTransition :one
+SELECT EXISTS (
+ SELECT 1 FROM session_interface_transitions AS t
+ JOIN account_transition_recovery_evidence AS r ON r.id=t.id
+ WHERE t.session_id=? AND t.error_code='TARGET_STOP_UNCONFIRMED'
+   AND r.retire_without_stop=0 AND r.current_target=0)
+`
+
+func (q *Queries) HasUnconfirmedAccountTransition(ctx context.Context, sessionID domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasUnconfirmedAccountTransition, sessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertSessionInterfaceTransition = `-- name: InsertSessionInterfaceTransition :one
@@ -237,12 +264,12 @@ INSERT INTO session_interface_transitions (
     id, session_id, source_mode, target_mode, policy, history_policy, phase,
     native_conversation_id, error_code, error_detail,
     created_at, updated_at, completed_at, notice_acknowledged_at,
-    source_account_id, target_account_id, settings_operation_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL, ?, ?, ?)
+    source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, NULL, NULL, ?11, ?12, '', '', CASE WHEN ?12<>'' THEN 'not_started' ELSE '' END, ?13)
 RETURNING id, session_id, source_mode, target_mode, policy, phase,
           native_conversation_id, error_code, error_detail,
           created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, settings_operation_id
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 `
 
 type InsertSessionInterfaceTransitionParams struct {
@@ -295,6 +322,9 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 		&i.HistoryPolicy,
 		&i.SourceAccountID,
 		&i.TargetAccountID,
+		&i.TargetRuntimeLaunchID,
+		&i.TargetRuntimeHandleID,
+		&i.TargetRuntimeState,
 		&i.SettingsOperationID,
 	)
 	return i, err
@@ -304,7 +334,7 @@ const listActiveSessionInterfaceTransitions = `-- name: ListActiveSessionInterfa
 SELECT id, session_id, source_mode, target_mode, policy, phase,
        native_conversation_id, error_code, error_detail,
        created_at, updated_at, completed_at, notice_acknowledged_at, history_policy,
-       source_account_id, target_account_id, settings_operation_id
+       source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id
 FROM session_interface_transitions
 WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR (phase='recovery_required' AND settings_operation_id<>'')
 ORDER BY created_at
@@ -336,6 +366,9 @@ func (q *Queries) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]
 			&i.HistoryPolicy,
 			&i.SourceAccountID,
 			&i.TargetAccountID,
+			&i.TargetRuntimeLaunchID,
+			&i.TargetRuntimeHandleID,
+			&i.TargetRuntimeState,
 			&i.SettingsOperationID,
 		); err != nil {
 			return nil, err
@@ -355,7 +388,7 @@ const listDeliverableSessionInterfaceTransitions = `-- name: ListDeliverableSess
 SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase,
        t.native_conversation_id, t.error_code, t.error_detail,
        t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy,
-       t.source_account_id, t.target_account_id, t.settings_operation_id
+       t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id
 FROM session_interface_transitions AS t
 WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required') AND NOT (t.phase='recovery_required' AND t.settings_operation_id<>'')
   AND EXISTS (
@@ -392,6 +425,9 @@ func (q *Queries) ListDeliverableSessionInterfaceTransitions(ctx context.Context
 			&i.HistoryPolicy,
 			&i.SourceAccountID,
 			&i.TargetAccountID,
+			&i.TargetRuntimeLaunchID,
+			&i.TargetRuntimeHandleID,
+			&i.TargetRuntimeState,
 			&i.SettingsOperationID,
 		); err != nil {
 			return nil, err
@@ -457,6 +493,82 @@ func (q *Queries) ListPendingSessionInterfaceTransitionMessages(ctx context.Cont
 	return items, nil
 }
 
+const listUnsettledAccountTransitions = `-- name: ListUnsettledAccountTransitions :many
+SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id FROM session_interface_transitions AS t
+JOIN account_transition_recovery_evidence AS r ON r.id=t.id
+WHERE r.current_target=0
+ORDER BY t.created_at,t.id
+`
+
+func (q *Queries) ListUnsettledAccountTransitions(ctx context.Context) ([]SessionInterfaceTransition, error) {
+	rows, err := q.db.QueryContext(ctx, listUnsettledAccountTransitions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionInterfaceTransition{}
+	for rows.Next() {
+		var i SessionInterfaceTransition
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.SourceMode,
+			&i.TargetMode,
+			&i.Policy,
+			&i.Phase,
+			&i.NativeConversationID,
+			&i.ErrorCode,
+			&i.ErrorDetail,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+			&i.NoticeAcknowledgedAt,
+			&i.HistoryPolicy,
+			&i.SourceAccountID,
+			&i.TargetAccountID,
+			&i.TargetRuntimeLaunchID,
+			&i.TargetRuntimeHandleID,
+			&i.TargetRuntimeState,
+			&i.SettingsOperationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markAccountRecoveryUnconfirmed = `-- name: MarkAccountRecoveryUnconfirmed :execrows
+UPDATE session_interface_transitions
+SET error_code='TARGET_STOP_UNCONFIRMED', error_detail=?1,
+    updated_at=?2
+WHERE session_interface_transitions.id=?3
+  AND session_interface_transitions.id IN (
+    SELECT r.id FROM account_transition_recovery_evidence AS r
+    WHERE r.retire_without_stop=0 AND r.current_target=0)
+`
+
+type MarkAccountRecoveryUnconfirmedParams struct {
+	ErrorDetail string
+	UpdatedAt   time.Time
+	ID          string
+}
+
+// Diagnostic updates must not rewrite the historical completion or phase.
+func (q *Queries) MarkAccountRecoveryUnconfirmed(ctx context.Context, arg MarkAccountRecoveryUnconfirmedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markAccountRecoveryUnconfirmed, arg.ErrorDetail, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markSessionInterfaceTransitionMessageDelivered = `-- name: MarkSessionInterfaceTransitionMessageDelivered :execrows
 UPDATE session_interface_transition_messages
 SET delivered_at = ?
@@ -470,6 +582,61 @@ type MarkSessionInterfaceTransitionMessageDeliveredParams struct {
 
 func (q *Queries) MarkSessionInterfaceTransitionMessageDelivered(ctx context.Context, arg MarkSessionInterfaceTransitionMessageDeliveredParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, markSessionInterfaceTransitionMessageDelivered, arg.DeliveredAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recordAccountTransitionRuntime = `-- name: RecordAccountTransitionRuntime :execrows
+UPDATE session_interface_transitions
+SET target_runtime_launch_id=?1, target_runtime_handle_id=?2,
+    target_runtime_state=?3, updated_at=?4
+WHERE id=?5 AND target_account_id<>'' AND (phase='target_starting' OR (phase IN ('activating','recovery_required') AND ?3='stopped'))
+  AND target_runtime_state=?6 AND target_runtime_launch_id=?7
+`
+
+type RecordAccountTransitionRuntimeParams struct {
+	LaunchID         string
+	HandleID         string
+	State            string
+	UpdatedAt        time.Time
+	ID               string
+	ExpectedState    string
+	ExpectedLaunchID string
+}
+
+func (q *Queries) RecordAccountTransitionRuntime(ctx context.Context, arg RecordAccountTransitionRuntimeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordAccountTransitionRuntime,
+		arg.LaunchID,
+		arg.HandleID,
+		arg.State,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedState,
+		arg.ExpectedLaunchID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const retireAccountTransitionRuntime = `-- name: RetireAccountTransitionRuntime :execrows
+UPDATE session_interface_transitions
+SET target_runtime_state='stopped', updated_at=?1
+WHERE session_interface_transitions.id=?2 AND session_interface_transitions.id IN (
+ SELECT r.id FROM account_transition_recovery_evidence AS r WHERE r.retire_without_stop=1)
+`
+
+type RetireAccountTransitionRuntimeParams struct {
+	UpdatedAt time.Time
+	ID        string
+}
+
+// Re-evaluate the proof and retire in one statement; no runtime is stopped.
+func (q *Queries) RetireAccountTransitionRuntime(ctx context.Context, arg RetireAccountTransitionRuntimeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retireAccountTransitionRuntime, arg.UpdatedAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}
