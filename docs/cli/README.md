@@ -394,8 +394,16 @@ For automation, `--detach --json` starts or reads a **pending** operation refere
 without attaching; it never claims success from HTTP 202. Reconnect with
 `ao account login --operation <id> --no-attach --json` to watch the terminal exit
 without displaying its output. Both modes verify only after a confirmed native
-exit. If verification reports **Not signed in**, the command exits 1 and retains
-the operation; retry the same `--operation` or cancel it in Settings. Temporary
+exit. If verification reports **Not signed in**, the CLI asks the daemon to
+cancel that operation and confirms cleanup before exiting 1. Start a new attempt
+with the printed `ao account add --provider <provider>` or
+`ao account login <account-id>` command. Failed new-account profiles are removed;
+existing account profiles remain available for re-login. If cleanup cannot be
+confirmed, the CLI reports that uncertainty and provides the same `--operation`
+reference to retry cleanup; do not start another login until it is confirmed.
+A completed legacy identity conflict instead directs you to remove the
+conflicting legacy login in Settings > Accounts before starting a new add.
+Temporary
 verification failures are shown on stderr and retried at most three times with
 500ms then 1s backoff, within a two-minute overall verification budget. Account
 storage errors, unsupported modes and a stopped daemon exit immediately with

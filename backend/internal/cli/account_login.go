@@ -157,12 +157,17 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 			}
 		}
 		// Bound the whole post-exit verification phase as well as its retries.
-		// Failure retains the operation so retrying cannot create another profile.
+		// RPC failures retain the operation so retrying cannot create another profile.
 		verifyCtx, finishVerify := context.WithTimeout(ctx, commandTimeout)
 		defer finishVerify()
 		failed := func(err error) error {
 			action := "resolve the reported problem before retrying"
 			var response apiResponseError
+			if errors.As(err, &response) && response.ErrorBody.Code == "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT" {
+				// The daemon emits this only after completing legacy-conflict
+				// cleanup; reconnecting that finished operation cannot retry it.
+				return fmt.Errorf("login ended with a legacy identity conflict; remove the conflicting legacy Codex login in Settings > Accounts, then run ao account add --provider codex: %w", err)
+			}
 			if errors.Is(err, errDaemonNotRunning) {
 				action = "start the daemon with ao start"
 			} else if errors.As(err, &response) && response.ErrorBody.Code == "AGENT_ACCOUNT_STORAGE_UNAVAILABLE" {
@@ -186,7 +191,20 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 					return c.cancelAccountLogin(cmd, operation, jsonOut)
 				}
 				if err == nil && verified.Status == "waiting" {
-					return fmt.Errorf("not signed in; native login has exited. Operation retained; retry with ao account login --operation %s, or cancel it in Settings", operation)
+					// The native process has exited unsigned. Reopening that
+					// terminal cannot sign in; release this exact operation.
+					cancelErr := c.cancelAccountLogin(cmd, operation, jsonOut)
+					if cancelErr == nil { // Acceptance won; the account is saved.
+						return nil
+					}
+					if !errors.Is(cancelErr, context.Canceled) {
+						return fmt.Errorf("not signed in; %w", cancelErr)
+					}
+					retry := "ao account add --provider " + op.Provider
+					if op.Action == "login-again" {
+						retry = "ao account login " + op.AccountID
+					}
+					return fmt.Errorf("not signed in; login cancelled and cleanup confirmed; start a new attempt with %s", retry)
 				}
 				if err == nil {
 					err = c.getJSON(verifyCtx, "agents/accounts/operations/"+url.PathEscape(operation), &op)

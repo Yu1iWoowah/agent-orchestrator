@@ -224,7 +224,6 @@ func TestLoginAfterExitEndsUnsuccessfulVerificationWithReconnectInstructions(t *
 		status, calls       int
 		daemonStopped       bool
 	}{
-		{name: "not signed in", status: http.StatusOK, message: "not signed in", calls: 1},
 		{name: "temporary unavailable", status: http.StatusServiceUnavailable, code: "AGENT_ACCOUNT_PROVIDER_UNAVAILABLE", message: "Retry later", calls: 3},
 		{name: "storage needs repair", status: http.StatusServiceUnavailable, code: "AGENT_ACCOUNT_STORAGE_UNAVAILABLE", message: "Check account storage permissions", calls: 1},
 		{name: "storage unsupported", status: http.StatusNotImplemented, code: "AGENT_ACCOUNT_STORAGE_UNSUPPORTED", message: "Profiles are not supported", calls: 1},
@@ -285,5 +284,158 @@ func TestLoginAfterExitEndsUnsuccessfulVerificationWithReconnectInstructions(t *
 				t.Fatalf("retries were silent: %s", stderr.String())
 			}
 		})
+	}
+}
+
+func TestLoginWaitingCancelsBeforeStartingAnotherAttempt(t *testing.T) {
+	for _, again := range []bool{false, true} {
+		t.Run(fmt.Sprintf("again=%t", again), func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var starts, verifies, cancels atomic.Int32
+			var busy, cancelled atomic.Bool
+			action, retry := "login", "ao account add --provider codex"
+			args := []string{"account", "add", "--provider", "codex", "--no-attach"}
+			startPath := "/api/v1/agents/accounts/login"
+			if again {
+				action, retry = "login-again", "ao account login account-A"
+				args = []string{"account", "login", "account-A", "--no-attach"}
+				startPath = "/api/v1/agents/accounts/account-A/login"
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.Contains(r.URL.Path, "/telemetry/"):
+					w.WriteHeader(http.StatusNoContent)
+				case r.URL.Path == startPath:
+					if busy.Swap(true) {
+						w.WriteHeader(http.StatusConflict)
+						_, _ = io.WriteString(w, `{"code":"AGENT_ACCOUNT_OPERATION_BUSY","message":"Busy"}`)
+						return
+					}
+					n := starts.Add(1)
+					_, _ = fmt.Fprintf(w, `{"operationId":"op-%d","provider":"codex","shellTerminal":{"handleId":"native-login"}}`, n)
+				case strings.HasPrefix(r.URL.Path, "/api/v1/agents/accounts/operations/"):
+					phase, outcome := "pending", ""
+					if starts.Load() == 1 && cancelled.Load() {
+						phase, outcome = "complete", "cancelled"
+					}
+					if starts.Load() == 2 && verifies.Load() == 2 {
+						phase, outcome = "complete", "complete"
+					}
+					_, _ = fmt.Fprintf(w, `{"operationId":"op-%d","accountId":"account-A","provider":"codex","action":%q,"phase":%q,"outcome":%q,"resultAccountId":"account-A","terminalHandleId":"native-login"}`, starts.Load(), action, phase, outcome)
+				case r.URL.Path == "/mux":
+					serveExitedAccountLogin(t, w, r)
+				case strings.HasSuffix(r.URL.Path, "/verify"):
+					if verifies.Add(1) == 1 {
+						_, _ = io.WriteString(w, `{"status":"waiting"}`)
+					} else {
+						busy.Store(false)
+						_, _ = io.WriteString(w, `{"status":"complete"}`)
+					}
+				case strings.HasSuffix(r.URL.Path, "/cancel"):
+					cancels.Add(1)
+					cancelled.Store(true)
+					busy.Store(false)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			writeRunFileFor(t, cfg, srv)
+			deps := Deps{ProcessAlive: func(int) bool { return true }}
+			_, stderr, err := executeCLI(t, deps, args...)
+			if err == nil || ExitCode(err) != 1 || !strings.Contains(err.Error(), "not signed in") || !strings.Contains(err.Error(), retry) || !strings.Contains(stderr, "cleanup confirmed") || cancels.Load() != 1 || busy.Load() {
+				t.Fatalf("waiting did not cancel and offer a working retry: err=%v stderr=%s cancels=%d busy=%t", err, stderr, cancels.Load(), busy.Load())
+			}
+			if strings.Contains(err.Error(), "Settings") || strings.Contains(err.Error(), "--operation") {
+				t.Fatal("waiting suggested an unusable recovery route")
+			}
+			out, _, err := executeCLI(t, deps, args...)
+			if err != nil || starts.Load() != 2 || !strings.Contains(out, "account-A saved") {
+				t.Fatalf("message's fresh attempt remained busy: %v %s", err, out)
+			}
+		})
+	}
+}
+
+func TestLoginWaitingHonorsCleanupFailureAndAcceptedRace(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(fmt.Sprint("accepted=", accepted), func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var cancelled atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.Contains(r.URL.Path, "/telemetry/"):
+					w.WriteHeader(http.StatusNoContent)
+				case r.URL.Path == "/mux":
+					serveExitedAccountLogin(t, w, r)
+				case r.URL.Path == "/api/v1/agents/accounts/operations/op":
+					phase, outcome := "pending", ""
+					if accepted && cancelled.Load() {
+						phase, outcome = "complete", "complete"
+					}
+					_, _ = fmt.Fprintf(w, `{"operationId":"op","accountId":"A","provider":"codex","action":"login-again","phase":%q,"outcome":%q,"resultAccountId":"A","terminalHandleId":"native-login"}`, phase, outcome)
+				case strings.HasSuffix(r.URL.Path, "/verify"):
+					_, _ = io.WriteString(w, `{"status":"waiting"}`)
+				case strings.HasSuffix(r.URL.Path, "/cancel"):
+					cancelled.Store(true)
+					if accepted {
+						w.WriteHeader(http.StatusNoContent)
+					} else {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = io.WriteString(w, `{"code":"AGENT_ACCOUNT_CLEANUP_UNCONFIRMED","message":"Cleanup is unconfirmed","requestId":"cleanup-request"}`)
+					}
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			writeRunFileFor(t, cfg, srv)
+			out, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "login", "--operation", "op", "--no-attach")
+			if !cancelled.Load() {
+				t.Fatal("waiting left a pending operation")
+			}
+			if accepted {
+				if err != nil || !strings.Contains(out, "account A saved") {
+					t.Fatalf("accepted race lost: %v %s", err, out)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "cleanup-request") || !strings.Contains(err.Error(), "--operation op") || strings.Contains(stderr, "cleanup confirmed") {
+				t.Fatalf("unconfirmed cleanup was misreported: %v %s", err, stderr)
+			}
+		})
+	}
+}
+
+func TestLoginLegacyConflictDoesNotClaimOperationRetained(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var verified atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/telemetry/"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/mux":
+			serveExitedAccountLogin(t, w, r)
+		case strings.HasSuffix(r.URL.Path, "/verify"):
+			verified.Store(true)
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"code":"AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT","message":"A legacy login already exists","requestId":"legacy-request"}`)
+		case r.URL.Path == "/api/v1/agents/accounts/operations/op":
+			phase, outcome := "pending", ""
+			if verified.Load() {
+				phase, outcome = "complete", "legacy-conflict"
+			}
+			_, _ = fmt.Fprintf(w, `{"operationId":"op","accountId":"A","provider":"codex","action":"login","phase":%q,"outcome":%q,"terminalHandleId":"native-login"}`, phase, outcome)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	writeRunFileFor(t, cfg, srv)
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "login", "--operation", "op", "--no-attach")
+	if err == nil || !strings.Contains(err.Error(), "legacy-request") || !strings.Contains(err.Error(), "Settings") || !strings.Contains(err.Error(), "ao account add --provider codex") || strings.Contains(err.Error(), "operation retained") || strings.Contains(err.Error(), "--operation") {
+		t.Fatalf("completed legacy conflict had misleading instructions: %v", err)
 	}
 }

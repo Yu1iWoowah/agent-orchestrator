@@ -25,6 +25,7 @@ if provider=='codex' and 'login' in args and args[args.index('login')+1:][:1]==[
 if 'login' in args:
  audit('login');print('access_token[session]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('https://example.test/?refresh_token[0]=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('oauth.token.value=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('client_secret=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('ac\x1b[32mcess_token\x1b[0m=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY',flush=True);print('\x1b]8;;https://example.test/?access_token=ACCOUNT_E2E_PRIVATE_TOKEN_CANARY\x1b\\Sign in\x1b]8;;\x1b\\',flush=True);print('Fake subscription sign-in waiting.',flush=True);print('Paste authorization code: ',end='',flush=True)
  while not(root/'approve-login').exists():time.sleep(.02)
+ if(root/'decline-login').exists():print('Fake sign-in declined.',flush=True);sys.exit(1)
  home.mkdir(mode=0o700,parents=True,exist_ok=True);(home/'.fixture-identity').write_text((root/'next-identity').read_text());(home/'.fixture-identity').chmod(0o600);credential.write_text(json.dumps({'fakeCredential':'ACCOUNT_E2E_PRIVATE_TOKEN_CANARY','fixtureEmail':(root/'next-identity').read_text().strip()}));credential.chmod(0o600)
  if(root/'hold-login').exists():
   (root/'credential-written').write_text(str(os.getpid()))

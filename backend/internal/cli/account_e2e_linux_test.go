@@ -299,7 +299,7 @@ func TestE2E_AccountScopesHandoffRestartAndSecretSinks(t *testing.T) {
 	snapshotJSON, _ := json.Marshal(legacySnapshot)
 	t.Logf("safe legacy metadata: %s", snapshotJSON)
 	conflict, code := runCode("account", "login", "--operation", detached.OperationID, "--no-attach")
-	if code != 1 || !strings.Contains(conflict, "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT") {
+	if code != 1 || !strings.Contains(conflict, "AGENT_ACCOUNT_LEGACY_IDENTITY_CONFLICT") || strings.Contains(conflict, "operation retained") || !strings.Contains(conflict, "Settings") {
 		t.Fatalf("safe legacy root expected canonical conflict: %d %s", code, conflict)
 	}
 	api("POST", "/agents/codex/accounts/"+legacyID+"/logout", nil)
@@ -425,6 +425,73 @@ waiting:
 	}
 	_ = os.Remove(filepath.Join(root, "hold-login"))
 	_ = os.Remove(filepath.Join(root, "credential-written"))
+	// An exited, unsigned native login must release its operation without a
+	// daemon restart. Follow the CLI's fresh-attempt instructions below.
+	decline := filepath.Join(root, "decline-login")
+	assertUnsignedCancelled := func(output string, existingID string) {
+		if !strings.Contains(output, "not signed in") || !strings.Contains(output, "cleanup confirmed") {
+			t.Fatal("unsigned exit did not confirm cancellation")
+		}
+		match := regexp.MustCompile(`Login operation ([a-f0-9-]+)`).FindStringSubmatch(output)
+		if len(match) != 2 {
+			t.Fatal("unsigned operation reference missing")
+		}
+		op := api("GET", "/agents/accounts/operations/"+match[1], nil)
+		if op["phase"] != "complete" || op["outcome"] != "cancelled" {
+			t.Fatalf("unsigned operation remained busy: %v", op)
+		}
+		accountID, _ := op["accountId"].(string)
+		if accountID == "" {
+			t.Fatal("cancelled operation lost account identity")
+		}
+		if existingID == "" {
+			if !strings.Contains(output, "ao account add --provider codex") {
+				t.Fatal("new-login retry instruction missing")
+			}
+			if _, err := os.Lstat(filepath.Join(e.dataDir, "agent-accounts", "codex", accountID)); !os.IsNotExist(err) {
+				t.Fatal("unsigned new login left a pending profile")
+			}
+		} else if accountID != existingID || !strings.Contains(output, "ao account login "+existingID) {
+			t.Fatal("existing-login retry instruction lost account identity")
+		}
+	}
+	if err := os.WriteFile(decline, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	unsigned, unsignedCode := runCode("account", "add", "--provider", "codex", "--no-attach")
+	if unsignedCode != 1 {
+		t.Fatal("unsigned new login should exit 1")
+	}
+	assertUnsignedCancelled(unsigned, "")
+	if err := os.Remove(decline); err != nil {
+		t.Fatal(err)
+	}
+	retryAccount := add("codex", "retry@example.test")
+	run("account", "logout", retryAccount)
+	if err := os.WriteFile(decline, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	unsigned, unsignedCode = runCode("account", "login", retryAccount, "--no-attach")
+	if unsignedCode != 1 {
+		t.Fatal("unsigned re-login should exit 1")
+	}
+	assertUnsignedCancelled(unsigned, retryAccount)
+	if err := os.Remove(decline); err != nil {
+		t.Fatal(err)
+	}
+	retryOutput := run("account", "login", retryAccount, "--no-attach", "--json")
+	var retryOperation struct {
+		ResultAccountID string `json:"resultAccountId"`
+		Outcome         string `json:"outcome"`
+	}
+	retryJSON := strings.Index(retryOutput, "{")
+	if retryJSON < 0 {
+		t.Fatal("fresh re-login returned no operation JSON")
+	}
+	if err := json.Unmarshal([]byte(retryOutput[retryJSON:]), &retryOperation); err != nil || retryOperation.Outcome != "complete" || retryOperation.ResultAccountID != retryAccount {
+		t.Fatal("fresh re-login failed or changed account identity", err)
+	}
+	run("account", "rm", retryAccount)
 	a := add("codex", "A@example.test")
 	d := add("codex", "D@example.test")
 	b := add("claude", "B@example.test")
