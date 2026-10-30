@@ -20,7 +20,29 @@ func (s *Store) bindReplacementSuccessorController(ctx context.Context, q *gen.Q
 	if err != nil {
 		return err
 	}
-	op, err := decodeReplacement(row)
+	if ready.Kind != domain.KindOrchestrator || ready.ID == domain.SessionID(row.SourceSessionID) {
+		return nil
+	}
+	// Route unrelated controllers using sealed identity, never an unverified
+	// successorSessionId from the mutable row. Corruption must remain fenced
+	// without blocking ordinary Chat commits elsewhere in the project.
+	checkpoint, err := q.GetLatestReplacementRepairSnapshot(ctx, row.ID)
+	if err == nil {
+		sealed, err := checkpointRow(checkpoint)
+		if err != nil {
+			return err
+		}
+		trusted, err := decodeReplacement(sealed)
+		if err != nil {
+			return err
+		}
+		if trusted.SuccessorSessionID != ready.ID {
+			return nil
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	op, err := s.decodeCheckpointedReplacement(ctx, q, row)
 	if err != nil {
 		return err
 	}

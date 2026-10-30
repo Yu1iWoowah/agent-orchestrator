@@ -13,6 +13,44 @@ import (
 
 type replacementUnattemptedStopKey struct{}
 
+// ClearUnattemptedReplacementTUIRelease is called only before Destroy was
+// attempted. A stale owner/operation cannot retract another launch's marker.
+func (s *Store) ClearUnattemptedReplacementTUIRelease(ctx context.Context, operation string, revision int64, id domain.SessionID, launch string) (bool, error) {
+	applied := false
+	err := s.replacementTx(ctx, func(tx context.Context, q *gen.Queries) error {
+		row, err := q.GetOrchestratorReplacement(tx, operation)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		op, err := s.decodeCheckpointedReplacement(tx, q, row)
+		if err != nil {
+			return err
+		}
+		if op.Revision != revision || op.Phase != domain.ReplacementExportingTranscript || op.SourceSessionID != id || op.SourceStopIntentAt == nil || op.SourceStop != nil || op.SourceRetiredAt != nil || op.FrozenAt == nil || launch == "" {
+			return nil
+		}
+		current, err := q.GetSession(tx, id)
+		if err != nil {
+			return err
+		}
+		rec := rowToRecord(current)
+		if rec.Kind != domain.KindOrchestrator || rec.ProjectID != op.ProjectID || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI || rec.ControllerOwner() != op.SourceOwner || rec.Metadata.BrowserCapabilityVerifier != op.SourceCapabilityVerifier || rec.Activity.State == domain.ActivityExited || rec.HibernatedAt != nil || rec.Metadata.RuntimeLaunchID != launch || rec.Metadata.AgentSessionIDLaunchID != launch {
+			return nil
+		}
+		if rec.Metadata.RuntimeReleasedLaunchID == "" {
+			applied = true
+			return nil
+		}
+		count, err := q.ClearUnattemptedReplacementTUIRelease(tx, gen.ClearUnattemptedReplacementTUIReleaseParams{ID: id, ExpectedRevision: current.Revision, LaunchID: launch})
+		applied = count == 1
+		return err
+	})
+	return applied && err == nil, err
+}
+
 // ClearReplacementStopIntent accepts only the coordinator's positive no-stop
 // observation. A generic save cannot clear an intent or an existing stop receipt.
 func (s *Store) ClearReplacementStopIntent(ctx context.Context, id string, revision int64, observed ports.ReplacementSourceObservation, at time.Time) (domain.OrchestratorReplacement, bool, error) {

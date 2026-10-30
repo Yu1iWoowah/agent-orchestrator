@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"sync"
@@ -148,7 +149,13 @@ func killProviderProcess(ctx context.Context, cmd *exec.Cmd) error {
 	defer cancel()
 	kill := aoprocess.CommandContext(ctx, "taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
 	if err := kill.Run(); err != nil {
-		return cmd.Process.Kill()
+		err = cmd.Process.Kill()
+		if errors.Is(err, os.ErrProcessDone) {
+			// Wait may already have reaped the bridge. The subsequent Job
+			// Object confirmation still proves every descendant has stopped.
+			return nil
+		}
+		return err
 	}
 	return nil
 }

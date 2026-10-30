@@ -535,6 +535,25 @@ func ShutdownForReplacement(ctx context.Context, dataDir, sessionID, owner strin
 	return shutdown(ctx, dataDir, sessionID, quick, owner)
 }
 
+// CheckReplacementShutdown verifies support without detaching or stopping a
+// provider. In particular, hosts surviving an AO upgrade may lack the receipt.
+func CheckReplacementShutdown(ctx context.Context, dataDir, sessionID, owner string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d, err := readDescriptor(dataDir, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotRunning
+	}
+	if err != nil {
+		return err
+	}
+	if owner == "" || d.Version != ProtocolVersion || !d.StopConfirmation || d.OwnershipFingerprint != owner {
+		return ErrIncompatible
+	}
+	return nil
+}
+
 func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confirmedOwner string) error {
 	d, err := readDescriptor(dataDir, sessionID)
 	if errors.Is(err, os.ErrNotExist) {

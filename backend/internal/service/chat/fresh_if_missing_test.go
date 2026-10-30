@@ -24,12 +24,16 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 		wantAccepted   bool
 		required       bool
 		unanswered     bool
+		strict         bool
+		wantFresh      bool
 	}{
-		{name: "allowed", freshIfMissing: true, wantAccepted: true},
+		{name: "allowed", freshIfMissing: true, wantAccepted: true, wantFresh: true},
 		{name: "without proof", freshIfMissing: false},
-		{name: "live provider", freshIfMissing: true, live: true},
-		{name: "required forbids explicit fresh", freshIfMissing: true, required: true},
-		{name: "required forbids unanswered fallback", required: true, unanswered: true},
+		{name: "live provider", freshIfMissing: true, live: true, wantFresh: true},
+		{name: "replacement forbids explicit fresh", freshIfMissing: true, required: true, strict: true},
+		{name: "replacement forbids unanswered fallback", required: true, unanswered: true, strict: true},
+		{name: "ordinary required retains explicit fresh", freshIfMissing: true, required: true, wantFresh: true, wantAccepted: true},
+		{name: "ordinary required retains unanswered fallback", required: true, unanswered: true, wantFresh: true, wantAccepted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := openStore(t)
@@ -81,6 +85,7 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 				Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
 				ProviderConversationID:             "reserved-provider-thread",
 				FreshIfProviderConversationMissing: tc.freshIfMissing,
+				DisableFreshProviderFallback:       tc.strict,
 				HistoryMode:                        historyMode,
 				ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 					ready = result.ProviderConversationID
@@ -88,9 +93,8 @@ func TestResumeAcceptsFreshProviderOnlyWhenAllowed(t *testing.T) {
 				},
 			})
 
-			wantFresh := tc.freshIfMissing && !tc.required
-			if resumed.FreshIfMissing != wantFresh {
-				t.Fatalf("driver FreshIfMissing = %v, want %v", resumed.FreshIfMissing, wantFresh)
+			if resumed.FreshIfMissing != tc.wantFresh {
+				t.Fatalf("driver FreshIfMissing = %v, want %v", resumed.FreshIfMissing, tc.wantFresh)
 			}
 			if !tc.wantAccepted {
 				if err == nil || !strings.Contains(err.Error(), "does not match requested handle") {

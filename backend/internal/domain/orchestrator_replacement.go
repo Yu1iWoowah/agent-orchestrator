@@ -136,6 +136,13 @@ type ReplacementWorkerNotification struct {
 }
 
 // ReplacementResumeEvidence retains observations from one controlled probe.
+type ReplacementResumeUnlaunched struct {
+	Generation  string    `json:"generation"`
+	IntentAt    time.Time `json:"intentAt"`
+	ConfirmedAt time.Time `json:"confirmedAt"`
+}
+
+// ReplacementResumeEvidence retains observations from one controlled probe.
 type ReplacementResumeEvidence struct {
 	BeforeCapabilityVerifier string                 `json:"beforeCapabilityVerifier,omitempty"`
 	AfterCapabilityVerifier  string                 `json:"afterCapabilityVerifier,omitempty"`
@@ -152,6 +159,7 @@ type ReplacementResumeEvidence struct {
 	ResumeIntentAt   *time.Time                 `json:"resumeIntentAt,omitempty"`
 	ResumeGeneration string                     `json:"resumeGeneration,omitempty"`
 	ResumedAt        *time.Time                 `json:"resumedAt,omitempty"`
+	UnlaunchedAttempts []ReplacementResumeUnlaunched `json:"unlaunchedAttempts,omitempty"`
 
 	Probe *ReplacementContinuityProbe `json:"probe,omitempty"`
 }

@@ -57,6 +57,9 @@ type ChatControllerStart struct {
 	// provider conversation and is told it does not exist may then start a fresh
 	// one instead; a live provider that still holds it is always reattached.
 	FreshIfProviderConversationMissing bool
+	// DisableFreshProviderFallback is an attempt-scoped replacement constraint.
+	// Ordinary handoff/version recovery keeps its proven fresh fallback policy.
+	DisableFreshProviderFallback bool
 	// ProviderScopeID reserves the opaque-id namespace for a provider boundary
 	// that ControllerReady will commit. Empty derives the namespace from the
 	// active branch, which is the ordinary initial-start and resume path.

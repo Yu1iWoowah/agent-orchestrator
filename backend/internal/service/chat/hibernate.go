@@ -303,6 +303,10 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 			gate.unlock()
 			return false, ports.ErrChatRecoveryInconclusive
 		}
+		if err := replacementStop.PreflightHibernateForReplacement(ctx); err != nil {
+			gate.unlock()
+			return false, fmt.Errorf("%w: replacement shutdown preflight: %v", domain.ErrReplacementSourceBusy, err)
+		}
 	}
 	// Inventory is provider I/O. Keep hibernation out with an operation count,
 	// while allowing new views, sends and explicit Kill to proceed.
@@ -389,6 +393,10 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	at := s.now()
 	var applied bool
 	if opts.replacement != nil {
+		if err := replacementStop.PreflightHibernateForReplacement(ctx); err != nil {
+			controller.sendMu.Unlock()
+			return false, fmt.Errorf("%w: replacement shutdown preflight: %v", domain.ErrReplacementSourceBusy, err)
+		}
 		replacementStore, ok := s.sessions.(replacementHibernationStore)
 		if !ok {
 			controller.sendMu.Unlock()

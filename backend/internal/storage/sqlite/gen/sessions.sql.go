@@ -94,6 +94,30 @@ func (q *Queries) ClearSessionBranchNaming(ctx context.Context) error {
 	return err
 }
 
+const clearUnattemptedReplacementTUIRelease = `-- name: ClearUnattemptedReplacementTUIRelease :execrows
+UPDATE sessions
+SET runtime_released_launch_id = ''
+WHERE id = ?1 AND revision = ?2
+  AND runtime_launch_id = ?3
+  AND runtime_released_launch_id = ?3
+  AND is_terminated = 0
+`
+
+type ClearUnattemptedReplacementTUIReleaseParams struct {
+	ID               domain.SessionID
+	ExpectedRevision int64
+	LaunchID         string
+}
+
+// The managed no-stop path checks operation and owner in the same transaction.
+func (q *Queries) ClearUnattemptedReplacementTUIRelease(ctx context.Context, arg ClearUnattemptedReplacementTUIReleaseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearUnattemptedReplacementTUIRelease, arg.ID, arg.ExpectedRevision, arg.LaunchID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const commitClientRequestSession = `-- name: CommitClientRequestSession :execrows
 UPDATE sessions SET client_request_committed = 1 WHERE id = ? AND client_request_id <> ''
 `

@@ -838,9 +838,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		// A target that has not answered yet still needs its standing context, though
 		// the source's turns come before it.
 		unanswered := s.branchUnanswered(ctx, cfg.SessionID, conversation.ID, activeBranch)
-		// Required replay certifies continuity of this exact native thread. A
-		// reserved/unanswered branch cannot weaken it into a fresh replacement.
-		freshIfMissing = (freshIfMissing || unanswered) && cfg.HistoryMode != ports.ChatHistoryRequired
+		// Only replacement's one-shot continuity check forbids all fallback.
+		// Ordinary handoff/version recovery retains its proven fresh policy.
+		freshIfMissing = (freshIfMissing || unanswered) && !cfg.DisableFreshProviderFallback
 		conv, err = resume(ctx, ports.ChatResumeConfig{
 			SessionID:              hostID,
 			ProviderConversationID: cfg.ProviderConversationID,
@@ -1249,6 +1249,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	cfg.ProviderScopeID = ""
 	cfg.AwakeReconnectTarget = nil
 	cfg.HistoryMode = ports.ChatHistoryImport
+	cfg.DisableFreshProviderFallback = false
 	s.startConfigs[owner] = cloneStartConfig(cfg)
 	delete(s.awakeInterrupted, owner)
 	controller.start()

@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 )
 
 func TestReplacementQuiescencePreservesHeldQueueAndFencesChangedOperation(t *testing.T) {
-	for _, which := range []string{"idle", "background", "running", "changed operation", "changed capability", "missing intent"} {
+	for _, which := range []string{"idle", "background", "running", "changed operation", "changed capability", "missing intent", "legacy host", "compatibility changed"} {
 		t.Run(which, func(t *testing.T) {
 			h, provider := hibernationHarnessForKind(t, domain.TurnStateCompleted, domain.KindOrchestrator, func(opts *chatsvc.Options) { opts.HibernationEnabled = func() bool { return false } })
 			ctx := context.Background()
@@ -61,6 +62,12 @@ func TestReplacementQuiescencePreservesHeldQueueAndFencesChangedOperation(t *tes
 			switch which {
 			case "background":
 				provider.backgroundRunning = true
+			case "legacy host":
+				provider.replacementPreflightErr = errors.New("host has no StopConfirmation")
+			case "compatibility changed":
+				provider.onBackgroundCheck = func(context.Context) {
+					provider.replacementPreflightErr = errors.New("host descriptor no longer supports confirmation")
+				}
 			case "running":
 				if err := h.st.BindTurnToProvider(ctx, snapshot.Turns[0].ID, "another-running-turn", now); err != nil {
 					t.Fatal(err)
@@ -130,8 +137,17 @@ func TestReplacementQuiescencePreservesHeldQueueAndFencesChangedOperation(t *tes
 			if err != nil || current.IsTerminated || !found {
 				t.Fatal("source/queued receipt lost", err)
 			}
+			if which == "legacy host" || which == "compatibility changed" {
+				if current.HibernatedAt != nil || !h.svc.HasLiveChatController(testSession) {
+					t.Fatal("incompatible host was detached or marked hibernated")
+				}
+			}
 		})
 	}
 }
 
 func (c *hibernationConversation) HibernateForReplacement() error { return c.Hibernate() }
+
+func (c *hibernationConversation) PreflightHibernateForReplacement(context.Context) error {
+	return c.replacementPreflightErr
+}

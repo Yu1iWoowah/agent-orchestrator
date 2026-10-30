@@ -40,7 +40,8 @@ func (l *retirementUsage) FinalizeReplacementUsage(context.Context, domain.Sessi
 
 type retirementStore struct {
 	*replacementFenceStore
-	commits int
+	commits   int
+	commitErr error
 }
 
 func (s *retirementStore) CommitReplacementRetirement(ctx context.Context, id string, revision int64, source domain.SessionRecord, documentRevision int64, check func(context.Context) error) (domain.OrchestratorReplacement, bool, error) {
@@ -50,6 +51,9 @@ func (s *retirementStore) CommitReplacementRetirement(ctx context.Context, id st
 	}
 	if err := check(ctx); err != nil {
 		return domain.OrchestratorReplacement{}, false, err
+	}
+	if s.commitErr != nil {
+		return domain.OrchestratorReplacement{}, false, s.commitErr
 	}
 	rec := s.sessions[source.ID]
 	rec.IsTerminated = true
@@ -61,7 +65,7 @@ func (s *retirementStore) CommitReplacementRetirement(ctx context.Context, id st
 }
 
 func TestReplacementRetirementPreservesWorkspaceAndWorkers(t *testing.T) {
-	for _, change := range []string{"current", "shell close fails", "live controller", "no stop receipt", "stale proof", "proof fails", "proof changes at commit", "owner changes during usage"} {
+	for _, change := range []string{"current", "shell close fails", "commit ENOSPC", "live controller", "no stop receipt", "stale proof", "proof fails", "proof changes at commit", "owner changes during usage"} {
 		t.Run(change, func(t *testing.T) {
 			m, base, chat := replacementRuntimeManager(t)
 			store := &retirementStore{replacementFenceStore: base}
@@ -97,6 +101,8 @@ func TestReplacementRetirementPreservesWorkspaceAndWorkers(t *testing.T) {
 			switch change {
 			case "shell close fails":
 				closer.err = errors.New("shell still alive")
+			case "commit ENOSPC":
+				store.commitErr = errors.New("ENOSPC")
 			case "live controller":
 				chat.live = true
 			case "no stop receipt":
@@ -111,12 +117,15 @@ func TestReplacementRetirementPreservesWorkspaceAndWorkers(t *testing.T) {
 				}
 			}
 			result, err := m.RetireReplacementSource(context.Background(), base.operation, proof)
-			if change == "current" {
-				if err != nil || result.SourceRetiredAt == nil || result.Phase != domain.ReplacementStarting || !base.sessions[source.ID].IsTerminated || usage.calls != 1 || store.commits != 1 {
+			if change == "current" || change == "shell close fails" {
+				if (err != nil) != (change == "shell close fails") || result.SourceRetiredAt == nil || result.Phase != domain.ReplacementStarting || !base.sessions[source.ID].IsTerminated || usage.calls != 1 || store.commits != 1 {
 					t.Fatalf("retirement not committed: phase=%s usage=%d commits=%d err=%v", result.Phase, usage.calls, store.commits, err)
 				}
 			} else if err == nil || base.sessions[source.ID].IsTerminated {
 				t.Fatalf("%s retired without current proof: %v", change, err)
+			}
+			if change != "current" && change != "shell close fails" && len(closer.began) != 0 {
+				t.Fatal("retirement that did not commit closed source shell", change)
 			}
 			if change == "no stop receipt" || change == "stale proof" || change == "live controller" || change == "proof fails" {
 				if len(closer.began) != 0 || usage.calls != 0 || store.commits != 0 {

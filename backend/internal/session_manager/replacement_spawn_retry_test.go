@@ -21,12 +21,27 @@ func (c *replacementAccountObservingChat) StartChat(ctx context.Context, cfg Cha
 	return c.replacementPreflightChat.StartChat(ctx, cfg)
 }
 
+type replacementBranchCheckingWorkspace struct {
+	*fakeWorkspace
+	branches []string
+}
+
+func (w *replacementBranchCheckingWorkspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	w.branches = append(w.branches, cfg.Branch)
+	if cfg.Branch == "" {
+		return ports.WorkspaceInfo{}, errors.New("branch is required")
+	}
+	return w.fakeWorkspace.Create(ctx, cfg)
+}
+
 func TestReplacementAsyncFailureRetryReusesSameUnlaunchedSeed(t *testing.T) {
 	m, store, chat, deferred := replacementSuccessorFixture(t)
 	ctx := context.Background()
 	observed := &replacementAccountObservingChat{replacementPreflightChat: chat}
 	m.chat = observed
 	workspace := m.workspace.(*fakeWorkspace)
+	checked := &replacementBranchCheckingWorkspace{fakeWorkspace: workspace}
+	m.workspace = checked
 	workspace.createErr = errors.New("workspace preparation unavailable")
 	seed, err := m.EnsureReplacementSuccessor(ctx, store.operation)
 	if err != nil {
@@ -35,6 +50,9 @@ func TestReplacementAsyncFailureRetryReusesSameUnlaunchedSeed(t *testing.T) {
 	(*deferred)[0]()
 	if store.sessions[seed.ID].ProvisionState != domain.SessionProvisionFailed || len(chat.started) != 0 {
 		t.Fatal("fixture did not fail before provider launch")
+	}
+	if store.sessions[seed.ID].Metadata.Branch != "" || len(checked.branches) != 1 || checked.branches[0] == "" {
+		t.Fatal("fixture must fail before the deterministic branch is published", checked.branches)
 	}
 	if _, err := m.EnsureReplacementSuccessor(ctx, store.operation); err == nil || len(*deferred) != 1 {
 		t.Fatal("polling retried provisioning without explicit authorization")
@@ -50,6 +68,9 @@ func TestReplacementAsyncFailureRetryReusesSameUnlaunchedSeed(t *testing.T) {
 		t.Fatal("prelaunch retry did not reuse the bound successor", retry.ID, err)
 	}
 	(*deferred)[1]()
+	if len(checked.branches) != 2 || checked.branches[1] != checked.branches[0] {
+		t.Fatal("retry lost the deterministic replacement branch", checked.branches)
+	}
 	if !observed.found || observed.selected.AccountID != store.operation.TargetAccountID {
 		t.Fatalf("retry lost pinned account context: found=%t selected=%s want=%s", observed.found, observed.selected.AccountID, store.operation.TargetAccountID)
 	}
@@ -59,6 +80,35 @@ func TestReplacementAsyncFailureRetryReusesSameUnlaunchedSeed(t *testing.T) {
 }
 
 type lostReplacementLaunchReply struct{ *replacementSuccessorStore }
+
+func TestReplacementRetryCommitsPreviouslyUncommittedClientRequest(t *testing.T) {
+	m, store, chat, deferred := replacementSuccessorFixture(t)
+	ctx := context.Background()
+	workspace := m.workspace.(*fakeWorkspace)
+	workspace.createErr = errors.New("workspace failed before launch")
+	seed, err := m.EnsureReplacementSuccessor(ctx, store.operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*deferred)[0]()
+	rec := store.sessions[seed.ID]
+	if rec.ProvisionState != domain.SessionProvisionFailed {
+		t.Fatal("fixture did not fail before launch")
+	}
+	// Model a crash before the initial client request commit.
+	rec.ClientRequestCommitted = false
+	store.sessions[seed.ID] = rec
+	store.operation.SpawnRetryGeneration++
+	workspace.createErr = nil
+	retried, err := m.EnsureReplacementSuccessor(ctx, store.operation)
+	if err != nil || retried.ID != seed.ID || !store.sessions[seed.ID].ClientRequestCommitted {
+		t.Fatal("authorized retry returned without committing its client request", err)
+	}
+	(*deferred)[1]()
+	if store.sessions[seed.ID].ProvisionState != domain.SessionProvisionReady || store.creates != 1 || len(chat.started) != 1 {
+		t.Fatal("request commit replayed or lost the one controller")
+	}
+}
 
 func (s lostReplacementLaunchReply) MarkReplacementSpawnLaunch(ctx context.Context, operation string, id domain.SessionID, attempt string, at time.Time) (bool, error) {
 	if applied, err := s.replacementSuccessorStore.MarkReplacementSpawnLaunch(ctx, operation, id, attempt, at); err != nil || !applied {

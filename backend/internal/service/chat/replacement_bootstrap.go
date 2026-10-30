@@ -8,7 +8,8 @@ import (
 )
 
 // EnsureReplacementChatBootstrap sends only the exact persisted bootstrap intent.
-// Lookup-only reconciliation can recover a receipt but cannot create a turn.
+// Reconciliation can create a turn only when its canonical client ID has no
+// message at all. An accepted-but-unverifiable turn still fails closed.
 func (s *Service) EnsureReplacementChatBootstrap(ctx context.Context, expected domain.OrchestratorReplacement, prompt string, allowNew bool) (ports.ReplacementPreparationDelivery, error) {
 	if expected.Phase != domain.ReplacementControllerReady {
 		return ports.ReplacementPreparationDelivery{}, domain.ErrReplacementStateInvalid
@@ -24,7 +25,7 @@ func (s *Service) EnsureReplacementChatProbe(ctx context.Context, expected domai
 	return s.ensureReplacementSuccessorControl(ctx, expected, prompt, allowNew)
 }
 
-func (s *Service) ensureReplacementSuccessorControl(ctx context.Context, expected domain.OrchestratorReplacement, prompt string, allowNew bool) (ports.ReplacementPreparationDelivery, error) {
+func (s *Service) ensureReplacementSuccessorControl(ctx context.Context, expected domain.OrchestratorReplacement, prompt string, _ bool) (ports.ReplacementPreparationDelivery, error) {
 	var receipt ports.ReplacementPreparationDelivery
 	op, rec, controller, err := s.replacementChatSuccessor(ctx, expected)
 	if err != nil {
@@ -46,10 +47,13 @@ func (s *Service) ensureReplacementSuccessorControl(ctx context.Context, expecte
 		receipt.TurnID = turn.ID
 		return receipt, nil
 	}
-	if !allowNew || turnID != "" {
+	if turnID != "" {
 		receipt.Uncertain = true
 		return receipt, nil
 	}
+	// replacementControlTurn returned (nil, nil) only because the client ID
+	// has no canonical message. Send commits that unique row before dispatch,
+	// so retrying this persisted intent cannot duplicate a provider delivery.
 	observation, err := s.ObserveReplacementChatSuccessor(ctx, op)
 	if err != nil {
 		return receipt, err

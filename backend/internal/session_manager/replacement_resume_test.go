@@ -96,11 +96,18 @@ func TestReplacementNativeResumeRequiresStrongStopAndExactPinnedOwner(t *testing
 					t.Fatal("resume proof not exact", observed, err)
 				}
 				cfg := chat.started[len(chat.started)-1]
-				if cfg.HistoryMode != ports.ChatHistoryRequired || cfg.FreshIfProviderConversationMissing || cfg.ProviderConversationID != rec.Metadata.ProviderConversationID || cfg.ReconnectOnly {
+				if cfg.HistoryMode != ports.ChatHistoryRequired || cfg.FreshIfProviderConversationMissing || !cfg.DisableFreshProviderFallback || cfg.ProviderConversationID != rec.Metadata.ProviderConversationID || cfg.ReconnectOnly {
 					t.Fatal("resume weakened native history admission", cfg.HistoryMode, cfg.FreshIfProviderConversationMissing)
 				}
 			} else if err == nil || observed.HistoryVerified {
 				t.Fatal("unverified resume accepted", change, observed, err)
+			}
+			prelaunch := change == "expired deadline" || change == "account drift" || change == "project drift" || change == "wrong native" || change == "wrong verifier" || change == "missing stop receipt" || change == "live controller"
+			if prelaunch && !errors.Is(err, ports.ErrChatResumeNotLaunched) {
+				t.Fatal("pure prelaunch failure lost its no-launch evidence", change, err)
+			}
+			if !prelaunch && errors.Is(err, ports.ErrChatResumeNotLaunched) {
+				t.Fatal("unknown/provider failure was misclassified as not launched", change, err)
 			}
 			wantStarts := beforeStarts
 			if change == "resume" || change == "history failure" || change == "owner rotated after ready" {

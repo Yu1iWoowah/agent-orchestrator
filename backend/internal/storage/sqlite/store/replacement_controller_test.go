@@ -126,3 +126,74 @@ func TestReplacementSuccessorControllerReceiptCannotBeAssignedByGenericSave(t *t
 		t.Fatal("rejected receipt changed native owner", err)
 	}
 }
+
+func TestReplacementControllerBindRejectsUnsealedState(t *testing.T) {
+	for _, boundary := range []bool{false, true} {
+		t.Run(map[bool]string{false: "session", true: "provider boundary"}[boundary], func(t *testing.T) {
+			dir := t.TempDir()
+			store, op, before, ready := replacementControllerFixture(t, dir)
+			ctx := context.Background()
+			var branch domain.ConversationBranch
+			if boundary {
+				conv, err := store.CreateConversation(ctx, "unsealed-target", domain.ConversationScopeSession, op.ProjectID, ready.ID, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				branch = domain.ConversationBranch{ID: "unsealed-branch", ConversationID: conv.ID, SessionID: ready.ID, ParentBranchID: conv.ActiveBranchID, ProviderScopeID: "unsealed-branch", ProviderConversationID: ready.Metadata.ProviderConversationID, Strategy: domain.ConversationBranchStrategyNative, CreatedAt: ready.UpdatedAt}
+			}
+			raw, err := sql.Open("sqlite", filepath.Join(dir, "ao.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			if _, err := raw.ExecContext(ctx, `UPDATE orchestrator_replacements SET state_json=json_set(state_json,'$.error',json('{"code":"UNSEALED","message":"not a managed write"}')) WHERE id=?`, op.ID); err != nil {
+				t.Fatal(err)
+			}
+			if boundary {
+				err = store.CommitChatSpawn(ctx, ready, branch)
+			} else {
+				err = store.UpdateSession(ctx, ready)
+			}
+			if !errors.Is(err, domain.ErrReplacementRepairUnverified) {
+				t.Fatal("controller publication laundered unsealed operation", err)
+			}
+			current, _, err := store.GetSession(ctx, ready.ID)
+			if err != nil || !reflect.DeepEqual(current, before) {
+				t.Fatal("unsealed operation published a native owner", err)
+			}
+			if _, _, err := store.GetOrchestratorReplacement(ctx, op.ID); !errors.Is(err, domain.ErrReplacementRepairUnverified) {
+				t.Fatal("corruption was sealed as valid history", err)
+			}
+		})
+	}
+}
+
+func TestReplacementControllerBindIgnoresUnrelatedSessionWithUnknownOperationFields(t *testing.T) {
+	dir := t.TempDir()
+	store, op, _, _ := replacementControllerFixture(t, dir)
+	ctx := context.Background()
+	worker, err := store.CreateSession(ctx, domain.SessionRecord{ProjectID: op.ProjectID, Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.CreateConversation(ctx, "unrelated-worker", domain.ConversationScopeSession, op.ProjectID, worker.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "ao.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `UPDATE orchestrator_replacements SET state_json=json_set(state_json,'$.futureNativeStop',true) WHERE id=?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	worker.Metadata.ControllerGeneration, worker.Metadata.ProviderConversationID = "worker-generation", "worker-native"
+	branch := domain.ConversationBranch{ID: "unrelated-worker-branch", ConversationID: conv.ID, SessionID: worker.ID, ParentBranchID: conv.ActiveBranchID, ProviderScopeID: "unrelated-worker-branch", ProviderConversationID: worker.Metadata.ProviderConversationID, Strategy: domain.ConversationBranchStrategyNative, CreatedAt: time.Now()}
+	if err := store.CommitChatSpawn(ctx, worker, branch); err != nil {
+		t.Fatal("unknown operation field blocked unrelated controller update", err)
+	}
+	if _, _, err := store.GetOrchestratorReplacement(ctx, op.ID); err == nil {
+		t.Fatal("unrelated update must not repair operation")
+	}
+}

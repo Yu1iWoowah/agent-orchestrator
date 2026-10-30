@@ -45,6 +45,9 @@ var (
 	// must preserve the durable session and worktree rather than treating the
 	// failed attachment as proof that the provider died.
 	ErrChatRecoveryInconclusive = errors.New("chat conversation recovery is inconclusive")
+	// ErrChatResumeNotLaunched proves this fresh replacement invocation failed
+	// before entering its native launcher. It never describes an unknown reply.
+	ErrChatResumeNotLaunched = errors.New("replacement native resume was not launched")
 	// ErrChatHostNotRunning is a definitive observation that no provider host exists.
 	ErrChatHostNotRunning = errors.New("chat provider host is not running")
 	// ErrChatNoActiveTurn means an interrupt found nothing to cancel — either AO
@@ -1247,6 +1250,8 @@ type ChatProviderHibernator interface {
 // its process tree stopped. A prior detach, missing host or unsupported receipt
 // must fail; ordinary best-effort Hibernate is insufficient for replacement.
 type ChatProviderReplacementHibernator interface {
+	// Preflight must leave the transport, close guard and provider untouched.
+	PreflightHibernateForReplacement(context.Context) error
 	HibernateForReplacement() error
 }
 

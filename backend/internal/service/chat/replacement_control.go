@@ -147,6 +147,15 @@ func (s *Service) ObserveReplacementChatSource(ctx context.Context, expected dom
 	if err != nil {
 		return observation, err
 	}
+	if op.SourceStopIntentAt == nil {
+		stopper, ok := controller.conv.(ports.ChatProviderReplacementHibernator)
+		if !ok {
+			return observation, &ports.NativeTranscriptError{Code: "ORCHESTRATOR_HANDOFF_SOURCE_STOP_UNSUPPORTED", Reason: "Source does not support a verified replacement shutdown"}
+		}
+		if err := stopper.PreflightHibernateForReplacement(ctx); err != nil {
+			return observation, &ports.NativeTranscriptError{Code: "ORCHESTRATOR_HANDOFF_SOURCE_STOP_UNSUPPORTED", Reason: err.Error()}
+		}
+	}
 	observation.Owner, observation.NativeID, observation.Provenance = op.SourceOwner, controller.ProviderConversationID(), domain.NativeThreadMain
 	controller.mu.Lock()
 	observation.State = controller.state

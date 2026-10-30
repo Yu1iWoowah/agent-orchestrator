@@ -1171,10 +1171,20 @@ func (c *conversation) Hibernate() error {
 // HibernateForReplacement requires a post-cleanup receipt from this provider's
 // owned host. An already-consumed close guard cannot turn detach into proof.
 func (c *conversation) HibernateForReplacement() error {
-	if c.proc.hibernate == nil {
-		return ports.ErrChatRecoveryInconclusive
+	if err := c.PreflightHibernateForReplacement(context.Background()); err != nil {
+		return err
 	}
 	return c.closeProviderWithProof(true, false, true)
+}
+
+func (c *conversation) PreflightHibernateForReplacement(ctx context.Context) error {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed || c.proc.hibernate == nil || c.proc.preflightHibernate == nil {
+		return ports.ErrChatRecoveryInconclusive
+	}
+	return c.proc.preflightHibernate(ctx)
 }
 
 func (c *conversation) closeProvider(terminate, closeSession bool) error {

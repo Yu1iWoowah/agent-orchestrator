@@ -21,6 +21,7 @@ type process struct {
 	stop      func() error
 	terminate func() error
 	hibernate func() error // authenticated post-cleanup receipt, never detach-only
+	preflightHibernate func(context.Context) error
 	// quickStop: the provider answered session/close or never exits on stdin
 	// closing, so a persistent host signals it without the stdin grace.
 	quickStop   atomic.Bool

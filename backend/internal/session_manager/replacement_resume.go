@@ -2,6 +2,7 @@ package sessionmanager
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -9,10 +10,18 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+type replacementNativeResumeKey struct{}
+
 // ResumeReplacementSuccessor reopens only the strongly stopped native thread.
 // Unknown caller/launch gaps require recovery, never another fresh controller.
-func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domain.OrchestratorReplacement, allowNew bool) (ports.ReplacementResumeObservation, error) {
+func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domain.OrchestratorReplacement, allowNew bool) (_ ports.ReplacementResumeObservation, resultErr error) {
 	var zero ports.ReplacementResumeObservation
+	launcherEntered := false
+	defer func() {
+		if allowNew && !launcherEntered && resultErr != nil {
+			resultErr = fmt.Errorf("%w: %w", ports.ErrChatResumeNotLaunched, resultErr)
+		}
+	}()
 	ctx, release, err := m.acquireOrchestratorGate(ctx, expected.ProjectID)
 	if err != nil {
 		return zero, err
@@ -102,6 +111,8 @@ func (m *Manager) ResumeReplacementSuccessor(ctx context.Context, expected domai
 	}
 	// Reuse ordinary native restore, with required replay and a durably reserved
 	// generation. That mode forbids both explicit and unanswered fresh fallback.
+	ctx = context.WithValue(ctx, replacementNativeResumeKey{}, true)
+	launcherEntered = true
 	resumed, err := m.resumeChatController(ctx, "orchestrator replacement native probe", rec, project, ws, true, false, p.ResumeGeneration, domain.SessionInterfaceTransitionHistoryStrict)
 	if err != nil {
 		return zero, err

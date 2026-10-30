@@ -48,13 +48,6 @@ func (m *Manager) RetireReplacementSource(ctx context.Context, op domain.Orchest
 	if err := proof.Check(ctx); err != nil {
 		return zero, err
 	}
-	closeRelease, err := m.beginShellTerminalTeardown(ctx, rec.ID)
-	if err != nil {
-		return zero, err
-	}
-	if closeRelease != nil {
-		defer closeRelease()
-	}
 	if err := usage.FinalizeReplacementUsage(ctx, rec); err != nil {
 		return zero, err
 	}
@@ -74,6 +67,18 @@ func (m *Manager) RetireReplacementSource(ctx context.Context, op domain.Orchest
 	}
 	if !applied {
 		return zero, domain.ErrReplacementSourceChanged
+	}
+	// Shell teardown is an irreversible UI/process side effect. It must not
+	// precede the retirement transaction, which can still reject current proof.
+	cleanup, cancel := spawnRollbackContext(ctx)
+	defer cancel()
+	closeRelease, err := m.beginShellTerminalTeardown(cleanup, rec.ID)
+	if err != nil {
+		m.logger.Warn("source shell cleanup after replacement retirement", "sessionID", rec.ID, "error", err)
+		return next, err
+	}
+	if closeRelease != nil {
+		closeRelease()
 	}
 	return next, nil
 }

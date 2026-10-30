@@ -88,7 +88,7 @@ func (s *Service) ActivateReplacementWriter(ctx context.Context, operation strin
 		})
 		op.Notifications = []domain.ReplacementWorkerNotification{}
 		for _, worker := range workers {
-			if worker.Kind == domain.KindWorker {
+			if worker.Kind == domain.KindWorker && !worker.IsTerminated {
 				op.Notifications = append(op.Notifications, domain.ReplacementWorkerNotification{SessionID: worker.ID, ContactID: "handoff-notice:" + op.ID + ":" + string(worker.ID), ObservedOwner: worker.ControllerOwner(), State: "pending", CreatedAt: now})
 			}
 		}

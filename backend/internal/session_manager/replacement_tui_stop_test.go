@@ -19,12 +19,96 @@ type replacementStopRuntime struct {
 	afterStop func()
 }
 
+type replacementBusyAfterReleaseStore struct {
+	*replacementTUIStore
+	afterRelease func()
+	failClear bool
+}
+
+func (s replacementBusyAfterReleaseStore) ClearUnattemptedReplacementTUIRelease(ctx context.Context, operation string, revision int64, id domain.SessionID, launch string) (bool, error) {
+	if s.failClear {
+		return false, errors.New("clear ENOSPC")
+	}
+	return s.replacementTUIStore.ClearUnattemptedReplacementTUIRelease(ctx, operation, revision, id, launch)
+}
+
+func (s replacementBusyAfterReleaseStore) SetReplacementTUIRuntimeReleased(ctx context.Context, operation string, revision int64, id domain.SessionID, sessionRevision int64) (bool, error) {
+	ok, err := s.replacementTUIStore.SetReplacementTUIRuntimeReleased(ctx, operation, revision, id, sessionRevision)
+	if ok && err == nil {
+		s.afterRelease()
+	}
+	return ok, err
+}
+
+func TestReplacementTUIUnattemptedStopCanReleaseItsMarker(t *testing.T) {
+	for _, change := range []string{"busy", "cancelled", "clear ENOSPC"} {
+		t.Run(change, func(t *testing.T) {
+			f := newReplacementTUIFixture(t)
+			f.acceptControl()
+			f.writeNative(t, true, false, "")
+			now := time.Now().UTC()
+			f.op.Phase, f.op.FrozenAt, f.op.SourceStopIntentAt = domain.ReplacementExportingTranscript, &now, &now
+			f.op.Preparation.VerifiedAt = &now
+			f.op.Transcript = &domain.ReplacementTranscript{AttemptID: "evidence"}
+			f.store.operation = f.op
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f.manager.store = replacementBusyAfterReleaseStore{replacementTUIStore: f.store, failClear: change == "clear ENOSPC", afterRelease: func() {
+				if change == "cancelled" {
+					cancel()
+				} else {
+					rec := f.store.sessions[f.op.SourceSessionID]
+					rec.Activity.State = domain.ActivityActive
+					f.store.sessions[rec.ID] = rec
+				}
+			}}
+			_, err := f.manager.QuiesceReplacementSource(ctx, f.op)
+			if err == nil || f.runtime.destroyed != 0 {
+				t.Fatal("pre-Destroy refusal attempted a stop", err)
+			}
+			rec := f.store.sessions[f.op.SourceSessionID]
+			if change == "clear ENOSPC" {
+				if errors.Is(err, domain.ErrReplacementSourceBusy) || rec.Metadata.RuntimeReleasedLaunchID == "" || f.store.operation.SourceStopIntentAt == nil {
+					t.Fatal("failed clearance falsely authorized no-stop recovery", err)
+				}
+				return
+			}
+			if rec.Metadata.RuntimeReleasedLaunchID != "" {
+				t.Fatal("unattempted stop left a release marker", rec.Metadata.RuntimeReleasedLaunchID)
+			}
+			if change == "busy" && !errors.Is(err, domain.ErrReplacementSourceBusy) {
+				t.Fatal("cleared no-stop result must remain safely retryable", err)
+			}
+			rec.Activity.State = domain.ActivityIdle
+			f.store.sessions[rec.ID] = rec
+			f.manager.store = f.store
+			stop, err := f.manager.QuiesceReplacementSource(context.Background(), f.op)
+			if err != nil || stop.ConfirmedAt.IsZero() || f.runtime.destroyed != 1 {
+				t.Fatal("retry could not stop the original fenced launch", stop, err)
+			}
+		})
+	}
+}
+
 func (s *replacementTUIStore) SetReplacementTUIRuntimeReleased(ctx context.Context, operation string, revision int64, id domain.SessionID, sessionRevision int64) (bool, error) {
 	rec, found, err := s.GetSession(ctx, id)
 	if err != nil || !found || s.operation.ID != operation || s.operation.Revision != revision || rec.Revision != sessionRevision || !s.operation.AllowsTUIQuiescence(rec) {
 		return false, err
 	}
 	return s.SetSessionRuntimeReleased(ctx, id, rec.Metadata.RuntimeLaunchID)
+}
+
+func (s *replacementTUIStore) ClearUnattemptedReplacementTUIRelease(ctx context.Context, operation string, revision int64, id domain.SessionID, launch string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	rec, found := s.sessions[id]
+	if !found || s.operation.ID != operation || s.operation.Revision != revision || s.operation.SourceStopIntentAt == nil || s.operation.SourceStop != nil || rec.ControllerOwner() != s.operation.SourceOwner || rec.Metadata.BrowserCapabilityVerifier != s.operation.SourceCapabilityVerifier || rec.Metadata.RuntimeReleasedLaunchID != launch {
+		return false, nil
+	}
+	rec.Metadata.RuntimeReleasedLaunchID = ""
+	s.sessions[id] = rec
+	return true, nil
 }
 
 func (r *replacementStopRuntime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error {

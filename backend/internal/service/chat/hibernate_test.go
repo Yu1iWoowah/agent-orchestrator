@@ -31,6 +31,7 @@ type hibernationConversation struct {
 	hostShutdownErr   error
 	backgroundRunning bool
 	backgroundErr     error
+	replacementPreflightErr error
 	backgroundChecks  atomic.Int32
 	onBackgroundCheck func(context.Context)
 	// afterNextRead runs once, after the next session read and before that

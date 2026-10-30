@@ -155,7 +155,10 @@ func (m *Manager) EnsureReplacementSuccessor(ctx context.Context, expected domai
 	if err != nil {
 		return zero, err
 	}
-	if !found || op.ID != expected.ID || op.Revision != expected.Revision || op.Phase != domain.ReplacementStarting || op.SourceRetiredAt == nil || op.SourceSessionID != expected.SourceSessionID || op.SourceOwner != expected.SourceOwner || op.SourceCapabilityVerifier != expected.SourceCapabilityVerifier || op.SpawnRequestID == "" || op.SpawnRequestID != expected.SpawnRequestID || op.SpawnRequestHash != expected.SpawnRequestHash {
+	// Background launch/controller receipts can advance revision while this
+	// caller waits for the gate. Revalidate the same pinned identity and use
+	// the committed row; progress alone is not source ownership loss.
+	if !found || op.ID != expected.ID || op.Revision < expected.Revision || op.Phase != domain.ReplacementStarting || op.SourceRetiredAt == nil || op.SourceSessionID != expected.SourceSessionID || op.SourceOwner != expected.SourceOwner || op.SourceCapabilityVerifier != expected.SourceCapabilityVerifier || op.SpawnRequestID == "" || op.SpawnRequestID != expected.SpawnRequestID || op.SpawnRequestHash != expected.SpawnRequestHash || op.ProjectFingerprint != expected.ProjectFingerprint {
 		return zero, domain.ErrReplacementSourceChanged
 	}
 	hash, err := domain.ReplacementSpawnRequestHash(op)
@@ -200,13 +203,17 @@ func (m *Manager) EnsureReplacementSuccessor(ctx context.Context, expected domai
 	if target.AccountID != op.TargetAccountID || target.AgentConfig != op.TargetAgentConfig {
 		return zero, domain.ErrReplacementConfigChanged
 	}
-	branch := ""
-	if project.Kind.WithDefault() != domain.ProjectKindScratch {
-		branch = aoBranch(generatedBranchNamespace(m.dataDir), sessionPrefix(project)+"-orchestrator-replacement-"+op.ID)
-	}
+	branch := m.replacementSuccessorBranch(project, op)
 	cfg := ports.SpawnConfig{ProjectID: op.ProjectID, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, RequestedMode: domain.SessionModeChat, Async: true, ClientRequestID: op.SpawnRequestID, ClientRequestHash: op.SpawnRequestHash, AgentConfig: op.TargetAgentConfig, AgentConfigResolved: true, AgentAccountID: op.TargetAccountID, Branch: branch}
 	rec, _, _, err := m.spawn(ctx, cfg, &op)
 	return rec, err
+}
+
+func (m *Manager) replacementSuccessorBranch(project domain.ProjectRecord, op domain.OrchestratorReplacement) string {
+	if project.Kind.WithDefault() == domain.ProjectKindScratch {
+		return ""
+	}
+	return aoBranch(generatedBranchNamespace(m.dataDir), sessionPrefix(project)+"-orchestrator-replacement-"+op.ID)
 }
 
 func (m *Manager) checkReplacementSpawnReservation(ctx context.Context, expected domain.OrchestratorReplacement, id domain.SessionID) error {

@@ -48,13 +48,9 @@ func successorBootstrapIntentFor(t *testing.T, f successorChatFixture) (successo
 func TestReplacementBootstrapRecoversExactReceiptWithoutResending(t *testing.T) {
 	f, prompt := successorBootstrapIntent(t)
 	ctx := context.Background()
-	missing, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, false)
-	if err != nil || !missing.Uncertain || len(f.provider.sentTexts()) != 0 {
-		t.Fatal("lookup-only sent bootstrap", missing, err)
-	}
-	first, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, true)
+	first, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, false)
 	if err != nil || first.Uncertain || first.TurnID == "" || first.Owner != f.op.SuccessorController.Owner {
-		t.Fatal("bootstrap not bound", first, err)
+		t.Fatal("persisted intent with no canonical message could not recover", first, err)
 	}
 	again, err := f.service.EnsureReplacementChatBootstrap(ctx, f.op, prompt, false)
 	if err != nil || again.TurnID != first.TurnID || again.Uncertain || len(f.provider.sentTexts()) != 1 {

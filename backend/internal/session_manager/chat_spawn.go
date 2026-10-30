@@ -580,9 +580,10 @@ func (m *Manager) resumeChatController(
 		// Ordinary resumes allocate a fresh generation. Switch recovery reuses
 		// the saga's reserved generation until delivery is durably settled so a
 		// second restart can still prove exact target ownership.
-		ControllerGeneration: controllerGeneration,
-		HistoryMode:          historyMode,
-		HistoryPolicy:        historyPolicy,
+		ControllerGeneration:         controllerGeneration,
+		DisableFreshProviderFallback: ctx.Value(replacementNativeResumeKey{}) == true,
+		HistoryMode:                  historyMode,
+		HistoryPolicy:                historyPolicy,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path

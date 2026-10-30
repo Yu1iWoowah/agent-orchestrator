@@ -8,8 +8,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.OrchestratorReplacement, rec domain.SessionRecord) (domain.ReplacementControllerStop, error) {
-	var stop domain.ReplacementControllerStop
+func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.OrchestratorReplacement, rec domain.SessionRecord) (stop domain.ReplacementControllerStop, resultErr error) {
 	if op.FrozenAt == nil || op.SourceStopIntentAt == nil || op.Preparation == nil || op.Preparation.VerifiedAt == nil || op.Transcript == nil {
 		return stop, domain.ErrReplacementStateInvalid
 	}
@@ -18,6 +17,7 @@ func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.Orc
 	}
 	store, ok := m.store.(interface {
 		SetReplacementTUIRuntimeReleased(context.Context, string, int64, domain.SessionID, int64) (bool, error)
+		ClearUnattemptedReplacementTUIRelease(context.Context, string, int64, domain.SessionID, string) (bool, error)
 	})
 	if !ok {
 		return stop, domain.ErrReplacementStateInvalid
@@ -54,6 +54,20 @@ func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.Orc
 		if !reserved {
 			return stop, domain.ErrReplacementSourceBusy
 		}
+		attempted := false
+		defer func() {
+			if attempted {
+				return
+			}
+			cleanup, cancel := spawnRollbackContext(ctx)
+			defer cancel()
+			cleared, err := store.ClearUnattemptedReplacementTUIRelease(cleanup, op.ID, op.Revision, rec.ID, ref.Generation)
+			if err != nil || !cleared {
+				// Do not wrap the original Busy: the coordinator must retain the
+				// stop intent when its no-stop clearance could not be committed.
+				resultErr = tuiEvidenceError("ORCHESTRATOR_HANDOFF_SOURCE_STOP_UNCERTAIN", fmt.Sprintf("Unattempted TUI release clearance is pending: %v (cleared=%t)", err, cleared))
+			}
+		}()
 		_, current, releaseCheck, err := m.beginReplacementSourceAction(ctx, op)
 		if err != nil {
 			return stop, err
@@ -70,6 +84,7 @@ func (m *Manager) quiesceReplacementTUISource(ctx context.Context, op domain.Orc
 		}
 		// Destroy success is only an acknowledgement. Confirm the same launch
 		// below even when Destroy returns nil; never blindly repeat a stop.
+		attempted = true
 		if err := m.runtime.Destroy(ctx, ref.Handle); err != nil {
 			if probe := m.runtime.ProbeFencedRuntime(ctx, ref); probe.Liveness != ports.FencedDead {
 				return stop, fmt.Errorf("replacement TUI shutdown: %w", err)

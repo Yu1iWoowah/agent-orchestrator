@@ -55,11 +55,7 @@ func TestReplacementContinuityProbeRequiresMainNonceAcknowledgment(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			missing, err := f.service.EnsureReplacementChatProbe(ctx, f.op, prompt, false)
-			if err != nil || !missing.Uncertain || len(f.provider.sentTexts()) != 0 {
-				t.Fatal("lookup-only sent a probe", missing, err)
-			}
-			first, err := f.service.EnsureReplacementChatProbe(ctx, f.op, prompt, true)
+			first, err := f.service.EnsureReplacementChatProbe(ctx, f.op, prompt, false)
 			if err != nil || first.TurnID == "" || first.Owner != f.op.ResumeEvidence.AfterOwner || first.NativeID != f.op.ResumeEvidence.AfterNativeID {
 				t.Fatal("probe not bound to resumed owner", first, err)
 			}

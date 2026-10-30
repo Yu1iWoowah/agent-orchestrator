@@ -112,6 +112,28 @@ func TestReplacementTUIReleaseIntentChecksOperationAndSessionAtomically(t *testi
 			if (current.Metadata.RuntimeReleasedLaunchID == "source-launch") != ok {
 				t.Fatal("release intent differed from reservation result")
 			}
+			if which == "current" {
+				for _, stale := range []struct {
+					revision int64
+					launch   string
+				}{{op.Revision - 1, "source-launch"}, {op.Revision, "another-launch"}} {
+					if cleared, err := st.ClearUnattemptedReplacementTUIRelease(ctx, op.ID, stale.revision, rec.ID, stale.launch); err != nil || cleared {
+						t.Fatal("stale scope cleared a launch marker", cleared, err)
+					}
+				}
+				current.Activity.State = domain.ActivityActive
+				if err := st.UpdateSession(ctx, current); err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if cleared, err := st.ClearUnattemptedReplacementTUIRelease(ctx, op.ID, op.Revision, rec.ID, "source-launch"); err != nil || !cleared {
+						t.Fatal("positive no-stop could not clear busy marker idempotently", cleared, err)
+					}
+				}
+				if source, _, err := st.GetSession(ctx, rec.ID); err != nil || source.Activity.State != domain.ActivityActive || source.Metadata.RuntimeReleasedLaunchID != "" || source.Metadata.RuntimeLaunchID != "source-launch" {
+					t.Fatal("clear changed source activity or launch ownership", source.Metadata, err)
+				}
+			}
 		})
 	}
 }

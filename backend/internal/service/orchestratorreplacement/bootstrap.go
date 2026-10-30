@@ -106,13 +106,15 @@ func bootstrapPrompt(op domain.OrchestratorReplacement, handoff projectdocuments
 	if err != nil {
 		return "", err
 	}
+	fence := "ao_handoff_snapshot_sha256_" + p.SubmittedHash
 	return fmt.Sprintf(`AO orchestrator replacement bootstrap。這是新 orchestrator 的第一個 control turn。
 讀取下列 immutable handoff snapshot，承接既有授權、session map、下一個 D、最後 ACK、待答 Q 與待 ACK D。不要重發 Q/D、推定答案或擴大授權，不要打斷 workers。
 Shared writer lease 仍 frozen；這個回合只讀，不寫 shared living files、不派新工作、不自行 stop/replace。AO 將另行驗證同 native conversation 的 stop/resume，之後才啟用 writer。
 Immutable references (JSON): %s
 全文只以 path/hash 提供，未嵌入此 prompt。依需要從 transcript/manifest 查閱原文。
 Immutable handoff snapshot (%d UTF-8 bytes; starts next line):
+<%s>
 %s
-End immutable handoff snapshot.
-確認 snapshot SHA256、transcript path/hash 與 §B 的未結事項，簡短回報目前停點，然後結束本回合。`, references, len(handoff.Content), handoff.Content), nil
+</%s>
+確認 snapshot SHA256、transcript path/hash 與 §B 的未結事項，簡短回報目前停點，然後結束本回合。`, references, len(handoff.Content), fence, handoff.Content, fence), nil
 }

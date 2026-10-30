@@ -95,12 +95,19 @@ func (m *Manager) retryReplacementSuccessor(ctx context.Context, op domain.Orche
 	if err != nil {
 		return rec, err
 	}
-	cfg := ports.SpawnConfig{ProjectID: op.ProjectID, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, RequestedMode: domain.SessionModeChat, Async: true, ClientRequestID: op.SpawnRequestID, ClientRequestHash: op.SpawnRequestHash, AgentConfig: op.TargetAgentConfig, AgentConfigResolved: true, AgentAccountID: op.TargetAccountID, Branch: rec.Metadata.Branch}
-	retried, _, _, err := m.beginAsyncChatSpawn(ctx, asyncChatSpawn{replacement: &op, cfg: cfg, project: project, projectKind: projectKindForSession(project, rec.ProjectID), record: rec, branch: rec.Metadata.Branch, systemPrompt: systemPrompt, systemPromptFile: systemPromptFile, retry: true, releaseHarness: releaseHarness})
+	branch := rec.Metadata.Branch
+	if branch == "" {
+		branch = m.replacementSuccessorBranch(project, op)
+	}
+	cfg := ports.SpawnConfig{ProjectID: op.ProjectID, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode, RequestedMode: domain.SessionModeChat, Async: true, ClientRequestID: op.SpawnRequestID, ClientRequestHash: op.SpawnRequestHash, AgentConfig: op.TargetAgentConfig, AgentConfigResolved: true, AgentAccountID: op.TargetAccountID, Branch: branch}
+	retried, _, _, err := m.beginAsyncChatSpawn(ctx, asyncChatSpawn{replacement: &op, cfg: cfg, project: project, projectKind: projectKindForSession(project, rec.ProjectID), record: rec, branch: branch, systemPrompt: systemPrompt, systemPromptFile: systemPromptFile, retry: true, releaseHarness: releaseHarness})
 	if err != nil {
 		return rec, err
 	}
 	scheduled, releaseHarness = true, nil
+	if err := m.store.CommitClientRequestSession(ctx, retried.ID); err != nil {
+		return retried, wrapSpawnStage(retried.ID, ErrSpawnCommit, err)
+	}
 	return retried, nil
 }
 
