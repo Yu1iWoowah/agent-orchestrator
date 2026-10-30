@@ -1,5 +1,6 @@
 import type { components } from "../../api/schema";
 import { apiErrorCode, apiErrorMessage, apiErrorRequestId } from "./api-client";
+import { isLocal } from "./hosts";
 
 export type AgentSettingsSnapshot = components["schemas"]["SessionAgentSettingsResponse"];
 export type AgentSettingsSelection = components["schemas"]["AgentSettings"];
@@ -12,13 +13,13 @@ export function agentSettingsErrorMessage(error: unknown, conflictMessage: strin
 }
 
 export function agentSettingsQueryKey(sessionId: string, hostId?: string) {
-	return hostId
+	return hostId && !isLocal(hostId)
 		? ["remote-session-agent-settings", hostId, sessionId] as const
 		: ["session-agent-settings", sessionId, null] as const;
 }
 
 export function agentSettingsQueryRoot(hostId?: string) {
-	return hostId ? ["remote-session-agent-settings", hostId] as const : ["session-agent-settings"] as const;
+	return hostId && !isLocal(hostId) ? ["remote-session-agent-settings", hostId] as const : ["session-agent-settings"] as const;
 }
 
 export function canCancelAgentSettings(operation: AgentSettingsOperation): boolean {

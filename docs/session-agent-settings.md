@@ -54,6 +54,12 @@ ambiguous connection failure uses the original payload and idempotency key.
 TUI changes show a restart review; interruption consent is a separate, initially
 unchecked option. Unstarted pending operations can be cancelled with version CAS.
 
+English and Traditional Chinese have explicit UI copy. Other locale catalogs
+currently carry explicit English fallbacks for these new keys; they are not
+claimed as completed translations. Effective observation reasons are available
+in keyboard-accessible disclosures. Local host aliases share one cache/readiness
+scope; remote hosts with equal session IDs remain separate.
+
 ## Mutations and polling
 
 `PATCH /api/v1/sessions/{sessionId}/agent-settings` requires `expectedRevision`,

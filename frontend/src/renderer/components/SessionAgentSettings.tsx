@@ -9,6 +9,7 @@ import { verifiedSettingsActor, type AgentSettingsSelection } from "../lib/agent
 import type { WorkspaceSession } from "../types/workspace";
 import { AgentSettingsEditor } from "./AgentSettingsEditor";
 import { AgentSettingsRecovery } from "./AgentSettingsRecovery";
+import { isLocal } from "../lib/hosts";
 
 function SettingsValue({ label, children }: { label: string; children: ReactNode }) {
 	return <div className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-2">
@@ -48,7 +49,8 @@ export function SessionAgentSettings({ session, hostId }: { session: WorkspaceSe
 	const panelId = useId();
 	const supported = !session.cloud && (session.provider === "codex" || session.provider === "claude-code");
 	const query = useSessionAgentSettings({ sessionId: session.id, hostId, enabled: supported && open });
-	const accountLabel = useAgentAccountLabel(supported && open && !hostId && hasTrustedApiBaseUrl());
+	const remote = Boolean(hostId && !isLocal(hostId));
+	const accountLabel = useAgentAccountLabel(supported && open && !remote && hasTrustedApiBaseUrl());
 	if (!supported) return null;
 	const snapshot = query.data;
 	return <div className="mt-3 min-w-0 border-t border-(--color-border-settings-input) pt-3 text-xs" data-testid="session-agent-settings">
@@ -65,7 +67,7 @@ export function SessionAgentSettings({ session, hostId }: { session: WorkspaceSe
 				{!session.isTerminated && <AgentSettingsEditor hostId={hostId} key={`${hostId ?? "local"}:${session.id}`} sessionId={session.id} snapshot={snapshot} />}
 				<SelectionGroup label={t("agentSettings.current")} settings={snapshot.settings} />
 				<dl className="space-y-1 text-muted-foreground">
-					<SettingsValue label={t("agentSettings.account")}>{snapshot.capabilities.accountId ? hostId ? snapshot.capabilities.accountId : accountLabel(snapshot.capabilities.accountId) : t("agentSettings.unknown")}</SettingsValue>
+					<SettingsValue label={t("agentSettings.account")}>{snapshot.capabilities.accountId ? remote ? snapshot.capabilities.accountId : accountLabel(snapshot.capabilities.accountId) : t("agentSettings.unknown")}</SettingsValue>
 					<SettingsValue label={t("agentSettings.restart")}>{t(snapshot.restartRequired ? "agentSettings.required" : "agentSettings.nextTurn")}</SettingsValue>
 				</dl>
 				{session.spawnAgentSettings && <details className="min-w-0 text-muted-foreground">

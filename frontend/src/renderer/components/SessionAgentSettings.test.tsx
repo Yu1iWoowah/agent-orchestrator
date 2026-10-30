@@ -10,11 +10,11 @@ import { SessionAgentSettings } from "./SessionAgentSettings";
 import { AgentSettingsStatus } from "./AgentSettingsStatus";
 import { TooltipProvider } from "./ui/tooltip";
 
-const { getMock, patchMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), patchMock: vi.fn(), postMock: vi.fn() }));
+const { getMock, patchMock, postMock, connection } = vi.hoisted(() => ({ getMock: vi.fn(), patchMock: vi.fn(), postMock: vi.fn(), connection: { trusted: true } }));
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, PATCH: patchMock, POST: postMock },
 	getApiBaseUrl: () => "http://127.0.0.1:43791",
-	hasTrustedApiBaseUrl: () => true,
+	hasTrustedApiBaseUrl: () => connection.trusted,
 	subscribeApiBaseUrl: () => () => {},
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => error instanceof Error ? error.message
 		: typeof error === "object" && error !== null && "message" in error && typeof error.message === "string" ? error.message : fallback,
@@ -31,6 +31,7 @@ const clients: QueryClient[] = [];
 const session: WorkspaceSession = { id: "sess-1", workspaceId: "ws-1", workspaceName: "Fake workspace", title: "Fake task", provider: "codex", kind: "worker", mode: "chat", status: "idle", updatedAt: "2026-10-30T09:00:00Z", prs: [] };
 
 beforeEach(() => {
+	connection.trusted = true;
 	server = agentSettingsSnapshot({ pending: undefined });
 	getMock.mockReset().mockImplementation(async (path: string) => path === "/api/v1/sessions/{sessionId}/agent-settings"
 		? { data: server }
@@ -53,10 +54,10 @@ afterEach(() => {
 	for (const client of clients.splice(0)) client.clear();
 });
 
-function showSession(overrides: Partial<WorkspaceSession> = {}) {
+function showSession(overrides: Partial<WorkspaceSession> = {}, hostId?: string) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 	clients.push(client);
-	render(<QueryClientProvider client={client}><TooltipProvider><SessionAgentSettings session={{ ...session, ...overrides }} /></TooltipProvider></QueryClientProvider>);
+	render(<QueryClientProvider client={client}><TooltipProvider><SessionAgentSettings hostId={hostId} session={{ ...session, ...overrides }} /></TooltipProvider></QueryClientProvider>);
 	return client;
 }
 
@@ -70,6 +71,12 @@ async function editModel() {
 }
 
 describe("Session agent settings intent", () => {
+	it("does not bypass local daemon readiness through the local host alias", async () => {
+		connection.trusted = false;
+		showSession({}, "local");
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		expect(getMock).not.toHaveBeenCalled();
+	});
 	it("exposes a provider observation reason in a disclosure without guessing an effective value", async () => {
 		showSession();
 		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));

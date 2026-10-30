@@ -5,6 +5,7 @@ import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "../lib
 import { agentSettingsQueryKey } from "../lib/agent-settings";
 import { clientForSessionHost } from "../lib/host-clients";
 import { appI18n } from "../i18n";
+import { isLocal } from "../lib/hosts";
 
 export function useSessionAgentSettings({ sessionId, hostId, enabled = true }: {
 	sessionId?: string;
@@ -12,9 +13,10 @@ export function useSessionAgentSettings({ sessionId, hostId, enabled = true }: {
 	enabled?: boolean;
 }) {
 	const baseUrl = useSyncExternalStore(subscribeApiBaseUrl, getApiBaseUrl, getApiBaseUrl);
+	const remote = Boolean(hostId && !isLocal(hostId));
 	return useQuery({
 		queryKey: agentSettingsQueryKey(sessionId ?? "", hostId),
-		enabled: enabled && Boolean(sessionId && (hostId || (baseUrl && hasTrustedApiBaseUrl()))),
+		enabled: enabled && Boolean(sessionId && (remote || (baseUrl && hasTrustedApiBaseUrl()))),
 		queryFn: async () => {
 			if (!sessionId) throw new Error("A session is required");
 			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/agent-settings", {

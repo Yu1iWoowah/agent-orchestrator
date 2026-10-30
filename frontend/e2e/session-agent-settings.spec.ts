@@ -1,4 +1,5 @@
 import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { _electron as electron, expect, test as base, type Page } from "@playwright/test";
 import { agentSettingsOperation, agentSettingsSelection, agentSettingsSnapshot } from "../src/renderer/test/agent-settings-fixtures";
 import type { components } from "../src/api/schema";
@@ -23,11 +24,15 @@ const test = process.env.AO_E2E_ELECTRON ? base.extend({
 				userData: app.getPath("userData"),
 				noSandbox: app.commandLine.hasSwitch("no-sandbox"),
 			}));
+			await page.waitForFunction(() => window.__aoSettingsSandboxProof !== undefined);
 			const renderer = await page.evaluate(() => window.__aoSettingsSandboxProof);
+			const proofPath = info.outputPath("electron-isolation.json");
+			await mkdir(info.outputDir, { recursive: true });
+			await writeFile(proofPath, JSON.stringify({ ...isolation, ...renderer }, null, 2));
+			await info.attach("electron-isolation", { path: proofPath, contentType: "application/json" });
 			expect(isolation.noSandbox).toBe(false);
 			expect(renderer?.rendererSandbox).toBe(true);
 			expect(renderer?.contextIsolated).toBe(true);
-			await info.attach("electron-isolation", { body: Buffer.from(JSON.stringify({ ...isolation, ...renderer }, null, 2)), contentType: "application/json" });
 			page.on("pageerror", (error) => console.error("Electron renderer error:", error.message));
 			page.on("console", (message) => { if (message.type() === "error" && !message.text().includes("Failed to load resource")) console.error("Electron console:", message.text()); });
 			await page.bringToFront(); await use(page);
