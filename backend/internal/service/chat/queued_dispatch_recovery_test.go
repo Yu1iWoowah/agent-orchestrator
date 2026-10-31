@@ -17,8 +17,10 @@ import (
 
 type queuedPreSendFaultStore struct {
 	chatsvc.Store
-	armed   atomic.Bool
-	atInput bool
+	armed           atomic.Bool
+	atInput         bool
+	invalidPreview  atomic.Bool
+	invalidClientID string
 }
 
 func (s *queuedPreSendFaultStore) RecordTurnSettingsSnapshot(ctx context.Context, cid, generation string, ids []string, snapshot domain.AgentSettingsTurnSnapshot) error {
@@ -33,6 +35,18 @@ func (s *queuedPreSendFaultStore) RecordProviderInput(ctx context.Context, id, t
 		return errors.New("queued-provider-input-injected")
 	}
 	return s.Store.RecordProviderInput(ctx, id, text)
+}
+
+func (s *queuedPreSendFaultStore) ListQueuedBatch(ctx context.Context, cid string, limit int) ([]domain.QueuedTurn, error) {
+	batch, err := s.Store.ListQueuedBatch(ctx, cid, limit)
+	if err == nil && s.invalidPreview.CompareAndSwap(true, false) {
+		for i := range batch {
+			if batch[i].ClientMessageID == s.invalidClientID {
+				batch[i].DeliveryContentJSON = "{"
+			}
+		}
+	}
+	return batch, err
 }
 
 type uncertainDeferredConversation struct {
@@ -51,18 +65,24 @@ func (c *uncertainDeferredConversation) SendTurn(ctx context.Context, msg ports.
 }
 
 func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
-	for _, mode := range []string{"direct", "queuedAhead", "queuedList", "queuedClaim", "settings", "input", "direct-settings", "direct-input", "uncertain"} {
+	for _, mode := range []string{"direct", "queuedAhead", "queuedList", "queuedClaim", "settings", "input", "direct-settings", "direct-input", "uncertain", "bindRequeue", "invalidPreview", "invalidPreviewRetry", "invalidPreviewOlderUncertain"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			direct := strings.HasPrefix(mode, "direct")
+			invalidPreview := strings.HasPrefix(mode, "invalidPreview")
+			previewRejectsCurrent := invalidPreview && mode != "invalidPreviewOlderUncertain"
 			preSendFailure := strings.HasSuffix(mode, "settings") || strings.HasSuffix(mode, "input")
+			rejectedUnsent := preSendFailure || mode == "bindRequeue" || previewRejectsCurrent
 			conv := &uncertainDeferredConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
 			fault := &bindUnsentFaultStore{}
-			preSendFault := &queuedPreSendFaultStore{atInput: strings.HasSuffix(mode, "input")}
+			preSendFault := &queuedPreSendFaultStore{atInput: strings.HasSuffix(mode, "input"), invalidClientID: "accepted"}
+			if mode == "invalidPreviewOlderUncertain" {
+				preSendFault.invalidClientID = "older"
+			}
 			readFault := &readyRetryFaultStore{atClaim: mode == "queuedClaim", persistent: true, requeued: make(chan struct{})}
 			h := newHarnessWithConversationAndStore(t, conv, func(db *store.Store) chatsvc.Store {
 				fault.Store = db
-				if preSendFailure {
+				if preSendFailure || invalidPreview {
 					preSendFault.Store = fault
 					return preSendFault
 				}
@@ -109,6 +129,17 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 				} else {
 					preSendFault.armed.Store(true)
 				}
+			} else if mode == "bindRequeue" {
+				fault.requeueErr = errors.New("queued-requeue-injected")
+				fault.armed.Store(true)
+			} else if invalidPreview {
+				preSendFault.invalidPreview.Store(true)
+				switch mode {
+				case "invalidPreviewRetry":
+					fault.armed.Store(true)
+				case "invalidPreviewOlderUncertain":
+					conv.uncertain.Store(true)
+				}
 			} else if mode == "uncertain" {
 				conv.uncertain.Store(true)
 			} else {
@@ -123,8 +154,12 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("report: found=%v err=%v", found, err)
 			}
-			if preSendFailure {
-				if firstErr == nil || saved.State != domain.TurnStateFailed || saved.ProviderTurnID != "" || report.DeliveryState != domain.ReportPending || conv.starts.Load() != 0 {
+			if rejectedUnsent {
+				wantStarts := int32(0)
+				if previewRejectsCurrent {
+					wantStarts = 1 // The older, valid input must still dispatch.
+				}
+				if firstErr == nil || saved.State != domain.TurnStateFailed || saved.ProviderTurnID != "" || report.DeliveryState != domain.ReportPending || conv.starts.Load() != wantStarts {
 					t.Errorf("unsent failed message consumed reports: err=%v turn=%+v report=%s starts=%d", firstErr, saved, report.DeliveryState, conv.starts.Load())
 				}
 			} else if firstErr != nil || report.DeliveryState != domain.ReportAcknowledged {
@@ -135,6 +170,22 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 					t.Errorf("queue store retry was not bounded to two attempts: %d", readFault.attempts.Load())
 				}
 				readFault.armed.Store(false)
+			}
+			if previewRejectsCurrent {
+				messages := conv.sentMessages()
+				if len(messages) != 1 || messages[0].Text != "older queued input" {
+					t.Fatalf("invalid preview blocked or corrupted valid input: %+v", messages)
+				}
+				older, found, err := h.st.ConversationMessageByClientID(ctx, h.ctrl.ConversationID(), "older")
+				if err != nil || !found {
+					t.Fatalf("valid queued message: found=%t err=%v", found, err)
+				}
+				olderTurn, err := h.st.TurnByID(ctx, older.TurnID)
+				if err != nil || olderTurn.ProviderTurnID == "" {
+					t.Fatalf("valid input did not bind: %+v err=%v", olderTurn, err)
+				}
+				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: olderTurn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+				fence("valid-preview-input-completed")
 			}
 			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "trigger queue", ClientMessageID: "trigger", Origin: domain.MessageOriginHuman}); err != nil {
 				t.Fatal(err)

@@ -2178,7 +2178,7 @@ func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID strin
 		if len(followers) > 0 {
 			followersErr = c.store.FailQueuedBatch(settleCtx, c.conversation.ID, followers, reason, c.now())
 		}
-		return domain.ConversationTurn{}, fmt.Errorf("requeue unsent turn: %w", errors.Join(err, settleErr, followersErr))
+		return domain.ConversationTurn{}, fmt.Errorf("%w: requeue unsent turn: %w", errDispatchNotSent, errors.Join(err, settleErr, followersErr))
 	}
 	c.mu.Lock()
 	c.retryUnsentOnReady = true
@@ -2193,7 +2193,7 @@ func (c *Controller) queuedDispatchReceipt(id string, at time.Time) domain.Conve
 // queuedReceiptAfterDrainError preserves report ownership unless this input was
 // durably failed before it could reach the provider. Callers must hold sendMu.
 func (c *Controller) queuedReceiptAfterDrainError(ctx context.Context, queued domain.ConversationTurn, err error) (domain.ConversationTurn, error) {
-	if errors.Is(err, errDispatchNotSent) {
+	if errors.Is(err, errDispatchNotSent) || errors.Is(err, batchInputError{turnID: queued.ID}) {
 		settled, readErr := c.store.TurnByID(context.WithoutCancel(ctx), queued.ID)
 		if readErr == nil && settled.State == domain.TurnStateFailed {
 			return settled, err
@@ -2313,12 +2313,16 @@ var errRetryQueuedDispatch = errors.New("queued dispatch was not sent")
 func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch bool, limit int) error {
 	err := c.drainOnceLocked(ctx, allowDispatch, limit)
 	if allowDispatch && errors.Is(err, errRetryQueuedDispatch) {
-		return c.drainOnceLocked(ctx, allowDispatch, limit)
+		retryErr := c.drainOnceLocked(ctx, allowDispatch, limit)
+		if _, rejected := invalidBatchTurn(err); rejected {
+			return errors.Join(err, retryErr)
+		}
+		return retryErr
 	}
 	return err
 }
 
-func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) error {
+func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) (drainErr error) {
 	c.mu.Lock()
 	cutoff := c.cancelQueuedAt
 	c.cancelQueuedAt = time.Time{}
@@ -2350,6 +2354,11 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 		return err
 	}
 
+	// Invalid members can fail while healthy input still dispatches. Preserve
+	// their identities so intake can release only those members' reports.
+	var rejectedInputErr error
+	defer func() { drainErr = errors.Join(rejectedInputErr, drainErr) }()
+
 	for {
 		preview, err := c.store.ListQueuedBatch(ctx, c.conversation.ID, limit)
 		if errors.Is(err, domain.ErrNoQueuedTurn) {
@@ -2360,6 +2369,7 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 		}
 		if _, err := c.queuedBatchInput(ctx, preview, nil); err != nil {
 			if id, ok := invalidBatchTurn(err); ok {
+				rejectedInputErr = errors.Join(rejectedInputErr, err)
 				if settleErr := c.store.SettleTurnByID(ctx, id, domain.TurnStateFailed, err.Error(), c.now()); settleErr != nil {
 					return settleErr
 				}
