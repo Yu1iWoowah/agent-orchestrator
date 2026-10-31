@@ -15,6 +15,15 @@ import (
 
 type shellReviewer struct{ fakeReviewer }
 
+type recordingCreateRuntime struct {
+	*tmux.Runtime
+	created fakeRuntime
+}
+
+func (r *recordingCreateRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	return r.created.Create(ctx, cfg)
+}
+
 func (*shellReviewer) ReviewCommand(context.Context, ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	return ports.ReviewCommandSpec{Argv: []string{"/bin/sh", "-c", "echo reviewer-ready; exec /bin/cat"}}, nil
 }
@@ -89,6 +98,37 @@ func TestLauncherSpawnWithMissingOrLiveTmuxPane(t *testing.T) {
 			}
 		})
 	}
+	t.Run("completed_run_retrigger_without_claim", func(t *testing.T) {
+		completed := domain.ReviewRun{
+			ID: "run-complete", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha0",
+			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved,
+		}
+		store := &fakeStore{
+			review: &domain.Review{
+				ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+				ReviewerHandleID: "review-mer-1", AgentSessionID: "native-reviewer-1",
+			},
+			runs: []domain.ReviewRun{completed},
+		}
+		// Use real tmux cleanup, recording Create without starting a supervisor.
+		runtime := &recordingCreateRuntime{Runtime: rt}
+		launcher := newTestLauncher(t, &shellReviewer{}, runtime)
+		engine := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+		result, err := trigger(context.Background(), engine, "mer-1", "", domain.AgentConfig{})
+		if err != nil {
+			t.Fatalf("Trigger after completed review with missing pane: %v", err)
+		}
+		if !result.Created || result.Run.Status != domain.ReviewRunRunning || result.ReviewerHandleID != "review-mer-1" || !runtime.created.created {
+			t.Fatalf("reviewer did not relaunch: %+v", result)
+		}
+		if store.runs[0] != completed {
+			t.Fatalf("completed review changed during retrigger: %+v", store.runs[0])
+		}
+		if got := run(t, "list-panes", "-s", "-t", "="+decoy+":", "-F", "#{pane_id}"); got != decoyPane {
+			t.Fatalf("other reviewer's pane changed: got %q, want %q", got, decoyPane)
+		}
+	})
 	t.Run("missing_record_teardown", func(t *testing.T) {
 		store := &fakeStore{review: &domain.Review{
 			ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
