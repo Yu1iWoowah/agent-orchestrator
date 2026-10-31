@@ -61,6 +61,12 @@ for (const theme of ["dark", "light"] as const) {
 					const close = page.getByRole("button", { name: "Close tab AO guarded navigation with a long page title for browser layout verification", exact: true });
 					const add = page.getByRole("button", { name: "Open new tab", exact: true });
 					await expect(close).toBeVisible();
+					await expect(close).toHaveCSS("transition-duration", "0s");
+					await close.hover();
+					await page.mouse.down();
+					await expect(close).toHaveCSS("transform", "none");
+					await page.mouse.move(0, 0);
+					await page.mouse.up();
 					const closeBox = await close.boundingBox();
 					const addBox = await add.boundingBox();
 					expect.soft(Math.abs(closeBox!.width - addBox!.width)).toBeLessThanOrEqual(0.1);

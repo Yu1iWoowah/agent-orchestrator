@@ -1329,6 +1329,29 @@ describe("BrowserPanel", () => {
 		expect(container.querySelector(".browser-panel__single-tab-title")).toBeNull();
 	});
 
+	it.each([
+		["localhost:4173/page-1", "http://localhost:4173/page-1"],
+		["https://example.test", "https://example.test/"],
+		["127.0.0.1:8111/guarded-navigation.html", "http://127.0.0.1:8111/guarded-navigation.html"],
+		["www.example.test/path/?q=1", "https://www.example.test/path/?q=1"],
+	])("hides Chromium's formatted URL title (%s)", (title, url) => {
+		hookState.tabs = [{ id: "t1", url, title, active: true }];
+		const { container } = render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(container.querySelector(".browser-panel__single-tab-title")).toBeNull();
+	});
+
+	it.each([
+		["AO guarded navigation", "http://localhost:4173/page-1"],
+		["localhost:4173/page-2", "http://localhost:4173/page-1"],
+		["localhost:4173/page-1?q=2", "http://localhost:4173/page-1?q=1"],
+		["localhost:4173/page-1?q=1/", "http://localhost:4173/page-1?q=1"],
+		["localhost:4173/page-1#two", "http://localhost:4173/page-1#one"],
+	])("keeps a title that differs from the normalized page URL (%s)", (title, url) => {
+		hookState.tabs = [{ id: "t1", url, title, active: true }];
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(screen.getByText(title)).toBeVisible();
+	});
+
 	it.each(["selected tab", "remaining close", "removed close"])("preserves focus when two browser tabs become one (%s)", async (target) => {
 		hookState.tabs = [
 			{ id: "t1", url: "https://example.test/", title: "First app", active: true },

@@ -6152,6 +6152,7 @@ html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-
 	.browser-panel__toolbar button,
 	.browser-panel__toolbar > :not(.browser-panel__url-wrap),
 	.browser-panel__url-input,
+	.browser-panel__single-tab-close,
 	.browser-panel__tab-new,
 	.browser-panel__tab-close {
 		transition: none;
@@ -6159,6 +6160,7 @@ html[data-native-browser-composition="true"][data-browser-hole="true"] .browser-
 
 	.browser-panel__toolbar button:not(:disabled):hover,
 	.browser-panel__toolbar button:not(:disabled):active,
+	.browser-panel__single-tab-close:active,
 	.browser-panel__tab-new:active,
 	.browser-panel__tab-close:not(:disabled):active {
 		transform: none;

@@ -499,9 +499,10 @@ export function BrowserPanelView({
 	const singleTab = tabs.length === 1 ? tabs[0] : undefined;
 	const singleTabLabel = singleTab ? browserTabLabel(singleTab.title, singleTab.url) : undefined;
 	const singleTabTitle = singleTab?.title.trim();
+	const normalizedSingleTabTitle = normalizeBrowserLocationLabel(singleTabTitle ?? "");
 	const showSingleTabTitle = singleTabTitle && ![
 		singleTab?.url, singleTabLabel?.subtitle, getDisplayUrl(singleTab?.url ?? ""), "about:blank",
-	].includes(singleTabTitle);
+	].some((label) => normalizeBrowserLocationLabel(label ?? "") === normalizedSingleTabTitle);
 	const singleTabCloseLabel = singleTabLabel
 		? t("browser.closeTab", { title: singleTabLabel.title }) : undefined;
 	const singleTabCloseRef = useRef<HTMLButtonElement>(null);
@@ -1126,7 +1127,7 @@ export function BrowserPanelView({
 				<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
 					<div className="browser-panel__tab-region">
 						{showSingleTabTitle ? (
-							<span className="browser-panel__single-tab-title" title={singleTabTitle}>{singleTabTitle}</span>
+							<span className="browser-panel__single-tab-title">{singleTabTitle}</span>
 						) : null}
 						{tabs.length > 1 ? (
 							<div
@@ -2012,6 +2013,13 @@ function browserActionVerb(action: string): string {
 		}
 	})();
 	return appI18n.t(key);
+}
+
+function normalizeBrowserLocationLabel(label: string): string {
+	const location = label.trim().replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+	const suffixIndex = location.search(/[?#]/);
+	const path = suffixIndex < 0 ? location : location.slice(0, suffixIndex);
+	return path.replace(/\/+$/, "") + (suffixIndex < 0 ? "" : location.slice(suffixIndex));
 }
 
 function getDisplayUrl(url: string): string {
