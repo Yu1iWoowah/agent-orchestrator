@@ -871,6 +871,35 @@ func (q *Queries) FailRolledBackConversationApprovals(ctx context.Context, arg F
 	return err
 }
 
+const failUnfinishedConversationTurn = `-- name: FailUnfinishedConversationTurn :exec
+UPDATE conversation_turns
+SET state = 'failed', error_message = ?1,
+    completed_at = ?2
+WHERE id = ?3
+  AND conversation_id = ?4
+  AND state IN ('queued', 'running')
+  AND completed_at IS NULL
+`
+
+type FailUnfinishedConversationTurnParams struct {
+	ErrorMessage   string
+	CompletedAt    sql.NullTime
+	ID             string
+	ConversationID string
+}
+
+// A refused or uncertain queue delivery cannot replace a terminal outcome
+// already committed by another controller cleanup path.
+func (q *Queries) FailUnfinishedConversationTurn(ctx context.Context, arg FailUnfinishedConversationTurnParams) error {
+	_, err := q.db.ExecContext(ctx, failUnfinishedConversationTurn,
+		arg.ErrorMessage,
+		arg.CompletedAt,
+		arg.ID,
+		arg.ConversationID,
+	)
+	return err
+}
+
 const finalizeConversationPlanActivity = `-- name: FinalizeConversationPlanActivity :exec
 UPDATE conversation_activities
 SET status = 'completed',

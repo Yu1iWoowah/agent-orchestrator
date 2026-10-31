@@ -757,6 +757,17 @@ UPDATE conversation_turns
 SET state = ?, error_message = ?, completed_at = COALESCE(completed_at, ?)
 WHERE id = ?;
 
+-- A refused or uncertain queue delivery cannot replace a terminal outcome
+-- already committed by another controller cleanup path.
+-- name: FailUnfinishedConversationTurn :exec
+UPDATE conversation_turns
+SET state = 'failed', error_message = sqlc.arg(error_message),
+    completed_at = sqlc.narg(completed_at)
+WHERE id = sqlc.arg(id)
+  AND conversation_id = sqlc.arg(conversation_id)
+  AND state IN ('queued', 'running')
+  AND completed_at IS NULL;
+
 -- A streamed assistant item may not receive item/completed when steering causes
 -- the provider to finish the turn without replaying it: the accumulated text is
 -- still the durable answer, and the enclosing turn is the terminal boundary.

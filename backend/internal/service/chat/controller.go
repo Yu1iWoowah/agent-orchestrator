@@ -2145,14 +2145,15 @@ func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID strin
 	}
 	c.mu.Unlock()
 	// The provider definitively sent nothing. Restore durable queue ownership
-	// even if the caller disconnects, without holding sendMu indefinitely.
+	// even if the caller disconnects. The cleanup deadline bounds SQL work;
+	// store writer-lock acquisition is not context-aware.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := c.store.RequeueUnsentTurn(cleanupCtx, c.conversation.ID, id, providerID, followers); err != nil {
 		reason := "unsent input could not be requeued: " + err.Error()
 		settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancelSettle()
-		settleErr := c.store.SettleTurnByID(settleCtx, id, domain.TurnStateFailed, reason, c.now())
+		settleErr := c.store.FailQueuedBatch(settleCtx, c.conversation.ID, []string{id}, reason, c.now())
 		var followersErr error
 		if len(followers) > 0 {
 			followersErr = c.store.FailQueuedBatch(settleCtx, c.conversation.ID, followers, reason, c.now())
@@ -3139,6 +3140,8 @@ func (c *Controller) projectUnit(
 	// A lifecycle event and a concurrent Send must agree on whether the root
 	// conversation is busy. Holding the same lock Send/dispatch use closes the
 	// window between the durable projection and the in-memory ownership update.
+	// A sendMu holder must not wait for pump progress or a large provider
+	// stream: the pump can be waiting for this lock.
 	lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventCompacted ||
 		(event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady)
 	if lifecycle {
@@ -3802,10 +3805,8 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if event.ControllerState != ports.ChatControllerReady || c.pendingTurnID == "" {
 			c.state = event.ControllerState
 		}
+		// Dispatch consumes the retry; failed queue reads/claims must keep it armed.
 		retryUnsent := event.ControllerState == ports.ChatControllerReady && c.pendingTurnID == "" && !c.compactionPending && c.retryUnsentOnReady
-		if retryUnsent {
-			c.retryUnsentOnReady = false
-		}
 		suppressStoppedActivity := c.suppressStoppedActivity
 		c.mu.Unlock()
 		if retryUnsent {

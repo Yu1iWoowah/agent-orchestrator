@@ -107,3 +107,34 @@ func TestRequeueUnsentBatchResetsSnapshotsAtomically(t *testing.T) {
 		t.Fatalf("later snapshot conflicts: %v", err)
 	}
 }
+
+func TestFailQueuedBatchPreservesTerminalOutcomes(t *testing.T) {
+	ctx := context.Background()
+	s, session, conversation := seededChatConversation(t)
+	states := []domain.TurnState{domain.TurnStateCompleted, domain.TurnStateFailed, domain.TurnStateInterrupted}
+	ids := []string{"turn-pending"}
+	appendBranchPrompt(t, s, session, conversation, "generation-root", "pending", "pending input")
+	for _, state := range states {
+		id := string(state)
+		appendBranchPrompt(t, s, session, conversation, "generation-root", id, id+" input")
+		if err := s.SettleTurnByID(ctx, "turn-"+id, state, "original outcome", testNow); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, "turn-"+id)
+	}
+	for _, reason := range []string{"first failure", "later failure"} {
+		if err := s.FailQueuedBatch(ctx, conversation.ID, ids, reason, testNow.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		for _, state := range states {
+			saved, err := s.TurnByID(ctx, "turn-"+string(state))
+			if err != nil || saved.State != state || saved.ErrorMessage != "original outcome" || saved.CompletedAt == nil || !saved.CompletedAt.Equal(testNow) {
+				t.Fatalf("terminal batch member overwritten: %+v %v", saved, err)
+			}
+		}
+	}
+	pending, err := s.TurnByID(ctx, "turn-pending")
+	if err != nil || pending.State != domain.TurnStateFailed || pending.ErrorMessage != "first failure" {
+		t.Fatalf("unfinished input not settled once: %+v %v", pending, err)
+	}
+}

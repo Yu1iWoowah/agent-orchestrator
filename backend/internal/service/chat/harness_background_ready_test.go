@@ -103,6 +103,11 @@ func newPausedReadyRetry(t *testing.T) (*harness, *singleFlightReadyConversation
 	case <-time.After(5 * time.Second):
 		t.Fatal("Ready did not claim the old input")
 	}
+	if !h.ctrl.SendMuHeldForTest() {
+		st.unblock()
+		awaitReadyRetryFence(t, h)
+		t.Fatal("Ready dispatch does not hold sendMu")
+	}
 	return h, conv, st, queued
 }
 

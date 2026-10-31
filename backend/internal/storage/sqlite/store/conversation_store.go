@@ -2617,14 +2617,15 @@ func (s *Store) ReleaseQueuedBatch(ctx context.Context, conversationID string, t
 	})
 }
 
-// FailQueuedBatch retains uncertain source messages without replaying them.
+// FailQueuedBatch retains uncertain source messages without replaying them,
+// preserving terminal outcomes already committed by another cleanup path.
 func (s *Store) FailQueuedBatch(ctx context.Context, conversationID string, turnIDs []string, reason string, now time.Time) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "fail queued batch", func(q *gen.Queries) error {
 		for _, id := range turnIDs {
-			if err := q.SettleConversationTurn(ctx, gen.SettleConversationTurnParams{
-				State: domain.TurnStateFailed, ErrorMessage: reason,
+			if err := q.FailUnfinishedConversationTurn(ctx, gen.FailUnfinishedConversationTurnParams{
+				ErrorMessage: reason, ConversationID: conversationID,
 				CompletedAt: sql.NullTime{Time: now, Valid: true}, ID: id,
 			}); err != nil {
 				return fmt.Errorf("fail queued batch turn %s: %w", id, err)
