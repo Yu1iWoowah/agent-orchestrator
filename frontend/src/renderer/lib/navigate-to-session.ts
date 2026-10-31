@@ -31,6 +31,13 @@ export function sessionNavigateTarget(projectId: string | undefined, sessionId: 
 	};
 }
 
+/** Project-role entry points follow handovers; explicit session links stay fixed. */
+export function orchestratorNavigateTarget(projectId: string, sessionId: string, host: HostId = LOCAL_HOST) {
+	return host === LOCAL_HOST
+		? { to: "/projects/$projectId/sessions/$sessionId" as const, params: { projectId, sessionId }, search: { followOrchestrator: true as const } }
+		: { to: "/host/$hostId/project/$projectId/session/$sessionId" as const, params: { hostId: host, projectId, sessionId }, search: { followOrchestrator: true as const } };
+}
+
 export function useNavigateToSession(): (projectId: string | undefined, sessionId: string, host?: HostId) => void {
 	const navigate = useNavigate();
 	return useCallback(

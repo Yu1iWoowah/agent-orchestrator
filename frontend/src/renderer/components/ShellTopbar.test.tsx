@@ -346,7 +346,7 @@ describe("ShellTopbar status pill", () => {
 		expect(screen.getByRole("button", { name: "Archive session" })).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /open in.*editor/i })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Open orchestrator" }));
-		expect(navigateMock).toHaveBeenCalledWith({ to: "/host/$hostId/project/$projectId/session/$sessionId", params: { hostId: "box-a", projectId: "proj-1", sessionId: "orch-1" } });
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/host/$hostId/project/$projectId/session/$sessionId", params: { hostId: "box-a", projectId: "proj-1", sessionId: "orch-1" }, search: { followOrchestrator: true } });
 		view.unmount();
 		renderTopbarSessions([{ ...orchestrator, hostId: "box-a" }], orchestrator.id, true);
 		await userEvent.click(screen.getByRole("button", { name: "New task" }));
@@ -556,6 +556,7 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "orch-1" },
+			search: { followOrchestrator: true },
 		});
 	});
 
@@ -580,6 +581,7 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "orch-1" },
+			search: { followOrchestrator: true },
 		});
 	});
 

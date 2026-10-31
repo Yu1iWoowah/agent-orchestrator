@@ -1,3 +1,4 @@
+import { orchestratorNavigateTarget } from "../lib/navigate-to-session";
 import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, ChevronRight, CircleAlert, Folder, Loader2 } from "lucide-react";
@@ -561,7 +562,7 @@ export function CommandPalette() {
 			if (blockedByRestart(projectId)) return;
 			const orchestrator = findProjectOrchestrator(workspaces, projectId);
 			if (orchestrator) {
-				navigateToTarget(sessionRoute(projectId, orchestrator.id));
+				void navigate(orchestratorNavigateTarget(projectId, orchestrator.id));
 				closePalette();
 				return;
 			}
@@ -572,7 +573,7 @@ export function CommandPalette() {
 			if (workspace?.kind === "cloud") {
 				const sessionId = await spawnCloudOrchestrator(queryClient, projectId);
 				await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
-				navigateToTarget(sessionRoute(projectId, sessionId));
+				void navigate(orchestratorNavigateTarget(projectId, sessionId));
 				if (isCurrentRun()) closePalette();
 				return;
 			}
@@ -585,11 +586,11 @@ export function CommandPalette() {
 			}
 			const sessionId = await spawnOrchestrator(projectId, "command_palette");
 			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			navigateToTarget(sessionRoute(projectId, sessionId));
+			void navigate(orchestratorNavigateTarget(projectId, sessionId));
 			// A palette reopened while the spawn ran stays open.
 			if (isCurrentRun()) closePalette();
 		},
-		[workspaces, navigateToTarget, queryClient, closePalette, blockedByRestart, sessionRoute],
+		[workspaces, navigateToTarget, queryClient, closePalette, blockedByRestart, navigate],
 	);
 
 	const resumeSession = useCallback(

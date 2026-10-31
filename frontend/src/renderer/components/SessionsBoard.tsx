@@ -52,7 +52,7 @@ import { labelForHost } from "../lib/host-clients";
 import { useConnectedHosts } from "../hooks/useHostConnection";
 import { LOCAL_HOST, refKey, sessionUiKey } from "../lib/hosts";
 import { useShellMaybe } from "../lib/shell-context";
-import { sessionNavigateTarget } from "../lib/navigate-to-session";
+import { orchestratorNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
 import { ProjectTerminationFeedback } from "./ShellTopbar";
 import { ProjectBoardActions } from "./ProjectBoardActions";
 import { useDiagnosticsEnabled, usePressureState, useSessionMemory } from "../hooks/useSessionMemory";
@@ -224,7 +224,7 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 			try {
 				const sessionId = await openRemoteOrchestrator(hostId, projectId, orchestrator, undefined, true, "restart");
 				await queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
-				if (activeScopeRef.current === scopeKey) void navigate(sessionNavigateTarget(projectId, sessionId, hostId));
+				if (activeScopeRef.current === scopeKey) void navigate(orchestratorNavigateTarget(projectId, sessionId, hostId));
 			} catch (error) {
 				setOrchestratorStartupError(projectId, error instanceof Error ? error.message : t("shell.couldNotSpawn"), hostId);
 			} finally {

@@ -3922,6 +3922,7 @@ func (w *conversationPageWalk) oldest() int64 {
 func (s *Store) conversationPage(
 	ctx context.Context,
 	conversationID string,
+	rootBranchID string,
 	beforeSequence, visibleAfterSequence, limit int64,
 ) (messages []gen.SelectConversationMessagesPageRow, activities []gen.ConversationActivity, oldest int64, hasMore bool, err error) {
 	walk := &conversationPageWalk{
@@ -3932,7 +3933,7 @@ func (s *Store) conversationPage(
 			sequence: func(row gen.SelectConversationMessagesPageRow) int64 { return row.ConversationMessage.Sequence },
 			read: func(before, n int64) ([]gen.SelectConversationMessagesPageRow, error) {
 				rows, err := s.qr.SelectConversationMessagesPage(ctx, gen.SelectConversationMessagesPageParams{
-					ConversationID: conversationID, BeforeSequence: before, PageLimit: n,
+					ConversationID: conversationID, RootBranchID: rootBranchID, BeforeSequence: before, PageLimit: n,
 				})
 				if err != nil {
 					return nil, fmt.Errorf("select message page: %w", err)
@@ -3945,7 +3946,7 @@ func (s *Store) conversationPage(
 			sequence: func(row gen.ConversationActivity) int64 { return row.Sequence },
 			read: func(before, n int64) ([]gen.ConversationActivity, error) {
 				rows, err := s.qr.SelectConversationActivitiesPage(ctx, gen.SelectConversationActivitiesPageParams{
-					ConversationID: conversationID, BeforeSequence: before, PageLimit: n,
+					ConversationID: conversationID, RootBranchID: rootBranchID, BeforeSequence: before, PageLimit: n,
 				})
 				if err != nil {
 					return nil, fmt.Errorf("select activity page: %w", err)
@@ -4075,6 +4076,11 @@ func (s *Store) LoadConversationSnapshotPage(
 			}
 		}
 	}
+	return s.loadConversationSnapshotPage(ctx, conv, "", s.conversationHistoryPresentation(ctx, conversationID), beforeSequence, limit)
+}
+
+func (s *Store) loadConversationSnapshotPage(ctx context.Context, conv gen.Conversation, rootBranchID string, presentation conversationHistoryPresentation, beforeSequence, limit int64) (ConversationSnapshot, error) {
+	conversationID := conv.ID
 	if limit <= 0 {
 		limit = DefaultConversationPageSize
 	}
@@ -4088,7 +4094,6 @@ func (s *Store) LoadConversationSnapshotPage(
 	if err != nil {
 		return ConversationSnapshot{}, err
 	}
-	presentation := s.conversationHistoryPresentation(ctx, conversationID)
 	if beforeSequence <= visibleAfterSequence {
 		snapshot := ConversationSnapshot{
 			Conversation:                     conversationToDomain(conv),
@@ -4102,13 +4107,14 @@ func (s *Store) LoadConversationSnapshotPage(
 		}
 		return snapshot, nil
 	}
-	messageRows, activityRows, oldest, hasMore, err := s.conversationPage(ctx, conversationID, beforeSequence, visibleAfterSequence, limit)
+	messageRows, activityRows, oldest, hasMore, err := s.conversationPage(ctx, conversationID, rootBranchID, beforeSequence, visibleAfterSequence, limit)
 	if err != nil {
 		return ConversationSnapshot{}, err
 	}
 
 	turnRows, err := s.qr.SelectConversationTurnsPage(ctx, gen.SelectConversationTurnsPageParams{
 		ConversationID: conversationID,
+		RootBranchID:   rootBranchID,
 		OldestSequence: oldest,
 		BeforeSequence: beforeSequence,
 	})

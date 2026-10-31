@@ -17,7 +17,7 @@ import { useUiStore } from "../stores/ui-store";
 import { useCanResumeAgent } from "./useCanResumeAgent";
 import { openRemoteOrchestrator } from "../lib/remote-orchestrator";
 import { sessionUiKey } from "../lib/hosts";
-import { sessionNavigateTarget } from "../lib/navigate-to-session";
+import { orchestratorNavigateTarget } from "../lib/navigate-to-session";
 import { useConnectedHosts } from "./useHostConnection";
 
 export function useProjectOrchestratorAction({
@@ -88,7 +88,7 @@ export function useProjectOrchestratorAction({
 			// shimmer while the resume runs, instead of the click waiting for it.
 			const earlyResume = !hostId && resumableOrchestrator ? resumeOrchestrator(resumableOrchestrator.id) : undefined;
 			if (earlyResume && resumableOrchestrator && activeRoute.current === routeKey) {
-				void navigate(sessionNavigateTarget(projectId, resumableOrchestrator.id, hostId));
+				void navigate(orchestratorNavigateTarget(projectId, resumableOrchestrator.id, hostId));
 			}
 			const openedSessionId = hostId
 				? await openRemoteOrchestrator(hostId, projectId, orchestrator, mode, false, source)
@@ -104,7 +104,7 @@ export function useProjectOrchestratorAction({
 			// A completed request belongs to its original route, even if this
 			// component survived a project or session change while it was pending.
 			if (!earlyResume && activeRoute.current === routeKey) {
-				void navigate(sessionNavigateTarget(projectId, openedSessionId, hostId));
+				void navigate(orchestratorNavigateTarget(projectId, openedSessionId, hostId));
 			}
 		},
 		onError: (cause) => {
@@ -129,7 +129,7 @@ export function useProjectOrchestratorAction({
 		} else if (resumableOrchestrator) {
 			mutation.mutate(mode);
 		} else if (orchestrator) {
-			void navigate(sessionNavigateTarget(projectId, orchestrator.id, hostId));
+			void navigate(orchestratorNavigateTarget(projectId, orchestrator.id, hostId));
 		} else if (project?.kind !== CLOUD_PROJECT_KIND && !hasConfiguredOrchestratorAgent(project)) {
 			if (project) useUiStore.getState().openProjectSettings(projectId, hostId);
 		} else {

@@ -1,13 +1,11 @@
+import { orchestratorNavigateTarget } from "./navigate-to-session";
 import type { QueryClient } from "@tanstack/react-query";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import type { SessionMode } from "../types/conversation";
 import { OrchestratorSpawnError, spawnOrchestrator } from "./spawn-orchestrator";
 import type { OrchestratorReplacementFailure } from "../stores/ui-store";
 
-type NavigateToSession = (options: {
-	to: "/projects/$projectId/sessions/$sessionId";
-	params: { projectId: string; sessionId: string };
-}) => unknown;
+type NavigateToSession = (options: ReturnType<typeof orchestratorNavigateTarget>) => unknown;
 
 type RestartProjectOrchestratorOptions = {
 	projectId: string;
@@ -52,10 +50,7 @@ export async function restartProjectOrchestrator({
 		await refreshWorkspaceState(queryClient);
 		setOrchestratorReplacementError(projectId, null);
 		if (activeElement instanceof HTMLElement) activeElement.blur();
-		void navigate({
-			to: "/projects/$projectId/sessions/$sessionId",
-			params: { projectId, sessionId },
-		});
+		void navigate(orchestratorNavigateTarget(projectId, sessionId));
 	} catch (error) {
 		await refreshWorkspaceState(queryClient);
 		setOrchestratorReplacementError(projectId, {

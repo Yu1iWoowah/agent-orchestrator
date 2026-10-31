@@ -838,6 +838,17 @@ describe("Sidebar", () => {
 	// The sidebar owns its own openOrchestrator, separate from
 	// useProjectOrchestratorAction. Clicking Orchestrator on an orchestrator whose
 	// agent exited must resume it, not navigate to the dead terminal.
+	it("marks the project orchestrator entry for following future handovers", async () => {
+		const user = userEvent.setup();
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [exitedOrchestrator] }] });
+		await user.click(screen.getByRole("button", { name: "Open Project One orchestrator" }));
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "proj-1-orch" },
+			search: { followOrchestrator: true },
+		});
+	});
+
 	it("resumes an exited orchestrator instead of opening its dead terminal", async () => {
 		const user = userEvent.setup();
 		renderSidebar({ workspaces: [{ ...workspace, sessions: [exitedOrchestrator] }] });
@@ -861,6 +872,7 @@ describe("Sidebar", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "proj-1-orch" },
+			search: { followOrchestrator: true },
 		});
 		await waitFor(() => expect(console.error).toHaveBeenCalledWith("Failed to resume orchestrator:", error));
 		expect(useUiStore.getState().globalToast).toMatchObject({
@@ -888,6 +900,7 @@ describe("Sidebar", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "proj-1-orch" },
+			search: { followOrchestrator: true },
 		});
 	});
 
@@ -1495,6 +1508,7 @@ describe("Sidebar", () => {
 		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: orchestrator.id },
+			search: { followOrchestrator: true },
 		}));
 		expect(spawnMock).toHaveBeenCalledTimes(existing ? 0 : 1);
 	});
@@ -1587,6 +1601,7 @@ describe("Sidebar", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "proj-1-orc" },
+			search: { followOrchestrator: true },
 		});
 		expect(screen.getByLabelText("Open fix login")).toBeInTheDocument();
 		expect(screen.getByText("Project One").closest("button")).toHaveAttribute("aria-expanded", "true");
