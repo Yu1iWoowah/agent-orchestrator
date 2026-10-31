@@ -195,7 +195,7 @@ func TestDeferredBindFailurePreservesUnsentInput(t *testing.T) {
 			})
 			conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "previous", ProviderInitiated: true})
 			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Turns) == 1 })
-			fault.armed.Store(true)
+			fault.failAlways.Store(true)
 			texts := []string{"keep lead"}
 			if mode == "batch" {
 				texts = append(texts, "keep follower")
@@ -226,9 +226,10 @@ func TestDeferredBindFailurePreservesUnsentInput(t *testing.T) {
 					t.Fatalf("Bind failure stranded unsent input: state=%s snapshot=%+v input=%q provider=%q started=%v err=%v", turn.State, turn.AgentSettings, turn.ProviderInputText, turn.ProviderTurnID, turn.StartedAt, err)
 				}
 			}
-			if conv.starts.Load() != 0 || conv.discards.Load() != 1 {
+			if conv.starts.Load() != 0 || conv.discards.Load() != 2 {
 				t.Fatalf("failed binding crossed provider boundary: starts=%d discards=%d", conv.starts.Load(), conv.discards.Load())
 			}
+			fault.failAlways.Store(false)
 			h.advance(time.Second)
 			conv.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 			conv.emit(ports.ChatEvent{Kind: ports.ChatEventActivityCompleted, ProviderTurnID: "previous", ProviderItemID: "ready-fence", ActivityKind: domain.ActivityKindSystem, ActivityStatus: domain.ActivityStatusCompleted, Summary: "ready-fence"})

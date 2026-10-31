@@ -19,6 +19,8 @@ type readyRetryFaultStore struct {
 	chatsvc.Store
 	atClaim        bool
 	armed, faulted atomic.Bool
+	persistent     bool
+	attempts       atomic.Int32
 	requeued       chan struct{}
 	once           sync.Once
 }
@@ -30,15 +32,26 @@ func (s *readyRetryFaultStore) RequeueUnsentTurn(ctx context.Context, cid, id, p
 	}
 	return err
 }
+func (s *readyRetryFaultStore) fail() bool {
+	if !s.armed.Load() || (!s.persistent && !s.armed.CompareAndSwap(true, false)) {
+		return false
+	}
+	s.faulted.Store(true)
+	// Let an over-retrying implementation return so the budget assertion fails.
+	if s.attempts.Add(1) > 2 {
+		s.armed.Store(false)
+	}
+	return true
+}
 func (s *readyRetryFaultStore) ListQueuedBatch(ctx context.Context, cid string, limit int) ([]domain.QueuedTurn, error) {
-	if !s.atClaim && s.armed.CompareAndSwap(true, false) {
+	if !s.atClaim && s.fail() {
 		s.faulted.Store(true)
 		return nil, errors.New("ready-list-injected")
 	}
 	return s.Store.ListQueuedBatch(ctx, cid, limit)
 }
 func (s *readyRetryFaultStore) ClaimQueuedBatch(ctx context.Context, cid string, dispatch bool, limit int, at time.Time) ([]domain.QueuedTurn, error) {
-	if s.atClaim && s.armed.CompareAndSwap(true, false) {
+	if s.atClaim && s.fail() {
 		s.faulted.Store(true)
 		return nil, errors.New("ready-claim-injected")
 	}
@@ -83,12 +96,8 @@ func TestHarnessBackgroundReadyRetriesAfterTransientStoreFailure(t *testing.T) {
 				if err != nil || !st.faulted.Load() {
 					t.Fatalf("store failure not exercised: %+v %v", saved, err)
 				}
-				if attempt == 1 {
-					if saved.State != domain.TurnStateQueued || len(conv.sentMessages()) != 0 {
-						t.Fatalf("failed retry lost input: %+v sent=%+v", saved, conv.sentMessages())
-					}
-				} else if saved.State != domain.TurnStateRunning || len(conv.sentMessages()) != 1 {
-					t.Fatalf("second Ready did not retry after transient %s error: state=%s sent=%+v", name, saved.State, conv.sentMessages())
+				if saved.State != domain.TurnStateRunning || len(conv.sentMessages()) != 1 {
+					t.Fatalf("Ready attempt %d did not recover once after transient %s error: state=%s sent=%+v", attempt, name, saved.State, conv.sentMessages())
 				}
 			}
 			if messages := conv.sentMessages(); messages[0].Text != "preserved retry" {
