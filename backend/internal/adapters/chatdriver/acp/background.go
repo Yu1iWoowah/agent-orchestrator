@@ -79,7 +79,7 @@ func (c *conversation) claudeBackgroundEvent(raw json.RawMessage) error {
 		if startID != "" {
 			startID += ":start"
 		}
-		c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id, ProviderEventID: startID, ProviderInitiated: true})
+		c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id, ProviderConversationID: c.ProviderConversationID(), ProviderEventID: startID, ProviderInitiated: true})
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
 		return nil
 	}
@@ -118,7 +118,7 @@ func (c *conversation) claudeBackgroundEvent(raw json.RawMessage) error {
 	} else if strings.TrimSpace(message.StopReason) == "cancelled" {
 		state = domain.TurnStateInterrupted
 	}
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: id, ProviderEventID: eventID, TurnState: state, Err: failure})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: id, ProviderConversationID: c.ProviderConversationID(), ProviderEventID: eventID, TurnState: state, Err: failure})
 	c.mu.Lock()
 	released := c.activeTurn == id
 	if released {

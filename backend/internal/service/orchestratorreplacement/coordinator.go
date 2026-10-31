@@ -274,6 +274,9 @@ func (s *Service) wait(ctx context.Context, op domain.OrchestratorReplacement, p
 			failure.Code, failure.Message = "ORCHESTRATOR_HANDOFF_SUCCESSOR_STOP_UNCERTAIN", "Successor shutdown cannot be positively confirmed for the current owner"
 		}
 	}
+	if failure.Code == "TRANSCRIPT_PROVENANCE_UNKNOWN" && op.SourceStopIntentAt == nil && op.SourceStop == nil && op.SourceRetiredAt == nil {
+		failure.Retryable = false
+	}
 	if retry := op.RetainedRetry; retry != nil && retry.Phase == op.Phase && retry.Failure == failure {
 		fingerprint, err := domain.ReplacementReconciliationHash(op)
 		if err != nil {
@@ -320,6 +323,9 @@ func (s *Service) advance(ctx context.Context, op domain.OrchestratorReplacement
 			return op, err
 		}
 		if _, err := transcriptexport.RequiredNativeEpochs(snapshot); err != nil {
+			return s.wait(ctx, op, domain.ReplacementAwaitingTranscript, op.Phase, err)
+		}
+		if err := transcriptexport.VerifyNativeTurnOwnership(snapshot); err != nil {
 			return s.wait(ctx, op, domain.ReplacementAwaitingTranscript, op.Phase, err)
 		}
 		op.Phase, op.Error = domain.ReplacementWaitingSourceIdle, nil

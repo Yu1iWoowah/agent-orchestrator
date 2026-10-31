@@ -174,10 +174,6 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 		}
 		m.Segments = append(m.Segments, seg)
 	}
-	branches := map[string]domain.ConversationBranch{}
-	for _, b := range s.Branches {
-		branches[b.ID] = b
-	}
 	inputs, members, e := batchInputs(s)
 	if e != nil {
 		return out, e
@@ -188,7 +184,10 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 	}
 	childDispatch := map[string]bool{}
 	initialCaptured := map[string]bool{}
-	index := domain.IndexNativeThreadEvidence(s.NativeThreads)
+	owners, e := verifyTurnOwnership(s, epochs, members)
+	if e != nil {
+		return out, e
+	}
 	aoOnly := map[string]domain.TurnState{}
 	for _, turn := range s.Turns {
 		if members[turn.ID] != "" {
@@ -213,27 +212,15 @@ func Build(ctx context.Context, s domain.TranscriptSourceSnapshot, cuts []EpochC
 		if !turn.State.Terminal() {
 			return out, incomplete("TRANSCRIPT_TAIL_UNSETTLED", "AO source still has an active turn")
 		}
-		root := branches[turn.BranchID].ProviderConversationID
-		provenance := index.Classify(turn.BranchID, turn.ProviderTurnID, root)
-		owner := index[domain.NativeThreadTurnKey{BranchID: turn.BranchID, ProviderTurnID: turn.ProviderTurnID}]
-		if provenance == domain.NativeThreadChild {
-			if _, ownedEpoch := epochs[owner]; ownedEpoch {
-				root = owner
-				provenance = domain.NativeThreadMain
-			} else if !confirmedChild(s, root, owner) {
-				provenance = domain.NativeThreadUnknown
-			}
-		}
+		owner := owners[turn.ID]
+		root, provenance := owner.nativeID, owner.provenance
 		if provenance == domain.NativeThreadMain && childIdentities[root][turn.ProviderTurnID] {
 			return out, incomplete("TRANSCRIPT_PROVENANCE_UNKNOWN", "durable main ownership conflicts with native child identity")
 		}
-		switch provenance {
-		case domain.NativeThreadChild:
+		if provenance == domain.NativeThreadChild {
 			m.ExcludedChildTurns++
 			childDispatch[turn.ID] = true
 			continue
-		case domain.NativeThreadUnknown:
-			return out, incomplete("TRANSCRIPT_PROVENANCE_UNKNOWN", "AO turn lacks unambiguous native-thread ownership")
 		}
 
 		initialCaptured[turn.ID] = turn.ProviderInputText != ""

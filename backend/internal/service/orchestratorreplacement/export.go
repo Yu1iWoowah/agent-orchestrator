@@ -33,6 +33,15 @@ func (s *Service) export(ctx context.Context, op domain.OrchestratorReplacement)
 			if op.Error != nil && op.Error.Code == "ORCHESTRATOR_HANDOFF_SOURCE_BUSY" && s.deps.Now().Before(op.UpdatedAt.Add(5*time.Second)) {
 				return op, nil
 			}
+			// Recheck DB ownership after preparation and intake freezing: new
+			// settled turns may have appeared since the initial preflight.
+			snapshot, err := s.deps.Store.LoadTranscriptSourceSnapshot(ctx, op.SourceSessionID)
+			if err != nil {
+				return op, err
+			}
+			if err := transcriptexport.VerifyNativeTurnOwnership(snapshot); err != nil {
+				return op, err
+			}
 			now := s.deps.Now().UTC()
 			op.SourceStopIntentAt = &now
 			return s.save(ctx, op)

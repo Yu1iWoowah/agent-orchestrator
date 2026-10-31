@@ -5,12 +5,19 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	replacement "github.com/aoagents/agent-orchestrator/backend/internal/service/orchestratorreplacement"
 )
 
@@ -304,5 +311,32 @@ func TestReplacementResetRereadsCommittedAttemptAfterReplyLoss(t *testing.T) {
 				t.Fatal("replay repeated reset", err)
 			}
 		})
+	}
+}
+
+func TestReplacementRetryUnknownPreparationReturnsConflictAndCanCancel(t *testing.T) {
+	x := preparedExportFixture(t)
+	ctx := context.Background()
+	x.f.runtime.observationErr = &ports.NativeTranscriptError{Code: "TRANSCRIPT_PROVENANCE_UNKNOWN", Reason: "private preparation native evidence missing"}
+	op, err := x.service().Advance(ctx, x.operation.ID)
+	if err != nil || op.Phase != domain.ReplacementAwaitingHandoff || op.Error == nil || op.Error.Code != "TRANSCRIPT_PROVENANCE_UNKNOWN" {
+		t.Fatalf("missing preparation evidence did not retain source: phase=%s err=%v failure=%+v", op.Phase, err, op.Error)
+	}
+	router := chi.NewRouter()
+	(&controllers.OrchestratorReplacementController{Svc: x.service()}).Register(router)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/orchestrator/replacements/"+op.ID+"/retry", nil))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"TRANSCRIPT_PROVENANCE_UNKNOWN"`) || !strings.Contains(response.Body.String(), "cancel") || strings.Contains(response.Body.String(), "private preparation") {
+		t.Errorf("retry must explain missing native provenance safely: status=%d body=%s", response.Code, response.Body.String())
+	}
+	current, err := x.service().Get(ctx, op.ID)
+	if err != nil || current.Revision != op.Revision || current.SourceStopIntentAt != nil || x.f.runtime.preparations != 1 || x.f.runtime.quiescences != 0 {
+		t.Fatalf("retry mutated unverified preparation: revision=%d err=%v sends=%d stops=%d", current.Revision, err, x.f.runtime.preparations, x.f.runtime.quiescences)
+	}
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/orchestrator/replacements/"+op.ID+"/cancel", nil))
+	source, _, err := x.f.store.GetSession(ctx, op.SourceSessionID)
+	if response.Code != http.StatusAccepted || err != nil || source.IsTerminated || x.f.runtime.quiescences != 0 {
+		t.Fatalf("safe cancellation unavailable: status=%d err=%v", response.Code, err)
 	}
 }

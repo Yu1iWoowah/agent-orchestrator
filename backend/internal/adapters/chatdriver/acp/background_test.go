@@ -22,7 +22,7 @@ import (
 func TestClaudeBackgroundCycleHasDurableTurnBoundaries(t *testing.T) {
 	c := &conversation{
 		claudeBackgroundTurns: true,
-		sessionID:             "native", log: slog.New(slog.DiscardHandler),
+		sessionID:             "native", reportedSessionID: "native", log: slog.New(slog.DiscardHandler),
 		events:   make(chan ports.ChatEvent, 32),
 		messages: make(map[string]string), thoughts: make(map[string]string),
 		nestedMessages: make(map[string]nestedMessageState), tools: make(map[string]*toolState),
@@ -43,12 +43,18 @@ func TestClaudeBackgroundCycleHasDurableTurnBoundaries(t *testing.T) {
 		event := <-c.events
 		switch event.Kind {
 		case ports.ChatEventTurnStarted:
+			if event.ProviderConversationID != "native" {
+				t.Errorf("background start owner = %q", event.ProviderConversationID)
+			}
 			started = event.ProviderTurnID
 		case ports.ChatEventMessageDelta:
 			if started == "" || event.ProviderTurnID != started {
 				t.Fatalf("background output has no preceding correlated turn: %+v", event)
 			}
 		case ports.ChatEventTurnCompleted:
+			if event.ProviderConversationID != "native" {
+				t.Errorf("background completion owner = %q", event.ProviderConversationID)
+			}
 			completed = event.ProviderTurnID
 		}
 	}

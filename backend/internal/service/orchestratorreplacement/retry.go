@@ -9,6 +9,9 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// ProvenanceRecoveryGuidance is safe to expose without native paths or payloads.
+const ProvenanceRecoveryGuidance = "Native turn ownership evidence is missing or conflicting. Retry cannot reconstruct historical evidence. Before source shutdown, cancel this operation and use a manual handoff; preserve the source and its evidence."
+
 // Retry preserves one operation, its evidence and its bound successor. Before
 // source shutdown it may archive a failed attempt under a fresh preparation.
 func (s *Service) Retry(ctx context.Context, id string) (domain.OrchestratorReplacement, error) {
@@ -66,6 +69,10 @@ func (s *Service) resetBeforeStop(ctx context.Context, id string, cancel bool) (
 			}
 			observed, err := s.deps.Runtime.ObserveReplacementSource(locked, op)
 			if err != nil {
+				var native *ports.NativeTranscriptError
+				if errors.As(err, &native) && native.Code == "TRANSCRIPT_PROVENANCE_UNKNOWN" {
+					return apierr.Conflict(native.Code, ProvenanceRecoveryGuidance, nil)
+				}
 				return err
 			}
 			if observed.Owner != op.SourceOwner || observed.NativeID != sourceNativeID(op.SourceOwner) || observed.Provenance != domain.NativeThreadMain || observed.ObservedAt.IsZero() || (observed.State != ports.ChatControllerReady && observed.State != ports.ChatControllerBusy) {
