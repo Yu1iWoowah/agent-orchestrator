@@ -13,10 +13,22 @@ import (
 // prove append-only history, so this durable pass also visits unrelated lines.
 func (s *Service) verifyPrefix(ctx context.Context, f io.ReadSeeker, b *domain.GuardianBatch, records int, bytes int64) error {
 	c := &b.Cursor
+	if !c.ReplayDiscarding {
+		partial, err := startsInsideLine(ctx, f, c.ReplayOffset)
+		if err != nil {
+			return err
+		}
+		c.ReplayDiscarding = partial
+		if partial && c.ReplayOffset > c.ReadStartOffset {
+			c.ReplayAgain = true
+		}
+	}
 	if _, err := f.Seek(c.ReplayOffset, io.SeekStart); err != nil {
 		return err
 	}
-	reader := bufio.NewReaderSize(io.LimitReader(f, c.ReplayUntil-c.ReplayOffset), maxLine+1)
+	// A rewrite can move the saved endpoint into a line. Stop after that line,
+	// under the existing budgets, rather than manufacturing EOF at the old byte.
+	reader := bufio.NewReaderSize(f, maxLine+1)
 	probe := domain.GuardianBatch{Owner: b.Owner, Thread: b.Thread, Cursor: *c, Anomalies: map[domain.GuardianCode]int64{}}
 	for n := 0; n < records && bytes > 0 && c.ReplayOffset < c.ReplayUntil; n++ {
 		if err := ctx.Err(); err != nil {
@@ -26,12 +38,15 @@ func (s *Service) verifyPrefix(ctx context.Context, f io.ReadSeeker, b *domain.G
 		line, err := reader.ReadSlice('\n')
 		bytes -= int64(len(line))
 		if errors.Is(err, io.EOF) {
+			end := c.ReplayOffset + int64(len(line))
 			if c.ReplayDiscarding {
 				c.ReplayOffset += int64(len(line))
 			}
-			if c.ReplayOffset < c.ReplayUntil {
+			if end < c.ReplayUntil {
 				probe.Anomalies[domain.GuardianSourceTruncated]++
 				probe.Anomalies[domain.GuardianCoverageGap]++
+			} else if len(line) > 0 && !c.ReplayDiscarding {
+				probe.Anomalies[domain.GuardianPartialLine]++
 			}
 			break
 		}
@@ -67,6 +82,21 @@ func (s *Service) verifyPrefix(ctx context.Context, f io.ReadSeeker, b *domain.G
 		finishRevalidation(c)
 	}
 	return nil
+}
+
+func startsInsideLine(ctx context.Context, f io.ReadSeeker, offset int64) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if offset == 0 {
+		return false, nil
+	}
+	if _, err := f.Seek(offset-1, io.SeekStart); err != nil {
+		return false, err
+	}
+	var previous [1]byte
+	_, err := io.ReadFull(f, previous[:])
+	return previous[0] != '\n', err
 }
 
 func finishRevalidation(c *domain.GuardianCursor) {

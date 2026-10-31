@@ -429,6 +429,16 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 	if b.Cursor.ReplayOffset > 0 {
 		revalidationEnd = 0
 	}
+	if !b.Cursor.Discarding {
+		partial, err := startsInsideLine(ctx, f, b.Cursor.Offset)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
+		}
+		b.Cursor.Discarding = partial
+	}
 	if _, err := f.Seek(b.Cursor.Offset, io.SeekStart); err != nil {
 		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
