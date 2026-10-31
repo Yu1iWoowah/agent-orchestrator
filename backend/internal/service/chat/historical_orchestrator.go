@@ -25,8 +25,12 @@ func (s *Service) snapshotWithoutCurrentConversation(ctx context.Context, record
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("historical conversation for %s: %w", record.ID, err)
 	}
-	for i := range rows.Turns {
-		rows.Turns[i].ProviderTurnID = ""
+	for _, turn := range rows.Turns {
+		if !turn.State.Terminal() {
+			continue
+		}
+		turn.ProviderTurnID = ""
+		snapshot.Turns = append(snapshot.Turns, turn)
 	}
 	snapshot.Conversation = domain.ConversationRecord{
 		ID: rows.Conversation.ID, Scope: rows.Conversation.Scope, ProjectID: record.ProjectID,
@@ -35,7 +39,7 @@ func (s *Service) snapshotWithoutCurrentConversation(ctx context.Context, record
 	snapshot.ActiveBranch = rows.ActiveBranch
 	snapshot.EditFloorSequence = rows.Conversation.LatestSequence
 	snapshot.Controller = ports.ChatControllerStopped
-	snapshot.Turns, snapshot.Messages, snapshot.Activities = rows.Turns, rows.Messages, rows.Activities
+	snapshot.Messages, snapshot.Activities = rows.Messages, rows.Activities
 	snapshot.OldestSequence, snapshot.HasMoreBefore = rows.OldestSequence, rows.HasMoreBefore
 	return snapshot, nil
 }

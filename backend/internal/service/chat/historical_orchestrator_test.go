@@ -122,3 +122,104 @@ func TestRetiredOrchestratorSnapshotKeepsItsOwnTranscript(t *testing.T) {
 		t.Fatalf("current history = %+v", current.Messages)
 	}
 }
+
+func TestRetiredOrchestratorSnapshotOmitsAdoptedSuccessorLiveTurn(t *testing.T) {
+	for _, state := range []domain.TurnState{domain.TurnStateQueued, domain.TurnStateRunning} {
+		t.Run(string(state), func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().UTC()
+			st, oldID := openProvisioningStore(t, domain.SessionProvisionReady)
+			old, _, err := st.GetSession(ctx, oldID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old.Kind = domain.KindOrchestrator
+			old.Metadata.ControllerGeneration = "old-generation"
+			old.Metadata.ProviderConversationID = "old-native"
+			if err := st.UpdateSession(ctx, old); err != nil {
+				t.Fatal(err)
+			}
+			conv, err := st.CreateConversation(ctx, "first-project-chat", domain.ConversationScopeProject, testProject, oldID, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.AppendUserMessage(ctx, conv.ID, oldID, "old-generation", domain.ConversationMessage{ID: "old-message", Origin: domain.MessageOriginHuman, Text: "source prompt"}, "old-turn", now); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SettleTurnByID(ctx, "old-turn", domain.TurnStateCompleted, "", now); err != nil {
+				t.Fatal(err)
+			}
+			old.IsTerminated = true
+			if err := st.UpdateSession(ctx, old); err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := st.CreateSession(ctx, domain.SessionRecord{
+				ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessClaudeCode,
+				Mode: domain.SessionModeChat, ProvisionState: domain.SessionProvisionProvisioning,
+				CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queue, err := st.CreateConversation(ctx, "provisioning-chat", domain.ConversationScopeSession, testProject, fresh.ID, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.AppendUserMessage(ctx, queue.ID, fresh.ID, "", domain.ConversationMessage{ID: "successor-message", Origin: domain.MessageOriginHuman, Text: "successor prompt"}, "successor-turn", now); err != nil {
+				t.Fatal(err)
+			}
+			adopted, err := st.CreateProjectConversationAdoptingQueue(ctx, "unused", testProject, fresh.ID, domain.ConversationActivity{
+				ID: "successor-reset", ProviderItemID: domain.ConversationContextResetProviderItemID(fresh.ID),
+				Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted,
+			}, now.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.CreateAndActivateConversationBranch(ctx, fresh.ID, domain.ConversationBranch{
+				ID: "successor-branch", ConversationID: conv.ID, SessionID: fresh.ID,
+				ParentBranchID: conv.ActiveBranchID, ForkAfterSequence: adopted.LatestSequence,
+				ProviderConversationID: "successor-native", CreatedAt: now.Add(time.Minute),
+			}, "successor-generation", now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			if state == domain.TurnStateRunning {
+				batch, err := st.ClaimQueuedBatch(ctx, conv.ID, true, 1, now.Add(time.Minute))
+				if err != nil || len(batch) != 1 || batch[0].TurnID != "successor-turn" {
+					t.Fatalf("claim successor: batch=%+v err=%v", batch, err)
+				}
+			}
+			current, err := st.LoadConversationSnapshotPage(ctx, conv.ID, 0, 10)
+			if err != nil || len(current.Turns) != 1 || current.Turns[0].ID != "successor-turn" || current.Turns[0].BranchID != conv.ActiveBranchID || current.Turns[0].State != state {
+				t.Fatalf("successor must remain on the source root branch: turns=%+v err=%v", current.Turns, err)
+			}
+			svc := chatsvc.New(chatsvc.Options{
+				Store: st, Sessions: st, Reader: fullSnapshotReader(st), PageReader: boundedSnapshotReader(st),
+				HistoricalReader: func(ctx context.Context, id domain.SessionID, before, limit int64) (chatsvc.ConversationRows, error) {
+					rows, err := st.LoadHistoricalSessionSnapshotPage(ctx, id, before, limit)
+					return chatsvc.ConversationRows{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities, OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore}, err
+				},
+			})
+			for _, full := range []bool{false, true} {
+				var snapshot chatsvc.Snapshot
+				if full {
+					snapshot, err = svc.Snapshot(ctx, oldID)
+				} else {
+					snapshot, err = svc.SnapshotPage(ctx, oldID, 0, 10)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(snapshot.Messages) != 1 || snapshot.Messages[0].Text != "source prompt" {
+					t.Fatalf("full=%t source transcript changed: %+v", full, snapshot.Messages)
+				}
+				if len(snapshot.Turns) != 1 || snapshot.Turns[0].ID != "old-turn" || snapshot.Turns[0].State != domain.TurnStateCompleted {
+					t.Errorf("full=%t historical turns must contain only the source's completed turn: %+v", full, snapshot.Turns)
+				}
+			}
+			live, err := svc.SnapshotPage(ctx, fresh.ID, 0, 10)
+			if err != nil || len(live.Turns) != 1 || live.Turns[0].ID != "successor-turn" || live.Turns[0].State != state {
+				t.Fatalf("successor live turn changed: turns=%+v err=%v", live.Turns, err)
+			}
+		})
+	}
+}
