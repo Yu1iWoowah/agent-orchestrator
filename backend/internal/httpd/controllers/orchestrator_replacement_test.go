@@ -402,3 +402,54 @@ func TestReplacementProvenanceFailureHasSafeRecoveryGuidance(t *testing.T) {
 		t.Fatal("unsafe provenance receipt", response.Code, body)
 	}
 }
+
+func TestReplacementProvenanceRecoveryGuidanceRespectsSourceStop(t *testing.T) {
+	for _, boundary := range []string{"intent", "stopped", "retired"} {
+		t.Run(boundary, func(t *testing.T) {
+			op := replacementAPIState()
+			op.Phase = domain.ReplacementRecoveryRequired
+			op.SourceStopIntentAt, op.SourceStop, op.SourceRetiredAt = nil, nil, nil
+			switch boundary {
+			case "intent":
+				op.SourceStopIntentAt = &op.UpdatedAt
+			case "stopped":
+				op.SourceStop = &domain.ReplacementControllerStop{ConfirmedAt: op.UpdatedAt}
+			case "retired":
+				op.SourceRetiredAt = &op.UpdatedAt
+			}
+			failure := domain.ReplacementFailure{Code: "TRANSCRIPT_PROVENANCE_UNKNOWN", Message: "private source evidence", Retryable: true}
+			op.Error = &failure
+			op.RetainedRetry = &domain.ReplacementRetainedRetry{Failure: failure}
+			op.Attempts = []domain.ReplacementAttempt{{Error: &failure}}
+			router := chi.NewRouter()
+			(&controllers.OrchestratorReplacementController{Svc: &replacementAPI{op: op}}).Register(router)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orchestrator/replacements/"+op.ID, nil))
+			var body struct {
+				Operation struct {
+					Error         domain.ReplacementFailure `json:"error"`
+					RetainedRetry struct {
+						Failure domain.ReplacementFailure `json:"failure"`
+					} `json:"retainedRetry"`
+					Attempts []struct {
+						Error domain.ReplacementFailure `json:"error"`
+					} `json:"attempts"`
+				} `json:"operation"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || len(body.Operation.Attempts) != 1 {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			for _, failure := range []domain.ReplacementFailure{body.Operation.Error, body.Operation.RetainedRetry.Failure, body.Operation.Attempts[0].Error} {
+				if strings.Contains(failure.Message, "cancel") || strings.Contains(failure.Message, "private source evidence") || !strings.Contains(failure.Message, "same native controller") {
+					t.Errorf("unavailable recovery guidance after %s: %s", boundary, failure.Message)
+				}
+			}
+			if strings.Contains(response.Body.String(), `"cancelCommand"`) {
+				t.Error("stopped source exposes cancel")
+			}
+		})
+	}
+}

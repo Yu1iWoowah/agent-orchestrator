@@ -191,7 +191,7 @@ func (c *OrchestratorReplacementController) write(w http.ResponseWriter, r *http
 }
 
 func replacementPublicView(op domain.OrchestratorReplacement) OrchestratorReplacementView {
-	view := OrchestratorReplacementView{ID: op.ID, OperationKey: op.OperationKey, ProjectID: op.ProjectID, SourceSessionID: op.SourceSessionID, SuccessorSessionID: op.SuccessorSessionID, Phase: op.Phase, ResumePhase: op.ResumePhase, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt, DeadlineAt: op.DeadlineAt, SourceStopIntentAt: op.SourceStopIntentAt, SourceRetiredAt: op.SourceRetiredAt, FrozenAt: op.FrozenAt, IntakeReleasedAt: op.IntakeReleasedAt, IntakeDrainRequestedAt: op.IntakeDrainRequestedAt, IntakeTransfer: op.IntakeTransfer, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt, SharedDir: op.SharedDir, DocumentPath: op.DocumentPath, Preparation: replacementPreparationView(op.Preparation), Evidence: replacementEvidenceView(op.Preparation, op.Transcript), NotificationReceipts: make([]ReplacementNotificationView, 0, len(op.Notifications)), Attempts: make([]ReplacementAttemptView, 0, len(op.Attempts)), Error: replacementFailureView(op.Error), ReadCommand: "ao orchestrator replacement get " + op.ID + " --json"}
+	view := OrchestratorReplacementView{ID: op.ID, OperationKey: op.OperationKey, ProjectID: op.ProjectID, SourceSessionID: op.SourceSessionID, SuccessorSessionID: op.SuccessorSessionID, Phase: op.Phase, ResumePhase: op.ResumePhase, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt, DeadlineAt: op.DeadlineAt, SourceStopIntentAt: op.SourceStopIntentAt, SourceRetiredAt: op.SourceRetiredAt, FrozenAt: op.FrozenAt, IntakeReleasedAt: op.IntakeReleasedAt, IntakeDrainRequestedAt: op.IntakeDrainRequestedAt, IntakeTransfer: op.IntakeTransfer, SourceIntakeReleasedAt: op.SourceIntakeReleasedAt, SharedDir: op.SharedDir, DocumentPath: op.DocumentPath, Preparation: replacementPreparationView(op.Preparation), Evidence: replacementEvidenceView(op.Preparation, op.Transcript), NotificationReceipts: make([]ReplacementNotificationView, 0, len(op.Notifications)), Attempts: make([]ReplacementAttemptView, 0, len(op.Attempts)), Error: replacementFailureView(op, op.Error), ReadCommand: "ao orchestrator replacement get " + op.ID + " --json"}
 	view.Revision, view.IntakeRevision = op.Revision, op.IntakeRevision
 	view.ControlAttempts = make([]ReplacementControlAttemptView, 0, len(op.ControlAttempts))
 	for _, attempt := range op.ControlAttempts {
@@ -205,7 +205,7 @@ func replacementPublicView(op domain.OrchestratorReplacement) OrchestratorReplac
 		view.ControlAttempts = append(view.ControlAttempts, item)
 	}
 	if retry := op.RetainedRetry; retry != nil {
-		view.RetainedRetry = &ReplacementRetainedRetryView{Phase: retry.Phase, Failure: *replacementFailureView(&retry.Failure), RequestedAt: retry.RequestedAt}
+		view.RetainedRetry = &ReplacementRetainedRetryView{Phase: retry.Phase, Failure: *replacementFailureView(op, &retry.Failure), RequestedAt: retry.RequestedAt}
 	}
 	if op.Phase == domain.ReplacementRecoveryRequired {
 		view.OperatorGuidance = "Preserve this operation and its immutable evidence. Read the durable facts with readCommand; retryCommand only reconciles the retained boundary and never authorizes a fresh replacement. Do not edit the database, revive the retired source, or clear an uncertain intent. An operator must verify the native runtime before recovery can continue."
@@ -252,7 +252,7 @@ func replacementPublicView(op domain.OrchestratorReplacement) OrchestratorReplac
 		view.NotificationReceipts = append(view.NotificationReceipts, ReplacementNotificationView{SessionID: notice.SessionID, ContactID: notice.ContactID, State: notice.State, CreatedAt: notice.CreatedAt})
 	}
 	for _, attempt := range op.Attempts {
-		view.Attempts = append(view.Attempts, ReplacementAttemptView{ID: attempt.ID, Phase: attempt.Phase, SourceIntakeReleasedAt: attempt.SourceIntakeReleasedAt, EndedAt: attempt.EndedAt, FrozenAt: attempt.FrozenAt, Preparation: replacementPreparationView(attempt.Preparation), Evidence: replacementEvidenceView(attempt.Preparation, attempt.Transcript), Error: replacementFailureView(attempt.Error)})
+		view.Attempts = append(view.Attempts, ReplacementAttemptView{ID: attempt.ID, Phase: attempt.Phase, SourceIntakeReleasedAt: attempt.SourceIntakeReleasedAt, EndedAt: attempt.EndedAt, FrozenAt: attempt.FrozenAt, Preparation: replacementPreparationView(attempt.Preparation), Evidence: replacementEvidenceView(attempt.Preparation, attempt.Transcript), Error: replacementFailureView(op, attempt.Error)})
 	}
 	view.ProvisioningAttempts = make([]ReplacementProvisioningAttemptView, 0, len(op.SpawnAttempts))
 	for i, attempt := range op.SpawnAttempts {
@@ -261,13 +261,16 @@ func replacementPublicView(op domain.OrchestratorReplacement) OrchestratorReplac
 	return view
 }
 
-func replacementFailureView(failure *domain.ReplacementFailure) *domain.ReplacementFailure {
+func replacementFailureView(op domain.OrchestratorReplacement, failure *domain.ReplacementFailure) *domain.ReplacementFailure {
 	if failure == nil {
 		return nil
 	}
 	message := "Inspect the operation's durable phase and evidence; available controls are listed separately."
 	if failure.Code == "TRANSCRIPT_PROVENANCE_UNKNOWN" {
-		message = replacement.ProvenanceRecoveryGuidance
+		message = "Native provenance could not be verified after source shutdown intent. Preserve this operation and its evidence; an operator must verify the same native controller before recovery can continue."
+		if op.SourceStopIntentAt == nil && op.SourceStop == nil && op.SourceRetiredAt == nil {
+			message = replacement.ProvenanceRecoveryGuidance
+		}
 	}
 	return &domain.ReplacementFailure{Code: failure.Code, Retryable: failure.Retryable, Message: message}
 }
