@@ -82,6 +82,7 @@ type Store interface {
 	RecordProviderInput(ctx context.Context, turnID, text string) error
 	RecordTurnSettingsSnapshot(context.Context, string, string, []string, domain.AgentSettingsTurnSnapshot) error
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
+	RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string, followers []string) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error
@@ -259,6 +260,9 @@ type Controller struct {
 	// activeTurn maps a provider turn id to AO's turn id for the turn currently
 	// in flight, so a completion can be attributed without a round trip.
 	pendingTurnID string
+	// A definite pre-send refusal may outlive the completion that triggered drain.
+	// Retry when the provider releases ownership and announces readiness.
+	retryUnsentOnReady bool
 	// dispatchedApproval is the approval mode the latest turn was sent with,
 	// the one its sandbox runs under; settings hold the next turn's. Unset
 	// until this controller sends a turn.
@@ -2028,11 +2032,15 @@ func (c *Controller) dispatch(
 
 	c.mu.Lock()
 	c.dispatchingTurnID = turnID
+	c.retryUnsentOnReady = false
 	c.settingsDispatchSnapshot = settingsSnapshot
 	c.dispatchedApproval, c.hasDispatchedApproval = msg.Settings.Approval, true
 	c.mu.Unlock()
 	ref, err := c.conv.SendTurn(ctx, msg)
 	if err != nil {
+		if hasDeferredStart && errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+			return c.requeueUnsentTurn(ctx, turnID, "", followers, requestedAt)
+		}
 		failFollowers("batch delivery to provider is uncertain: " + err.Error())
 		c.mu.Lock()
 		if c.dispatchingTurnID == turnID {
@@ -2095,6 +2103,10 @@ func (c *Controller) dispatch(
 	// projected. Eager drivers do not implement this optional interface.
 	if hasDeferredStart {
 		if err := deferred.StartDeferredTurn(ref.ProviderTurnID); err != nil {
+			if errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+				deferred.DiscardDeferredTurn(ref.ProviderTurnID)
+				return c.requeueUnsentTurn(ctx, turnID, ref.ProviderTurnID, followers, requestedAt)
+			}
 			failFollowers("batch provider start is uncertain: " + err.Error())
 			c.mu.Lock()
 			c.pendingTurnID = ""
@@ -2121,6 +2133,37 @@ func (c *Controller) dispatch(
 		State:              domain.TurnStateRunning,
 		RequestedAt:        requestedAt,
 	}, nil
+}
+
+func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID string, followers []string, at time.Time) (domain.ConversationTurn, error) {
+	c.mu.Lock()
+	if c.dispatchingTurnID == id {
+		c.dispatchingTurnID = ""
+	}
+	if providerID != "" && c.pendingTurnID == providerID {
+		c.pendingTurnID, c.ackedTurnID = "", ""
+	}
+	c.mu.Unlock()
+	// The provider definitively sent nothing. Restore durable queue ownership
+	// even if the caller disconnects. The cleanup deadline bounds SQL work;
+	// store writer-lock acquisition is not context-aware.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := c.store.RequeueUnsentTurn(cleanupCtx, c.conversation.ID, id, providerID, followers); err != nil {
+		reason := "unsent input could not be requeued: " + err.Error()
+		settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelSettle()
+		settleErr := c.store.FailQueuedBatch(settleCtx, c.conversation.ID, []string{id}, reason, c.now())
+		var followersErr error
+		if len(followers) > 0 {
+			followersErr = c.store.FailQueuedBatch(settleCtx, c.conversation.ID, followers, reason, c.now())
+		}
+		return domain.ConversationTurn{}, fmt.Errorf("requeue unsent turn: %w", errors.Join(err, settleErr, followersErr))
+	}
+	c.mu.Lock()
+	c.retryUnsentOnReady = true
+	c.mu.Unlock()
+	return c.queuedDispatchReceipt(id, at), nil
 }
 
 func (c *Controller) queuedDispatchReceipt(id string, at time.Time) domain.ConversationTurn {
@@ -3097,7 +3140,10 @@ func (c *Controller) projectUnit(
 	// A lifecycle event and a concurrent Send must agree on whether the root
 	// conversation is busy. Holding the same lock Send/dispatch use closes the
 	// window between the durable projection and the in-memory ownership update.
-	lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventCompacted
+	// A sendMu holder must not wait for pump progress or a large provider
+	// stream: the pump can be waiting for this lock.
+	lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventCompacted ||
+		(event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady)
 	if lifecycle {
 		c.sendMu.Lock()
 	}
@@ -3199,6 +3245,9 @@ func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, project
 		"threadState":            event.ThreadState,
 		"mcpServers":             event.MCPServers,
 	}
+	if event.ProviderInitiated {
+		record["providerInitiated"] = true
+	}
 	if c.harness == domain.HarnessCodex {
 		// Codex account identity and subscription capacity are daemon-memory
 		// account state. Conversation provider archives must not become a second
@@ -3269,6 +3318,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 		c.compactionPending = false
 		c.pendingTurnID = ""
 		c.dispatchingTurnID = ""
+		c.retryUnsentOnReady = false
 		if c.ackedTurnID == event.ProviderTurnID {
 			c.ackedTurnID = ""
 		}
@@ -3289,7 +3339,7 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		c.mu.Unlock()
 		if event.ProviderTurnID != "" {
 			rootConversation := event.ProviderConversationID == "" || event.ProviderConversationID == c.conv.ProviderConversationID()
-			if dispatchingTurnID != "" && rootConversation {
+			if dispatchingTurnID != "" && rootConversation && !event.ProviderInitiated {
 				if err := c.store.BindTurnToProvider(ctx, dispatchingTurnID, event.ProviderTurnID, now); err != nil {
 					return fmt.Errorf("bind early provider-started turn %s: %w", event.ProviderTurnID, err)
 				}
@@ -3308,6 +3358,13 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 				if adoptErr != nil {
 					return fmt.Errorf("adopt provider-started turn %s: %w", event.ProviderTurnID, adoptErr)
 				}
+			}
+			if event.ProviderInitiated {
+				return c.store.UpsertActivity(ctx, c.conversation.ID, event.ProviderTurnID, domain.ConversationActivity{
+					ID: c.newID(), ProviderItemID: "harness-trigger:" + event.ProviderTurnID,
+					Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted,
+					Summary: "Harness-triggered turn", Detail: []byte(`{"event":"harness_triggered"}`),
+				}, now)
 			}
 		}
 		return nil
@@ -3748,8 +3805,13 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if event.ControllerState != ports.ChatControllerReady || c.pendingTurnID == "" {
 			c.state = event.ControllerState
 		}
+		// Dispatch consumes the retry; failed queue reads/claims must keep it armed.
+		retryUnsent := event.ControllerState == ports.ChatControllerReady && c.pendingTurnID == "" && !c.compactionPending && c.retryUnsentOnReady
 		suppressStoppedActivity := c.suppressStoppedActivity
 		c.mu.Unlock()
+		if retryUnsent {
+			_ = c.drainLocked(ctx, true)
+		}
 		if event.ControllerState == ports.ChatControllerStopped && !suppressStoppedActivity {
 			c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 		}

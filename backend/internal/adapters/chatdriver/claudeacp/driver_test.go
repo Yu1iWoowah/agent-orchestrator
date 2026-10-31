@@ -251,8 +251,8 @@ func TestClaudeSessionMetaOmitsPlanGuidanceWhenTodoToolsAreOff(t *testing.T) {
 		t.Run("project env "+off, func(t *testing.T) {
 			t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "")
 			env := map[string]string{"CLAUDE_CODE_ENABLE_TODO_TOOLS": off}
-			if got := claudeSessionMeta(acpdriver.LaunchConfig{Env: env}); got != nil {
-				t.Fatalf("meta = %#v, want none: the to-do tools are off", got)
+			if got := claudeSessionMeta(acpdriver.LaunchConfig{Env: env})["systemPrompt"]; got != nil {
+				t.Fatalf("systemPrompt = %#v, want none: the to-do tools are off", got)
 			}
 			prompt := claudeSessionMeta(acpdriver.LaunchConfig{Env: env, SystemPrompt: "AO standing instructions"})["systemPrompt"].(map[string]any)
 			if prompt["append"] != "AO standing instructions" {
@@ -262,15 +262,15 @@ func TestClaudeSessionMetaOmitsPlanGuidanceWhenTodoToolsAreOff(t *testing.T) {
 	}
 	t.Run("daemon env", func(t *testing.T) {
 		t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "0")
-		if got := claudeSessionMeta(acpdriver.LaunchConfig{}); got != nil {
-			t.Fatalf("meta = %#v, want none: the to-do tools are off", got)
+		if got := claudeSessionMeta(acpdriver.LaunchConfig{})["systemPrompt"]; got != nil {
+			t.Fatalf("systemPrompt = %#v, want none: the to-do tools are off", got)
 		}
 	})
 }
 
 func TestClaudeSessionMetaAppendsWithoutReplacingPreset(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "0")
-	if got := claudeSessionMeta(acpdriver.LaunchConfig{}); got != nil {
+	if got := claudeSessionMeta(acpdriver.LaunchConfig{})["systemPrompt"]; got != nil {
 		t.Fatalf("empty prompt metadata = %#v", got)
 	}
 	meta := claudeSessionMeta(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"})
@@ -283,6 +283,17 @@ func TestClaudeSessionMetaAppendsWithoutReplacingPreset(t *testing.T) {
 	}
 	if options := claudeNestedMap(claudeNestedMap(meta, "claudeCode"), "options"); options["tools"] != nil {
 		t.Fatalf("ordinary session received a tool restriction: %#v", options)
+	}
+}
+
+func TestClaudeSessionMetaRequestsOnlyBackgroundLifecycle(t *testing.T) {
+	meta := claudeSessionMeta(acpdriver.LaunchConfig{})
+	if meta["ao.retainUnpromptedEvents"] != true {
+		t.Fatal("host retention was not enabled")
+	}
+	want := []map[string]string{{"type": "system", "subtype": "session_state_changed"}, {"type": "result"}}
+	if got := claudeNestedMap(meta, "claudeCode")["emitRawSDKMessages"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SDK feed = %#v, want lifecycle only", got)
 	}
 }
 

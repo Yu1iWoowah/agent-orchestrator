@@ -145,6 +145,9 @@ type Config struct {
 	// session (claude-agent-acp's task list), re-sent into later turns, rather
 	// than a plan for the turn it arrives in.
 	PlansSpanTurns bool
+	// ClaudeBackgroundTurns consumes the pinned Claude bridge's opt-in raw SDK
+	// lifecycle feed. Other ACP providers do not share that extension contract.
+	ClaudeBackgroundTurns bool
 	// QuickStop marks a provider whose stop gains nothing from waiting (it never
 	// reacts to stdin closing): a short session/close wait, then a quick signal.
 	QuickStop bool
@@ -744,6 +747,7 @@ func (d *Driver) initialize(
 	conv.historyNotice = d.cfg.HistoryNotice
 	conv.historyUserChunkIsMessage = d.cfg.HistoryUserChunkIsMessage
 	conv.plansSpanTurns = d.cfg.PlansSpanTurns
+	conv.claudeBackgroundTurns = d.cfg.ClaudeBackgroundTurns
 	conv.requireAdvertised = d.cfg.RequireAdvertisedOptions
 	conv.agentSettingsDefaults = d.cfg.AgentSettingsDefaults
 	if proc.reconnected {

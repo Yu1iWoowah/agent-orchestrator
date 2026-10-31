@@ -871,6 +871,35 @@ func (q *Queries) FailRolledBackConversationApprovals(ctx context.Context, arg F
 	return err
 }
 
+const failUnfinishedConversationTurn = `-- name: FailUnfinishedConversationTurn :exec
+UPDATE conversation_turns
+SET state = 'failed', error_message = ?1,
+    completed_at = ?2
+WHERE id = ?3
+  AND conversation_id = ?4
+  AND state IN ('queued', 'running')
+  AND completed_at IS NULL
+`
+
+type FailUnfinishedConversationTurnParams struct {
+	ErrorMessage   string
+	CompletedAt    sql.NullTime
+	ID             string
+	ConversationID string
+}
+
+// A refused or uncertain queue delivery cannot replace a terminal outcome
+// already committed by another controller cleanup path.
+func (q *Queries) FailUnfinishedConversationTurn(ctx context.Context, arg FailUnfinishedConversationTurnParams) error {
+	_, err := q.db.ExecContext(ctx, failUnfinishedConversationTurn,
+		arg.ErrorMessage,
+		arg.CompletedAt,
+		arg.ID,
+		arg.ConversationID,
+	)
+	return err
+}
+
 const finalizeConversationPlanActivity = `-- name: FinalizeConversationPlanActivity :exec
 UPDATE conversation_activities
 SET status = 'completed',
@@ -1993,7 +2022,7 @@ func (q *Queries) RejectConversationSteerDelivery(ctx context.Context, arg Rejec
 
 const releaseQueuedConversationTurnPromotion = `-- name: ReleaseQueuedConversationTurnPromotion :execrows
 UPDATE conversation_turns
-SET promotion_started_at = NULL
+SET promotion_started_at = NULL, agent_settings_snapshot_json = ''
 WHERE id = ?1
   AND conversation_id = ?2
   AND state = 'queued'
@@ -2073,6 +2102,33 @@ type ReplaceUntouchedConversationProviderParams struct {
 // the persistent provider host's identity.
 func (q *Queries) ReplaceUntouchedConversationProvider(ctx context.Context, arg ReplaceUntouchedConversationProviderParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, replaceUntouchedConversationProvider, arg.ProviderConversationID, arg.ExpectedProviderConversationID, arg.SessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const requeueUnsentConversationTurn = `-- name: RequeueUnsentConversationTurn :execrows
+UPDATE conversation_turns
+SET state = 'queued', provider_turn_id = '', started_at = NULL,
+    promotion_started_at = NULL, provider_input_text = '', agent_settings_snapshot_json = ''
+WHERE id = ?1
+  AND conversation_id = ?2
+  AND provider_turn_id = ?3
+  AND state IN ('queued', 'running')
+  AND completed_at IS NULL
+`
+
+type RequeueUnsentConversationTurnParams struct {
+	ID             string
+	ConversationID string
+	ProviderTurnID string
+}
+
+// Only a deferred driver that definitively refused before sending may use this.
+// Keep the original queue position and reject an unexpected provider binding.
+func (q *Queries) RequeueUnsentConversationTurn(ctx context.Context, arg RequeueUnsentConversationTurnParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, requeueUnsentConversationTurn, arg.ID, arg.ConversationID, arg.ProviderTurnID)
 	if err != nil {
 		return 0, err
 	}

@@ -32,3 +32,12 @@ func SetDeltaFlushInterval(interval time.Duration) (restore func()) {
 
 // DeltaRunMaxBytes is the most delta text one batched write carries.
 const DeltaRunMaxBytes = deltaRunMaxBytes
+
+// SendMuHeldForTest reports whether command dispatch is locked without waiting.
+func (c *Controller) SendMuHeldForTest() bool {
+	if !c.sendMu.TryLock() {
+		return true
+	}
+	c.sendMu.Unlock()
+	return false
+}

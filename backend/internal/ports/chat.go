@@ -26,6 +26,10 @@ import (
 // Errors a Chat driver returns. They map to stable API error codes, so a client
 // can tell "this harness cannot do Chat" from "Codex is not logged in".
 var (
+	// ErrChatTurnNotSentBusy guarantees no input reached the provider. A
+	// deferred driver lost the dispatch race to provider-initiated work; the
+	// controller may return this turn to its durable queue without duplication.
+	ErrChatTurnNotSentBusy = errors.New("provider busy; turn was not sent")
 	// ErrChatUnsupported means the harness has no Chat driver at all.
 	ErrChatUnsupported = errors.New("chat mode unsupported for harness")
 	// ErrChatDriverUnavailable means the driver exists but its binary or
@@ -972,7 +976,10 @@ const (
 	ChatEventInputRequested       ChatEventKind = "input.requested"
 	ChatEventInputResolved        ChatEventKind = "input.resolved"
 	ChatEventControllerState      ChatEventKind = "controller.state"
-	ChatEventError                ChatEventKind = "error"
+	// ChatEventProviderCheckpoint carries only a replay receipt. The controller
+	// commits it in stream order before acknowledging ignored provider frames.
+	ChatEventProviderCheckpoint ChatEventKind = "provider.checkpoint"
+	ChatEventError              ChatEventKind = "error"
 
 	// Kinds below carry provider signal AO previously discarded. Each is modelled
 	// rather than folded into an activity so a reader can tell "the agent produced
@@ -1078,7 +1085,10 @@ func (f *chatProviderFailure) Unwrap() error { return f.cause }
 // Assistant message text is portable Markdown. Adapters convert native citation
 // annotations to links before emitting events or returning history.
 type ChatEvent struct {
-	Kind ChatEventKind
+	// ProviderInitiated identifies a turn started by the harness, without an AO
+	// user submission. The projector records its trigger as a system activity.
+	ProviderInitiated bool
+	Kind              ChatEventKind
 	// NativeUserMessageID is an adapter-proven native user record identity.
 	// Unlike ProviderItemID, it is never synthesized or namespaced by AO.
 	NativeUserMessageID string

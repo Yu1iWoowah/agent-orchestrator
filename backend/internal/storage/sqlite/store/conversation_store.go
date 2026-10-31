@@ -1649,6 +1649,28 @@ func (s *Store) BindTurnToProvider(ctx context.Context, turnID, providerTurnID s
 	})
 }
 
+// RequeueUnsentTurn preserves input when a deferred driver confirms it lost
+// the start race before sending anything to the provider.
+func (s *Store) RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string, followers []string) error {
+	_, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	return s.inTx(ctx, "requeue unsent batch", func(q *gen.Queries) error {
+		changed, err := q.RequeueUnsentConversationTurn(ctx, gen.RequeueUnsentConversationTurnParams{
+			ID: turnID, ConversationID: conversationID, ProviderTurnID: providerTurnID,
+		})
+		if err := expectBatchRow("requeue unsent turn", turnID, changed, err); err != nil {
+			return err
+		}
+		for _, id := range followers {
+			changed, err := q.ReleaseQueuedConversationTurnPromotion(ctx, gen.ReleaseQueuedConversationTurnPromotionParams{ID: id, ConversationID: conversationID})
+			if err := expectBatchRow("requeue unsent follower", id, changed, err); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // SettleTurn records a turn's terminal state. An interrupted turn is not an
 // error and carries no message.
 func (s *Store) SettleTurn(
@@ -2595,14 +2617,15 @@ func (s *Store) ReleaseQueuedBatch(ctx context.Context, conversationID string, t
 	})
 }
 
-// FailQueuedBatch retains uncertain source messages without replaying them.
+// FailQueuedBatch retains uncertain source messages without replaying them,
+// preserving terminal outcomes already committed by another cleanup path.
 func (s *Store) FailQueuedBatch(ctx context.Context, conversationID string, turnIDs []string, reason string, now time.Time) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "fail queued batch", func(q *gen.Queries) error {
 		for _, id := range turnIDs {
-			if err := q.SettleConversationTurn(ctx, gen.SettleConversationTurnParams{
-				State: domain.TurnStateFailed, ErrorMessage: reason,
+			if err := q.FailUnfinishedConversationTurn(ctx, gen.FailUnfinishedConversationTurnParams{
+				ErrorMessage: reason, ConversationID: conversationID,
 				CompletedAt: sql.NullTime{Time: now, Valid: true}, ID: id,
 			}); err != nil {
 				return fmt.Errorf("fail queued batch turn %s: %w", id, err)

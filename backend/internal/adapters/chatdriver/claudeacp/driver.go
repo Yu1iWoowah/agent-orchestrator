@@ -96,7 +96,8 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		HistoryNotice:         claudeTranscriptNotice,
 		// claude-agent-acp keeps one TaskCreate/TaskUpdate list for the session
 		// and re-sends it at the start of every prompt while a task is unfinished.
-		PlansSpanTurns: true,
+		PlansSpanTurns:        true,
+		ClaudeBackgroundTurns: true,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,
@@ -378,7 +379,7 @@ func validateClaudeACPExecutable(binary, goos string) error {
 }
 
 func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
-	meta := map[string]any{}
+	meta := map[string]any{"ao.retainUnpromptedEvents": true}
 	standing := strings.TrimSpace(cfg.SystemPrompt)
 	if !cfg.DisableTools && claudeTodoToolsEnabled(cfg.Env) {
 		if standing != "" {
@@ -403,11 +404,12 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 		options["strictMcpConfig"] = true
 		options["disallowedTools"] = []string{"mcp__*"}
 	}
-	if len(options) > 0 {
-		meta["claudeCode"] = map[string]any{"options": options}
-	}
-	if len(meta) == 0 {
-		return nil
+	meta["claudeCode"] = map[string]any{
+		"options": options,
+		"emitRawSDKMessages": []map[string]string{
+			{"type": "system", "subtype": "session_state_changed"},
+			{"type": "result"},
+		},
 	}
 	return meta
 }

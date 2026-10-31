@@ -80,11 +80,23 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 		recordPersistentACPCall(request.Method)
 		switch request.Method {
 		case "initialize":
+			if os.Getenv("AO_TEST_PERSISTENT_ACP_HISTORY_NOISE") == "1" {
+				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"authMethods":[]}}`+"\n", request.ID)
+				continue
+			}
 			if os.Getenv("AO_TEST_PERSISTENT_ACP_NO_RESUME") == "1" {
 				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}`+"\n", request.ID)
 				continue
 			}
 			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"resume":{}}},"authMethods":[]}}`+"\n", request.ID)
+		case "session/load":
+			for _, frame := range []string{
+				`{"method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"user_message_chunk","messageId":"history-user","content":{"type":"text","text":"historical request"}}}}`,
+				`{"method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"history-answer","content":{"type":"text","text":"historical answer"}}}}`,
+			} {
+				_, _ = fmt.Fprintln(os.Stdout, frame)
+			}
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{}}`+"\n", request.ID)
 		case "session/new":
 			if os.Getenv("AO_TEST_PERSISTENT_ACP_BAD_SETUP") == "1" {
 				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{}}`+"\n", request.ID)
@@ -110,6 +122,10 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 				_, _ = fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}}}`)
 			}
 			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`+"\n", request.ID)
+			if os.Getenv("AO_TEST_PERSISTENT_ACP_HISTORY_NOISE") == "1" {
+				_, _ = fmt.Fprintln(os.Stdout, `{"method":"_claude/sdkMessage","params":{"sessionId":"persistent-provider-session","message":{"type":"system","subtype":"session_state_changed","state":"idle"}}}`)
+				_, _ = fmt.Fprintln(os.Stdout, `{"method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}`)
+			}
 		default:
 			if len(request.ID) > 0 {
 				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{}}`+"\n", request.ID)
