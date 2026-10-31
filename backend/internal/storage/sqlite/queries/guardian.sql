@@ -38,14 +38,14 @@ SELECT * FROM guardian_cursors WHERE epoch_id=? AND thread_id=?;
 SELECT * FROM guardian_positions WHERE epoch_id=? AND file_identity=?;
 
 -- name: PutGuardianPosition :exec
-INSERT INTO guardian_positions(epoch_id,file_identity,generation,byte_offset,discarding,source_size,source_modified_at,read_start_offset,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity) DO UPDATE SET
- generation=excluded.generation,byte_offset=excluded.byte_offset,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,updated_at=excluded.updated_at;
+INSERT INTO guardian_positions(epoch_id,file_identity,generation,byte_offset,discarding,source_size,source_modified_at,read_start_offset,replay_until,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity) DO UPDATE SET
+ generation=excluded.generation,byte_offset=excluded.byte_offset,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,replay_until=excluded.replay_until,updated_at=excluded.updated_at;
 
 -- name: PutGuardianCursor :exec
-INSERT INTO guardian_cursors(epoch_id,thread_id,generation,byte_offset,file_identity,discarding,source_size,source_modified_at,read_start_offset,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO UPDATE SET
- generation=excluded.generation,byte_offset=excluded.byte_offset,file_identity=excluded.file_identity,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,updated_at=excluded.updated_at;
+INSERT INTO guardian_cursors(epoch_id,thread_id,generation,byte_offset,file_identity,discarding,source_size,source_modified_at,read_start_offset,replay_until,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO UPDATE SET
+ generation=excluded.generation,byte_offset=excluded.byte_offset,file_identity=excluded.file_identity,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,replay_until=excluded.replay_until,updated_at=excluded.updated_at;
 
 -- name: PutGuardianThread :exec
 INSERT INTO guardian_threads(epoch_id,thread_id,parent_id,cli_version,retention_at,first_seen_at,last_seen_at)
@@ -133,7 +133,8 @@ UPDATE guardian_threads SET cli_version='' WHERE retention_at<=? AND cli_version
 -- name: DeleteExpiredGuardianEpochs :exec
 DELETE FROM guardian_epochs WHERE guardian_epochs.first_seen_at<=sqlc.arg(cutoff)
 AND NOT EXISTS(SELECT 1 FROM guardian_threads t WHERE t.epoch_id=guardian_epochs.id)
-AND NOT EXISTS(SELECT 1 FROM guardian_positions p WHERE p.epoch_id=guardian_epochs.id);
+AND NOT EXISTS(SELECT 1 FROM guardian_positions p WHERE p.epoch_id=guardian_epochs.id)
+AND NOT EXISTS(SELECT 1 FROM guardian_anomaly_states a WHERE a.epoch_id=guardian_epochs.id);
 -- name: DeleteExpiredGuardianPositions :exec
 DELETE FROM guardian_positions WHERE updated_at<=?;
 -- name: DeleteExpiredGuardianAnomalies :exec
@@ -147,6 +148,7 @@ DELETE FROM guardian_anomalies WHERE session_id=?;
 SELECT * FROM guardian_requests WHERE epoch_id=sqlc.arg(epoch_id) AND thread_id=sqlc.arg(thread_id)
 AND ((source_generation=sqlc.arg(source_generation) AND source_offset>=sqlc.arg(start_offset) AND source_offset<sqlc.arg(end_offset) AND conflict=0)
  OR response_id IN (sqlc.slice('response_ids')))
+ORDER BY source_offset,response_id
 LIMIT 1025;
 
 -- name: ListGuardianAnomalyStates :many
@@ -164,3 +166,9 @@ DELETE FROM guardian_anomaly_states WHERE epoch_id=? AND file_identity=? AND cod
 DELETE FROM guardian_anomaly_states WHERE guardian_anomaly_states.first_seen_at<=sqlc.arg(cutoff)
 OR EXISTS(SELECT 1 FROM guardian_epochs e JOIN guardian_anomalies a ON a.session_id=e.session_id
  WHERE e.id=guardian_anomaly_states.epoch_id AND a.code=guardian_anomaly_states.code AND a.first_seen_at<=sqlc.arg(cutoff));
+
+-- name: GetGuardianEpoch :one
+SELECT * FROM guardian_epochs WHERE binding_id=? AND account_id=? AND account_bound_at=?;
+
+-- name: HasGuardianRequests :one
+SELECT EXISTS(SELECT 1 FROM guardian_requests WHERE epoch_id=? AND thread_id=?);

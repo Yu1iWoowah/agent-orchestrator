@@ -576,6 +576,7 @@ type GuardianCursor struct {
 	Generation       int64
 	ByteOffset       int64
 	ReadStartOffset  int64
+	ReplayUntil      int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
 	FileIdentity     string
@@ -598,6 +599,7 @@ type GuardianPosition struct {
 	Generation       int64
 	ByteOffset       int64
 	ReadStartOffset  int64
+	ReplayUntil      int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
 	Discarding       int64

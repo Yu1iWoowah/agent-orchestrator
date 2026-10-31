@@ -83,14 +83,14 @@ func TestPrefixReplayFindsUsageIntroducedBetweenKnownRequests(t *testing.T) {
 	}
 }
 
-func TestPrefixVerificationBudgetDeclaresGapWithoutFalseTruncation(t *testing.T) {
+func TestCheckpointSamplingBudgetDoesNotCreateGap(t *testing.T) {
 	f := newFixture(t)
 	f.enable(true)
 	f.write("guardian", f.meta("guardian", "root", true, f.base)+f.request("a", "t", 100, 20)+f.request("b", "t", 100, 20))
 	f.collect()
 	f.svc.cfg.RecordBudget = 1
 	f.collect()
-	if f.codes()[domain.GuardianCoverageGap] == 0 || f.codes()[domain.GuardianSourceTruncated] != 0 {
+	if f.codes()[domain.GuardianCoverageGap] != 0 || f.codes()[domain.GuardianSourceTruncated] != 0 {
 		t.Fatalf("unverified prefix mislabeled: %v", f.codes())
 	}
 	seq, err := f.store.LatestSeq(context.Background())

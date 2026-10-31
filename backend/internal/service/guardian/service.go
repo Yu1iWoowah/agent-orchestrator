@@ -33,6 +33,7 @@ type Service struct {
 	mu          sync.Mutex
 	lastCleanup time.Time
 	discovery   map[string]*headerDiscovery
+	checks      map[checkpointKey]checkpointProgress
 }
 
 // New constructs a metadata-only collector; it never starts a provider.
@@ -46,7 +47,7 @@ func New(store ports.GuardianStore, cfg Config) *Service {
 	if cfg.RecordBudget <= 0 {
 		cfg.RecordBudget = 512
 	}
-	return &Service{store: store, cfg: cfg, discovery: map[string]*headerDiscovery{}}
+	return &Service{store: store, cfg: cfg, discovery: map[string]*headerDiscovery{}, checks: map[checkpointKey]checkpointProgress{}}
 }
 
 // Collect cleans expired metadata and reads bounded new source sections.
@@ -67,7 +68,17 @@ func (s *Service) Collect(ctx context.Context) error {
 	}
 	if len(owners) == 0 {
 		clear(s.discovery)
+		clear(s.checks)
 		return nil
+	}
+	activeEpochs := make(map[int64]bool, len(owners))
+	for _, owner := range owners {
+		activeEpochs[owner.EpochID] = true
+	}
+	for key := range s.checks {
+		if !activeEpochs[key.epoch] {
+			delete(s.checks, key)
+		}
 	}
 	// A native root claimed by multiple durable AO owners is ambiguous even if
 	// its files happen to live under the same account's shared history.
@@ -143,6 +154,22 @@ func (s *Service) collectGroup(ctx context.Context, roots []string, owners []dom
 		required = append(required, o.NativeRootID)
 		for _, c := range rows {
 			required = append(required, c.ThreadID)
+		}
+	}
+	for key := range s.checks {
+		rows, active := cursors[key.epoch]
+		if !active {
+			continue
+		}
+		found := false
+		for _, c := range rows {
+			if c.ThreadID == key.thread {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(s.checks, key)
 		}
 	}
 	result := discovery.scan(ctx, roots, s.cfg.DiscoveryBudget, required)
@@ -227,6 +254,9 @@ func ownerCode(h header, root string, index map[string]artifact, conflicts map[s
 			crossedClaim = true
 		}
 		if h.Parent == "" {
+			if wasOwned && claims[h.ID] == 0 {
+				return true, domain.GuardianOwnerUnresolved
+			}
 			return false, ""
 		}
 		a, ok := index[h.Parent]
@@ -299,25 +329,29 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 	}
 	b.Cursor.ThreadID = a.meta.ID
 
+	sourceChanged := b.Cursor.FileIdentity != identity || b.Cursor.SourceSize != info.Size() || !b.Cursor.SourceModifiedAt.Equal(info.ModTime())
+	growth := b.Cursor.FileIdentity == identity && info.Size() > b.Cursor.SourceSize
+	readEnd := max(b.Cursor.Offset, b.Cursor.ReplayUntil)
 	b.Cursor.UpdatedAt = now
 	if b.Cursor.FileIdentity != "" && b.Cursor.FileIdentity != identity {
 		b.Cursor.Generation++
 		b.Cursor.Offset = 0
 		b.Cursor.ReadStartOffset = 0
+		b.Cursor.ReplayUntil = 0
 		b.Cursor.Discarding = false
 		b.Anomalies[domain.GuardianSourceRotated]++
 	}
-	if info.Size() < b.Cursor.Offset {
+	if info.Size() < b.Cursor.Offset || b.Cursor.FileIdentity == identity && info.Size() < b.Cursor.SourceSize {
 		b.Cursor.Generation++
 		b.Cursor.Offset = 0
 		b.Cursor.ReadStartOffset = 0
+		b.Cursor.ReplayUntil = min(readEnd, info.Size())
 		b.Cursor.Discarding = false
 		b.Anomalies[domain.GuardianSourceTruncated]++
 	}
 	b.Cursor.FileIdentity = identity
 	// Revalidate the header from the exact descriptor, closing discovery/open races.
-	reader := bufio.NewReaderSize(f, maxLine+1)
-	line, err := reader.ReadSlice('\n')
+	line, err := bufio.NewReaderSize(io.LimitReader(f, maxLine+1), 4096).ReadBytes('\n')
 	if err != nil || len(line) > maxLine {
 		return s.anomaly(ctx, o, a.state, domain.GuardianInvalidMetadata, now)
 	}
@@ -329,15 +363,27 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		b.Cursor.ReadStartOffset = int64(len(line))
 	}
 	if b.Cursor.Offset > b.Cursor.ReadStartOffset {
-		changed, err := s.replayPrefix(ctx, f, &b, b.Cursor.SourceSize != info.Size() || !b.Cursor.SourceModifiedAt.Equal(info.ModTime()))
-		if err != nil {
-			return err
-		}
-		if changed {
-			b.Cursor.Generation++
-			b.Cursor.Offset = b.Cursor.ReadStartOffset
-			b.Cursor.Discarding = false
-			b.Anomalies[domain.GuardianSourceTruncated]++
+		if b.Cursor.ReplayUntil > b.Cursor.Offset {
+			if sourceChanged && !growth {
+				b.Cursor.Generation++
+				b.Cursor.ReplayUntil = min(readEnd, info.Size())
+				b.Cursor.Offset = b.Cursor.ReadStartOffset
+				b.Cursor.Discarding = false
+			}
+		} else {
+			rewritten, err := s.checkpoints(ctx, f, b.Cursor)
+			if err != nil {
+				return err
+			}
+			if rewritten || sourceChanged && !growth {
+				b.Cursor.Generation++
+				b.Cursor.ReplayUntil = b.Cursor.Offset
+				b.Cursor.Offset = b.Cursor.ReadStartOffset
+				b.Cursor.Discarding = false
+				if rewritten {
+					b.Anomalies[domain.GuardianSourceTruncated]++
+				}
+			}
 		}
 	}
 	b.Cursor.SourceSize = info.Size()
@@ -350,17 +396,24 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		if !o.AcceptsProviderTime(a.meta.CreatedAt, now) && (b.Expected.FileIdentity == "" || b.Expected.ReadStartOffset > int64(len(line))) {
 			b.Cursor.Offset = info.Size()
 			b.Cursor.ReadStartOffset = info.Size()
+			b.Cursor.ReplayUntil = 0
 			b.Anomalies[domain.GuardianCoverageGap]++
 		}
 	}
+	if !sourceChanged && b.Cursor.Offset == info.Size() && b.Cursor.ReplayUntil == 0 && !b.Cursor.Discarding && len(b.Anomalies) == 0 {
+		return s.observe(ctx, o, b.Cursor.SourceState(), nil, now)
+	}
+	revalidationEnd := b.Cursor.ReplayUntil
 	if _, err := f.Seek(b.Cursor.Offset, io.SeekStart); err != nil {
 		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
-	reader.Reset(f)
+	reader := bufio.NewReaderSize(f, maxLine+1)
 	startOffset := b.Cursor.Offset
 	for n := 0; n < s.cfg.RecordBudget; n++ {
 		if b.Cursor.Offset-startOffset >= 4*maxLine {
-			b.Anomalies[domain.GuardianCoverageGap]++
+			if b.Cursor.Offset >= revalidationEnd {
+				b.Anomalies[domain.GuardianCoverageGap]++
+			}
 			break
 		}
 		if err := ctx.Err(); err != nil {
@@ -392,13 +445,24 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		} else {
 			appendRecord(&b, line, offset)
 		}
-		if n == s.cfg.RecordBudget-1 && b.Cursor.Offset < info.Size() {
+		if n == s.cfg.RecordBudget-1 && b.Cursor.Offset < info.Size() && b.Cursor.Offset >= revalidationEnd {
 			b.Anomalies[domain.GuardianCoverageGap]++
+		}
+	}
+	if revalidationEnd > 0 {
+		if err := s.revalidationGap(ctx, &b, revalidationEnd); err != nil {
+			return err
+		}
+		if b.Cursor.Offset >= revalidationEnd {
+			b.Cursor.ReplayUntil = 0
 		}
 	}
 	// Detect an in-place truncation while reading before committing its cursor.
 	if after, err := f.Stat(); err != nil || after.Size() < b.Cursor.Offset {
 		return s.anomaly(ctx, o, a.state, domain.GuardianSourceTruncated, now)
+	}
+	if len(b.Requests) == 0 && len(b.Models) == 0 && sameReadPosition(b.Cursor, b.Expected) {
+		return s.observe(ctx, o, b.Cursor.SourceState(), b.Anomalies, now)
 	}
 	return s.store.ApplyGuardianBatch(ctx, b)
 }
@@ -406,4 +470,8 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 func sameTokens(a, b domain.GuardianTokens) bool {
 	equal := func(x, y *int64) bool { return x == nil && y == nil || x != nil && y != nil && *x == *y }
 	return equal(a.Input, b.Input) && equal(a.Cached, b.Cached) && equal(a.CacheWrite, b.CacheWrite) && equal(a.Output, b.Output) && equal(a.Reasoning, b.Reasoning) && equal(a.Total, b.Total)
+}
+
+func sameReadPosition(a, b domain.GuardianCursor) bool {
+	return a.FileIdentity == b.FileIdentity && a.Offset == b.Offset && a.Generation == b.Generation && a.ReadStartOffset == b.ReadStartOffset && a.ReplayUntil == b.ReplayUntil && a.Discarding == b.Discarding && a.SourceSize == b.SourceSize && a.SourceModifiedAt.Equal(b.SourceModifiedAt)
 }

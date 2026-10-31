@@ -155,6 +155,7 @@ type GuardianTurnModel struct {
 
 // GuardianCursor is a metadata-only read position without provider content.
 type GuardianCursor struct {
+	ReplayUntil      int64
 	ReadStartOffset  int64
 	SourceSize       int64
 	SourceModifiedAt time.Time

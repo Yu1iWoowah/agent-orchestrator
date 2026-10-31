@@ -14,6 +14,7 @@ type GuardianStore interface {
 	GuardianCursor(context.Context, int64, string) (domain.GuardianCursor, error)
 	GuardianPosition(context.Context, int64, string) (domain.GuardianCursor, error)
 	GuardianContinuityRequests(context.Context, domain.GuardianCursor, int64, []string) ([]domain.GuardianRequest, error)
+	GuardianHasRequests(context.Context, int64, string) (bool, error)
 	GuardianCursors(context.Context, int64) ([]domain.GuardianCursor, error)
 	ApplyGuardianBatch(context.Context, domain.GuardianBatch) error
 	ObserveGuardianAnomalies(context.Context, domain.GuardianOwner, domain.GuardianSourceState, map[domain.GuardianCode]int64, time.Time) error

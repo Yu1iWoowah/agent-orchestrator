@@ -4,95 +4,109 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-type prefixRecord struct {
-	offset  int64
-	request domain.GuardianRequest
-	valid   bool
+type checkpointKey struct {
+	epoch  int64
+	thread string
+}
+type checkpointProgress struct {
+	identity   string
+	generation int64
+	next       int64
 }
 
-// replayPrefix reprocesses the entire claimed read interval when it fits the
-// same bounded record/byte budgets as ingestion. Unverified suffixes are gaps.
-// Replaying the typed whitelist catches new facts hidden between checkpoints;
-// SQL dedupe preserves first_seen/retention and makes unchanged replays silent.
-func (s *Service) replayPrefix(ctx context.Context, f io.ReadSeeker, b *domain.GuardianBatch, sourceChanged bool) (bool, error) {
-	start, stop := b.Cursor.ReadStartOffset, b.Cursor.Offset
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return false, err
+// checkpoints reads only retained request lines. A bounded rotating sample
+// spreads validation across polls without replaying unrelated source payloads.
+func (s *Service) checkpoints(ctx context.Context, f io.ReadSeeker, c domain.GuardianCursor) (bool, error) {
+	key := checkpointKey{epoch: c.EpochID, thread: c.ThreadID}
+	p := s.checks[key]
+	if p.identity != c.FileIdentity || p.generation != c.Generation || p.next < c.ReadStartOffset || p.next >= c.Offset {
+		p = checkpointProgress{identity: c.FileIdentity, generation: c.Generation, next: c.ReadStartOffset}
 	}
-	reader := bufio.NewReaderSize(io.LimitReader(f, min(stop-start, 4*maxLine)), maxLine+1)
-	probe := domain.GuardianBatch{Owner: b.Owner, Thread: b.Thread, Cursor: b.Cursor, Anomalies: map[domain.GuardianCode]int64{}}
-	entries := make([]prefixRecord, 0, min(s.cfg.RecordBudget, 512))
-	ids := make([]string, 0, min(s.cfg.RecordBudget, 512))
-	offset := start
-	for n := 0; n < s.cfg.RecordBudget && offset < stop; n++ {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		line, err := reader.ReadSlice('\n')
-		if err != nil || len(line) > maxLine {
-			break
-		}
-		request, valid := requestMetadata(line, b.Thread.ThreadID)
-		entries = append(entries, prefixRecord{offset: offset, request: request, valid: valid})
-		if valid {
-			ids = append(ids, request.ResponseID)
-		}
-		appendRecord(&probe, line, offset)
-		offset += int64(len(line))
-	}
-	gap := offset < stop
-	proofs, err := s.store.GuardianContinuityRequests(ctx, b.Cursor, offset, ids)
+	proofCursor := c
+	proofCursor.ReadStartOffset = p.next
+	rows, err := s.store.GuardianContinuityRequests(ctx, proofCursor, c.Offset, nil)
 	if err != nil {
 		return false, err
 	}
-	if sourceChanged && len(proofs) == 0 {
-		gap = true
+	if len(rows) == 0 {
+		p.next = c.ReadStartOffset
+		s.checks[key] = p
+		return false, nil
 	}
-	if len(proofs) > 1024 {
-		gap = true
-	}
-	byID := make(map[string]domain.GuardianRequest, len(proofs))
-	byOffset := make(map[int64]domain.GuardianRequest, len(proofs))
-	for _, r := range proofs {
-		byID[r.ResponseID] = r
-		if !r.Conflict && r.SourceGeneration == b.Cursor.Generation && r.SourceOffset >= start && r.SourceOffset < offset {
-			byOffset[r.SourceOffset] = r
+	bytes := 0
+	checked := 0
+	for _, expected := range rows {
+		if checked >= min(s.cfg.RecordBudget, 512) || bytes >= 4*maxLine {
+			break
 		}
-	}
-	rewritten := false
-	for _, r := range entries {
-		if expected, ok := byOffset[r.offset]; ok {
-			if !r.valid || !sameRequestMetadata(expected, r.request) {
-				rewritten = true
-			}
-			delete(byOffset, r.offset)
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
-		if r.valid {
-			expected, ok := byID[r.request.ResponseID]
-			if !ok || !expected.Conflict && !sameRequestMetadata(expected, r.request) {
-				gap = true
-			}
+		if _, err := f.Seek(expected.SourceOffset, io.SeekStart); err != nil {
+			return false, err
 		}
+		line, err := bufio.NewReaderSize(io.LimitReader(f, maxLine+1), 4096).ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, err
+		}
+		bytes += len(line)
+		checked++
+		actual, valid := requestMetadata(line, c.ThreadID)
+		if errors.Is(err, io.EOF) || len(line) > maxLine || !valid || !sameRequestMetadata(expected, actual) {
+			return true, nil
+		}
+		p.next = expected.SourceOffset + 1
 	}
-	// A proof now inside another line also demonstrates that the prefix changed.
-	rewritten = rewritten || len(byOffset) > 0
-	if gap {
-		b.Anomalies[domain.GuardianCoverageGap]++
+	if checked == len(rows) {
+		p.next = c.ReadStartOffset
 	}
-	if rewritten {
-		return true, nil
-	}
-	b.Requests = append(b.Requests, probe.Requests...)
-	b.Models = append(b.Models, probe.Models...)
-	for code, count := range probe.Anomalies {
-		b.Anomalies[code] += count
-	}
+	s.checks[key] = p
 	return false, nil
+}
+
+// revalidationGap distinguishes newly recovered facts from a validation budget.
+// Existing IDs need no write, and finishing only part of the interval is pending
+// work rather than evidence of missing data.
+func (s *Service) revalidationGap(ctx context.Context, b *domain.GuardianBatch, until int64) error {
+	ids := make([]string, 0, len(b.Requests))
+	for _, r := range b.Requests {
+		if r.SourceOffset < until {
+			ids = append(ids, r.ResponseID)
+		}
+	}
+	if len(ids) == 0 {
+		if len(b.Models) > 0 {
+			exists, err := s.store.GuardianHasRequests(ctx, b.Owner.EpochID, b.Thread.ThreadID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				b.Anomalies[domain.GuardianCoverageGap]++
+			}
+		}
+		return nil
+	}
+	rows, err := s.store.GuardianContinuityRequests(ctx, b.Cursor, b.Cursor.ReadStartOffset, ids)
+	if err != nil {
+		return err
+	}
+	known := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		known[r.ResponseID] = true
+	}
+	for _, id := range ids {
+		if !known[id] {
+			b.Anomalies[domain.GuardianCoverageGap]++
+			break
+		}
+	}
+	return nil
 }
 
 // Physical evidence decoding intentionally has no enable/TTL filters. Those
