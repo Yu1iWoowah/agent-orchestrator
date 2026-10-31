@@ -353,7 +353,21 @@ It is not a reset. Use the revision-qualified settings PATCH with explicit
 model/effort nulls and `fastMode: default` to reset the selection. A nonempty
 legacy `agentConfig: {"fastMode":"default"}` explicitly resets the whole
 selection to the baseline; the switch never interprets an absent config as
-that choice.
+that choice. The Inspector's agent-default model option sends this explicit
+reset for a known Codex or Claude pin, clearing effort and fast overrides too.
+If a switch fails, the picker returns to the saved worker config (or the pin
+when available) while displaying the error.
+
+Mode and permissions are worker launch settings, outside the selection pin.
+Switch saves these fields even for an already-pinned reviewer, including a
+switch from another harness. A changed mode or permission setting restarts the
+idle target runtime using the saved config; it never changes an active pass or
+relaxes the reviewer's fixed adapter sandbox/tool restrictions. Amp mode changes
+therefore survive reopening the Inspector and apply to Run review without a
+trigger override. Their save does not change the model/effort/fast pin or its
+revision. Worker-level model/effort/fast can still reflect an older selection:
+the pin is authoritative, including when the picker can only show worker config
+as a fallback because its pin query is unavailable.
 
 An omitted or empty harness clears the worker's reviewer override and follows
 the current project default. Conflict and pin checks use that resolved target,
@@ -443,15 +457,17 @@ Grants expire after 24 hours; they do not renew in a running provider process.
 
 Other harnesses can launch with fields declared by their adapter, but currently
 lack the fixed U3 account binding required for account-bound next-pass changes.
-Changing an existing pinned reviewer through trigger overrides, switch config
-or the settings API returns `AGENT_SETTINGS_UNSUPPORTED`, rather than reporting
+Changing an existing pinned reviewer's model/effort/fast through trigger
+overrides, switch config or the settings API returns
+`AGENT_SETTINGS_UNSUPPORTED`, rather than reporting
 a temporary catalog outage. This also applies when a trigger override actually
 changes the resolved choice of an unpinned legacy reviewer with execution
 history. Repeating its saved choice or retrying an unlaunched owner goes through
 normal admission and catalog qualification. A legacy switch/config save still
 records its selection for the first admitted pass; it does not mutate a pin or
-infer an account binding. No change is made to an active pass or its permission
-rules.
+infer an account binding. Worker-level mode and permissions remain saveable via
+switch as described above; they are not account-bound pin mutations. No change
+is made to an active pass or the reviewer's fixed permission rules.
 
 The additive reviewer migration leaves every old row unchanged, including
 worker revisions, reviewer bindings and historical run selections (`NULL`). A

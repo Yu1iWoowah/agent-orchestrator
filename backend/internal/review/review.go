@@ -966,7 +966,7 @@ func (e *Engine) SwitchReviewer(
 	}
 	selectionWorker := worker
 	selectionWorker.ReviewerHarness, selectionWorker.ReviewerConfig = harness, config
-	selectedHarness, _, err := e.reviewerSelection(ctx, selectionWorker)
+	selectedHarness, nextSelectedConfig, err := e.reviewerSelection(ctx, selectionWorker)
 	if err != nil {
 		return SessionReviews{}, err
 	}
@@ -974,6 +974,7 @@ func (e *Engine) SwitchReviewer(
 		return SessionReviews{}, ports.ErrAgentSettingsConflict
 	}
 	pinnedSelection := false
+	resetPinnedRuntime := false
 	if settingsStore, supported := e.store.(ports.ReviewerAgentSettingsStore); supported {
 		review, found, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, selectedHarness)
 		if err != nil {
@@ -989,7 +990,7 @@ func (e *Engine) SwitchReviewer(
 			if state.Settings != nil {
 				pinnedSelection = true
 				next := reviewerSelectionSettings(config)
-				if config.IsZero() {
+				if config.Model == "" && config.Effort == "" && config.FastMode == "" {
 					next = *state.Settings
 				}
 				if next != *state.Settings {
@@ -998,12 +999,18 @@ func (e *Engine) SwitchReviewer(
 						return SessionReviews{}, err
 					}
 				}
-				if selectedHarness == previousSelected && harness == worker.ReviewerHarness {
+				// Selection belongs to the pin; mode and permissions still belong
+				// to the worker's launch config. Do not discard those changes.
+				config.Model, config.Effort, config.FastMode = "", "", ""
+				if selectedHarness == previousSelected {
+					config.Model, config.Effort, config.FastMode = worker.ReviewerConfig.Model, worker.ReviewerConfig.Effort, worker.ReviewerConfig.FastMode
+					resetPinnedRuntime = previousConfig.Mode != nextSelectedConfig.Mode || previousConfig.Permissions != nextSelectedConfig.Permissions
+				} else {
+					resetPinnedRuntime = config.Mode != "" || config.Permissions != ""
+				}
+				if selectedHarness == previousSelected && harness == worker.ReviewerHarness && config == worker.ReviewerConfig {
 					return e.listLocked(ctx, workerID, selectedHarness)
 				}
-				// Selecting an existing reviewer does not overwrite its pinned values
-				// with the previously selected reviewer's worker-level defaults.
-				config = domain.AgentConfig{}
 			}
 		}
 	}
@@ -1025,7 +1032,7 @@ func (e *Engine) SwitchReviewer(
 	if err := e.destroyIdleOtherReviewerHandles(ctx, workerID, selected, reviewRows, running); err != nil {
 		return SessionReviews{}, err
 	}
-	if !pinnedSelection && previousSelected == selected && previousConfig != selectedConfig {
+	if resetPinnedRuntime || !pinnedSelection && previousSelected == selected && previousConfig != selectedConfig {
 		if err := e.resetReviewerRuntimeLocked(ctx, workerID, selected); err != nil {
 			return SessionReviews{}, err
 		}

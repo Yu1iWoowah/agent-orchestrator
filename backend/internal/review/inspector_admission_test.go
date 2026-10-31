@@ -135,3 +135,64 @@ func TestRejectedRestoreCanRecoverWithUnchangedTrigger(t *testing.T) {
 		}
 	}
 }
+
+func TestPinnedReviewerSwitchSavesWorkerConfig(t *testing.T) {
+	for _, otherHarness := range []bool{false, true} {
+		for _, harness := range []domain.ReviewerHarness{domain.ReviewerAmp, domain.ReviewerCodex} {
+			t.Run(fmt.Sprintf("%s/fromOther=%t", harness, otherHarness), func(t *testing.T) {
+				ctx, store, worker := context.Background(), newSQLiteReviewStore(t), liveWorker()
+				worker.ReviewerHarness = harness
+				worker.ReviewerConfig = domain.AgentConfig{Permissions: domain.PermissionModeDefault}
+				if harness == domain.ReviewerAmp {
+					worker.ReviewerConfig.Mode = "medium"
+				} else {
+					worker.ReviewerConfig.Model = "review-model"
+				}
+				seedReviewWorker(t, store, worker)
+				launcher := &fakeLauncher{handle: "old-pane", agentSessionID: "old-native", alive: true}
+				engine := newEngineForTest(store, store, prAt("head-one"), store, launcher)
+				engine.models = successfulReviewerModelCatalog("review-model")
+				first, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+					t.Fatal(err)
+				}
+				before, err := store.ReviewerAgentSettings(ctx, first.Run.ReviewID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if otherHarness {
+					if _, err := store.SetSessionReviewerConfig(ctx, worker.ID, domain.ReviewerOpenCode, domain.AgentConfig{Model: "other-model"}, engine.clock()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				config := domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits}
+				if harness == domain.ReviewerAmp {
+					config.Mode = "high"
+				}
+				launcher.handle, launcher.agentSessionID = "new-pane", "new-native"
+				if _, err := engine.SwitchReviewer(ctx, worker.ID, harness, config); err != nil {
+					t.Fatal(err)
+				}
+				saved, found, err := store.GetSession(ctx, worker.ID)
+				if err != nil || !found || saved.ReviewerHarness != harness || saved.ReviewerConfig.Mode != config.Mode || saved.ReviewerConfig.Permissions != config.Permissions {
+					t.Fatalf("switch lost worker config: config=%+v want=%+v err=%v", saved.ReviewerConfig, config, err)
+				}
+				if !launcher.destroyed || launcher.destroyedHandle != "old-pane" || !launcher.restored || launcher.gotSpec.AgentSessionID != "" || launcher.gotSpec.AgentConfig.Mode != config.Mode || launcher.gotSpec.AgentConfig.Permissions != config.Permissions {
+					t.Fatalf("switch reused stale runtime: launch=%+v destroyed=%v/%s", launcher.gotSpec, launcher.destroyed, launcher.destroyedHandle)
+				}
+				engine.prs = prAt("head-two")
+				second, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{Harness: harness})
+				if err != nil || !second.Created || launcher.gotSpec.AgentConfig.Mode != config.Mode || launcher.gotSpec.AgentConfig.Permissions != config.Permissions {
+					t.Fatalf("Run review lost worker config: pass=%+v launch=%+v err=%v", second, launcher.gotSpec, err)
+				}
+				after, err := store.ReviewerAgentSettings(ctx, first.Run.ReviewID)
+				if err != nil || after.Revision != before.Revision || *after.Settings != *before.Settings || *second.Run.AgentSettings != *before.Settings {
+					t.Fatalf("worker config changed selection pin: before=%+v after=%+v pass=%+v err=%v", before, after, second.Run, err)
+				}
+			})
+		}
+	}
+}

@@ -3618,6 +3618,79 @@ describe("SessionInspector summary reviews", () => {
     expect(screen.getByRole("button", { name: /Select reviewer agent/ })).toHaveTextContent("GPT-5 Mini");
   });
 
+  it.each(["amp", "opencode"] satisfies WorkspaceSession["reviewerHarness"][])("reads back saved Amp mode after switching from %s and remounting", async (initialHarness) => {
+    let worker = session([pr(3, "open")], { reviewerHarness: initialHarness, reviewerConfig: initialHarness === "amp" ? { mode: "medium" } : undefined });
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/readiness") return { data: { agents: ["amp", "opencode", "codex", "claude-code"].map((id) => agentReadiness(id)) } };
+      if (path === "/api/v1/agents/{agent}/models") return { data: {
+        agentId: "amp", selectionMode: "mode", allowCustom: false, stale: false,
+        source: "official-catalog", fetchedAt: "2026-10-31T00:00:00Z",
+        models: [{ id: "medium", label: "Medium" }, { id: "high", label: "High" }],
+      } };
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-2")])(path);
+    });
+    postMock.mockImplementation(async (path: string, options?: { body?: { agentConfig?: { mode?: string } } }) => {
+      if (path === "/api/v1/sessions/{sessionId}/reviews/switch") worker = { ...worker, reviewerHarness: "amp", reviewerConfig: options?.body?.agentConfig };
+      return { data: { reviewerHandleId: "reviewer-pane", reviews: [reviewState(3, "needs_review", "sha-2")] }, response: { status: 200 } };
+    });
+    const first = renderWithQuery(<SessionInspector session={worker} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    const ampOption = await screen.findByRole("menuitem", { name: /amp/i });
+    act(() => ampOption.focus());
+    await userEvent.keyboard("{ArrowRight}");
+    await userEvent.click(await screen.findByRole("menuitem", { name: "High" }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/switch", {
+      params: { path: { sessionId: "sess-1" } }, body: { harness: "amp", agentConfig: { mode: "high" } },
+    }));
+    first.unmount();
+    renderWithQuery(<SessionInspector session={worker} />);
+    await openReviewsSection();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Select reviewer agent/ })).toHaveTextContent("High"));
+    await userEvent.click(screen.getByRole("button", { name: "Review latest commit" }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
+      params: { path: { sessionId: "sess-1" } }, body: { harness: "amp" },
+    }));
+    expect(worker.reviewerConfig?.mode).toBe("high");
+  });
+
+  it("explicitly resets a pinned reviewer when choosing the agent default", async () => {
+    hasTrustedApiBaseUrlMock.mockReturnValue(true);
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/reviews/{reviewId}/agent-settings") return { data: { reviewId: "review-owner", harness: "codex", revision: 0, activePass: false, applyMode: "next-pass", effectiveState: "unknown", reason: "", settings: { model: "gpt-5-mini", effort: "high", fastMode: "on" } } };
+      if (path === "/api/v1/sessions/{sessionId}/interface-transition") return { data: sessionInterfaceTransitionStatus("tui") };
+      if (path === "/api/v1/sessions/{sessionId}/reviews") return { data: { reviewerSurface: { reviewId: "review-owner", harness: "codex", mode: "tui" }, reviews: [reviewState(3, "needs_review", "sha-2")] } };
+      if (path === "/api/v1/agents/{agent}/models") return { data: { agentId: "codex", selectionMode: "catalog", allowCustom: false, models: [{ id: "gpt-5-mini", label: "GPT-5 Mini" }] } };
+      if (path === "/api/v1/projects/{id}") return { data: { project: { id: "ws-1", config: { reviewers: [{ harness: "claude-code" }] } } } };
+      return commonGetsResponder()(path);
+    });
+    postMock.mockResolvedValue({ data: { reviews: [] } });
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")], { reviewerHarness: "codex", reviewerConfig: { model: "gpt-5-mini", permissions: "accept-edits" } })} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Use agent model/i }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/switch", {
+      params: { path: { sessionId: "sess-1" } }, body: { harness: "codex", agentConfig: { fastMode: "default", permissions: "accept-edits" } },
+    }));
+  });
+
+  it("restores the saved reviewer display when a switch fails", async () => {
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/{agent}/models") return { data: { agentId: "codex", selectionMode: "catalog", allowCustom: false, models: [{ id: "gpt-5", label: "GPT-5" }, { id: "gpt-5-mini", label: "GPT-5 Mini" }] } };
+      return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-2")])(path);
+    });
+    postMock.mockResolvedValue({ error: { message: "Reviewer save rejected" } });
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")], { reviewerHarness: "codex", reviewerConfig: { model: "gpt-5" } })} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "GPT-5 Mini" }));
+    expect(await screen.findByText("Reviewer save rejected")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Select reviewer agent/ })).toHaveTextContent("Codex · GPT-5"));
+    expect(screen.getByRole("button", { name: /Select reviewer agent/ })).not.toHaveTextContent("Mini");
+  });
+
   it("preserves hidden reviewer config fields when saving a session reviewer model", async () => {
     getMock.mockImplementation(async (path: string, options?: { params?: { path?: { agent?: string } } }) => {
       if (path === "/api/v1/agents/{agent}/models" && options?.params?.path?.agent === "codex") {

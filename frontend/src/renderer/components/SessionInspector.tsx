@@ -1433,7 +1433,13 @@ function LocalReviewsSection({
 				!clearingToProjectDefault && currentEffectiveReviewerHarness === nextEffectiveReviewerHarness
 					? session.reviewerConfig
 					: undefined;
-			const nextReviewerConfig = buildReviewerAgentConfig(existingReviewerConfig, model, mode);
+			let nextReviewerConfig = buildReviewerAgentConfig(existingReviewerConfig, model, mode);
+			if (!model && !mode && reviewerSettingsQuery.data?.harness === nextEffectiveReviewerHarness && reviewerSettingsQuery.data.settings && (nextEffectiveReviewerHarness === "codex" || nextEffectiveReviewerHarness === "claude-code")) {
+				// An empty switch config preserves a pin. The picker default is an
+				// explicit reset, including inherited effort and fast overrides.
+				nextReviewerConfig = { ...nextReviewerConfig, fastMode: "default" };
+				delete nextReviewerConfig.effort;
+			}
 			const { data, error } = await clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/reviews/switch", {
 				params: { path: { sessionId: session.id } },
 				body: {
@@ -1444,6 +1450,11 @@ function LocalReviewsSection({
 			if (error) throw new Error(apiErrorMessage(error, "Unable to save reviewer"));
 			if (data) queryClient.setQueryData(reviewsKey, data);
 			return { data, hostId, reviewsKey, workspaceKey };
+		},
+		onError: () => {
+			setReviewerOverride(session.reviewerHarness ?? "");
+			setReviewerModel(session.reviewerConfig?.model ?? "");
+			setReviewerMode(session.reviewerConfig?.mode ?? "");
 		},
 		onSuccess: ({ data, hostId: requestHostId, reviewsKey: requestReviewsKey, workspaceKey: requestWorkspaceKey }) => {
 			void queryClient.invalidateQueries({ queryKey: requestReviewsKey });
@@ -2289,7 +2300,7 @@ function buildReviewerAgentConfig(
 	existing: WorkspaceSession["reviewerConfig"] | undefined,
 	model: string,
 	mode: string,
-): { model?: string; mode?: string; permissions?: string } | undefined {
+): components["schemas"]["AgentConfig"] | undefined {
 	const next = { ...existing };
 	if (model) next.model = model;
 	else delete next.model;
