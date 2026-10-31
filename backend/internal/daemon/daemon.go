@@ -398,6 +398,10 @@ func Run(buildVersion string) error {
 				BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
 			}, nil
 		}),
+		HistoricalReader: func(ctx context.Context, session domain.SessionID, before, limit int64) (chatsvc.ConversationRows, error) {
+			rows, err := store.LoadHistoricalSessionSnapshotPage(ctx, session, before, limit)
+			return chatsvc.ConversationRows{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities, OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore}, err
+		},
 		PageReader: chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, conversationID string, beforeSequence, limit int64) (chatsvc.ConversationRows, error) {
 			rows, err := store.LoadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit)
 			if err != nil {

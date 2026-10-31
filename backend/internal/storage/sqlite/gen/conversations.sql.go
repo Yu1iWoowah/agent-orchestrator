@@ -2383,7 +2383,7 @@ func (q *Queries) SelectConversationActivities(ctx context.Context, conversation
 
 const selectConversationActivitiesPage = `-- name: SelectConversationActivitiesPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
-    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    SELECT COALESCE(NULLIF(CAST(?4 AS TEXT), ''), conversations.active_branch_id), CAST(NULL AS INTEGER)
     FROM conversations
     WHERE conversations.id = ?1
     UNION ALL
@@ -2418,10 +2418,16 @@ type SelectConversationActivitiesPageParams struct {
 	ConversationID string
 	BeforeSequence int64
 	PageLimit      int64
+	RootBranchID   string
 }
 
 func (q *Queries) SelectConversationActivitiesPage(ctx context.Context, arg SelectConversationActivitiesPageParams) ([]ConversationActivity, error) {
-	rows, err := q.db.QueryContext(ctx, selectConversationActivitiesPage, arg.ConversationID, arg.BeforeSequence, arg.PageLimit)
+	rows, err := q.db.QueryContext(ctx, selectConversationActivitiesPage,
+		arg.ConversationID,
+		arg.BeforeSequence,
+		arg.PageLimit,
+		arg.RootBranchID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -3429,7 +3435,7 @@ func (q *Queries) SelectConversationMessages(ctx context.Context, conversationID
 
 const selectConversationMessagesPage = `-- name: SelectConversationMessagesPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
-    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    SELECT COALESCE(NULLIF(CAST(?4 AS TEXT), ''), conversations.active_branch_id), CAST(NULL AS INTEGER)
     FROM conversations
     WHERE conversations.id = ?1
     UNION ALL
@@ -3470,6 +3476,7 @@ type SelectConversationMessagesPageParams struct {
 	ConversationID string
 	BeforeSequence int64
 	PageLimit      int64
+	RootBranchID   string
 }
 
 type SelectConversationMessagesPageRow struct {
@@ -3478,7 +3485,12 @@ type SelectConversationMessagesPageRow struct {
 }
 
 func (q *Queries) SelectConversationMessagesPage(ctx context.Context, arg SelectConversationMessagesPageParams) ([]SelectConversationMessagesPageRow, error) {
-	rows, err := q.db.QueryContext(ctx, selectConversationMessagesPage, arg.ConversationID, arg.BeforeSequence, arg.PageLimit)
+	rows, err := q.db.QueryContext(ctx, selectConversationMessagesPage,
+		arg.ConversationID,
+		arg.BeforeSequence,
+		arg.PageLimit,
+		arg.RootBranchID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -3621,6 +3633,27 @@ func (q *Queries) SelectConversationNativeThreadEvidence(ctx context.Context, ar
 		return nil, err
 	}
 	return items, nil
+}
+
+const selectConversationNextContextResetSequence = `-- name: SelectConversationNextContextResetSequence :one
+SELECT CAST(COALESCE(MIN(sequence), 0) AS INTEGER) AS sequence
+FROM conversation_activities
+WHERE conversation_id = ?1
+  AND sequence > ?2
+  AND kind = 'system'
+  AND provider_item_id LIKE 'ao-context-reset:%'
+`
+
+type SelectConversationNextContextResetSequenceParams struct {
+	ConversationID string
+	AfterSequence  int64
+}
+
+func (q *Queries) SelectConversationNextContextResetSequence(ctx context.Context, arg SelectConversationNextContextResetSequenceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, selectConversationNextContextResetSequence, arg.ConversationID, arg.AfterSequence)
+	var sequence int64
+	err := row.Scan(&sequence)
+	return sequence, err
 }
 
 const selectConversationProviderEvents = `-- name: SelectConversationProviderEvents :many
@@ -4046,7 +4079,7 @@ func (q *Queries) SelectConversationTurns(ctx context.Context, conversationID st
 
 const selectConversationTurnsPage = `-- name: SelectConversationTurnsPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
-    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    SELECT COALESCE(NULLIF(CAST(?4 AS TEXT), ''), conversations.active_branch_id), CAST(NULL AS INTEGER)
     FROM conversations
     WHERE conversations.id = ?1
     UNION ALL
@@ -4098,12 +4131,18 @@ type SelectConversationTurnsPageParams struct {
 	ConversationID string
 	OldestSequence int64
 	BeforeSequence int64
+	RootBranchID   string
 }
 
 // Turns represented by one bounded timeline page. Active turns are included
 // even before their first item arrives, so the live-turn controls never vanish.
 func (q *Queries) SelectConversationTurnsPage(ctx context.Context, arg SelectConversationTurnsPageParams) ([]ConversationTurn, error) {
-	rows, err := q.db.QueryContext(ctx, selectConversationTurnsPage, arg.ConversationID, arg.OldestSequence, arg.BeforeSequence)
+	rows, err := q.db.QueryContext(ctx, selectConversationTurnsPage,
+		arg.ConversationID,
+		arg.OldestSequence,
+		arg.BeforeSequence,
+		arg.RootBranchID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -4700,6 +4739,88 @@ func (q *Queries) SelectReservedConversationTurnForPromotion(ctx context.Context
 		&i.ClientMessageID,
 		&i.Origin,
 		&i.DeliveryContentJson,
+	)
+	return i, err
+}
+
+const selectRetiredOrchestratorConversation = `-- name: SelectRetiredOrchestratorConversation :one
+SELECT conversations.id, conversations.scope, conversations.project_id, conversations.session_id, conversations.review_id, conversations.current_session_id, conversations.current_review_id, conversations.latest_sequence, conversations.created_at, conversations.updated_at, conversations.model, conversations.reasoning_effort, conversations.approval_mode, conversations.compacted_at, conversations.context_used, conversations.context_window, conversations.usage_input_tokens, conversations.usage_output_tokens, conversations.usage_cached_tokens, conversations.usage_total_tokens, conversations.rate_limit_primary_percent, conversations.rate_limit_secondary_percent, conversations.rate_limit_primary_resets_in, conversations.rate_limit_secondary_resets_in, conversations.rate_limit_plan, conversations.provider_title, conversations.applied_title, conversations.model_reroute_json, conversations.account_json, conversations.thread_state_json, conversations.mcp_servers_json, conversations.usage_cost, conversations.usage_currency, conversations.active_branch_id, conversations.opencode_mode, conversations.auto_compact_window, conversations.agent_fast_mode, conversation_branches.id, conversation_branches.conversation_id, conversation_branches.session_id, conversation_branches.provider_conversation_id, conversation_branches.parent_branch_id, conversation_branches.fork_after_turn_id, conversation_branches.replaced_turn_id, conversation_branches.replacement_turn_id, conversation_branches.fork_after_sequence, conversation_branches.created_at, conversation_branches.strategy, conversation_branches.replay_cutoff_sequence, conversation_branches.replay_truncated, conversation_branches.provider_scope_id, conversation_branches.provider_ids_scoped, conversation_branches.review_id, conversation_branches.handoff_note
+FROM sessions
+JOIN conversation_branches ON conversation_branches.session_id = sessions.id
+JOIN conversations ON conversations.id = conversation_branches.conversation_id
+WHERE sessions.id = ?1
+  AND sessions.kind = 'orchestrator' AND sessions.is_terminated = 1
+  AND conversations.scope = 'project' AND conversations.project_id = sessions.project_id
+  AND (sessions.provider_conversation_id = '' OR conversation_branches.provider_conversation_id = sessions.provider_conversation_id)
+ORDER BY conversation_branches.created_at DESC, conversation_branches.id DESC
+LIMIT 1
+`
+
+type SelectRetiredOrchestratorConversationRow struct {
+	Conversation       Conversation
+	ConversationBranch ConversationBranch
+}
+
+// A retired orchestrator keeps its final native branch for read-only history.
+// Never use this selector for controller admission or writes.
+func (q *Queries) SelectRetiredOrchestratorConversation(ctx context.Context, sessionID domain.SessionID) (SelectRetiredOrchestratorConversationRow, error) {
+	row := q.db.QueryRowContext(ctx, selectRetiredOrchestratorConversation, sessionID)
+	var i SelectRetiredOrchestratorConversationRow
+	err := row.Scan(
+		&i.Conversation.ID,
+		&i.Conversation.Scope,
+		&i.Conversation.ProjectID,
+		&i.Conversation.SessionID,
+		&i.Conversation.ReviewID,
+		&i.Conversation.CurrentSessionID,
+		&i.Conversation.CurrentReviewID,
+		&i.Conversation.LatestSequence,
+		&i.Conversation.CreatedAt,
+		&i.Conversation.UpdatedAt,
+		&i.Conversation.Model,
+		&i.Conversation.ReasoningEffort,
+		&i.Conversation.ApprovalMode,
+		&i.Conversation.CompactedAt,
+		&i.Conversation.ContextUsed,
+		&i.Conversation.ContextWindow,
+		&i.Conversation.UsageInputTokens,
+		&i.Conversation.UsageOutputTokens,
+		&i.Conversation.UsageCachedTokens,
+		&i.Conversation.UsageTotalTokens,
+		&i.Conversation.RateLimitPrimaryPercent,
+		&i.Conversation.RateLimitSecondaryPercent,
+		&i.Conversation.RateLimitPrimaryResetsIn,
+		&i.Conversation.RateLimitSecondaryResetsIn,
+		&i.Conversation.RateLimitPlan,
+		&i.Conversation.ProviderTitle,
+		&i.Conversation.AppliedTitle,
+		&i.Conversation.ModelRerouteJson,
+		&i.Conversation.AccountJson,
+		&i.Conversation.ThreadStateJson,
+		&i.Conversation.McpServersJson,
+		&i.Conversation.UsageCost,
+		&i.Conversation.UsageCurrency,
+		&i.Conversation.ActiveBranchID,
+		&i.Conversation.OpencodeMode,
+		&i.Conversation.AutoCompactWindow,
+		&i.Conversation.AgentFastMode,
+		&i.ConversationBranch.ID,
+		&i.ConversationBranch.ConversationID,
+		&i.ConversationBranch.SessionID,
+		&i.ConversationBranch.ProviderConversationID,
+		&i.ConversationBranch.ParentBranchID,
+		&i.ConversationBranch.ForkAfterTurnID,
+		&i.ConversationBranch.ReplacedTurnID,
+		&i.ConversationBranch.ReplacementTurnID,
+		&i.ConversationBranch.ForkAfterSequence,
+		&i.ConversationBranch.CreatedAt,
+		&i.ConversationBranch.Strategy,
+		&i.ConversationBranch.ReplayCutoffSequence,
+		&i.ConversationBranch.ReplayTruncated,
+		&i.ConversationBranch.ProviderScopeID,
+		&i.ConversationBranch.ProviderIdsScoped,
+		&i.ConversationBranch.ReviewID,
+		&i.ConversationBranch.HandoffNote,
 	)
 	return i, err
 }

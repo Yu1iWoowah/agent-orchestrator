@@ -151,7 +151,7 @@ import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
 import { useCloudSession } from "../lib/cloud-session";
 import type { RemoteHost } from "../hooks/useRemoteHosts";
-import { sessionNavigateTarget } from "../lib/navigate-to-session";
+import { orchestratorNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
 import { sessionUiKey } from "../lib/hosts";
 import { RemoteHostsSection } from "./RemoteHostsSection";
 
@@ -561,7 +561,11 @@ function useSelection() {
 		[navigate],
 	);
 	const goSession = useCallback(
-		(projectId: string, sessionId: string) => {
+		(projectId: string, sessionId: string, followOrchestrator = false) => {
+			if (followOrchestrator) {
+				void navigate(orchestratorNavigateTarget(projectId, sessionId));
+				return;
+			}
 			if (projectId === STANDALONE_WORKSPACE_ID) {
 				void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
 				return;
@@ -1633,7 +1637,7 @@ const ProjectItem = memo(function ProjectItem({
 					// Start the resume, then open the chat while it runs; its
 					// composer shows the startup shimmer in the meantime.
 					const resume = resumeOrchestrator(orchestrator.id);
-					selection.goSession(workspace.id, orchestrator.id);
+					selection.goSession(workspace.id, orchestrator.id, true);
 					await resume;
 					await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 					return;
@@ -1649,7 +1653,7 @@ const ProjectItem = memo(function ProjectItem({
 					setIsSpawning(false);
 				}
 			}
-			selection.goSession(workspace.id, orchestrator.id);
+			selection.goSession(workspace.id, orchestrator.id, true);
 			return;
 		}
 		// A guest cannot start an orchestrator in someone else's project.
@@ -1662,7 +1666,7 @@ const ProjectItem = memo(function ProjectItem({
 			try {
 				const sessionId = await spawnCloudOrchestrator(queryClient, workspace.id);
 				await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
-				selection.goSession(workspace.id, sessionId);
+				selection.goSession(workspace.id, sessionId, true);
 			} catch (err) {
 				console.error("Failed to spawn cloud orchestrator:", err);
 			} finally {
@@ -1678,7 +1682,7 @@ const ProjectItem = memo(function ProjectItem({
 		try {
 			const sessionId = await spawnOrchestrator(workspace.id, "sidebar");
 			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-			selection.goSession(workspace.id, sessionId);
+			selection.goSession(workspace.id, sessionId, true);
 		} catch (err) {
 			console.error("Failed to spawn orchestrator:", err);
 		} finally {

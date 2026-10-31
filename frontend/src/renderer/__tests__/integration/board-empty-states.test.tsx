@@ -729,6 +729,7 @@ describe.each([false, true])("shared project board actions, in-panel header=%s",
 		expect(spawnOrchestratorMock).toHaveBeenLastCalledWith("proj-1", "board", false, "tui");
 		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId", params: { projectId: "proj-1", sessionId: "orch-retry" },
+			search: { followOrchestrator: true },
 		}));
 	});
 

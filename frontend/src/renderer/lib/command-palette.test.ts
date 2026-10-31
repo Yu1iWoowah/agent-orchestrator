@@ -794,3 +794,16 @@ describe("loose keyword matches", () => {
 		expect(matchScore("side", setting)).toBe(0);
 	});
 });
+
+it("opens a retired orchestrator transcript from search as a fixed historical session", () => {
+	const rows = workspaces();
+	rows[0].sessions.push(session({ id: "old-orchestrator", title: "Previous coordinator", kind: "orchestrator", isTerminated: true }));
+	const items = buildCommands({ workspaces: rows });
+	const historical = byId(items).get("session:old-orchestrator");
+	expect(historical?.searchOnly).toBe(true);
+	expect(historical?.subtitle).toBe("app · old-orchestrator");
+	expect(historical?.action).toEqual({ kind: "navigate", target: { to: "/projects/$projectId/sessions/$sessionId", params: { projectId: "proj-1", sessionId: "old-orchestrator" } } });
+	expect(filterCommands(items, "").some((item) => item.id === "session:old-orchestrator")).toBe(false);
+	expect(filterCommands(items, "Previous coordinator").some((item) => item.id === "session:old-orchestrator")).toBe(true);
+	expect(byId(items).has("session:orch")).toBe(false);
+});

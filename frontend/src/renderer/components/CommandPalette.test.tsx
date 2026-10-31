@@ -878,6 +878,15 @@ describe("CommandPalette actions", () => {
 		});
 	});
 
+	it("opens the project orchestrator with follow intent instead of a fixed history link", async () => {
+		ctx.params = { projectId: "proj-1" };
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search sessions/i);
+		fireEvent.click(screen.getByText(rowTitle("Open orchestrator")));
+		expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { followOrchestrator: true } }));
+	});
+
 	it("spawns only once when Open orchestrator is selected twice (in-flight guard)", async () => {
 		ctx.params = { projectId: "proj-2" };
 		spawnMock.mockReturnValueOnce(new Promise<string>(() => {}));

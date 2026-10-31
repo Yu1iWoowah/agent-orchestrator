@@ -61,6 +61,7 @@ type Service struct {
 	settingsGrants          ports.AgentSettingsGrantEnvironment // guarded by mu
 	reader                  SnapshotReader
 	pageReader              SnapshotPageReader
+	historicalReader        HistoricalSnapshotReader
 	sessions                SessionReader
 	drivers                 ports.ChatDriverRegistry
 	activity                ActivityRecorder
@@ -163,12 +164,13 @@ func (g controllerGate) unlock() { <-g }
 // Options configures a Service. The id factory and clock are injected so tests
 // are deterministic.
 type Options struct {
-	AppRunID   string
-	Store      Store
-	Reader     SnapshotReader
-	PageReader SnapshotPageReader
-	Sessions   SessionReader
-	Drivers    ports.ChatDriverRegistry
+	AppRunID         string
+	Store            Store
+	Reader           SnapshotReader
+	PageReader       SnapshotPageReader
+	HistoricalReader HistoricalSnapshotReader
+	Sessions         SessionReader
+	Drivers          ports.ChatDriverRegistry
 	// Activity feeds derived session status from turn events. Nil leaves a chat
 	// session reading as idle while it works, so production always wires it.
 	Activity ActivityRecorder
@@ -218,6 +220,7 @@ func New(opts Options) *Service {
 		store:                  opts.Store,
 		reader:                 opts.Reader,
 		pageReader:             opts.PageReader,
+		historicalReader:       opts.HistoricalReader,
 		sessions:               opts.Sessions,
 		drivers:                opts.Drivers,
 		activity:               opts.Activity,
@@ -2091,16 +2094,9 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 
 	conversation, err := s.store.ConversationForSession(ctx, id)
 	if errors.Is(err, domain.ErrNoConversation) {
-		// A chat session has no conversation until its controller first starts.
-		// That is an empty conversation, not a failure — returning an error here
-		// would make a brand-new session look broken.
-		return Snapshot{
-			SessionID:  id,
-			Harness:    record.Harness,
-			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: idleControllerState(record),
-		}, nil
+		return s.snapshotWithoutCurrentConversation(ctx, record, 0, 0)
 	}
+
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("conversation for %s: %w", id, err)
 	}
@@ -2203,13 +2199,9 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	}
 	conversation, err := s.store.ConversationForSession(ctx, id)
 	if errors.Is(err, domain.ErrNoConversation) {
-		return Snapshot{
-			SessionID:  id,
-			Harness:    record.Harness,
-			Mode:       domain.NormalizeSessionMode(record.Mode),
-			Controller: idleControllerState(record),
-		}, nil
+		return s.snapshotWithoutCurrentConversation(ctx, record, beforeSequence, limit)
 	}
+
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("conversation for %s: %w", id, err)
 	}

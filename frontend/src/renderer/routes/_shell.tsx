@@ -79,7 +79,8 @@ import { clientForHost } from "../lib/host-clients";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCloudAccountSwitchReset } from "../hooks/useCloudAccountSwitchReset";
 import { openRemoteOrchestrator } from "../lib/remote-orchestrator";
-import { projectNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
+import { useFollowProjectOrchestrator } from "../hooks/useFollowProjectOrchestrator";
+import { orchestratorNavigateTarget, projectNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
 import { sessionUiKey } from "../lib/hosts";
 import { buildSidebarSessionOrder, sessionWantsAttention, stepSessionNav, type SidebarNavSession } from "../lib/sidebar-order";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
@@ -326,6 +327,7 @@ function ShellLayout() {
 	const workspaces = workspaceQuery.data ?? [];
 	const { hosts: remoteHosts, refresh: refreshRemoteHosts } = useRemoteHosts();
 	const { data: remoteWorkspaces, failedHostIds: remoteFailedHostIds } = useRemoteWorkspaces();
+	useFollowProjectOrchestrator(workspaces, remoteWorkspaces);
 	const failedRemoteHostKey = remoteFailedHostIds.join("\0");
 	useEffect(() => {
 		if (failedRemoteHostKey) void refreshRemoteHosts();
@@ -717,10 +719,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 			// this project's board; do not pull them back from another page.
 			const current = routeParamsRef.current;
 			if (current.projectId === workspace.id && !current.sessionId && !current.hostId) {
-				void navigate({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId: workspace.id, sessionId },
-				});
+				void navigate(orchestratorNavigateTarget(workspace.id, sessionId));
 			}
 		} catch (spawnError) {
 			window.clearTimeout(provisioningGuard);
@@ -954,7 +953,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 		if (!projectId) throw Object.assign(new Error(apiErrorMessage(error, "Could not add project on this host.")), { code: apiErrorCode(error) });
 		const showProject = (sessionId?: string) => {
 			void queryClient.invalidateQueries({ queryKey: remoteWorkspaceQueryKey(hostId) });
-			void navigate(sessionId ? sessionNavigateTarget(projectId, sessionId, hostId) : projectNavigateTarget(projectId, hostId));
+			void navigate(sessionId ? orchestratorNavigateTarget(projectId, sessionId, hostId) : projectNavigateTarget(projectId, hostId));
 		};
 		showProject();
 		setOrchestratorStartupError(projectId, null, hostId);
@@ -1095,7 +1094,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 		try {
 			const sessionId = await openRemoteOrchestrator(hostId, projectId, newestActiveOrchestrator(workspace.sessions));
 			await queryClient.invalidateQueries({ queryKey: remoteWorkspaceQueryKey(hostId) });
-			void navigate(sessionNavigateTarget(projectId, sessionId, hostId));
+			void navigate(orchestratorNavigateTarget(projectId, sessionId, hostId));
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : t("shell.couldNotSpawn");
 			setOrchestratorStartupError(projectId, message, hostId);

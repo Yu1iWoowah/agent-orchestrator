@@ -298,7 +298,7 @@ function sessionCommand(
 	workspace: WorkspaceSummary,
 	session: WorkspaceSession,
 	group: SessionCommandGroup,
-): CommandItem {
+): CommandItem & { keywords: string[] } {
 	return {
 		id: `${SESSION_ID_PREFIX[group]}:${session.id}`,
 		group,
@@ -483,10 +483,17 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 	}
 
 	for (const workspace of workspaces) {
-		for (const session of workerSessions(workspace.sessions).filter(
-			(session) => !attentionIds.has(session.id) && session.id !== currentSessionId,
+		for (const session of workspace.sessions.filter(
+			(session) => (!isOrchestratorSession(session) || !sessionIsActive(session)) && !attentionIds.has(session.id) && session.id !== currentSessionId,
 		)) {
-			items.push({ ...sessionCommand(workspace, session, "sessions"), searchOnly: !sessionIsActive(session) });
+			const command = sessionCommand(workspace, session, "sessions");
+			const historicalOrchestrator = isOrchestratorSession(session);
+			items.push({
+				...command,
+				subtitle: historicalOrchestrator ? `${workspace.name} · ${session.id}` : command.subtitle,
+				keywords: historicalOrchestrator ? [...command.keywords, session.id] : command.keywords,
+				searchOnly: !sessionIsActive(session),
+			});
 		}
 	}
 

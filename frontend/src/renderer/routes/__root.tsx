@@ -8,6 +8,8 @@ import { useKeybindingsStore } from "../stores/keybindings-store";
 export const Route = createRootRouteWithContext<{
 	queryClient: QueryClient;
 }>()({
+	validateSearch: (search: Record<string, unknown>): { followOrchestrator?: true } =>
+		({ followOrchestrator: search.followOrchestrator === true ? true : undefined }),
 	component: RootComponent,
 });
 

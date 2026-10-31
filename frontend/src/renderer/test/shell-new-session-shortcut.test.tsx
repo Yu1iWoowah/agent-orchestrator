@@ -592,6 +592,7 @@ describe("shell workspace startup", () => {
 		await waitFor(() => expect(shellMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "orch-existing" },
+			search: { followOrchestrator: true },
 		}));
 		expect(apiClient.POST).toHaveBeenCalledWith("/api/v1/sessions", {
 			body: { projectId: "proj-1", kind: "orchestrator", harness: "codex" },
@@ -746,6 +747,7 @@ describe("shell workspace startup", () => {
 		await waitFor(() => expect(shellMocks.navigate).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-new", sessionId: "orch-new" },
+			search: { followOrchestrator: true },
 		}));
 		const publish = shellMocks.queryClient.setQueryData.mock.calls.at(-1)?.[1] as (current: WorkspaceSummary[]) => WorkspaceSummary[];
 		expect(publish([{ ...workspaces[0], id: "proj-new", name: "New", sessions: [] }])[0].sessions[0]).toMatchObject({ id: "orch-new", mode: "chat", provisionState: "provisioning" });
@@ -1529,5 +1531,24 @@ describe("shell taskbar-icon folder drop subscription", () => {
 
 		expect(useUiStore.getState().folderDropRequest).toEqual({ nonce: 1, path: "/dropped-on-icon/my-project" });
 		expect(screen.getByTestId("create-project-flow")).toHaveAttribute("data-path", "/dropped-on-icon/my-project");
+	});
+});
+
+describe("shell project orchestrator following", () => {
+	it("switches the open project-role chat when the workspace publishes a successor", async () => {
+		const old = { ...workspaces[0].sessions[0], id: "orch-old", kind: "orchestrator" as const };
+		shellMocks.state.routeParams = { projectId: "proj-1", sessionId: old.id };
+		shellMocks.state.routeSearch = { followOrchestrator: true };
+		setWorkspaces([{ ...workspaces[0], sessions: [old] }]);
+		const view = await renderShell();
+		shellMocks.navigate.mockClear();
+		setWorkspaces([{ ...workspaces[0], sessions: [{ ...old, isTerminated: true }, { ...old, id: "orch-new", isTerminated: false }] }]);
+		view.rerender(<Suspense fallback={null}><ShellRoute /></Suspense>);
+		await waitFor(() => expect(shellMocks.navigate).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "orch-new" },
+			search: { followOrchestrator: true },
+			replace: true,
+		}));
 	});
 });

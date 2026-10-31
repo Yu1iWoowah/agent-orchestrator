@@ -28,6 +28,20 @@ SELECT * FROM conversations WHERE current_session_id = ?
 ORDER BY scope = 'project' DESC, created_at DESC, id DESC
 LIMIT 1;
 
+-- A retired orchestrator keeps its final native branch for read-only history.
+-- Never use this selector for controller admission or writes.
+-- name: SelectRetiredOrchestratorConversation :one
+SELECT sqlc.embed(conversations), sqlc.embed(conversation_branches)
+FROM sessions
+JOIN conversation_branches ON conversation_branches.session_id = sessions.id
+JOIN conversations ON conversations.id = conversation_branches.conversation_id
+WHERE sessions.id = sqlc.arg(session_id)
+  AND sessions.kind = 'orchestrator' AND sessions.is_terminated = 1
+  AND conversations.scope = 'project' AND conversations.project_id = sessions.project_id
+  AND (sessions.provider_conversation_id = '' OR conversation_branches.provider_conversation_id = sessions.provider_conversation_id)
+ORDER BY conversation_branches.created_at DESC, conversation_branches.id DESC
+LIMIT 1;
+
 -- Sessions in the batch whose latest Chat turn the person interrupted. The
 -- conversation is the one SelectConversationBySession picks. A cancelled turn is
 -- a queued prompt the user withdrew, so it never counts as the latest turn.
@@ -996,7 +1010,7 @@ LIMIT 1;
 -- even before their first item arrives, so the live-turn controls never vanish.
 -- name: SelectConversationTurnsPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
-    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    SELECT COALESCE(NULLIF(CAST(sqlc.arg(root_branch_id) AS TEXT), ''), conversations.active_branch_id), CAST(NULL AS INTEGER)
     FROM conversations
     WHERE conversations.id = sqlc.arg(conversation_id)
     UNION ALL
@@ -1471,7 +1485,7 @@ ORDER BY conversation_messages.sequence;
 
 -- name: SelectConversationMessagesPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
-    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    SELECT COALESCE(NULLIF(CAST(sqlc.arg(root_branch_id) AS TEXT), ''), conversations.active_branch_id), CAST(NULL AS INTEGER)
     FROM conversations
     WHERE conversations.id = sqlc.arg(conversation_id)
     UNION ALL
@@ -1685,6 +1699,14 @@ WHERE conversation_id = ?
   AND kind = 'system'
   AND provider_item_id = ?;
 
+-- name: SelectConversationNextContextResetSequence :one
+SELECT CAST(COALESCE(MIN(sequence), 0) AS INTEGER) AS sequence
+FROM conversation_activities
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND sequence > sqlc.arg(after_sequence)
+  AND kind = 'system'
+  AND provider_item_id LIKE 'ao-context-reset:%';
+
 -- Activities the agent still remembers, filtered the same way messages are and for
 -- the same reason. See SelectConversationMessages.
 -- name: SelectConversationActivities :many
@@ -1719,7 +1741,7 @@ ORDER BY conversation_activities.sequence;
 
 -- name: SelectConversationActivitiesPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
-    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    SELECT COALESCE(NULLIF(CAST(sqlc.arg(root_branch_id) AS TEXT), ''), conversations.active_branch_id), CAST(NULL AS INTEGER)
     FROM conversations
     WHERE conversations.id = sqlc.arg(conversation_id)
     UNION ALL
