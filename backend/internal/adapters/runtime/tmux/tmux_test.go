@@ -236,24 +236,23 @@ func TestCommandBuilders(t *testing.T) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
 	}
 	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
-		[]string{"respawn-pane", "-k", "-t", "sess-1", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
+		[]string{"respawn-pane", "-k", "-t", "=sess-1:", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("respawnPaneArgs = %#v, want %#v", got, want)
 	}
-	// set-option uses pane-targeting (no = prefix).
-	if got, want := setStatusOffArgs("sess-1"), []string{"set-option", "-t", "sess-1", "status", "off"}; !reflect.DeepEqual(got, want) {
+	// Window/pane commands must make the session component exact.
+	if got, want := setStatusOffArgs("sess-1"), []string{"set-option", "-t", "=sess-1:", "status", "off"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("setStatusOffArgs = %#v, want %#v", got, want)
 	}
-	if got, want := setWindowSizeLargestArgs("sess-1"), []string{"set-option", "-t", "sess-1", "window-size", "largest"}; !reflect.DeepEqual(got, want) {
+	if got, want := setWindowSizeLargestArgs("sess-1"), []string{"set-option", "-t", "=sess-1:", "window-size", "largest"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("setWindowSizeLargestArgs = %#v, want %#v", got, want)
 	}
-	if got, want := paneCurrentPathArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1", "#{pane_current_path}"}; !reflect.DeepEqual(got, want) {
+	if got, want := paneCurrentPathArgs("sess-1"), []string{"display-message", "-p", "-t", "=sess-1:", "#{pane_current_path}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("paneCurrentPathArgs = %#v, want %#v", got, want)
 	}
-	if got, want := setMouseOnArgs("sess-1"), []string{"set-option", "-t", "sess-1", "mouse", "on"}; !reflect.DeepEqual(got, want) {
+	if got, want := setMouseOnArgs("sess-1"), []string{"set-option", "-t", "=sess-1:", "mouse", "on"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("setMouseOnArgs = %#v, want %#v", got, want)
 	}
-	// set-option uses the exact-match target `=<id>:`, unlike the plain targets
-	// above: this call can run long after creation, when the session may
+	// This guard can run long after creation, when the session may
 	// already be gone, and a plain target then risks silently re-targeting an
 	// unrelated session sharing the name prefix (see setDetachOnDestroyOnArgs).
 	if got, want := setDetachOnDestroyOnArgs("sess-1"), []string{"set-option", "-t", "=sess-1:", "detach-on-destroy", "on"}; !reflect.DeepEqual(got, want) {
@@ -269,26 +268,29 @@ func TestCommandBuilders(t *testing.T) {
 	if got, want := hasSessionArgs("sess-1"), []string{"has-session", "-t", "=sess-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hasSessionArgs = %#v, want %#v", got, want)
 	}
-	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "sess-1", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
+	if got, want := paneDeadArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1:", "-F", "#{pane_dead}"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("paneDeadArgs = %#v, want %#v", got, want)
+	}
+	if got, want := panePIDArgs("sess-1"), []string{"display-message", "-p", "-t", "=sess-1:", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("panePIDArgs = %#v, want %#v", got, want)
 	}
 	// list-panes reaps whole-session (-s) with exact-match target and prints pane pids.
 	if got, want := listPanePIDsArgs("sess-1"), []string{"list-panes", "-s", "-t", "=sess-1:", "-F", "#{pane_pid}"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("listPanePIDsArgs = %#v, want %#v", got, want)
 	}
-	if got, want := sendKeysLiteralArgs("sess-1", "hello"), []string{"send-keys", "-t", "sess-1", "-l", "hello"}; !reflect.DeepEqual(got, want) {
+	if got, want := sendKeysLiteralArgs("sess-1", "hello"), []string{"send-keys", "-t", "=sess-1:", "-l", "hello"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sendKeysLiteralArgs = %#v, want %#v", got, want)
 	}
-	if got, want := sendEnterArgs("sess-1"), []string{"send-keys", "-t", "sess-1", "Enter"}; !reflect.DeepEqual(got, want) {
+	if got, want := sendEnterArgs("sess-1"), []string{"send-keys", "-t", "=sess-1:", "Enter"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sendEnterArgs = %#v, want %#v", got, want)
 	}
-	if got, want := sendInterruptArgs("sess-1"), []string{"send-keys", "-t", "sess-1", "C-c"}; !reflect.DeepEqual(got, want) {
+	if got, want := sendInterruptArgs("sess-1"), []string{"send-keys", "-t", "=sess-1:", "C-c"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sendInterruptArgs = %#v, want %#v", got, want)
 	}
-	if got, want := capturePaneArgs("sess-1", 10), []string{"capture-pane", "-t", "sess-1", "-p", "-S", "-10"}; !reflect.DeepEqual(got, want) {
+	if got, want := capturePaneArgs("sess-1", 10), []string{"capture-pane", "-t", "=sess-1:", "-p", "-S", "-10"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("capturePaneArgs = %#v, want %#v", got, want)
 	}
-	if got, want := capturePaneStyledArgs("sess-1", 10), []string{"capture-pane", "-e", "-t", "sess-1", "-p", "-S", "-10"}; !reflect.DeepEqual(got, want) {
+	if got, want := capturePaneStyledArgs("sess-1", 10), []string{"capture-pane", "-e", "-t", "=sess-1:", "-p", "-S", "-10"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("capturePaneStyledArgs = %#v, want %#v", got, want)
 	}
 }
@@ -750,7 +752,7 @@ func TestRestartRespawnsExistingPaneAndPreservesHandle(t *testing.T) {
 	if len(fr.calls) != 2 {
 		t.Fatalf("calls = %d, want respawn + liveness probe", len(fr.calls))
 	}
-	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "sess-1" || args[5] != "/tmp/ws" {
+	if args := fr.calls[0].args; len(args) < 6 || args[0] != "respawn-pane" || args[1] != "-k" || args[3] != "=sess-1:" || args[5] != "/tmp/ws" {
 		t.Fatalf("respawn args = %#v", args)
 	}
 	if args := fr.calls[1].args; !reflect.DeepEqual(args, hasSessionArgs("sess-1")) {
@@ -1000,12 +1002,16 @@ func TestDestroyIsIdempotentWhenNoSuchSession(t *testing.T) {
 	for _, command := range []string{"set-option", "kill-session"} {
 		t.Run(command, func(t *testing.T) {
 			r, _ := newTestRuntime(0)
-			r.runner = &fakeRunnerSelectiveErr{
+			fr := &fakeRunnerSelectiveErr{
 				exitErrOn: command,
 				errOutput: []byte("no such session: =review-worker-1:"),
 			}
+			r.runner = fr
 			if err := r.Destroy(context.Background(), ports.RuntimeHandle{ID: "review-worker-1"}); err != nil {
 				t.Fatalf("Destroy already-missing reviewer: %v", err)
+			}
+			if len(fr.calls) != 3 || !reflect.DeepEqual(fr.calls[2].args, []string{"kill-session", "-t", "=review-worker-1"}) {
+				t.Fatalf("cleanup calls = %v, want kill-session after missing-session guard", fr.calls)
 			}
 		})
 	}
@@ -1774,7 +1780,7 @@ func TestIsChildAliveUsesPaneStatus(t *testing.T) {
 			if alive != tc.alive || (err != nil) != tc.wantErr {
 				t.Fatalf("child status %q = %v, %v; want alive %v, error %v", tc.status, alive, err, tc.alive, tc.wantErr)
 			}
-			if len(fr.calls) != 2 || !reflect.DeepEqual(fr.calls[1].args, []string{"list-panes", "-s", "-t", "=shell", "-F", "#{pane_dead}"}) {
+			if len(fr.calls) != 2 || !reflect.DeepEqual(fr.calls[1].args, []string{"list-panes", "-s", "-t", "=shell:", "-F", "#{pane_dead}"}) {
 				t.Fatalf("child probe calls = %v", fr.calls)
 			}
 		})
