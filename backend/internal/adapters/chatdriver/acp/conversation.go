@@ -776,7 +776,7 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 }
 
 func (c *conversation) runTurn(ctx context.Context, sessionID string, turn preparedTurn) {
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.id})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.id, ProviderConversationID: c.ProviderConversationID()})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
 	// ACP message ids are opaque idempotency/correlation keys. Preserve AO's
 	// durable client id when possible so an agent that echoes it from session/load
@@ -908,7 +908,7 @@ func (c *conversation) finishPrompt(
 	}
 	c.emit(ports.ChatEvent{
 		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state, Err: turnErr,
+		ProviderTurnID: turnID, ProviderConversationID: c.ProviderConversationID(), TurnState: state, Err: turnErr,
 	})
 	// Release the turn before announcing readiness, not after. A consumer that
 	// reacts to ChatControllerReady by sending the next turn — AO's own queue
@@ -973,7 +973,7 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	c.providerFailure = nil
 	c.mu.Unlock()
 
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id, ProviderConversationID: c.ProviderConversationID()})
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy})
 
 	go c.runCompactionTurn(turnCtx, sessionID, id)

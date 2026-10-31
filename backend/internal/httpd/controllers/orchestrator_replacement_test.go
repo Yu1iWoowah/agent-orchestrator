@@ -382,3 +382,23 @@ func TestReplacementHTTPPendingIntakeOnlyReads(t *testing.T) {
 		}
 	}
 }
+
+func TestReplacementProvenanceFailureHasSafeRecoveryGuidance(t *testing.T) {
+	op := replacementAPIState()
+	op.Phase, op.ResumePhase = domain.ReplacementAwaitingHandoff, domain.ReplacementPreparingHandoff
+	op.SourceRetiredAt, op.SourceStopIntentAt, op.SourceStop = nil, nil, nil
+	op.Error = &domain.ReplacementFailure{Code: "TRANSCRIPT_PROVENANCE_UNKNOWN", Message: "private source evidence", Retryable: true}
+	router := chi.NewRouter()
+	(&controllers.OrchestratorReplacementController{Svc: &replacementAPI{op: op}}).Register(router)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orchestrator/replacements/"+op.ID, nil))
+	body := response.Body.String()
+	for _, expected := range []string{"native", "ownership", "cancel", "manual"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("missing recovery guidance %q: %s", expected, body)
+		}
+	}
+	if response.Code != http.StatusOK || strings.Contains(body, "private source evidence") {
+		t.Fatal("unsafe provenance receipt", response.Code, body)
+	}
+}

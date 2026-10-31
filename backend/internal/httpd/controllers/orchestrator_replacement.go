@@ -265,7 +265,11 @@ func replacementFailureView(failure *domain.ReplacementFailure) *domain.Replacem
 	if failure == nil {
 		return nil
 	}
-	return &domain.ReplacementFailure{Code: failure.Code, Retryable: failure.Retryable, Message: "Inspect the operation's durable phase and evidence; available controls are listed separately."}
+	message := "Inspect the operation's durable phase and evidence; available controls are listed separately."
+	if failure.Code == "TRANSCRIPT_PROVENANCE_UNKNOWN" {
+		message = replacement.ProvenanceRecoveryGuidance
+	}
+	return &domain.ReplacementFailure{Code: failure.Code, Retryable: failure.Retryable, Message: message}
 }
 func replacementPreparationView(p *domain.ReplacementPreparation) *ReplacementPreparationView {
 	if p == nil {
