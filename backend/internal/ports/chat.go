@@ -27,8 +27,8 @@ import (
 // can tell "this harness cannot do Chat" from "Codex is not logged in".
 var (
 	// ErrChatTurnNotSentBusy guarantees no input reached the provider. A
-	// deferred driver lost the dispatch race to provider-initiated work; the
-	// controller may return this turn to its durable queue without duplication.
+	// deferred driver refused a busy turn before preparing or starting its
+	// prompt; the controller may requeue it without duplication.
 	ErrChatTurnNotSentBusy = errors.New("provider busy; turn was not sent")
 	// ErrChatUnsupported means the harness has no Chat driver at all.
 	ErrChatUnsupported = errors.New("chat mode unsupported for harness")

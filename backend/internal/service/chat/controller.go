@@ -2079,9 +2079,14 @@ func (c *Controller) dispatch(
 		c.mu.Unlock()
 		if hasDeferredStart {
 			deferred.DiscardDeferredTurn(ref.ProviderTurnID)
-		}
-		if hasDeferredStart && !claimed && errors.Is(err, domain.ErrReplacementIntakeFenced) {
-			return c.queuedDispatchReceipt(turnID, requestedAt), nil
+			// Bind failed before StartDeferredTurn could send anything. Restore
+			// the whole reservation, including dispatch snapshots, for a later
+			// Ready/drain. Eager drivers may already have accepted the prompt.
+			turn, requeueErr := c.requeueUnsentTurn(ctx, turnID, "", followers, requestedAt)
+			if !claimed && errors.Is(err, domain.ErrReplacementIntakeFenced) && requeueErr == nil {
+				return turn, nil
+			}
+			return turn, fmt.Errorf("bind turn: %w", errors.Join(err, requeueErr))
 		}
 		failFollowers("batch provider binding is uncertain: " + err.Error())
 		return domain.ConversationTurn{}, fmt.Errorf("bind turn: %w", err)

@@ -487,14 +487,16 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, err
 	}
 	c.mu.Lock()
-	busy := c.closed || c.prepared != nil || c.activeTurn != ""
-	backgroundBusy := c.backgroundTurn != ""
+	closed := c.closed
+	busy := c.prepared != nil || c.activeTurn != ""
 	c.mu.Unlock()
+	if closed {
+		return ports.ChatTurnRef{}, errConversationClosed
+	}
 	if busy {
-		if backgroundBusy {
-			return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
-		}
-		return ports.ChatTurnRef{}, errors.New("ACP conversation already has a turn in flight")
+		// Completion may reach AO's queue drain before activeTurn is released.
+		// No prompt was prepared or sent, so Ready can safely retry this input.
+		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	if err := c.applyTurnSettings(ctx, msg.Settings); err != nil {
 		return ports.ChatTurnRef{}, err
@@ -505,10 +507,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, errConversationClosed
 	}
 	if c.prepared != nil || c.activeTurn != "" {
-		if c.backgroundTurn != "" {
-			return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
-		}
-		return ports.ChatTurnRef{}, errors.New("ACP conversation already has a turn in flight")
+		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	id := uuid.NewString()
 	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt}
