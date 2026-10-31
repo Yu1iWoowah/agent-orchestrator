@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,15 +15,57 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
-func TestAuditBindReceiptAndPiggyback(t *testing.T) {
-	for _, mode := range []string{"direct", "queuedAhead", "queuedList", "queuedClaim"} {
+type queuedPreSendFaultStore struct {
+	chatsvc.Store
+	armed   atomic.Bool
+	atInput bool
+}
+
+func (s *queuedPreSendFaultStore) RecordTurnSettingsSnapshot(ctx context.Context, cid, generation string, ids []string, snapshot domain.AgentSettingsTurnSnapshot) error {
+	if !s.atInput && s.armed.CompareAndSwap(true, false) {
+		return errors.New("queued-settings-injected")
+	}
+	return s.Store.RecordTurnSettingsSnapshot(ctx, cid, generation, ids, snapshot)
+}
+
+func (s *queuedPreSendFaultStore) RecordProviderInput(ctx context.Context, id, text string) error {
+	if s.atInput && s.armed.CompareAndSwap(true, false) {
+		return errors.New("queued-provider-input-injected")
+	}
+	return s.Store.RecordProviderInput(ctx, id, text)
+}
+
+type uncertainDeferredConversation struct {
+	*bindDeferredConversation
+	uncertain atomic.Bool
+}
+
+func (c *uncertainDeferredConversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
+	if c.uncertain.CompareAndSwap(true, false) {
+		c.mu.Lock()
+		c.sent = append(c.sent, msg)
+		c.mu.Unlock()
+		return ports.ChatTurnRef{}, errors.New("provider accepted input but response was lost")
+	}
+	return c.bindDeferredConversation.SendTurn(ctx, msg)
+}
+
+func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
+	for _, mode := range []string{"direct", "queuedAhead", "queuedList", "queuedClaim", "settings", "input", "direct-settings", "direct-input", "uncertain"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			conv := &bindDeferredConversation{fakeConversation: newFakeConversation()}
+			direct := strings.HasPrefix(mode, "direct")
+			preSendFailure := strings.HasSuffix(mode, "settings") || strings.HasSuffix(mode, "input")
+			conv := &uncertainDeferredConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
 			fault := &bindUnsentFaultStore{}
+			preSendFault := &queuedPreSendFaultStore{atInput: strings.HasSuffix(mode, "input")}
 			readFault := &readyRetryFaultStore{atClaim: mode == "queuedClaim", persistent: true, requeued: make(chan struct{})}
 			h := newHarnessWithConversationAndStore(t, conv, func(db *store.Store) chatsvc.Store {
 				fault.Store = db
+				if preSendFailure {
+					preSendFault.Store = fault
+					return preSendFault
+				}
 				if mode == "queuedList" || mode == "queuedClaim" {
 					readFault.Store = fault
 					return readFault
@@ -40,7 +83,7 @@ func TestAuditBindReceiptAndPiggyback(t *testing.T) {
 					return false
 				})
 			}
-			if mode != "direct" {
+			if !direct {
 				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "previous", ProviderInitiated: true})
 				h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Turns) == 1 })
 				if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: "older queued input", ClientMessageID: "older"}); err != nil {
@@ -53,12 +96,21 @@ func TestAuditBindReceiptAndPiggyback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = h.st.CreateReport(ctx, domain.ReportRecord{ID: "audit-report", SessionID: worker.ID, ProjectID: testProject, State: domain.ReportCheckpoint, Note: "audit-report-note", CreatedAt: h.now(), AvailableAt: h.now().Add(time.Hour), DeliveryState: domain.ReportPending, RepeatCount: 1}); err != nil {
+			if _, err = h.st.CreateReport(ctx, domain.ReportRecord{ID: "queued-report", SessionID: worker.ID, ProjectID: testProject, State: domain.ReportCheckpoint, Note: "queued-report-note", CreatedAt: h.now(), AvailableAt: h.now().Add(time.Hour), DeliveryState: domain.ReportPending, RepeatCount: 1}); err != nil {
 				t.Fatal(err)
 			}
-			h.svc.SetReportCoordinator(reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{Store: h.st, Now: h.now, NewToken: func() string { return "audit-claim" }}))
+			h.svc.SetReportCoordinator(reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{Store: h.st, Now: h.now, NewToken: func() string { return "queued-claim" }}))
 			if mode == "queuedList" || mode == "queuedClaim" {
 				readFault.armed.Store(true)
+			} else if preSendFailure {
+				if direct {
+					fault.onFault = func() { preSendFault.armed.Store(true) }
+					fault.armed.Store(true)
+				} else {
+					preSendFault.armed.Store(true)
+				}
+			} else if mode == "uncertain" {
+				conv.uncertain.Store(true)
 			} else {
 				fault.armed.Store(true)
 			}
@@ -67,11 +119,17 @@ func TestAuditBindReceiptAndPiggyback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			report, found, err := h.st.GetReport(ctx, "audit-report")
+			report, found, err := h.st.GetReport(ctx, "queued-report")
 			if err != nil || !found {
 				t.Fatalf("report: found=%v err=%v", found, err)
 			}
-			t.Logf("first receipt=%s durable=%s error=%v report=%s", turn.State, saved.State, firstErr, report.DeliveryState)
+			if preSendFailure {
+				if firstErr == nil || saved.State != domain.TurnStateFailed || saved.ProviderTurnID != "" || report.DeliveryState != domain.ReportPending || conv.starts.Load() != 0 {
+					t.Errorf("unsent failed message consumed reports: err=%v turn=%+v report=%s starts=%d", firstErr, saved, report.DeliveryState, conv.starts.Load())
+				}
+			} else if firstErr != nil || report.DeliveryState != domain.ReportAcknowledged {
+				t.Errorf("retained message released reports: err=%v state=%s report=%s", firstErr, saved.State, report.DeliveryState)
+			}
 			if mode == "queuedList" || mode == "queuedClaim" {
 				if readFault.attempts.Load() != 2 {
 					t.Errorf("queue store retry was not bounded to two attempts: %d", readFault.attempts.Load())
@@ -92,14 +150,14 @@ func TestAuditBindReceiptAndPiggyback(t *testing.T) {
 					copies += strings.Count(m.Text, "<ao-worker-reports>")
 				}
 			}
-			if firstErr != nil || report.DeliveryState != domain.ReportAcknowledged || copies != 1 {
+			if copies != 1 {
 				t.Errorf("durably accepted message rejected: err=%v report-after-first=%s delivered-report-copies=%d", firstErr, report.DeliveryState, copies)
 			}
 		})
 	}
 }
 
-func TestAuditIdleDirectBindFailureSameIDRetry(t *testing.T) {
+func TestDirectBindFailureSameIDRetryDoesNotDuplicateInput(t *testing.T) {
 	ctx := context.Background()
 	conv := &bindDeferredConversation{fakeConversation: newFakeConversation()}
 	fault := &bindUnsentFaultStore{}
@@ -130,20 +188,20 @@ func TestAuditIdleDirectBindFailureSameIDRetry(t *testing.T) {
 	}
 }
 
-type auditReadyBindConversation struct {
+type readyBusyBindConversation struct {
 	*bindDeferredConversation
 	refuse atomic.Bool
 }
 
-func (c *auditReadyBindConversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
+func (c *readyBusyBindConversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	if c.refuse.CompareAndSwap(true, false) {
 		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	return c.bindDeferredConversation.SendTurn(ctx, msg)
 }
-func TestAuditBindFailureDuringLastReady(t *testing.T) {
+func TestLastReadyBindFailureRecoversWithoutAnotherReady(t *testing.T) {
 	ctx := context.Background()
-	conv := &auditReadyBindConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
+	conv := &readyBusyBindConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
 	fault := &bindUnsentFaultStore{}
 	h := newHarnessWithConversationAndStore(t, conv, func(db *store.Store) chatsvc.Store { fault.Store = db; return fault })
 	fence := func(id string) {
@@ -182,7 +240,7 @@ func TestLastReadyRetryIsBounded(t *testing.T) {
 	for _, mode := range []string{"bind", "list", "claim"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			conv := &auditReadyBindConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
+			conv := &readyBusyBindConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
 			fault := &bindUnsentFaultStore{}
 			readFault := &readyRetryFaultStore{atClaim: mode == "claim", persistent: true, requeued: make(chan struct{})}
 			h := newHarnessWithConversationAndStore(t, conv, func(db *store.Store) chatsvc.Store {

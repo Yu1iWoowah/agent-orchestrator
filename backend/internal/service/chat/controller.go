@@ -1627,9 +1627,7 @@ func (c *Controller) sendLocked(
 		}
 		if queuedAhead && !c.busy() {
 			if err := c.drainLocked(ctx, true); err != nil {
-				// Intake is already durable. Releasing piggyback reports here
-				// would attach them to another message as well.
-				c.log.Warn("queued input retained after drain error", "session", c.sessionID, "error", err)
+				return c.queuedReceiptAfterDrainError(ctx, queuedTurn, err)
 			}
 		}
 		return queuedTurn, nil
@@ -1998,7 +1996,7 @@ func (c *Controller) dispatch(
 			} else if failErr := c.store.SettleTurnByID(context.WithoutCancel(ctx), turnID, domain.TurnStateFailed, reason, c.now()); failErr != nil {
 				return domain.ConversationTurn{}, errors.Join(err, failErr)
 			}
-			return domain.ConversationTurn{}, fmt.Errorf("record dispatch settings: %w", err)
+			return domain.ConversationTurn{}, fmt.Errorf("%w: record dispatch settings: %w", errDispatchNotSent, err)
 		}
 	}
 	if err := c.store.RecordProviderInput(ctx, turnID, msg.Text); err != nil {
@@ -2012,7 +2010,7 @@ func (c *Controller) dispatch(
 			domain.TurnStateFailed, "provider input could not be recorded: "+err.Error(), c.now()); settleErr != nil {
 			c.log.Error("failed to settle unrecorded provider input", "error", settleErr)
 		}
-		return domain.ConversationTurn{}, fmt.Errorf("record provider input: %w", err)
+		return domain.ConversationTurn{}, fmt.Errorf("%w: record provider input: %w", errDispatchNotSent, err)
 	}
 	failFollowers := func(reason string) {
 		if len(followers) == 0 {
@@ -2090,8 +2088,10 @@ func (c *Controller) dispatch(
 				// an error would release reports that are still queued for delivery.
 				// An idle provider will not emit another Ready after a Bind failure.
 				// Drain once here; the retry is claimed, so it cannot recurse again.
-				if retryErr := c.drainOnceLocked(ctx, true, 0); retryErr != nil {
-					c.log.Warn("failed to retry requeued direct input", "session", c.sessionID, "error", retryErr)
+				// Accepted work outlives the request, including cancellation that
+				// caused Bind to fail while waiting for the store's write lock.
+				if retryErr := c.drainOnceLocked(context.WithoutCancel(ctx), true, 0); retryErr != nil {
+					return c.queuedReceiptAfterDrainError(ctx, turn, retryErr)
 				}
 				return turn, nil
 			}
@@ -2188,6 +2188,23 @@ func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID strin
 
 func (c *Controller) queuedDispatchReceipt(id string, at time.Time) domain.ConversationTurn {
 	return domain.ConversationTurn{ID: id, ConversationID: c.conversation.ID, HandledBySessionID: c.sessionID, HandledByReviewID: c.reviewID, State: domain.TurnStateQueued, RequestedAt: at}
+}
+
+// queuedReceiptAfterDrainError preserves report ownership unless this input was
+// durably failed before it could reach the provider. Callers must hold sendMu.
+func (c *Controller) queuedReceiptAfterDrainError(ctx context.Context, queued domain.ConversationTurn, err error) (domain.ConversationTurn, error) {
+	if errors.Is(err, errDispatchNotSent) {
+		settled, readErr := c.store.TurnByID(context.WithoutCancel(ctx), queued.ID)
+		if readErr == nil && settled.State == domain.TurnStateFailed {
+			return settled, err
+		}
+		if readErr != nil {
+			c.log.Warn("failed to read queued input after drain error", "turn", queued.ID, "error", readErr)
+		}
+	}
+	// Retained input and uncertain delivery still own their reports.
+	c.log.Warn("queued input retained after drain error", "session", c.sessionID, "turn", queued.ID, "error", err)
+	return queued, nil
 }
 
 // excerptDeliveryMessage renders verified excerpts into deterministic prompt
@@ -2287,6 +2304,9 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) error 
 	return c.drainLockedWithLimit(ctx, allowDispatch, 0)
 }
 
+// A failed pre-send dispatch may release reports, unlike uncertain delivery.
+var errDispatchNotSent = errors.New("dispatch failed before sending")
+
 // Only errors that prove no prompt was sent may spend the extra attempt.
 var errRetryQueuedDispatch = errors.New("queued dispatch was not sent")
 
@@ -2365,7 +2385,7 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 			queuedBatchIDs(batch), err.Error(), c.now()); failErr != nil {
 			return errors.Join(err, failErr)
 		}
-		return err
+		return fmt.Errorf("%w: prepare queued input: %w", errDispatchNotSent, err)
 	}
 	followers := queuedBatchIDs(batch[1:])
 	if _, err := c.dispatch(ctx, batch[0].TurnID, msg, c.now(), true, followers); err != nil {

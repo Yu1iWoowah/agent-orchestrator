@@ -121,6 +121,33 @@ func TestDeferredDirectBindFailureRetriesWithoutReady(t *testing.T) {
 	}
 }
 
+func TestDeferredDirectBindFailureRecoversAfterRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conv := &bindDeferredConversation{fakeConversation: newFakeConversation()}
+	fault := &bindUnsentFaultStore{onFault: cancel}
+	h := newHarnessWithConversationAndStore(t, conv, func(db *store.Store) chatsvc.Store {
+		fault.Store = db
+		return fault
+	})
+	fault.armed.Store(true)
+	msg := ports.ChatUserMessage{Text: "recover after client disconnects", ClientMessageID: "canceled-direct"}
+	turn, err := h.ctrl.Send(ctx, msg)
+	if ctx.Err() != context.Canceled || err != nil || turn.ID == "" || turn.State != domain.TurnStateQueued || fault.attempts.Load() != 2 || conv.starts.Load() != 1 {
+		t.Fatalf("canceled direct recovery: ctx=%v receipt=%+v err=%v binds=%d starts=%d", ctx.Err(), turn, err, fault.attempts.Load(), conv.starts.Load())
+	}
+	saved, err := h.st.TurnByID(context.Background(), turn.ID)
+	if err != nil || saved.State != domain.TurnStateRunning {
+		t.Fatalf("accepted input stayed queued after cancellation: %+v %v", saved, err)
+	}
+	if _, err := h.ctrl.Send(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if messages := conv.sentMessages(); len(messages) != 1 || messages[0].Text != msg.Text || conv.starts.Load() != 1 || conv.discards.Load() != 1 {
+		t.Fatalf("canceled request lost or duplicated input: %+v starts=%d discards=%d", messages, conv.starts.Load(), conv.discards.Load())
+	}
+}
+
 func TestDeferredDirectBindFailureAcceptsPiggybackWithoutDuplication(t *testing.T) {
 	ctx := context.Background()
 	conv := &bindDeferredConversation{fakeConversation: newFakeConversation()}
