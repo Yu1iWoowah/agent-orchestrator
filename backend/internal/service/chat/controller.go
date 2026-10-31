@@ -1626,9 +1626,8 @@ func (c *Controller) sendLocked(
 			RequestedAt:        now,
 		}
 		if queuedAhead && !c.busy() {
-			if err := c.drainLocked(ctx, true); err != nil {
-				return c.queuedReceiptAfterDrainError(ctx, queuedTurn, err)
-			}
+			rejected, err := c.drainLockedWithLimit(ctx, true, 0)
+			return c.queuedReceiptAfterDrain(ctx, queuedTurn, rejected, err)
 		}
 		return queuedTurn, nil
 	}
@@ -2090,10 +2089,8 @@ func (c *Controller) dispatch(
 				// Drain once here; the retry is claimed, so it cannot recurse again.
 				// Accepted work outlives the request, including cancellation that
 				// caused Bind to fail while waiting for the store's write lock.
-				if retryErr := c.drainOnceLocked(context.WithoutCancel(ctx), true, 0); retryErr != nil {
-					return c.queuedReceiptAfterDrainError(ctx, turn, retryErr)
-				}
-				return turn, nil
+				rejected, retryErr := c.drainOnceLocked(context.WithoutCancel(ctx), true, 0)
+				return c.queuedReceiptAfterDrain(ctx, turn, rejected, retryErr)
 			}
 			if requeueErr == nil {
 				return turn, fmt.Errorf("%w: bind turn: %w", errRetryQueuedDispatch, err)
@@ -2190,20 +2187,23 @@ func (c *Controller) queuedDispatchReceipt(id string, at time.Time) domain.Conve
 	return domain.ConversationTurn{ID: id, ConversationID: c.conversation.ID, HandledBySessionID: c.sessionID, HandledByReviewID: c.reviewID, State: domain.TurnStateQueued, RequestedAt: at}
 }
 
-// queuedReceiptAfterDrainError preserves report ownership unless this input was
-// durably failed before it could reach the provider. Callers must hold sendMu.
-func (c *Controller) queuedReceiptAfterDrainError(ctx context.Context, queued domain.ConversationTurn, err error) (domain.ConversationTurn, error) {
-	if errors.Is(err, errDispatchNotSent) || errors.Is(err, batchInputError{turnID: queued.ID}) {
+// queuedReceiptAfterDrain preserves report ownership unless this intake was
+// durably failed before reaching the provider. Callers must hold sendMu.
+func (c *Controller) queuedReceiptAfterDrain(ctx context.Context, queued domain.ConversationTurn, rejected map[string]error, drainErr error) (domain.ConversationTurn, error) {
+	rejection := rejected[queued.ID]
+	if rejection != nil || errors.Is(drainErr, errDispatchNotSent) {
 		settled, readErr := c.store.TurnByID(context.WithoutCancel(ctx), queued.ID)
 		if readErr == nil && settled.State == domain.TurnStateFailed {
-			return settled, err
+			return settled, errors.Join(rejection, drainErr)
 		}
 		if readErr != nil {
 			c.log.Warn("failed to read queued input after drain error", "turn", queued.ID, "error", readErr)
 		}
 	}
 	// Retained input and uncertain delivery still own their reports.
-	c.log.Warn("queued input retained after drain error", "session", c.sessionID, "turn", queued.ID, "error", err)
+	if drainErr != nil {
+		c.log.Warn("queued input retained after drain error", "session", c.sessionID, "turn", queued.ID, "error", drainErr)
+	}
 	return queued, nil
 }
 
@@ -2291,7 +2291,8 @@ func (c *Controller) drain(ctx context.Context) error {
 func (c *Controller) drainOne(ctx context.Context) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	return c.drainLockedWithLimit(ctx, true, 1)
+	_, err := c.drainLockedWithLimit(ctx, true, 1)
+	return err
 }
 
 // drainLocked is drain with the dispatch lock already held. Turn completion
@@ -2301,7 +2302,8 @@ func (c *Controller) drainOne(ctx context.Context) error {
 // allowDispatch gates sending the next queued turn. A pending Stop cutoff forces
 // it true so messages typed after Stop still send.
 func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) error {
-	return c.drainLockedWithLimit(ctx, allowDispatch, 0)
+	_, err := c.drainLockedWithLimit(ctx, allowDispatch, 0)
+	return err
 }
 
 // A failed pre-send dispatch may release reports, unlike uncertain delivery.
@@ -2310,19 +2312,24 @@ var errDispatchNotSent = errors.New("dispatch failed before sending")
 // Only errors that prove no prompt was sent may spend the extra attempt.
 var errRetryQueuedDispatch = errors.New("queued dispatch was not sent")
 
-func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch bool, limit int) error {
-	err := c.drainOnceLocked(ctx, allowDispatch, limit)
+// Rejections are intake bookkeeping, not failures of the remaining drain.
+func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch bool, limit int) (map[string]error, error) {
+	rejected, err := c.drainOnceLocked(ctx, allowDispatch, limit)
 	if allowDispatch && errors.Is(err, errRetryQueuedDispatch) {
-		retryErr := c.drainOnceLocked(ctx, allowDispatch, limit)
-		if _, rejected := invalidBatchTurn(err); rejected {
-			return errors.Join(err, retryErr)
+		retryRejected, retryErr := c.drainOnceLocked(ctx, allowDispatch, limit)
+		for id, cause := range retryRejected {
+			if rejected == nil {
+				rejected = make(map[string]error)
+			}
+			rejected[id] = cause
 		}
-		return retryErr
+		return rejected, retryErr
 	}
-	return err
+	return rejected, err
 }
 
-func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) (drainErr error) {
+func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) (map[string]error, error) {
+	var rejected map[string]error
 	c.mu.Lock()
 	cutoff := c.cancelQueuedAt
 	c.cancelQueuedAt = time.Time{}
@@ -2332,7 +2339,7 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 
 	if busy {
 		// Something already claimed the agent, so this drain has nothing to do.
-		return nil
+		return rejected, nil
 	}
 
 	if !cutoff.IsZero() {
@@ -2340,70 +2347,68 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 		// cancelled; anything typed afterwards is still theirs to send.
 		if err := c.store.CancelQueuedTurns(ctx, c.conversation.ID, cutoff, c.now()); err != nil {
 			c.log.Error("failed to cancel queued turns", "session", c.sessionID, "error", err)
-			return err
+			return rejected, err
 		}
 		allowDispatch = true
 	}
 	if handoff != controllerHandoffNone && handoff != controllerHandoffInterfaceDrain {
-		return nil
+		return rejected, nil
 	}
 	if !allowDispatch {
-		return nil
+		return rejected, nil
 	}
 	if blocked, err := c.reconcileAgentSettingsLocked(ctx); err != nil || blocked {
-		return err
+		return rejected, err
 	}
-
-	// Invalid members can fail while healthy input still dispatches. Preserve
-	// their identities so intake can release only those members' reports.
-	var rejectedInputErr error
-	defer func() { drainErr = errors.Join(rejectedInputErr, drainErr) }()
 
 	for {
 		preview, err := c.store.ListQueuedBatch(ctx, c.conversation.ID, limit)
 		if errors.Is(err, domain.ErrNoQueuedTurn) {
-			return nil
+			return rejected, nil
 		}
 		if err != nil {
-			return fmt.Errorf("%w: list queued input: %w", errRetryQueuedDispatch, err)
+			return rejected, fmt.Errorf("%w: list queued input: %w", errRetryQueuedDispatch, err)
 		}
 		if _, err := c.queuedBatchInput(ctx, preview, nil); err != nil {
 			if id, ok := invalidBatchTurn(err); ok {
-				rejectedInputErr = errors.Join(rejectedInputErr, err)
+				if rejected == nil {
+					rejected = make(map[string]error)
+				}
+				rejected[id] = err
 				if settleErr := c.store.SettleTurnByID(ctx, id, domain.TurnStateFailed, err.Error(), c.now()); settleErr != nil {
-					return settleErr
+					return rejected, settleErr
 				}
 				continue
 			}
-			return err
+			return rejected, err
 		}
 		break
 	}
 	batch, err := c.store.ClaimQueuedBatch(ctx, c.conversation.ID, true, limit, c.now())
 	if errors.Is(err, domain.ErrReplacementIntakeFenced) {
-		return nil
+		return rejected, nil
 	}
 	if errors.Is(err, domain.ErrNoQueuedTurn) {
-		return nil
+		return rejected, nil
 	}
 	if err != nil {
-		return fmt.Errorf("%w: claim queued input: %w", errRetryQueuedDispatch, err)
+		return rejected, fmt.Errorf("%w: claim queued input: %w", errRetryQueuedDispatch, err)
 	}
 	msg, err := c.queuedBatchInput(ctx, batch, nil)
 	if err != nil {
 		if failErr := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID,
 			queuedBatchIDs(batch), err.Error(), c.now()); failErr != nil {
-			return errors.Join(err, failErr)
+			return rejected, errors.Join(err, failErr)
 		}
-		return fmt.Errorf("%w: prepare queued input: %w", errDispatchNotSent, err)
+		return rejected, fmt.Errorf("%w: prepare queued input: %w", errDispatchNotSent, err)
 	}
 	followers := queuedBatchIDs(batch[1:])
 	if _, err := c.dispatch(ctx, batch[0].TurnID, msg, c.now(), true, followers); err != nil {
 		c.log.Error("failed to dispatch queued batch", "session", c.sessionID,
 			"firstTurn", batch[0].TurnID, "count", len(batch), "error", err)
-		return err
+		return rejected, err
 	}
-	return nil
+	return rejected, nil
 }
 
 // ArmHandoff is the linearization point for an interface transition. It closes

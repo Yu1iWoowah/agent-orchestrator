@@ -17,10 +17,6 @@ type batchInputError struct {
 
 func (e batchInputError) Error() string { return fmt.Sprintf("queued turn %s: %v", e.turnID, e.cause) }
 func (e batchInputError) Unwrap() error { return e.cause }
-func (e batchInputError) Is(target error) bool {
-	rejected, ok := target.(batchInputError)
-	return ok && e.turnID == rejected.turnID
-}
 
 func invalidBatchTurn(err error) (string, bool) {
 	var target batchInputError
