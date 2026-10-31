@@ -195,16 +195,13 @@ function claimLayoutRevision(): number {
 	return nextLayoutRevision;
 }
 
-// The macOS translucent window tints the shell over the vibrancy blur. The live
-// page sits below the shell, so styles.css cuts the tint out over this rect
-// rather than tinting the page. Last visible view owns the hole.
+// The shell paints its theme (or macOS vibrancy tint) outside this visible
+// native viewport. Hidden, still-mounted panels must not clear the shell.
+// Last visible view owns the hole.
 let browserHoleOwner: string | null = null;
 
 function publishBrowserHole(viewId: string, rect: BrowserRect | null): void {
 	const root = document.documentElement;
-	// Custom properties on :root restyle the whole document, so only write them
-	// while the translucent window actually needs the hole.
-	if (rect && root.dataset.windowTranslucent !== "true") rect = null;
 	if (!rect) {
 		if (browserHoleOwner !== viewId) return;
 		browserHoleOwner = null;

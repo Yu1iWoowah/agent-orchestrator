@@ -1351,8 +1351,9 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	const activeWorkspaceTabKey = fileTabs.activePath ? `file:${fileTabs.activePath}` : undefined;
 	const previewUrl = session?.previewUrl?.trim() || undefined;
 	const previewRevision = session?.previewRevision;
+	const settingsCoverSession = useUiStore((state) => state.settingsModal?.scope === "global");
 	const browserSlotVisible = Boolean(
-		session &&
+		session && !settingsCoverSession &&
 			hasInspector &&
 			(browserPoppedOut || (inspectorPanelVisible && inspectorView === "browser")),
 	);
@@ -2311,7 +2312,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
           sidebar + topbar, not just the session area) and sits outside any
           `[data-panel]` column, so the native WebContentsView is not clamped
           and fills the window below any native titlebar overlay. */}
-			{browserPopOutMounted && session
+			{browserPopOutMounted && !settingsCoverSession && session
 				? createPortal(
 						<SessionBrowserPopOut onClose={() => handleToggleBrowserPopOut(false)} onTopbarHost={setBrowserPopoutTopbarHost} phase={browserPopOutPhase === "open" ? "open" : "mounting"}>
 								{browserPoppedOut && browserPopoutTopbarHost ? <BrowserPanelView

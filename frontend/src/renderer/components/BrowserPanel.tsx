@@ -493,12 +493,34 @@ export function BrowserPanelView({
 	const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
+	// Nav and tab-list events can arrive separately during a tab switch.
+	const addressTabId = tabs.some((tab) => tab.id === activeTabId)
+		? activeTabId : tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id;
+	const singleTab = tabs.length === 1 ? tabs[0] : undefined;
+	const singleTabLabel = singleTab ? browserTabLabel(singleTab.title, singleTab.url) : undefined;
+	const singleTabTitle = singleTab?.title.trim();
+	const normalizedSingleTabTitle = normalizeBrowserLocationLabel(singleTabTitle ?? "");
+	const showSingleTabTitle = singleTabTitle && ![
+		singleTab?.url, singleTabLabel?.subtitle, getDisplayUrl(singleTab?.url ?? ""), "about:blank",
+	].some((label) => normalizeBrowserLocationLabel(label ?? "") === normalizedSingleTabTitle);
+	const singleTabCloseLabel = singleTabLabel
+		? t("browser.closeTab", { title: singleTabLabel.title }) : undefined;
+	const singleTabCloseRef = useRef<HTMLButtonElement>(null);
 	const {
 		scrollRef: tabScrollRef,
 		scrollToEnd: scrollTabsToEnd,
 		showLeftFade: showTabsLeftFade,
 		showRightFade: showTabsRightFade,
 	} = useTabScrollEdges([tabs.length]);
+	const setTabStripRef = useCallback((element: HTMLDivElement | null) => {
+		// Ref detachment runs before the focused tab is removed from the DOM.
+		if (!element && tabScrollRef.current?.contains(document.activeElement)) {
+			requestAnimationFrame(() => {
+				if (document.activeElement === document.body) singleTabCloseRef.current?.focus();
+			});
+		}
+		tabScrollRef.current = element;
+	}, [tabScrollRef]);
 	const previousTabCountRef = useRef(tabs.length);
 
 	// Opening a tab (or a popup adding one) appends it, so reveal the newest.
@@ -514,7 +536,7 @@ export function BrowserPanelView({
 		const region = tabScrollRef.current;
 		if (!region) return;
 		const activeTab = Array.from(region.querySelectorAll<HTMLElement>("[data-browser-tab-id]")).find(
-			(element) => element.dataset.browserTabId === activeTabId,
+			(element) => element.dataset.browserTabId === addressTabId,
 		);
 		if (!activeTab) return;
 		const regionRect = region.getBoundingClientRect();
@@ -524,7 +546,7 @@ export function BrowserPanelView({
 		if (tabRect.right > regionRect.right) nextScrollLeft += tabRect.right - regionRect.right;
 		if (nextScrollLeft === region.scrollLeft) return;
 		region.scrollTo({ behavior: "smooth", left: Math.max(0, nextScrollLeft) });
-	}, [activeTabId, tabs.length, draggedTopTabId, tabScrollRef]);
+	}, [addressTabId, tabs.length, draggedTopTabId, tabScrollRef]);
 
 	useEffect(() => {
 		if (controlsView !== "profiles" || !window.ao?.browserProfiles) return;
@@ -1104,33 +1126,51 @@ export function BrowserPanelView({
 			>
 				<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
 					<div className="browser-panel__tab-region">
-						<div
-							aria-label={t("browser.tabs")}
-							className="browser-panel__tab-strip"
-							onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
-							ref={tabScrollRef}
-							role="tablist"
-						>
-							{tabs.map((tab) => (
-								<SortableBrowserTopTab
-									key={tab.id}
-									onClose={handleCloseTab}
-									onSelect={handleSelectTab}
-									selected={tab.id === activeTabId}
-									tab={tab}
-								/>
-							))}
-						</div>
-						{showTabsLeftFade ? (
+						{showSingleTabTitle ? (
+							<span className="browser-panel__single-tab-title">{singleTabTitle}</span>
+						) : null}
+						{tabs.length > 1 ? (
+							<div
+								aria-label={t("browser.tabs")}
+								className="browser-panel__tab-strip"
+								onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
+								ref={setTabStripRef}
+								role="tablist"
+							>
+								{tabs.map((tab) => (
+									<SortableBrowserTopTab
+										key={tab.id}
+										onClose={handleCloseTab}
+										onSelect={handleSelectTab}
+										selected={tab.id === addressTabId}
+										tab={tab}
+									/>
+								))}
+							</div>
+						) : null}
+						{tabs.length > 1 && showTabsLeftFade ? (
 							<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
 						) : null}
-						{showTabsRightFade ? <div aria-hidden="true" className="browser-panel__tab-fade" /> : null}
+						{tabs.length > 1 && showTabsRightFade ? <div aria-hidden="true" className="browser-panel__tab-fade" /> : null}
 					</div>
 				</SortableContext>
 				<DragOverlay adjustScale={false} dropAnimation={null} modifiers={browserTopTabDragModifiers}>
 					{draggedTopTab ? <BrowserTopTabDragOverlay tab={draggedTopTab} /> : null}
 				</DragOverlay>
 			</DndContext>
+			{singleTab && singleTabCloseLabel ? (
+				<BrowserControlTooltip label={singleTabCloseLabel}>
+					<button
+						aria-label={singleTabCloseLabel}
+						className="browser-panel__single-tab-close"
+						onClick={() => handleCloseTab(singleTab.id)}
+						ref={singleTabCloseRef}
+						type="button"
+					>
+						<X aria-hidden="true" className="size-icon-base" />
+					</button>
+				</BrowserControlTooltip>
+			) : null}
 				<BrowserControlTooltip label={t("browser.openNewTab")}>
 					<button
 						aria-label={t("browser.openNewTab")}
@@ -1860,6 +1900,7 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 					{...attributes}
 					{...listeners}
 					aria-selected={selected}
+					aria-label={label.title}
 					className="browser-panel__tab-select"
 					onClick={() => void onSelect(tab.id)}
 					role="tab"
@@ -1972,6 +2013,13 @@ function browserActionVerb(action: string): string {
 		}
 	})();
 	return appI18n.t(key);
+}
+
+function normalizeBrowserLocationLabel(label: string): string {
+	const location = label.trim().replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+	const suffixIndex = location.search(/[?#]/);
+	const path = suffixIndex < 0 ? location : location.slice(0, suffixIndex);
+	return path.replace(/\/+$/, "") + (suffixIndex < 0 ? "" : location.slice(suffixIndex));
 }
 
 function getDisplayUrl(url: string): string {

@@ -2416,7 +2416,7 @@ function ChatHeader({
 	const header = (
 		<header className={cn("flex h-inspector-tabs w-full shrink-0 items-stretch bg-sidebar", slideIn && "chat-header-slide-in")}>
 			<div
-				className="session-topbar-surface flex min-w-0 flex-1"
+				className="session-topbar-surface workspace-topbar-container flex min-w-0 flex-1"
 				data-testid="session-workspace-topbar"
 			>
 				<div
@@ -2436,41 +2436,41 @@ function ChatHeader({
 						ref={tabListRef}
 						role="tablist"
 					>
-						{session ? (
-							<SessionPaneTab
-								isActive={timelineActive}
-								label={label}
-								onSelect={timelineActive ? undefined : onSelectChat}
-								onRenamed={onSessionRenamed}
-								session={session}
-								tabAction={sessionTabAction}
-								tabActionWide={sessionTabActionWide}
-							/>
-						) : (
-							<button
-								aria-current={timelineActive ? true : undefined}
-								aria-label={`${label} · ${providerLabel}`}
-								aria-selected={timelineActive}
-								data-terminal-role="primary"
-								className={cn(
-									"group relative inline-flex min-w-shell-tab-min max-w-shell-tab-max shrink-0 self-stretch cursor-pointer items-center gap-1.5 border-r border-border px-3 text-control font-medium leading-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
-									timelineActive
-										? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
-										: "text-muted-foreground hover:bg-raised hover:text-foreground",
-								)}
-								onClick={timelineActive ? undefined : onSelectChat}
-								role="tab"
-								tabIndex={timelineActive || orderedAuxiliaryTabs.length === 0 ? 0 : -1}
-								title={label}
-								type="button"
-							>
-								<AgentAvatar className="size-icon-base" decorative provider={snapshot.harness} />
-								<span className="truncate">{label}</span>
-							</button>
-						)}
 						<div className="relative min-w-0 flex-1 self-stretch overflow-hidden">
-							<motion.div ref={tabsOverflowRef} className="scrollbar-none flex h-full min-w-flex-min min-w-0 items-stretch overflow-x-auto" layoutScroll>
-								<div className="flex w-max items-stretch">
+							<motion.div ref={tabsOverflowRef} className="session-tab-scroll-region scrollbar-none flex h-full min-w-0 items-stretch overflow-x-auto" layoutScroll>
+								<div className="flex w-max min-w-full items-stretch">
+									{session ? (
+									<SessionPaneTab
+										isActive={timelineActive}
+										label={label}
+										onSelect={timelineActive ? undefined : onSelectChat}
+										onRenamed={onSessionRenamed}
+										session={session}
+										tabAction={sessionTabAction}
+										tabActionWide={sessionTabActionWide}
+									/>
+								) : (
+									<button
+										aria-current={timelineActive ? true : undefined}
+										aria-label={`${label} · ${providerLabel}`}
+										aria-selected={timelineActive}
+										data-terminal-role="primary"
+										className={cn(
+											"group relative inline-flex min-w-shell-tab-min max-w-shell-tab-max shrink-0 self-stretch cursor-pointer items-center gap-1.5 border-r border-border px-3 text-control font-medium leading-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
+											timelineActive
+												? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
+												: "text-muted-foreground hover:bg-raised hover:text-foreground",
+										)}
+										onClick={timelineActive ? undefined : onSelectChat}
+										role="tab"
+										tabIndex={timelineActive || orderedAuxiliaryTabs.length === 0 ? 0 : -1}
+										title={label}
+										type="button"
+									>
+										<AgentAvatar className="size-icon-base" decorative provider={snapshot.harness} />
+										<span className="truncate">{label}</span>
+									</button>
+								)}
 								<Reorder.Group
 									as="div"
 									axis="x"

@@ -54,7 +54,7 @@ async function expectAddressBelowInspectorTabs(page: Page) {
 		.toBe(true);
 }
 
-test("@P0 browser address stays centered, clear of the tabs, and drops below them in the compact inspector", async ({ page }) => {
+test("@P0 browser address stays centered and fills its host with zero browser tabs", async ({ page }) => {
 	await page.goto("/#/projects/ao-demo/sessions/demo-working");
 	await openInspector(page);
 	await page.locator("#inspector").getByRole("tab", { name: "Browser" }).click();
@@ -62,6 +62,8 @@ test("@P0 browser address stays centered, clear of the tabs, and drops below the
 
 	await expectAddressCentered(page);
 	await expectAddressClearOfTabs(page);
+	await expect(page.getByRole("tablist", { name: "Browser tabs", exact: true })).toHaveCount(0);
+	await expect(page.getByTestId("browser-tab-row").getByRole("tab")).toHaveCount(0);
 	await expectAddressWidth(page, 240);
 	await page.setViewportSize({ width: 1100, height: 720 });
 	await expectAddressCentered(page, true);

@@ -1,0 +1,20 @@
+<!doctype html>
+<html data-native-browser-composition="true" data-ao-platform="linux">
+<head><meta charset="utf-8"><script type="module" src="./harness.ts"></script></head>
+<body>
+<div id="root">
+  <div class="app-shell-root bg-sidebar" style="height:100vh">
+    <div style="height:60px">Shell header</div>
+    <div class="center-panel-shell center-panel-shell--session" style="height:calc(100vh - 60px)">
+      <div class="center-panel-surface">
+        <div id="session" class="flex-1">
+          <div class="browser-panel" data-browser-native-page="live" style="position:absolute;left:600px;top:120px;width:300px;height:400px">
+            <div class="browser-panel__body"><div class="browser-panel__viewport"></div></div>
+          </div>
+        </div>
+        <div id="settings" class="hidden">Settings</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

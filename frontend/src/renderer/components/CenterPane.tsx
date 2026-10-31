@@ -455,7 +455,7 @@ export function CenterPane({
 	const terminalTopbar = (
 		<div className="flex h-inspector-tabs w-full shrink-0 items-stretch bg-sidebar">
 
-			<div className="session-topbar-surface flex min-w-0 flex-1" data-testid="session-workspace-topbar">
+			<div className="session-topbar-surface workspace-topbar-container flex min-w-0 flex-1" data-testid="session-workspace-topbar">
 				<div
 					className={cn(
 						"flex min-w-0 shrink items-stretch",
