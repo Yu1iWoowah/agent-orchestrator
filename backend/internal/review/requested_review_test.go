@@ -289,6 +289,7 @@ func TestReviewerDefaultsToTheProjectDefaultWorkerConfig(t *testing.T) {
 	}}
 	launcher := &fakeLauncher{handle: "codex-pane"}
 	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), projects, launcher)
+	eng.models = successfulReviewerModelCatalog("gpt-5.5", "high")
 
 	res, err := eng.TriggerWithOptions(context.Background(), "mer-1", TriggerOptions{Source: domain.ReviewTriggerAgent})
 	if err != nil {

@@ -20,6 +20,7 @@ import { editorHandoffQueryKey, editorHandoffQueryRoot } from "../hooks/useEdito
 import { baseUrlForHost, connectedHosts, subscribeConnectedHosts } from "./host-clients";
 import { probeRemoteSse } from "./remote-sse-probe";
 import { agentSettingsQueryKey, agentSettingsQueryRoot, type AgentSettingsSnapshot } from "./agent-settings";
+import { reviewerAgentSettingsQueryKey } from "./reviewer-agent-settings";
 
 export type EventTransport = {
 	connect: () => () => void;
@@ -83,6 +84,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let allAttentionProjectsPending = false;
 			let allAttentionInvalidationPending = false;
 			const pendingReviewerConversations = new Set<string>();
+			const pendingReviewerSettings = new Set<string>();
 			const pendingReviewSessions = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			const pendingAgentSettingsSessions = new Set<string>();
@@ -199,6 +201,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				if (reconnect) invalidate(["remote-conversation", hostId]);
 				if (reconnect) invalidate(["reviewer-conversation", hostId]);
 				if (reconnect) invalidate(agentSettingsQueryRoot(hostId));
+				if (reconnect) invalidate(["reviewer-agent-settings", hostId]);
 				invalidate(["session-scm-summary", hostId]);
 				invalidate(["session-reviews", hostId]);
 				invalidate(["session-usage", hostId]);
@@ -218,6 +221,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				connection.pollTimer = setInterval(() => {
 					refreshRemote(hostId);
 					invalidate(agentSettingsQueryRoot(hostId));
+					invalidate(["reviewer-agent-settings", hostId]);
 					invalidate(["reviewer-conversation", hostId]);
 				}, 2_000);
 				connection.close = probeRemoteSse(
@@ -228,7 +232,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						refreshRemote(hostId, false, false);
 						if (!("data" in event)) { invalidate(["remote-project-attention", hostId]); return; }
 						try {
-							const decoded = JSON.parse(String((event as MessageEvent).data)) as { projectId?: unknown; type?: unknown; sessionId?: unknown; payload?: { conversationId?: unknown; reviewId?: unknown } };
+							const decoded = JSON.parse(String((event as MessageEvent).data)) as { projectId?: unknown; type?: unknown; sessionId?: unknown; payload?: { conversationId?: unknown; reviewId?: unknown; reviewSettingsRevision?: unknown } };
 							const project = attentionProjectEvent(decoded);
 							if ((decoded.type === "session_updated" || decoded.type === "session_created") && typeof decoded.sessionId === "string" && decoded.sessionId && typeof decoded.payload?.conversationId !== "string") {
 								refreshAgentSettings(decoded.sessionId, hostId);
@@ -239,7 +243,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 								refreshRemoteConversationOnce(hostId, decoded.sessionId);
 							}
 							if (typeof decoded.payload?.reviewId === "string") {
-								invalidate(["reviewer-conversation", hostId, decoded.payload.reviewId]);
+								invalidate(reviewerAgentSettingsQueryKey(decoded.payload.reviewId, hostId));
+								if (typeof decoded.payload.reviewSettingsRevision !== "number") invalidate(["reviewer-conversation", hostId, decoded.payload.reviewId]);
 							}
 						} catch {
 							// The host's project/session cache still refreshes after a malformed event.
@@ -289,6 +294,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(conversationQueryRoot);
 					invalidate(["session-plan"]);
 					invalidate(reviewerConversationQueryRoot);
+					invalidate(["reviewer-agent-settings"]);
 					allConversationsInvalidationPending = false;
 				}
 				if (workspaceInvalidationPending) {
@@ -336,6 +342,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					invalidate(reviewerConversationQueryKey(reviewId));
 				}
 				pendingReviewerConversations.clear();
+				for (const reviewId of pendingReviewerSettings) invalidate(reviewerAgentSettingsQueryKey(reviewId));
+				pendingReviewerSettings.clear();
 				for (const sessionId of pendingInterfaceTransitionSessions) {
 					invalidate(["session-interface-transition", sessionId]);
 				}
@@ -432,12 +440,20 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 								? (decoded.payload as {
 										conversationId?: unknown;
 										reviewId?: unknown;
+										reviewSettingsRevision?: unknown;
 										interfaceTransitionId?: unknown;
 										kind?: unknown;
 										agentId?: unknown;
 										projectId?: unknown;
 								  })
 								: undefined;
+						if (typeof payload?.reviewId === "string" && payload.reviewId) {
+							pendingReviewerSettings.add(payload.reviewId);
+							if (decoded.type === "session_updated" && typeof payload.reviewSettingsRevision === "number") {
+								scheduleFlush();
+								return;
+							}
+						}
 						// A review run can start or finish without this window asking for
 						// it: an agent ran `ao review trigger`, auto-review fired, or a
 						// reviewer submitted. Refresh that session's reviews so the

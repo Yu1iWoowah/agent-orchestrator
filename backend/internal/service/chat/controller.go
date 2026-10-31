@@ -1843,6 +1843,9 @@ func (c *Controller) Settings() domain.ConversationSettings {
 // The row is written first: if that fails, the in-memory copy must not move, or a
 // restart would silently revert a choice the user watched take effect.
 func (c *Controller) SetSettings(ctx context.Context, settings domain.ConversationSettings) error {
+	if c.reviewID != "" {
+		return ports.ErrAgentSettingsUnsupported
+	}
 	if mutator := c.agentSettingsMutator(); mutator != nil {
 		return c.scheduleLegacySettings(ctx, settings, mutator)
 	}

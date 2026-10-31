@@ -3968,5 +3968,19 @@
 	"settings.agentAccounts.identityUpdated": "Identity checked {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "Manage older saved Codex logins",
 	"settings.agentAccounts.legacyAccountsTitle": "Older saved Codex logins",
-	"settings.agentAccounts.legacyAccountsDescription": "Manage Codex logins saved by older AO versions. If you want to add the same identity above, sign out and remove the older entry first."
+	"settings.agentAccounts.legacyAccountsDescription": "Manage Codex logins saved by older AO versions. If you want to add the same identity above, sign out and remove the older entry first.",
+	"reviewerSettings.nextPass": "Next review pass",
+	"reviewerSettings.effectiveUnknown": "Provider-effective settings: unknown. A pinned choice does not prove it is applied.",
+	"reviewerSettings.preferenceUnknown": "No qualified reviewer preference is recorded.",
+	"reviewerSettings.activePass": "A review pass is active. Its settings and account stay fixed; change the next pass after it finishes.",
+	"reviewerSettings.loadError": "Could not verify reviewer settings.",
+	"reviewerSettings.changeError": "The daemon did not confirm a next-pass pin.",
+	"reviewerSettings.conflict": "The revision changed or a pass started. Your draft is kept. Load the latest preference before choosing again.",
+	"reviewerSettings.reload": "Load latest preference",
+	"reviewerSettings.edit": "Edit next-pass settings",
+	"reviewerSettings.pin": "Pin for next pass",
+	"reviewerSettings.description": "Only the next review pass uses this choice. The current pass is unchanged; the reviewer keeps its account and fixed permissions. Empty model or effort resets to the provider default.",
+	"reviewerSettings.fastOn": "On",
+	"reviewerSettings.fastOff": "Off",
+	"reviewerSettings.fastCost": "Fast may incur additional provider charges. Pinning On is an explicit choice for the next pass."
 }

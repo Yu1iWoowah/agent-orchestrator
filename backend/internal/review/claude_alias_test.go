@@ -5,12 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 type aliasReviewerModels struct{ catalog ports.AgentModelCatalog }
+
+func (m aliasReviewerModels) CatalogFingerprint(context.Context, string, string) (string, error) {
+	return "saved-fingerprint", nil
+}
 
 func (m aliasReviewerModels) ModelCatalog(context.Context, string, string, bool) (ports.AgentModelCatalog, error) {
 	return m.catalog, nil
@@ -29,7 +34,7 @@ func TestReviewerClaudeAliasTrigger(t *testing.T) {
 					launcher := &fakeLauncher{handle: "review-handle"}
 					config := domain.AgentConfig{Model: model, Effort: effort}
 					engine := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerClaudeCode, AgentConfig: config}}}}, launcher)
-					engine.models = aliasReviewerModels{ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+					engine.models = aliasReviewerModels{ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "saved-fingerprint", Models: []ports.AgentModelInfo{
 						{ID: "opus", IsDefault: true}, {ID: "opus[1m]"},
 						{ID: "claude-opus-4-1", Efforts: []string{"low"}},
 						{ID: "claude-opus-5-5", Efforts: []string{"low", "high", "xhigh", "max"}},
@@ -60,7 +65,7 @@ func TestReviewerClaudeAliasEvidence(t *testing.T) {
 		{"non Claude", domain.ReviewerCodex, []ports.AgentModelInfo{{ID: "claude-opus-5-5", Efforts: []string{"xhigh"}}}, ports.ErrAgentSettingsUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := ports.AgentModelCatalog{Models: append([]ports.AgentModelInfo{{ID: "opus", IsDefault: true}}, tc.models...)}
+			catalog := ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "saved-fingerprint", Models: append([]ports.AgentModelInfo{{ID: "opus", IsDefault: true}}, tc.models...)}
 			engine := &Engine{models: aliasReviewerModels{catalog}}
 			err := engine.validateReviewerModels(context.Background(), tc.harness, domain.AgentConfig{Effort: "xhigh"})
 			if !errors.Is(err, tc.want) {
@@ -71,7 +76,7 @@ func TestReviewerClaudeAliasEvidence(t *testing.T) {
 }
 
 func TestReviewerClaudeAliasUsesSavedCatalog(t *testing.T) {
-	models := &savedReviewerModels{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "opus", IsDefault: true}, {ID: "claude-opus-5-5", Efforts: []string{"xhigh"}}}}}
+	models := &savedReviewerModels{catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "saved-fingerprint", Models: []ports.AgentModelInfo{{ID: "opus", IsDefault: true}, {ID: "claude-opus-5-5", Efforts: []string{"xhigh"}}}}}
 	engine := &Engine{models: models}
 	if err := engine.validateReviewerModels(context.Background(), domain.ReviewerClaudeCode, domain.AgentConfig{Effort: "xhigh"}); err != nil {
 		t.Fatal(err)

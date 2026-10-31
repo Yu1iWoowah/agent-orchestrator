@@ -3987,5 +3987,19 @@
 	"settings.agentAccounts.identityUpdated": "本人情報の確認日時 {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "以前に保存した Codex ログインを管理",
 	"settings.agentAccounts.legacyAccountsTitle": "以前に保存した Codex ログイン",
-	"settings.agentAccounts.legacyAccountsDescription": "以前の AO で保存した Codex ログインを管理します。同じアカウントを上で追加するには、古い項目からログアウトして削除してください。"
+	"settings.agentAccounts.legacyAccountsDescription": "以前の AO で保存した Codex ログインを管理します。同じアカウントを上で追加するには、古い項目からログアウトして削除してください。",
+	"reviewerSettings.nextPass": "次の review",
+	"reviewerSettings.effectiveUnknown": "Provider の有効設定：不明。固定した選択は適用の証明ではありません。",
+	"reviewerSettings.preferenceUnknown": "検証済みの reviewer 設定がありません。",
+	"reviewerSettings.activePass": "Review が実行中です。設定とアカウントは固定され、終了後に次回の設定を変更できます。",
+	"reviewerSettings.loadError": "Reviewer 設定を検証できません。",
+	"reviewerSettings.changeError": "Daemon が次回の設定固定を確認しませんでした。",
+	"reviewerSettings.conflict": "Revision が変更されたか review が開始しました。下書きは保持されます。最新の設定を読み込んでください。",
+	"reviewerSettings.reload": "最新の設定を読み込む",
+	"reviewerSettings.edit": "次回の設定を編集",
+	"reviewerSettings.pin": "次回用に固定",
+	"reviewerSettings.description": "この選択は次回の review のみに使われます。現在の review、アカウント、固定権限は変わりません。model または effort を空にすると provider の既定値に戻ります。",
+	"reviewerSettings.fastOn": "オン",
+	"reviewerSettings.fastOff": "オフ",
+	"reviewerSettings.fastCost": "Fast は追加料金が発生する場合があります。オンで固定すると、次回の使用を明示的に選択します。"
 }

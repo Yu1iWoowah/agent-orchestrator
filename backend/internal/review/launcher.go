@@ -77,8 +77,10 @@ type LaunchSpec struct {
 	ProjectEnv      map[string]string
 	Harness         domain.ReviewerHarness
 	AgentConfig     domain.AgentConfig
-	WorkspacePath   string
-	AgentSessionID  string
+	// PinnedSettings is the admitted pass selection, including explicit defaults.
+	PinnedSettings *domain.AgentSettings
+	WorkspacePath  string
+	AgentSessionID string
 	// ProviderConversationID is the typed Chat driver's stable conversation id.
 	// Terminal reviewers continue to use AgentSessionID.
 	ProviderConversationID string
@@ -114,6 +116,8 @@ type ReviewerChatStart struct {
 	Harness                domain.AgentHarness
 	Model                  string
 	Effort                 string
+	FastMode               domain.AgentFastMode
+	PinnedSettings         *domain.AgentSettings
 	DataDir                string
 	WorkspacePath          string
 	Env                    map[string]string
@@ -421,6 +425,7 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec, 
 			spec.ReplyLanguage = language
 		}
 	}
+	spec.AgentConfig = reviewerSelectionConfig(spec.AgentConfig, reviewerSelectionSettings(spec.AgentConfig))
 	inv := l.invocation(spec)
 	accountEnv, accountErr := l.accountEnv(ctx, spec)
 	if accountErr != nil {
@@ -611,7 +616,7 @@ func (l *agentLauncher) startReviewerChat(ctx context.Context, spec LaunchSpec, 
 	if envErr != nil {
 		return LaunchResult{}, envErr
 	}
-	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: env, Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
+	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, FastMode: spec.AgentConfig.FastMode, PinnedSettings: spec.PinnedSettings, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: env, Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
 	if restore {
 		providerID, err = l.chat.RestoreReviewChat(ctx, start)
 	} else {

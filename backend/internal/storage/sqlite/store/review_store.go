@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
@@ -238,21 +239,33 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 	if r.TriggerSource == "" {
 		r.TriggerSource = domain.ReviewTriggerManual
 	}
+	var initialSettings sql.NullString
+	if r.AgentSettings != nil {
+		if err := r.AgentSettings.Validate(); err != nil {
+			return err
+		}
+		raw, err := json.Marshal(r.AgentSettings)
+		if err != nil {
+			return err
+		}
+		initialSettings = sql.NullString{String: string(raw), Valid: true}
+	}
 	err := s.qw.InsertReviewRun(ctx, gen.InsertReviewRunParams{
-		ID:               r.ID,
-		ReviewID:         r.ReviewID,
-		SessionID:        r.SessionID,
-		BatchID:          r.BatchID,
-		Harness:          r.Harness,
-		TriggerSource:    r.TriggerSource,
-		PRURL:            r.PRURL,
-		TargetSha:        r.TargetSHA,
-		Status:           r.Status,
-		Verdict:          r.Verdict,
-		Body:             r.Body,
-		GithubReviewID:   r.GithubReviewID,
-		CreatedAt:        r.CreatedAt,
-		AutoInjectReview: r.AutoInjectReview,
+		ID:                  r.ID,
+		ReviewID:            r.ReviewID,
+		SessionID:           r.SessionID,
+		BatchID:             r.BatchID,
+		Harness:             r.Harness,
+		TriggerSource:       r.TriggerSource,
+		PRURL:               r.PRURL,
+		TargetSha:           r.TargetSHA,
+		Status:              r.Status,
+		Verdict:             r.Verdict,
+		Body:                r.Body,
+		GithubReviewID:      r.GithubReviewID,
+		CreatedAt:           r.CreatedAt,
+		AutoInjectReview:    r.AutoInjectReview,
+		InitialSettingsJson: initialSettings,
 	})
 	if isSQLiteUnique(err) {
 		return fmt.Errorf("insert review run for session %s pr %s sha %s: %w", r.SessionID, r.PRURL, r.TargetSHA, domain.ErrDuplicateReviewRun)
@@ -324,7 +337,8 @@ func (s *Store) GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, 
 	if err != nil {
 		return domain.ReviewRun{}, false, fmt.Errorf("get review run %s: %w", id, err)
 	}
-	return reviewRunFromRow(row), true, nil
+	result, err := reviewRunFromRow(row)
+	return result, err == nil, err
 }
 
 // GetReviewRunBySessionPRAndSHA returns the most recent review pass for a
@@ -339,7 +353,8 @@ func (s *Store) GetReviewRunBySessionPRAndSHA(ctx context.Context, id domain.Ses
 	if err != nil {
 		return domain.ReviewRun{}, false, fmt.Errorf("get review run for session %s pr %s sha %s: %w", id, prURL, targetSHA, err)
 	}
-	return reviewRunFromRow(row), true, nil
+	result, err := reviewRunFromRow(row)
+	return result, err == nil, err
 }
 
 // GetReviewRunBySessionPRSHAAndHarness returns the most recent review pass for
@@ -352,7 +367,8 @@ func (s *Store) GetReviewRunBySessionPRSHAAndHarness(ctx context.Context, id dom
 	if err != nil {
 		return domain.ReviewRun{}, false, fmt.Errorf("get review run for session %s pr %s sha %s harness %s: %w", id, prURL, targetSHA, harness, err)
 	}
-	return reviewRunFromRow(row), true, nil
+	result, err := reviewRunFromRow(row)
+	return result, err == nil, err
 }
 
 // ListReviewRunsBySession returns all review passes for a worker session, newest first.
@@ -363,7 +379,11 @@ func (s *Store) ListReviewRunsBySession(ctx context.Context, id domain.SessionID
 	}
 	out := make([]domain.ReviewRun, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, reviewRunFromRow(row))
+		entry, err := reviewRunFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }
@@ -377,7 +397,11 @@ func (s *Store) ListRunningReviewRunsBySession(ctx context.Context, id domain.Se
 	}
 	out := make([]domain.ReviewRun, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, reviewRunFromRow(row))
+		entry, err := reviewRunFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }
@@ -390,7 +414,11 @@ func (s *Store) ListReviewRunsByBatch(ctx context.Context, id domain.SessionID, 
 	}
 	out := make([]domain.ReviewRun, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, reviewRunFromRow(row))
+		entry, err := reviewRunFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }
@@ -483,13 +511,13 @@ func reviewFromListRecoverableChatReviewsRow(r gen.ListRecoverableChatReviewsRow
 	return domain.Review{ID: r.ID, SessionID: r.SessionID, ProjectID: r.ProjectID, Harness: r.Harness, PRURL: r.PRURL, ReviewerHandleID: r.ReviewerHandleID, AgentSessionID: r.AgentSessionID, ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState), ReviewerLaunchID: r.ReviewerLaunchID, InterfaceMode: domain.ReviewerInterfaceMode(r.InterfaceMode), ProviderConversationID: r.ProviderConversationID, ControllerGeneration: r.ControllerGeneration, ControllerError: r.ControllerError, IsArchived: r.IsArchived, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 
-func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
+func reviewRunFromRow(r gen.ReviewRun) (domain.ReviewRun, error) {
 	var deliveredAt *time.Time
 	if r.DeliveredAt.Valid {
 		t := r.DeliveredAt.Time
 		deliveredAt = &t
 	}
-	return domain.ReviewRun{
+	result := domain.ReviewRun{
 		ID:               r.ID,
 		ReviewID:         r.ReviewID,
 		SessionID:        r.SessionID,
@@ -506,6 +534,18 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		DeliveredAt:      deliveredAt,
 		AutoInjectReview: r.AutoInjectReview,
 	}
+	if r.AgentSettingsJson.Valid != r.AgentSettingsRevision.Valid {
+		return domain.ReviewRun{}, ports.ErrAgentSettingsInvalid
+	}
+	if r.AgentSettingsJson.Valid {
+		settings, err := decodeReviewerSelection(r.AgentSettingsJson.String)
+		if err != nil {
+			return domain.ReviewRun{}, err
+		}
+		revision := r.AgentSettingsRevision.Int64
+		result.AgentSettings, result.AgentSettingsRevision = &settings, &revision
+	}
+	return result, nil
 }
 
 // ListCurrentHeadReviewRunsForSession returns AO's review passes against the

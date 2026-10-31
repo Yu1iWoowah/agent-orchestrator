@@ -5,6 +5,11 @@ import { ReviewerChatSurface } from "./ReviewerChatSurface";
 
 const mocks = vi.hoisted(() => ({ openSessionLink: vi.fn(), chooseSettings: vi.fn(), resumeAgent: vi.fn() }));
 
+vi.mock("../../hooks/useReviewerAgentSettings", () => ({
+	useReviewerAgentSettings: () => ({ data: { reviewId: "review-1", harness: "codex", revision: 1, settings: { model: "review-model", effort: "high", fastMode: "off" }, activePass: false }, refetch: vi.fn() }),
+	usePinReviewerAgentSettings: () => ({ isPending: false, reset: vi.fn() }),
+}));
+
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../hooks/useReviewerConversation", () => ({
 	useReviewerConversation: () => ({
@@ -31,19 +36,26 @@ vi.mock("../../lib/use-session-link-navigation", () => ({
 	useSessionLinkNavigation: () => mocks.openSessionLink,
 }));
 vi.mock("./ChatWorkspace", () => ({
-	ChatWorkspace: ({ onResumeAgent, onSessionLinkOpen, draftOwner, models, onChooseSettings, approvalModes }: { onResumeAgent?: () => void; onSessionLinkOpen?: (url: string) => void; draftOwner?: { sessionId: string }; models?: ChatModel[]; onChooseSettings?: (settings: TurnSettings) => void; approvalModes?: string[] }) => (
+	ChatWorkspace: ({ onResumeAgent, onSessionLinkOpen, draftOwner, models, onChooseSettings, approvalModes, agentSettingsNotice }: { onResumeAgent?: () => void; onSessionLinkOpen?: (url: string) => void; draftOwner?: { sessionId: string }; models?: ChatModel[]; onChooseSettings?: (settings: TurnSettings) => void; approvalModes?: string[]; agentSettingsNotice?: React.ReactNode }) => (
 		<>
 		<button onClick={onResumeAgent}>Resume agent</button>
 		<button type="button" data-draft-owner={draftOwner?.sessionId} onClick={() => onSessionLinkOpen?.("ao://sessions/project/session")}>
 			Open session
 		</button>
-		<button type="button" data-approval-modes={approvalModes?.join(",")} onClick={() => onChooseSettings?.({ model: models?.[0]?.id, reasoningEffort: "high", approvalMode: "auto" })}>Choose reviewer settings</button>
+		<button type="button" disabled={!onChooseSettings} data-approval-modes={approvalModes?.join(",")} onClick={() => onChooseSettings?.({ model: models?.[0]?.id, reasoningEffort: "high", approvalMode: "auto" })}>Choose reviewer settings</button>
+		{agentSettingsNotice}
 		</>
 	),
 }));
 
 describe("ReviewerChatSurface", () => {
 	beforeEach(() => { mocks.openSessionLink.mockReset(); mocks.chooseSettings.mockReset(); });
+
+	it("labels reviewer controls as next-pass selection rather than applied provider state", () => {
+		render(<ReviewerChatSurface workerSessionId="worker-1" reviewId="review-1" />);
+		expect(screen.getByText("reviewerSettings.nextPass")).toBeInTheDocument();
+		expect(screen.getByText("reviewerSettings.effectiveUnknown")).toBeInTheDocument();
+	});
 
 	it("connects the shared Resume control to reviewer recovery for its worker owner", () => {
 		render(<ReviewerChatSurface workerSessionId="worker-1" reviewId="review-1" />);
@@ -57,12 +69,13 @@ describe("ReviewerChatSurface", () => {
 		expect(mocks.openSessionLink).toHaveBeenCalledWith("ao://sessions/project/session");
 	});
 
-	it("exposes reviewer models and effort while keeping unattended permissions fixed", () => {
+	it("routes edits through next-pass controls while keeping unattended permissions fixed", () => {
 		render(<ReviewerChatSurface workerSessionId="worker-1" reviewId="review-1" />);
 		const choose = screen.getByRole("button", { name: "Choose reviewer settings" });
 		expect(choose).toHaveAttribute("data-approval-modes", "auto");
-		fireEvent.click(choose);
-		expect(mocks.chooseSettings).toHaveBeenCalledWith({ model: "review-model", reasoningEffort: "high", approvalMode: "auto" });
+		expect(choose).toBeDisabled();
+		expect(screen.getByRole("button", { name: "reviewerSettings.edit" })).toBeEnabled();
+		expect(mocks.chooseSettings).not.toHaveBeenCalled();
 	});
 
 	it("keeps reviewer drafts isolated across remote hosts", () => {

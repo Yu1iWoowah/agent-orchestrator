@@ -793,6 +793,23 @@ func (c reviewerModelConversation) ListModels(context.Context) ([]ports.ChatMode
 	return []ports.ChatModel{{ID: "review-model", DisplayName: "Review model", Efforts: []string{"high"}}}, nil
 }
 
+type reviewerMenuPins struct {
+	id        string
+	patch     domain.AgentSettingsPatch
+	selection domain.AgentSettings
+}
+
+func (p *reviewerMenuPins) ReviewerChatSettings(context.Context, string) (*domain.AgentSettings, error) {
+	selected := p.selection
+	return &selected, nil
+}
+func (p *reviewerMenuPins) PinReviewerChatSettings(_ context.Context, id string, patch domain.AgentSettingsPatch) (domain.AgentSettings, error) {
+	p.id, p.patch = id, patch
+	var err error
+	p.selection, err = p.selection.Apply(patch)
+	return p.selection, err
+}
+
 func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -812,6 +829,14 @@ func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 	var synced bool
 	var ids atomic.Uint64
 	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: provider}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("review-model-%d", ids.Add(1)) }, OnModelChanged: func(domain.SessionID, string) { synced = true }})
+	pins := &reviewerMenuPins{selection: domain.AgentSettings{FastMode: domain.AgentFastDefault}}
+	installer, ok := any(svc).(interface {
+		SetReviewerSettingsControl(ports.ReviewerChatSettingsControl)
+	})
+	if !ok {
+		t.Fatal("reviewer menu has no next-pass pin boundary")
+	}
+	installer.SetReviewerSettingsControl(pins)
 	owner := domain.ReviewConversationOwner("review-models")
 	t.Cleanup(func() { _ = svc.StopForOwner(context.Background(), owner) })
 	if _, err := svc.Start(ctx, chatsvc.StartConfig{Owner: owner, SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), Permissions: ports.PermissionModeAuto}); err != nil {
@@ -830,8 +855,12 @@ func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewConversation.Settings.Model != "review-model" || reviewConversation.Settings.ReasoningEffort != "high" {
-		t.Fatalf("review settings=%+v", reviewConversation.Settings)
+	if reviewConversation.Settings.Model == "review-model" || reviewConversation.Settings.ReasoningEffort == "high" || pins.id != owner.ID || pins.patch.Model == nil || *pins.patch.Model != "review-model" {
+		t.Fatalf("review menu changed live pass or wrong owner: settings=%+v pin=%+v", reviewConversation.Settings, pins)
+	}
+	_, projected, err := svc.ModelsForOwner(ctx, owner)
+	if err != nil || projected.Model != "review-model" || projected.ReasoningEffort != "high" {
+		t.Fatalf("next-pass projection=%+v %v", projected, err)
 	}
 	workerAfter, err := st.LoadConversationSnapshot(ctx, worker.ID)
 	if err != nil || workerAfter.Conversation.Settings != workerSettings || synced {
@@ -841,7 +870,7 @@ func TestReviewerModelSettingsStayWithReviewOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := provider.sentMessages()
-	if len(sent) != 1 || sent[0].Settings.Model != "review-model" || sent[0].Settings.Effort != "high" {
+	if len(sent) != 1 || sent[0].Settings.Model == "review-model" || sent[0].Settings.Effort == "high" {
 		t.Fatalf("provider turn settings = %+v", sent)
 	}
 	settings.ApprovalMode = domain.PermissionModeBypassPermissions
@@ -7232,5 +7261,98 @@ func TestReservedBoundaryAdoptsSuccessorHandleWithoutRewritingHistory(t *testing
 	if keptSource.ProviderConversationID != ancestor ||
 		keptSource.ProviderScopeID != sourceBranch.ProviderScopeID {
 		t.Fatalf("ancestor branch = %+v, want the recorded handle untouched", keptSource)
+	}
+}
+
+func TestReviewerResumeUsesPinnedSelectionInsteadOfPreviousConversation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target domain.AgentSettings
+		pinned bool
+	}{
+		{"next selection", domain.AgentSettings{Model: "next-review-model", Effort: "high", FastMode: domain.AgentFastOn}, true},
+		{"explicit defaults", domain.AgentSettings{FastMode: domain.AgentFastDefault}, true},
+		{"legacy conversation", domain.AgentSettings{Model: "caller-default", Effort: "high", FastMode: domain.AgentFastOn}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			ctx := context.Background()
+			now := time.Now().UTC()
+			owner := domain.ReviewConversationOwner("pinned-review")
+			if err := st.UpsertReview(ctx, domain.Review{ID: owner.ID, SessionID: testSession, ProjectID: testProject, Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			var resumed ports.ChatResumeConfig
+			var counter atomic.Uint64
+			first := newFakeConversation()
+			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: first}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("pinned-initial-%d", counter.Add(1)) }})
+			cfg := chatsvc.StartConfig{Owner: owner, SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), Permissions: ports.PermissionModeAuto, Model: "previous-review-model", Effort: "low", FastMode: domain.AgentFastOff}
+			if _, err := svc.Start(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.ConversationForReview(ctx, owner.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.StopForOwner(ctx, owner); err != nil {
+				t.Fatal(err)
+			}
+			next := newFakeConversation()
+			replacement := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: fakeDriver{conv: next, resumeCfg: &resumed}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("pinned-replacement-%d", counter.Add(1)) }})
+			t.Cleanup(func() { _ = replacement.StopForOwner(context.Background(), owner) })
+			cfg.ProviderConversationID = first.ProviderConversationID()
+			if cfg.ProviderConversationID == "" {
+				t.Fatal("Fixture needs native history")
+			}
+			cfg.Model, cfg.Effort, cfg.FastMode = string(tc.target.Model), string(tc.target.Effort), tc.target.FastMode
+			if tc.pinned {
+				cfg.ReviewerSettings = &tc.target
+			}
+			if _, err := replacement.Start(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			want := tc.target
+			if !tc.pinned {
+				want = domain.AgentSettings{Model: "previous-review-model", Effort: "low", FastMode: domain.AgentFastOff}
+			}
+			if !resumed.ReadOnly || resumed.Permissions != ports.PermissionModeAuto || resumed.ProviderConversationID != cfg.ProviderConversationID || resumed.Model != string(want.Model) || resumed.Effort != string(want.Effort) || resumed.FastMode != want.FastMode {
+				t.Fatalf("resume replaced frozen preference: got=%+v want=%+v", resumed, want)
+			}
+			current, err := st.ConversationForReview(ctx, owner.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			savedFast := current.Settings.AgentFastMode
+			if savedFast == "" {
+				savedFast = domain.AgentFastDefault
+			}
+			if current.Settings.FastMode != (want.FastMode == domain.AgentFastOn) || current.Settings.Model != string(want.Model) || current.Settings.ReasoningEffort != string(want.Effort) || savedFast != want.FastMode {
+				t.Fatalf("stored reviewer projection=%+v want=%+v", current.Settings, want)
+			}
+			worker, err := st.ConversationForSession(ctx, testSession)
+			if err != nil && !errors.Is(err, domain.ErrNoConversation) {
+				t.Fatal(err)
+			}
+			if err == nil && worker.Settings.Model == string(tc.target.Model) && tc.target.Model != "" {
+				t.Fatalf("reviewer selection leaked to worker: %+v", worker.Settings)
+			}
+		})
+	}
+}
+
+func TestWorkerCannotUseReviewerPinnedSelection(t *testing.T) {
+	st := openStore(t)
+	var starts int
+	driver := fakeDriver{conv: newFakeConversation(), start: func(ports.ChatStartConfig) (ports.ChatConversation, error) {
+		starts++
+		return newFakeConversation(), nil
+	}}
+	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: fakeRegistry{driver: driver}, Log: slog.New(slog.DiscardHandler)})
+	selection := domain.AgentSettings{Model: "reviewer-only", FastMode: domain.AgentFastOff}
+	_, err := svc.Start(context.Background(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), ReviewerSettings: &selection})
+	if !errors.Is(err, ports.ErrAgentSettingsInvalid) || starts != 0 {
+		t.Fatalf("worker accepted reviewer preference: starts=%d err=%v", starts, err)
+	}
+	if _, err := st.ConversationForSession(context.Background(), testSession); !errors.Is(err, domain.ErrNoConversation) {
+		t.Fatalf("invalid reviewer handoff changed worker: %v", err)
 	}
 }

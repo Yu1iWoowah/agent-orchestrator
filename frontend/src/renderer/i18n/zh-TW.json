@@ -3968,5 +3968,19 @@
 	"settings.agentAccounts.identityUpdated": "身分確認於 {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "管理舊版 Codex 登入",
 	"settings.agentAccounts.legacyAccountsTitle": "舊版已儲存的 Codex 登入",
-	"settings.agentAccounts.legacyAccountsDescription": "在此管理舊版 AO 儲存的 Codex 登入。若要在上方新增相同身分，請先登出並移除舊項目。"
+	"settings.agentAccounts.legacyAccountsDescription": "在此管理舊版 AO 儲存的 Codex 登入。若要在上方新增相同身分，請先登出並移除舊項目。",
+	"reviewerSettings.nextPass": "下一個 review pass",
+	"reviewerSettings.effectiveUnknown": "Provider 實際生效值：unknown。已 pin 的選擇不代表已套用。",
+	"reviewerSettings.preferenceUnknown": "尚無經驗證的 reviewer 偏好紀錄。",
+	"reviewerSettings.activePass": "Review pass 執行中，其設定與帳號保持固定。請等它完成後再變更下一個 pass。",
+	"reviewerSettings.loadError": "無法驗證 reviewer 設定。",
+	"reviewerSettings.changeError": "Daemon 未確認下一個 pass 的 pin。",
+	"reviewerSettings.conflict": "Revision 已變更或 pass 已開始。你的草稿已保留，請載入最新偏好後再選擇。",
+	"reviewerSettings.reload": "載入最新偏好",
+	"reviewerSettings.edit": "編輯下一個 pass 設定",
+	"reviewerSettings.pin": "Pin 到下一個 pass",
+	"reviewerSettings.description": "這個選擇只供下一個 review pass 使用。目前 pass 保持原樣；reviewer 沿用帳號與固定權限。Model 或 effort 留空會重設為 provider default。",
+	"reviewerSettings.fastOn": "開啟",
+	"reviewerSettings.fastOff": "關閉",
+	"reviewerSettings.fastCost": "Fast 可能產生額外 provider 費用。Pin「開啟」表示你明確選擇在下一個 pass 使用。"
 }

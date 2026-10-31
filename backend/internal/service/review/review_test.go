@@ -699,6 +699,9 @@ func TestReviewErrorKindClassifiesEngineSentinels(t *testing.T) {
 		{"agent_unavailable", fmt.Errorf("%w", ports.ErrAgentBinaryNotFound), "agent_unavailable"},
 		{"settings_unsupported", fmt.Errorf("provider: %w", ports.ErrAgentSettingsUnsupported), "invalid"},
 		{"capabilities_unavailable", fmt.Errorf("provider: %w", ports.ErrAgentSettingsCapabilitiesUnavailable), "unavailable"},
+		{"settings_conflict", fmt.Errorf("reviewer: %w", ports.ErrAgentSettingsConflict), "conflict"},
+		{"settings_grant_invalid", fmt.Errorf("reviewer: %w", ports.ErrAgentSettingsGrantInvalid), "forbidden"},
+		{"settings_invalid", fmt.Errorf("reviewer: %w", ports.ErrAgentSettingsInvalid), "invalid"},
 		{"fallback_internal", errors.New("something unexpected"), "internal"},
 	}
 	for _, c := range cases {

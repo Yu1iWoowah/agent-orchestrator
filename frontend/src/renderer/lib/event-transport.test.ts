@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { act, render } from "@testing-library/react";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import { agentSettingsQueryKey } from "./agent-settings";
+import { reviewerAgentSettingsQueryKey } from "./reviewer-agent-settings";
 import { conversationQueryKey } from "../hooks/useConversation";
 import { agentSettingsSelection, agentSettingsSnapshot } from "../test/agent-settings-fixtures";
 import { chatFixtureEmpty } from "./chat-fixture";
@@ -577,6 +578,20 @@ describe("createEventTransport", () => {
 		}
 	});
 
+	it("refreshes only the stable reviewer preference for a settings pin CDC", () => {
+		vi.useFakeTimers();
+		const client = fakeQueryClient();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			vi.mocked(client.invalidateQueries).mockClear();
+			cdcSources().at(-1)?.emit("session_updated", JSON.stringify({ type: "session_updated", sessionId: "worker-1", payload: { id: "worker-1", reviewId: "review-1", reviewSettingsRevision: 4 } }));
+			vi.advanceTimersByTime(1_000);
+			expect(client.invalidateQueries).toHaveBeenCalledWith({ queryKey: reviewerAgentSettingsQueryKey("review-1") }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["reviewer-conversation", "review-1"] }, { cancelRefetch: false });
+			expect(client.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["conversation", "worker-1"] }, { cancelRefetch: false });
+		} finally { disconnect(); vi.useRealTimers(); }
+	});
+
 	// An agent can start a review with `ao review trigger`, and a reviewer can
 	// finish one, without this window asking. The session's reviews must refresh
 	// or the inspector keeps showing the previous verdict.
@@ -601,6 +616,7 @@ describe("createEventTransport", () => {
 				expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
 					queryKey: ["session-reviews", "worker-1"],
 				}, { cancelRefetch: false });
+				expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: reviewerAgentSettingsQueryKey("review-1") }, { cancelRefetch: false });
 				disconnect();
 			}
 		} finally {

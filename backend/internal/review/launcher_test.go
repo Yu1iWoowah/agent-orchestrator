@@ -10,11 +10,65 @@ import (
 	"testing"
 	"time"
 
+	claudereview "github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/claudecode"
 	codexreview "github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
+
+func TestReviewerNativeSelectionWireKeepsFixedPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fake executable fixture; cross compilation checked separately")
+	}
+	for _, harness := range []domain.ReviewerHarness{domain.ReviewerCodex, domain.ReviewerClaudeCode} {
+		for _, fast := range []domain.AgentFastMode{domain.AgentFastOn, domain.AgentFastOff} {
+			t.Run(string(harness)+"/"+string(fast), func(t *testing.T) {
+				bin := t.TempDir()
+				name := "codex"
+				var reviewer ports.Reviewer = codexreview.New()
+				if harness == domain.ReviewerClaudeCode {
+					name = "claude"
+					reviewer = claudereview.New()
+				}
+				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 91\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				rt := &fakeRuntime{}
+				launcher := newTestLauncher(t, reviewer, rt)
+				spec := launchSpec()
+				spec.Harness = harness
+				spec.WorkspacePath = t.TempDir()
+				spec.AgentConfig = domain.AgentConfig{Model: "review-model", Effort: "high", FastMode: fast, Permissions: domain.PermissionModeBypassPermissions}
+				if _, err := launcher.Spawn(context.Background(), spec); err != nil {
+					t.Fatal(err)
+				}
+				wire := strings.Join(rt.createCfg.Argv, " ")
+				if !strings.Contains(wire, "review-model") || !strings.Contains(wire, "high") {
+					t.Fatalf("model/effort missing: %s", wire)
+				}
+				if harness == domain.ReviewerCodex {
+					tier := "default"
+					if fast == domain.AgentFastOn {
+						tier = "priority"
+					}
+					if !strings.Contains(wire, "service_tier='"+tier+"'") || !strings.Contains(wire, "--sandbox read-only") {
+						t.Fatalf("fast/read-only wire: %s", wire)
+					}
+				} else {
+					value := "false"
+					if fast == domain.AgentFastOn {
+						value = "true"
+					}
+					if !strings.Contains(wire, `"fastMode":`+value) || !strings.Contains(wire, "--disallowedTools") || strings.Contains(wire, "bypassPermissions") {
+						t.Fatalf("Claude fast/fixed tools wire: %s", wire)
+					}
+				}
+			})
+		}
+	}
+}
 
 type fakeReviewer struct {
 	gotInv           ports.ReviewInvocation

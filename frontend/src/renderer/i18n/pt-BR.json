@@ -4057,5 +4057,19 @@
 	"settings.agentAccounts.identityUpdated": "Identidade verificada {{time}}",
 	"settings.agentAccounts.manageLegacyAccounts": "Gerenciar logins antigos do Codex",
 	"settings.agentAccounts.legacyAccountsTitle": "Logins antigos do Codex",
-	"settings.agentAccounts.legacyAccountsDescription": "Gerencie os logins do Codex salvos por versões anteriores do AO. Para adicionar a mesma identidade acima, saia e remova primeiro a entrada antiga."
+	"settings.agentAccounts.legacyAccountsDescription": "Gerencie os logins do Codex salvos por versões anteriores do AO. Para adicionar a mesma identidade acima, saia e remova primeiro a entrada antiga.",
+	"reviewerSettings.nextPass": "Próxima revisão",
+	"reviewerSettings.effectiveUnknown": "Configurações efetivas do provider: desconhecidas. Uma escolha fixada não comprova aplicação.",
+	"reviewerSettings.preferenceUnknown": "Nenhuma preferência verificada do reviewer registrada.",
+	"reviewerSettings.activePass": "Uma revisão está ativa. Configurações e conta permanecem fixas; altere a próxima após o término.",
+	"reviewerSettings.loadError": "Não foi possível verificar as configurações do reviewer.",
+	"reviewerSettings.changeError": "O daemon não confirmou a escolha para a próxima revisão.",
+	"reviewerSettings.conflict": "A revisão dos dados mudou ou uma revisão começou. Seu rascunho foi mantido. Carregue a preferência atual.",
+	"reviewerSettings.reload": "Carregar preferência atual",
+	"reviewerSettings.edit": "Editar próxima revisão",
+	"reviewerSettings.pin": "Fixar para a próxima revisão",
+	"reviewerSettings.description": "Somente a próxima revisão usa esta escolha. A revisão atual, a conta e as permissões fixas permanecem. Esvaziar model ou effort restaura o padrão do provider.",
+	"reviewerSettings.fastOn": "Ativado",
+	"reviewerSettings.fastOff": "Desativado",
+	"reviewerSettings.fastCost": "Fast pode gerar cobranças adicionais. Fixar em Ativado é uma escolha explícita para a próxima revisão."
 }

@@ -146,6 +146,7 @@ type projectConfig struct {
 type agentSettingsPolicy struct {
 	Enabled   bool                              `json:"enabled"`
 	Harnesses map[string]agentSettingsAllowance `json:"harnesses"`
+	Reviewers map[string]agentSettingsAllowance `json:"reviewers,omitempty"`
 }
 
 type agentSettingsAllowance struct {

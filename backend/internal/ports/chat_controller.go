@@ -37,7 +37,10 @@ type ChatControllerStart struct {
 	Model         string
 	Effort        string
 	FastMode      domain.AgentFastMode
-	Permissions   PermissionMode
+	// ReviewerSettings is a frozen pass selection. Nil preserves legacy restore.
+	// Only review-owned controllers may use it; it never changes account or permissions.
+	ReviewerSettings *domain.AgentSettings
+	Permissions      PermissionMode
 	// ReadOnly forces the provider's native sandbox to reject workspace writes.
 	// Reviewer-owned conversations set this independently of approval behavior.
 	ReadOnly              bool

@@ -77,8 +77,9 @@ type triggerReviewRequest struct {
 // reviewAgentConfig mirrors the model/effort subset of domain.AgentConfig a
 // reviewer pass may override.
 type reviewAgentConfig struct {
-	Model  string `json:"model,omitempty"`
-	Effort string `json:"effort,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	FastMode string `json:"fastMode,omitempty"`
 }
 
 // reviewRunResponse mirrors controllers.ReviewRunResponse.
@@ -124,6 +125,7 @@ type reviewTriggerOptions struct {
 	harness  string
 	model    string
 	effort   string
+	fast     string
 	rerun    bool
 	noInject bool
 }
@@ -157,6 +159,8 @@ func newReviewCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newReviewSubmitCommand(ctx))
 	cmd.AddCommand(newReviewCancelCommand(ctx))
 	cmd.AddCommand(newReviewTriggerCommand(ctx))
+	cmd.AddCommand(newReviewerSettingsCommand(ctx))
+	cmd.AddCommand(newReviewerSetCommand(ctx))
 	return cmd
 }
 
@@ -389,12 +393,16 @@ approval and does not authorize merging.`,
 	f.StringVar(&opts.harness, "harness", "", "Reviewer agent / --agent for this pass only (e.g. claude-code, codex)")
 	f.StringVar(&opts.model, "model", "", "Reviewer model for this pass only")
 	f.StringVar(&opts.effort, "effort", "", "Reviewer reasoning effort for this pass only")
+	f.StringVar(&opts.fast, "fast", "", "Reviewer fast preference: on, off, or default; active pass changes conflict")
 	f.BoolVar(&opts.rerun, "rerun", false, "Review heads that already have a review again, or add another reviewer alongside a running one")
 	f.BoolVar(&opts.noInject, "no-inject", false, "Leave the session's review auto-inject setting unchanged")
 	return cmd
 }
 
 func (c *commandContext) triggerReview(cmd *cobra.Command, args []string, opts reviewTriggerOptions) error {
+	if cmd.Flags().Changed("fast") && opts.fast != "on" && opts.fast != "off" && opts.fast != "default" {
+		return usageError{errors.New("--fast must be on, off, or default")}
+	}
 	if strings.TrimSpace(os.Getenv(envReviewSessionID)) != "" {
 		return usageError{errors.New("ao review trigger cannot run inside a reviewer: reviewers review the requested PR and submit with `ao review submit`; they never start reviews")}
 	}
@@ -409,8 +417,8 @@ func (c *commandContext) triggerReview(cmd *cobra.Command, args []string, opts r
 		Rerun:              opts.rerun,
 		EnableAutoInject:   !opts.noInject,
 	}
-	if model, effort := strings.TrimSpace(opts.model), strings.TrimSpace(opts.effort); model != "" || effort != "" {
-		req.AgentConfig = &reviewAgentConfig{Model: model, Effort: effort}
+	if model, effort := strings.TrimSpace(opts.model), strings.TrimSpace(opts.effort); model != "" || effort != "" || cmd.Flags().Changed("fast") {
+		req.AgentConfig = &reviewAgentConfig{Model: model, Effort: effort, FastMode: opts.fast}
 	}
 	// A request from inside an AO session (a worker reviewing its own PR, or an
 	// orchestrator) is labelled as such, so it is never mistaken for a person.

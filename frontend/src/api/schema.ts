@@ -2525,6 +2525,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviews/{reviewId}/agent-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a stable review owner's next-pass preference; effective values remain unknown */
+        get: operations["getReviewerAgentSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Pin the next pass selection; active passes conflict and keep their original settings/account */
+        patch: operations["changeReviewerAgentSettings"];
+        trace?: never;
+    };
     "/api/v1/reviews/{reviewId}/conversation": {
         parameters: {
             query?: never;
@@ -5631,6 +5649,9 @@ export interface components {
             harnesses: {
                 [key: string]: components["schemas"]["AgentSettingsAllowance"];
             } | null;
+            reviewers?: {
+                [key: string]: components["schemas"]["AgentSettingsAllowance"];
+            };
         };
         AgentSettingsRecovery: {
             /** Format: date-time */
@@ -6341,6 +6362,10 @@ export interface components {
         CancelSessionInterfaceTransitionResponse: {
             ok: boolean;
             sessionId: string;
+        };
+        ChangeReviewerAgentSettingsPayload: {
+            expectedRevision: null | number;
+            settings: components["schemas"]["AgentSettingsPatch"];
         };
         ChangeSessionAgentSettingsPayload: {
             /** @enum {string} */
@@ -8699,6 +8724,8 @@ export interface components {
             turnId?: string;
         };
         ReviewRun: {
+            agentSettings?: components["schemas"]["AgentSettings"];
+            agentSettingsRevision?: null | number;
             autoInjectReview: boolean;
             batchId: string;
             body: string;
@@ -8722,6 +8749,38 @@ export interface components {
             review: components["schemas"]["ReviewRun"];
             reviewerHandleId: string;
             reviews: components["schemas"]["ReviewRun"][];
+        };
+        ReviewerAgentSettingsResponse: {
+            activePass: boolean;
+            /** @enum {string} */
+            applyMode: "next-pass";
+            /** @enum {string} */
+            effectiveState: "unknown";
+            harness: string;
+            reason: string;
+            reviewId: string;
+            /** Format: int64 */
+            revision: number;
+            settings: null | components["schemas"]["AgentSettings"];
+        };
+        ReviewerSettingsOperationResponse: {
+            actor: components["schemas"]["AgentSettingsActor"];
+            /** @enum {string} */
+            applyMode: "next-pass";
+            /** Format: int64 */
+            baseRevision: number;
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            /** @enum {string} */
+            phase: "pinned";
+            policyRevision: string;
+            requestId?: string;
+            reviewId: string;
+            /** Format: int64 */
+            revision: number;
+            source?: components["schemas"]["AgentSettings"];
+            target: components["schemas"]["AgentSettings"];
         };
         RoleOverride: {
             agent?: string;
@@ -19532,6 +19591,164 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getReviewerAgentSettings: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+            };
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewerAgentSettingsResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    changeReviewerAgentSettings: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeReviewerAgentSettingsPayload"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewerSettingsOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

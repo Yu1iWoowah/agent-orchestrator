@@ -568,6 +568,14 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("wire session service: %w", err)
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
+	if controls, ok := reviewSvc.(interface {
+		SetReviewerSettingsAuthorizer(ports.ReviewerSettingsAuthorizer)
+	}); ok {
+		controls.SetReviewerSettingsAuthorizer(agentsettings.NewAuthorizer(store, settingsGrantAuthority, time.Now))
+	}
+	if controls, ok := reviewSvc.(ports.ReviewerChatSettingsControl); ok {
+		chatSvc.SetReviewerSettingsControl(controls)
+	}
 	memoryReader := usagesvc.NewMemoryReader(usagesvc.MemoryReaderDeps{
 		Store: store, Runtime: runtimeAdapter, Reviewers: store, CacheTTL: 2 * time.Second,
 		ChatHostPID: func(id domain.SessionID) (int, bool) {

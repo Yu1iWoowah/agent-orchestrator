@@ -68,9 +68,13 @@ type ReviewerSurface struct {
 
 // ReviewRun is one review pass against a worker's PR.
 type ReviewRun struct {
-	ID        string    `json:"id"`
-	ReviewID  string    `json:"reviewId"`
-	SessionID SessionID `json:"sessionId"`
+	// AgentSettings snapshots the admitted reviewer's preference, not the worker
+	// model. Nil preserves unknown history for passes predating this snapshot.
+	AgentSettings         *AgentSettings `json:"agentSettings,omitempty"`
+	AgentSettingsRevision *int64         `json:"agentSettingsRevision,omitempty"`
+	ID                    string         `json:"id"`
+	ReviewID              string         `json:"reviewId"`
+	SessionID             SessionID      `json:"sessionId"`
 	// BatchID groups review runs created by one trigger so worker feedback can
 	// be delivered once after the whole trigger batch is terminal. Empty marks
 	// legacy/single-run delivery.
