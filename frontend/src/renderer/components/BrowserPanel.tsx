@@ -497,14 +497,29 @@ export function BrowserPanelView({
 	const addressTabId = tabs.some((tab) => tab.id === activeTabId)
 		? activeTabId : tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id;
 	const singleTab = tabs.length === 1 ? tabs[0] : undefined;
-	const singleTabCloseLabel = singleTab
-		? t("browser.closeTab", { title: browserTabLabel(singleTab.title, singleTab.url).title }) : undefined;
+	const singleTabLabel = singleTab ? browserTabLabel(singleTab.title, singleTab.url) : undefined;
+	const singleTabTitle = singleTab?.title.trim();
+	const showSingleTabTitle = singleTabTitle && ![
+		singleTab?.url, singleTabLabel?.subtitle, getDisplayUrl(singleTab?.url ?? ""), "about:blank",
+	].includes(singleTabTitle);
+	const singleTabCloseLabel = singleTabLabel
+		? t("browser.closeTab", { title: singleTabLabel.title }) : undefined;
+	const singleTabCloseRef = useRef<HTMLButtonElement>(null);
 	const {
 		scrollRef: tabScrollRef,
 		scrollToEnd: scrollTabsToEnd,
 		showLeftFade: showTabsLeftFade,
 		showRightFade: showTabsRightFade,
 	} = useTabScrollEdges([tabs.length]);
+	const setTabStripRef = useCallback((element: HTMLDivElement | null) => {
+		// Ref detachment runs before the focused tab is removed from the DOM.
+		if (!element && tabScrollRef.current?.contains(document.activeElement)) {
+			requestAnimationFrame(() => {
+				if (document.activeElement === document.body) singleTabCloseRef.current?.focus();
+			});
+		}
+		tabScrollRef.current = element;
+	}, [tabScrollRef]);
 	const previousTabCountRef = useRef(tabs.length);
 
 	// Opening a tab (or a popup adding one) appends it, so reveal the newest.
@@ -1110,12 +1125,15 @@ export function BrowserPanelView({
 			>
 				<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
 					<div className="browser-panel__tab-region">
+						{showSingleTabTitle ? (
+							<span className="browser-panel__single-tab-title" title={singleTabTitle}>{singleTabTitle}</span>
+						) : null}
 						{tabs.length > 1 ? (
 							<div
 								aria-label={t("browser.tabs")}
 								className="browser-panel__tab-strip"
 								onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
-								ref={tabScrollRef}
+								ref={setTabStripRef}
 								role="tablist"
 							>
 								{tabs.map((tab) => (
@@ -1143,8 +1161,9 @@ export function BrowserPanelView({
 				<BrowserControlTooltip label={singleTabCloseLabel}>
 					<button
 						aria-label={singleTabCloseLabel}
-						className="browser-panel__tab-close"
+						className="browser-panel__single-tab-close"
 						onClick={() => handleCloseTab(singleTab.id)}
+						ref={singleTabCloseRef}
 						type="button"
 					>
 						<X aria-hidden="true" className="size-icon-base" />

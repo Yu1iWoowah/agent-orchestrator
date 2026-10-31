@@ -5638,6 +5638,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 .browser-panel__toolbar button,
 .browser-panel__address-bar button,
 .browser-panel__tab-new,
+.browser-panel__single-tab-close,
 .browser-panel__tab-close {
 	color: var(--fg-muted);
 	transform-origin: center;
@@ -5668,6 +5669,16 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	min-width: 0;
 	flex: 1 1 0;
 	overflow: hidden;
+}
+
+.browser-panel__single-tab-title {
+	min-width: 0;
+	overflow: hidden;
+	align-self: center;
+	color: var(--fg-muted);
+	font-size: var(--font-size-sm);
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .browser-panel__tab-strip {
@@ -5818,6 +5829,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	display: grid;
 }
 
+.browser-panel__single-tab-close,
 .browser-panel__tab-new {
 	display: grid;
 	width: var(--size-control-md);
@@ -5841,16 +5853,19 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	pointer-events: none;
 }
 
+.browser-panel__single-tab-close:not(:disabled):hover,
 .browser-panel__tab-new:not(:disabled):hover {
 	color: var(--fg);
 	background: var(--interactive-hover);
 }
 
+.browser-panel__single-tab-close:focus-visible,
 .browser-panel__tab-new:focus-visible {
 	outline: 2px solid var(--color-accent);
 	outline-offset: -2px;
 }
 
+.browser-panel__single-tab-close:active,
 .browser-panel__tab-new:active {
 	transform: scale(0.98);
 	transform-origin: center;

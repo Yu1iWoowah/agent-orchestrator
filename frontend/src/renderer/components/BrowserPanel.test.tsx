@@ -363,7 +363,7 @@ describe("BrowserPanel", () => {
 
 	it("toggles find-in-page, searches as text changes, and supports keyboard navigation", async () => {
 		let focusFrame: FrameRequestCallback | undefined;
-		vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+		const animationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
 			focusFrame = callback;
 			return 1;
 		});
@@ -408,6 +408,7 @@ describe("BrowserPanel", () => {
 		await userEvent.keyboard("{Escape}");
 		expect(screen.queryByRole("search")).not.toBeInTheDocument();
 		expect(hookState.stopFindInPage).toHaveBeenCalledTimes(2);
+		animationFrame.mockRestore();
 	});
 
 	it("supports consecutive address-bar navigations after refocusing", async () => {
@@ -1313,6 +1314,48 @@ describe("BrowserPanel", () => {
 		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Open new tab" })).toBeInTheDocument();
 		expect(screen.getByTestId("browser-address-bar")).toBeInTheDocument();
+	});
+
+	it("shows a real single-page title without requiring hover", () => {
+		hookState.tabs = [{ id: "t1", url: "https://example.test/", title: "AO guarded navigation", active: true }];
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(screen.getByText("AO guarded navigation")).toBeVisible();
+		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
+	});
+
+	it.each(["", "https://example.test/", "example.test", "about:blank"])("hides a single-page URL fallback title (%s)", (title) => {
+		hookState.tabs = [{ id: "t1", url: "https://example.test/", title, active: true }];
+		const { container } = render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(container.querySelector(".browser-panel__single-tab-title")).toBeNull();
+	});
+
+	it.each(["selected tab", "remaining close", "removed close"])("preserves focus when two browser tabs become one (%s)", async (target) => {
+		hookState.tabs = [
+			{ id: "t1", url: "https://example.test/", title: "First app", active: true },
+			{ id: "t2", url: "https://example.test/second", title: "Second app", active: false },
+		];
+		const { rerender } = render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const list = screen.getByRole("tablist", { name: "Browser tabs" });
+		const focused = target === "selected tab" ? within(list).getByRole("tab", { name: "First app" })
+			: within(list).getByRole("button", { name: target === "remaining close" ? "Close tab First app" : "Close tab Second app" });
+		focused.focus();
+		expect(focused).toHaveFocus();
+		hookState.tabs = hookState.tabs.slice(0, 1);
+		rerender(<TooltipProvider><BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} /></TooltipProvider>);
+		await waitFor(() => expect(screen.getByRole("button", { name: "Close tab First app" })).toHaveFocus());
+	});
+
+	it("does not steal address focus when two browser tabs become one", () => {
+		hookState.tabs = [
+			{ id: "t1", url: "https://example.test/", title: "First app", active: true },
+			{ id: "t2", url: "https://example.test/second", title: "Second app", active: false },
+		];
+		const { rerender } = render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const input = screen.getByRole("textbox", { name: "Browser URL" });
+		input.focus();
+		hookState.tabs = hookState.tabs.slice(0, 1);
+		rerender(<TooltipProvider><BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} /></TooltipProvider>);
+		expect(input).toHaveFocus();
 	});
 
 	it("scrolls the selected fallback tab into view while the active ID is stale", () => {
