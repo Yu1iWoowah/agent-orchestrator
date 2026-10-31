@@ -109,6 +109,7 @@ import {
 	sessionReviewsQueryKey,
 	type PRReviewState,
 	type ReviewRunFacts,
+	type ReviewsResponse,
 } from "../lib/session-reviews";
 import type { CloudCpAOReviewRun, CloudCpSessionReviewState, CloudCpPullRequestSummary } from "../lib/cloud-cp";
 
@@ -1425,6 +1426,7 @@ function LocalReviewsSection({
 	}, [hostId, session.id, session.reviewerConfig?.mode, session.reviewerConfig?.model, session.reviewerHarness]);
 	const saveReviewer = useMutation({
 		mutationKey: [...reviewsKey, "switch-reviewer"],
+		onMutate: () => ({ reviewsKey, workspaceKey, hostId, reviewId: reviewsQuery.data?.reviewerSurface?.reviewId }),
 		mutationFn: async ({ harness, model, mode }: { harness: ReviewerHarness | ""; model: string; mode: string }) => {
 			const clearingToProjectDefault = harness === "" && model === "" && mode === "";
 			const currentEffectiveReviewerHarness = (session.reviewerHarness ?? "") || currentDefaultReviewerHarness;
@@ -1451,10 +1453,22 @@ function LocalReviewsSection({
 			if (data) queryClient.setQueryData(reviewsKey, data);
 			return { data, hostId, reviewsKey, workspaceKey };
 		},
-		onError: () => {
+		onError: async (_error, _variables, request) => {
 			setReviewerOverride(session.reviewerHarness ?? "");
 			setReviewerModel(session.reviewerConfig?.model ?? "");
 			setReviewerMode(session.reviewerConfig?.mode ?? "");
+			if (!request) return;
+			// Restore can fail after the preference was saved. Read the durable
+			// worker and target reviewer before treating old props as current.
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: request.reviewsKey }),
+				queryClient.invalidateQueries({ queryKey: request.workspaceKey }),
+			]);
+			const refreshed = queryClient.getQueryData<ReviewsResponse>(request.reviewsKey);
+			const reviewIds = new Set([request.reviewId, refreshed?.reviewerSurface?.reviewId]);
+			await Promise.all([...reviewIds].flatMap((reviewId) => reviewId ? [
+				queryClient.invalidateQueries({ queryKey: reviewerAgentSettingsQueryKey(reviewId, request.hostId) }),
+			] : []));
 		},
 		onSuccess: ({ data, hostId: requestHostId, reviewsKey: requestReviewsKey, workspaceKey: requestWorkspaceKey }) => {
 			void queryClient.invalidateQueries({ queryKey: requestReviewsKey });

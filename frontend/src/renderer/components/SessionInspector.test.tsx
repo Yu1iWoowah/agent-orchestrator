@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   act,
   fireEvent,
@@ -3689,6 +3689,52 @@ describe("SessionInspector summary reviews", () => {
     expect(await screen.findByText("Reviewer save rejected")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: /Select reviewer agent/ })).toHaveTextContent("Codex · GPT-5"));
     expect(screen.getByRole("button", { name: /Select reviewer agent/ })).not.toHaveTextContent("Mini");
+  });
+
+  it("reads persisted reviewer config after switch saves but restore fails", async () => {
+    hasTrustedApiBaseUrlMock.mockReturnValue(true);
+    let savedWorker = session([pr(3, "open")], { reviewerHarness: "amp", reviewerConfig: { mode: "medium" } });
+    let workspaceReads = 0;
+    let reviewReads = 0;
+    let pinReads = 0;
+    const reviewData = { reviewerSurface: { reviewId: "review-owner", harness: "amp", mode: "tui" }, reviews: [reviewState(3, "needs_review", "sha-2")] };
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/readiness") return { data: { agents: ["amp", "codex", "claude-code"].map((id) => agentReadiness(id)) } };
+      if (path === "/api/v1/sessions/{sessionId}/interface-transition") return { data: sessionInterfaceTransitionStatus("tui") };
+      if (path === "/api/v1/sessions/{sessionId}/reviews") { reviewReads++; return { data: reviewData }; }
+      if (path === "/api/v1/reviews/{reviewId}/agent-settings") {
+        pinReads++;
+        return { data: { reviewId: "review-owner", harness: "amp", revision: 0, activePass: false, applyMode: "next-pass", effectiveState: "unknown", reason: "", settings: { model: "", effort: "", fastMode: "default" } } };
+      }
+      if (path === "/api/v1/agents/{agent}/models") return { data: { agentId: "amp", selectionMode: "mode", allowCustom: false, models: [{ id: "medium", label: "Medium" }, { id: "high", label: "High" }] } };
+      return commonGetsResponder()(path);
+    });
+    postMock.mockImplementation(async (path: string) => {
+      if (path !== "/api/v1/sessions/{sessionId}/reviews/switch") return { data: {} };
+      savedWorker = { ...savedWorker, reviewerConfig: { mode: "high" } };
+      return { error: { code: "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", message: "Saved; reviewer restore unavailable" }, response: { status: 503 } };
+    });
+    function PersistedInspector() {
+      const workspace = useQuery({ queryKey: workspaceQueryKey, staleTime: Infinity, queryFn: async (): Promise<WorkspaceSummary[]> => {
+        workspaceReads++;
+        return [{ id: "ws-1", name: "my-app", path: "/repo", sessions: [savedWorker] }];
+      } });
+      const worker = workspace.data?.[0]?.sessions[0];
+      return worker ? <SessionInspector session={worker} /> : null;
+    }
+    renderWithQuery(<PersistedInspector />);
+    await screen.findByRole("tab", { name: "Reviews" });
+    await openReviewsSection();
+    await waitFor(() => expect(pinReads).toBeGreaterThan(0));
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    act(() => screen.getByRole("menuitem", { name: /amp/i }).focus());
+    await userEvent.keyboard("{ArrowRight}");
+    await userEvent.click(await screen.findByRole("menuitem", { name: "High" }));
+    expect(await screen.findByText("Saved; reviewer restore unavailable")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Select reviewer agent/ })).toHaveTextContent("High"));
+    expect(workspaceReads).toBeGreaterThan(1);
+    expect(reviewReads).toBeGreaterThan(1);
+    expect(pinReads).toBeGreaterThan(1);
   });
 
   it("preserves hidden reviewer config fields when saving a session reviewer model", async () => {

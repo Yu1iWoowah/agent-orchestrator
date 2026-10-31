@@ -198,3 +198,44 @@ func TestPinnedReviewerSwitchSavesWorkerConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestClearInheritedReviewerShadowAfterAdmission(t *testing.T) {
+	for _, initial := range []domain.ReviewerHarness{"", domain.ReviewerCodex} {
+		t.Run("initial="+string(initial), func(t *testing.T) {
+			ctx, store, worker := context.Background(), newSQLiteReviewStore(t), liveWorker()
+			worker.ReviewerHarness = initial
+			worker.ReviewerConfig = domain.AgentConfig{Model: "worker-shadow"}
+			seedReviewWorker(t, store, worker)
+			launcher := &fakeLauncher{handle: "review-pane", agentSessionID: "review-native", alive: true}
+			engine := newEngineForTest(store, store, prAt("head-one"), fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentConfig: domain.AgentConfig{Model: "project-original"}}}}}, launcher)
+			engine.models = successfulReviewerModelCatalog("worker-shadow")
+			first, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.ReviewerAgentSettings(ctx, first.Run.ReviewID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := engine.SwitchReviewer(ctx, worker.ID, "", domain.AgentConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			saved, _, err := store.GetSession(ctx, worker.ID)
+			if err != nil || saved.ReviewerHarness != "" || !saved.ReviewerConfig.IsZero() {
+				t.Fatalf("clear retained worker shadow: config=%+v err=%v", saved.ReviewerConfig, err)
+			}
+			engine.projects = fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerOpenCode, AgentConfig: domain.AgentConfig{Model: "project-new"}}}}}
+			harness, config, err := engine.reviewerSelection(ctx, saved)
+			if err != nil || harness != domain.ReviewerOpenCode || config.Model != "project-new" {
+				t.Fatalf("future project default shadowed: harness=%s config=%+v err=%v", harness, config, err)
+			}
+			after, err := store.ReviewerAgentSettings(ctx, first.Run.ReviewID)
+			if err != nil || after.Settings == nil || *after.Settings != *before.Settings || after.Revision != before.Revision || after.Review.AgentSessionID != before.Review.AgentSessionID || launcher.destroyed {
+				t.Fatalf("clear changed reviewer pin/history: before=%+v after=%+v err=%v", before, after, err)
+			}
+		})
+	}
+}

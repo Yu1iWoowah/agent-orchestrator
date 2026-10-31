@@ -356,7 +356,9 @@ selection to the baseline; the switch never interprets an absent config as
 that choice. The Inspector's agent-default model option sends this explicit
 reset for a known Codex or Claude pin, clearing effort and fast overrides too.
 If a switch fails, the picker returns to the saved worker config (or the pin
-when available) while displaying the error.
+when available) while displaying the error. A switch can save the preference
+before restore fails; the Inspector therefore refetches that request's reviews,
+workspace and original/updated reviewer pins to display the durable result.
 
 Mode and permissions are worker launch settings, outside the selection pin.
 Switch saves these fields even for an already-pinned reviewer, including a
@@ -372,7 +374,9 @@ as a fallback because its pin query is unavailable.
 An omitted or empty harness clears the worker's reviewer override and follows
 the current project default. Conflict and pin checks use that resolved target,
 not the previously selected override. Clearing the override still persists when
-both choices currently resolve to the same harness; its pin remains unchanged.
+both choices currently resolve to the same harness, including when the worker
+already inherits it. Old worker model/effort/fast shadows are cleared; its pin
+remains unchanged unless an explicit selection change was requested.
 Native history also remains unchanged unless the switch changes worker mode or
 permissions and requires the runtime reset described above. Later project-default
 changes can still take effect.

@@ -1003,7 +1003,9 @@ func (e *Engine) SwitchReviewer(
 				// to the worker's launch config. Do not discard those changes.
 				config.Model, config.Effort, config.FastMode = "", "", ""
 				if selectedHarness == previousSelected {
-					if harness == worker.ReviewerHarness {
+					// Inheriting the harness must not revive a worker selection
+					// that would override future project defaults.
+					if harness != "" && harness == worker.ReviewerHarness {
 						config.Model, config.Effort, config.FastMode = worker.ReviewerConfig.Model, worker.ReviewerConfig.Effort, worker.ReviewerConfig.FastMode
 					}
 					resetPinnedRuntime = previousConfig.Mode != nextSelectedConfig.Mode || previousConfig.Permissions != nextSelectedConfig.Permissions
