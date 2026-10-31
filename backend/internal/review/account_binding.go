@@ -164,19 +164,20 @@ func validateReviewerCatalog(harness domain.ReviewerHarness, catalog ports.Agent
 
 func validateReviewerCatalogSelection(harness domain.ReviewerHarness, catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
 	for _, model := range catalog.Models {
-		if model.ID == config.Model || config.Model == "" && model.IsDefault {
-			efforts, known := modelcapabilities.Efforts(domain.AgentHarness(harness), catalog.Models, model)
-			if config.Effort != "" && !known {
-				return ports.ErrAgentSettingsCapabilitiesUnavailable
-			}
-			if config.Effort != "" && !slices.Contains(efforts, config.Effort) {
-				return ports.ErrAgentSettingsUnsupported
-			}
-			if config.FastMode == domain.AgentFastOn && !model.SupportsFast {
-				return ports.ErrAgentSettingsUnsupported
-			}
-			return nil
+		if model.ID != config.Model && (config.Model != "" || !model.IsDefault) {
+			continue
 		}
+		efforts, known := modelcapabilities.Efforts(domain.AgentHarness(harness), catalog.Models, model)
+		if config.Effort != "" && !known {
+			return ports.ErrAgentSettingsCapabilitiesUnavailable
+		}
+		if config.Effort != "" && !slices.Contains(efforts, config.Effort) {
+			return ports.ErrAgentSettingsUnsupported
+		}
+		if config.FastMode == domain.AgentFastOn && !model.SupportsFast {
+			return ports.ErrAgentSettingsUnsupported
+		}
+		return nil
 	}
 	if catalog.AllowCustom && config.Effort == "" && config.FastMode != domain.AgentFastOn {
 		return nil
