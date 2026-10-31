@@ -10,7 +10,6 @@ import {
 	type FocusEvent,
 	type FormEvent,
 	type KeyboardEvent,
-	type ReactNode,
 	type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
@@ -494,6 +493,12 @@ export function BrowserPanelView({
 	const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [draggedTopTabId, setDraggedTopTabId] = useState<string | null>(null);
 	const draggedTopTab = tabs.find((tab) => tab.id === draggedTopTabId);
+	// Nav and tab-list events can arrive separately during a tab switch.
+	const addressTabId = tabs.some((tab) => tab.id === activeTabId)
+		? activeTabId : tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id;
+	const singleTab = tabs.length === 1 ? tabs[0] : undefined;
+	const singleTabCloseLabel = singleTab
+		? t("browser.closeTab", { title: browserTabLabel(singleTab.title, singleTab.url).title }) : undefined;
 	const {
 		scrollRef: tabScrollRef,
 		scrollToEnd: scrollTabsToEnd,
@@ -515,7 +520,7 @@ export function BrowserPanelView({
 		const region = tabScrollRef.current;
 		if (!region) return;
 		const activeTab = Array.from(region.querySelectorAll<HTMLElement>("[data-browser-tab-id]")).find(
-			(element) => element.dataset.browserTabId === activeTabId,
+			(element) => element.dataset.browserTabId === addressTabId,
 		);
 		if (!activeTab) return;
 		const regionRect = region.getBoundingClientRect();
@@ -525,7 +530,7 @@ export function BrowserPanelView({
 		if (tabRect.right > regionRect.right) nextScrollLeft += tabRect.right - regionRect.right;
 		if (nextScrollLeft === region.scrollLeft) return;
 		region.scrollTo({ behavior: "smooth", left: Math.max(0, nextScrollLeft) });
-	}, [activeTabId, tabs.length, draggedTopTabId, tabScrollRef]);
+	}, [addressTabId, tabs.length, draggedTopTabId, tabScrollRef]);
 
 	useEffect(() => {
 		if (controlsView !== "profiles" || !window.ao?.browserProfiles) return;
@@ -1093,12 +1098,8 @@ export function BrowserPanelView({
 			</Popover>
 		</form>
 	);
-	// Nav and tab-list events can arrive separately during a tab switch.
-	const addressTabId = tabs.some((tab) => tab.id === activeTabId)
-		? activeTabId : tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id;
 	const browserTabBar = (
 		<div className="browser-panel__tab-bar" data-testid="browser-tab-bar">
-			{tabs.length === 0 ? browserAddressBar : null}
 			<DndContext
 				collisionDetection={closestCenter}
 				modifiers={browserTopTabDragModifiers}
@@ -1109,34 +1110,47 @@ export function BrowserPanelView({
 			>
 				<SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
 					<div className="browser-panel__tab-region">
-						<div
-							aria-label={t("browser.tabs")}
-							className="browser-panel__tab-strip"
-							onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
-							ref={tabScrollRef}
-							role="tablist"
-						>
-							{tabs.map((tab) => (
-								<SortableBrowserTopTab
-									key={tab.id}
-									addressBar={tab.id === addressTabId ? browserAddressBar : undefined}
-									onClose={handleCloseTab}
-									onSelect={handleSelectTab}
-									selected={tab.id === addressTabId}
-									tab={tab}
-								/>
-							))}
-						</div>
-						{showTabsLeftFade ? (
+						{tabs.length > 1 ? (
+							<div
+								aria-label={t("browser.tabs")}
+								className="browser-panel__tab-strip"
+								onKeyDown={draggedTopTabId ? undefined : handleTabListKeyDown}
+								ref={tabScrollRef}
+								role="tablist"
+							>
+								{tabs.map((tab) => (
+									<SortableBrowserTopTab
+										key={tab.id}
+										onClose={handleCloseTab}
+										onSelect={handleSelectTab}
+										selected={tab.id === addressTabId}
+										tab={tab}
+									/>
+								))}
+							</div>
+						) : null}
+						{tabs.length > 1 && showTabsLeftFade ? (
 							<div aria-hidden="true" className="browser-panel__tab-fade browser-panel__tab-fade--left" />
 						) : null}
-						{showTabsRightFade ? <div aria-hidden="true" className="browser-panel__tab-fade" /> : null}
+						{tabs.length > 1 && showTabsRightFade ? <div aria-hidden="true" className="browser-panel__tab-fade" /> : null}
 					</div>
 				</SortableContext>
 				<DragOverlay adjustScale={false} dropAnimation={null} modifiers={browserTopTabDragModifiers}>
 					{draggedTopTab ? <BrowserTopTabDragOverlay tab={draggedTopTab} /> : null}
 				</DragOverlay>
 			</DndContext>
+			{singleTab && singleTabCloseLabel ? (
+				<BrowserControlTooltip label={singleTabCloseLabel}>
+					<button
+						aria-label={singleTabCloseLabel}
+						className="browser-panel__tab-close"
+						onClick={() => handleCloseTab(singleTab.id)}
+						type="button"
+					>
+						<X aria-hidden="true" className="size-icon-base" />
+					</button>
+				</BrowserControlTooltip>
+			) : null}
 				<BrowserControlTooltip label={t("browser.openNewTab")}>
 					<button
 						aria-label={t("browser.openNewTab")}
@@ -1292,11 +1306,12 @@ export function BrowserPanelView({
 			}}
 			role="tabpanel"
 		>
-			{topbarHost ? createPortal(<div className="browser-panel__title-row">{browserTabBar}</div>, topbarHost) : <div className="browser-panel__title-row">{browserTabBar}</div>}
+			{topbarHost ? createPortal(browserAddressBar, topbarHost) : browserAddressBar}
 			<div
 				className="browser-panel__tab-row"
 				data-testid="browser-tab-row"
 			>
+				{browserTabBar}
 				<div className="browser-panel__toolbar" data-testid="browser-toolbar">
 							{runtimeDisconnected ? (
 								<div className="flex min-w-0 items-center gap-1.5 text-2xs text-destructive" data-testid="browser-runtime-alert" role="alert">
@@ -1836,13 +1851,11 @@ function BrowserControlTooltip({
 
 const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 	tab,
-	addressBar,
 	selected,
 	onSelect,
 	onClose,
 }: {
 	tab: BrowserViewModel["tabs"][number];
-	addressBar?: ReactNode;
 	selected: boolean;
 	onSelect: (tabId: string) => void;
 	onClose: (tabId: string) => void;
@@ -1856,7 +1869,6 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 			className={cn(
 				"browser-panel__tab",
 				selected && "browser-panel__tab--active",
-				addressBar && "browser-panel__tab--address",
 				isDragging && "browser-panel__tab--drag-placeholder",
 			)}
 			data-browser-tab-id={tab.id}
@@ -1880,10 +1892,9 @@ const SortableBrowserTopTab = memo(function SortableBrowserTopTab({
 					) : (
 						<BrowserIcon aria-hidden="true" className="browser-panel__tab-icon" />
 					)}
-					{addressBar ? null : <span className="browser-panel__tab-title">{label.title}</span>}
+					<span className="browser-panel__tab-title">{label.title}</span>
 				</button>
 			</BrowserControlTooltip>
-			{addressBar}
 			<BrowserControlTooltip label={closeLabel}>
 				<button
 					aria-label={closeLabel}

@@ -1261,7 +1261,7 @@ describe("BrowserPanel", () => {
 		hookState.activeTabId = "t1";
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
 
-		expect(screen.getByRole("tab", { name: "New tab" })).toBeInTheDocument();
+		expect(screen.queryByRole("tab", { name: "New tab" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Close tab New tab" })).toBeInTheDocument();
 	});
 
@@ -1274,7 +1274,7 @@ describe("BrowserPanel", () => {
 		hookState.tabs = [];
 		hookState.activeTabId = "";
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
-		expect(within(screen.getByRole("tablist", { name: "Browser tabs" })).queryAllByRole("tab")).toHaveLength(0);
+		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Open new tab" }));
 		expect(hookState.openTab).toHaveBeenCalled();
 	});
@@ -1294,12 +1294,42 @@ describe("BrowserPanel", () => {
 		expect(screen.queryByTestId("browser-tabs-rail")).not.toBeInTheDocument();
 	});
 
-	it("uses the active tab for the address field instead of a second title row", () => {
+	it("keeps multiple browser tabs in the toolbar and the address outside the tablist", () => {
+		hookState.tabs = [
+			{ id: "t1", url: "http://localhost:3000/", title: "First app", active: true },
+			{ id: "t2", url: "http://localhost:4173/", title: "Second app", active: false },
+		];
 		const topbarHost = document.createElement("div");
 		document.body.appendChild(topbarHost);
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} topbarHost={topbarHost} />);
-		expect(topbarHost.querySelector('[data-testid="browser-tab-bar"]')).toContainElement(screen.getByTestId("browser-address-bar"));
-		expect(screen.getByTestId("browser-tab-row")).not.toContainElement(screen.getByTestId("browser-tab-bar"));
+		expect(topbarHost).toContainElement(screen.getByTestId("browser-address-bar"));
+		const tabs = screen.getByRole("tablist", { name: "Browser tabs" });
+		expect(tabs).not.toContainElement(screen.getByTestId("browser-address-bar"));
+		expect(screen.getByTestId("browser-tab-row")).toContainElement(tabs);
+	});
+
+	it("does not duplicate a single browser tab beside its address", () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open new tab" })).toBeInTheDocument();
+		expect(screen.getByTestId("browser-address-bar")).toBeInTheDocument();
+	});
+
+	it("scrolls the selected fallback tab into view while the active ID is stale", () => {
+		hookState.tabs = [1, 2, 3].map((index) => ({ id: `t${index}`, url: `http://localhost:4173/${index}`, title: `Page ${index}`, active: index === 1 }));
+		const { rerender } = render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		const region = screen.getByRole("tablist", { name: "Browser tabs" });
+		vi.spyOn(region, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 28));
+		for (const [index, tab] of Array.from(region.querySelectorAll<HTMLElement>("[data-browser-tab-id]")).entries()) {
+			vi.spyOn(tab, "getBoundingClientRect").mockReturnValue(new DOMRect(index * 152, 0, 150, 28));
+		}
+		const scrollTo = vi.fn();
+		Object.defineProperty(region, "scrollTo", { configurable: true, value: scrollTo });
+		hookState.activeTabId = "stale";
+		hookState.tabs = hookState.tabs.map((tab) => ({ ...tab, active: tab.id === "t3" }));
+		rerender(<TooltipProvider><BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} /></TooltipProvider>);
+		expect(screen.getByRole("tab", { name: "Page 3" })).toHaveAttribute("aria-selected", "true");
+		expect(scrollTo).toHaveBeenCalledWith({ behavior: "smooth", left: 254 });
 	});
 
 	it("does not render a tab-specific agent marker in the tab strip", () => {

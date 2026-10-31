@@ -5177,7 +5177,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	padding-left: var(--size-titlebar-content-offset);
 }
 
-.browser-popout-titlebar > .browser-panel__title-row {
+.browser-popout-titlebar > .browser-panel__address-bar {
 	position: absolute;
 	left: 50%;
 	width: min(480px, calc(100vw - 32px));
@@ -5188,7 +5188,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	transition: width var(--duration-fast) ease;
 }
 
-.browser-popout-titlebar:has(.browser-panel__address-bar--editing) > .browser-panel__title-row {
+.browser-popout-titlebar > .browser-panel__address-bar--editing {
 	width: min(760px, calc(100vw - 32px));
 }
 
@@ -5196,7 +5196,7 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	max-width: none;
 }
 
-.browser-popout-titlebar--mac-windowed > .browser-panel__title-row {
+.browser-popout-titlebar--mac-windowed > .browser-panel__address-bar {
 	max-width: calc(100vw - (2 * var(--size-titlebar-content-offset)));
 }
 
@@ -5333,40 +5333,11 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	justify-content: center;
 }
 
-.browser-panel__title-row > .browser-panel__address-bar {
+.browser-panel__topbar-host > .browser-panel__address-bar {
 	flex: 1 1 0;
 }
 
-/* The active page's address is its tab label: one title row, including when
- * portaled into the inspector or maximized window header. */
-.browser-panel__title-row {
-	display: flex;
-	min-width: 0;
-	width: 100%;
-	align-items: center;
-	gap: var(--space-1);
-	background: var(--bg);
-}
-
-.browser-panel__tab.browser-panel__tab--address {
-	max-width: none;
-	height: var(--size-inspector-tabs);
-	flex: 1 0 150px;
-	align-items: center;
-	background: transparent;
-}
-
-.browser-panel__tab--address > .browser-panel__tab-select {
-	flex: none;
-	padding-inline: var(--space-1);
-}
-
-.browser-panel__tab--address > .browser-panel__address-bar {
-	min-width: 0;
-	flex: 1;
-}
-
-.browser-panel > .browser-panel__title-row {
+.browser-panel > .browser-panel__address-bar {
 	width: 100%;
 	flex: 0 0 var(--size-inspector-tabs);
 	padding: 0 4px;
@@ -5896,7 +5867,11 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	transition: max-width var(--duration-fast) ease;
 }
 
-.browser-panel__address-bar--editing .browser-panel__url-wrap {
+.browser-panel > .browser-panel__address-bar--editing .browser-panel__url-wrap {
+	max-width: min(520px, calc(100% - 8px));
+}
+
+.browser-panel__topbar-host > .browser-panel__address-bar--editing .browser-panel__url-wrap {
 	max-width: 100%;
 }
 

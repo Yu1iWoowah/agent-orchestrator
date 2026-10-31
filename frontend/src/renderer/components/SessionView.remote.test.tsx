@@ -445,7 +445,8 @@ it("automatically reveals a remote preview after session data finishes loading",
 	expect(useUiStore.getState().inspectorSessions["session-1"]).toBeUndefined();
 	await waitFor(() => expect(resolvePreview).toHaveBeenCalledWith("box-a", "session-1", "http://127.0.0.1:4600/"));
 	await waitFor(() => expect(screen.getByRole("textbox", { name: "Browser URL" })).toHaveValue("ao-preview.localhost"));
-	await waitFor(() => expect(within(screen.getByRole("tablist", { name: "Browser tabs" })).getByRole("tab", { name: "QA preview" })).toBeVisible());
+	expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
+	expect(await screen.findByRole("button", { name: "Close tab QA preview" })).toBeVisible();
 	await userEvent.click(screen.getByRole("button", { name: "Maximize" }));
 	expect(screen.getByTestId("browser-popout-topbar")).toBeInTheDocument();
 	await userEvent.click(within(document.querySelector(".browser-popout-overlay") as HTMLElement).getByRole("button", { name: "Return to panel" }));
