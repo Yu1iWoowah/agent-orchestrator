@@ -7477,6 +7477,9 @@ export interface components {
             remoteUrl?: string;
             repoPath: string;
         };
+        GuardianObservabilityConfig: {
+            enabled?: boolean;
+        };
         HarnessDefault: {
             disabledModels?: string[];
         };
@@ -8043,6 +8046,7 @@ export interface components {
             env?: {
                 [key: string]: string;
             };
+            guardianObservability?: components["schemas"]["GuardianObservabilityConfig"];
             orchestrator?: components["schemas"]["RoleOverride"];
             orchestratorHandoff?: components["schemas"]["OrchestratorHandoffConfig"];
             orchestratorRules?: string;

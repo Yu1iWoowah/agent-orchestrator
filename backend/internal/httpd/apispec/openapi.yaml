@@ -22674,6 +22674,11 @@ components:
       - repoPath
       - approvedActions
       type: object
+    GuardianObservabilityConfig:
+      properties:
+        enabled:
+          type: boolean
+      type: object
     HarnessDefault:
       properties:
         disabledModels:
@@ -24142,6 +24147,8 @@ components:
           additionalProperties:
             type: string
           type: object
+        guardianObservability:
+          $ref: '#/components/schemas/GuardianObservabilityConfig'
         orchestrator:
           $ref: '#/components/schemas/RoleOverride'
         orchestratorHandoff:

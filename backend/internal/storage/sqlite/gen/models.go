@@ -552,6 +552,92 @@ type Cue struct {
 	UpdatedAt time.Time
 }
 
+type GuardianAnomaly struct {
+	SessionID   string
+	Code        string
+	Count       int64
+	FirstSeenAt time.Time
+}
+
+type GuardianCursor struct {
+	EpochID      int64
+	ThreadID     string
+	Generation   int64
+	ByteOffset   int64
+	FileIdentity string
+	Discarding   int64
+	UpdatedAt    time.Time
+}
+
+type GuardianEpoch struct {
+	ID             int64
+	BindingID      int64
+	SessionID      string
+	AccountID      string
+	AccountBoundAt time.Time
+	FirstSeenAt    time.Time
+}
+
+type GuardianPosition struct {
+	EpochID      int64
+	FileIdentity string
+	Generation   int64
+	ByteOffset   int64
+	Discarding   int64
+	UpdatedAt    time.Time
+}
+
+type GuardianProjectPolicy struct {
+	ProjectID string
+	Enabled   int64
+	EnabledAt time.Time
+}
+
+type GuardianRequest struct {
+	CliVersion       string
+	EpochID          int64
+	ThreadID         string
+	TurnID           string
+	ResponseID       string
+	RootTurnID       sql.NullString
+	ModelID          sql.NullString
+	InputTokens      sql.NullInt64
+	CachedTokens     sql.NullInt64
+	CacheWriteTokens sql.NullInt64
+	OutputTokens     sql.NullInt64
+	ReasoningTokens  sql.NullInt64
+	TotalTokens      sql.NullInt64
+	ProviderAt       time.Time
+	FirstSeenAt      time.Time
+	SourceGeneration int64
+	SourceOffset     int64
+	Conflict         int64
+}
+
+type GuardianThread struct {
+	EpochID     int64
+	ThreadID    string
+	ParentID    string
+	CliVersion  string
+	RetentionAt time.Time
+	FirstSeenAt time.Time
+	LastSeenAt  time.Time
+}
+
+type GuardianTurnModel struct {
+	EpochID    int64
+	ThreadID   string
+	TurnID     string
+	ModelID    string
+	ProviderAt time.Time
+	Conflict   int64
+}
+
+type GuardianWatermark struct {
+	SessionID     string
+	CleanedBefore time.Time
+}
+
 type ManagedHarnessRelease struct {
 	Harness   string
 	Release   string

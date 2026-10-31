@@ -11,6 +11,7 @@ import (
 )
 
 const projectConfigFixture = `{
+	"guardianObservability":{"enabled":true},
 	"orchestratorHandoff":{"sharedDir":"shared","documentPath":"handoff/current.md"},
 	"canonicalRepoURL":"https://github.com/acme/demo",
 	"defaultBranch":"main","sessionPrefix":"demo",
@@ -142,6 +143,7 @@ func TestProjectConfigMirrorsDomainJSONFields(t *testing.T) {
 		domain any
 	}{
 		{projectConfig{}, domain.ProjectConfig{}},
+		{guardianObservabilityConfig{}, domain.GuardianObservabilityConfig{}},
 		{agentSettingsPolicy{}, domain.AgentSettingsPolicy{}},
 		{agentSettingsAllowance{}, domain.AgentSettingsAllowance{}},
 		{agentConfig{}, domain.AgentConfig{}},

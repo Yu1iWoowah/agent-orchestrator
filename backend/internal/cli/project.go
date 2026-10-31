@@ -117,9 +117,10 @@ type orchestratorHandoffConfig struct {
 }
 
 type projectConfig struct {
-	AgentSettingsPolicy *agentSettingsPolicy      `json:"agentSettingsPolicy,omitempty"`
-	AgentAccounts       map[string]string         `json:"agentAccounts,omitempty"`
-	OrchestratorHandoff orchestratorHandoffConfig `json:"orchestratorHandoff,omitempty,omitzero"`
+	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
+	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
+	AgentAccounts         map[string]string           `json:"agentAccounts,omitempty"`
+	OrchestratorHandoff   orchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
 
 	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`
 	CanonicalRepoURL  string               `json:"canonicalRepoURL,omitempty"`
@@ -141,6 +142,10 @@ type projectConfig struct {
 	// of another field never silently turns it off.
 	WorkersRequestReview bool             `json:"workersRequestReview,omitempty"`
 	Reviewers            []reviewerConfig `json:"reviewers,omitempty"`
+}
+
+type guardianObservabilityConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 type agentSettingsPolicy struct {

@@ -18,7 +18,8 @@ import (
 // yet exist (tracker/SCM per-project config) are intentionally absent and land in
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
-	OrchestratorHandoff OrchestratorHandoffConfig `json:"orchestratorHandoff,omitempty,omitzero"`
+	GuardianObservability GuardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
+	OrchestratorHandoff   OrchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
 	// AgentSettingsPolicy gates managed orchestrators; local manual calls remain
 	// explicitly unverified and retain their existing permissions (A-Q8 B).
 	AgentSettingsPolicy *AgentSettingsPolicy `json:"agentSettingsPolicy,omitempty"`
@@ -94,6 +95,12 @@ type ProjectConfig struct {
 	// the feature but check with the user or orchestrator before using it.
 	// Read at spawn, when the worker prompt is built.
 	WorkersRequestReview bool `json:"workersRequestReview,omitempty"`
+}
+
+// GuardianObservabilityConfig enables metadata-only observation for one project.
+// It is off by default; changing it never changes approval behavior.
+type GuardianObservabilityConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker
