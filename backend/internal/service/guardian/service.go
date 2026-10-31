@@ -102,16 +102,16 @@ func (s *Service) Collect(ctx context.Context) error {
 			continue
 		}
 		if s.cfg.Roots == nil {
+			clear(s.checks)
 			return errors.New("guardian roots unavailable")
 		}
 		roots, err := s.cfg.Roots(ctx, o)
-		if err != nil {
-			if err := s.anomaly(ctx, o, domain.GuardianSourceState{}, domain.GuardianSourceMissing, now); err != nil {
-				return err
+		if err != nil || len(roots) == 0 {
+			for key := range s.checks {
+				if key.epoch == o.EpochID {
+					delete(s.checks, key)
+				}
 			}
-			continue
-		}
-		if len(roots) == 0 {
 			if err := s.anomaly(ctx, o, domain.GuardianSourceState{}, domain.GuardianSourceMissing, now); err != nil {
 				return err
 			}
@@ -338,6 +338,9 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		b.Cursor.Offset = 0
 		b.Cursor.ReadStartOffset = 0
 		b.Cursor.ReplayUntil = 0
+		b.Cursor.ReplayOffset = 0
+		b.Cursor.ReplayDiscarding = false
+		b.Cursor.ReplayAgain = false
 		b.Cursor.Discarding = false
 		b.Anomalies[domain.GuardianSourceRotated]++
 	}
@@ -346,6 +349,9 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		b.Cursor.Offset = 0
 		b.Cursor.ReadStartOffset = 0
 		b.Cursor.ReplayUntil = min(readEnd, info.Size())
+		b.Cursor.ReplayOffset = 0
+		b.Cursor.ReplayDiscarding = false
+		b.Cursor.ReplayAgain = false
 		b.Cursor.Discarding = false
 		b.Anomalies[domain.GuardianSourceTruncated]++
 	}
@@ -363,12 +369,15 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		b.Cursor.ReadStartOffset = int64(len(line))
 	}
 	if b.Cursor.Offset > b.Cursor.ReadStartOffset {
-		if b.Cursor.ReplayUntil > b.Cursor.Offset {
+		if b.Cursor.ReplayUntil > b.Cursor.Offset && b.Cursor.ReplayOffset == 0 {
 			if sourceChanged && !growth {
 				b.Cursor.Generation++
 				b.Cursor.ReplayUntil = min(readEnd, info.Size())
 				b.Cursor.Offset = b.Cursor.ReadStartOffset
 				b.Cursor.Discarding = false
+				b.Cursor.ReplayAgain = false
+			} else if sourceChanged {
+				b.Cursor.ReplayAgain = true
 			}
 		} else {
 			rewritten, err := s.checkpoints(ctx, f, b.Cursor)
@@ -380,8 +389,18 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 				b.Cursor.ReplayUntil = b.Cursor.Offset
 				b.Cursor.Offset = b.Cursor.ReadStartOffset
 				b.Cursor.Discarding = false
+				b.Cursor.ReplayOffset = 0
+				b.Cursor.ReplayDiscarding = false
+				b.Cursor.ReplayAgain = false
 				if rewritten {
 					b.Anomalies[domain.GuardianSourceTruncated]++
+				}
+			} else if sourceChanged && growth {
+				if b.Cursor.ReplayOffset > 0 {
+					b.Cursor.ReplayAgain = true
+				} else {
+					b.Cursor.ReplayOffset = b.Cursor.ReadStartOffset
+					b.Cursor.ReplayUntil = b.Cursor.Offset
 				}
 			}
 		}
@@ -397,6 +416,9 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 			b.Cursor.Offset = info.Size()
 			b.Cursor.ReadStartOffset = info.Size()
 			b.Cursor.ReplayUntil = 0
+			b.Cursor.ReplayOffset = 0
+			b.Cursor.ReplayDiscarding = false
+			b.Cursor.ReplayAgain = false
 			b.Anomalies[domain.GuardianCoverageGap]++
 		}
 	}
@@ -404,14 +426,18 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		return s.observe(ctx, o, b.Cursor.SourceState(), nil, now)
 	}
 	revalidationEnd := b.Cursor.ReplayUntil
+	if b.Cursor.ReplayOffset > 0 {
+		revalidationEnd = 0
+	}
 	if _, err := f.Seek(b.Cursor.Offset, io.SeekStart); err != nil {
 		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
 	reader := bufio.NewReaderSize(f, maxLine+1)
 	startOffset := b.Cursor.Offset
+	recordsRead, bytesRead := 0, int64(0)
 	for n := 0; n < s.cfg.RecordBudget; n++ {
 		if b.Cursor.Offset-startOffset >= 4*maxLine {
-			if b.Cursor.Offset >= revalidationEnd {
+			if b.Cursor.Offset >= revalidationEnd && b.Cursor.Offset < info.Size() {
 				b.Anomalies[domain.GuardianCoverageGap]++
 			}
 			break
@@ -421,6 +447,10 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 		}
 		offset := b.Cursor.Offset
 		line, err := reader.ReadSlice('\n')
+		bytesRead += int64(len(line))
+		if len(line) > 0 {
+			recordsRead++
+		}
 		if errors.Is(err, io.EOF) {
 			if len(line) > 0 && b.Cursor.Discarding {
 				b.Cursor.Offset += int64(len(line))
@@ -454,7 +484,15 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 			return err
 		}
 		if b.Cursor.Offset >= revalidationEnd {
-			b.Cursor.ReplayUntil = 0
+			finishRevalidation(&b.Cursor)
+		}
+	}
+	if b.Cursor.ReplayOffset > 0 {
+		if err := s.verifyPrefix(ctx, f, &b, s.cfg.RecordBudget-recordsRead, 4*maxLine-bytesRead); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 		}
 	}
 	// Detect an in-place truncation while reading before committing its cursor.
@@ -473,5 +511,5 @@ func sameTokens(a, b domain.GuardianTokens) bool {
 }
 
 func sameReadPosition(a, b domain.GuardianCursor) bool {
-	return a.FileIdentity == b.FileIdentity && a.Offset == b.Offset && a.Generation == b.Generation && a.ReadStartOffset == b.ReadStartOffset && a.ReplayUntil == b.ReplayUntil && a.Discarding == b.Discarding && a.SourceSize == b.SourceSize && a.SourceModifiedAt.Equal(b.SourceModifiedAt)
+	return a.FileIdentity == b.FileIdentity && a.Offset == b.Offset && a.Generation == b.Generation && a.ReadStartOffset == b.ReadStartOffset && a.ReplayUntil == b.ReplayUntil && a.ReplayOffset == b.ReplayOffset && a.ReplayDiscarding == b.ReplayDiscarding && a.ReplayAgain == b.ReplayAgain && a.Discarding == b.Discarding && a.SourceSize == b.SourceSize && a.SourceModifiedAt.Equal(b.SourceModifiedAt)
 }

@@ -35,8 +35,7 @@ func (s *Service) checkpoints(ctx context.Context, f io.ReadSeeker, c domain.Gua
 		return false, err
 	}
 	if len(rows) == 0 {
-		p.next = c.ReadStartOffset
-		s.checks[key] = p
+		delete(s.checks, key)
 		return false, nil
 	}
 	bytes := 0

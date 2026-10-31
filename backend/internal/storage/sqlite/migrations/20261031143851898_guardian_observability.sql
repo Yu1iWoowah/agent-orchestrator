@@ -49,6 +49,9 @@ CREATE TABLE guardian_positions (
  byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
  read_start_offset INTEGER NOT NULL DEFAULT 0 CHECK(read_start_offset>=0),
  replay_until INTEGER NOT NULL DEFAULT 0 CHECK(replay_until>=0),
+ replay_offset INTEGER NOT NULL DEFAULT 0 CHECK(replay_offset>=0),
+ replay_discarding INTEGER NOT NULL DEFAULT 0 CHECK(replay_discarding IN (0,1)),
+ replay_again INTEGER NOT NULL DEFAULT 0 CHECK(replay_again IN (0,1)),
  source_size INTEGER NOT NULL DEFAULT 0 CHECK(source_size>=0),
  source_modified_at TIMESTAMP,
  discarding INTEGER NOT NULL CHECK(discarding IN (0,1)),
@@ -62,6 +65,9 @@ CREATE TABLE guardian_cursors (
  byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
  read_start_offset INTEGER NOT NULL DEFAULT 0 CHECK(read_start_offset>=0),
  replay_until INTEGER NOT NULL DEFAULT 0 CHECK(replay_until>=0),
+ replay_offset INTEGER NOT NULL DEFAULT 0 CHECK(replay_offset>=0),
+ replay_discarding INTEGER NOT NULL DEFAULT 0 CHECK(replay_discarding IN (0,1)),
+ replay_again INTEGER NOT NULL DEFAULT 0 CHECK(replay_again IN (0,1)),
  source_size INTEGER NOT NULL DEFAULT 0 CHECK(source_size>=0),
  source_modified_at TIMESTAMP,
  file_identity TEXT NOT NULL CHECK(length(file_identity)<=128),
@@ -98,12 +104,14 @@ CREATE TABLE guardian_requests (
  first_seen_at TIMESTAMP NOT NULL,
  source_generation INTEGER NOT NULL CHECK(source_generation>=0),
  source_offset INTEGER NOT NULL CHECK(source_offset>=0),
+ checkpoint_generation INTEGER NOT NULL DEFAULT 0 CHECK(checkpoint_generation>=0),
+ checkpoint_offset INTEGER NOT NULL DEFAULT 0 CHECK(checkpoint_offset>=0),
  conflict INTEGER NOT NULL DEFAULT 0 CHECK(conflict IN (0,1)),
  PRIMARY KEY(epoch_id,thread_id,response_id),
  FOREIGN KEY(epoch_id,thread_id) REFERENCES guardian_threads(epoch_id,thread_id) ON DELETE CASCADE
 );
 CREATE INDEX guardian_requests_retention ON guardian_requests(provider_at,first_seen_at);
-CREATE INDEX guardian_requests_checkpoint ON guardian_requests(epoch_id,thread_id,source_generation,source_offset);
+CREATE INDEX guardian_requests_checkpoint ON guardian_requests(epoch_id,thread_id,checkpoint_generation,checkpoint_offset);
 CREATE INDEX guardian_requests_turn ON guardian_requests(epoch_id,thread_id,turn_id);
 -- Processing state uses only the existing kernel source identity and numeric
 -- positions. No native thread IDs, paths, payloads, or content hashes survive.

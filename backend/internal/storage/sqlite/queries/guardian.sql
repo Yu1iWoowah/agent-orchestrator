@@ -38,14 +38,14 @@ SELECT * FROM guardian_cursors WHERE epoch_id=? AND thread_id=?;
 SELECT * FROM guardian_positions WHERE epoch_id=? AND file_identity=?;
 
 -- name: PutGuardianPosition :exec
-INSERT INTO guardian_positions(epoch_id,file_identity,generation,byte_offset,discarding,source_size,source_modified_at,read_start_offset,replay_until,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity) DO UPDATE SET
- generation=excluded.generation,byte_offset=excluded.byte_offset,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,replay_until=excluded.replay_until,updated_at=excluded.updated_at;
+INSERT INTO guardian_positions(epoch_id,file_identity,generation,byte_offset,discarding,source_size,source_modified_at,read_start_offset,replay_until,replay_offset,replay_discarding,replay_again,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity) DO UPDATE SET
+ generation=excluded.generation,byte_offset=excluded.byte_offset,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,replay_until=excluded.replay_until,replay_offset=excluded.replay_offset,replay_discarding=excluded.replay_discarding,replay_again=excluded.replay_again,updated_at=excluded.updated_at;
 
 -- name: PutGuardianCursor :exec
-INSERT INTO guardian_cursors(epoch_id,thread_id,generation,byte_offset,file_identity,discarding,source_size,source_modified_at,read_start_offset,replay_until,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO UPDATE SET
- generation=excluded.generation,byte_offset=excluded.byte_offset,file_identity=excluded.file_identity,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,replay_until=excluded.replay_until,updated_at=excluded.updated_at;
+INSERT INTO guardian_cursors(epoch_id,thread_id,generation,byte_offset,file_identity,discarding,source_size,source_modified_at,read_start_offset,replay_until,replay_offset,replay_discarding,replay_again,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO UPDATE SET
+ generation=excluded.generation,byte_offset=excluded.byte_offset,file_identity=excluded.file_identity,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,replay_until=excluded.replay_until,replay_offset=excluded.replay_offset,replay_discarding=excluded.replay_discarding,replay_again=excluded.replay_again,updated_at=excluded.updated_at;
 
 -- name: PutGuardianThread :exec
 INSERT INTO guardian_threads(epoch_id,thread_id,parent_id,cli_version,retention_at,first_seen_at,last_seen_at)
@@ -96,6 +96,12 @@ ON CONFLICT(epoch_id,thread_id,response_id) DO UPDATE SET conflict=1 WHERE confl
 -- name: ListGuardianRequests :many
 SELECT * FROM guardian_requests WHERE epoch_id=? ORDER BY thread_id,response_id;
 
+-- name: RefreshGuardianRequestCheckpoint :exec
+UPDATE guardian_requests SET checkpoint_generation=sqlc.arg(source_generation),checkpoint_offset=sqlc.arg(source_offset)
+WHERE epoch_id=sqlc.arg(epoch_id) AND thread_id=sqlc.arg(thread_id) AND response_id=sqlc.arg(response_id)
+AND conflict=0 AND provider_at=sqlc.arg(provider_at)
+AND (checkpoint_generation<>sqlc.arg(source_generation) OR checkpoint_offset<>sqlc.arg(source_offset));
+
 -- name: ListGuardianModels :many
 SELECT * FROM guardian_turn_models WHERE epoch_id=? AND thread_id=? ORDER BY turn_id;
 
@@ -136,7 +142,9 @@ AND NOT EXISTS(SELECT 1 FROM guardian_threads t WHERE t.epoch_id=guardian_epochs
 AND NOT EXISTS(SELECT 1 FROM guardian_positions p WHERE p.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_anomaly_states a WHERE a.epoch_id=guardian_epochs.id);
 -- name: DeleteExpiredGuardianPositions :exec
-DELETE FROM guardian_positions WHERE updated_at<=?;
+DELETE FROM guardian_positions WHERE updated_at<=sqlc.arg(cutoff)
+AND NOT EXISTS(SELECT 1 FROM guardian_epochs e WHERE e.id=guardian_positions.epoch_id
+ AND e.id IN (sqlc.slice('active_epoch_ids')));
 -- name: DeleteExpiredGuardianAnomalies :exec
 DELETE FROM guardian_anomalies WHERE first_seen_at<=?;
 -- name: PurgeGuardianEpochs :exec
@@ -146,9 +154,9 @@ DELETE FROM guardian_anomalies WHERE session_id=?;
 
 -- name: ListGuardianContinuityRequests :many
 SELECT * FROM guardian_requests WHERE epoch_id=sqlc.arg(epoch_id) AND thread_id=sqlc.arg(thread_id)
-AND ((source_generation=sqlc.arg(source_generation) AND source_offset>=sqlc.arg(start_offset) AND source_offset<sqlc.arg(end_offset) AND conflict=0)
+AND ((checkpoint_generation=sqlc.arg(source_generation) AND checkpoint_offset>=sqlc.arg(start_offset) AND checkpoint_offset<sqlc.arg(end_offset) AND conflict=0)
  OR response_id IN (sqlc.slice('response_ids')))
-ORDER BY source_offset,response_id
+ORDER BY checkpoint_offset,response_id
 LIMIT 1025;
 
 -- name: ListGuardianAnomalyStates :many

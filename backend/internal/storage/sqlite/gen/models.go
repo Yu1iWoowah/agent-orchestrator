@@ -577,6 +577,9 @@ type GuardianCursor struct {
 	ByteOffset       int64
 	ReadStartOffset  int64
 	ReplayUntil      int64
+	ReplayOffset     int64
+	ReplayDiscarding int64
+	ReplayAgain      int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
 	FileIdentity     string
@@ -600,6 +603,9 @@ type GuardianPosition struct {
 	ByteOffset       int64
 	ReadStartOffset  int64
 	ReplayUntil      int64
+	ReplayOffset     int64
+	ReplayDiscarding int64
+	ReplayAgain      int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
 	Discarding       int64
@@ -613,24 +619,26 @@ type GuardianProjectPolicy struct {
 }
 
 type GuardianRequest struct {
-	CliVersion       string
-	EpochID          int64
-	ThreadID         string
-	TurnID           string
-	ResponseID       string
-	RootTurnID       sql.NullString
-	ModelID          sql.NullString
-	InputTokens      sql.NullInt64
-	CachedTokens     sql.NullInt64
-	CacheWriteTokens sql.NullInt64
-	OutputTokens     sql.NullInt64
-	ReasoningTokens  sql.NullInt64
-	TotalTokens      sql.NullInt64
-	ProviderAt       time.Time
-	FirstSeenAt      time.Time
-	SourceGeneration int64
-	SourceOffset     int64
-	Conflict         int64
+	CliVersion           string
+	EpochID              int64
+	ThreadID             string
+	TurnID               string
+	ResponseID           string
+	RootTurnID           sql.NullString
+	ModelID              sql.NullString
+	InputTokens          sql.NullInt64
+	CachedTokens         sql.NullInt64
+	CacheWriteTokens     sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ReasoningTokens      sql.NullInt64
+	TotalTokens          sql.NullInt64
+	ProviderAt           time.Time
+	FirstSeenAt          time.Time
+	SourceGeneration     int64
+	SourceOffset         int64
+	CheckpointGeneration int64
+	CheckpointOffset     int64
+	Conflict             int64
 }
 
 type GuardianThread struct {
