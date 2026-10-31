@@ -147,6 +147,9 @@ func TestSwitchReviewerClearsOverrideToResolvedDefault(t *testing.T) {
 				if err != nil || saved.ReviewerHarness != "" || result.ReviewerHarness != tc.defaultAgent {
 					t.Fatalf("default selection not persisted/resolved: result=%+v saved=%+v err=%v", result, saved, err)
 				}
+				if !saved.ReviewerConfig.IsZero() {
+					t.Fatalf("clearing override retained worker config: %+v", saved.ReviewerConfig)
+				}
 				if tc.config.Model != "" {
 					state, err := store.ReviewerAgentSettings(ctx, string(tc.defaultAgent))
 					if err != nil || state.Settings == nil || state.Settings.Model != domain.AgentModelSelection(tc.config.Model) || state.Revision != 1 {
@@ -159,10 +162,10 @@ func TestSwitchReviewerClearsOverrideToResolvedDefault(t *testing.T) {
 				if err != nil || row.AgentSessionID != "codex-native" {
 					t.Fatalf("clearing override lost pinned native history: native=%q err=%v", row.AgentSessionID, err)
 				}
-				engine.projects = fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerOpenCode}}}}
-				selected, _, err := engine.reviewerSelection(ctx, saved)
-				if err != nil || selected != domain.ReviewerOpenCode {
-					t.Fatalf("cleared override stopped following project defaults: harness=%q err=%v", selected, err)
+				engine.projects = fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerOpenCode, AgentConfig: domain.AgentConfig{Model: "project-model"}}}}}
+				selected, selectedConfig, err := engine.reviewerSelection(ctx, saved)
+				if err != nil || selected != domain.ReviewerOpenCode || selectedConfig.Model != "project-model" {
+					t.Fatalf("cleared override stopped following project defaults: harness=%q config=%+v err=%v", selected, selectedConfig, err)
 				}
 			}
 			oldAfter, _ := store.ReviewerAgentSettings(ctx, string(domain.ReviewerCodex))
