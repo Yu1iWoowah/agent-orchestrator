@@ -63,9 +63,9 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 	if explicitFast && !domain.AgentHarness(harness).SupportsFastMode() {
 		return "", ports.ErrAgentSettingsUnsupported
 	}
-	// New passes qualify every selected field. Model/effort admission may use
-	// same-input last-known-good evidence after a failed refresh; typed mutation
-	// and explicit fast still require fresh successful discovery.
+	// New passes qualify every selected field. Admission may use same-input
+	// last-known-good evidence after a failed refresh; typed mutation still
+	// requires fresh successful discovery.
 	hasSelection := config.Model != "" || config.Effort != "" || explicitFast
 	requireSuccess := purpose == reviewerCatalogMutation || explicitFast || purpose == reviewerCatalogAdmission && hasSelection
 	if e.models == nil {
@@ -99,7 +99,7 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	now := time.Now()
-	allowLastKnownGood := purpose != reviewerCatalogMutation && !explicitFast && catalog.Stale && catalog.RefreshState == "error" &&
+	allowLastKnownGood := purpose != reviewerCatalogMutation && catalog.Stale && catalog.RefreshState == "error" &&
 		catalog.LastSuccessAt != nil && !catalog.LastSuccessAt.IsZero() && !catalog.LastSuccessAt.After(now)
 	if allowLastKnownGood {
 		// A stale catalog must cover the selection itself. Its custom-entry

@@ -131,7 +131,8 @@ func TestReviewerLastKnownGoodPreservesProofBoundaries(t *testing.T) {
 		{name: "inputs changed during lookup", changedFingerprint: true, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
 		{name: "unknown alias effort", missingAliasEvidence: true, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
 		{name: "strict settings mutation", mutation: true, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
-		{name: "explicit fast", fast: domain.AgentFastOff, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "strict fast mutation", mutation: true, fast: domain.AgentFastOff, want: ports.ErrAgentSettingsCapabilitiesUnavailable},
+		{name: "explicit fast off", fast: domain.AgentFastOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			models := &lastKnownGoodReviewerModels{accountID: tc.accountID, catalog: ports.AgentModelCatalog{
@@ -157,5 +158,31 @@ func TestReviewerLastKnownGoodPreservesProofBoundaries(t *testing.T) {
 				t.Fatalf("LKG boundary: got %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestReviewerLastKnownGoodFastAdmission(t *testing.T) {
+	for _, harness := range []domain.ReviewerHarness{domain.ReviewerCodex, domain.ReviewerClaudeCode} {
+		for _, mode := range []domain.AgentFastMode{domain.AgentFastOn, domain.AgentFastOff} {
+			for _, supported := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/%s/supported=%t", harness, mode, supported), func(t *testing.T) {
+					worker := liveWorker()
+					launcher := &fakeLauncher{handle: "review-pane"}
+					config := domain.AgentConfig{Model: "review-model", FastMode: mode}
+					engine := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("head"), fakeProjects{cfg: domain.ProjectConfig{Reviewers: []domain.ReviewerConfig{{Harness: harness, AgentConfig: config}}}}, launcher)
+					engine.models = &lastKnownGoodReviewerModels{catalog: ports.AgentModelCatalog{InputFingerprint: "saved-fingerprint", LastSuccessAt: new(time.Now().Add(-24 * time.Hour)), Models: []ports.AgentModelInfo{{ID: "review-model", IsDefault: true, SupportsFast: supported}}}}
+					result, err := engine.TriggerWithOptions(context.Background(), worker.ID, TriggerOptions{})
+					if mode == domain.AgentFastOn && !supported {
+						if !errors.Is(err, ports.ErrAgentSettingsUnsupported) || result.Created || launcher.spawned {
+							t.Fatalf("unsupported LKG fast admitted: result=%+v err=%v", result, err)
+						}
+						return
+					}
+					if err != nil || !result.Created || !launcher.spawned || launcher.gotSpec.AgentConfig.FastMode != mode {
+						t.Fatalf("LKG fast admission: created=%v spawned=%v fast=%s err=%v", result.Created, launcher.spawned, launcher.gotSpec.AgentConfig.FastMode, err)
+					}
+				})
+			}
+		}
 	}
 }

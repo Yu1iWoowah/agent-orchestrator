@@ -9,6 +9,8 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import type { components } from "../../api/schema";
+import { usePinReviewerAgentSettings } from "../hooks/useReviewerAgentSettings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionInspector } from "./SessionInspector";
 import { TooltipProvider } from "./ui/tooltip";
@@ -32,7 +34,7 @@ import type {
 } from "../types/workspace";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
-const { cloudCpMock, getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
+const { cloudCpMock, getMock, navigateMock, patchMock, putMock, postMock, hasTrustedApiBaseUrlMock } = vi.hoisted(
   () => ({
     cloudCpMock: {
       cancelSessionReviews: vi.fn(),
@@ -47,6 +49,7 @@ const { cloudCpMock, getMock, navigateMock, patchMock, putMock, postMock } = vi.
       triggerSessionReviews: vi.fn(),
       updateSessionPreferences: vi.fn(),
     },
+    hasTrustedApiBaseUrlMock: vi.fn(() => false),
     getMock: vi.fn(),
     navigateMock: vi.fn(),
     patchMock: vi.fn(),
@@ -83,7 +86,7 @@ vi.mock("../lib/api-client", () => ({
     PUT: putMock,
   },
   getApiBaseUrl: () => "http://127.0.0.1:3001",
-  hasTrustedApiBaseUrl: () => false,
+  hasTrustedApiBaseUrl: hasTrustedApiBaseUrlMock,
   subscribeApiBaseUrl: () => () => {},
   apiErrorMessage: (error: unknown, fallback = "Request failed") => {
     if (error instanceof Error) return error.message;
@@ -317,6 +320,7 @@ const reviewState = (n: number, status: string, targetSha = `sha-${n}`) => ({
 });
 
 beforeEach(() => {
+  hasTrustedApiBaseUrlMock.mockReset().mockReturnValue(false);
   cloudCpMock.cancelSessionReviews.mockReset();
   cloudCpMock.getSessionReviewState.mockReset();
   cloudCpMock.inspectSessionReviewerHarnesses.mockReset();
@@ -3551,6 +3555,67 @@ describe("SessionInspector summary reviews", () => {
         body: { harness: "opencode" },
       },
     );
+  });
+
+  it.each(["picker switch", "next-pass PATCH"])("preserves a newer reviewer pin after %s and Inspector remount", async (entry) => {
+    hasTrustedApiBaseUrlMock.mockReturnValue(true);
+    let pinnedModel = "gpt-5";
+    let revision = 0;
+    const snapshot = (): components["schemas"]["ReviewerAgentSettingsResponse"] => ({
+      reviewId: "review-owner", harness: "codex", revision, activePass: false,
+      applyMode: "next-pass", effectiveState: "unknown", reason: "",
+      settings: { model: pinnedModel, effort: "", fastMode: "default" },
+    });
+    const reviewData = () => ({ reviewerHandleId: "reviewer-pane", reviewerHarness: "codex",
+      reviewerSurface: { reviewId: "review-owner", harness: "codex", mode: "tui" },
+      reviews: [reviewState(3, "needs_review", "sha-2")] });
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/reviews/{reviewId}/agent-settings") return { data: snapshot() };
+      if (path === "/api/v1/sessions/{sessionId}/interface-transition") return { data: sessionInterfaceTransitionStatus("tui") };
+      if (path === "/api/v1/sessions/{sessionId}/reviews") return { data: reviewData() };
+      if (path === "/api/v1/agents/{agent}/models") return { data: {
+        agentId: "codex", selectionMode: "catalog", allowCustom: false, stale: false,
+        source: "official-catalog", fetchedAt: "2026-10-31T00:00:00Z",
+        models: [{ id: "gpt-5", label: "GPT-5", isDefault: true }, { id: "gpt-5-mini", label: "GPT-5 Mini" }],
+      } };
+      return commonGetsResponder()(path);
+    });
+    postMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/sessions/{sessionId}/reviews/switch") { pinnedModel = "gpt-5-mini"; revision++; }
+      return { data: reviewData(), response: { status: 201 } };
+    });
+    patchMock.mockImplementation(async (path: string) => {
+      if (path !== "/api/v1/reviews/{reviewId}/agent-settings") return { data: { ok: true } };
+      pinnedModel = "gpt-5-mini"; revision++;
+      return { data: { id: "pin-b", reviewId: "review-owner", revision, phase: "pinned", applyMode: "next-pass", target: snapshot().settings } };
+    });
+    function PinNextPass() {
+      const pin = usePinReviewerAgentSettings();
+      return <button type="button" onClick={() => pin.mutate({ reviewId: "review-owner", key: "pin-b", body: { expectedRevision: 0, settings: { model: "gpt-5-mini" } } })}>Pin next pass</button>;
+    }
+    const worker = session([pr(3, "open")], { reviewerHarness: "codex", reviewerConfig: { model: "gpt-5" } });
+    const first = renderWithQuery(<><SessionInspector session={worker} /><PinNextPass /></>);
+    await openReviewsSection();
+    if (entry === "picker switch") {
+      await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: /codex/i }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: "GPT-5 Mini" }));
+      await waitFor(() => expect(postCallsFor("/api/v1/sessions/{sessionId}/reviews/switch")).toHaveLength(1));
+    } else {
+      await userEvent.click(screen.getByRole("button", { name: "Pin next pass" }));
+      await waitFor(() => expect(patchMock).toHaveBeenCalledWith("/api/v1/reviews/{reviewId}/agent-settings", expect.objectContaining({ body: { expectedRevision: 0, settings: { model: "gpt-5-mini" } } })));
+    }
+    await waitFor(() => expect(pinnedModel).toBe("gpt-5-mini"));
+    first.unmount();
+    renderWithQuery(<SessionInspector session={worker} />);
+    await openReviewsSection();
+    await userEvent.click(screen.getByRole("button", { name: "Review latest commit" }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
+      params: { path: { sessionId: "sess-1" } }, body: { harness: "codex" },
+    }));
+    expect(pinnedModel).toBe("gpt-5-mini");
+    expect(revision).toBe(1);
+    expect(screen.getByRole("button", { name: /Select reviewer agent/ })).toHaveTextContent("GPT-5 Mini");
   });
 
   it("preserves hidden reviewer config fields when saving a session reviewer model", async () => {

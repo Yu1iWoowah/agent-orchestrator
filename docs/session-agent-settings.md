@@ -383,7 +383,8 @@ last-known-good catalog for the current input fingerprint, admission may use
 its covered model/effort choices (user decision, 2026-10-31). The catalog remains
 marked stale; it must carry a real past successful discovery. An unlisted custom
 model or unknown alias effort is not covered. A known unsupported effort still
-uses the settings unsupported error. Explicit fast and settings mutation retain
+uses the settings unsupported error. Explicit fast admission may also use that LKG evidence; fast-on still requires
+the adapter and selected model to advertise support. Settings mutation retains
 the fresh-success requirement. Fetched or validated timestamps alone, including
 an idle authentication-required cache, are not successful evidence. Failure of
 this initial qualification rejects admission before saving a preference/pass
@@ -392,7 +393,11 @@ can retry or change its initial choice once qualification succeeds, provided it 
 has no pass or native launch history. This includes non-account harnesses and
 retains any established fixed account binding. Repeating the already-resolved
 worker model/mode on an unpinned legacy reviewer is also ordinary admission,
-including the Inspector's repeated config payload. Only an actual change to an
+including the Inspector's repeated config payload. The Inspector reads a recorded next-pass
+pin for its model display. Its picker saves through switch; Run review sends
+only the selected harness/rerun intent, never a copy of worker config. An
+explicit CLI model/effort/fast override remains a selection change, even if it
+matches an older worker config. Only an actual change to an
 executed legacy reviewer requires mutation support and a recorded preference.
 A legacy native-history restore keeps its compatibility behavior; restoring
 that history does not qualify the next pass. Without a native conversation ID,
@@ -400,7 +405,12 @@ restore must qualify the selected snapshot or pin as a new launch. A pin alone
 does not prove native history exists: preflight can fail after admission saves
 the pin and pass. Rejection preserves the pin, pass and fixed account. This also
 applies to a running snapshot whose native ID has not yet been recorded and to
-Chat-to-TUI fallback that clears native history. A launch with no model,
+Chat-to-TUI fallback that clears native history. A rejected restore leaves an
+existing running pass intact. A selection-changing trigger or switch still
+conflicts; retry a normal trigger without overrides after qualification is
+available. That path reconciles a reviewer proven dead and cancels the stale
+run before admitting its replacement. This does not make an unknown runtime
+probe proof of death. A launch with no model,
 effort or explicit fast choice uses provider defaults without adopting a cached
 catalog selection or claiming provider-effective values.
 
@@ -424,7 +434,7 @@ Grants expire after 24 hours; they do not renew in a running provider process.
 
 | Surface | Declared support and limits |
 | --- | --- |
-| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Model/effort admission allows a covering last-known-good catalog after refresh failure; strict mutation/fast proof requires the last successful discovery to remain fresh under the catalog owner’s calendar-day rule; fetched/validated timestamps alone do not qualify. Native fake-wire contracts also retain fixed reviewer permissions. |
+| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Model/effort admission allows a covering last-known-good catalog after refresh failure; settings mutation requires the last successful discovery to remain fresh under the catalog owner’s calendar-day rule; fetched/validated timestamps alone do not qualify. Native fake-wire contracts also retain fixed reviewer permissions. |
 | Existing reviewer next-pass mutation | Stable review owner with recorded preference, fixed U3 binding and complete native/generation identity. Active passes conflict. Legacy unknown preferences are not reconstructed from worker settings. |
 | Other reviewer launch adapters | Only fields declared by the adapter config spec and accepted by its catalog. Catalog variants alone do not declare effort or fast support. |
 | Other harness reconfigure | No generic hot-reconfigure or account binding is inferred from a model launch flag. Missing settings/runtime/account capability remains unsupported or unavailable. |
