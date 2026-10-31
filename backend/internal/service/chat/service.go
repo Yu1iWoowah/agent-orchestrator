@@ -1503,19 +1503,23 @@ func (s *Service) Send(
 			release()
 		}
 	}
+	// Report ownership follows the durable turn outcome, even if the request
+	// disconnected while the controller was recovering accepted input.
+	reportCtx := context.WithoutCancel(ctx)
+
 	if err != nil {
 		if s.reports != nil {
-			_ = s.reports.ReleasePiggyback(ctx, reports, err)
+			_ = s.reports.ReleasePiggyback(reportCtx, reports, err)
 		}
 		return turn, err
 	}
 	if s.reports != nil {
 		if turn.ID == "" {
 			// A retried client message did not record the newly claimed reports.
-			_ = s.reports.ReleasePiggyback(ctx, reports, errors.New("duplicate chat message"))
+			_ = s.reports.ReleasePiggyback(reportCtx, reports, errors.New("duplicate chat message"))
 			return turn, nil
 		}
-		if err := s.reports.AcceptPiggyback(ctx, reports); err != nil {
+		if err := s.reports.AcceptPiggyback(reportCtx, reports); err != nil {
 			return domain.ConversationTurn{}, fmt.Errorf("acknowledge worker reports: %w", err)
 		}
 	}
