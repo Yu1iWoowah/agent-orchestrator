@@ -51,14 +51,17 @@ func (s *Store) GuardianCursor(ctx context.Context, epoch int64, thread string) 
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.GuardianCursor{EpochID: epoch, ThreadID: thread}, nil
 	}
-	return domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
+	return domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, ReadStartOffset: r.ReadStartOffset, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
 }
 
 // ApplyGuardianBatch commits metadata and its independent cursor atomically.
 // Fixed errors contain no provider text, paths, IDs or raw record fragments.
 func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) error {
 	b.Cursor.UpdatedAt = b.Cursor.UpdatedAt.UTC()
-	if !domain.ValidGuardianID(b.Thread.ThreadID) || !domain.ValidGuardianID(b.Thread.ParentID) || !domain.ValidGuardianVersion(b.Thread.CLIVersion) || b.Cursor.Generation < 0 || b.Cursor.Offset < 0 || len(b.Cursor.FileIdentity) > 128 {
+	if b.Anomalies == nil {
+		b.Anomalies = make(map[domain.GuardianCode]int64)
+	}
+	if !domain.ValidGuardianID(b.Thread.ThreadID) || !domain.ValidGuardianID(b.Thread.ParentID) || !domain.ValidGuardianVersion(b.Thread.CLIVersion) || b.Cursor.ReadStartOffset < 0 || b.Cursor.ReadStartOffset > b.Cursor.Offset || b.Cursor.Generation < 0 || b.Cursor.Offset < 0 || len(b.Cursor.FileIdentity) > 128 {
 		return errors.New("invalid guardian batch")
 	}
 	s.writeMu.Lock()
@@ -74,25 +77,15 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		if policy.Enabled != 1 {
 			return domain.ErrGuardianDisabled
 		}
-		candidates, err := q.ListGuardianCandidates(ctx)
-		if err != nil {
+		if err := checkGuardianOwner(ctx, q, b.Owner, false); err != nil {
 			return err
 		}
-		current := false
-		for _, r := range candidates {
-			if r.BindingID == b.Owner.BindingID && r.AccountID == b.Owner.AccountID && r.BoundAt.Equal(b.Owner.AccountBoundAt) && r.NativeRootID == b.Owner.NativeRootID && r.SessionID == b.Owner.SessionID && r.OwnerConflict == 0 {
-				current = true
-				break
-			}
-		}
-		if !current {
-			return domain.ErrGuardianDisabled
-		}
+
 		cur, err := q.GetGuardianCursor(ctx, gen.GetGuardianCursorParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if cur.SourceSize != b.Expected.SourceSize || !cur.SourceModifiedAt.Time.Equal(b.Expected.SourceModifiedAt) || cur.ByteOffset != b.Expected.Offset || cur.Generation != b.Expected.Generation || cur.FileIdentity != b.Expected.FileIdentity || (cur.Discarding != 0) != b.Expected.Discarding || !cur.UpdatedAt.Equal(b.Expected.UpdatedAt) {
+		if cur.ReadStartOffset != b.Expected.ReadStartOffset || cur.SourceSize != b.Expected.SourceSize || !cur.SourceModifiedAt.Time.Equal(b.Expected.SourceModifiedAt) || cur.ByteOffset != b.Expected.Offset || cur.Generation != b.Expected.Generation || cur.FileIdentity != b.Expected.FileIdentity || (cur.Discarding != 0) != b.Expected.Discarding || !cur.UpdatedAt.Equal(b.Expected.UpdatedAt) {
 			return domain.ErrGuardianCursorConflict
 		}
 
@@ -100,7 +93,7 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if position.SourceSize != b.ExpectedPosition.SourceSize || !position.SourceModifiedAt.Time.Equal(b.ExpectedPosition.SourceModifiedAt) || position.ByteOffset != b.ExpectedPosition.Offset || position.Generation != b.ExpectedPosition.Generation || position.FileIdentity != b.ExpectedPosition.FileIdentity || (position.Discarding != 0) != b.ExpectedPosition.Discarding || !position.UpdatedAt.Equal(b.ExpectedPosition.UpdatedAt) {
+		if position.ReadStartOffset != b.ExpectedPosition.ReadStartOffset || position.SourceSize != b.ExpectedPosition.SourceSize || !position.SourceModifiedAt.Time.Equal(b.ExpectedPosition.SourceModifiedAt) || position.ByteOffset != b.ExpectedPosition.Offset || position.Generation != b.ExpectedPosition.Generation || position.FileIdentity != b.ExpectedPosition.FileIdentity || (position.Discarding != 0) != b.ExpectedPosition.Discarding || !position.UpdatedAt.Equal(b.ExpectedPosition.UpdatedAt) {
 			return domain.ErrGuardianCursorConflict
 		}
 
@@ -124,10 +117,8 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		b.Models = models
 		b.Requests = requests
 		if cur.FileIdentity == "" && len(b.Models) == 0 && len(b.Requests) == 0 {
-			for code, n := range b.Anomalies {
-				if err := addGuardianAnomaly(ctx, q, b.Owner.SessionID, code, n, b.Cursor.UpdatedAt); err != nil {
-					return err
-				}
+			if err := observeGuardianAnomalies(ctx, q, b.Owner, b.Cursor.SourceState(), b.Anomalies, b.Cursor.UpdatedAt); err != nil {
+				return err
 			}
 			return putGuardianPosition(ctx, q, b)
 		}
@@ -137,7 +128,7 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 			return err
 		}
 		if err == nil && (old.ParentID != b.Thread.ParentID || (old.CliVersion != "" && old.CliVersion != b.Thread.CLIVersion)) {
-			return addGuardianAnomaly(ctx, q, b.Owner.SessionID, domain.GuardianSourceConflict, 1, b.Cursor.UpdatedAt)
+			return observeGuardianAnomalies(ctx, q, b.Owner, b.Cursor.SourceState(), map[domain.GuardianCode]int64{domain.GuardianSourceConflict: 1}, b.Cursor.UpdatedAt)
 		}
 		retentionAt := b.Thread.ProviderAt.UTC()
 		if retentionAt.IsZero() || retentionAt.After(b.Cursor.UpdatedAt) {
@@ -169,9 +160,7 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 					return err
 				}
 				if !exists {
-					if err := addGuardianAnomaly(ctx, q, b.Owner.SessionID, domain.GuardianCoverageGap, 1, b.Cursor.UpdatedAt); err != nil {
-						return err
-					}
+					b.Anomalies[domain.GuardianCoverageGap]++
 				}
 			}
 		}
@@ -203,12 +192,10 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		}
 		// A bounded turn-context queue includes already-resolved turns so a late
 		// conflicting context cannot silently change a model. Excess is coverage_gap.
-		for code, n := range b.Anomalies {
-			if err := addGuardianAnomaly(ctx, q, b.Owner.SessionID, code, n, b.Cursor.UpdatedAt); err != nil {
-				return err
-			}
+		if err := observeGuardianAnomalies(ctx, q, b.Owner, b.Cursor.SourceState(), b.Anomalies, b.Cursor.UpdatedAt); err != nil {
+			return err
 		}
-		if err := q.PutGuardianCursor(ctx, gen.PutGuardianCursorParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, FileIdentity: b.Cursor.FileIdentity, Discarding: guardianBool(b.Cursor.Discarding), SourceSize: b.Cursor.SourceSize, SourceModifiedAt: sql.NullTime{Time: b.Cursor.SourceModifiedAt, Valid: !b.Cursor.SourceModifiedAt.IsZero()}, UpdatedAt: b.Cursor.UpdatedAt}); err != nil {
+		if err := q.PutGuardianCursor(ctx, gen.PutGuardianCursorParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, FileIdentity: b.Cursor.FileIdentity, ReadStartOffset: b.Cursor.ReadStartOffset, Discarding: guardianBool(b.Cursor.Discarding), SourceSize: b.Cursor.SourceSize, SourceModifiedAt: sql.NullTime{Time: b.Cursor.SourceModifiedAt, Valid: !b.Cursor.SourceModifiedAt.IsZero()}, UpdatedAt: b.Cursor.UpdatedAt}); err != nil {
 			return err
 		}
 		return putGuardianPosition(ctx, q, b)
@@ -276,7 +263,7 @@ func (s *Store) CleanupGuardian(ctx context.Context, now time.Time) error {
 	defer s.writeMu.Unlock()
 	cutoff := now.UTC().Add(-domain.GuardianRetention)
 	return s.inTx(ctx, "guardian cleanup", func(q *gen.Queries) error {
-		for _, f := range []func(context.Context, time.Time) error{q.AdvanceAllGuardianWatermarks, q.DeleteExpiredGuardianRequests, q.DeleteExpiredGuardianModels, q.ClearExpiredGuardianThreadMetadata, q.DeleteExpiredGuardianThreads, q.DeleteExpiredGuardianPositions, q.DeleteExpiredGuardianEpochs, q.DeleteExpiredGuardianAnomalies} {
+		for _, f := range []func(context.Context, time.Time) error{q.AdvanceAllGuardianWatermarks, q.DeleteExpiredGuardianAnomalyStates, q.DeleteExpiredGuardianRequests, q.DeleteExpiredGuardianModels, q.ClearExpiredGuardianThreadMetadata, q.DeleteExpiredGuardianThreads, q.DeleteExpiredGuardianPositions, q.DeleteExpiredGuardianEpochs, q.DeleteExpiredGuardianAnomalies} {
 			if err := f(ctx, cutoff); err != nil {
 				return err
 			}
@@ -306,7 +293,7 @@ func (s *Store) GuardianCursors(ctx context.Context, epoch int64) ([]domain.Guar
 	rows, err := s.qr.ListGuardianCursors(ctx, epoch)
 	out := make([]domain.GuardianCursor, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt})
+		out = append(out, domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, ReadStartOffset: r.ReadStartOffset, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt})
 	}
 	return out, err
 }
@@ -319,7 +306,7 @@ func guardianBool(v bool) int64 {
 }
 
 func putGuardianPosition(ctx context.Context, q *gen.Queries, b domain.GuardianBatch) error {
-	return q.PutGuardianPosition(ctx, gen.PutGuardianPositionParams{EpochID: b.Owner.EpochID, FileIdentity: b.Cursor.FileIdentity, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, Discarding: guardianBool(b.Cursor.Discarding), SourceSize: b.Cursor.SourceSize, SourceModifiedAt: sql.NullTime{Time: b.Cursor.SourceModifiedAt, Valid: !b.Cursor.SourceModifiedAt.IsZero()}, UpdatedAt: b.Cursor.UpdatedAt})
+	return q.PutGuardianPosition(ctx, gen.PutGuardianPositionParams{EpochID: b.Owner.EpochID, FileIdentity: b.Cursor.FileIdentity, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, ReadStartOffset: b.Cursor.ReadStartOffset, Discarding: guardianBool(b.Cursor.Discarding), SourceSize: b.Cursor.SourceSize, SourceModifiedAt: sql.NullTime{Time: b.Cursor.SourceModifiedAt, Valid: !b.Cursor.SourceModifiedAt.IsZero()}, UpdatedAt: b.Cursor.UpdatedAt})
 }
 
 // GuardianPosition reads a durable file position that contains no native ID.
@@ -328,18 +315,23 @@ func (s *Store) GuardianPosition(ctx context.Context, epoch int64, identity stri
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.GuardianCursor{EpochID: epoch}, nil
 	}
-	return domain.GuardianCursor{EpochID: r.EpochID, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
+	return domain.GuardianCursor{EpochID: r.EpochID, ReadStartOffset: r.ReadStartOffset, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
 }
 
 func guardianRequest(r gen.GuardianRequest) domain.GuardianRequest {
 	return domain.GuardianRequest{CLIVersion: r.CliVersion, EpochID: r.EpochID, ThreadID: r.ThreadID, TurnID: r.TurnID, ResponseID: r.ResponseID, RootTurnID: r.RootTurnID.String, ModelID: r.ModelID.String, Tokens: domain.GuardianTokens{Input: guardianPtr(r.InputTokens), Cached: guardianPtr(r.CachedTokens), CacheWrite: guardianPtr(r.CacheWriteTokens), Output: guardianPtr(r.OutputTokens), Reasoning: guardianPtr(r.ReasoningTokens), Total: guardianPtr(r.TotalTokens)}, ProviderAt: r.ProviderAt, FirstSeenAt: r.FirstSeenAt, SourceGeneration: r.SourceGeneration, SourceOffset: r.SourceOffset, Conflict: r.Conflict != 0}
 }
 
-// GuardianCheckpoint uses only retained immutable facts; expired facts cannot prove continuity.
-func (s *Store) GuardianCheckpoint(ctx context.Context, c domain.GuardianCursor) (domain.GuardianRequest, bool, error) {
-	r, err := s.qr.GetGuardianCheckpoint(ctx, gen.GetGuardianCheckpointParams{EpochID: c.EpochID, ThreadID: c.ThreadID, SourceGeneration: c.Generation, SourceOffset: c.Offset})
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.GuardianRequest{}, false, nil
+// GuardianContinuityRequests reads bounded immutable metadata evidence without
+// applying retention filters: expiry is not proof of a physical rewrite.
+func (s *Store) GuardianContinuityRequests(ctx context.Context, c domain.GuardianCursor, end int64, ids []string) ([]domain.GuardianRequest, error) {
+	rows, err := s.qr.ListGuardianContinuityRequests(ctx, gen.ListGuardianContinuityRequestsParams{EpochID: c.EpochID, ThreadID: c.ThreadID, SourceGeneration: c.Generation, StartOffset: c.ReadStartOffset, EndOffset: end, ResponseIds: ids})
+	if err != nil {
+		return nil, err
 	}
-	return guardianRequest(r), err == nil, err
+	out := make([]domain.GuardianRequest, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, guardianRequest(r))
+	}
+	return out, nil
 }

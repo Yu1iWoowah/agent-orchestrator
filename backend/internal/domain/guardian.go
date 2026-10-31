@@ -155,6 +155,7 @@ type GuardianTurnModel struct {
 
 // GuardianCursor is a metadata-only read position without provider content.
 type GuardianCursor struct {
+	ReadStartOffset  int64
 	SourceSize       int64
 	SourceModifiedAt time.Time
 	EpochID          int64
@@ -176,4 +177,19 @@ type GuardianBatch struct {
 	Requests         []GuardianRequest
 	Models           []GuardianTurnModel
 	Anomalies        map[GuardianCode]int64
+}
+
+// GuardianSourceState is a structured anomaly checkpoint. It contains no path,
+// native ID, provider content, or content fingerprint.
+type GuardianSourceState struct {
+	FileIdentity string
+	Size         int64
+	ModifiedAt   time.Time
+	Generation   int64
+	Offset       int64
+}
+
+// SourceState returns the non-content checkpoint used for anomaly dedupe.
+func (c GuardianCursor) SourceState() GuardianSourceState {
+	return GuardianSourceState{FileIdentity: c.FileIdentity, Size: c.SourceSize, ModifiedAt: c.SourceModifiedAt, Generation: c.Generation, Offset: c.Offset}
 }

@@ -8,6 +8,7 @@ package gen
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -81,6 +82,17 @@ func (q *Queries) DeleteExpiredGuardianAnomalies(ctx context.Context, firstSeenA
 	return err
 }
 
+const deleteExpiredGuardianAnomalyStates = `-- name: DeleteExpiredGuardianAnomalyStates :exec
+DELETE FROM guardian_anomaly_states WHERE guardian_anomaly_states.first_seen_at<=?1
+OR EXISTS(SELECT 1 FROM guardian_epochs e JOIN guardian_anomalies a ON a.session_id=e.session_id
+ WHERE e.id=guardian_anomaly_states.epoch_id AND a.code=guardian_anomaly_states.code AND a.first_seen_at<=?1)
+`
+
+func (q *Queries) DeleteExpiredGuardianAnomalyStates(ctx context.Context, cutoff time.Time) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredGuardianAnomalyStates, cutoff)
+	return err
+}
+
 const deleteExpiredGuardianEpochs = `-- name: DeleteExpiredGuardianEpochs :exec
 DELETE FROM guardian_epochs WHERE guardian_epochs.first_seen_at<=?1
 AND NOT EXISTS(SELECT 1 FROM guardian_threads t WHERE t.epoch_id=guardian_epochs.id)
@@ -127,6 +139,21 @@ AND NOT EXISTS(SELECT 1 FROM guardian_turn_models m WHERE m.epoch_id=guardian_th
 
 func (q *Queries) DeleteExpiredGuardianThreads(ctx context.Context, cutoff time.Time) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredGuardianThreads, cutoff)
+	return err
+}
+
+const deleteGuardianAnomalyState = `-- name: DeleteGuardianAnomalyState :exec
+DELETE FROM guardian_anomaly_states WHERE epoch_id=? AND file_identity=? AND code=?
+`
+
+type DeleteGuardianAnomalyStateParams struct {
+	EpochID      int64
+	FileIdentity string
+	Code         string
+}
+
+func (q *Queries) DeleteGuardianAnomalyState(ctx context.Context, arg DeleteGuardianAnomalyStateParams) error {
+	_, err := q.db.ExecContext(ctx, deleteGuardianAnomalyState, arg.EpochID, arg.FileIdentity, arg.Code)
 	return err
 }
 
@@ -187,50 +214,8 @@ func (q *Queries) FillGuardianModels(ctx context.Context, arg FillGuardianModels
 	return err
 }
 
-const getGuardianCheckpoint = `-- name: GetGuardianCheckpoint :one
-SELECT cli_version, epoch_id, thread_id, turn_id, response_id, root_turn_id, model_id, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens, total_tokens, provider_at, first_seen_at, source_generation, source_offset, "conflict" FROM guardian_requests WHERE epoch_id=? AND thread_id=? AND source_generation=? AND source_offset<? AND conflict=0 ORDER BY source_offset DESC LIMIT 1
-`
-
-type GetGuardianCheckpointParams struct {
-	EpochID          int64
-	ThreadID         string
-	SourceGeneration int64
-	SourceOffset     int64
-}
-
-func (q *Queries) GetGuardianCheckpoint(ctx context.Context, arg GetGuardianCheckpointParams) (GuardianRequest, error) {
-	row := q.db.QueryRowContext(ctx, getGuardianCheckpoint,
-		arg.EpochID,
-		arg.ThreadID,
-		arg.SourceGeneration,
-		arg.SourceOffset,
-	)
-	var i GuardianRequest
-	err := row.Scan(
-		&i.CliVersion,
-		&i.EpochID,
-		&i.ThreadID,
-		&i.TurnID,
-		&i.ResponseID,
-		&i.RootTurnID,
-		&i.ModelID,
-		&i.InputTokens,
-		&i.CachedTokens,
-		&i.CacheWriteTokens,
-		&i.OutputTokens,
-		&i.ReasoningTokens,
-		&i.TotalTokens,
-		&i.ProviderAt,
-		&i.FirstSeenAt,
-		&i.SourceGeneration,
-		&i.SourceOffset,
-		&i.Conflict,
-	)
-	return i, err
-}
-
 const getGuardianCursor = `-- name: GetGuardianCursor :one
-SELECT epoch_id, thread_id, generation, byte_offset, source_size, source_modified_at, file_identity, discarding, updated_at FROM guardian_cursors WHERE epoch_id=? AND thread_id=?
+SELECT epoch_id, thread_id, generation, byte_offset, read_start_offset, source_size, source_modified_at, file_identity, discarding, updated_at FROM guardian_cursors WHERE epoch_id=? AND thread_id=?
 `
 
 type GetGuardianCursorParams struct {
@@ -246,6 +231,7 @@ func (q *Queries) GetGuardianCursor(ctx context.Context, arg GetGuardianCursorPa
 		&i.ThreadID,
 		&i.Generation,
 		&i.ByteOffset,
+		&i.ReadStartOffset,
 		&i.SourceSize,
 		&i.SourceModifiedAt,
 		&i.FileIdentity,
@@ -256,7 +242,7 @@ func (q *Queries) GetGuardianCursor(ctx context.Context, arg GetGuardianCursorPa
 }
 
 const getGuardianPosition = `-- name: GetGuardianPosition :one
-SELECT epoch_id, file_identity, generation, byte_offset, source_size, source_modified_at, discarding, updated_at FROM guardian_positions WHERE epoch_id=? AND file_identity=?
+SELECT epoch_id, file_identity, generation, byte_offset, read_start_offset, source_size, source_modified_at, discarding, updated_at FROM guardian_positions WHERE epoch_id=? AND file_identity=?
 `
 
 type GetGuardianPositionParams struct {
@@ -272,6 +258,7 @@ func (q *Queries) GetGuardianPosition(ctx context.Context, arg GetGuardianPositi
 		&i.FileIdentity,
 		&i.Generation,
 		&i.ByteOffset,
+		&i.ReadStartOffset,
 		&i.SourceSize,
 		&i.SourceModifiedAt,
 		&i.Discarding,
@@ -444,6 +431,47 @@ func (q *Queries) ListGuardianAnomalies(ctx context.Context, sessionID string) (
 	return items, nil
 }
 
+const listGuardianAnomalyStates = `-- name: ListGuardianAnomalyStates :many
+SELECT epoch_id, file_identity, code, source_size, source_modified_at, source_generation, source_offset, first_seen_at FROM guardian_anomaly_states WHERE epoch_id=? AND file_identity=?
+`
+
+type ListGuardianAnomalyStatesParams struct {
+	EpochID      int64
+	FileIdentity string
+}
+
+func (q *Queries) ListGuardianAnomalyStates(ctx context.Context, arg ListGuardianAnomalyStatesParams) ([]GuardianAnomalyState, error) {
+	rows, err := q.db.QueryContext(ctx, listGuardianAnomalyStates, arg.EpochID, arg.FileIdentity)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GuardianAnomalyState{}
+	for rows.Next() {
+		var i GuardianAnomalyState
+		if err := rows.Scan(
+			&i.EpochID,
+			&i.FileIdentity,
+			&i.Code,
+			&i.SourceSize,
+			&i.SourceModifiedAt,
+			&i.SourceGeneration,
+			&i.SourceOffset,
+			&i.FirstSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGuardianCandidates = `-- name: ListGuardianCandidates :many
 SELECT ub.id AS binding_id, ub.session_id, ub.native_root_id, s.project_id,
  a.account_id, a.bound_at, p.enabled_at,
@@ -507,8 +535,81 @@ func (q *Queries) ListGuardianCandidates(ctx context.Context) ([]ListGuardianCan
 	return items, nil
 }
 
+const listGuardianContinuityRequests = `-- name: ListGuardianContinuityRequests :many
+SELECT cli_version, epoch_id, thread_id, turn_id, response_id, root_turn_id, model_id, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens, total_tokens, provider_at, first_seen_at, source_generation, source_offset, "conflict" FROM guardian_requests WHERE epoch_id=?1 AND thread_id=?2
+AND ((source_generation=?3 AND source_offset>=?4 AND source_offset<?5 AND conflict=0)
+ OR response_id IN (/*SLICE:response_ids*/?))
+LIMIT 1025
+`
+
+type ListGuardianContinuityRequestsParams struct {
+	EpochID          int64
+	ThreadID         string
+	SourceGeneration int64
+	StartOffset      int64
+	EndOffset        int64
+	ResponseIds      []string
+}
+
+func (q *Queries) ListGuardianContinuityRequests(ctx context.Context, arg ListGuardianContinuityRequestsParams) ([]GuardianRequest, error) {
+	query := listGuardianContinuityRequests
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.EpochID)
+	queryParams = append(queryParams, arg.ThreadID)
+	queryParams = append(queryParams, arg.SourceGeneration)
+	queryParams = append(queryParams, arg.StartOffset)
+	queryParams = append(queryParams, arg.EndOffset)
+	if len(arg.ResponseIds) > 0 {
+		for _, v := range arg.ResponseIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:response_ids*/?", strings.Repeat(",?", len(arg.ResponseIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:response_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GuardianRequest{}
+	for rows.Next() {
+		var i GuardianRequest
+		if err := rows.Scan(
+			&i.CliVersion,
+			&i.EpochID,
+			&i.ThreadID,
+			&i.TurnID,
+			&i.ResponseID,
+			&i.RootTurnID,
+			&i.ModelID,
+			&i.InputTokens,
+			&i.CachedTokens,
+			&i.CacheWriteTokens,
+			&i.OutputTokens,
+			&i.ReasoningTokens,
+			&i.TotalTokens,
+			&i.ProviderAt,
+			&i.FirstSeenAt,
+			&i.SourceGeneration,
+			&i.SourceOffset,
+			&i.Conflict,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGuardianCursors = `-- name: ListGuardianCursors :many
-SELECT epoch_id, thread_id, generation, byte_offset, source_size, source_modified_at, file_identity, discarding, updated_at FROM guardian_cursors WHERE epoch_id=? ORDER BY thread_id
+SELECT epoch_id, thread_id, generation, byte_offset, read_start_offset, source_size, source_modified_at, file_identity, discarding, updated_at FROM guardian_cursors WHERE epoch_id=? ORDER BY thread_id
 `
 
 func (q *Queries) ListGuardianCursors(ctx context.Context, epochID int64) ([]GuardianCursor, error) {
@@ -525,6 +626,7 @@ func (q *Queries) ListGuardianCursors(ctx context.Context, epochID int64) ([]Gua
 			&i.ThreadID,
 			&i.Generation,
 			&i.ByteOffset,
+			&i.ReadStartOffset,
 			&i.SourceSize,
 			&i.SourceModifiedAt,
 			&i.FileIdentity,
@@ -647,10 +749,41 @@ func (q *Queries) PurgeGuardianEpochs(ctx context.Context, sessionID string) err
 	return err
 }
 
+const putGuardianAnomalyState = `-- name: PutGuardianAnomalyState :exec
+INSERT INTO guardian_anomaly_states(epoch_id,file_identity,code,source_size,source_modified_at,source_generation,source_offset,first_seen_at)
+VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity,code) DO UPDATE SET
+ source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,source_generation=excluded.source_generation,source_offset=excluded.source_offset
+`
+
+type PutGuardianAnomalyStateParams struct {
+	EpochID          int64
+	FileIdentity     string
+	Code             string
+	SourceSize       int64
+	SourceModifiedAt sql.NullTime
+	SourceGeneration int64
+	SourceOffset     int64
+	FirstSeenAt      time.Time
+}
+
+func (q *Queries) PutGuardianAnomalyState(ctx context.Context, arg PutGuardianAnomalyStateParams) error {
+	_, err := q.db.ExecContext(ctx, putGuardianAnomalyState,
+		arg.EpochID,
+		arg.FileIdentity,
+		arg.Code,
+		arg.SourceSize,
+		arg.SourceModifiedAt,
+		arg.SourceGeneration,
+		arg.SourceOffset,
+		arg.FirstSeenAt,
+	)
+	return err
+}
+
 const putGuardianCursor = `-- name: PutGuardianCursor :exec
-INSERT INTO guardian_cursors(epoch_id,thread_id,generation,byte_offset,file_identity,discarding,source_size,source_modified_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO UPDATE SET
- generation=excluded.generation,byte_offset=excluded.byte_offset,file_identity=excluded.file_identity,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,updated_at=excluded.updated_at
+INSERT INTO guardian_cursors(epoch_id,thread_id,generation,byte_offset,file_identity,discarding,source_size,source_modified_at,read_start_offset,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO UPDATE SET
+ generation=excluded.generation,byte_offset=excluded.byte_offset,file_identity=excluded.file_identity,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,updated_at=excluded.updated_at
 `
 
 type PutGuardianCursorParams struct {
@@ -662,6 +795,7 @@ type PutGuardianCursorParams struct {
 	Discarding       int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
+	ReadStartOffset  int64
 	UpdatedAt        time.Time
 }
 
@@ -675,6 +809,7 @@ func (q *Queries) PutGuardianCursor(ctx context.Context, arg PutGuardianCursorPa
 		arg.Discarding,
 		arg.SourceSize,
 		arg.SourceModifiedAt,
+		arg.ReadStartOffset,
 		arg.UpdatedAt,
 	)
 	return err
@@ -712,9 +847,9 @@ func (q *Queries) PutGuardianModel(ctx context.Context, arg PutGuardianModelPara
 }
 
 const putGuardianPosition = `-- name: PutGuardianPosition :exec
-INSERT INTO guardian_positions(epoch_id,file_identity,generation,byte_offset,discarding,source_size,source_modified_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity) DO UPDATE SET
- generation=excluded.generation,byte_offset=excluded.byte_offset,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,updated_at=excluded.updated_at
+INSERT INTO guardian_positions(epoch_id,file_identity,generation,byte_offset,discarding,source_size,source_modified_at,read_start_offset,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch_id,file_identity) DO UPDATE SET
+ generation=excluded.generation,byte_offset=excluded.byte_offset,discarding=excluded.discarding,source_size=excluded.source_size,source_modified_at=excluded.source_modified_at,read_start_offset=excluded.read_start_offset,updated_at=excluded.updated_at
 `
 
 type PutGuardianPositionParams struct {
@@ -725,6 +860,7 @@ type PutGuardianPositionParams struct {
 	Discarding       int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
+	ReadStartOffset  int64
 	UpdatedAt        time.Time
 }
 
@@ -737,6 +873,7 @@ func (q *Queries) PutGuardianPosition(ctx context.Context, arg PutGuardianPositi
 		arg.Discarding,
 		arg.SourceSize,
 		arg.SourceModifiedAt,
+		arg.ReadStartOffset,
 		arg.UpdatedAt,
 	)
 	return err

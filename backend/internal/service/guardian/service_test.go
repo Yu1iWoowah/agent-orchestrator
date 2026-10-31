@@ -300,7 +300,7 @@ func TestA7A8LedgerIsolationAndSensitiveSentinels(t *testing.T) {
 		t.Fatal("ledger identity/cost/cursor changed")
 	}
 
-	for _, table := range []string{"guardian_epochs", "guardian_threads", "guardian_turn_models", "guardian_requests", "guardian_cursors", "guardian_positions", "guardian_anomalies", "guardian_watermarks"} {
+	for _, table := range []string{"guardian_epochs", "guardian_threads", "guardian_turn_models", "guardian_requests", "guardian_cursors", "guardian_positions", "guardian_anomalies", "guardian_anomaly_states", "guardian_watermarks"} {
 		func() {
 			rows, err := f.db.Query("SELECT * FROM " + table)
 			must(t, err)
@@ -407,8 +407,8 @@ func TestA1A4NestedLineageAndOwnerConflicts(t *testing.T) {
 	}
 	f.write("guardian", f.meta("guardian", "missing", true, f.base))
 	f.collect()
-	if f.codes()[domain.GuardianOwnerUnresolved] != 0 {
-		t.Fatal("unattributed broken chain counted for owner")
+	if f.codes()[domain.GuardianOwnerUnresolved] == 0 {
+		t.Fatal("previously owned broken chain lost coverage")
 	}
 	f.write("guardian", f.meta("guardian", "guardian", true, f.base))
 	f.collect()
@@ -516,7 +516,7 @@ func TestA4OversizeBoundAndSymlinkConfinement(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(f.root, "link.jsonl")); err != nil {
 		t.Skip("symlinks unavailable")
 	}
-	result := (&headerDiscovery{}).scan(context.Background(), []string{f.root}, 4096, nil, f.now)
+	result := (&headerDiscovery{}).scan(context.Background(), []string{f.root}, 4096, nil)
 	index := result.index
 	if _, ok := index["escape"]; ok {
 		t.Fatal("followed escaping symlink")
@@ -818,7 +818,7 @@ func TestDiscoveryBudgetPrioritizesLatestGuardianAndCachesHeaders(t *testing.T) 
 		t.Fatal("unexpected discovery root groups")
 	}
 	for _, d := range f.svc.discovery {
-		result := d.scan(context.Background(), []string{f.root}, 4096, []string{"root"}, f.now)
+		result := d.scan(context.Background(), []string{f.root}, 4096, []string{"root"})
 		if result.gap || result.reads != 0 || len(result.index) != 6002 {
 			t.Fatalf("warm inventory: gap=%v reads=%d entries=%d", result.gap, result.reads, len(result.index))
 		}

@@ -38,23 +38,32 @@ func parseHeader(line []byte) (header, bool) {
 	if !domain.ValidGuardianVersion(h.Version) {
 		h.Version = ""
 	}
-	var source struct {
-		Subagent struct {
-			Spawn struct {
-				Parent string `json:"parent_thread_id"`
-			} `json:"thread_spawn"`
-		} `json:"subagent"`
-	}
 	if !h.Guardian && len(e.Payload.Source) > 0 && e.Payload.Source[0] == '{' {
+		var source struct {
+			Subagent json.RawMessage `json:"subagent"`
+		}
 		if json.Unmarshal(e.Payload.Source, &source) != nil {
 			return header{}, false
 		}
-		p := source.Subagent.Spawn.Parent
-		if p != "" {
-			if h.Parent != "" && h.Parent != p {
+		var spawn struct {
+			Spawn struct {
+				Parent string `json:"parent_thread_id"`
+			} `json:"thread_spawn"`
+		}
+		if len(source.Subagent) > 0 && source.Subagent[0] == '"' {
+			// Codex review/compact subagents have no spawn parent evidence.
+			var kind string
+			if json.Unmarshal(source.Subagent, &kind) != nil {
 				return header{}, false
 			}
-			h.Parent = p
+		} else if len(source.Subagent) > 0 && json.Unmarshal(source.Subagent, &spawn) != nil {
+			return header{}, false
+		}
+		if parent := spawn.Spawn.Parent; parent != "" {
+			if h.Parent != "" && h.Parent != parent {
+				return header{}, false
+			}
+			h.Parent = parent
 		}
 	}
 	if h.Parent != "" && !domain.ValidGuardianID(h.Parent) {

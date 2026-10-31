@@ -47,6 +47,7 @@ CREATE TABLE guardian_positions (
  file_identity TEXT NOT NULL CHECK(length(file_identity) BETWEEN 1 AND 128),
  generation INTEGER NOT NULL CHECK(generation>=0),
  byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
+ read_start_offset INTEGER NOT NULL DEFAULT 0 CHECK(read_start_offset>=0),
  source_size INTEGER NOT NULL DEFAULT 0 CHECK(source_size>=0),
  source_modified_at TIMESTAMP,
  discarding INTEGER NOT NULL CHECK(discarding IN (0,1)),
@@ -58,6 +59,7 @@ CREATE TABLE guardian_cursors (
  thread_id TEXT NOT NULL,
  generation INTEGER NOT NULL CHECK(generation>=0),
  byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
+ read_start_offset INTEGER NOT NULL DEFAULT 0 CHECK(read_start_offset>=0),
  source_size INTEGER NOT NULL DEFAULT 0 CHECK(source_size>=0),
  source_modified_at TIMESTAMP,
  file_identity TEXT NOT NULL CHECK(length(file_identity)<=128),
@@ -101,6 +103,19 @@ CREATE TABLE guardian_requests (
 CREATE INDEX guardian_requests_retention ON guardian_requests(provider_at,first_seen_at);
 CREATE INDEX guardian_requests_checkpoint ON guardian_requests(epoch_id,thread_id,source_generation,source_offset);
 CREATE INDEX guardian_requests_turn ON guardian_requests(epoch_id,thread_id,turn_id);
+-- Processing state uses only the existing kernel source identity and numeric
+-- positions. No native thread IDs, paths, payloads, or content hashes survive.
+CREATE TABLE guardian_anomaly_states (
+ epoch_id INTEGER NOT NULL REFERENCES guardian_epochs(id) ON DELETE CASCADE,
+ file_identity TEXT NOT NULL CHECK(length(file_identity)<=128),
+ code TEXT NOT NULL CHECK(code IN ('invalid_metadata','skipped_unknown_time','owner_unresolved','owner_conflict','source_conflict','source_rotated','source_truncated','source_missing','partial_line','coverage_gap','unsupported_version')),
+ source_size INTEGER NOT NULL CHECK(source_size>=0),
+ source_modified_at TIMESTAMP,
+ source_generation INTEGER NOT NULL CHECK(source_generation>=0),
+ source_offset INTEGER NOT NULL CHECK(source_offset>=0),
+ first_seen_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(epoch_id,file_identity,code)
+);
 CREATE TABLE guardian_anomalies (
  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
  code TEXT NOT NULL CHECK(code IN ('invalid_metadata','skipped_unknown_time','owner_unresolved','owner_conflict','source_conflict','source_rotated','source_truncated','source_missing','partial_line','coverage_gap','unsupported_version')),
@@ -219,6 +234,7 @@ END;
 -- +goose Down
 DROP TRIGGER guardian_project_config;
 DROP TRIGGER guardian_project_insert;
+DROP TABLE guardian_anomaly_states;
 DROP TABLE guardian_anomalies;
 DROP TABLE guardian_requests;
 DROP TABLE guardian_turn_models;

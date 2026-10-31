@@ -559,11 +559,23 @@ type GuardianAnomaly struct {
 	FirstSeenAt time.Time
 }
 
+type GuardianAnomalyState struct {
+	EpochID          int64
+	FileIdentity     string
+	Code             string
+	SourceSize       int64
+	SourceModifiedAt sql.NullTime
+	SourceGeneration int64
+	SourceOffset     int64
+	FirstSeenAt      time.Time
+}
+
 type GuardianCursor struct {
 	EpochID          int64
 	ThreadID         string
 	Generation       int64
 	ByteOffset       int64
+	ReadStartOffset  int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
 	FileIdentity     string
@@ -585,6 +597,7 @@ type GuardianPosition struct {
 	FileIdentity     string
 	Generation       int64
 	ByteOffset       int64
+	ReadStartOffset  int64
 	SourceSize       int64
 	SourceModifiedAt sql.NullTime
 	Discarding       int64

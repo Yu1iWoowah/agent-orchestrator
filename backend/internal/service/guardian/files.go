@@ -12,14 +12,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 )
 
 const maxLine = 1 << 20
 
 type artifact struct {
-	root string
-	path string
-	meta header
+	root  string
+	path  string
+	meta  header
+	state domain.GuardianSourceState
 }
 
 // openFile confines all path resolution to an already registered root. The
@@ -43,14 +47,14 @@ func openFile(root, path string) (*os.File, error) {
 }
 
 // headerDiscovery caches only bounded parsed metadata and filesystem identity.
-// Entries expire after an hour and roots no longer in use are dropped by Collect.
+// File metadata changes invalidate entries; inactive roots are dropped by Collect.
 type headerDiscovery struct{ cache map[artifactKey]cachedHeader }
 type artifactKey struct{ root, path string }
 type cachedHeader struct {
-	info  os.FileInfo
-	meta  header
-	valid bool
-	at    time.Time
+	info     os.FileInfo
+	meta     header
+	valid    bool
+	identity string
 }
 type headerCandidate struct {
 	key      artifactKey
@@ -65,13 +69,14 @@ type discoveryResult struct {
 	reads     int
 }
 
-const maxCachedHeaders = 8192
+// Every entry admitted by the bounded inventory can stay warm.
+const maxCachedHeaders = maxDiscoveryEntries
 const maxDiscoveryEntries = 65536
 
 // scan shares one inventory across all owners of the same registered roots.
 // Only actual header reads consume budget; cached entries remain usable after
 // that budget is exhausted. Required native roots precede recent date folders.
-func (d *headerDiscovery) scan(ctx context.Context, roots []string, budget int, required []string, now time.Time) discoveryResult {
+func (d *headerDiscovery) scan(ctx context.Context, roots []string, budget int, required []string) discoveryResult {
 	result := discoveryResult{index: map[string]artifact{}, conflicts: map[string]bool{}}
 	candidates, gap := headerCandidates(ctx, roots, required)
 	result.gap = gap
@@ -99,13 +104,13 @@ func (d *headerDiscovery) scan(ctx context.Context, roots []string, budget int, 
 			break
 		}
 		cached, ok := d.cache[c.key]
-		if !ok || now.Sub(cached.at) >= time.Hour || !os.SameFile(cached.info, c.info) || cached.info.Size() != c.info.Size() || !cached.info.ModTime().Equal(c.info.ModTime()) {
+		if !ok || !os.SameFile(cached.info, c.info) || cached.info.Size() != c.info.Size() || !cached.info.ModTime().Equal(c.info.ModTime()) {
 			if result.reads >= budget {
 				result.gap = true
 				continue
 			}
 			result.reads++
-			cached = cachedHeader{at: now, info: c.info}
+			cached = cachedHeader{info: c.info}
 			f, err := openFile(c.key.root, c.key.path)
 			if err != nil {
 				result.gap = true
@@ -115,13 +120,15 @@ func (d *headerDiscovery) scan(ctx context.Context, roots []string, budget int, 
 			if readErr == nil && len(line) <= maxLine {
 				cached.meta, cached.valid = parseHeader(line)
 			}
+			identity, identityErr := usagesvc.SourceIdentityFromFile(f)
 			info, statErr := f.Stat()
 			_ = f.Close()
-			if statErr != nil {
+			if statErr != nil || identityErr != nil {
 				result.gap = true
 				continue
 			}
 			cached.info = info
+			cached.identity = identity
 		}
 		if len(next) < maxCachedHeaders {
 			next[c.key] = cached
@@ -138,7 +145,7 @@ func (d *headerDiscovery) scan(ctx context.Context, roots []string, budget int, 
 			continue
 		}
 		physical[h.ID] = cached.info
-		result.index[h.ID] = artifact{root: c.key.root, path: c.key.path, meta: h}
+		result.index[h.ID] = artifact{root: c.key.root, path: c.key.path, meta: h, state: domain.GuardianSourceState{FileIdentity: cached.identity + "@" + h.CreatedAt.Format(time.RFC3339Nano), Size: cached.info.Size(), ModifiedAt: cached.info.ModTime().UTC()}}
 	}
 	d.cache = next
 	return result

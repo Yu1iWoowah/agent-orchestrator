@@ -85,7 +85,7 @@ func (s *Service) Collect(ctx context.Context) error {
 			return err
 		}
 		if o.OwnershipConflict || rootsClaimed[o.NativeRootID] != 1 {
-			if err := s.anomaly(ctx, o, domain.GuardianOwnerConflict, now); err != nil {
+			if err := s.anomaly(ctx, o, domain.GuardianSourceState{}, domain.GuardianOwnerConflict, now); err != nil {
 				return err
 			}
 			continue
@@ -95,13 +95,13 @@ func (s *Service) Collect(ctx context.Context) error {
 		}
 		roots, err := s.cfg.Roots(ctx, o)
 		if err != nil {
-			if err := s.anomaly(ctx, o, domain.GuardianSourceMissing, now); err != nil {
+			if err := s.anomaly(ctx, o, domain.GuardianSourceState{}, domain.GuardianSourceMissing, now); err != nil {
 				return err
 			}
 			continue
 		}
 		if len(roots) == 0 {
-			if err := s.anomaly(ctx, o, domain.GuardianSourceMissing, now); err != nil {
+			if err := s.anomaly(ctx, o, domain.GuardianSourceState{}, domain.GuardianSourceMissing, now); err != nil {
 				return err
 			}
 			continue
@@ -145,7 +145,7 @@ func (s *Service) collectGroup(ctx context.Context, roots []string, owners []dom
 			required = append(required, c.ThreadID)
 		}
 	}
-	result := discovery.scan(ctx, roots, s.cfg.DiscoveryBudget, required, now)
+	result := discovery.scan(ctx, roots, s.cfg.DiscoveryBudget, required)
 	ids := make([]string, 0, len(result.index))
 	for id, a := range result.index {
 		if a.meta.Guardian {
@@ -154,17 +154,19 @@ func (s *Service) collectGroup(ctx context.Context, roots []string, owners []dom
 	}
 	sort.Strings(ids)
 	for _, o := range owners {
+		inventory := map[domain.GuardianCode]int64{}
 		if result.gap {
-			if err := s.anomaly(ctx, o, domain.GuardianCoverageGap, now); err != nil {
-				return err
-			}
+			inventory[domain.GuardianCoverageGap] = 1
+		}
+		if err := s.observe(ctx, o, domain.GuardianSourceState{}, inventory, now); err != nil {
+			return err
 		}
 		known := map[string]bool{}
 		for _, c := range cursors[o.EpochID] {
 			known[c.ThreadID] = true
 			if !result.gap {
 				if _, ok := result.index[c.ThreadID]; !ok {
-					if err := s.anomaly(ctx, o, domain.GuardianSourceMissing, now); err != nil {
+					if err := s.anomaly(ctx, o, c.SourceState(), domain.GuardianSourceMissing, now); err != nil {
 						return err
 					}
 				}
@@ -177,13 +179,13 @@ func (s *Service) collectGroup(ctx context.Context, roots []string, owners []dom
 				continue
 			}
 			if code != "" {
-				if err := s.anomaly(ctx, o, code, now); err != nil {
+				if err := s.anomaly(ctx, o, a.state, code, now); err != nil {
 					return err
 				}
 				continue
 			}
-			if a.meta.Version != "0.146.0" && a.meta.Version != "0.166.0" {
-				if err := s.anomaly(ctx, o, domain.GuardianUnsupportedVersion, now); err != nil {
+			if !supportedVersion(a.meta.Version) {
+				if err := s.anomaly(ctx, o, a.state, domain.GuardianUnsupportedVersion, now); err != nil {
 					return err
 				}
 				continue
@@ -229,6 +231,9 @@ func ownerCode(h header, root string, index map[string]artifact, conflicts map[s
 		}
 		a, ok := index[h.Parent]
 		if !ok {
+			if wasOwned {
+				return true, domain.GuardianOwnerUnresolved
+			}
 			return false, ""
 		}
 		h = a.meta
@@ -239,8 +244,27 @@ func ownerCode(h header, root string, index map[string]artifact, conflicts map[s
 	return false, ""
 }
 
-func (s *Service) anomaly(ctx context.Context, o domain.GuardianOwner, code domain.GuardianCode, now time.Time) error {
-	return s.store.RecordGuardianAnomaly(ctx, o.SessionID, code, now)
+func (s *Service) anomaly(ctx context.Context, o domain.GuardianOwner, state domain.GuardianSourceState, code domain.GuardianCode, now time.Time) error {
+	return s.observe(ctx, o, state, map[domain.GuardianCode]int64{code: 1}, now)
+}
+
+func (s *Service) observe(ctx context.Context, owner domain.GuardianOwner, source domain.GuardianSourceState, codes map[domain.GuardianCode]int64, now time.Time) error {
+	err := s.store.ObserveGuardianAnomalies(ctx, owner, source, codes, now)
+	if errors.Is(err, domain.ErrGuardianDisabled) {
+		return nil
+	}
+	return err
+}
+
+// Rev2 has no fixed version list. These observed versions share the same
+// metadata whitelist fixtures; future versions remain explicitly unsupported.
+func supportedVersion(version string) bool {
+	switch version {
+	case "0.146.0", "0.164.0", "0.165.0", "0.166.0":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact, now time.Time) error {
@@ -250,19 +274,19 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 	}
 	f, err := openFile(a.root, a.path)
 	if err != nil {
-		return s.anomaly(ctx, o, domain.GuardianSourceMissing, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
 	defer func() { _ = f.Close() }()
 	identity, err := usagesvc.SourceIdentityFromFile(f)
 	if err != nil {
-		return s.anomaly(ctx, o, domain.GuardianSourceMissing, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
 	// A kernel inode may be reused after deletion. The bounded provider header
 	// timestamp distinguishes that new source without retaining its native ID.
 	identity += "@" + a.meta.CreatedAt.Format(time.RFC3339Nano)
 	info, err := f.Stat()
 	if err != nil {
-		return s.anomaly(ctx, o, domain.GuardianSourceMissing, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
 	b := domain.GuardianBatch{Owner: o, Thread: domain.GuardianThread{ProviderAt: a.meta.CreatedAt, ThreadID: a.meta.ID, ParentID: a.meta.Parent, CLIVersion: a.meta.Version}, Expected: cur, Cursor: cur, Anomalies: map[domain.GuardianCode]int64{}}
 	position, err := s.store.GuardianPosition(ctx, o.EpochID, identity)
@@ -273,17 +297,20 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 	if cur.FileIdentity == "" && position.FileIdentity != "" {
 		b.Cursor = position
 	}
+	b.Cursor.ThreadID = a.meta.ID
 
 	b.Cursor.UpdatedAt = now
 	if b.Cursor.FileIdentity != "" && b.Cursor.FileIdentity != identity {
 		b.Cursor.Generation++
 		b.Cursor.Offset = 0
+		b.Cursor.ReadStartOffset = 0
 		b.Cursor.Discarding = false
 		b.Anomalies[domain.GuardianSourceRotated]++
 	}
 	if info.Size() < b.Cursor.Offset {
 		b.Cursor.Generation++
 		b.Cursor.Offset = 0
+		b.Cursor.ReadStartOffset = 0
 		b.Cursor.Discarding = false
 		b.Anomalies[domain.GuardianSourceTruncated]++
 	}
@@ -292,52 +319,42 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 	reader := bufio.NewReaderSize(f, maxLine+1)
 	line, err := reader.ReadSlice('\n')
 	if err != nil || len(line) > maxLine {
-		return s.anomaly(ctx, o, domain.GuardianInvalidMetadata, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianInvalidMetadata, now)
 	}
 	actual, ok := parseHeader(line)
 	if !ok || actual != a.meta {
-		return s.anomaly(ctx, o, domain.GuardianSourceConflict, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianSourceConflict, now)
 	}
-	// Size alone cannot detect truncate-and-regrow on the same inode. When the
-	// resuming, verify a retained immutable request at its recorded offset.
-	// Missing/expired evidence is an explicit gap, never proof of continuity.
-	if b.Cursor.Offset > int64(len(line)) {
-		checkpoint, found, err := s.store.GuardianCheckpoint(ctx, b.Cursor)
+	if b.Cursor.ReadStartOffset == 0 {
+		b.Cursor.ReadStartOffset = int64(len(line))
+	}
+	if b.Cursor.Offset > b.Cursor.ReadStartOffset {
+		changed, err := s.replayPrefix(ctx, f, &b, b.Cursor.SourceSize != info.Size() || !b.Cursor.SourceModifiedAt.Equal(info.ModTime()))
 		if err != nil {
 			return err
 		}
-		if found && !matchesCheckpoint(f, checkpoint, b) {
+		if changed {
 			b.Cursor.Generation++
-			b.Cursor.Offset = int64(len(line))
+			b.Cursor.Offset = b.Cursor.ReadStartOffset
 			b.Cursor.Discarding = false
 			b.Anomalies[domain.GuardianSourceTruncated]++
-		} else if !found && (b.Cursor.SourceSize != info.Size() || !b.Cursor.SourceModifiedAt.Equal(info.ModTime())) {
-			b.Anomalies[domain.GuardianCoverageGap]++
-			// An unproven append must not replay bytes before the enable boundary.
-			if info.Size() <= b.Cursor.SourceSize {
-				b.Cursor.Generation++
-				b.Cursor.Offset = int64(len(line))
-				b.Cursor.Discarding = false
-			}
 		}
 	}
 	b.Cursor.SourceSize = info.Size()
 	b.Cursor.SourceModifiedAt = info.ModTime().UTC()
-	if b.Expected.FileIdentity == "" && b.Cursor.Offset == 0 {
-		// Existing bytes are an enable boundary, never a historical backfill. A
-		// trailing partial line is consumed only after it becomes a full record.
-		// Records are independently timestamp-gated even on new/rotated sources.
+	if b.Cursor.Offset == 0 {
 		b.Cursor.Offset = int64(len(line))
-		if !o.AcceptsProviderTime(a.meta.CreatedAt, now) {
+		b.Cursor.ReadStartOffset = int64(len(line))
+		// Preserve the original enable fence when an older source is replaced
+		// or shrunk. A fresh provider header can prove a newly readable source.
+		if !o.AcceptsProviderTime(a.meta.CreatedAt, now) && (b.Expected.FileIdentity == "" || b.Expected.ReadStartOffset > int64(len(line))) {
 			b.Cursor.Offset = info.Size()
+			b.Cursor.ReadStartOffset = info.Size()
 			b.Anomalies[domain.GuardianCoverageGap]++
 		}
 	}
-	if b.Cursor.Offset == 0 {
-		b.Cursor.Offset = int64(len(line))
-	}
 	if _, err := f.Seek(b.Cursor.Offset, io.SeekStart); err != nil {
-		return s.anomaly(ctx, o, domain.GuardianSourceMissing, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 	}
 	reader.Reset(f)
 	startOffset := b.Cursor.Offset
@@ -367,7 +384,7 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 			continue
 		}
 		if err != nil {
-			return s.anomaly(ctx, o, domain.GuardianSourceMissing, now)
+			return s.anomaly(ctx, o, a.state, domain.GuardianSourceMissing, now)
 		}
 		b.Cursor.Offset += int64(len(line))
 		if b.Cursor.Discarding {
@@ -381,33 +398,11 @@ func (s *Service) ingest(ctx context.Context, o domain.GuardianOwner, a artifact
 	}
 	// Detect an in-place truncation while reading before committing its cursor.
 	if after, err := f.Stat(); err != nil || after.Size() < b.Cursor.Offset {
-		return s.anomaly(ctx, o, domain.GuardianSourceTruncated, now)
+		return s.anomaly(ctx, o, a.state, domain.GuardianSourceTruncated, now)
 	}
 	return s.store.ApplyGuardianBatch(ctx, b)
 }
 
-// matchesCheckpoint reads at most one bounded line and compares only the typed
-// request whitelist. No provider bytes, content hashes or paths are persisted.
-func matchesCheckpoint(f io.ReadSeeker, expected domain.GuardianRequest, batch domain.GuardianBatch) bool {
-	if _, err := f.Seek(expected.SourceOffset, io.SeekStart); err != nil {
-		return false
-	}
-	line, err := bufio.NewReaderSize(io.LimitReader(f, maxLine+1), 4096).ReadBytes('\n')
-	if err != nil || len(line) > maxLine {
-		return false
-	}
-	probe := domain.GuardianBatch{Owner: batch.Owner, Thread: batch.Thread, Cursor: batch.Cursor, Anomalies: map[domain.GuardianCode]int64{}}
-	// Historical retained evidence remains useful across enable boundaries.
-	probe.Owner.EnabledAt = time.Time{}
-	probe.Owner.AccountBoundAt = time.Time{}
-	probe.Owner.CleanedBefore = time.Time{}
-	appendRecord(&probe, line, expected.SourceOffset)
-	if len(probe.Requests) != 1 {
-		return false
-	}
-	got := probe.Requests[0]
-	return got.ThreadID == expected.ThreadID && got.TurnID == expected.TurnID && got.ResponseID == expected.ResponseID && got.RootTurnID == expected.RootTurnID && got.ProviderAt.Equal(expected.ProviderAt) && sameTokens(got.Tokens, expected.Tokens)
-}
 func sameTokens(a, b domain.GuardianTokens) bool {
 	equal := func(x, y *int64) bool { return x == nil && y == nil || x != nil && y != nil && *x == *y }
 	return equal(a.Input, b.Input) && equal(a.Cached, b.Cached) && equal(a.CacheWrite, b.CacheWrite) && equal(a.Output, b.Output) && equal(a.Reasoning, b.Reasoning) && equal(a.Total, b.Total)
