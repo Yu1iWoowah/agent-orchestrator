@@ -322,9 +322,9 @@ func settingsError(err error) error {
 	case errors.Is(err, ports.ErrAgentSettingsInvalid):
 		return apierr.Invalid("AGENT_SETTINGS_INVALID", "The requested settings are invalid", nil)
 	case errors.Is(err, ports.ErrAgentSettingsUnsupported):
-		return apierr.Invalid("AGENT_SETTINGS_UNSUPPORTED", "The provider does not support this selection", nil)
+		return apierr.Invalid("AGENT_SETTINGS_UNSUPPORTED", "The provider does not support this selection", map[string]any{"reasonCode": "selection_unsupported"})
 	case errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable):
-		return apierr.Unavailable("AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", "Fresh settings capabilities are unavailable")
+		return apierr.New(apierr.KindUnavailable, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", "Fresh settings capabilities are unavailable", map[string]any{"reasonCode": "capabilities_unavailable"})
 	default:
 		// Unknown storage/provider failures must not carry native diagnostics
 		// into the HTTP access log or capture pipeline.

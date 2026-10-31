@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
@@ -443,7 +445,13 @@ func writeReviewError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	switch {
-	case errors.Is(err, ports.ErrAgentSettingsConflict), errors.Is(err, ports.ErrAgentSettingsUnsupported), errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable), errors.Is(err, ports.ErrAgentSettingsGrantInvalid), errors.Is(err, ports.ErrAgentSettingsInvalid):
+	case errors.Is(err, ports.ErrAgentSettingsUnsupported):
+		slog.WarnContext(r.Context(), "Review settings validation failed", "reasonCode", "selection_unsupported", "request_id", reqid.FromContext(r.Context()))
+		envelope.WriteError(w, r, agentsettings.SettingsError(ports.ErrAgentSettingsUnsupported))
+	case errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable):
+		slog.WarnContext(r.Context(), "Review settings validation failed", "reasonCode", "capabilities_unavailable", "request_id", reqid.FromContext(r.Context()))
+		envelope.WriteError(w, r, agentsettings.SettingsError(ports.ErrAgentSettingsCapabilitiesUnavailable))
+	case errors.Is(err, ports.ErrAgentSettingsConflict), errors.Is(err, ports.ErrAgentSettingsGrantInvalid), errors.Is(err, ports.ErrAgentSettingsInvalid):
 		envelope.WriteError(w, r, agentsettings.SettingsError(err))
 	case errors.Is(err, reviewsvc.ErrInvalid):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "REVIEW_INVALID", err.Error(), nil)

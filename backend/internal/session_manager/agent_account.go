@@ -240,7 +240,7 @@ func (m *Manager) preflightAccountModels(ctx context.Context, rec domain.Session
 		return nil
 	}
 	covers := func(catalog ports.AgentModelCatalog) bool {
-		if savedCatalogCovers(catalog, config.Model, config.Effort) {
+		if savedCatalogCovers(rec.Harness, catalog, config.Model, config.Effort) {
 			return true
 		}
 		// Direct-entry models have no advertised capabilities. Accept the name,

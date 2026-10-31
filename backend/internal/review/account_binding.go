@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/modelcapabilities"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -62,8 +63,9 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 	if explicitFast && !domain.AgentHarness(harness).SupportsFastMode() {
 		return "", ports.ErrAgentSettingsUnsupported
 	}
-	// New passes qualify every selected field. Legacy native-history restore
-	// retains its old behavior without turning that cache into admission proof.
+	// New passes qualify every selected field. Model/effort admission may use
+	// same-input last-known-good evidence after a failed refresh; typed mutation
+	// and explicit fast still require fresh successful discovery.
 	hasSelection := config.Model != "" || config.Effort != "" || explicitFast
 	requireSuccess := purpose == reviewerCatalogMutation || explicitFast || purpose == reviewerCatalogAdmission && hasSelection
 	if e.models == nil {
@@ -84,7 +86,7 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	catalog, err := e.models.ModelCatalog(ctx, string(harness), scope, false)
-	if err != nil || catalog.InputFingerprint != fingerprint || validateReviewerCatalog(catalog, config, requireSuccess, time.Now()) != nil {
+	if err != nil || catalog.InputFingerprint != fingerprint || validateReviewerCatalog(harness, catalog, config, requireSuccess, time.Now()) != nil {
 		catalog, err = e.models.ModelCatalog(ctx, string(harness), scope, true)
 	}
 	if err != nil {
@@ -96,7 +98,18 @@ func (e *Engine) reviewerModelProof(ctx context.Context, harness domain.Reviewer
 	if catalog.InputFingerprint != fingerprint {
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
-	if err := validateReviewerCatalog(catalog, config, requireSuccess, time.Now()); err != nil {
+	now := time.Now()
+	allowLastKnownGood := purpose != reviewerCatalogMutation && !explicitFast && catalog.Stale && catalog.RefreshState == "error" &&
+		catalog.LastSuccessAt != nil && !catalog.LastSuccessAt.IsZero() && !catalog.LastSuccessAt.After(now)
+	if allowLastKnownGood {
+		// A stale catalog must cover the selection itself. Its custom-entry
+		// policy cannot stand in for discovery of an unlisted model.
+		catalog.AllowCustom = false
+		err = validateReviewerCatalogSelection(harness, catalog, config)
+	} else {
+		err = validateReviewerCatalog(harness, catalog, config, requireSuccess, now)
+	}
+	if err != nil {
 		return "", err
 	}
 	current, err := e.models.CatalogFingerprint(ctx, string(harness), scope)
@@ -139,16 +152,24 @@ func (e *Engine) validateReviewerFields(ctx context.Context, harness domain.Revi
 	return nil
 }
 
-func validateReviewerCatalog(catalog ports.AgentModelCatalog, config domain.AgentConfig, requireSuccess bool, now time.Time) error {
+func validateReviewerCatalog(harness domain.ReviewerHarness, catalog ports.AgentModelCatalog, config domain.AgentConfig, requireSuccess bool, now time.Time) error {
 	if requireSuccess && (catalog.LastSuccessAt == nil || domain.AgentModelCatalogNeedsRevalidation(*catalog.LastSuccessAt, now)) {
 		return ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	if catalog.Stale || catalog.RefreshError != "" || catalog.RefreshState != "" && catalog.RefreshState != "idle" {
 		return ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
+	return validateReviewerCatalogSelection(harness, catalog, config)
+}
+
+func validateReviewerCatalogSelection(harness domain.ReviewerHarness, catalog ports.AgentModelCatalog, config domain.AgentConfig) error {
 	for _, model := range catalog.Models {
 		if model.ID == config.Model || config.Model == "" && model.IsDefault {
-			if config.Effort != "" && !slices.Contains(model.Efforts, config.Effort) {
+			efforts, known := modelcapabilities.Efforts(domain.AgentHarness(harness), catalog.Models, model)
+			if config.Effort != "" && !known {
+				return ports.ErrAgentSettingsCapabilitiesUnavailable
+			}
+			if config.Effort != "" && !slices.Contains(efforts, config.Effort) {
 				return ports.ErrAgentSettingsUnsupported
 			}
 			if config.FastMode == domain.AgentFastOn && !model.SupportsFast {

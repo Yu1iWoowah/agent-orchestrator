@@ -34,7 +34,7 @@ func TestReviewerStrictCatalogNeedsLastSuccessfulEvidence(t *testing.T) {
 	}
 }
 
-func TestReviewerAdmissionCatalogNeedsLastSuccessfulEvidence(t *testing.T) {
+func TestReviewerAdmissionWithoutRefreshFailureNeedsFreshEvidence(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
 		name string
@@ -91,7 +91,7 @@ func TestReviewerCatalogUsesOwnerCalendarDayRule(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			catalog := ports.AgentModelCatalog{LastSuccessAt: &tc.last, Models: []ports.AgentModelInfo{{ID: "review-model", SupportsFast: true}}}
-			err := validateReviewerCatalog(catalog, domain.AgentConfig{Model: "review-model", FastMode: domain.AgentFastOn}, true, tc.now)
+			err := validateReviewerCatalog(domain.ReviewerCodex, catalog, domain.AgentConfig{Model: "review-model", FastMode: domain.AgentFastOn}, true, tc.now)
 			if (err != nil) != tc.stale {
 				t.Fatalf("calendar evidence: %v, stale=%v", err, tc.stale)
 			}
@@ -99,7 +99,7 @@ func TestReviewerCatalogUsesOwnerCalendarDayRule(t *testing.T) {
 	}
 }
 
-func TestNewReviewerModelEffortRequiresSuccessfulCatalog(t *testing.T) {
+func TestNewReviewerModelEffortRejectsCacheWithoutSuccessfulDiscovery(t *testing.T) {
 	for _, harness := range []domain.ReviewerHarness{domain.ReviewerCodex, domain.ReviewerClaudeCode} {
 		for _, selection := range []struct {
 			name   string

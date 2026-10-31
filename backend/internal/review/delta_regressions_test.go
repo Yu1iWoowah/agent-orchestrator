@@ -214,7 +214,7 @@ func TestPinnedRestoreWithoutNativeHistoryRequiresAdmission(t *testing.T) {
 				coldLaunch := &fakeLauncher{handle: "new-pane", agentSessionID: "new-native"}
 				cold := newEngineForTest(store, store, prAt("head"), store, coldLaunch)
 				cold.accounts = &pinnedTestReviewAccount{store: store, defaultID: "account-B"}
-				cold.models = fixedReviewerCatalog{catalog: ports.AgentModelCatalog{InputFingerprint: "current-v1", RefreshState: "idle", WarningCode: ports.ModelCatalogWarningAuthRequired, Models: []ports.AgentModelInfo{{ID: "review-model", Efforts: []string{"high"}}}}}
+				cold.models = fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{InputFingerprint: "current-v1", RefreshState: "idle", WarningCode: ports.ModelCatalogWarningAuthRequired, Models: []ports.AgentModelInfo{{ID: "review-model", Efforts: []string{"high"}}}}}
 				result, err := cold.RestoreReviewer(ctx, worker.ID)
 				if !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) || result.Restored || coldLaunch.restored {
 					t.Fatalf("pinned fresh restore bypassed qualification: result=%+v launch=%+v err=%v", result, coldLaunch, err)
@@ -224,10 +224,13 @@ func TestPinnedRestoreWithoutNativeHistoryRequiresAdmission(t *testing.T) {
 				if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(runsBefore, runsAfter) || after.Owner.AccountID != "account-A" {
 					t.Fatalf("rejection changed owner/pin/pass: before=%+v after=%+v", before, after)
 				}
-				cold.models = successfulReviewerModelCatalog("review-model", "high")
+				cold.models = fixedReviewerCatalog{currentFingerprint: "current-v1", catalog: ports.AgentModelCatalog{
+					InputFingerprint: "current-v1", LastSuccessAt: new(time.Now().Add(-24 * time.Hour)), Stale: true, RefreshState: "error", RefreshError: "discovery unavailable",
+					Models: []ports.AgentModelInfo{{ID: "review-model", Efforts: []string{"high"}}},
+				}}
 				result, err = cold.RestoreReviewer(ctx, worker.ID)
 				if err != nil || !result.Restored || !coldLaunch.restored || coldLaunch.gotSpec.PinnedSettings == nil || *coldLaunch.gotSpec.PinnedSettings != *before.Settings {
-					t.Fatalf("successful catalog restore lost admitted pin: result=%+v launch=%+v err=%v", result, coldLaunch, err)
+					t.Fatalf("LKG-qualified restore lost admitted pin: result=%+v launch=%+v err=%v", result, coldLaunch, err)
 				}
 				// Once native history exists, its pinned restore remains available without discovery.
 				cold.models = nil

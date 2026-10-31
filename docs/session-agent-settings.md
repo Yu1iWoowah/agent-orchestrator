@@ -377,13 +377,18 @@ or configuring an idle reviewer leaves another harness's active pass and handle
 alone; changing the selected active reviewer still returns a conflict. Fixed
 reviewer sandbox/tool restrictions remain in force.
 
-Admission of a new pass with model or effort selected requires a matching
-account-scoped catalog with a last successful discovery that is still fresh,
-even when fast is `default`. Fetched or validated timestamps alone, including
+Admission of a new pass with model or effort selected first refreshes an
+unqualified account-scoped catalog. If discovery fails and returns a stale
+last-known-good catalog for the current input fingerprint, admission may use
+its covered model/effort choices (user decision, 2026-10-31). The catalog remains
+marked stale; it must carry a real past successful discovery. An unlisted custom
+model or unknown alias effort is not covered. A known unsupported effort still
+uses the settings unsupported error. Explicit fast and settings mutation retain
+the fresh-success requirement. Fetched or validated timestamps alone, including
 an idle authentication-required cache, are not successful evidence. Failure of
 this initial qualification rejects admission before saving a preference/pass
 snapshot or launching a reviewer. An owner left by failed initial qualification
-can retry or change its initial choice once discovery succeeds, provided it still
+can retry or change its initial choice once qualification succeeds, provided it still
 has no pass or native launch history. This includes non-account harnesses and
 retains any established fixed account binding. Repeating the already-resolved
 worker model/mode on an unpinned legacy reviewer is also ordinary admission,
@@ -419,7 +424,7 @@ Grants expire after 24 hours; they do not renew in a running provider process.
 
 | Surface | Declared support and limits |
 | --- | --- |
-| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Strict/fast proof requires the last successful discovery to remain fresh under the catalog owner’s calendar-day rule; fetched/validated timestamps alone do not qualify. Native fake-wire contracts also retain fixed reviewer permissions. |
+| Codex / Claude reviewer launch | Own model/effort/fast, with account-scoped catalog and current input fingerprint. Model/effort admission allows a covering last-known-good catalog after refresh failure; strict mutation/fast proof requires the last successful discovery to remain fresh under the catalog owner’s calendar-day rule; fetched/validated timestamps alone do not qualify. Native fake-wire contracts also retain fixed reviewer permissions. |
 | Existing reviewer next-pass mutation | Stable review owner with recorded preference, fixed U3 binding and complete native/generation identity. Active passes conflict. Legacy unknown preferences are not reconstructed from worker settings. |
 | Other reviewer launch adapters | Only fields declared by the adapter config spec and accepted by its catalog. Catalog variants alone do not declare effort or fast support. |
 | Other harness reconfigure | No generic hot-reconfigure or account binding is inferred from a model launch flag. Missing settings/runtime/account capability remains unsupported or unavailable. |
