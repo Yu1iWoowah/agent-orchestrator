@@ -155,13 +155,15 @@ type GuardianTurnModel struct {
 
 // GuardianCursor is a metadata-only read position without provider content.
 type GuardianCursor struct {
-	EpochID      int64
-	ThreadID     string
-	Generation   int64
-	Offset       int64
-	FileIdentity string
-	Discarding   bool
-	UpdatedAt    time.Time
+	SourceSize       int64
+	SourceModifiedAt time.Time
+	EpochID          int64
+	ThreadID         string
+	Generation       int64
+	Offset           int64
+	FileIdentity     string
+	Discarding       bool
+	UpdatedAt        time.Time
 }
 
 // GuardianBatch commits facts and both source positions as one transaction.

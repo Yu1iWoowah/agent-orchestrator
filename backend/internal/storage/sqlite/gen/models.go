@@ -560,13 +560,15 @@ type GuardianAnomaly struct {
 }
 
 type GuardianCursor struct {
-	EpochID      int64
-	ThreadID     string
-	Generation   int64
-	ByteOffset   int64
-	FileIdentity string
-	Discarding   int64
-	UpdatedAt    time.Time
+	EpochID          int64
+	ThreadID         string
+	Generation       int64
+	ByteOffset       int64
+	SourceSize       int64
+	SourceModifiedAt sql.NullTime
+	FileIdentity     string
+	Discarding       int64
+	UpdatedAt        time.Time
 }
 
 type GuardianEpoch struct {
@@ -579,12 +581,14 @@ type GuardianEpoch struct {
 }
 
 type GuardianPosition struct {
-	EpochID      int64
-	FileIdentity string
-	Generation   int64
-	ByteOffset   int64
-	Discarding   int64
-	UpdatedAt    time.Time
+	EpochID          int64
+	FileIdentity     string
+	Generation       int64
+	ByteOffset       int64
+	SourceSize       int64
+	SourceModifiedAt sql.NullTime
+	Discarding       int64
+	UpdatedAt        time.Time
 }
 
 type GuardianProjectPolicy struct {

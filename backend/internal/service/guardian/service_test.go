@@ -252,6 +252,8 @@ func TestA4BudgetVersionsAndInvalidFields(t *testing.T) {
 	}
 
 	f.svc.cfg.DiscoveryBudget = 1
+	f.write("new-a", f.meta("new-a", "root", true, f.base))
+	f.write("new-b", f.meta("new-b", "root", true, f.base))
 	f.collect()
 	if f.codes()[domain.GuardianCoverageGap] < 2 {
 		t.Fatal("discovery budget silent")
@@ -405,8 +407,8 @@ func TestA1A4NestedLineageAndOwnerConflicts(t *testing.T) {
 	}
 	f.write("guardian", f.meta("guardian", "missing", true, f.base))
 	f.collect()
-	if f.codes()[domain.GuardianOwnerUnresolved] == 0 {
-		t.Fatal("unknown lineage silent")
+	if f.codes()[domain.GuardianOwnerUnresolved] != 0 {
+		t.Fatal("unattributed broken chain counted for owner")
 	}
 	f.write("guardian", f.meta("guardian", "guardian", true, f.base))
 	f.collect()
@@ -514,7 +516,8 @@ func TestA4OversizeBoundAndSymlinkConfinement(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(f.root, "link.jsonl")); err != nil {
 		t.Skip("symlinks unavailable")
 	}
-	index, _, _ := discover(context.Background(), []string{f.root}, 4096)
+	result := (&headerDiscovery{}).scan(context.Background(), []string{f.root}, 4096, nil, f.now)
+	index := result.index
 	if _, ok := index["escape"]; ok {
 		t.Fatal("followed escaping symlink")
 	}
@@ -701,8 +704,8 @@ func TestA4PollingAndModelReplayDoNotRewriteRequestHistory(t *testing.T) {
 		f.collect()
 		var count int
 		must(t, f.db.QueryRow("SELECT count(*) FROM change_log WHERE seq>?", seq).Scan(&count))
-		if count != 1 {
-			t.Fatalf("poll/model replay produced %d CDC events, want only thread last_seen", count)
+		if count != 0 {
+			t.Fatalf("poll/model replay produced %d CDC events, want none", count)
 		}
 	}
 }
@@ -747,5 +750,175 @@ func TestA1A9EnableBoundaryInclusivePurgeFloorExclusive(t *testing.T) {
 	f.collect()
 	if len(f.requests()) != 1 {
 		t.Fatal("post-purge request lost")
+	}
+}
+
+func TestSharedHistoryCollectsOnlyEachOwnersGuardians(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	ctx := context.Background()
+	second, err := f.store.CreateSession(ctx, domain.SessionRecord{ProjectID: "project", Kind: domain.KindWorker, Harness: domain.HarnessCodex, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: f.base}, Metadata: domain.SessionMetadata{AgentSessionID: "root-2"}, CreatedAt: f.base, UpdatedAt: f.base})
+	must(t, err)
+	must(t, f.store.BindSessionAgentAccount(ctx, second.ID, domain.AgentAccountProviderCodex, domain.DeviceAgentAccountID(domain.AgentAccountProviderCodex), f.base.Add(-time.Minute)))
+	_, err = f.store.UpsertUsageBinding(ctx, domain.UsageBindingRecord{SessionID: second.ID, Harness: domain.HarnessCodex, NativeRootID: "root-2", State: domain.UsageBindingActive, UpdatedAt: f.base})
+	must(t, err)
+	f.write("root-2", f.meta("root-2", "", false, f.base))
+	f.write("unclaimed", f.meta("unclaimed", "", false, f.base))
+	f.write("guardian", f.meta("guardian", "root", true, f.base)+f.request("r1", "t1", 100, 20))
+	for _, pair := range [][2]string{{"guardian-2", "root-2"}, {"unclaimed-guardian", "unclaimed"}, {"broken-guardian", "missing"}} {
+		raw := strings.ReplaceAll(f.request("r2", "t2", 100, 20), `"thread_id":"guardian"`, `"thread_id":"`+pair[0]+`"`)
+		f.write(pair[0], f.meta(pair[0], pair[1], true, f.base)+raw)
+	}
+	for range 3 {
+		f.collect()
+		for _, o := range f.owners() {
+			requests, err := f.store.GuardianRequests(ctx, o.EpochID)
+			must(t, err)
+			want := "guardian"
+			if o.SessionID == second.ID {
+				want = "guardian-2"
+			}
+			if len(requests) != 1 || requests[0].ThreadID != want {
+				t.Fatalf("owner %s requests=%+v", o.SessionID, requests)
+			}
+			codes, err := f.store.GuardianAnomalies(ctx, o.SessionID)
+			must(t, err)
+			if codes[domain.GuardianOwnerConflict] != 0 || codes[domain.GuardianOwnerUnresolved] != 0 {
+				t.Fatalf("unrelated lineage counted for %s: %+v", o.SessionID, codes)
+			}
+		}
+		f.now = f.now.Add(time.Minute)
+	}
+}
+
+func TestDiscoveryBudgetPrioritizesLatestGuardianAndCachesHeaders(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	old := filepath.Join(f.root, "2025", "01", "01")
+	recent := filepath.Join(f.root, f.base.Format("2006/01/02"))
+	must(t, os.MkdirAll(old, 0700))
+	must(t, os.MkdirAll(recent, 0700))
+	for i := range 6000 {
+		id := fmt.Sprintf("old-%04d", i)
+		path := filepath.Join(old, "rollout-"+id+".jsonl")
+		must(t, os.WriteFile(path, []byte(f.meta(id, "", false, f.base.Add(-400*24*time.Hour))), 0600))
+		// A copied old archive can have a newer mtime than today's rollout.
+		must(t, os.Chtimes(path, f.now, f.now))
+	}
+	must(t, os.WriteFile(filepath.Join(recent, "rollout-guardian.jsonl"), []byte(f.meta("guardian", "root", true, f.base)+f.request("latest", "t", 100, 20)), 0600))
+	f.collect()
+	if len(f.requests()) != 1 {
+		t.Fatal("old history exhausted budget before latest guardian")
+	}
+	if f.codes()[domain.GuardianCoverageGap] == 0 {
+		t.Fatal("cold partial inventory claimed complete coverage")
+	}
+	f.collect()
+	if len(f.svc.discovery) != 1 {
+		t.Fatal("unexpected discovery root groups")
+	}
+	for _, d := range f.svc.discovery {
+		result := d.scan(context.Background(), []string{f.root}, 4096, []string{"root"}, f.now)
+		if result.gap || result.reads != 0 || len(result.index) != 6002 {
+			t.Fatalf("warm inventory: gap=%v reads=%d entries=%d", result.gap, result.reads, len(result.index))
+		}
+	}
+}
+
+func TestResponseReplayAndNoopWritesEmitNoCDC(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	raw := f.request("r", "t", 100, 20)
+	f.write("guardian", f.meta("guardian", "root", true, f.base)+raw+raw+f.model("t", "gpt-5.4-mini"))
+	f.collect()
+	seq, err := f.store.LatestSeq(context.Background())
+	must(t, err)
+	f.now = f.now.Add(time.Minute)
+	f.append("guardian", raw+raw)
+	f.collect()
+	if len(f.requests()) != 1 {
+		t.Fatal("response replay duplicated facts")
+	}
+	latest, err := f.store.LatestSeq(context.Background())
+	must(t, err)
+	if latest != seq {
+		t.Fatal("response replay emitted CDC")
+	}
+	_, err = f.db.Exec("UPDATE guardian_requests SET conflict=conflict")
+	must(t, err)
+	_, err = f.db.Exec("UPDATE guardian_threads SET last_seen_at=last_seen_at")
+	must(t, err)
+	latest, err = f.store.LatestSeq(context.Background())
+	must(t, err)
+	if latest != seq {
+		t.Fatal("unchanged raw UPDATE emitted CDC")
+	}
+}
+
+func TestLineageAnomaliesRequireEvidenceForThisOwner(t *testing.T) {
+	for _, tt := range []struct {
+		name, parent     string
+		nodes            map[string]artifact
+		conflicts, known map[string]bool
+		claims           map[string]int
+		belongs          bool
+		code             domain.GuardianCode
+	}{
+		{name: "own", parent: "root", nodes: map[string]artifact{"root": {meta: header{ID: "root"}}}, belongs: true},
+		{name: "other-owned", parent: "other", nodes: map[string]artifact{"other": {meta: header{ID: "other"}}}, claims: map[string]int{"other": 1}},
+		{name: "unclaimed", parent: "other", nodes: map[string]artifact{"other": {meta: header{ID: "other"}}}},
+		{name: "broken", parent: "absent"},
+		{name: "unknown-cycle", parent: "guardian"},
+		{name: "known-cycle", parent: "guardian", known: map[string]bool{"guardian": true}, belongs: true, code: domain.GuardianOwnerConflict},
+		{name: "own-root-has-parent", parent: "root", nodes: map[string]artifact{"root": {meta: header{ID: "root", Parent: "other"}}}, belongs: true, code: domain.GuardianOwnerConflict},
+		{name: "duplicate-own-header", parent: "root", nodes: map[string]artifact{"root": {meta: header{ID: "root"}}}, conflicts: map[string]bool{"guardian": true}, belongs: true, code: domain.GuardianOwnerConflict},
+		{name: "crossed-claimed-root", parent: "other", nodes: map[string]artifact{"other": {meta: header{ID: "other", Parent: "root"}}, "root": {meta: header{ID: "root"}}}, claims: map[string]int{"other": 1}, belongs: true, code: domain.GuardianOwnerConflict},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := header{ID: "guardian", Parent: tt.parent}
+			if tt.nodes == nil {
+				tt.nodes = map[string]artifact{}
+			}
+			tt.nodes[h.ID] = artifact{meta: h}
+			belongs, code := ownerCode(h, "root", tt.nodes, tt.conflicts, tt.claims, tt.known)
+			if belongs != tt.belongs || code != tt.code {
+				t.Fatalf("belongs=%v code=%s", belongs, code)
+			}
+		})
+	}
+}
+
+func TestCollectSharesOneHistorySnapshotAcrossOwners(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	ctx := context.Background()
+	second, err := f.store.CreateSession(ctx, domain.SessionRecord{ProjectID: "project", Kind: domain.KindWorker, Harness: domain.HarnessCodex, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: f.base}, Metadata: domain.SessionMetadata{AgentSessionID: "root-2"}, CreatedAt: f.base, UpdatedAt: f.base})
+	must(t, err)
+	must(t, f.store.BindSessionAgentAccount(ctx, second.ID, domain.AgentAccountProviderCodex, domain.DeviceAgentAccountID(domain.AgentAccountProviderCodex), f.base.Add(-time.Minute)))
+	_, err = f.store.UpsertUsageBinding(ctx, domain.UsageBindingRecord{SessionID: second.ID, Harness: domain.HarnessCodex, NativeRootID: "root-2", State: domain.UsageBindingActive, UpdatedAt: f.base})
+	must(t, err)
+	f.write("root-2", f.meta("root-2", "", false, f.base))
+	f.write("guardian", f.meta("guardian", "root", true, f.base))
+	f.write("guardian-2", f.meta("guardian-2", "root-2", true, f.base)+strings.ReplaceAll(f.request("r2", "t", 100, 20), `"thread_id":"guardian"`, `"thread_id":"guardian-2"`))
+	calls := 0
+	f.svc.cfg.Roots = func(context.Context, domain.GuardianOwner) ([]string, error) {
+		calls++
+		if calls == 2 {
+			f.append("guardian", f.request("r1", "t", 100, 20))
+		}
+		return []string{f.root}, nil
+	}
+	f.collect()
+	for _, o := range f.owners() {
+		requests, err := f.store.GuardianRequests(ctx, o.EpochID)
+		must(t, err)
+		if len(requests) != 1 {
+			t.Fatalf("owner %s did not see shared snapshot", o.SessionID)
+		}
+	}
+	f.enable(false)
+	f.collect()
+	if len(f.svc.discovery) != 0 {
+		t.Fatal("disabled collection retained header inventory")
 	}
 }

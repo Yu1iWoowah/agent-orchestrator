@@ -14,10 +14,17 @@ import (
 // random epoch is minted: the natural identity is binding + account bound_at.
 func (s *Store) GuardianOwners(ctx context.Context, at time.Time) ([]domain.GuardianOwner, error) {
 	at = at.UTC()
+	candidates, err := s.qr.ListGuardianCandidates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	var out []domain.GuardianOwner
-	err := s.inTx(ctx, "guardian owners", func(q *gen.Queries) error {
+	err = s.inTx(ctx, "guardian owners", func(q *gen.Queries) error {
 		rows, err := q.ListGuardianCandidates(ctx)
 		if err != nil {
 			return err
@@ -44,7 +51,7 @@ func (s *Store) GuardianCursor(ctx context.Context, epoch int64, thread string) 
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.GuardianCursor{EpochID: epoch, ThreadID: thread}, nil
 	}
-	return domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
+	return domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
 }
 
 // ApplyGuardianBatch commits metadata and its independent cursor atomically.
@@ -85,7 +92,7 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if cur.ByteOffset != b.Expected.Offset || cur.Generation != b.Expected.Generation || cur.FileIdentity != b.Expected.FileIdentity || (cur.Discarding != 0) != b.Expected.Discarding || !cur.UpdatedAt.Equal(b.Expected.UpdatedAt) {
+		if cur.SourceSize != b.Expected.SourceSize || !cur.SourceModifiedAt.Time.Equal(b.Expected.SourceModifiedAt) || cur.ByteOffset != b.Expected.Offset || cur.Generation != b.Expected.Generation || cur.FileIdentity != b.Expected.FileIdentity || (cur.Discarding != 0) != b.Expected.Discarding || !cur.UpdatedAt.Equal(b.Expected.UpdatedAt) {
 			return domain.ErrGuardianCursorConflict
 		}
 
@@ -93,7 +100,7 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if position.ByteOffset != b.ExpectedPosition.Offset || position.Generation != b.ExpectedPosition.Generation || position.FileIdentity != b.ExpectedPosition.FileIdentity || (position.Discarding != 0) != b.ExpectedPosition.Discarding || !position.UpdatedAt.Equal(b.ExpectedPosition.UpdatedAt) {
+		if position.SourceSize != b.ExpectedPosition.SourceSize || !position.SourceModifiedAt.Time.Equal(b.ExpectedPosition.SourceModifiedAt) || position.ByteOffset != b.ExpectedPosition.Offset || position.Generation != b.ExpectedPosition.Generation || position.FileIdentity != b.ExpectedPosition.FileIdentity || (position.Discarding != 0) != b.ExpectedPosition.Discarding || !position.UpdatedAt.Equal(b.ExpectedPosition.UpdatedAt) {
 			return domain.ErrGuardianCursorConflict
 		}
 
@@ -136,9 +143,12 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 		if retentionAt.IsZero() || retentionAt.After(b.Cursor.UpdatedAt) {
 			retentionAt = b.Cursor.UpdatedAt
 		}
-		if err := q.PutGuardianThread(ctx, gen.PutGuardianThreadParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, ParentID: b.Thread.ParentID, CliVersion: b.Thread.CLIVersion, RetentionAt: retentionAt, FirstSeenAt: b.Cursor.UpdatedAt, LastSeenAt: b.Cursor.UpdatedAt}); err != nil {
-			return err
+		if errors.Is(err, sql.ErrNoRows) {
+			if err := q.PutGuardianThread(ctx, gen.PutGuardianThreadParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, ParentID: b.Thread.ParentID, CliVersion: b.Thread.CLIVersion, RetentionAt: retentionAt, FirstSeenAt: b.Cursor.UpdatedAt, LastSeenAt: b.Cursor.UpdatedAt}); err != nil {
+				return err
+			}
 		}
+		changed := false
 		for _, m := range b.Models {
 			m.ProviderAt = m.ProviderAt.UTC()
 			if !domain.ValidGuardianID(m.TurnID) || !domain.ValidGuardianModel(m.ModelID) {
@@ -152,9 +162,16 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 			if err != nil {
 				return err
 			}
+			changed = changed || n > 0
 			if n == 0 {
-				if err := addGuardianAnomaly(ctx, q, b.Owner.SessionID, domain.GuardianCoverageGap, 1, b.Cursor.UpdatedAt); err != nil {
+				exists, err := q.GuardianModelExists(ctx, gen.GuardianModelExistsParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, TurnID: m.TurnID})
+				if err != nil {
 					return err
+				}
+				if !exists {
+					if err := addGuardianAnomaly(ctx, q, b.Owner.SessionID, domain.GuardianCoverageGap, 1, b.Cursor.UpdatedAt); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -167,7 +184,15 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 				continue
 			}
 			turns[r.TurnID] = struct{}{}
-			if err := q.InsertGuardianRequest(ctx, gen.InsertGuardianRequestParams{CliVersion: b.Thread.CLIVersion, EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, TurnID: r.TurnID, ResponseID: r.ResponseID, RootTurnID: sql.NullString{String: r.RootTurnID, Valid: r.RootTurnID != ""}, InputTokens: guardianNull(r.Tokens.Input), CachedTokens: guardianNull(r.Tokens.Cached), CacheWriteTokens: guardianNull(r.Tokens.CacheWrite), OutputTokens: guardianNull(r.Tokens.Output), ReasoningTokens: guardianNull(r.Tokens.Reasoning), TotalTokens: guardianNull(r.Tokens.Total), ProviderAt: r.ProviderAt, FirstSeenAt: b.Cursor.UpdatedAt, SourceGeneration: r.SourceGeneration, SourceOffset: r.SourceOffset}); err != nil {
+			n, err := q.InsertGuardianRequest(ctx, gen.InsertGuardianRequestParams{CliVersion: b.Thread.CLIVersion, EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, TurnID: r.TurnID, ResponseID: r.ResponseID, RootTurnID: sql.NullString{String: r.RootTurnID, Valid: r.RootTurnID != ""}, InputTokens: guardianNull(r.Tokens.Input), CachedTokens: guardianNull(r.Tokens.Cached), CacheWriteTokens: guardianNull(r.Tokens.CacheWrite), OutputTokens: guardianNull(r.Tokens.Output), ReasoningTokens: guardianNull(r.Tokens.Reasoning), TotalTokens: guardianNull(r.Tokens.Total), ProviderAt: r.ProviderAt, FirstSeenAt: b.Cursor.UpdatedAt, SourceGeneration: r.SourceGeneration, SourceOffset: r.SourceOffset})
+			if err != nil {
+				return err
+			}
+
+			changed = changed || n > 0
+		}
+		if changed {
+			if err := q.TouchGuardianThread(ctx, gen.TouchGuardianThreadParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, LastSeenAt: b.Cursor.UpdatedAt}); err != nil {
 				return err
 			}
 		}
@@ -183,7 +208,7 @@ func (s *Store) ApplyGuardianBatch(ctx context.Context, b domain.GuardianBatch) 
 				return err
 			}
 		}
-		if err := q.PutGuardianCursor(ctx, gen.PutGuardianCursorParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, FileIdentity: b.Cursor.FileIdentity, Discarding: guardianBool(b.Cursor.Discarding), UpdatedAt: b.Cursor.UpdatedAt}); err != nil {
+		if err := q.PutGuardianCursor(ctx, gen.PutGuardianCursorParams{EpochID: b.Owner.EpochID, ThreadID: b.Thread.ThreadID, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, FileIdentity: b.Cursor.FileIdentity, Discarding: guardianBool(b.Cursor.Discarding), SourceSize: b.Cursor.SourceSize, SourceModifiedAt: sql.NullTime{Time: b.Cursor.SourceModifiedAt, Valid: !b.Cursor.SourceModifiedAt.IsZero()}, UpdatedAt: b.Cursor.UpdatedAt}); err != nil {
 			return err
 		}
 		return putGuardianPosition(ctx, q, b)
@@ -222,7 +247,7 @@ func (s *Store) GuardianRequests(ctx context.Context, epoch int64) ([]domain.Gua
 	}
 	out := make([]domain.GuardianRequest, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, domain.GuardianRequest{CLIVersion: r.CliVersion, EpochID: r.EpochID, ThreadID: r.ThreadID, TurnID: r.TurnID, ResponseID: r.ResponseID, RootTurnID: r.RootTurnID.String, ModelID: r.ModelID.String, Tokens: domain.GuardianTokens{Input: guardianPtr(r.InputTokens), Cached: guardianPtr(r.CachedTokens), CacheWrite: guardianPtr(r.CacheWriteTokens), Output: guardianPtr(r.OutputTokens), Reasoning: guardianPtr(r.ReasoningTokens), Total: guardianPtr(r.TotalTokens)}, ProviderAt: r.ProviderAt, FirstSeenAt: r.FirstSeenAt, SourceGeneration: r.SourceGeneration, SourceOffset: r.SourceOffset, Conflict: r.Conflict != 0})
+		out = append(out, guardianRequest(r))
 	}
 	return out, nil
 }
@@ -240,6 +265,13 @@ func (s *Store) GuardianAnomalies(ctx context.Context, id domain.SessionID) (map
 // CleanupGuardian advances the replay floor before deleting any expiring IDs.
 // It also runs while collection is disabled; no ledger or transcript is touched.
 func (s *Store) CleanupGuardian(ctx context.Context, now time.Time) error {
+	hasState, err := s.qr.HasGuardianCleanupState(ctx)
+	if err != nil {
+		return err
+	}
+	if !hasState {
+		return nil
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	cutoff := now.UTC().Add(-domain.GuardianRetention)
@@ -274,7 +306,7 @@ func (s *Store) GuardianCursors(ctx context.Context, epoch int64) ([]domain.Guar
 	rows, err := s.qr.ListGuardianCursors(ctx, epoch)
 	out := make([]domain.GuardianCursor, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt})
+		out = append(out, domain.GuardianCursor{EpochID: r.EpochID, ThreadID: r.ThreadID, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt})
 	}
 	return out, err
 }
@@ -287,7 +319,7 @@ func guardianBool(v bool) int64 {
 }
 
 func putGuardianPosition(ctx context.Context, q *gen.Queries, b domain.GuardianBatch) error {
-	return q.PutGuardianPosition(ctx, gen.PutGuardianPositionParams{EpochID: b.Owner.EpochID, FileIdentity: b.Cursor.FileIdentity, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, Discarding: guardianBool(b.Cursor.Discarding), UpdatedAt: b.Cursor.UpdatedAt})
+	return q.PutGuardianPosition(ctx, gen.PutGuardianPositionParams{EpochID: b.Owner.EpochID, FileIdentity: b.Cursor.FileIdentity, Generation: b.Cursor.Generation, ByteOffset: b.Cursor.Offset, Discarding: guardianBool(b.Cursor.Discarding), SourceSize: b.Cursor.SourceSize, SourceModifiedAt: sql.NullTime{Time: b.Cursor.SourceModifiedAt, Valid: !b.Cursor.SourceModifiedAt.IsZero()}, UpdatedAt: b.Cursor.UpdatedAt})
 }
 
 // GuardianPosition reads a durable file position that contains no native ID.
@@ -296,5 +328,18 @@ func (s *Store) GuardianPosition(ctx context.Context, epoch int64, identity stri
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.GuardianCursor{EpochID: epoch}, nil
 	}
-	return domain.GuardianCursor{EpochID: r.EpochID, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
+	return domain.GuardianCursor{EpochID: r.EpochID, SourceSize: r.SourceSize, SourceModifiedAt: r.SourceModifiedAt.Time, Generation: r.Generation, Offset: r.ByteOffset, FileIdentity: r.FileIdentity, Discarding: r.Discarding != 0, UpdatedAt: r.UpdatedAt}, err
+}
+
+func guardianRequest(r gen.GuardianRequest) domain.GuardianRequest {
+	return domain.GuardianRequest{CLIVersion: r.CliVersion, EpochID: r.EpochID, ThreadID: r.ThreadID, TurnID: r.TurnID, ResponseID: r.ResponseID, RootTurnID: r.RootTurnID.String, ModelID: r.ModelID.String, Tokens: domain.GuardianTokens{Input: guardianPtr(r.InputTokens), Cached: guardianPtr(r.CachedTokens), CacheWrite: guardianPtr(r.CacheWriteTokens), Output: guardianPtr(r.OutputTokens), Reasoning: guardianPtr(r.ReasoningTokens), Total: guardianPtr(r.TotalTokens)}, ProviderAt: r.ProviderAt, FirstSeenAt: r.FirstSeenAt, SourceGeneration: r.SourceGeneration, SourceOffset: r.SourceOffset, Conflict: r.Conflict != 0}
+}
+
+// GuardianCheckpoint uses only retained immutable facts; expired facts cannot prove continuity.
+func (s *Store) GuardianCheckpoint(ctx context.Context, c domain.GuardianCursor) (domain.GuardianRequest, bool, error) {
+	r, err := s.qr.GetGuardianCheckpoint(ctx, gen.GetGuardianCheckpointParams{EpochID: c.EpochID, ThreadID: c.ThreadID, SourceGeneration: c.Generation, SourceOffset: c.Offset})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.GuardianRequest{}, false, nil
+	}
+	return guardianRequest(r), err == nil, err
 }

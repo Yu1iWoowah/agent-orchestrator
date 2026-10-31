@@ -47,6 +47,8 @@ CREATE TABLE guardian_positions (
  file_identity TEXT NOT NULL CHECK(length(file_identity) BETWEEN 1 AND 128),
  generation INTEGER NOT NULL CHECK(generation>=0),
  byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
+ source_size INTEGER NOT NULL DEFAULT 0 CHECK(source_size>=0),
+ source_modified_at TIMESTAMP,
  discarding INTEGER NOT NULL CHECK(discarding IN (0,1)),
  updated_at TIMESTAMP NOT NULL,
  PRIMARY KEY(epoch_id,file_identity)
@@ -56,6 +58,8 @@ CREATE TABLE guardian_cursors (
  thread_id TEXT NOT NULL,
  generation INTEGER NOT NULL CHECK(generation>=0),
  byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
+ source_size INTEGER NOT NULL DEFAULT 0 CHECK(source_size>=0),
+ source_modified_at TIMESTAMP,
  file_identity TEXT NOT NULL CHECK(length(file_identity)<=128),
 	 discarding INTEGER NOT NULL DEFAULT 0 CHECK(discarding IN (0,1)),
  updated_at TIMESTAMP NOT NULL,
@@ -95,6 +99,7 @@ CREATE TABLE guardian_requests (
  FOREIGN KEY(epoch_id,thread_id) REFERENCES guardian_threads(epoch_id,thread_id) ON DELETE CASCADE
 );
 CREATE INDEX guardian_requests_retention ON guardian_requests(provider_at,first_seen_at);
+CREATE INDEX guardian_requests_checkpoint ON guardian_requests(epoch_id,thread_id,source_generation,source_offset);
 CREATE INDEX guardian_requests_turn ON guardian_requests(epoch_id,thread_id,turn_id);
 CREATE TABLE guardian_anomalies (
  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -111,7 +116,23 @@ CREATE TRIGGER guardian_requests_cdc_insert AFTER INSERT ON guardian_requests BE
 END;
 -- +goose StatementEnd
 -- +goose StatementBegin
-CREATE TRIGGER guardian_requests_cdc_update AFTER UPDATE ON guardian_requests BEGIN
+CREATE TRIGGER guardian_requests_cdc_update AFTER UPDATE ON guardian_requests
+WHEN OLD.cli_version IS NOT NEW.cli_version
+ OR OLD.turn_id IS NOT NEW.turn_id
+ OR OLD.root_turn_id IS NOT NEW.root_turn_id
+ OR OLD.model_id IS NOT NEW.model_id
+ OR OLD.input_tokens IS NOT NEW.input_tokens
+ OR OLD.cached_tokens IS NOT NEW.cached_tokens
+ OR OLD.cache_write_tokens IS NOT NEW.cache_write_tokens
+ OR OLD.output_tokens IS NOT NEW.output_tokens
+ OR OLD.reasoning_tokens IS NOT NEW.reasoning_tokens
+ OR OLD.total_tokens IS NOT NEW.total_tokens
+ OR OLD.provider_at IS NOT NEW.provider_at
+ OR OLD.first_seen_at IS NOT NEW.first_seen_at
+ OR OLD.source_generation IS NOT NEW.source_generation
+ OR OLD.source_offset IS NOT NEW.source_offset
+ OR OLD.conflict IS NOT NEW.conflict
+BEGIN
  INSERT INTO change_log(project_id,session_id,event_type,payload,created_at)
  SELECT s.project_id,s.id,'session_updated',json_object('id',s.id),CURRENT_TIMESTAMP
  FROM guardian_epochs e JOIN sessions s ON s.id=e.session_id WHERE e.id=NEW.epoch_id;
@@ -132,7 +153,13 @@ CREATE TRIGGER guardian_threads_cdc_insert AFTER INSERT ON guardian_threads BEGI
 END;
 -- +goose StatementEnd
 -- +goose StatementBegin
-CREATE TRIGGER guardian_threads_cdc_update AFTER UPDATE ON guardian_threads BEGIN
+CREATE TRIGGER guardian_threads_cdc_update AFTER UPDATE ON guardian_threads
+WHEN OLD.parent_id IS NOT NEW.parent_id
+ OR OLD.cli_version IS NOT NEW.cli_version
+ OR OLD.retention_at IS NOT NEW.retention_at
+ OR OLD.first_seen_at IS NOT NEW.first_seen_at
+ OR OLD.last_seen_at IS NOT NEW.last_seen_at
+BEGIN
  INSERT INTO change_log(project_id,session_id,event_type,payload,created_at)
  SELECT s.project_id,s.id,'session_updated',json_object('id',s.id),CURRENT_TIMESTAMP
  FROM guardian_epochs e JOIN sessions s ON s.id=e.session_id WHERE e.id=NEW.epoch_id;

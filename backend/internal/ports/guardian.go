@@ -13,6 +13,7 @@ type GuardianStore interface {
 	GuardianOwners(context.Context, time.Time) ([]domain.GuardianOwner, error)
 	GuardianCursor(context.Context, int64, string) (domain.GuardianCursor, error)
 	GuardianPosition(context.Context, int64, string) (domain.GuardianCursor, error)
+	GuardianCheckpoint(context.Context, domain.GuardianCursor) (domain.GuardianRequest, bool, error)
 	GuardianCursors(context.Context, int64) ([]domain.GuardianCursor, error)
 	ApplyGuardianBatch(context.Context, domain.GuardianBatch) error
 	RecordGuardianAnomaly(context.Context, domain.SessionID, domain.GuardianCode, time.Time) error
