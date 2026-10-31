@@ -171,6 +171,8 @@ func TestPinnedReviewerSwitchSavesWorkerConfig(t *testing.T) {
 				config := domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits}
 				if harness == domain.ReviewerAmp {
 					config.Mode = "high"
+					// Isolate mode changes from permissions: either one must restart.
+					config.Permissions = domain.PermissionModeDefault
 				}
 				launcher.handle, launcher.agentSessionID = "new-pane", "new-native"
 				if _, err := engine.SwitchReviewer(ctx, worker.ID, harness, config); err != nil {

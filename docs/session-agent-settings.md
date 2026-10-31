@@ -372,8 +372,10 @@ as a fallback because its pin query is unavailable.
 An omitted or empty harness clears the worker's reviewer override and follows
 the current project default. Conflict and pin checks use that resolved target,
 not the previously selected override. Clearing the override still persists when
-both choices currently resolve to the same harness; its pin and native history
-remain unchanged, and later project-default changes can take effect.
+both choices currently resolve to the same harness; its pin remains unchanged.
+Native history also remains unchanged unless the switch changes worker mode or
+permissions and requires the runtime reset described above. Later project-default
+changes can still take effect.
 
 The successful receipt is `phase: pinned`, `applyMode: next-pass`. It does not
 claim a provider applied the selection. A running pass or queued/running Chat
