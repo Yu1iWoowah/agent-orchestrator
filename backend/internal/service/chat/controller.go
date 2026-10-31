@@ -1627,7 +1627,9 @@ func (c *Controller) sendLocked(
 		}
 		if queuedAhead && !c.busy() {
 			if err := c.drainLocked(ctx, true); err != nil {
-				return queuedTurn, err
+				// Intake is already durable. Releasing piggyback reports here
+				// would attach them to another message as well.
+				c.log.Warn("queued input retained after drain error", "session", c.sessionID, "error", err)
 			}
 		}
 		return queuedTurn, nil
@@ -2079,9 +2081,24 @@ func (c *Controller) dispatch(
 		c.mu.Unlock()
 		if hasDeferredStart {
 			deferred.DiscardDeferredTurn(ref.ProviderTurnID)
-		}
-		if hasDeferredStart && !claimed && errors.Is(err, domain.ErrReplacementIntakeFenced) {
-			return c.queuedDispatchReceipt(turnID, requestedAt), nil
+			// Bind failed before StartDeferredTurn could send anything. Restore
+			// the whole reservation, including dispatch snapshots, for a later
+			// Ready/drain. Eager drivers may already have accepted the prompt.
+			turn, requeueErr := c.requeueUnsentTurn(ctx, turnID, "", followers, requestedAt)
+			if !claimed && requeueErr == nil {
+				// The durable message owns any piggybacked reports now. Returning
+				// an error would release reports that are still queued for delivery.
+				// An idle provider will not emit another Ready after a Bind failure.
+				// Drain once here; the retry is claimed, so it cannot recurse again.
+				if retryErr := c.drainOnceLocked(ctx, true, 0); retryErr != nil {
+					c.log.Warn("failed to retry requeued direct input", "session", c.sessionID, "error", retryErr)
+				}
+				return turn, nil
+			}
+			if requeueErr == nil {
+				return turn, fmt.Errorf("%w: bind turn: %w", errRetryQueuedDispatch, err)
+			}
+			return turn, fmt.Errorf("bind turn: %w", errors.Join(err, requeueErr))
 		}
 		failFollowers("batch provider binding is uncertain: " + err.Error())
 		return domain.ConversationTurn{}, fmt.Errorf("bind turn: %w", err)
@@ -2270,7 +2287,18 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) error 
 	return c.drainLockedWithLimit(ctx, allowDispatch, 0)
 }
 
+// Only errors that prove no prompt was sent may spend the extra attempt.
+var errRetryQueuedDispatch = errors.New("queued dispatch was not sent")
+
 func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch bool, limit int) error {
+	err := c.drainOnceLocked(ctx, allowDispatch, limit)
+	if allowDispatch && errors.Is(err, errRetryQueuedDispatch) {
+		return c.drainOnceLocked(ctx, allowDispatch, limit)
+	}
+	return err
+}
+
+func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) error {
 	c.mu.Lock()
 	cutoff := c.cancelQueuedAt
 	c.cancelQueuedAt = time.Time{}
@@ -2308,7 +2336,7 @@ func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch boo
 			return nil
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: list queued input: %w", errRetryQueuedDispatch, err)
 		}
 		if _, err := c.queuedBatchInput(ctx, preview, nil); err != nil {
 			if id, ok := invalidBatchTurn(err); ok {
@@ -2329,7 +2357,7 @@ func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch boo
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: claim queued input: %w", errRetryQueuedDispatch, err)
 	}
 	msg, err := c.queuedBatchInput(ctx, batch, nil)
 	if err != nil {
