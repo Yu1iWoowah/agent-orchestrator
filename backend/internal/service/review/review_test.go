@@ -697,6 +697,8 @@ func TestReviewErrorKindClassifiesEngineSentinels(t *testing.T) {
 		{"invalid", fmt.Errorf("%w: no PR", reviewcore.ErrInvalid), "invalid"},
 		{"not_found", fmt.Errorf("%w: worker gone", reviewcore.ErrNotFound), "not_found"},
 		{"agent_unavailable", fmt.Errorf("%w", ports.ErrAgentBinaryNotFound), "agent_unavailable"},
+		{"settings_unsupported", fmt.Errorf("provider: %w", ports.ErrAgentSettingsUnsupported), "invalid"},
+		{"capabilities_unavailable", fmt.Errorf("provider: %w", ports.ErrAgentSettingsCapabilitiesUnavailable), "unavailable"},
 		{"fallback_internal", errors.New("something unexpected"), "internal"},
 	}
 	for _, c := range cases {
