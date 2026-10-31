@@ -2083,7 +2083,14 @@ func (c *Controller) dispatch(
 			// the whole reservation, including dispatch snapshots, for a later
 			// Ready/drain. Eager drivers may already have accepted the prompt.
 			turn, requeueErr := c.requeueUnsentTurn(ctx, turnID, "", followers, requestedAt)
-			if !claimed && errors.Is(err, domain.ErrReplacementIntakeFenced) && requeueErr == nil {
+			if !claimed && requeueErr == nil {
+				// The durable message owns any piggybacked reports now. Returning
+				// an error would release reports that are still queued for delivery.
+				// An idle provider will not emit another Ready after a Bind failure.
+				// Drain once here; the retry is claimed, so it cannot recurse again.
+				if retryErr := c.drainLocked(ctx, true); retryErr != nil {
+					c.log.Warn("failed to retry requeued direct input", "session", c.sessionID, "error", retryErr)
+				}
 				return turn, nil
 			}
 			return turn, fmt.Errorf("bind turn: %w", errors.Join(err, requeueErr))
