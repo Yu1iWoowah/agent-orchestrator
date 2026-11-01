@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,9 @@ const testToken = "test-owned-issuer-token-kept-in-memory-only"
 
 func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("native issuer is fail-closed pending platform runtime receipts")
+	}
 	dir := t.TempDir()
 	s, err := sqlite.Open(dir)
 	if err != nil {
@@ -34,6 +39,43 @@ func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 	// integration uses New unchanged and verifies kernel identity + pinned code.
 	b.verifyPeer = func(net.Conn) error { return nil }
 	return b, s, dir
+}
+
+func TestNativePlatformQualification(t *testing.T) {
+	if New(nil, "").platformVerified != (runtime.GOOS == "linux") {
+		t.Fatal("only Linux may qualify before other platform runtime receipts")
+	}
+}
+
+func TestNativeUnverifiedPlatformFailsClosed(t *testing.T) {
+	for _, mode := range []string{"owned", "attach"} {
+		t.Run(mode, func(t *testing.T) {
+			b := New(nil, testToken)
+			// Exercise a closed release gate on every CI OS, even if all other
+			// readiness facts have been populated. No store call is permissible.
+			b.platformVerified = false
+			b.ready, b.epoch, b.liveUntil = true, "issuer", time.Now().Add(time.Minute)
+			b.verifyPeer = func(net.Conn) error {
+				t.Error("unverified platform reached peer qualification")
+				return nil
+			}
+			plan := planFor(domain.ConsentSettingsPermissions)
+			readiness := b.GetAuthorityReadiness([]domain.OperatorPurpose{plan.Purpose}, plan.Scope)
+			if readiness.AuthorityGo || readiness.NativeIssuerDelivered || readiness.Reason != "native_platform_unverified" || readiness.IssuerEpoch != "" {
+				t.Fatalf("unverified platform qualified: %+v", readiness)
+			}
+			hello := frame{Type: "operator-hello", Version: 1}
+			if mode == "owned" {
+				hello.Token = testToken
+			}
+			c := dialNative(t, b, hello)
+			_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
+			var reply frame
+			if err := c.decoder.Decode(&reply); err != io.EOF {
+				t.Fatalf("unverified platform did not close native channel: %+v %v", reply, err)
+			}
+		})
+	}
 }
 
 func planFor(purpose domain.OperatorPurpose) domain.OperatorActionPlan {

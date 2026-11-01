@@ -6,6 +6,12 @@ recovery epoch、reservation、effect gate 與 provider I/O。native 確認只�
 
 ## Native 權威鏈
 
+目前只有 Linux 可進入下列 issuer 資格流程，且仍須完成全部 core acceptance 才能
+宣稱可用。**macOS／Windows：未驗、fail closed、已知缺口**；取得該平台真實
+runtime 收據前，private native channel 拒絕握手、不 mint，readiness 固定
+`authorityGo=false`、`native_platform_unverified`。沒有環境變數或設定可略過此 gate。
+以下 macOS／Windows peer 原語僅為尚未啟用的實作，不代表平台通過驗收。
+
 封裝桌面主程序為 owned daemon 產生獨立隨機 C0 token，透過 inherited stdin
 交付一次。它與 Browser／diagnostics token 不同。stdin marker 或 caller 自選的
 nonce 本身不構成 native 身分：owned 與 attach 都須通過下列 OS peer／程式內容驗證，
@@ -86,5 +92,7 @@ H 在 pause／export／candidate／stop／freeze 前必須 gate；S 人工恢復
 既有 IPC broker 與 OS peer 檢查。owned 用真 inherited stdin；attach daemon 保有未交給新 app
 的私有 token。自動測試只驗 pairing、材料暴露與 plan 維持 prepared，不模擬確認手勢。
 
-真人確認、完整桌面選單／dialog 視覺與 macOS／Windows native 可用性須另附平台收據。
-跨 OS `go test -c` 只證明編譯；實作授權、runtime readiness 與實際 acceptance 狀態分開記錄。
+Linux 真人確認與完整桌面選單／dialog 視覺仍須另附收據，全部 acceptance 通過後才可
+啟用交付。macOS／Windows 沒有真實 runtime 收據，維持未驗、fail closed 的已知缺口；
+日後取得收據並核准移除平台 gate 前，不得啟用。跨 OS `go test -c` 只證明編譯；
+實作授權、runtime readiness 與實際 acceptance 狀態分開記錄。

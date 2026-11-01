@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"time"
 
@@ -55,11 +56,14 @@ type Broker struct {
 	challenges map[domain.OperatorRequestRef]challenge
 	now        func() time.Time
 	verifyPeer func(net.Conn) error
+	// Set once at construction. Other platforms need real native receipts
+	// before their issuer can be enabled; code pinning alone is insufficient.
+	platformVerified bool
 }
 
 // New binds the native store to a private owned token and pinned attach code.
 func New(store nativeStore, ownedToken string) *Broker {
-	return &Broker{store: store, token: ownedToken, now: time.Now, challenges: map[domain.OperatorRequestRef]challenge{}, verifyPeer: newNativePeerVerifier()}
+	return &Broker{store: store, token: ownedToken, now: time.Now, challenges: map[domain.OperatorRequestRef]challenge{}, verifyPeer: newNativePeerVerifier(), platformVerified: runtime.GOOS == "linux"}
 }
 
 func readFrame(raw []byte) (frame, error) {
@@ -86,6 +90,9 @@ func send(conn net.Conn, out frame) error {
 // This connection never joins the Browser broker or its session command path.
 func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner, raw []byte) {
 	defer func() { _ = conn.Close() }()
+	if !b.platformVerified {
+		return
+	}
 	hello, err := readFrame(raw)
 	if err != nil || hello.Type != "operator-hello" || hello.Version != 1 {
 		return
@@ -232,6 +239,11 @@ func (b *Broker) GetAuthorityReadiness(required []domain.OperatorPurpose, scope 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := domain.OperatorAuthorityReadiness{Protocol: domain.OperatorConsentProtocol, RegistryVersion: domain.OperatorPurposeRegistryVersion, CoreDelivered: true, NativeIssuerDelivered: true, PurposeSet: []domain.OperatorPurpose{}, Reason: "native_issuer_unavailable"}
+	if !b.platformVerified {
+		out.NativeIssuerDelivered = false
+		out.Reason = "native_platform_unverified"
+		return out
+	}
 	if !b.ready || b.epoch == "" || !b.now().Before(b.liveUntil) {
 		return out
 	}
