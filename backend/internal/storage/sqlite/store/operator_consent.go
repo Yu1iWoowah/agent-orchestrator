@@ -17,6 +17,7 @@ var _ ports.OperatorConsentStore = (*Store)(nil)
 
 // PrepareOperatorAction saves a fixed, admitted plan without minting or executing.
 func (s *Store) PrepareOperatorAction(ctx context.Context, plan domain.OperatorActionPlan) (domain.OperatorActionReceipt, error) {
+	plan.ValidUntil = plan.ValidUntil.UTC().Truncate(time.Millisecond)
 	encoded, digest, err := domain.CanonicalOperatorPlan(plan)
 	if err != nil {
 		return domain.OperatorActionReceipt{}, err
@@ -37,8 +38,10 @@ func (s *Store) PrepareOperatorAction(ctx context.Context, plan domain.OperatorA
 			if err != nil {
 				return err
 			}
+			// A live request can need a new boot even when its old consent expired.
 			// Consumed actions keep the original key/result across every restart.
-			if receipt.State == domain.OperatorActionStale && row.ValidUntilMs > now {
+			if receipt.State != domain.OperatorActionConsumed && !row.RevokedAtMs.Valid && row.ValidUntilMs > now &&
+				(row.DaemonEpoch != s.operatorEpoch || receipt.State == domain.OperatorActionStale) {
 				if err := q.InvalidateUnusedOperatorConsents(ctx, gen.InvalidateUnusedOperatorConsentsParams{RequestRef: row.RequestRef, InvalidatedAtMs: sql.NullInt64{Int64: now, Valid: true}}); err != nil {
 					return err
 				}
@@ -101,21 +104,20 @@ func (s *Store) operatorReceipt(ctx context.Context, q *gen.Queries, row gen.Ope
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return domain.OperatorActionReceipt{}, err
 	}
+	now := s.operatorNow().UnixMilli()
 	switch {
 	case err == nil && consent.ConsumedAtMs.Valid:
 		result.State, result.ReservationRef = domain.OperatorActionConsumed, consent.ReservationRef
 	case row.RevokedAtMs.Valid:
 		result.State = domain.OperatorActionRevoked
+	case row.ValidUntilMs <= now || (err == nil && consent.ExpiresAtMs <= now):
+		result.State = domain.OperatorActionExpired
 	case row.DaemonEpoch != s.operatorEpoch:
 		result.State = domain.OperatorActionStale
-	case row.ValidUntilMs <= s.operatorNow().UnixMilli():
-		result.State = domain.OperatorActionExpired
 	case err == nil:
 		switch {
 		case consent.DaemonEpoch != s.operatorEpoch || consent.IssuerEpoch != s.operatorIssuerEpoch || s.operatorIssuerEpoch == "":
 			result.State = domain.OperatorActionStale
-		case consent.ExpiresAtMs <= s.operatorNow().UnixMilli():
-			result.State = domain.OperatorActionExpired
 		default:
 			result.State = domain.OperatorActionConfirmed
 		}

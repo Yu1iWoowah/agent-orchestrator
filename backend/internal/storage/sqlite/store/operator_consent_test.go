@@ -246,7 +246,7 @@ func TestOperatorConsentPlanIsolation(t *testing.T) {
 }
 
 func TestOperatorConsentExpiryRevokeAndRestart(t *testing.T) {
-	for _, kind := range []string{"daemon", "issuer", "consent_expiry", "domain_expiry", "revoke"} {
+	for _, kind := range []string{"daemon", "issuer", "consent_expiry", "domain_expiry", "daemon_domain_expiry", "revoke"} {
 		t.Run(kind, func(t *testing.T) {
 			s, path := operatorFixture(t)
 			p := operatorPlan(domain.ConsentHandoffRetryRestore)
@@ -256,12 +256,15 @@ func TestOperatorConsentExpiryRevokeAndRestart(t *testing.T) {
 			}
 			ref := mintOperatorFixture(t, s, p)
 			switch kind {
-			case "daemon":
+			case "daemon", "daemon_domain_expiry":
 				if err = s.Close(); err != nil {
 					t.Fatal(err)
 				}
 				s = openOperatorFixture(t, path)
 				s.operatorEpoch = "new-daemon"
+				if kind == "daemon_domain_expiry" {
+					s.operatorNow = func() time.Time { return p.ValidUntil }
+				}
 			case "issuer":
 				s.operatorIssuerEpoch = "new-issuer"
 			case "consent_expiry":
@@ -282,7 +285,7 @@ func TestOperatorConsentExpiryRevokeAndRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := domain.OperatorActionStale
-			if kind == "consent_expiry" || kind == "domain_expiry" {
+			if kind == "consent_expiry" || kind == "domain_expiry" || kind == "daemon_domain_expiry" {
 				want = domain.OperatorActionExpired
 			}
 			if kind == "revoke" {
@@ -290,6 +293,12 @@ func TestOperatorConsentExpiryRevokeAndRestart(t *testing.T) {
 			}
 			if got.State != want {
 				t.Fatalf("state %s want %s", got.State, want)
+			}
+			if kind == "daemon_domain_expiry" || kind == "domain_expiry" {
+				retried, err := s.PrepareOperatorAction(context.Background(), p)
+				if err != nil || retried.State != domain.OperatorActionExpired || retried.RequestRef != prepared.RequestRef {
+					t.Fatalf("expired prepare: %+v %v", retried, err)
+				}
 			}
 			if kind == "daemon" || kind == "issuer" || kind == "consent_expiry" {
 				if _, err = s.PrepareOperatorAction(context.Background(), p); err != nil {
@@ -583,4 +592,51 @@ func TestOperatorConsentInvalidPlansAndCancellation(t *testing.T) {
 	if _, err := s.GetOperatorAction(context.Background(), p.ActionKey); !errors.Is(err, domain.ErrOperatorActionNotFound) {
 		t.Fatalf("cancelled prepare persisted: %v", err)
 	}
+}
+
+func TestOperatorConsentNanosecondExpiryReplay(t *testing.T) {
+	s, path := operatorFixture(t)
+	plan := operatorPlan(domain.ConsentHandoffContext)
+	plan.ValidUntil = plan.ValidUntil.Add(123456789 * time.Nanosecond)
+	prepared, err := s.PrepareOperatorAction(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := plan
+	rebuilt.ValidUntil = prepared.ValidUntil
+	t.Run("prepare_from_receipt", func(t *testing.T) {
+		got, err := s.PrepareOperatorAction(context.Background(), rebuilt)
+		if err != nil || got != prepared {
+			t.Fatalf("millisecond prepare replay: %+v %v", got, err)
+		}
+	})
+	ref := mintOperatorFixture(t, s, plan)
+	accepted, err := reserveOperatorFixture(s, ref, plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := s.GetOperatorAction(context.Background(), plan.ActionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openOperatorFixture(t, path)
+	s.operatorEpoch = "new-daemon"
+	s.operatorIssuerEpoch = "new-issuer"
+	s.operatorNow = func() time.Time { return operatorTestTime.Add(time.Hour) }
+	t.Run("prepare_after_restart", func(t *testing.T) {
+		got, err := s.PrepareOperatorAction(context.Background(), rebuilt)
+		if err != nil || got != receipt {
+			t.Fatalf("millisecond accepted replay: %+v %v", got, err)
+		}
+	})
+	t.Run("consume_after_restart", func(t *testing.T) {
+		got, err := reserveOperatorFixture(s, ref, rebuilt, "")
+		if err != nil || !got.Replay || got.PlanDigest != accepted.PlanDigest || got.ReservationRef != accepted.ReservationRef {
+			t.Fatalf("millisecond consume replay: %+v %v", got, err)
+		}
+	})
+	assertOperatorCounts(t, s, 1, 1)
 }

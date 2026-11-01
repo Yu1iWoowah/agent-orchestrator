@@ -107,7 +107,8 @@ func OperatorReferenceValid(s string) bool {
 }
 
 // CanonicalOperatorPlan binds every field, including purpose, expiry and scope.
-// encoding/json sorts map keys; UTC removes representational timezone variance.
+// encoding/json sorts map keys; UTC and millisecond precision match the durable
+// expiry representation so a reconstructed plan retains its digest.
 func CanonicalOperatorPlan(p OperatorActionPlan) (string, string, error) {
 	d, active := p.Purpose.Domain()
 	if !active || d != p.Domain || p.Protocol != OperatorConsentProtocol ||
@@ -146,7 +147,7 @@ func CanonicalOperatorPlan(p OperatorActionPlan) (string, string, error) {
 			}
 		}
 	}
-	p.ValidUntil = p.ValidUntil.UTC()
+	p.ValidUntil = p.ValidUntil.UTC().Truncate(time.Millisecond)
 	b, err := json.Marshal(p)
 	if err != nil {
 		return "", "", ErrOperatorPlanInvalid
