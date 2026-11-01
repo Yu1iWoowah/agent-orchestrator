@@ -249,9 +249,12 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 		report.Capability.ReviewEvents = "supported"
 		report.Capability.ReviewAvailability = "missing_event"
 	}
-	report.Anomalies, err = s.store.GuardianAnomalies(ctx, id)
+	storedAnomalies, err := s.store.GuardianAnomalies(ctx, id)
 	if err != nil {
 		return Report{}, err
+	}
+	for code, count := range storedAnomalies {
+		report.Anomalies[code] = count
 	}
 	if o.Details {
 		report.Limit = o.Limit
@@ -260,6 +263,7 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 		}
 	}
 	groups := map[string]map[string]*Distribution{"bucket": {}, "model": {}, "version": {}, "action": {}, "thread": {}}
+	groupGap := false
 	more := false
 	last := token
 	for _, kind := range []string{"request", "review"} {
@@ -276,7 +280,7 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 				after = fact.Sequence
 				if r := fact.Request; r != nil {
 					report.Requests++
-					values := map[string]string{"bucket": r.Tokens.CacheBucket(), "model": r.ModelID, "version": r.CLIVersion, "action": "unknown"}
+					values := map[string]string{"bucket": r.Tokens.CacheBucket(), "model": r.ModelID, "version": r.CLIVersion, "action": "not_applicable"}
 					if o.Details {
 						values["thread"] = r.ThreadID
 					}
@@ -293,7 +297,7 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 						g := groups[group][value]
 						if g == nil {
 							if len(groups[group]) >= 500 {
-								report.Anomalies[domain.GuardianCoverageGap]++
+								groupGap = true
 								continue
 							}
 							g = &Distribution{Value: value, Totals: newTotals()}
@@ -335,6 +339,9 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 				break
 			}
 		}
+	}
+	if groupGap && report.Anomalies[domain.GuardianCoverageGap] < math.MaxInt64 {
+		report.Anomalies[domain.GuardianCoverageGap]++
 	}
 	if report.Reviews > 0 {
 		report.Capability.ReviewAvailability = "observed"

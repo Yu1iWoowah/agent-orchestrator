@@ -14,12 +14,18 @@ import (
 // RecordGuardianReview rechecks controller, policy and durable native ownership
 // in one transaction. Observation failures never change an approval decision.
 func (s *Store) RecordGuardianReview(ctx context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, now time.Time) error {
+	enabled, err := s.qr.GuardianSessionEnabled(ctx, scope.SessionID)
+	if err != nil || !enabled {
+		return err
+	}
 	if !r.InvalidMetadata && !r.Valid() {
 		return errors.New("invalid guardian review")
 	}
 	session, generation := scope.SessionID, scope.Generation
 	now = now.UTC()
-	s.writeMu.Lock()
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "guardian review", func(q *gen.Queries) error {
 		current, err := q.GetSession(ctx, session)
@@ -29,15 +35,13 @@ func (s *Store) RecordGuardianReview(ctx context.Context, scope domain.GuardianR
 		if current.ControllerGeneration != generation || current.SessionMode != "chat" {
 			return nil
 		}
-		candidates, err := q.ListGuardianCandidates(ctx)
+		candidates, err := q.ListGuardianReviewCandidates(ctx, session)
 		if err != nil {
 			return err
 		}
-		scoped := candidates[:0]
-		for _, candidate := range candidates {
-			if candidate.SessionID == session {
-				scoped = append(scoped, candidate)
-			}
+		scoped := make([]gen.ListGuardianCandidatesRow, len(candidates))
+		for i, candidate := range candidates {
+			scoped[i] = gen.ListGuardianCandidatesRow(candidate)
 		}
 		owners, _, err := guardianOwners(ctx, q, scoped, now, true)
 		if err != nil {
@@ -57,11 +61,13 @@ func (s *Store) RecordGuardianReview(ctx context.Context, scope domain.GuardianR
 				return addGuardianAnomaly(ctx, q, session, domain.GuardianOwnerConflict, 1, now)
 			}
 			if r.ParentThreadID != o.NativeRootID {
-				// Only collector-proven child lineage is accepted; no cwd/time inference.
-				if _, err := q.GetGuardianThread(ctx, gen.GetGuardianThreadParams{EpochID: o.EpochID, ThreadID: r.ParentThreadID}); errors.Is(err, sql.ErrNoRows) {
-					return addGuardianAnomaly(ctx, q, session, domain.GuardianOwnerUnresolved, 1, now)
-				} else if err != nil {
+				// Collector-proven G.parent=S establishes S's lineage to this root.
+				proven, err := q.HasGuardianParent(ctx, gen.HasGuardianParentParams{EpochID: o.EpochID, ParentID: r.ParentThreadID})
+				if err != nil {
 					return err
+				}
+				if !proven {
+					return addGuardianAnomaly(ctx, q, session, domain.GuardianOwnerUnresolved, 1, now)
 				}
 			}
 			at := r.StartedAt

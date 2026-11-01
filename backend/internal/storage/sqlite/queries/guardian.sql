@@ -20,6 +20,27 @@ WHERE ub.harness='codex' AND s.harness='codex' AND s.is_terminated=0
  THEN s.provider_conversation_id ELSE s.agent_session_id END
 ORDER BY ub.id;
 
+-- name: GuardianSessionEnabled :one
+SELECT EXISTS(SELECT 1 FROM sessions s JOIN guardian_project_policy p ON p.project_id=s.project_id
+WHERE s.id=sqlc.arg(session_id) AND p.enabled=1);
+
+-- name: ListGuardianReviewCandidates :many
+SELECT ub.id AS binding_id, ub.session_id, ub.native_root_id, s.project_id,
+ a.account_id, a.bound_at, p.enabled_at,
+ w.cleaned_before,
+ CAST((SELECT count(*) FROM sessions other WHERE other.harness='codex' AND other.is_terminated=0
+ AND ub.native_root_id=CASE WHEN other.session_mode='chat' AND other.provider_conversation_id<>''
+ THEN other.provider_conversation_id ELSE other.agent_session_id END)>1 AS INTEGER) AS owner_conflict
+FROM usage_bindings ub JOIN sessions s ON s.id=ub.session_id
+JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1
+JOIN session_agent_accounts a ON a.session_id=s.id AND a.provider='codex'
+LEFT JOIN guardian_watermarks w ON w.session_id=s.id
+WHERE s.id=sqlc.arg(session_id) AND ub.harness='codex' AND s.harness='codex' AND s.is_terminated=0
+ AND a.bound_at=(SELECT MAX(b.bound_at) FROM session_agent_accounts b WHERE b.session_id=s.id AND b.provider='codex')
+ AND ub.native_root_id=CASE WHEN s.session_mode='chat' AND s.provider_conversation_id<>''
+ THEN s.provider_conversation_id ELSE s.agent_session_id END
+ORDER BY ub.id;
+
 -- name: EnsureGuardianEpoch :one
 INSERT INTO guardian_epochs(binding_id,session_id,account_id,account_bound_at,first_seen_at)
 VALUES(?,?,?,?,?) ON CONFLICT(binding_id,account_id,account_bound_at) DO UPDATE SET binding_id=excluded.binding_id RETURNING *;
@@ -54,6 +75,9 @@ VALUES(?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO NOTHING;
 -- name: TouchGuardianThread :exec
 UPDATE guardian_threads SET last_seen_at=sqlc.arg(last_seen_at)
 WHERE epoch_id=sqlc.arg(epoch_id) AND thread_id=sqlc.arg(thread_id) AND last_seen_at<sqlc.arg(last_seen_at);
+
+-- name: HasGuardianParent :one
+SELECT EXISTS(SELECT 1 FROM guardian_threads WHERE epoch_id=? AND parent_id=?);
 
 -- name: GetGuardianThread :one
 SELECT * FROM guardian_threads WHERE epoch_id=? AND thread_id=?;
@@ -133,7 +157,7 @@ DELETE FROM guardian_turn_models WHERE provider_at<=?;
 -- name: DeleteExpiredGuardianThreads :exec
 DELETE FROM guardian_threads WHERE guardian_threads.retention_at<=sqlc.arg(cutoff)
 AND NOT EXISTS(SELECT 1 FROM guardian_requests r WHERE r.epoch_id=guardian_threads.epoch_id AND r.thread_id=guardian_threads.thread_id)
-AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.thread_id)
+AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.parent_id)
 AND NOT EXISTS(SELECT 1 FROM guardian_turn_models m WHERE m.epoch_id=guardian_threads.epoch_id AND m.thread_id=guardian_threads.thread_id);
 -- name: ClearExpiredGuardianThreadMetadata :exec
 UPDATE guardian_threads SET cli_version='' WHERE retention_at<=? AND cli_version<>'';

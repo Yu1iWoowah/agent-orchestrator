@@ -108,3 +108,61 @@ func TestA6AggregateOverflowIsUnknown(t *testing.T) {
 		t.Fatalf("overflow hidden: %+v", totals)
 	}
 }
+
+type groupedQueryStore struct {
+	QueryStore
+	facts     []domain.GuardianFact
+	anomalies map[domain.GuardianCode]int64
+}
+
+func (s *groupedQueryStore) GuardianAnomalies(context.Context, domain.SessionID) (map[domain.GuardianCode]int64, error) {
+	return s.anomalies, nil
+}
+func (s *groupedQueryStore) PageGuardianFacts(_ context.Context, _ domain.SessionID, _, _, _ time.Time, kind, after string) ([]domain.GuardianFact, error) {
+	page := make([]domain.GuardianFact, 0, 500)
+	for _, fact := range s.facts {
+		if fact.Kind == kind && fact.Sequence > after {
+			page = append(page, fact)
+			if len(page) == 500 {
+				break
+			}
+		}
+	}
+	return page, nil
+}
+func TestQueryGroupGapCountsOnceWithoutMutatingStoredAnomalies(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	store := &groupedQueryStore{QueryStore: f.store, anomalies: map[domain.GuardianCode]int64{domain.GuardianCoverageGap: 7}}
+	for i := 0; i < 510; i++ {
+		input, cached := int64(100), int64(10)
+		request := domain.GuardianRequest{EpochID: 1, ThreadID: fmt.Sprintf("guardian-%04d", i), TurnID: "turn", ResponseID: fmt.Sprintf("response-%04d", i), ModelID: fmt.Sprintf("model-%04d", i), CLIVersion: "0.166.0", ProviderAt: f.base, FirstSeenAt: f.now, Tokens: domain.GuardianTokens{Input: &input, Cached: &cached}}
+		store.facts = append(store.facts, domain.GuardianFact{Kind: "request", Sequence: fmt.Sprintf("%04d", i), Request: &request})
+	}
+	review := f.review("unknown-review", "unknown", true)
+	store.facts = append(store.facts, domain.GuardianFact{Kind: "review", Sequence: "review", Review: &review})
+	service := NewQuery(store, func() time.Time { return f.now.Add(time.Second) })
+	for _, details := range []bool{false, true, false} {
+		report, err := service.Query(context.Background(), f.session.ID, QueryOptions{Details: details})
+		must(t, err)
+		if report.Anomalies[domain.GuardianCoverageGap] != 8 || store.anomalies[domain.GuardianCoverageGap] != 7 {
+			t.Fatalf("query multiplied/mutated anomaly count: report=%v stored=%v", report.Anomalies, store.anomalies)
+		}
+		if len(report.ByModel) != 500 || report.Requests != 510 {
+			t.Fatal("group cap changed request totals")
+		}
+		actions := map[string]Distribution{}
+		for _, group := range report.ByAction {
+			actions[group.Value] = group
+		}
+		if actions["not_applicable"].Requests != 510 || actions["not_applicable"].Reviews != 0 || actions["unknown"].Requests != 0 || actions["unknown"].Reviews != 1 {
+			t.Fatalf("request and review action meanings mixed: %+v", actions)
+		}
+	}
+	store.anomalies[domain.GuardianCoverageGap] = math.MaxInt64
+	report, err := service.Query(context.Background(), f.session.ID, QueryOptions{})
+	must(t, err)
+	if report.Anomalies[domain.GuardianCoverageGap] != math.MaxInt64 {
+		t.Fatal("coverage count overflowed")
+	}
+}

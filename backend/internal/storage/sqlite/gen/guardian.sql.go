@@ -163,7 +163,7 @@ func (q *Queries) DeleteExpiredGuardianReviews(ctx context.Context, retentionAt 
 const deleteExpiredGuardianThreads = `-- name: DeleteExpiredGuardianThreads :exec
 DELETE FROM guardian_threads WHERE guardian_threads.retention_at<=?1
 AND NOT EXISTS(SELECT 1 FROM guardian_requests r WHERE r.epoch_id=guardian_threads.epoch_id AND r.thread_id=guardian_threads.thread_id)
-AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.thread_id)
+AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.parent_id)
 AND NOT EXISTS(SELECT 1 FROM guardian_turn_models m WHERE m.epoch_id=guardian_threads.epoch_id AND m.thread_id=guardian_threads.thread_id)
 `
 
@@ -424,6 +424,18 @@ func (q *Queries) GuardianModelExists(ctx context.Context, arg GuardianModelExis
 	return exists, err
 }
 
+const guardianSessionEnabled = `-- name: GuardianSessionEnabled :one
+SELECT EXISTS(SELECT 1 FROM sessions s JOIN guardian_project_policy p ON p.project_id=s.project_id
+WHERE s.id=?1 AND p.enabled=1)
+`
+
+func (q *Queries) GuardianSessionEnabled(ctx context.Context, sessionID domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, guardianSessionEnabled, sessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasGuardianCleanupState = `-- name: HasGuardianCleanupState :one
 SELECT EXISTS(SELECT 1 FROM guardian_epochs UNION ALL SELECT 1 FROM guardian_anomalies)
 `
@@ -432,6 +444,22 @@ SELECT EXISTS(SELECT 1 FROM guardian_epochs UNION ALL SELECT 1 FROM guardian_ano
 // inferred from cwd, file locations, or adjacent timestamps.
 func (q *Queries) HasGuardianCleanupState(ctx context.Context) (bool, error) {
 	row := q.db.QueryRowContext(ctx, hasGuardianCleanupState)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasGuardianParent = `-- name: HasGuardianParent :one
+SELECT EXISTS(SELECT 1 FROM guardian_threads WHERE epoch_id=? AND parent_id=?)
+`
+
+type HasGuardianParentParams struct {
+	EpochID  int64
+	ParentID string
+}
+
+func (q *Queries) HasGuardianParent(ctx context.Context, arg HasGuardianParentParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasGuardianParent, arg.EpochID, arg.ParentID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -837,6 +865,69 @@ func (q *Queries) ListGuardianRequests(ctx context.Context, epochID int64) ([]Gu
 			&i.CheckpointGeneration,
 			&i.CheckpointOffset,
 			&i.Conflict,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGuardianReviewCandidates = `-- name: ListGuardianReviewCandidates :many
+SELECT ub.id AS binding_id, ub.session_id, ub.native_root_id, s.project_id,
+ a.account_id, a.bound_at, p.enabled_at,
+ w.cleaned_before,
+ CAST((SELECT count(*) FROM sessions other WHERE other.harness='codex' AND other.is_terminated=0
+ AND ub.native_root_id=CASE WHEN other.session_mode='chat' AND other.provider_conversation_id<>''
+ THEN other.provider_conversation_id ELSE other.agent_session_id END)>1 AS INTEGER) AS owner_conflict
+FROM usage_bindings ub JOIN sessions s ON s.id=ub.session_id
+JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1
+JOIN session_agent_accounts a ON a.session_id=s.id AND a.provider='codex'
+LEFT JOIN guardian_watermarks w ON w.session_id=s.id
+WHERE s.id=?1 AND ub.harness='codex' AND s.harness='codex' AND s.is_terminated=0
+ AND a.bound_at=(SELECT MAX(b.bound_at) FROM session_agent_accounts b WHERE b.session_id=s.id AND b.provider='codex')
+ AND ub.native_root_id=CASE WHEN s.session_mode='chat' AND s.provider_conversation_id<>''
+ THEN s.provider_conversation_id ELSE s.agent_session_id END
+ORDER BY ub.id
+`
+
+type ListGuardianReviewCandidatesRow struct {
+	BindingID     int64
+	SessionID     domain.SessionID
+	NativeRootID  string
+	ProjectID     *domain.ProjectID
+	AccountID     string
+	BoundAt       time.Time
+	EnabledAt     time.Time
+	CleanedBefore sql.NullTime
+	OwnerConflict int64
+}
+
+func (q *Queries) ListGuardianReviewCandidates(ctx context.Context, sessionID domain.SessionID) ([]ListGuardianReviewCandidatesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listGuardianReviewCandidates, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGuardianReviewCandidatesRow{}
+	for rows.Next() {
+		var i ListGuardianReviewCandidatesRow
+		if err := rows.Scan(
+			&i.BindingID,
+			&i.SessionID,
+			&i.NativeRootID,
+			&i.ProjectID,
+			&i.AccountID,
+			&i.BoundAt,
+			&i.EnabledAt,
+			&i.CleanedBefore,
+			&i.OwnerConflict,
 		); err != nil {
 			return nil, err
 		}

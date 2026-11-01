@@ -143,11 +143,11 @@ func TestA9ReviewRetainsMinimalThreadOwnerUntilExpiry(t *testing.T) {
 	f := newFixture(t)
 	f.enable(true)
 	f.chat()
-	f.write("guardian", f.meta("guardian", "root", true, f.base)+f.request("response", "turn", 100, 20))
+	f.nestedReviewSource()
 	f.collect()
 	f.now = f.base.Add(domain.GuardianRetention + time.Hour)
 	r := f.review("nested-review", "execve", true)
-	r.ParentThreadID = "guardian"
+	r.ParentThreadID = "child"
 	start := f.now.Add(-2 * time.Minute)
 	done := f.now.Add(-time.Minute)
 	r.StartedAt = &start
@@ -166,5 +166,47 @@ func TestA9ReviewRetainsMinimalThreadOwnerUntilExpiry(t *testing.T) {
 	must(t, f.store.CleanupGuardian(context.Background(), f.now))
 	if f.count("guardian_reviews") != 0 || f.count("guardian_threads") != 0 {
 		t.Fatal("owner survived its last review reference")
+	}
+}
+
+func (f *fixture) nestedReviewSource() {
+	f.t.Helper()
+	f.write("child", f.line("session_meta", map[string]any{"id": "child", "cli_version": "0.166.0", "source": map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": "root"}}}}, f.base))
+	f.write("guardian", f.meta("guardian", "child", true, f.base)+f.request("response", "turn", 100, 20))
+	f.collect()
+}
+
+func TestA2ReviewUsesCollectorProvenChildLineage(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	f.chat()
+	f.nestedReviewSource()
+	var childRows int
+	must(t, f.db.QueryRow("SELECT count(*) FROM guardian_threads WHERE thread_id='child'").Scan(&childRows))
+	if childRows != 0 {
+		t.Fatal("ordinary child stored as guardian")
+	}
+	r := f.review("child-review", "execve", true)
+	r.ParentThreadID = "child"
+	f.recordReview(r)
+	if f.count("guardian_reviews") != 1 || f.codes()[domain.GuardianOwnerUnresolved] != 0 {
+		t.Fatal("collector-proven child review rejected")
+	}
+	r.ReviewID = "unproven-review"
+	r.ParentThreadID = "unproven-child"
+	f.recordReview(r)
+	if f.count("guardian_reviews") != 1 || f.codes()[domain.GuardianOwnerUnresolved] != 1 {
+		t.Fatal("unproven child review accepted")
+	}
+	// The same parent is insufficient when its evidence belongs to another epoch.
+	_, err := f.db.Exec("INSERT INTO guardian_epochs(binding_id,session_id,account_id,account_bound_at,first_seen_at) SELECT binding_id,session_id,'other-account',account_bound_at,first_seen_at FROM guardian_epochs LIMIT 1")
+	must(t, err)
+	_, err = f.db.Exec("INSERT INTO guardian_threads(epoch_id,thread_id,parent_id,cli_version,retention_at,first_seen_at,last_seen_at) SELECT id,'foreign-guardian','foreign-child','0.166.0',?,?,? FROM guardian_epochs WHERE account_id='other-account'", f.base, f.now, f.now)
+	must(t, err)
+	r.ReviewID = "foreign-review"
+	r.ParentThreadID = "foreign-child"
+	f.recordReview(r)
+	if f.count("guardian_reviews") != 1 || f.codes()[domain.GuardianOwnerUnresolved] != 2 {
+		t.Fatal("foreign epoch proved a child review")
 	}
 }
