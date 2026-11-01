@@ -20203,6 +20203,10 @@ components:
           - tool
           - background
           type: string
+        progressSequence:
+          format: int64
+          minimum: 0
+          type: integer
         providerEpoch:
           type: string
         providerRequestId:
@@ -28700,6 +28704,10 @@ components:
           type: array
         nativeAnchorId:
           type: string
+        outboundUnverified:
+          type:
+          - "null"
+          - boolean
         policyVersion:
           type: integer
         providerForkId:
@@ -28721,6 +28729,7 @@ components:
             $ref: '#/components/schemas/SideRecoveryTurn'
           type: array
       required:
+      - outboundUnverified
       - policyVersion
       - sourceProviderId
       - launchConfig

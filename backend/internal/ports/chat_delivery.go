@@ -28,3 +28,9 @@ type ChatDeliveryObserver interface {
 	QueryDeliveryAttempt(context.Context, ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error)
 	FenceAndFlushOutbound(context.Context, []ChatDeliveryLookup) ([]domain.ChatDeliveryReceipt, error)
 }
+
+// ChatDeliveryAcknowledger releases host evidence only after its durable receipt
+// is committed. Older observers may keep bounded unacknowledged evidence.
+type ChatDeliveryAcknowledger interface {
+	AcknowledgeDeliveryAttempt(context.Context, ChatDeliveryLookup) error
+}

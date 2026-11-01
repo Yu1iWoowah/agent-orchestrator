@@ -16,6 +16,7 @@ const (
 // ChatDeliveryReceipt contains only correlated, bounded protocol facts.
 // A locally allocated turn ID, frame write or missing journal entry is no proof.
 type ChatDeliveryReceipt struct {
+	ProgressSequence  int64                   `json:"progressSequence,omitempty" minimum:"0"`
 	AttemptID         string                  `json:"attemptId"`
 	ProviderTurnID    string                  `json:"providerTurnId,omitempty"`
 	ProviderRequestID string                  `json:"providerRequestId,omitempty"`

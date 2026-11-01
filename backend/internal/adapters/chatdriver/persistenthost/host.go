@@ -964,9 +964,15 @@ func (h *host) handle(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	if request.Action == "delivery-query" || request.Action == "delivery-flush" {
+	if request.Action == "delivery-query" || request.Action == "delivery-flush" || request.Action == "delivery-ack" {
 		var response helloResponse
 		if h.delivery != nil {
+			if request.Action == "delivery-ack" {
+				response.OK = h.delivery.acknowledge(request.Deliveries) == nil
+				_ = json.NewEncoder(conn).Encode(response)
+				_ = conn.Close()
+				return
+			}
 			var flushErr error
 			if request.Action == "delivery-flush" {
 				flushCtx, cancel := context.WithTimeout(h.ctx, handshakeTimeout)
@@ -1093,9 +1099,12 @@ func (h *host) handle(conn net.Conn) {
 			if len(providerFrame) > 0 && h.delivery != nil {
 				var deliveryErr error
 				providerFrame, deliveryErr = h.delivery.prepare(providerFrame)
-				if deliveryErr != nil {
+				if errors.Is(deliveryErr, errDuplicateDeliveryAttempt) {
 					h.detach(conn)
 					return
+				}
+				if deliveryErr != nil {
+					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
 				}
 			}
 			if len(providerFrame) > 0 {
@@ -1264,7 +1273,7 @@ func (h *host) forwardProvider(stdout io.Reader) error {
 		if len(frame) > 0 {
 			if h.delivery != nil {
 				if err := h.delivery.observe(frame); err != nil {
-					return err
+					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
 				}
 			}
 			h.mu.Lock()

@@ -144,6 +144,9 @@ func (a ChatDeliveryAttempt) Validate() error {
 // Validate checks vocabulary only; Accepts additionally checks correlation and
 // monotonic delivery facts against the original attempt.
 func (r ChatDeliveryReceipt) Validate() error {
+	if r.ProgressSequence < 0 {
+		return ErrInvalidChatJournal
+	}
 	if r.ExecutionSettled && r.Disposition != ChatDeliveryAccepted && r.Disposition != ChatDeliveryNotSent {
 		return ErrInvalidChatJournal
 	}

@@ -34,6 +34,9 @@ import (
 var aoBin string
 
 func TestMain(m *testing.M) {
+	if runReviewerStartupProvider() {
+		return
+	}
 	dir, err := os.MkdirTemp("", "ao-e2e-bin")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: mktemp:", err)

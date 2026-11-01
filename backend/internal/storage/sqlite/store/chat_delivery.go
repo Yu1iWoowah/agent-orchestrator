@@ -157,6 +157,40 @@ func (s *Store) UpdateChatDelivery(ctx context.Context, next domain.ChatDelivery
 		if n != 1 {
 			return ports.ErrAgentSettingsConflict
 		}
+		// Close the diagnostic in the same transaction as the terminal receipt.
+		if next.AttentionID != "" && (next.ExecutionSettled || next.Disposition == domain.ChatDeliveryNotSent) {
+			question, err := questionRow(ctx, q, next.SessionID, next.AttentionID)
+			if err != nil {
+				return err
+			}
+			if question.ClientKey != "delivery-"+next.ID {
+				return ports.ErrAgentSettingsConflict
+			}
+			if question.State == "open" {
+				reason := "原執行已確認結束"
+				if next.Disposition == domain.ChatDeliveryNotSent {
+					reason = "原輸入已確認未送出"
+				}
+				n, err := q.CloseAttentionQuestion(ctx, gen.CloseAttentionQuestionParams{ID: question.ID, OriginSessionID: string(next.SessionID), ExpectedVersion: question.Version, State: "cancelled", Actor: "agent", Reason: reason, At: sql.NullTime{Time: next.UpdatedAt.UTC(), Valid: true}})
+				if err != nil {
+					return err
+				}
+				if n != 1 {
+					return ports.ErrAgentSettingsConflict
+				}
+				row, err := questionRow(ctx, q, next.SessionID, next.AttentionID)
+				if err != nil {
+					return err
+				}
+				record, err := questionRecord(ctx, q, row)
+				if err != nil {
+					return err
+				}
+				if err := appendQuestionCompatibility(ctx, q, record, "cancelled", reason, next.UpdatedAt); err != nil {
+					return err
+				}
+			}
+		}
 		if next.Disposition == domain.ChatDeliveryNotSent && old.Disposition != domain.ChatDeliveryNotSent {
 			for _, input := range next.InputRefs {
 				if _, err := q.RequeueUnforwardedDeliveryMember(ctx, gen.RequeueUnforwardedDeliveryMemberParams{

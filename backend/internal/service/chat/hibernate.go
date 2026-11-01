@@ -401,7 +401,7 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 		controller.sendMu.Unlock()
 		return false, nil
 	}
-	if err := controller.settleOutboundLocked(ctx); err != nil {
+	if err := controller.settleOutboundLocked(checkCtx); err != nil {
 		controller.sendMu.Unlock()
 		return false, err
 	}
@@ -768,7 +768,7 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 			delete(s.backgroundWakes, id)
 			s.wakeMu.Unlock()
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		attempt, recordErr := s.beginWakeAttempt(ctx, id)
 		if recordErr != nil {
@@ -786,6 +786,11 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 			s.log.Warn("chat session could not wake; queued inputs preserved", "session", id, "code", "CHAT_WAKE_UNAVAILABLE")
 			return
 		}
+		// Provider startup has its own budget. A successful slow wake must not
+		// inherit an expired intake context when persisting and draining the queue.
+		cancel()
+		ctx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer drainCancel()
 		if version, switched := s.takeVersionSwitch(id); switched {
 			s.observeVersionSwitch(id, version, "succeeded")
 		}

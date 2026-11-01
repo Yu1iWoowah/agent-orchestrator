@@ -35,7 +35,8 @@ func (c *Controller) deliveryOwner(ctx context.Context, journal chatDeliveryJour
 
 func (c *Controller) reserveDeliveryLocked(ctx context.Context, members []string) (*domain.ChatDeliveryAttempt, bool, error) {
 	journal, ok := c.store.(chatDeliveryJournal)
-	if !ok || c.reviewID != "" {
+	_, supported := c.conv.(ports.ChatDeliveryObserver)
+	if !ok || !supported || c.reviewID != "" {
 		return nil, true, nil
 	}
 	current, err := c.deliveryOwner(ctx, journal)
@@ -74,6 +75,8 @@ func (c *Controller) bindDeliveryPrepared(ctx context.Context, a domain.ChatDeli
 // A native completion must not disappear when a read-only monitor commits the
 // same row first. Each retry requalifies the owner and the exact receipt keys.
 func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
 	var saved domain.ChatDeliveryAttempt
 	var err error
 	for retry := 0; retry < 3; retry++ {
@@ -101,7 +104,12 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	if !a.Accepts(r) {
 		return a, ports.ErrChatDeliveryUnverified
 	}
-	if a.ExecutionSettled && r.ExecutionSettled && r.Disposition == domain.ChatDeliveryAccepted {
+	if a.ExecutionSettled && r.ExecutionSettled && r.Disposition == domain.ChatDeliveryAccepted && a.AttentionID == "" && a.BlockedSince == nil && a.ErrorCode == "" {
+		return a, nil
+	}
+	previous := a.Receipt
+	advanced := previous == nil || r.ProgressSequence > previous.ProgressSequence || r.ObservedAt.After(previous.ObservedAt)
+	if previous != nil && r.ProgressSequence < previous.ProgressSequence {
 		return a, nil
 	}
 	r.ExecutionSettled = r.ExecutionSettled || a.ExecutionSettled
@@ -109,20 +117,31 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	a.UpdatedAt, a.Disposition, a.Receipt = laterChatTime(c.now(), a.UpdatedAt), r.Disposition, &r
 	if r.Disposition == domain.ChatDeliveryAccepted {
 		a.EvidenceLevel = 2
-		if r.ObservedAt.After(a.LastProgressAt) {
-			a.LastProgressAt = r.ObservedAt
-			a.BlockedSince = nil
-			a.ErrorCode = ""
-			nextCheck := a.LastProgressAt.Add(30 * time.Second)
-			a.NextCheckAt = &nextCheck
-		}
+	}
+	// Native progress is not acceptance. It only advances the silence deadline.
+	nativeProgress := r.ProviderEpoch != "" && r.ProviderRequestID != "" && r.Progress != "" && r.ProgressSequence > 0
+	if advanced && (r.Disposition == domain.ChatDeliveryAccepted || nativeProgress) {
+		a.LastProgressAt = laterChatTime(c.now(), a.LastProgressAt)
+		a.BlockedSince, a.ErrorCode = nil, ""
+		nextCheck := a.LastProgressAt.Add(30 * time.Second)
+		a.NextCheckAt = &nextCheck
 	}
 	a.ExecutionSettled = a.ExecutionSettled || r.ExecutionSettled
 	if a.ExecutionSettled || r.Disposition == domain.ChatDeliveryNotSent {
-		a.NextCheckAt = nil
+		a.NextCheckAt, a.BlockedSince, a.ErrorCode = nil, nil, ""
 	}
 	saved, err := journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
 	if err == nil {
+		if saved.ExecutionSettled && r.ProviderEpoch != "" {
+			if acknowledger, ok := c.conv.(ports.ChatDeliveryAcknowledger); ok {
+				ackCtx, cancel := c.deadlineContext(ctx, 5*time.Second)
+				ackErr := acknowledger.AcknowledgeDeliveryAttempt(ackCtx, deliveryLookup(saved))
+				cancel()
+				if ackErr != nil {
+					c.log.Warn("settled delivery evidence retained by host", "session", c.sessionID, "attempt", saved.ID)
+				}
+			}
+		}
 		resumed := false
 		c.mu.Lock()
 		if c.pendingDeliveryID == a.ID && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
@@ -180,6 +199,8 @@ type deliveryAttentionWriter interface {
 }
 
 func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAttempt, cause error) error {
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
 	journal, ok := c.store.(chatDeliveryJournal)
 	if !ok {
 		return ports.ErrChatDeliveryUnverified
@@ -239,6 +260,9 @@ func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 }
 
 func (c *Controller) startDeliveryMonitor() {
+	if _, ok := c.conv.(ports.ChatDeliveryObserver); !ok || c.reviewID != "" {
+		return
+	}
 	if _, ok := c.store.(chatDeliveryJournal); !ok || c.reviewID != "" {
 		return
 	}
@@ -319,7 +343,7 @@ func (c *Controller) monitorDeliveries() {
 						if queryErr == nil && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
 							continue
 						}
-						if queryErr == nil && saved.Disposition == domain.ChatDeliveryAccepted && saved.LastProgressAt.After(a.LastProgressAt) {
+						if queryErr == nil && saved.LastProgressAt.After(a.LastProgressAt) {
 							due = saved.LastProgressAt.Add(30 * time.Second)
 						} else if !due.After(c.now()) || a.BlockedSince != nil {
 							blockCtx, blockCancel := c.deadlineContext(context.Background(), 5*time.Second)
@@ -358,4 +382,41 @@ func laterChatTime(a, b time.Time) time.Time {
 		return b
 	}
 	return a
+}
+
+// Retry durable intake without requiring a second user send. Coalesce failures
+// and back off while storage is unavailable; stopped controllers own no timer.
+func (c *Controller) scheduleDeliveryRetry() {
+	c.mu.Lock()
+	if c.deliveryRetryScheduled {
+		c.mu.Unlock()
+		return
+	}
+	switch c.deliveryRetryDelay {
+	case 0:
+		c.deliveryRetryDelay = time.Second
+	case time.Second:
+		c.deliveryRetryDelay = 5 * time.Second
+	case 5 * time.Second:
+		c.deliveryRetryDelay = 15 * time.Second
+	default:
+		c.deliveryRetryDelay = 30 * time.Second
+	}
+	delay := c.deliveryRetryDelay
+	c.deliveryRetryScheduled = true
+	c.mu.Unlock()
+	timer := c.timerAfter(delay)
+	go func() {
+		select {
+		case <-c.stopped:
+			return
+		case <-timer:
+		}
+		c.mu.Lock()
+		c.deliveryRetryScheduled = false
+		c.mu.Unlock()
+		if !c.outboundQuiescing() {
+			c.queueSettingsRecheck()
+		}
+	}()
 }

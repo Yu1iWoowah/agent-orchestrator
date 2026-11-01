@@ -240,10 +240,13 @@ type Controller struct {
 	settingsExecutorID          string                              // guarded by sendMu
 	after                       func(time.Duration) <-chan time.Time
 	deliveryCheckMu             sync.Mutex
+	deliveryReceiptMu           sync.Mutex    // serializes attention creation with terminal receipts
 	deliveryWake                chan struct{} // guarded by mu
 	deliveryMonitorStarted      bool          // guarded by mu
 	deliveryImmediate           bool          // guarded by mu
 	deliveryQuiescing           bool          // guarded by mu
+	deliveryRetryScheduled      bool          // guarded by mu
+	deliveryRetryDelay          time.Duration // guarded by mu
 	pendingDeliveryID           string        // guarded by mu; original primary execution
 
 	conv                   ports.ChatConversation
@@ -2065,8 +2068,17 @@ func (c *Controller) dispatch(
 	delivery, created, err := c.reserveDeliveryLocked(ctx, members)
 	if err != nil || !created {
 		c.log.Warn("delivery reservation retained input", "session", c.sessionID, "turn", turnID, "code", "CHAT_DELIVERY_RESERVATION_UNAVAILABLE")
-		return c.queuedDispatchReceipt(turnID, requestedAt), nil //nolint:nilerr // Durable intake stays queued when reservation cannot be recorded.
+		// No provider I/O occurred. If a reservation committed but its reply was
+		// lost, retire that exact reservation before allowing another attempt.
+		if delivery != nil && delivery.ID != "" {
+			_ = c.recordLocalNotForwarded(context.WithoutCancel(ctx), delivery, "")
+		}
+		c.scheduleDeliveryRetry()
+		return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
 	}
+	c.mu.Lock()
+	c.deliveryRetryDelay = 0
+	c.mu.Unlock()
 	if delivery != nil {
 		msg.DeliveryAttemptID = delivery.ID
 	}
@@ -2532,11 +2544,22 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 	}
 	msg, err := c.queuedBatchInput(ctx, batch, nil)
 	if err != nil {
-		if failErr := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID,
-			queuedBatchIDs(batch), err.Error(), c.now()); failErr != nil {
-			return rejected, errors.Join(err, failErr)
+		// No reservation or provider I/O occurred. Restore every original receipt
+		// before isolating the invalid member; its siblings keep order and content.
+		if _, preserveErr := c.preserveBeforeProviderIO(ctx, batch[0].TurnID, queuedBatchIDs(batch[1:]), c.now()); preserveErr != nil {
+			return rejected, errors.Join(err, preserveErr)
 		}
-		return rejected, fmt.Errorf("%w: prepare queued input: %w", errDispatchNotSent, err)
+		if id, ok := invalidBatchTurn(err); ok {
+			if rejected == nil {
+				rejected = make(map[string]error)
+			}
+			rejected[id] = err
+			if settleErr := c.store.SettleTurnByID(ctx, id, domain.TurnStateFailed, err.Error(), c.now()); settleErr != nil {
+				return rejected, settleErr
+			}
+		}
+		c.scheduleDeliveryRetry()
+		return rejected, fmt.Errorf("%w: prepare queued input: %w", errRetryQueuedDispatch, err)
 	}
 	followers := queuedBatchIDs(batch[1:])
 	if _, err := c.dispatch(ctx, batch[0].TurnID, msg, c.now(), true, followers); err != nil {

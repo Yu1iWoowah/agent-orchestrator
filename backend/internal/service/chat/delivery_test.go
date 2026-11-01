@@ -3,6 +3,7 @@ package chat_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -214,13 +215,84 @@ func TestBlockedDeliveryRechecksOriginalOnNativeReady(t *testing.T) {
 		return e == nil && a.AttentionID != ""
 	})
 	conv.fakeDeliveryReceipt(attempt.ID, turn.ProviderTurnID, true)
+	// Settlement must clear diagnostics even without a newer progress timestamp.
+	conv.mu.Lock()
+	receipt := conv.deliveryReceipts[attempt.ID]
+	receipt.ObservedAt = attempt.Receipt.ObservedAt
+	conv.deliveryReceipts[attempt.ID] = receipt
+	conv.mu.Unlock()
 	// This event carries no receipt. The monitor must query the original host key.
 	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
 		return e == nil && a.ExecutionSettled
 	})
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	if err != nil || saved.BlockedSince != nil || saved.ErrorCode != "" {
+		t.Fatalf("terminal attempt retained blocked diagnostics: %+v %v", saved, err)
+	}
+	question, err := h.st.GetAttentionQuestion(t.Context(), testSession, saved.AttentionID)
+	if err != nil || question.State == "open" {
+		t.Fatalf("settled attempt retained open attention: %+v %v", question, err)
+	}
 	if len(conv.queryCount) < 2 || len(conv.sentTexts()) != 1 {
 		t.Fatal("native readiness did not query original execution, or replayed input")
+	}
+}
+
+// Embedding the base port deliberately excludes delivery observer methods.
+type unmanagedDeliveryConversation struct{ ports.ChatConversation }
+
+func TestUnmanagedConversationDoesNotReserveDelivery(t *testing.T) {
+	clock := newSettingsTestClock()
+	native := newFakeConversation()
+	h := deliveryHarness(t, &unmanagedDeliveryConversation{ChatConversation: native}, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "legacy driver input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := h.st.PendingChatDeliveries(t.Context(), testSession)
+	if err != nil || len(attempts) != 0 {
+		t.Fatalf("unmanaged driver acquired managed attempt: %+v %v", attempts, err)
+	}
+	native.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateCompleted
+	})
+	clock.advance(time.Minute)
+	if err := h.svc.StopAll(t.Context()); err != nil {
+		t.Fatalf("idle unmanaged driver cannot stop: %v", err)
+	}
+}
+
+type deliveryReservationFailureStore struct {
+	*store.Store
+	failed atomic.Bool
+}
+
+func (s *deliveryReservationFailureStore) ReserveChatDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (domain.ChatDeliveryAttempt, bool, error) {
+	if !s.failed.Swap(true) {
+		return domain.ChatDeliveryAttempt{}, false, errors.New("injected reservation failure")
+	}
+	return s.Store.ReserveChatDelivery(ctx, a)
+}
+func TestReservationFailureRetriesQueuedInputWithoutAnotherSend(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := newFakeConversation()
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { return &deliveryReservationFailureStore{Store: st} }, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "retry durable intake", ClientMessageID: "reserve-retry"})
+	if err != nil || turn.State != domain.TurnStateQueued {
+		t.Fatalf("intake lost: %+v %v", turn, err)
+	}
+	if len(conv.sentTexts()) != 0 {
+		t.Fatal("provider received input before reservation")
+	}
+	clock.awaitTimer(t, time.Second)
+	clock.advance(time.Second)
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].ID == turn.ID && s.Turns[0].State == domain.TurnStateRunning
+	})
+	if got := conv.sentTexts(); len(got) != 1 || got[0] != "retry durable intake" {
+		t.Fatalf("dispatch did not converge once: %v", got)
 	}
 }

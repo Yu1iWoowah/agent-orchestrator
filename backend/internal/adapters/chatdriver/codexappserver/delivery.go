@@ -19,3 +19,10 @@ func (c *conversation) FenceAndFlushOutbound(ctx context.Context, keys []ports.C
 	}
 	return c.proc.delivery.FenceAndFlushOutbound(ctx, keys)
 }
+
+func (c *conversation) AcknowledgeDeliveryAttempt(ctx context.Context, key ports.ChatDeliveryLookup) error {
+	if c.proc.delivery == nil {
+		return ports.ErrChatDeliveryUnverified
+	}
+	return c.proc.delivery.AcknowledgeDeliveryAttempt(ctx, key)
+}

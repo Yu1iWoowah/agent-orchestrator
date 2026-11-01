@@ -66,23 +66,27 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 	if uncovered {
 		return ports.ErrChatShutdownNotSettled
 	}
+	observer, supported := c.conv.(ports.ChatDeliveryObserver)
 	journal, managed := c.store.(chatDeliveryJournal)
-	if !managed {
+	if !managed || !supported {
 		if nativeInFlight {
 			return ports.ErrChatShutdownNotSettled
+		}
+		return nil
+	}
+	if c.reviewID != "" {
+		if nativeInFlight {
+			return ports.ErrChatShutdownNotSettled
+		}
+		_, err := observer.FenceAndFlushOutbound(ctx, nil)
+		if err != nil {
+			return errors.Join(ports.ErrChatShutdownNotSettled, err)
 		}
 		return nil
 	}
 	attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 	if err != nil {
 		return errors.Join(ports.ErrChatShutdownNotSettled, err)
-	}
-	observer, supported := c.conv.(ports.ChatDeliveryObserver)
-	if !supported {
-		if len(attempts) > 0 || nativeInFlight {
-			return ports.ErrChatShutdownNotSettled
-		}
-		return nil
 	}
 	keys := make([]ports.ChatDeliveryLookup, 0, len(attempts))
 	for _, a := range attempts {
@@ -158,6 +162,13 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			runtime.mu.Lock()
 			uncovered = uncovered || runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified
 			runtime.mu.Unlock()
+		}
+		if store, ok := s.sides.store.(*memorySideStore); ok {
+			for _, id := range store.unverifiedSides() {
+				if s.sides.runtimes[id] == nil {
+					uncovered = true
+				}
+			}
 		}
 		s.sides.mu.Unlock()
 		if uncovered {

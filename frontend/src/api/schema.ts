@@ -6539,6 +6539,8 @@ export interface components {
             observedAt: string;
             /** @enum {string} */
             progress?: "running" | "approval" | "tool" | "background";
+            /** Format: int64 */
+            progressSequence?: number;
             providerEpoch?: string;
             providerRequestId?: string;
             providerTurnId?: string;
@@ -9800,6 +9802,7 @@ export interface components {
             };
             messages: components["schemas"]["SideMessage"][];
             nativeAnchorId: string;
+            outboundUnverified: null | boolean;
             policyVersion: number;
             providerForkId: string;
             providerHostId: string;

@@ -1397,3 +1397,65 @@ func TestRelayWhileHibernatedKeepsSenderAndInteraction(t *testing.T) {
 		t.Fatalf("worker latest interaction = %v (found=%v err=%v), want %v", rec.Metadata.LatestInteractionAt, found, err, interactionAt)
 	}
 }
+
+func TestSlowBackgroundWakeDrainsWithoutAnotherSend(t *testing.T) {
+	h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
+	if slept, err := h.svc.HibernateChat(t.Context(), testSession); err != nil || !slept {
+		t.Fatalf("hibernate: %v %v", slept, err)
+	}
+	resumed := newFakeConversation()
+	resumed.turnSeq = 1
+	svc := chatsvc.New(chatsvc.Options{Store: h.st, Reader: fullSnapshotReader(h.st), Sessions: h.st, Drivers: fakeRegistry{driver: fakeDriver{conv: resumed}}, Activity: h.activity, Log: slog.New(slog.DiscardHandler), Now: h.now, NewID: func() string { return "slow-wake-id" }})
+	t.Cleanup(func() { _ = svc.StopAll(context.Background()) })
+	svc.SetWakeCallback(func(ctx context.Context, id domain.SessionID) error {
+		// The former background context expired at 30 seconds while native wake
+		// continued with its independent 60-second budget.
+		select {
+		case <-time.After(31 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		rec, found, err := h.st.GetSession(ctx, id)
+		if err != nil {
+			return fmt.Errorf("read wake owner: %w", err)
+		}
+		if !found {
+			return errors.New("wake owner not found")
+		}
+		ok, err := h.st.SetSessionHibernated(ctx, id, rec.Revision, nil)
+		if err != nil {
+			return fmt.Errorf("clear wake marker: %w", err)
+		}
+		if !ok {
+			return errors.New("wake owner changed")
+		}
+		_, err = svc.Start(ctx, chatsvc.StartConfig{SessionID: id, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), ProviderConversationID: rec.Metadata.ProviderConversationID})
+		return err
+	})
+	turn, err := svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "wake past former deadline", ClientMessageID: "slow-wake-input"})
+	if err != nil || turn.State != domain.TurnStateQueued {
+		t.Fatalf("cold intake: %+v %v", turn, err)
+	}
+	deadline := time.Now().Add(40 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(resumed.sentTexts()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := resumed.sentTexts(); len(got) != 1 || got[0] != "wake past former deadline" {
+		t.Fatalf("slow wake did not drain: %v", got)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		attempts, e := h.st.ListChatWakeAttempts(t.Context(), testSession)
+		if e == nil && len(attempts) == 1 && attempts[0].Phase == "ready" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	attempts, err := h.st.ListChatWakeAttempts(t.Context(), testSession)
+	if err != nil || len(attempts) != 1 || attempts[0].Phase != "ready" {
+		t.Fatalf("wake diagnosis not converged: %+v %v", attempts, err)
+	}
+}

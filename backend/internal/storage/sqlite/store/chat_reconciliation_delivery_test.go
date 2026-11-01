@@ -156,3 +156,61 @@ func TestSettingsReconciliationClaimNeverRepeatsUnknownEffect(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalDeliveryWithdrawsAttentionAtomically(t *testing.T) {
+	for _, disposition := range []domain.ChatDeliveryDisposition{domain.ChatDeliveryAccepted, domain.ChatDeliveryNotSent} {
+		t.Run(string(disposition), func(t *testing.T) {
+			s, _, rec := settingsStartFixture(t, "")
+			current, err := s.SessionAgentSettings(t.Context(), rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conv, err := s.ConversationForSession(t.Context(), rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC()
+			owner := *dispatchSnapshot(t, current).Owner
+			if _, err := s.AppendUserMessage(t.Context(), conv.ID, rec.ID, current.OwnerGeneration, domain.ConversationMessage{ID: "message", Text: "preserved input", ClientMessageID: "input", Origin: domain.MessageOriginHuman}, "turn", at); err != nil {
+				t.Fatal(err)
+			}
+			a, _, err := s.ReserveChatDelivery(t.Context(), domain.ChatDeliveryAttempt{ID: "attempt", SessionID: rec.ID, ConversationID: conv.ID, Owner: owner, Revision: current.Revision, TurnIDs: []string{"turn"}, Disposition: domain.ChatDeliveryReserved, CreatedAt: at, UpdatedAt: at, LastProgressAt: at})
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := askCreate(rec.ID)
+			command.ClientKey = "delivery-" + a.ID
+			question, _, err := s.CreateAttentionQuestion(t.Context(), command, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.Version++
+			a.AttentionID = question.ID
+			a.BlockedSince = &at
+			a.ErrorCode = "CHAT_EXECUTION_STATE_UNVERIFIED"
+			a, err = s.UpdateChatDelivery(t.Context(), a, 0, owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt := domain.ChatDeliveryReceipt{AttemptID: a.ID, ProviderEpoch: "epoch", ProviderRequestID: "rpc", Disposition: disposition, Complete: true, Source: "not_forwarded", ObservedAt: at}
+			if disposition == domain.ChatDeliveryAccepted {
+				receipt.Source = "provider_response"
+				receipt.ExecutionSettled = true
+				a.ExecutionSettled = true
+				a.EvidenceLevel = 2
+			}
+			a.Version++
+			a.Disposition = disposition
+			a.Receipt = &receipt
+			a.BlockedSince = nil
+			a.ErrorCode = ""
+			if _, err = s.UpdateChatDelivery(t.Context(), a, 1, owner); err != nil {
+				t.Fatal(err)
+			}
+			closed, err := s.GetAttentionQuestion(t.Context(), rec.ID, question.ID)
+			if err != nil || closed.State != "cancelled" {
+				t.Fatalf("terminal receipt left actionable attention: %+v %v", closed, err)
+			}
+		})
+	}
+}

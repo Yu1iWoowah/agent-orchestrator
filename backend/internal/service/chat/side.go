@@ -1026,6 +1026,9 @@ func (m *sideManager) attach(side domain.SideConversation, conv ports.ChatConver
 	runtime := &sideRuntime{side: side, conv: conv, cancel: cancel, done: ctx.Done(), ctx: ctx,
 		completed: make(chan ports.ChatEvent, 8), messageText: make(map[string]string),
 		messageIDs: make(map[string]string), activityIDs: make(map[string]string), activityText: make(map[string]string)}
+	if store, ok := m.store.(*memorySideStore); ok {
+		runtime.outboundUnverified = store.outboundUnverified(side.ID)
+	}
 	m.mu.Lock()
 	if m.runID != side.AppRunID || m.ctx.Err() != nil {
 		m.mu.Unlock()
@@ -1116,7 +1119,7 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 			case ports.ChatEventTurnCompleted:
 				runtime.mu.Lock()
 				noActiveTurn := runtime.activeTurnID == ""
-				compactionCompleted := noActiveTurn && runtime.compacting
+				compactionCompleted := noActiveTurn && (runtime.compacting || runtime.outboundUnverified) && event.ProviderTurnID != ""
 				runtime.mu.Unlock()
 				if compactionCompleted {
 					// ACP hosts refuse another prompt until the terminal receipt is
@@ -1134,6 +1137,9 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 					}
 					runtime.mu.Lock()
 					runtime.compacting = false
+					if !runtime.dispatchBlocked {
+						m.setOutboundUnverifiedLocked(runtime, false)
+					}
 					runtime.mu.Unlock()
 					m.signal()
 				}
@@ -1407,7 +1413,7 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 		providerRequestID = fmt.Sprintf("%s:retry:%d", turn.ClientMessageID, turn.DispatchAttempt)
 	}
 	runtime.mu.Lock()
-	runtime.outboundUnverified = true
+	m.setOutboundUnverifiedLocked(runtime, true)
 	runtime.mu.Unlock()
 	ref, err := runtime.conv.SendTurn(ctx, ports.ChatUserMessage{Text: text, Content: content,
 		ClientMessageID: providerRequestID, Origin: domain.MessageOriginHuman,
@@ -1507,11 +1513,15 @@ func (m *sideManager) awaitSideTurn(ctx context.Context, runtime *sideRuntime, s
 				m.service.log.Warn("side turn settlement failed", "side", side.ID, "turn", turn.ID, "error", err)
 				return
 			}
+			settlementVerified := true
 			if event.ProviderEventID != "" {
 				if acknowledger, ok := runtime.conv.(ports.ChatProviderEventAcknowledger); ok {
 					ackCtx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 					err := acknowledger.AcknowledgeProviderEvent(ackCtx, event.ProviderEventID)
 					cancel()
+					if err != nil {
+						settlementVerified = false
+					}
 					if err != nil && m.ctx.Err() == nil {
 						m.service.log.Warn("side provider event acknowledgement failed", "side", side.ID, "turn", turn.ID, "error", err)
 						_ = m.store.SetSideFailed(context.Background(), side.ID, side.Generation,
@@ -1521,6 +1531,9 @@ func (m *sideManager) awaitSideTurn(ctx context.Context, runtime *sideRuntime, s
 			}
 			m.announce(side.ID)
 			runtime.mu.Lock()
+			if settlementVerified {
+				m.setOutboundUnverifiedLocked(runtime, false)
+			}
 			runtime.activeTurnID = ""
 			runtime.providerTurnID = ""
 			runtime.mu.Unlock()
@@ -1852,7 +1865,7 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}
 	runtime.compacting = true
-	runtime.outboundUnverified = true
+	s.sides.setOutboundUnverifiedLocked(runtime, true)
 	runtime.mu.Unlock()
 	s.sides.mu.Unlock()
 	result, err := compactor.Compact(ctx)
@@ -2092,4 +2105,12 @@ func (s *Service) closeSessionSides(ctx context.Context, session domain.SessionI
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// Callers hold runtime.mu; recovery exports the same fact before native I/O.
+func (m *sideManager) setOutboundUnverifiedLocked(runtime *sideRuntime, value bool) {
+	runtime.outboundUnverified = value
+	if store, ok := m.store.(*memorySideStore); ok {
+		store.setOutboundUnverified(runtime.side.ID, value)
+	}
 }
