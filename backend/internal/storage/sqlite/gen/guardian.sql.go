@@ -552,6 +552,18 @@ func (q *Queries) HasGuardianRequests(ctx context.Context, arg HasGuardianReques
 	return exists, err
 }
 
+const hasPendingGuardianReviews = `-- name: HasPendingGuardianReviews :one
+SELECT EXISTS(SELECT 1 FROM guardian_review_pending r JOIN guardian_epochs e ON e.id=r.epoch_id
+JOIN sessions s ON s.id=e.session_id JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1)
+`
+
+func (q *Queries) HasPendingGuardianReviews(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasPendingGuardianReviews)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertGuardianRequest = `-- name: InsertGuardianRequest :execrows
 INSERT INTO guardian_requests(cli_version,epoch_id,thread_id,turn_id,response_id,root_turn_id,
  model_id,input_tokens,cached_tokens,cache_write_tokens,output_tokens,reasoning_tokens,total_tokens,

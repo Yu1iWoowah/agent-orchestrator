@@ -3229,7 +3229,7 @@ func (c *Controller) projectUnit(
 	// A terminal receipt compacts the entire prompt, so it cannot pass a
 	// failed earlier projection. Retry transient store errors in order; if
 	// still failing, detach and leave the journal for a replacement controller.
-	for attempt := 0; err != nil && (persistent || queuedReview || errors.Is(err, errGuardianReviewCapture)) && attempt < 3; attempt++ {
+	for attempt := 0; err != nil && persistent && attempt < 3; attempt++ {
 		time.Sleep(20 * time.Millisecond)
 		projected, primaryTurn, err = project()
 	}
@@ -3238,7 +3238,7 @@ func (c *Controller) projectUnit(
 			err = acknowledger.AcknowledgeProviderEvent(ctx, committed.ProviderEventID)
 		}
 	}
-	if err != nil && (persistent || queuedReview || errors.Is(err, errGuardianReviewCapture)) {
+	if err != nil && persistent {
 		c.log.Error("chat projection stopped",
 			"session", c.sessionID, "kind", event.Kind, "error", err)
 		c.mu.Lock()
@@ -3278,8 +3278,6 @@ func (c *Controller) cleanupOwnedControllerWork(ctx context.Context, now time.Ti
 	return err
 }
 
-var errGuardianReviewCapture = errors.New("guardian review durable capture failed")
-
 type guardianReviewSink interface {
 	QueueGuardianReview(context.Context, domain.GuardianReviewScope, domain.GuardianReview, time.Time) (bool, error)
 	RecordGuardianReview(context.Context, domain.GuardianReviewScope, domain.GuardianReview, time.Time) error
@@ -3316,23 +3314,38 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 }
 
 func (c *Controller) projectEventWithGuardian(ctx context.Context, event ports.ChatEvent, queued *bool) (bool, bool, error) {
+	if queued != nil {
+		*queued = false
+	}
+	captured := false
 	projected, err := c.archive(ctx, event, func(txCtx context.Context) error {
-		if sink, ok := c.guardianReviewSink(event); ok {
-			accepted, err := sink.QueueGuardianReview(txCtx, c.guardianReviewScope(), *event.GuardianReview, c.now())
-			if err != nil {
-				// Never propagate storage error text into generic projection logging.
-				return errGuardianReviewCapture
-			}
-			if queued != nil {
-				*queued = accepted
-			}
-		}
+		captured = c.captureGuardianReview(txCtx, event)
 		return c.apply(txCtx, event)
 	})
 	if err != nil || !projected {
 		return projected, false, err
 	}
+	if queued != nil {
+		*queued = captured
+	}
 	return true, c.applyCommittedTurnLifecycle(event), nil
+}
+
+func (c *Controller) captureGuardianReview(ctx context.Context, event ports.ChatEvent) bool {
+	sink, ok := c.guardianReviewSink(event)
+	if !ok {
+		return false
+	}
+	at := c.now()
+	for attempt := 0; attempt < 3; attempt++ {
+		accepted, err := sink.QueueGuardianReview(ctx, c.guardianReviewScope(), *event.GuardianReview, at)
+		if err == nil {
+			return accepted
+		}
+	}
+	// Capture is diagnostic: its isolated failure cannot reject Chat projection.
+	c.log.Warn("guardian review capture incomplete", "code", "collection_failed")
+	return false
 }
 
 // archive records event in the provider archive and runs project in the same

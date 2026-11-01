@@ -19,8 +19,32 @@ func (s *Store) RecordGuardianReview(ctx context.Context, scope domain.GuardianR
 }
 
 // QueueGuardianReview participates in the archive/projection transaction. Only
-// the metadata whitelist is queued; a committed activity cannot lose this fact.
+// the metadata whitelist is queued. A savepoint isolates diagnostic failures
+// from the surrounding Chat transaction; callers can keep projecting activity.
 func (s *Store) QueueGuardianReview(ctx context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, now time.Time) (bool, error) {
+	enabled, err := s.conversationReader(ctx).GuardianSessionEnabled(ctx, scope.SessionID)
+	if err != nil || !enabled {
+		return false, err
+	}
+	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
+		db, ok := ctx.Value(conversationProjectionDBKey{}).(gen.DBTX)
+		if !ok || db == nil {
+			return false, errors.New("guardian capture transaction unavailable")
+		}
+		if _, err := db.ExecContext(ctx, "SAVEPOINT guardian_review_capture"); err != nil {
+			return false, err
+		}
+		accepted, err := s.recordGuardianReview(ctx, scope, r, now, true)
+		if err != nil {
+			_, rollbackErr := db.ExecContext(ctx, "ROLLBACK TO SAVEPOINT guardian_review_capture")
+			_, releaseErr := db.ExecContext(ctx, "RELEASE SAVEPOINT guardian_review_capture")
+			return false, errors.Join(err, rollbackErr, releaseErr)
+		}
+		if _, err := db.ExecContext(ctx, "RELEASE SAVEPOINT guardian_review_capture"); err != nil {
+			return false, err
+		}
+		return accepted, nil
+	}
 	return s.recordGuardianReview(ctx, scope, r, now, true)
 }
 
@@ -212,8 +236,14 @@ func pendingGuardianReview(r gen.GuardianReviewPending) domain.GuardianReview {
 }
 
 // ReplayGuardianReviews recovers already validated observations, including after
-// a controller generation changes. Epoch deletion (purge) cascades to pending.
+// a controller generation changes. Disabling collection pauses application;
+// re-enabling resumes facts validated while enabled, in their original epochs.
+// This is not provider history backfill. Expiry and epoch purge delete pending.
 func (s *Store) ReplayGuardianReviews(ctx context.Context, now time.Time) error {
+	pending, err := s.qr.HasPendingGuardianReviews(ctx)
+	if err != nil || !pending {
+		return err
+	}
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err
 	}

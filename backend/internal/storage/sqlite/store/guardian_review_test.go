@@ -43,3 +43,41 @@ func TestDisabledGuardianReviewDoesNotWaitForProjectionWriter(t *testing.T) {
 		t.Fatal(result)
 	}
 }
+
+func TestEmptyGuardianReplayDoesNotWaitForProjectionWriter(t *testing.T) {
+	st, session, conversation := conversationFixture(t)
+	_, err := st.UpdateProjectSettings(context.Background(), "hist", "", domain.ProjectConfig{GuardianObservability: domain.GuardianObservabilityConfig{Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		_, err := st.ProjectProviderEvent(context.Background(), conversation, session, "gen-1", "held-replay", "test.held", "{}", histClock, func(context.Context) error { close(entered); <-release; return nil })
+		writerDone <- err
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	replayDone := make(chan error, 1)
+	go func() { replayDone <- st.ReplayGuardianReviews(ctx, histClock) }()
+	blocked := false
+	var replayErr error
+	select {
+	case replayErr = <-replayDone:
+	case <-ctx.Done():
+		blocked = true
+	}
+	close(release)
+	if err := <-writerDone; err != nil {
+		t.Fatal(err)
+	}
+	if blocked {
+		<-replayDone
+		t.Fatal("empty replay waited for the projection writer")
+	}
+	if replayErr != nil {
+		t.Fatal(replayErr)
+	}
+}

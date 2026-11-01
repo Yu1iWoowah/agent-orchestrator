@@ -720,7 +720,7 @@ func (s *Store) commitChatSpawn(
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.inTx(ctx, "commit Chat spawn", func(q *gen.Queries) error {
+	return s.inTxDB(ctx, "commit Chat spawn", func(q *gen.Queries, db gen.DBTX) error {
 		owner, err := q.GetSession(ctx, rec.ID)
 		if err != nil {
 			return fmt.Errorf("select Chat session %s: %w", rec.ID, err)
@@ -809,6 +809,9 @@ func (s *Store) commitChatSpawn(
 				return fmt.Errorf("stage Chat controller generation: Chat session %s not found", rec.ID)
 			}
 			txCtx := context.WithValue(ctx, conversationProjectionTxKey{}, q)
+			if db != nil {
+				txCtx = context.WithValue(txCtx, conversationProjectionDBKey{}, db)
+			}
 			if err := prepare(txCtx); err != nil {
 				return fmt.Errorf("project native provider history: %w", err)
 			}
@@ -3423,6 +3426,7 @@ func (s *Store) projectProviderEvent(
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := s.qw.WithTx(tx)
+	ctx = context.WithValue(ctx, conversationProjectionDBKey{}, tx)
 	projected, err := projectProviderEventTx(
 		ctx, q, conversationID, session, reviewID, generation,
 		providerEventID, method, payloadJSON, now, project,

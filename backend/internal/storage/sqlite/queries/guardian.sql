@@ -260,3 +260,7 @@ ORDER BY r.first_seen_at,r.epoch_id,r.parent_thread_id,r.review_id LIMIT 500;
 
 -- name: DeleteExpiredPendingGuardianReviews :exec
 DELETE FROM guardian_review_pending WHERE retention_at<=?;
+
+-- name: HasPendingGuardianReviews :one
+SELECT EXISTS(SELECT 1 FROM guardian_review_pending r JOIN guardian_epochs e ON e.id=r.epoch_id
+JOIN sessions s ON s.id=e.session_id JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1);
