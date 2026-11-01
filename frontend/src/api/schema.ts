@@ -1854,6 +1854,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operator-consent/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read operator confirmation qualification (PR1 is unavailable) */
+        get: operations["getOperatorConsentReadiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orchestrator/replacements/{operationId}": {
         parameters: {
             query?: never;
@@ -7843,6 +7860,19 @@ export interface components {
             startOnAttach?: boolean;
             /** @description Tab title for the new shell, for a client that already shows its tab. Trimmed; omitted or empty numbers it after the existing shells (Terminal N). */
             title?: string;
+        };
+        OperatorConsentReadinessResponse: {
+            authorityGo: boolean;
+            coreDelivered: boolean;
+            /** Format: date-time */
+            expiresAt: null | string;
+            issuerEpoch: string;
+            nativeIssuerDelivered: boolean;
+            protocol: string;
+            purposeSet: string[];
+            qualificationRef: string;
+            reason: string;
+            registryVersion: number;
         };
         OrchestratorHandoffConfig: {
             documentPath?: string;
@@ -16690,6 +16720,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getOperatorConsentReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorConsentReadinessResponse"];
                 };
             };
         };

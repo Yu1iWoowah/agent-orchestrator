@@ -4914,6 +4914,19 @@ paths:
       summary: Stream notification changes
       tags:
       - notifications
+  /api/v1/operator-consent/readiness:
+    get:
+      operationId: getOperatorConsentReadiness
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorConsentReadinessResponse'
+          description: OK
+      summary: Read operator confirmation qualification (PR1 is unavailable)
+      tags:
+      - system
   /api/v1/orchestrator/replacements/{operationId}:
     get:
       operationId: getOrchestratorReplacement
@@ -23662,6 +23675,45 @@ components:
             its tab. Trimmed; omitted or empty numbers it after the existing shells
             (Terminal N).
           type: string
+      type: object
+    OperatorConsentReadinessResponse:
+      properties:
+        authorityGo:
+          type: boolean
+        coreDelivered:
+          type: boolean
+        expiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        issuerEpoch:
+          type: string
+        nativeIssuerDelivered:
+          type: boolean
+        protocol:
+          type: string
+        purposeSet:
+          items:
+            type: string
+          type: array
+        qualificationRef:
+          type: string
+        reason:
+          type: string
+        registryVersion:
+          type: integer
+      required:
+      - protocol
+      - registryVersion
+      - coreDelivered
+      - nativeIssuerDelivered
+      - authorityGo
+      - purposeSet
+      - issuerEpoch
+      - expiresAt
+      - qualificationRef
+      - reason
       type: object
     OrchestratorHandoffConfig:
       properties:

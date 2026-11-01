@@ -4528,3 +4528,7 @@ type ReplacementRetainedRetryView struct {
 	Failure     domain.ReplacementFailure `json:"failure"`
 	RequestedAt time.Time                 `json:"requestedAt"`
 }
+
+// OperatorConsentReadinessResponse exposes qualification state, never authority
+// materials. C0-PR1 always reports authorityGo=false and an empty purpose set.
+type OperatorConsentReadinessResponse domain.OperatorAuthorityReadiness
