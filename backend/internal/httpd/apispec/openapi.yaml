@@ -18860,6 +18860,12 @@ components:
           type: string
         lastError:
           type: string
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         questionVersion:
           format: int64
           type: integer
@@ -18890,6 +18896,12 @@ components:
           maximum: 9.007199254740991e+15
           minimum: 1
           type: integer
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         questionId:
           maxLength: 128
           minLength: 1
@@ -19010,6 +19022,12 @@ components:
       type: object
     AttentionQuestionAnswer:
       properties:
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         otherText:
           maxLength: 4000
           minLength: 1
@@ -25089,6 +25107,12 @@ components:
           type: string
         lastError:
           type: string
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         questionVersion:
           format: int64
           type: integer

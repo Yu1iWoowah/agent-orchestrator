@@ -24,6 +24,10 @@ test("grouped decision validates, preserves drafts, and submits one saved receip
 	await expect(dialog.locator("fieldset[aria-invalid=true]")).toHaveCount(2);
 	await expect(dialog.locator("fieldset").first()).toBeFocused();
 	await fillGrouped(page);
+	const perNotes = "  選 A，但 PR3 先不要做\n保留原文 🚀  ";
+	const overallNotes = "  總補充\n可以明天做嗎？  ";
+	await dialog.getByRole("textbox", { name: "Notes (optional)", exact: true }).first().fill(perNotes);
+	await dialog.getByRole("textbox", { name: "Overall notes (optional)", exact: true }).fill(overallNotes);
 	const textarea = dialog.getByRole("textbox", { name: "Other answer: Checks" });
 	await textarea.press("Enter");
 	await expect(page.locator("html")).not.toHaveAttribute("data-answer-posts");
@@ -35,6 +39,8 @@ test("grouped decision validates, preserves drafts, and submits one saved receip
 	await expect(row).toBeFocused();
 	await row.press("Space");
 	await expect(page.getByRole("dialog").getByRole("checkbox", { name: "Tests", exact: true })).toBeChecked();
+	await expect(page.getByRole("dialog").getByRole("textbox", { name: "Notes (optional)", exact: true }).first()).toHaveValue(perNotes);
+	await expect(page.getByRole("dialog").getByRole("textbox", { name: "Overall notes (optional)", exact: true })).toHaveValue(overallNotes);
 	await page.getByRole("dialog").getByRole("button", { name: "Submit all answers" }).click();
 	await expect(page.getByRole("dialog")).toHaveCount(0);
 	await expect(page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true })).toHaveCount(0);
@@ -42,6 +48,8 @@ test("grouped decision validates, preserves drafts, and submits one saved receip
 	await page.getByRole("region", { name: "Awaiting you", exact: true }).getByRole("tab", { name: "History", exact: true }).click();
 	await page.getByRole("button", { name: "Open decision: Choose a deployment target", exact: true }).click();
 	await expect(page.getByRole("dialog").getByText("Saved · Pending delivery", { exact: true })).toBeVisible();
+	await expect(page.getByRole("dialog").getByRole("textbox", { name: "Notes (optional)", exact: true }).first()).toHaveValue(perNotes);
+	await expect(page.getByRole("dialog").getByRole("textbox", { name: "Overall notes (optional)", exact: true })).toHaveValue(overallNotes);
 	await expect(page.getByRole("dialog").getByText("Saved · Delivered", { exact: true })).toHaveCount(0);
 	await page.evaluate(() => window.dispatchEvent(new CustomEvent("decision-fixture", { detail: "delivered" })));
 	await expect(page.getByRole("dialog").getByText("Saved · Delivered", { exact: true })).toBeVisible();

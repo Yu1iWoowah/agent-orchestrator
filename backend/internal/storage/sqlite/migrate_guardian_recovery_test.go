@@ -3,7 +3,7 @@ package sqlite
 import "testing"
 
 func TestGuardianRecoverySnapshotMigrationPreservesExistingFacts(t *testing.T) {
-	const previous int64 = 20261101121152789
+	const previous int64 = 20261101143810287
 	const current int64 = 20261101144300192
 	db := openMigratedDatabaseCopy(t, previous)
 	for _, query := range []string{
@@ -28,6 +28,10 @@ func TestGuardianRecoverySnapshotMigrationPreservesExistingFacts(t *testing.T) {
 		}
 		if err := db.QueryRow("SELECT status FROM guardian_reviews WHERE review_id='review'").Scan(&status); err != nil || status != "approved" {
 			t.Fatalf("review changed: %v", err)
+		}
+		var notesColumn int
+		if err := db.QueryRow("SELECT count(*) FROM pragma_table_info('attention_answers') WHERE name='notes'").Scan(&notesColumn); err != nil || notesColumn != 1 {
+			t.Fatalf("main answer notes column changed: %v", err)
 		}
 	}
 	upTo(t, db, current)

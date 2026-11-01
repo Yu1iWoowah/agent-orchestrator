@@ -26,7 +26,8 @@ func askCLIFile(t *testing.T, body string) string {
 
 func TestAskCLICommandsUseOnlyDaemonRoutes(t *testing.T) {
 	payloadFile := askCLIFile(t, askCLIPayload)
-	answerFile := askCLIFile(t, askCLIAnswer)
+	answerWithNotes := strings.Replace(askCLIAnswer, `"selectedOptionIds":["stage"]`, `"selectedOptionIds":["stage"],"notes":"  選 A，但 PR3 先不要做\n原文  "`, 1)
+	answerFile := askCLIFile(t, strings.TrimSuffix(answerWithNotes, "}")+`,"notes":"總補充"}`)
 	for _, tc := range []struct {
 		name, method, path, bodyContains string
 		args                             []string
@@ -52,6 +53,9 @@ func TestAskCLICommandsUseOnlyDaemonRoutes(t *testing.T) {
 				raw, _ := io.ReadAll(r.Body)
 				if r.Method != tc.method || r.URL.RequestURI() != tc.path || !strings.Contains(string(raw), tc.bodyContains) {
 					t.Errorf("request %s %s %s", r.Method, r.URL.RequestURI(), raw)
+				}
+				if tc.name == "answer" && (!strings.Contains(string(raw), `"notes":"  選 A，但 PR3 先不要做\n原文  "`) || !strings.Contains(string(raw), `"notes":"總補充"`)) {
+					t.Errorf("notes lost: %s", raw)
 				}
 				if tc.name == "read" {
 					w.WriteHeader(http.StatusNoContent)
@@ -206,5 +210,47 @@ func TestAskProjectCLIUsesExplicitAudienceAndCursor(t *testing.T) {
 	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "ask", "project", "--project", "project", "--audience", "orchestrator", "--cursor", "next", "--limit", "2", "--json")
 	if err != nil || !strings.Contains(out, `"open": 5`) {
 		t.Fatalf("out=%s err=%v", out, err)
+	}
+}
+
+func TestAskCLIReadsSavedNotes(t *testing.T) {
+	for _, action := range []string{"get", "list"} {
+		for _, jsonOutput := range []bool{false, true} {
+			if action == "list" && !jsonOutput {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/json=%t", action, jsonOutput), func(t *testing.T) {
+				cfg := setConfigEnv(t)
+				t.Setenv("AO_SESSION_ID", "worker-1")
+				record := `{"id":"ask-1","state":"answered","version":1,"payload":` + askCLIPayload + `,"answer":{"answers":[{"questionKey":"target","selectedOptionIds":["stage"],"notes":"  選 A，但 PR3 先不要做\n原文  "}],"notes":"總補充"}}`
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/internal/telemetry/cli-invoked" {
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if action == "list" {
+						_, _ = io.WriteString(w, `{"items":[`+record+`],"history":1}`)
+					} else {
+						_, _ = io.WriteString(w, record)
+					}
+				}))
+				defer server.Close()
+				writeRunFileFor(t, cfg, server)
+				args := []string{"ask", action}
+				if action == "get" {
+					args = append(args, "ask-1")
+				} else {
+					args = append(args, "--state", "history")
+				}
+				if jsonOutput {
+					args = append(args, "--json")
+				}
+				stdout, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, args...)
+				if err != nil || !strings.Contains(stdout, `"notes": "總補充"`) || !strings.Contains(stdout, "PR3 先不要做") {
+					t.Fatalf("saved notes missing: %s %v", stdout, err)
+				}
+			})
+		}
 	}
 }

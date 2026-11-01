@@ -14,7 +14,7 @@ let client: QueryClient;
 beforeEach(() => {
 	localStorage.clear(); useQuestionDraftStore.setState({ entries: {}, storageAvailable: true });
 	post.mockReset(); client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	post.mockImplementation((_path, request) => Promise.resolve({ data: { clientAnswerId: request.body.clientAnswerId, questionVersion: request.body.expectedVersion, answers: request.body.answers, savedAt: "2026-10-29T01:00:00Z", deliveryState: "queued" }, response: { status: 200 } }));
+	post.mockImplementation((_path, request) => Promise.resolve({ data: { clientAnswerId: request.body.clientAnswerId, questionVersion: request.body.expectedVersion, answers: request.body.answers, notes: request.body.notes, savedAt: "2026-10-29T01:00:00Z", deliveryState: "queued" }, response: { status: 200 } }));
 });
 afterEach(() => { cleanup(); client.clear(); });
 
@@ -152,4 +152,39 @@ it.each([1, 4])("saves all %i related prompts together without implicit choices"
  await user.click(screen.getByRole("button", { name: "Submit all answers" }));
  await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
  expect(post.mock.calls[0][1].body.answers).toEqual(Array.from({length: count},(_,index)=>({questionKey:`target${index}`,selectedOptionIds:["stage"]})));
+});
+
+
+it("keeps both optional notes through closing and submits them alongside a single choice", async () => {
+	const mounted = show(); const user = userEvent.setup();
+	await user.click(await screen.findByRole("radio", { name: /Staging/ }));
+	await user.click(within(screen.getByRole("group", { name: /Which checks/ })).getByRole("checkbox", { name: "Tests" }));
+	const notes = "  選 A，但 PR3 先不要做\n原文 🚀  ";
+	fireEvent.change(screen.getAllByRole("textbox", { name: "Notes (optional)" })[0], { target: { value: notes } });
+	const total = screen.getByRole("textbox", { name: "Overall notes (optional)" });
+	await user.click(total); await user.type(total, "總補充{Enter}可以明天做嗎？");
+	expect(post).not.toHaveBeenCalled();
+	mounted.unmount(); show();
+	expect((await screen.findAllByRole("textbox", { name: "Notes (optional)" }))[0]).toHaveValue(notes);
+	expect(screen.getByRole("textbox", { name: "Overall notes (optional)" })).toHaveValue("總補充\n可以明天做嗎？");
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await screen.findByText("Saved · Pending delivery");
+	expect(post).toHaveBeenCalledTimes(1);
+	const sent = post.mock.calls[0][1].body;
+	expect(sent.answers[0]).toEqual({ questionKey: "target", selectedOptionIds: ["stage"], notes });
+	expect(sent.notes).toBe("總補充\n可以明天做嗎？");
+	expect(screen.getAllByRole("textbox", { name: "Notes (optional)" })[0]).toHaveAttribute("readonly");
+	expect(screen.getByRole("textbox", { name: "Overall notes (optional)" })).toHaveAttribute("readonly");
+});
+
+it("focuses overlong overall notes and leaves the answer unsent", async () => {
+	show(); const user = userEvent.setup();
+	await user.click(await screen.findByRole("radio", { name: /Staging/ }));
+	await user.click(within(screen.getByRole("group", { name: /Which checks/ })).getByRole("checkbox", { name: "Tests" }));
+	const total = screen.getByRole("textbox", { name: "Overall notes (optional)" });
+	fireEvent.change(total, { target: { value: "界".repeat(4001) } });
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	expect(total).toHaveFocus(); expect(total).toHaveAttribute("aria-invalid", "true");
+	expect(screen.getByRole("alert")).toHaveTextContent("Use at most 4000 characters for these notes.");
+	expect(post).not.toHaveBeenCalled();
 });

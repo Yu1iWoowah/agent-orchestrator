@@ -16,13 +16,13 @@ import type { MessageKey } from "../../i18n/messages";
 
 const errorKeys = {
 	required: "decision.error.required", single: "decision.error.single", unknown: "decision.error.unknown",
-	otherRequired: "decision.error.otherRequired", otherTooLong: "decision.error.otherTooLong",
+	otherRequired: "decision.error.otherRequired", otherTooLong: "decision.error.otherTooLong", notesTooLong: "decision.error.notesTooLong",
 } satisfies Record<QuestionFieldError, MessageKey>;
 
 function receiptFields(question: SessionQuestion) {
 	const fields = emptyQuestionFields(question.payload);
 	for (const answer of question.answer?.answers ?? []) {
-		fields[answer.questionKey] = { selectedOptionIds: answer.selectedOptionIds, otherSelected: answer.otherText != null, otherText: answer.otherText ?? "" };
+		fields[answer.questionKey] = { selectedOptionIds: answer.selectedOptionIds, otherSelected: answer.otherText != null, otherText: answer.otherText ?? "", notes: answer.notes ?? undefined };
 	}
 	return fields;
 }
@@ -59,13 +59,15 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 		if (entry?.phase.state === "editing" && (entry.phase.errorCode || entry.phase.message)) notice.current?.focus();
 	}, [entry?.phase]);
 	const fields = question.state === "open" ? entry?.fields ?? emptyQuestionFields(question.payload) : receiptFields(question);
-	const built = questionAnswers(question.payload, fields);
+	const notes = (question.state === "open" ? entry?.notes : question.answer?.notes) ?? "";
+	const built = questionAnswers(question.payload, fields, notes);
+	const notesInput = useRef<HTMLTextAreaElement>(null);
 	const locked = question.state !== "open" || !entry || entry.phase.state !== "editing";
 	const pending = entry?.phase.state === "submitting" || entry?.phase.state === "unknown";
 	const references = Object.values(entries).filter((draft) =>
 		(draft.scope.hostId ?? null) === (hostId ?? null) && draft.scope.sessionId === question.originSessionId && draft.scope.questionId === question.id &&
 		(draft.scope.version !== question.version || question.state !== "open" || draft.phase.state === "conflict") &&
-		Object.values(draft.fields).some((field) => field.selectedOptionIds.length || field.otherSelected || field.otherText));
+		(draft.notes || Object.values(draft.fields).some((field) => field.selectedOptionIds.length || field.otherSelected || field.otherText || field.notes)));
 	const changeField = (promptKey: string, field: QuestionField) => useQuestionDraftStore.getState().setField(key, promptKey, field);
 	return <form className="flex min-h-0 flex-1 flex-col overflow-hidden" data-question-version={question.version}
 		onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}
@@ -75,6 +77,7 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 			setShowErrors(true);
 			const first = question.payload.questions.find((prompt) => built.errors[prompt.key]);
 			if (first) { const group = groups.current.get(first.key); group?.focus({ preventScroll: true }); group?.scrollIntoView?.({ block: "nearest" }); return; }
+			if (built.errors.$notes) { notesInput.current?.focus(); return; }
 			if (useQuestionDraftStore.getState().begin(key, crypto.randomUUID(), Date.now())) void sendQuestionAnswer(client, key);
 		}}>
 		<div className="min-h-0 flex-1 space-y-5 overflow-y-auto break-words px-4 py-3">
@@ -161,9 +164,24 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 							</div>
 						</div>
 					</div>
+					<div className="space-y-1">
+						<Label htmlFor={`${groupId}-notes`}>{t("decision.notes")}</Label>
+						<Textarea id={`${groupId}-notes`} value={field.notes ?? ""} readOnly={locked} rows={2}
+							aria-invalid={error === "notesTooLong"} aria-describedby={`${groupId}-notes-counter${error === "notesTooLong" ? ` ${groupId}-error` : ""}`}
+							onChange={(event) => changeField(prompt.key, { ...field, notes: event.currentTarget.value })} />
+						<p id={`${groupId}-notes-counter`} className="text-right text-xs text-muted-foreground">{Array.from(field.notes ?? "").length}/4000</p>
+					</div>
 					{error ? <p id={`${groupId}-error`} role="alert" className="text-sm text-destructive">{t(errorKeys[error])}</p> : null}
 				</fieldset>;
 			})}
+			<div className="space-y-1">
+				<Label htmlFor={`${prefix}-notes`}>{t("decision.overallNotes")}</Label>
+				<Textarea id={`${prefix}-notes`} ref={notesInput} value={notes} readOnly={locked} rows={2}
+					aria-invalid={showErrors && Boolean(built.errors.$notes)} aria-describedby={`${prefix}-notes-counter${showErrors && built.errors.$notes ? ` ${prefix}-notes-error` : ""}`}
+					onChange={(event) => useQuestionDraftStore.getState().setNotes(key, event.currentTarget.value)} />
+				<p id={`${prefix}-notes-counter`} className="text-right text-xs text-muted-foreground">{Array.from(notes).length}/4000</p>
+				{showErrors && built.errors.$notes ? <p id={`${prefix}-notes-error`} role="alert" className="text-sm text-destructive">{t(errorKeys[built.errors.$notes])}</p> : null}
+			</div>
 		</div>
 		<div className="shrink-0 space-y-2 border-t border-border px-4 py-3">
 			{question.state === "open" && !compact ? <p
@@ -188,7 +206,9 @@ function PreviousQuestionDraft({ draft }: { draft: QuestionDraft }) {
 			return <div key={prompt.key}><dt className="font-medium">{prompt.question}</dt><dd className="space-y-1 whitespace-pre-wrap">
 				{field.selectedOptionIds.map((id) => <p key={id}>{prompt.options.find((option) => option.id === id)?.label ?? id}</p>)}
 				{field.otherText ? <p>{t(field.otherSelected ? "decision.other" : "decision.unselectedOther")}: {field.otherText}</p> : null}
+				{field.notes ? <p>{t("decision.notes")}: {field.notes}</p> : null}
 			</dd></div>;
 		})}</dl>
+		{draft.notes ? <p className="mt-3 whitespace-pre-wrap">{t("decision.overallNotes")}: {draft.notes}</p> : null}
 	</details>;
 }
