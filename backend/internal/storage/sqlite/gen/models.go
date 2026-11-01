@@ -753,6 +753,32 @@ type Notification struct {
 	SourceKey   string
 }
 
+type OperatorConfirmationRequest struct {
+	RequestRef   string
+	ActionKey    string
+	ProjectID    string
+	Purpose      string
+	PlanJson     string
+	PlanDigest   string
+	DaemonEpoch  string
+	ValidUntilMs int64
+	RevokedAtMs  sql.NullInt64
+	CreatedAtMs  int64
+}
+
+type OperatorConsent struct {
+	ConsentRef      string
+	RequestRef      string
+	PlanDigest      string
+	DaemonEpoch     string
+	IssuerEpoch     string
+	MintedAtMs      int64
+	ExpiresAtMs     int64
+	InvalidatedAtMs sql.NullInt64
+	ConsumedAtMs    sql.NullInt64
+	ReservationRef  string
+}
+
 type OrchestratorReplacement struct {
 	ID              string
 	ProjectID       string

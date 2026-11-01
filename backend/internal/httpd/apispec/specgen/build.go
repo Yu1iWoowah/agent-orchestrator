@@ -160,6 +160,8 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"ControllersOperatorConsentReadinessResponse":          "OperatorConsentReadinessResponse",
+	"DomainOperatorPurpose":                                "OperatorPurpose",
 	"ControllersGuardianPurgeQuery":                        "GuardianPurgeQuery",
 	"ControllersGuardianObservabilityResponse":             "GuardianObservabilityResponse",
 	"ControllersGuardianObservabilityQuery":                "GuardianObservabilityQuery",
@@ -896,6 +898,7 @@ type operation struct {
 
 func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
+	ops = append(ops, operation{method: http.MethodGet, path: "/api/v1/operator-consent/readiness", id: "getOperatorConsentReadiness", summary: "Read operator confirmation qualification (PR1 is unavailable)", tag: "system", resps: []respUnit{{http.StatusOK, controllers.OperatorConsentReadinessResponse{}}}})
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, projectDocumentOperations()...)

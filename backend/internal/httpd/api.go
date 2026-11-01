@@ -283,6 +283,7 @@ func (a *API) Register(root chi.Router) {
 	root.Route("/api/v1", func(r chi.Router) {
 		// Serve the OpenAPI document from the same origin as the routes it describes.
 		r.Get("/openapi.yaml", apispec.ServeYAML)
+		r.Get("/operator-consent/readiness", controllers.OperatorConsentReadiness)
 
 		r.Group(func(r chi.Router) {
 			// Large base64 bodies can spend longer than the ordinary REST budget
