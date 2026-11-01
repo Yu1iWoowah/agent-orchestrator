@@ -1106,6 +1106,7 @@ func Run(buildVersion string) error {
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
 	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithOrchestratorProjectGate})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		GuardianObservability:    guardianQuery(store),
 		OrchestratorReplacements: replacementSvc,
 
 		Awake:              awakeSvc,

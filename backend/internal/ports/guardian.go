@@ -20,4 +20,5 @@ type GuardianStore interface {
 	ObserveGuardianAnomalies(context.Context, domain.GuardianOwner, domain.GuardianSourceState, map[domain.GuardianCode]int64, time.Time) error
 	RecordGuardianAnomaly(context.Context, domain.SessionID, domain.GuardianCode, time.Time) error
 	CleanupGuardian(context.Context, time.Time) error
+	ReplayGuardianReviews(context.Context, time.Time) error
 }

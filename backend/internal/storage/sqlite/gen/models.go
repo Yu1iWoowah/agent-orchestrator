@@ -636,6 +636,11 @@ type GuardianEpoch struct {
 	FirstSeenAt    time.Time
 }
 
+type GuardianIngestionState struct {
+	ID       int64
+	Sequence int64
+}
+
 type GuardianPosition struct {
 	EpochID          int64
 	FileIdentity     string
@@ -679,6 +684,44 @@ type GuardianRequest struct {
 	CheckpointGeneration int64
 	CheckpointOffset     int64
 	Conflict             int64
+	IngestionSequence    int64
+}
+
+type GuardianReview struct {
+	EpochID           int64
+	ParentThreadID    string
+	ReviewID          string
+	ParentTurnID      string
+	TargetItemID      sql.NullString
+	Action            string
+	Status            string
+	DecisionSource    string
+	StartedAt         sql.NullTime
+	CompletedAt       sql.NullTime
+	FirstSeenAt       time.Time
+	RetentionAt       time.Time
+	SawStarted        int64
+	SawCompleted      int64
+	Conflict          int64
+	IngestionSequence int64
+}
+
+type GuardianReviewPending struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
 }
 
 type GuardianThread struct {

@@ -95,6 +95,8 @@ func (q *Queries) DeleteExpiredGuardianAnomalyStates(ctx context.Context, cutoff
 
 const deleteExpiredGuardianEpochs = `-- name: DeleteExpiredGuardianEpochs :exec
 DELETE FROM guardian_epochs WHERE guardian_epochs.first_seen_at<=?1
+AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_epochs.id)
+AND NOT EXISTS(SELECT 1 FROM guardian_review_pending r WHERE r.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_threads t WHERE t.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_positions p WHERE p.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_anomaly_states a WHERE a.epoch_id=guardian_epochs.id)
@@ -150,14 +152,34 @@ func (q *Queries) DeleteExpiredGuardianRequests(ctx context.Context, cutoff time
 	return err
 }
 
+const deleteExpiredGuardianReviews = `-- name: DeleteExpiredGuardianReviews :exec
+DELETE FROM guardian_reviews WHERE retention_at<=?
+`
+
+func (q *Queries) DeleteExpiredGuardianReviews(ctx context.Context, retentionAt time.Time) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredGuardianReviews, retentionAt)
+	return err
+}
+
 const deleteExpiredGuardianThreads = `-- name: DeleteExpiredGuardianThreads :exec
 DELETE FROM guardian_threads WHERE guardian_threads.retention_at<=?1
 AND NOT EXISTS(SELECT 1 FROM guardian_requests r WHERE r.epoch_id=guardian_threads.epoch_id AND r.thread_id=guardian_threads.thread_id)
+AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.parent_id)
+AND NOT EXISTS(SELECT 1 FROM guardian_review_pending r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.parent_id)
 AND NOT EXISTS(SELECT 1 FROM guardian_turn_models m WHERE m.epoch_id=guardian_threads.epoch_id AND m.thread_id=guardian_threads.thread_id)
 `
 
 func (q *Queries) DeleteExpiredGuardianThreads(ctx context.Context, cutoff time.Time) error {
 	_, err := q.db.ExecContext(ctx, deleteExpiredGuardianThreads, cutoff)
+	return err
+}
+
+const deleteExpiredPendingGuardianReviews = `-- name: DeleteExpiredPendingGuardianReviews :exec
+DELETE FROM guardian_review_pending WHERE retention_at<=?
+`
+
+func (q *Queries) DeleteExpiredPendingGuardianReviews(ctx context.Context, retentionAt time.Time) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredPendingGuardianReviews, retentionAt)
 	return err
 }
 
@@ -173,6 +195,21 @@ type DeleteGuardianAnomalyStateParams struct {
 
 func (q *Queries) DeleteGuardianAnomalyState(ctx context.Context, arg DeleteGuardianAnomalyStateParams) error {
 	_, err := q.db.ExecContext(ctx, deleteGuardianAnomalyState, arg.EpochID, arg.FileIdentity, arg.Code)
+	return err
+}
+
+const deletePendingGuardianReview = `-- name: DeletePendingGuardianReview :exec
+DELETE FROM guardian_review_pending WHERE epoch_id=? AND parent_thread_id=? AND review_id=?
+`
+
+type DeletePendingGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+}
+
+func (q *Queries) DeletePendingGuardianReview(ctx context.Context, arg DeletePendingGuardianReviewParams) error {
+	_, err := q.db.ExecContext(ctx, deletePendingGuardianReview, arg.EpochID, arg.ParentThreadID, arg.ReviewID)
 	return err
 }
 
@@ -318,6 +355,40 @@ func (q *Queries) GetGuardianPosition(ctx context.Context, arg GetGuardianPositi
 	return i, err
 }
 
+const getGuardianReview = `-- name: GetGuardianReview :one
+SELECT epoch_id, parent_thread_id, review_id, parent_turn_id, target_item_id, "action", status, decision_source, started_at, completed_at, first_seen_at, retention_at, saw_started, saw_completed, "conflict", ingestion_sequence FROM guardian_reviews WHERE epoch_id=? AND parent_thread_id=? AND review_id=?
+`
+
+type GetGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+}
+
+func (q *Queries) GetGuardianReview(ctx context.Context, arg GetGuardianReviewParams) (GuardianReview, error) {
+	row := q.db.QueryRowContext(ctx, getGuardianReview, arg.EpochID, arg.ParentThreadID, arg.ReviewID)
+	var i GuardianReview
+	err := row.Scan(
+		&i.EpochID,
+		&i.ParentThreadID,
+		&i.ReviewID,
+		&i.ParentTurnID,
+		&i.TargetItemID,
+		&i.Action,
+		&i.Status,
+		&i.DecisionSource,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.FirstSeenAt,
+		&i.RetentionAt,
+		&i.SawStarted,
+		&i.SawCompleted,
+		&i.Conflict,
+		&i.IngestionSequence,
+	)
+	return i, err
+}
+
 const getGuardianThread = `-- name: GetGuardianThread :one
 SELECT epoch_id, thread_id, parent_id, cli_version, retention_at, first_seen_at, last_seen_at FROM guardian_threads WHERE epoch_id=? AND thread_id=?
 `
@@ -338,6 +409,39 @@ func (q *Queries) GetGuardianThread(ctx context.Context, arg GetGuardianThreadPa
 		&i.RetentionAt,
 		&i.FirstSeenAt,
 		&i.LastSeenAt,
+	)
+	return i, err
+}
+
+const getPendingGuardianReview = `-- name: GetPendingGuardianReview :one
+SELECT epoch_id, parent_thread_id, review_id, parent_turn_id, target_item_id, "action", status, decision_source, started_at, completed_at, first_seen_at, retention_at, saw_started, saw_completed, "conflict" FROM guardian_review_pending WHERE epoch_id=? AND parent_thread_id=? AND review_id=?
+`
+
+type GetPendingGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+}
+
+func (q *Queries) GetPendingGuardianReview(ctx context.Context, arg GetPendingGuardianReviewParams) (GuardianReviewPending, error) {
+	row := q.db.QueryRowContext(ctx, getPendingGuardianReview, arg.EpochID, arg.ParentThreadID, arg.ReviewID)
+	var i GuardianReviewPending
+	err := row.Scan(
+		&i.EpochID,
+		&i.ParentThreadID,
+		&i.ReviewID,
+		&i.ParentTurnID,
+		&i.TargetItemID,
+		&i.Action,
+		&i.Status,
+		&i.DecisionSource,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.FirstSeenAt,
+		&i.RetentionAt,
+		&i.SawStarted,
+		&i.SawCompleted,
+		&i.Conflict,
 	)
 	return i, err
 }
@@ -380,6 +484,29 @@ func (q *Queries) GuardianModelExists(ctx context.Context, arg GuardianModelExis
 	return exists, err
 }
 
+const guardianSessionEnabled = `-- name: GuardianSessionEnabled :one
+SELECT EXISTS(SELECT 1 FROM sessions s JOIN guardian_project_policy p ON p.project_id=s.project_id
+WHERE s.id=?1 AND p.enabled=1)
+`
+
+func (q *Queries) GuardianSessionEnabled(ctx context.Context, sessionID domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, guardianSessionEnabled, sessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const guardianSnapshot = `-- name: GuardianSnapshot :one
+SELECT sequence FROM guardian_ingestion_state WHERE id=1
+`
+
+func (q *Queries) GuardianSnapshot(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, guardianSnapshot)
+	var sequence int64
+	err := row.Scan(&sequence)
+	return sequence, err
+}
+
 const hasGuardianCleanupState = `-- name: HasGuardianCleanupState :one
 SELECT EXISTS(SELECT 1 FROM guardian_epochs UNION ALL SELECT 1 FROM guardian_anomalies)
 `
@@ -388,6 +515,22 @@ SELECT EXISTS(SELECT 1 FROM guardian_epochs UNION ALL SELECT 1 FROM guardian_ano
 // inferred from cwd, file locations, or adjacent timestamps.
 func (q *Queries) HasGuardianCleanupState(ctx context.Context) (bool, error) {
 	row := q.db.QueryRowContext(ctx, hasGuardianCleanupState)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasGuardianParent = `-- name: HasGuardianParent :one
+SELECT EXISTS(SELECT 1 FROM guardian_threads WHERE epoch_id=? AND parent_id=?)
+`
+
+type HasGuardianParentParams struct {
+	EpochID  int64
+	ParentID string
+}
+
+func (q *Queries) HasGuardianParent(ctx context.Context, arg HasGuardianParentParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasGuardianParent, arg.EpochID, arg.ParentID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -404,6 +547,18 @@ type HasGuardianRequestsParams struct {
 
 func (q *Queries) HasGuardianRequests(ctx context.Context, arg HasGuardianRequestsParams) (bool, error) {
 	row := q.db.QueryRowContext(ctx, hasGuardianRequests, arg.EpochID, arg.ThreadID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasPendingGuardianReviews = `-- name: HasPendingGuardianReviews :one
+SELECT EXISTS(SELECT 1 FROM guardian_review_pending r JOIN guardian_epochs e ON e.id=r.epoch_id
+JOIN sessions s ON s.id=e.session_id JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1)
+`
+
+func (q *Queries) HasPendingGuardianReviews(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasPendingGuardianReviews)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -603,7 +758,7 @@ func (q *Queries) ListGuardianCandidates(ctx context.Context) ([]ListGuardianCan
 }
 
 const listGuardianContinuityRequests = `-- name: ListGuardianContinuityRequests :many
-SELECT cli_version, epoch_id, thread_id, turn_id, response_id, root_turn_id, model_id, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens, total_tokens, provider_at, first_seen_at, source_generation, source_offset, checkpoint_generation, checkpoint_offset, "conflict" FROM guardian_requests WHERE epoch_id=?1 AND thread_id=?2
+SELECT cli_version, epoch_id, thread_id, turn_id, response_id, root_turn_id, model_id, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens, total_tokens, provider_at, first_seen_at, source_generation, source_offset, checkpoint_generation, checkpoint_offset, "conflict", ingestion_sequence FROM guardian_requests WHERE epoch_id=?1 AND thread_id=?2
 AND ((checkpoint_generation=?3 AND checkpoint_offset>=?4 AND checkpoint_offset<?5 AND conflict=0)
  OR response_id IN (/*SLICE:response_ids*/?))
 ORDER BY checkpoint_offset,response_id
@@ -664,6 +819,7 @@ func (q *Queries) ListGuardianContinuityRequests(ctx context.Context, arg ListGu
 			&i.CheckpointGeneration,
 			&i.CheckpointOffset,
 			&i.Conflict,
+			&i.IngestionSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -760,7 +916,7 @@ func (q *Queries) ListGuardianModels(ctx context.Context, arg ListGuardianModels
 }
 
 const listGuardianRequests = `-- name: ListGuardianRequests :many
-SELECT cli_version, epoch_id, thread_id, turn_id, response_id, root_turn_id, model_id, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens, total_tokens, provider_at, first_seen_at, source_generation, source_offset, checkpoint_generation, checkpoint_offset, "conflict" FROM guardian_requests WHERE epoch_id=? ORDER BY thread_id,response_id
+SELECT cli_version, epoch_id, thread_id, turn_id, response_id, root_turn_id, model_id, input_tokens, cached_tokens, cache_write_tokens, output_tokens, reasoning_tokens, total_tokens, provider_at, first_seen_at, source_generation, source_offset, checkpoint_generation, checkpoint_offset, "conflict", ingestion_sequence FROM guardian_requests WHERE epoch_id=? ORDER BY thread_id,response_id
 `
 
 func (q *Queries) ListGuardianRequests(ctx context.Context, epochID int64) ([]GuardianRequest, error) {
@@ -793,6 +949,297 @@ func (q *Queries) ListGuardianRequests(ctx context.Context, epochID int64) ([]Gu
 			&i.CheckpointGeneration,
 			&i.CheckpointOffset,
 			&i.Conflict,
+			&i.IngestionSequence,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGuardianReviewCandidates = `-- name: ListGuardianReviewCandidates :many
+SELECT ub.id AS binding_id, ub.session_id, ub.native_root_id, s.project_id,
+ a.account_id, a.bound_at, p.enabled_at,
+ w.cleaned_before,
+ CAST((SELECT count(*) FROM sessions other WHERE other.harness='codex' AND other.is_terminated=0
+ AND ub.native_root_id=CASE WHEN other.session_mode='chat' AND other.provider_conversation_id<>''
+ THEN other.provider_conversation_id ELSE other.agent_session_id END)>1 AS INTEGER) AS owner_conflict
+FROM usage_bindings ub JOIN sessions s ON s.id=ub.session_id
+JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1
+JOIN session_agent_accounts a ON a.session_id=s.id AND a.provider='codex'
+LEFT JOIN guardian_watermarks w ON w.session_id=s.id
+WHERE s.id=?1 AND ub.harness='codex' AND s.harness='codex' AND s.is_terminated=0
+ AND a.bound_at=(SELECT MAX(b.bound_at) FROM session_agent_accounts b WHERE b.session_id=s.id AND b.provider='codex')
+ AND ub.native_root_id=CASE WHEN s.session_mode='chat' AND s.provider_conversation_id<>''
+ THEN s.provider_conversation_id ELSE s.agent_session_id END
+ORDER BY ub.id
+`
+
+type ListGuardianReviewCandidatesRow struct {
+	BindingID     int64
+	SessionID     domain.SessionID
+	NativeRootID  string
+	ProjectID     *domain.ProjectID
+	AccountID     string
+	BoundAt       time.Time
+	EnabledAt     time.Time
+	CleanedBefore sql.NullTime
+	OwnerConflict int64
+}
+
+func (q *Queries) ListGuardianReviewCandidates(ctx context.Context, sessionID domain.SessionID) ([]ListGuardianReviewCandidatesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listGuardianReviewCandidates, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGuardianReviewCandidatesRow{}
+	for rows.Next() {
+		var i ListGuardianReviewCandidatesRow
+		if err := rows.Scan(
+			&i.BindingID,
+			&i.SessionID,
+			&i.NativeRootID,
+			&i.ProjectID,
+			&i.AccountID,
+			&i.BoundAt,
+			&i.EnabledAt,
+			&i.CleanedBefore,
+			&i.OwnerConflict,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingGuardianReviews = `-- name: ListPendingGuardianReviews :many
+SELECT r.epoch_id, r.parent_thread_id, r.review_id, r.parent_turn_id, r.target_item_id, r."action", r.status, r.decision_source, r.started_at, r.completed_at, r.first_seen_at, r.retention_at, r.saw_started, r.saw_completed, r."conflict" FROM guardian_review_pending r JOIN guardian_epochs e ON e.id=r.epoch_id
+JOIN sessions s ON s.id=e.session_id JOIN guardian_project_policy p ON p.project_id=s.project_id AND p.enabled=1
+ORDER BY r.first_seen_at,r.epoch_id,r.parent_thread_id,r.review_id LIMIT 500
+`
+
+func (q *Queries) ListPendingGuardianReviews(ctx context.Context) ([]GuardianReviewPending, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingGuardianReviews)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GuardianReviewPending{}
+	for rows.Next() {
+		var i GuardianReviewPending
+		if err := rows.Scan(
+			&i.EpochID,
+			&i.ParentThreadID,
+			&i.ReviewID,
+			&i.ParentTurnID,
+			&i.TargetItemID,
+			&i.Action,
+			&i.Status,
+			&i.DecisionSource,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.FirstSeenAt,
+			&i.RetentionAt,
+			&i.SawStarted,
+			&i.SawCompleted,
+			&i.Conflict,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pageGuardianRequests = `-- name: PageGuardianRequests :many
+SELECT CAST(printf('%020d:%s:%s',r.epoch_id,r.thread_id,r.response_id) AS TEXT) AS sequence,r.cli_version, r.epoch_id, r.thread_id, r.turn_id, r.response_id, r.root_turn_id, r.model_id, r.input_tokens, r.cached_tokens, r.cache_write_tokens, r.output_tokens, r.reasoning_tokens, r.total_tokens, r.provider_at, r.first_seen_at, r.source_generation, r.source_offset, r.checkpoint_generation, r.checkpoint_offset, r."conflict", r.ingestion_sequence FROM guardian_requests r
+JOIN guardian_epochs e ON e.id=r.epoch_id
+WHERE e.session_id=?1 AND r.provider_at>=?2 AND r.provider_at<?3
+ AND r.ingestion_sequence<=?4 AND r.provider_at>?5 AND r.first_seen_at>?5
+ AND CAST(printf('%020d:%s:%s',r.epoch_id,r.thread_id,r.response_id) AS TEXT)>CAST(?6 AS TEXT)
+ORDER BY sequence LIMIT 500
+`
+
+type PageGuardianRequestsParams struct {
+	SessionID        string
+	SinceAt          time.Time
+	UntilAt          time.Time
+	SnapshotSequence int64
+	RetentionFloor   time.Time
+	AfterSequence    string
+}
+
+type PageGuardianRequestsRow struct {
+	Sequence             string
+	CliVersion           string
+	EpochID              int64
+	ThreadID             string
+	TurnID               string
+	ResponseID           string
+	RootTurnID           sql.NullString
+	ModelID              sql.NullString
+	InputTokens          sql.NullInt64
+	CachedTokens         sql.NullInt64
+	CacheWriteTokens     sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ReasoningTokens      sql.NullInt64
+	TotalTokens          sql.NullInt64
+	ProviderAt           time.Time
+	FirstSeenAt          time.Time
+	SourceGeneration     int64
+	SourceOffset         int64
+	CheckpointGeneration int64
+	CheckpointOffset     int64
+	Conflict             int64
+	IngestionSequence    int64
+}
+
+func (q *Queries) PageGuardianRequests(ctx context.Context, arg PageGuardianRequestsParams) ([]PageGuardianRequestsRow, error) {
+	rows, err := q.db.QueryContext(ctx, pageGuardianRequests,
+		arg.SessionID,
+		arg.SinceAt,
+		arg.UntilAt,
+		arg.SnapshotSequence,
+		arg.RetentionFloor,
+		arg.AfterSequence,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PageGuardianRequestsRow{}
+	for rows.Next() {
+		var i PageGuardianRequestsRow
+		if err := rows.Scan(
+			&i.Sequence,
+			&i.CliVersion,
+			&i.EpochID,
+			&i.ThreadID,
+			&i.TurnID,
+			&i.ResponseID,
+			&i.RootTurnID,
+			&i.ModelID,
+			&i.InputTokens,
+			&i.CachedTokens,
+			&i.CacheWriteTokens,
+			&i.OutputTokens,
+			&i.ReasoningTokens,
+			&i.TotalTokens,
+			&i.ProviderAt,
+			&i.FirstSeenAt,
+			&i.SourceGeneration,
+			&i.SourceOffset,
+			&i.CheckpointGeneration,
+			&i.CheckpointOffset,
+			&i.Conflict,
+			&i.IngestionSequence,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pageGuardianReviews = `-- name: PageGuardianReviews :many
+SELECT CAST(printf('%020d:%s:%s',r.epoch_id,r.parent_thread_id,r.review_id) AS TEXT) AS sequence,r.epoch_id, r.parent_thread_id, r.review_id, r.parent_turn_id, r.target_item_id, r."action", r.status, r.decision_source, r.started_at, r.completed_at, r.first_seen_at, r.retention_at, r.saw_started, r.saw_completed, r."conflict", r.ingestion_sequence FROM guardian_reviews r
+JOIN guardian_epochs e ON e.id=r.epoch_id
+WHERE e.session_id=?1 AND r.retention_at>=?2 AND r.retention_at<?3
+ AND r.ingestion_sequence<=?4 AND r.retention_at>?5
+ AND CAST(printf('%020d:%s:%s',r.epoch_id,r.parent_thread_id,r.review_id) AS TEXT)>CAST(?6 AS TEXT)
+ORDER BY sequence LIMIT 500
+`
+
+type PageGuardianReviewsParams struct {
+	SessionID        string
+	SinceAt          time.Time
+	UntilAt          time.Time
+	SnapshotSequence int64
+	RetentionFloor   time.Time
+	AfterSequence    string
+}
+
+type PageGuardianReviewsRow struct {
+	Sequence          string
+	EpochID           int64
+	ParentThreadID    string
+	ReviewID          string
+	ParentTurnID      string
+	TargetItemID      sql.NullString
+	Action            string
+	Status            string
+	DecisionSource    string
+	StartedAt         sql.NullTime
+	CompletedAt       sql.NullTime
+	FirstSeenAt       time.Time
+	RetentionAt       time.Time
+	SawStarted        int64
+	SawCompleted      int64
+	Conflict          int64
+	IngestionSequence int64
+}
+
+func (q *Queries) PageGuardianReviews(ctx context.Context, arg PageGuardianReviewsParams) ([]PageGuardianReviewsRow, error) {
+	rows, err := q.db.QueryContext(ctx, pageGuardianReviews,
+		arg.SessionID,
+		arg.SinceAt,
+		arg.UntilAt,
+		arg.SnapshotSequence,
+		arg.RetentionFloor,
+		arg.AfterSequence,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PageGuardianReviewsRow{}
+	for rows.Next() {
+		var i PageGuardianReviewsRow
+		if err := rows.Scan(
+			&i.Sequence,
+			&i.EpochID,
+			&i.ParentThreadID,
+			&i.ReviewID,
+			&i.ParentTurnID,
+			&i.TargetItemID,
+			&i.Action,
+			&i.Status,
+			&i.DecisionSource,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.FirstSeenAt,
+			&i.RetentionAt,
+			&i.SawStarted,
+			&i.SawCompleted,
+			&i.Conflict,
+			&i.IngestionSequence,
 		); err != nil {
 			return nil, err
 		}
@@ -971,6 +1418,54 @@ func (q *Queries) PutGuardianPosition(ctx context.Context, arg PutGuardianPositi
 	return err
 }
 
+const putGuardianReview = `-- name: PutGuardianReview :exec
+INSERT INTO guardian_reviews(epoch_id,parent_thread_id,review_id,parent_turn_id,target_item_id,action,status,decision_source,started_at,completed_at,first_seen_at,retention_at,saw_started,saw_completed,conflict)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(epoch_id,parent_thread_id,review_id) DO UPDATE SET
+ status=excluded.status,decision_source=excluded.decision_source,started_at=excluded.started_at,
+ completed_at=excluded.completed_at,retention_at=excluded.retention_at,
+ saw_started=excluded.saw_started,saw_completed=excluded.saw_completed,conflict=excluded.conflict
+`
+
+type PutGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
+}
+
+func (q *Queries) PutGuardianReview(ctx context.Context, arg PutGuardianReviewParams) error {
+	_, err := q.db.ExecContext(ctx, putGuardianReview,
+		arg.EpochID,
+		arg.ParentThreadID,
+		arg.ReviewID,
+		arg.ParentTurnID,
+		arg.TargetItemID,
+		arg.Action,
+		arg.Status,
+		arg.DecisionSource,
+		arg.StartedAt,
+		arg.CompletedAt,
+		arg.FirstSeenAt,
+		arg.RetentionAt,
+		arg.SawStarted,
+		arg.SawCompleted,
+		arg.Conflict,
+	)
+	return err
+}
+
 const putGuardianThread = `-- name: PutGuardianThread :exec
 INSERT INTO guardian_threads(epoch_id,thread_id,parent_id,cli_version,retention_at,first_seen_at,last_seen_at)
 VALUES(?,?,?,?,?,?,?) ON CONFLICT(epoch_id,thread_id) DO NOTHING
@@ -995,6 +1490,54 @@ func (q *Queries) PutGuardianThread(ctx context.Context, arg PutGuardianThreadPa
 		arg.RetentionAt,
 		arg.FirstSeenAt,
 		arg.LastSeenAt,
+	)
+	return err
+}
+
+const putPendingGuardianReview = `-- name: PutPendingGuardianReview :exec
+INSERT INTO guardian_review_pending(epoch_id,parent_thread_id,review_id,parent_turn_id,target_item_id,action,status,decision_source,started_at,completed_at,first_seen_at,retention_at,saw_started,saw_completed,conflict)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(epoch_id,parent_thread_id,review_id) DO UPDATE SET
+ status=excluded.status,decision_source=excluded.decision_source,started_at=excluded.started_at,
+ completed_at=excluded.completed_at,retention_at=excluded.retention_at,
+ saw_started=excluded.saw_started,saw_completed=excluded.saw_completed,conflict=excluded.conflict
+`
+
+type PutPendingGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
+}
+
+func (q *Queries) PutPendingGuardianReview(ctx context.Context, arg PutPendingGuardianReviewParams) error {
+	_, err := q.db.ExecContext(ctx, putPendingGuardianReview,
+		arg.EpochID,
+		arg.ParentThreadID,
+		arg.ReviewID,
+		arg.ParentTurnID,
+		arg.TargetItemID,
+		arg.Action,
+		arg.Status,
+		arg.DecisionSource,
+		arg.StartedAt,
+		arg.CompletedAt,
+		arg.FirstSeenAt,
+		arg.RetentionAt,
+		arg.SawStarted,
+		arg.SawCompleted,
+		arg.Conflict,
 	)
 	return err
 }

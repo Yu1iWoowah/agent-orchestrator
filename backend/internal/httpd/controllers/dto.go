@@ -18,6 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentsettings"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	guardiansvc "github.com/aoagents/agent-orchestrator/backend/internal/service/guardian"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
@@ -4527,4 +4528,27 @@ type ReplacementRetainedRetryView struct {
 	Phase       domain.ReplacementPhase   `json:"phase"`
 	Failure     domain.ReplacementFailure `json:"failure"`
 	RequestedAt time.Time                 `json:"requestedAt"`
+}
+
+// GuardianObservabilityResponse is the metadata-only, local query contract.
+type GuardianObservabilityResponse guardiansvc.Report
+
+// GuardianObservabilityQuery declares the bounded local query parameters.
+type GuardianObservabilityQuery struct {
+	SessionID string `path:"sessionId"`
+	Since     string `query:"since" format:"date-time"`
+	Until     string `query:"until" format:"date-time"`
+	Details   bool   `query:"details"`
+	Limit     int    `query:"limit" minimum:"1" maximum:"500"`
+	Cursor    string `query:"cursor" maxLength:"2048"`
+}
+
+// GuardianPurgeResponse confirms that metadata has been purged.
+type GuardianPurgeResponse struct {
+	Purged bool `json:"purged"`
+}
+
+// GuardianPurgeQuery accepts only the session identity.
+type GuardianPurgeQuery struct {
+	SessionID string `path:"sessionId"`
 }
