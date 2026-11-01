@@ -112,19 +112,29 @@ func (c *Controller) settingsContext(ctx context.Context, journal agentSettingsJ
 	return current, nil
 }
 
+// qualifySettings tracks executor work only while its caller owns sendMu.
 func (c *Controller) qualifySettings(ctx context.Context, op domain.AgentSettingsOperation, owner domain.AgentSettingsOwner, restoring bool) (domain.AgentSettingsQualification, error) {
+	var proof domain.AgentSettingsQualification
+	err := c.settingsRPC(ctx, "observing", false, func(ctx context.Context) error {
+		var err error
+		proof, err = c.qualifySettingsRead(ctx, op, owner, restoring)
+		return err
+	})
+	return proof, err
+}
+
+// Intake validation can run concurrently with the executor. It has a bounded
+// read context and never inspects or changes the executor's attempt state.
+func (c *Controller) qualifySettingsRead(ctx context.Context, op domain.AgentSettingsOperation, owner domain.AgentSettingsOwner, restoring bool) (domain.AgentSettingsQualification, error) {
 	c.mu.Lock()
 	validator := c.settingsValidator
 	c.mu.Unlock()
 	if validator == nil {
 		return domain.AgentSettingsQualification{}, fmt.Errorf("%w: settings_validation_unavailable", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
-	var proof domain.AgentSettingsQualification
-	var err error
-	err = c.settingsRPC(ctx, "observing", false, func(ctx context.Context) error {
-		proof, err = validator.ValidateAgentSettings(ctx, op, owner, restoring)
-		return err
-	})
+	readCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
+	defer cancel()
+	proof, err := validator.ValidateAgentSettings(readCtx, op, owner, restoring)
 	if err != nil {
 		return proof, err
 	}
@@ -166,7 +176,7 @@ func (c *Controller) queueAgentSettings(ctx context.Context, op domain.AgentSett
 	if op.Source != current.Settings || op.BaseRevision != current.Revision || op.ControllerGeneration != current.OwnerGeneration || op.AccountID != current.AccountID || op.ProviderConversationID != current.ProviderConversationID || op.BranchID != current.BranchID || settingsSelection(c.turnSettings()) != current.Settings {
 		return op, ports.ErrAgentSettingsConflict
 	}
-	if _, err := c.qualifySettings(ctx, op, ownerForSettings(current), false); err != nil {
+	if _, err := c.qualifySettingsRead(ctx, op, ownerForSettings(current), false); err != nil {
 		return op, err
 	}
 	if old == nil {
