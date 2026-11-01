@@ -2837,6 +2837,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry a versioned reconciliation attempt without changing preferences or replaying uncertain effects */
+        post: operations["retryAgentSettingsAttempt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/settle": {
         parameters: {
             query?: never;
@@ -5547,6 +5564,9 @@ export interface components {
             efforts: string[];
             models: string[];
         };
+        AgentSettingsAttemptResponse: {
+            attempt: components["schemas"]["AgentSettingsReconciliation"];
+        };
         AgentSettingsEffective: {
             effort: components["schemas"]["AgentSettingObservation"];
             fastMode: components["schemas"]["AgentSettingObservation"];
@@ -5653,6 +5673,58 @@ export interface components {
                 [key: string]: components["schemas"]["AgentSettingsAllowance"];
             };
         };
+        AgentSettingsReconciliation: {
+            actionKey?: string;
+            /** Format: date-time */
+            blockedSince?: null | string;
+            /** Format: date-time */
+            claimUntil: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            deadline: string;
+            desired: components["schemas"]["AgentSettings"];
+            effectPending: boolean;
+            errorCategory?: string;
+            errorCode?: string;
+            /** @enum {string} */
+            evidenceKind: "unknown" | "provider_current" | "per_turn_wire";
+            /** Format: date-time */
+            failedAt?: null | string;
+            failedStep?: string;
+            historicalApplied?: components["schemas"]["AgentSettings"];
+            id: string;
+            jsonRpcCode?: null | number;
+            /** Format: date-time */
+            lastProgressAt: string;
+            lastSuccessfulStep?: string;
+            missingEvidence: string[];
+            /** @enum {string} */
+            observationAvailability: "unknown" | "available" | "unsupported";
+            observationRef?: string;
+            observed?: components["schemas"]["AgentSettings"];
+            operationId?: string;
+            originReplacementOperationId?: null | string;
+            owner: components["schemas"]["AgentSettingsOwner"];
+            /** @enum {string} */
+            phase: "observing" | "waiting_idle" | "applying" | "verifying" | "ready" | "blocked" | "recovery_required" | "cancelled";
+            preferenceAtStart: components["schemas"]["AgentSettings"];
+            providerEpoch?: string;
+            providerErrorCode?: string;
+            recoveryActions: string[];
+            requestId?: string;
+            retryCount: number;
+            retryOfAttemptId?: string;
+            /** Format: int64 */
+            retryOfVersion?: number;
+            /** Format: int64 */
+            revision: number;
+            safeCause?: string;
+            sessionId: string;
+            step: string;
+            /** Format: int64 */
+            version: number;
+        };
         AgentSettingsRecovery: {
             /** Format: date-time */
             claimedAt: string;
@@ -5719,6 +5791,11 @@ export interface components {
             liveSessions: number;
             /** @description Sessions that run this harness or own a reviewer that does. */
             sessionIds?: string[];
+        };
+        AgentsettingsRetryAttempt: {
+            attemptId: string;
+            expectedRevision: number;
+            expectedVersion: number;
         };
         AppDiagnosticsAudit: {
             /** Format: date-time */
@@ -6378,6 +6455,58 @@ export interface components {
             agent: string;
             modes: string[];
         };
+        ChatDeliveryAttempt: {
+            attentionId?: string;
+            /** Format: date-time */
+            blockedSince?: null | string;
+            conversationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            disposition: "dispatch_reserved" | "known_not_sent" | "outcome_unknown" | "accepted";
+            errorCode?: string;
+            evidenceLevel: number;
+            executionSettled: boolean;
+            id: string;
+            inputRefs: components["schemas"]["ChatDeliveryInputRef"][];
+            /** Format: date-time */
+            lastProgressAt: string;
+            /** Format: date-time */
+            nextCheckAt?: null | string;
+            owner: components["schemas"]["AgentSettingsOwner"];
+            preparedTurnId?: string;
+            receipt?: components["schemas"]["ChatDeliveryReceipt"];
+            /** Format: int64 */
+            revision: number;
+            sessionId: string;
+            turnIds: string[];
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
+        };
+        ChatDeliveryInputRef: {
+            branchId: string;
+            sessionId: string;
+            turnId: string;
+        };
+        ChatDeliveryReceipt: {
+            attemptId: string;
+            complete: boolean;
+            custodyFlushed: boolean;
+            /** @enum {string} */
+            disposition: "dispatch_reserved" | "known_not_sent" | "outcome_unknown" | "accepted";
+            executionSettled: boolean;
+            /** Format: date-time */
+            observedAt: string;
+            /** @enum {string} */
+            progress?: "running" | "approval" | "tool" | "background";
+            providerEpoch?: string;
+            providerRequestId?: string;
+            providerTurnId?: string;
+            /** @enum {string} */
+            source: "provider_response" | "provider_event" | "not_forwarded" | "local_not_forwarded" | "incomplete";
+        };
         ChatFileReferenceLine: {
             /** @enum {string} */
             kind: "context" | "add" | "del";
@@ -6396,6 +6525,20 @@ export interface components {
         };
         ChatPermissionModesResponse: {
             agents: components["schemas"]["ChatAgentPermissionModes"][];
+        };
+        ChatWakeAttempt: {
+            /** Format: date-time */
+            createdAt: string;
+            errorCode?: string;
+            id: string;
+            ownerGeneration?: string;
+            /** @enum {string} */
+            phase: "waking" | "draining" | "ready" | "blocked";
+            sessionId: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            version: number;
         };
         ClaimPRRequest: {
             allowTakeover?: null | boolean;
@@ -8873,11 +9016,14 @@ export interface components {
             effective: components["schemas"]["AgentSettingsEffective"];
             history?: components["schemas"]["AgentSettingsHistoryEntry"][];
             pending?: components["schemas"]["AgentSettingsOperation"];
+            pendingDeliveries?: components["schemas"]["ChatDeliveryAttempt"][];
+            reconciliations?: components["schemas"]["AgentSettingsReconciliation"][];
             restartRequired?: boolean;
             /** Format: int64 */
             revision: number;
             sessionId: string;
             settings: components["schemas"]["AgentSettings"];
+            wakeAttempts?: components["schemas"]["ChatWakeAttempt"][];
             writerRecovery?: components["schemas"]["AgentSettingsWriterRecovery"];
         };
         SessionArchiveSummary: {
@@ -21130,6 +21276,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentSettingsOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    retryAgentSettingsAttempt: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-AO-Session-ID"?: string;
+                /** @description Settings-purpose native-environment grant; never returned or persisted. */
+                "X-AO-Settings-Grant"?: string;
+            };
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentsettingsRetryAttempt"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSettingsAttemptResponse"];
                 };
             };
             /** @description Bad Request */

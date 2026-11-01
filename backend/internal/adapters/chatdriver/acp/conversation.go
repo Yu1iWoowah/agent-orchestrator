@@ -46,6 +46,8 @@ var (
 )
 
 type preparedTurn struct {
+	deliveryAttemptID string
+
 	id              string
 	clientMessageID string
 	prompt          []acpsdk.ContentBlock
@@ -511,7 +513,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	id := uuid.NewString()
-	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt}
+	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt, deliveryAttemptID: msg.DeliveryAttemptID}
 	return ports.ChatTurnRef{ProviderTurnID: id}, nil
 }
 
@@ -788,6 +790,7 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 		messageID = uuid.NewString()
 	}
 	resp, err := c.conn.Prompt(ctx, acpsdk.PromptRequest{
+		Meta:      map[string]any{persistenthost.DeliveryMetaKey: turn.deliveryAttemptID},
 		SessionId: acpsdk.SessionId(sessionID),
 		MessageId: &messageID,
 		Prompt:    turn.prompt,

@@ -36,7 +36,13 @@ func (c *conversation) SetConfigOption(
 	ctx context.Context,
 	id string,
 	value ports.ChatConfigOptionValue,
-) ([]ports.ChatConfigOption, error) {
+) (options []ports.ChatConfigOption, resultErr error) {
+	defer func() {
+		var native *acpsdk.RequestError
+		if errors.As(resultErr, &native) {
+			resultErr = ports.NewAgentSettingsRPCFailure(native.Code, resultErr)
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

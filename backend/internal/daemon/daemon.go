@@ -1106,6 +1106,7 @@ func Run(buildVersion string) error {
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
 	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithOrchestratorProjectGate})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		ShutdownPreflight:        chatSvc.PreflightShutdown,
 		OrchestratorReplacements: replacementSvc,
 
 		Awake:              awakeSvc,
@@ -1426,7 +1427,10 @@ func Run(buildVersion string) error {
 	// consumes host-replayed output. Explicit session termination, not daemon
 	// shutdown, destroys them.
 	chatStopCtx, chatCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	chatSvc.StopAll(chatStopCtx)
+	if err := chatSvc.StopAll(chatStopCtx); err != nil {
+		log.Error("chat shutdown not settled; original providers retained", "error", err)
+		runErr = errors.Join(runErr, err)
+	}
 	chatCancel()
 	if usageDone != nil {
 		<-usageDone

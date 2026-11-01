@@ -6,6 +6,24 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// ChatAgentSettingsReconciliationEvidence qualifies the current attachment.
+// A sticky adapter must supply a provider-qualified snapshot; reading setup or
+// returning a successful setter acknowledgement cannot implement this contract.
+type ChatAgentSettingsReconciliationEvidence interface {
+	ReconciliationEvidence(context.Context, domain.AgentSettingsOwner) (AgentSettingsReconciliationEvidence, error)
+}
+
+// AgentSettingsReconciliationEvidence separates per-request wire from sticky
+// provider state. Per-turn wire does not claim a current provider observation.
+type AgentSettingsReconciliationEvidence struct {
+	Kind               string
+	Owner              domain.AgentSettingsOwner
+	ProviderEpoch      string
+	SourceRef          string
+	Settings           *domain.AgentSettings
+	PermissionVerified bool
+}
+
 // AgentSettingsCaller is untrusted transport identity. It contains a bearer
 // only in memory; durable actor attribution is resolved by the service.
 type AgentSettingsCaller struct {
@@ -68,3 +86,20 @@ type ChatAgentSettingsValidator interface {
 type ChatAgentSettingsRecoveryPreparer interface {
 	PrepareAgentSettingsRecovery(context.Context, domain.AgentSettings) (domain.AgentSettingsProviderPlan, error)
 }
+
+// AgentSettingsRPCFailure preserves a numeric protocol code without publishing
+// the provider's unbounded error text in an attempt DTO or log.
+type AgentSettingsRPCFailure struct {
+	code  int
+	cause error
+}
+
+// NewAgentSettingsRPCFailure retains a numeric RPC code without exposing its message.
+func NewAgentSettingsRPCFailure(code int, cause error) error {
+	return &AgentSettingsRPCFailure{code: code, cause: cause}
+}
+func (e *AgentSettingsRPCFailure) Error() string { return "agent settings native RPC failed" }
+func (e *AgentSettingsRPCFailure) Unwrap() error { return e.cause }
+
+// AgentSettingsJSONRPCCode returns the original numeric protocol code.
+func (e *AgentSettingsRPCFailure) AgentSettingsJSONRPCCode() int { return e.code }

@@ -4528,3 +4528,11 @@ type ReplacementRetainedRetryView struct {
 	Failure     domain.ReplacementFailure `json:"failure"`
 	RequestedAt time.Time                 `json:"requestedAt"`
 }
+
+// RetryAgentSettingsAttemptPayload targets an existing versioned attempt.
+type RetryAgentSettingsAttemptPayload = agentsettings.RetryAttempt
+
+// AgentSettingsAttemptResponse exposes durable safe diagnostics, not native proof.
+type AgentSettingsAttemptResponse struct {
+	Attempt domain.AgentSettingsReconciliation `json:"attempt"`
+}

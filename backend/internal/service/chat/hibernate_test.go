@@ -893,7 +893,7 @@ func testSendWhileHibernatedReturnsBeforeWakeAndDrainsQueue(t *testing.T, cancel
 	t.Fatalf("background queue was not drained: %v", resumed.sentTexts())
 }
 
-func TestFailedBackgroundWakeSettlesAllQueuedMessagesOnce(t *testing.T) {
+func TestFailedBackgroundWakePreservesAllQueuedMessagesOnce(t *testing.T) {
 	h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
 	ctx := context.Background()
 	if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
@@ -903,10 +903,12 @@ func TestFailedBackgroundWakeSettlesAllQueuedMessagesOnce(t *testing.T) {
 	var wakeCalls atomic.Int32
 	wakeStarted := make(chan struct{}, 2)
 	releaseWake := make(chan struct{})
+	wakeReturned := make(chan struct{})
 	h.svc.SetWakeCallback(func(context.Context, domain.SessionID) error {
 		wakeCalls.Add(1)
 		wakeStarted <- struct{}{}
 		<-releaseWake
+		close(wakeReturned)
 		return wakeErr
 	})
 	turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
@@ -927,24 +929,33 @@ func TestFailedBackgroundWakeSettlesAllQueuedMessagesOnce(t *testing.T) {
 		t.Fatalf("second cold send = %+v, %v", turn, err)
 	}
 	close(releaseWake)
+	<-wakeReturned
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		snapshot, err := h.svc.Snapshot(ctx, testSession)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(snapshot.Turns) >= 3 && snapshot.Turns[len(snapshot.Turns)-2].State == domain.TurnStateFailed && snapshot.Turns[len(snapshot.Turns)-1].State == domain.TurnStateFailed {
+		if len(snapshot.Turns) >= 3 && snapshot.Turns[len(snapshot.Turns)-2].State == domain.TurnStateQueued && snapshot.Turns[len(snapshot.Turns)-1].State == domain.TurnStateQueued {
+			wakes, wakeErr := h.st.ListChatWakeAttempts(ctx, testSession)
+			if wakeErr != nil || len(wakes) == 0 || wakes[0].Phase != "blocked" {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			if wakes[0].ErrorCode != "CHAT_WAKE_UNAVAILABLE" {
+				t.Fatalf("unsafe wake diagnosis: %+v", wakes[0])
+			}
 			if wakeCalls.Load() != 1 {
 				t.Fatalf("wake attempts = %d, want one shared attempt", wakeCalls.Load())
 			}
-			if snapshot.Turns[len(snapshot.Turns)-2].ErrorMessage == "" || snapshot.Turns[len(snapshot.Turns)-1].ErrorMessage == "" {
-				t.Fatal("failed cold turns did not retain an error")
+			if snapshot.Turns[len(snapshot.Turns)-2].ErrorMessage != "" || snapshot.Turns[len(snapshot.Turns)-1].ErrorMessage != "" {
+				t.Fatal("unattempted cold inputs were failed")
 			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("queued turns were not settled after wake failure; wake attempts=%d", wakeCalls.Load())
+	t.Fatalf("queued inputs were not preserved after wake failure; wake attempts=%d", wakeCalls.Load())
 }
 
 func TestSendAfterFailedHibernationCompletesShutdownBeforeWake(t *testing.T) {

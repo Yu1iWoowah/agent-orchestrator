@@ -194,7 +194,7 @@ func TestAsyncChatSpawnRealDrainFailureStaysRetryable(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("session: found=%v err=%v", found, err)
 	}
-	if stored.ProvisionState != domain.SessionProvisionFailed || !strings.Contains(stored.ProvisionError, "provider rejected queued turn") {
+	if stored.ProvisionState != domain.SessionProvisionFailed || !strings.Contains(stored.ProvisionError, ports.ErrChatDeliveryUnverified.Error()) {
 		t.Fatalf("failed opening turn left session state=%q error=%q; want retryable failure",
 			stored.ProvisionState, stored.ProvisionError)
 	}

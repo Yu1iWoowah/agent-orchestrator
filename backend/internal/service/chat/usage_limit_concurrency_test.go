@@ -321,14 +321,16 @@ func TestUsageLimitAutoResumeRechecksConsentInRetryTransaction(t *testing.T) {
 	for _, action := range []string{"cancel", "change account", "postpone deadline"} {
 		t.Run(action, func(t *testing.T) {
 			var wrapped *usageLimitAppendHookStore
-			h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
+			h := newHarnessWithConversationAndStoreForHarness(t, nil, func(st *sqlite.Store) chatsvc.Store {
 				wrapped = &usageLimitAppendHookStore{Store: st}
 				return wrapped
+			}, domain.HarnessCodex, func(options *chatsvc.Options) {
+				if err := wrapped.BindSessionAgentAccount(t.Context(), testSession, domain.AgentAccountProviderCodex, "account-a", options.Now().Add(-time.Minute)); err != nil {
+					t.Fatal(err)
+				}
 			})
 			ctx := context.Background()
-			if err := h.st.BindSessionAgentAccount(ctx, testSession, domain.AgentAccountProviderCodex, "account-a", h.now().Add(-time.Minute)); err != nil {
-				t.Fatal(err)
-			}
+
 			source := failUsageLimitedTurn(t, h, timedUsageLimit)
 			if err := h.svc.SetTurnAutoResume(ctx, testSession, source.ID, true); err != nil {
 				t.Fatal(err)

@@ -21,6 +21,9 @@ func (s *Service) readObservations(ctx context.Context, snapshot *Snapshot) erro
 	if err := s.readHistory(ctx, snapshot); err != nil {
 		return err
 	}
+	if err := s.readReconciliations(ctx, snapshot); err != nil {
+		return err
+	}
 	if reader, ok := s.store.(pendingSettingsReader); ok {
 		op, found, err := reader.PendingAgentSettingsOperation(ctx, snapshot.SessionID)
 		if err != nil {

@@ -99,6 +99,21 @@ type AgentSettingsAuthorityKey struct {
 	KeyBytes  []byte
 }
 
+type AgentSettingsReconciliation struct {
+	ID               string
+	Sequence         int64
+	SessionID        string
+	OwnerGeneration  string
+	SettingsRevision int64
+	Phase            string
+	Version          int64
+	ExecutorID       string
+	ClaimUntil       time.Time
+	RecordJson       string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type AgentSwitch struct {
 	ID                      string
 	SessionID               string
@@ -316,6 +331,41 @@ type ChangeLog struct {
 	EventType cdc.EventType
 	Payload   string
 	CreatedAt time.Time
+}
+
+type ChatDeliveryAttempt struct {
+	ID              string
+	Sequence        int64
+	SessionID       string
+	ConversationID  string
+	OwnerGeneration string
+	Disposition     string
+	EvidenceLevel   int64
+	Version         int64
+	RecordJson      string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ChatDeliveryAttemptMember struct {
+	AttemptID string
+	TurnID    string
+	Ordinal   int64
+}
+
+type ChatDeliveryReceipt struct {
+	AttemptID   string
+	Version     int64
+	ReceiptJson string
+	RecordedAt  time.Time
+}
+
+type ChatWakeAttempt struct {
+	Sequence   int64
+	ID         string
+	SessionID  string
+	Version    int64
+	RecordJson string
 }
 
 type CodexAccountSwitch struct {

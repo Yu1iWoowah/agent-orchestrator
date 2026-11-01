@@ -54,6 +54,11 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
+	shutdownPrepared bool // guarded by mu; admission stays fenced until detach
+
+	shutdownQuiescing   bool // guarded by mu
+	startingControllers int  // guarded by mu
+
 	store                   Store
 	settingsValidator       ports.ChatAgentSettingsValidator    // guarded by mu
 	settingsMutator         ports.ChatAgentSettingsMutator      // guarded by mu
@@ -68,6 +73,7 @@ type Service struct {
 	log                     *slog.Logger
 	newID                   IDFactory
 	now                     Clock
+	after                   func(time.Duration) <-chan time.Time
 	onAccountChanged        func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged  func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
@@ -177,6 +183,8 @@ type Options struct {
 	Log      *slog.Logger
 	NewID    IDFactory
 	Now      Clock
+	// After supplies timers for reconciliation and delivery observation tests.
+	After func(time.Duration) <-chan time.Time
 	// OnAccountChanged invalidates daemon-owned account readiness for the
 	// harness that emitted an account/updated notification.
 	OnAccountChanged func(domain.SessionID, string, domain.AgentHarness)
@@ -227,6 +235,7 @@ func New(opts Options) *Service {
 		log:                    log,
 		newID:                  opts.NewID,
 		now:                    now,
+		after:                  opts.After,
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onModelChanged:         opts.OnModelChanged,
@@ -417,6 +426,15 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 // startLocked is the launch implementation shared by ordinary starts and the
 // provider-switch saga. Callers must hold the typed controller gate.
 func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller, error) {
+	s.mu.Lock()
+	if s.shutdownQuiescing {
+		s.mu.Unlock()
+		return nil, ports.ErrChatShutdownNotSettled
+	}
+	s.startingControllers++
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.startingControllers--; s.mu.Unlock() }()
+
 	owner := conversationOwner(cfg)
 	if cfg.ReviewerSettings != nil && (owner.Kind != domain.ConversationOwnerReview || cfg.ReviewerSettings.Validate() != nil) {
 		return nil, ports.ErrAgentSettingsInvalid
@@ -1304,6 +1322,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	s.startConfigs[owner] = cloneStartConfig(cfg)
 	delete(s.awakeInterrupted, owner)
 	controller.start()
+	controller.startDeliveryMonitor()
 	s.mu.Unlock()
 
 	// Drop the registry entry when the provider stream ends, so a later command
@@ -1927,7 +1946,10 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 }
 
 // StopAll closes every controller, for daemon shutdown.
-func (s *Service) StopAll(ctx context.Context) {
+func (s *Service) StopAll(ctx context.Context) error {
+	if err := s.PreflightShutdown(ctx); err != nil {
+		return err
+	}
 	if s.sides != nil {
 		s.sides.stopAll()
 	}
@@ -1946,6 +1968,7 @@ func (s *Service) StopAll(ctx context.Context) {
 		return strings.Compare(string(a.owner.Kind)+":"+a.owner.ID, string(b.owner.Kind)+":"+b.owner.ID)
 	})
 
+	var closeErrors []error
 	for _, target := range targets {
 		gate := s.controllerGate(target.owner)
 		// Take an uncontended gate immediately so an expired shared shutdown
@@ -1954,6 +1977,7 @@ func (s *Service) StopAll(ctx context.Context) {
 		if !gate.tryLock() {
 			if err := gate.lock(ctx); err != nil {
 				s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
+				closeErrors = append(closeErrors, ports.ErrChatShutdownNotSettled)
 				continue
 			}
 		}
@@ -1964,8 +1988,8 @@ func (s *Service) StopAll(ctx context.Context) {
 			gate.unlock()
 			continue
 		}
-		if err := target.controller.Close(ctx); err != nil {
-			s.log.Error("failed to close chat controller", "session", target.id, "error", err)
+		if err := target.controller.closeAfterPreflight(ctx); err != nil {
+			closeErrors = append(closeErrors, err)
 		}
 		select {
 		case <-target.controller.stopped:
@@ -1982,6 +2006,7 @@ func (s *Service) StopAll(ctx context.Context) {
 		}
 		gate.unlock()
 	}
+	return errors.Join(closeErrors...)
 }
 
 // Snapshot is the durable read model a client bootstraps from.

@@ -354,6 +354,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 
 	params := map[string]any{
+		"_meta":    map[string]any{"aoDeliveryAttempt": msg.DeliveryAttemptID},
 		"threadId": c.threadID,
 		"input":    []any{map[string]any{"type": "text", "text": msg.Text}},
 	}

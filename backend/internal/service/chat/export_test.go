@@ -1,6 +1,9 @@
 package chat
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // SetNativeHistoryLoadAttemptLimit shortens the per-attempt provider load bound
 // for tests and returns a restore function.
@@ -40,4 +43,12 @@ func (c *Controller) SendMuHeldForTest() bool {
 	}
 	c.sendMu.Unlock()
 	return false
+}
+
+// DetachIncompleteForTest simulates a daemon disappearing without settling its
+// provider work. Normal Close/StopAll must pass preflight instead. Keeping this
+// in test code prevents an unverified normal-shutdown escape hatch.
+func DetachIncompleteForTest(ctx context.Context, c *Controller) error {
+	c.setOutboundQuiescing(true)
+	return c.closeAfterPreflight(ctx)
 }

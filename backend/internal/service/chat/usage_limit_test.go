@@ -603,7 +603,7 @@ func TestUsageLimitDispatchFailureConsumesSourceWithoutRepeating(t *testing.T) {
 	h.conv.sendErr = errors.New("provider disconnected")
 	h.conv.mu.Unlock()
 	h.advance(time.Minute)
-	if err := h.svc.ResumeUsageLimitedTurns(ctx); err == nil || !strings.Contains(err.Error(), "provider disconnected") {
+	if err := h.svc.ResumeUsageLimitedTurns(ctx); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
 		t.Fatalf("dispatch failure = %v", err)
 	}
 	if err := h.svc.ResumeUsageLimitedTurns(ctx); err != nil {
@@ -618,8 +618,12 @@ func TestUsageLimitDispatchFailureConsumesSourceWithoutRepeating(t *testing.T) {
 		t.Fatalf("failed attempt = %q, %v, %v", retryID, found, err)
 	}
 	retry, err := h.st.TurnByID(ctx, retryID)
-	if err != nil || retry.State != domain.TurnStateFailed || !strings.Contains(retry.ErrorMessage, "provider disconnected") {
-		t.Fatalf("failed attempt lost its outcome: %+v, %v", retry, err)
+	if err != nil || retry.State == domain.TurnStateFailed || retry.ErrorMessage != "" {
+		t.Fatalf("uncertain input was not preserved: %+v, %v", retry, err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, retry.ID)
+	if err != nil || attempt.Disposition == domain.ChatDeliveryNotSent || attempt.ExecutionSettled {
+		t.Fatalf("uncertain delivery was made replayable: %+v, %v", attempt, err)
 	}
 	h.conv.mu.Lock()
 	calls := h.conv.sendCalls

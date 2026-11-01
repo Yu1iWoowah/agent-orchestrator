@@ -199,4 +199,21 @@ func TestTurnSettingsSnapshotAttributesClaimedReceiptToCurrentDispatcher(t *test
 	if err := s.RecordTurnSettingsSnapshot(ctx, "start-context", current.OwnerGeneration, []string{"completed"}, dispatchSnapshot(t, current)); !errors.Is(err, ports.ErrAgentSettingsConflict) {
 		t.Fatalf("completed history was backfilled: %v", err)
 	}
+	frame := dispatchSnapshot(t, current)
+	attempt, created, err := s.ReserveChatDelivery(ctx, domain.ChatDeliveryAttempt{ID: "carried-delivery", SessionID: rec.ID, ConversationID: "start-context", Owner: *frame.Owner, Revision: current.Revision, TurnIDs: []string{"carried"}, Disposition: domain.ChatDeliveryReserved, CreatedAt: now, UpdatedAt: now, LastProgressAt: now})
+	if err != nil || !created || len(attempt.InputRefs) != 1 || attempt.InputRefs[0].BranchID != "previous-branch" || attempt.InputRefs[0].SessionID != previous.ID {
+		t.Fatalf("carried input identity: %+v %v", attempt, err)
+	}
+	receipt := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, ProviderRequestID: "local:" + attempt.ID, Disposition: domain.ChatDeliveryNotSent, Source: "local_not_forwarded", Complete: true, ObservedAt: now}
+	attempt.Version++
+	attempt.Disposition = domain.ChatDeliveryNotSent
+	attempt.Receipt = &receipt
+	if _, err = s.UpdateChatDelivery(ctx, attempt, 0, *frame.Owner); err != nil {
+		t.Fatal(err)
+	}
+	original, err := s.TurnByID(ctx, "carried")
+	if err != nil || original.State != domain.TurnStateQueued || original.BranchID != "previous-branch" || original.HandledBySessionID != previous.ID {
+		t.Fatalf("known not-sent rewrote historical receipt: %+v %v", original, err)
+	}
+
 }

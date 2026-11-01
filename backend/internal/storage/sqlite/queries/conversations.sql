@@ -1188,6 +1188,11 @@ WHERE conversation_activities.conversation_id = ?
 -- NOTE: keep these comments ASCII. sqlc locates its star-expansion edits by byte
 -- offset, so a multi-byte character here silently corrupts later queries.
 -- name: SelectNextQueuedConversationTurn :one
+WITH RECURSIVE queue_path(branch_id,parent_id) AS (
+ SELECT b.id,b.parent_branch_id FROM conversation_branches b JOIN conversations c ON c.active_branch_id=b.id WHERE c.id=sqlc.arg(conversation_id)
+ UNION ALL
+ SELECT b.id,b.parent_branch_id FROM conversation_branches b JOIN queue_path p ON b.id=p.parent_id
+)
 SELECT conversation_turns.id,
        conversation_messages.text,
        conversation_messages.client_message_id,
@@ -1200,14 +1205,20 @@ FROM conversation_turns
 JOIN conversation_messages
     ON conversation_messages.turn_id = conversation_turns.id
     AND conversation_messages.role = 'user'
-WHERE conversation_turns.conversation_id = ?
+WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
   AND conversation_turns.state = 'queued'
+  AND conversation_turns.branch_id IN (SELECT branch_id FROM queue_path)
   AND conversation_turns.promotion_started_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid
 LIMIT 1;
 
 -- name: SelectQueuedConversationBatch :many
+WITH RECURSIVE queue_path(branch_id,parent_id) AS (
+ SELECT b.id,b.parent_branch_id FROM conversation_branches b JOIN conversations c ON c.active_branch_id=b.id WHERE c.id=sqlc.arg(conversation_id)
+ UNION ALL
+ SELECT b.id,b.parent_branch_id FROM conversation_branches b JOIN queue_path p ON b.id=p.parent_id
+)
 SELECT conversation_turns.id,
        conversation_messages.text,
        conversation_messages.client_message_id,
@@ -1220,8 +1231,9 @@ FROM conversation_turns
 JOIN conversation_messages
     ON conversation_messages.turn_id = conversation_turns.id
     AND conversation_messages.role = 'user'
-WHERE conversation_turns.conversation_id = ?
+WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
   AND conversation_turns.state = 'queued'
+  AND conversation_turns.branch_id IN (SELECT branch_id FROM queue_path)
   AND conversation_turns.promotion_started_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid;

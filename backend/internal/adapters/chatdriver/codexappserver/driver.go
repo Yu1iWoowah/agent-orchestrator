@@ -53,6 +53,8 @@ type codexPlugin interface {
 // process is a running app-server, abstracted so tests can substitute pipes for
 // a child process.
 type process struct {
+	delivery *persistenthost.DeliveryClient
+
 	stdin  io.WriteCloser
 	stdout io.Reader
 	// reconnected means the provider process and initialized protocol connection
@@ -637,6 +639,7 @@ func (d *Driver) connectSession(
 		return nil, false, fmt.Errorf("%w: persistent host: %w", ports.ErrChatDriverUnavailable, err)
 	}
 	proc := &process{
+		delivery:      transport.Delivery,
 		stdin:         transport.Stdin,
 		stdout:        transport.Stdout,
 		reconnected:   transport.Reconnected,

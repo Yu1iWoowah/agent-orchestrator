@@ -8522,6 +8522,93 @@ paths:
       summary: Cancel an unstarted settings operation using its version
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/retry:
+    post:
+      operationId: retryAgentSettingsAttempt
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: path
+        name: operationId
+        required: true
+        schema:
+          type: string
+      - in: header
+        name: X-AO-Session-ID
+        schema:
+          type: string
+      - description: Settings-purpose native-environment grant; never returned or
+          persisted.
+        in: header
+        name: X-AO-Settings-Grant
+        schema:
+          description: Settings-purpose native-environment grant; never returned or
+            persisted.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentsettingsRetryAttempt'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSettingsAttemptResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Retry a versioned reconciliation attempt without changing preferences
+        or replaying uncertain effects
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/settle:
     post:
       operationId: settleAgentSettingsWriter
@@ -17443,6 +17530,13 @@ components:
       - efforts
       - allowFast
       type: object
+    AgentSettingsAttemptResponse:
+      properties:
+        attempt:
+          $ref: '#/components/schemas/AgentSettingsReconciliation'
+      required:
+      - attempt
+      type: object
     AgentSettingsEffective:
       properties:
         effort:
@@ -17727,6 +17821,143 @@ components:
       - enabled
       - harnesses
       type: object
+    AgentSettingsReconciliation:
+      properties:
+        actionKey:
+          type: string
+        blockedSince:
+          format: date-time
+          type:
+          - "null"
+          - string
+        claimUntil:
+          format: date-time
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        deadline:
+          format: date-time
+          type: string
+        desired:
+          $ref: '#/components/schemas/AgentSettings'
+        effectPending:
+          type: boolean
+        errorCategory:
+          type: string
+        errorCode:
+          type: string
+        evidenceKind:
+          enum:
+          - unknown
+          - provider_current
+          - per_turn_wire
+          type: string
+        failedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        failedStep:
+          type: string
+        historicalApplied:
+          $ref: '#/components/schemas/AgentSettings'
+        id:
+          type: string
+        jsonRpcCode:
+          type:
+          - "null"
+          - integer
+        lastProgressAt:
+          format: date-time
+          type: string
+        lastSuccessfulStep:
+          type: string
+        missingEvidence:
+          items:
+            type: string
+          type: array
+        observationAvailability:
+          enum:
+          - unknown
+          - available
+          - unsupported
+          type: string
+        observationRef:
+          type: string
+        observed:
+          $ref: '#/components/schemas/AgentSettings'
+        operationId:
+          type: string
+        originReplacementOperationId:
+          type:
+          - "null"
+          - string
+        owner:
+          $ref: '#/components/schemas/AgentSettingsOwner'
+        phase:
+          enum:
+          - observing
+          - waiting_idle
+          - applying
+          - verifying
+          - ready
+          - blocked
+          - recovery_required
+          - cancelled
+          type: string
+        preferenceAtStart:
+          $ref: '#/components/schemas/AgentSettings'
+        providerEpoch:
+          type: string
+        providerErrorCode:
+          type: string
+        recoveryActions:
+          items:
+            type: string
+          type: array
+        requestId:
+          type: string
+        retryCount:
+          type: integer
+        retryOfAttemptId:
+          type: string
+        retryOfVersion:
+          format: int64
+          type: integer
+        revision:
+          format: int64
+          type: integer
+        safeCause:
+          type: string
+        sessionId:
+          type: string
+        step:
+          type: string
+        version:
+          format: int64
+          type: integer
+      required:
+      - preferenceAtStart
+      - id
+      - sessionId
+      - owner
+      - revision
+      - evidenceKind
+      - phase
+      - step
+      - version
+      - retryCount
+      - effectPending
+      - claimUntil
+      - deadline
+      - createdAt
+      - lastProgressAt
+      - desired
+      - observationAvailability
+      - missingEvidence
+      - recoveryActions
+      type: object
     AgentSettingsRecovery:
       properties:
         claimedAt:
@@ -17890,6 +18121,21 @@ components:
       required:
       - liveSessions
       - level
+      type: object
+    AgentsettingsRetryAttempt:
+      properties:
+        attemptId:
+          type: string
+        expectedRevision:
+          minimum: 0
+          type: integer
+        expectedVersion:
+          minimum: 0
+          type: integer
+      required:
+      - attemptId
+      - expectedVersion
+      - expectedRevision
       type: object
     AppDiagnosticsAudit:
       properties:
@@ -19690,6 +19936,149 @@ components:
       - agent
       - modes
       type: object
+    ChatDeliveryAttempt:
+      properties:
+        attentionId:
+          type: string
+        blockedSince:
+          format: date-time
+          type:
+          - "null"
+          - string
+        conversationId:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        disposition:
+          enum:
+          - dispatch_reserved
+          - known_not_sent
+          - outcome_unknown
+          - accepted
+          type: string
+        errorCode:
+          type: string
+        evidenceLevel:
+          maximum: 2
+          minimum: 0
+          type: integer
+        executionSettled:
+          type: boolean
+        id:
+          type: string
+        inputRefs:
+          items:
+            $ref: '#/components/schemas/ChatDeliveryInputRef'
+          type: array
+        lastProgressAt:
+          format: date-time
+          type: string
+        nextCheckAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        owner:
+          $ref: '#/components/schemas/AgentSettingsOwner'
+        preparedTurnId:
+          type: string
+        receipt:
+          $ref: '#/components/schemas/ChatDeliveryReceipt'
+        revision:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        turnIds:
+          items:
+            type: string
+          type: array
+        updatedAt:
+          format: date-time
+          type: string
+        version:
+          format: int64
+          type: integer
+      required:
+      - inputRefs
+      - id
+      - sessionId
+      - conversationId
+      - owner
+      - revision
+      - turnIds
+      - version
+      - disposition
+      - evidenceLevel
+      - executionSettled
+      - createdAt
+      - updatedAt
+      - lastProgressAt
+      type: object
+    ChatDeliveryInputRef:
+      properties:
+        branchId:
+          type: string
+        sessionId:
+          type: string
+        turnId:
+          type: string
+      required:
+      - turnId
+      - branchId
+      - sessionId
+      type: object
+    ChatDeliveryReceipt:
+      properties:
+        attemptId:
+          type: string
+        complete:
+          type: boolean
+        custodyFlushed:
+          type: boolean
+        disposition:
+          enum:
+          - dispatch_reserved
+          - known_not_sent
+          - outcome_unknown
+          - accepted
+          type: string
+        executionSettled:
+          type: boolean
+        observedAt:
+          format: date-time
+          type: string
+        progress:
+          enum:
+          - running
+          - approval
+          - tool
+          - background
+          type: string
+        providerEpoch:
+          type: string
+        providerRequestId:
+          type: string
+        providerTurnId:
+          type: string
+        source:
+          enum:
+          - provider_response
+          - provider_event
+          - not_forwarded
+          - local_not_forwarded
+          - incomplete
+          type: string
+      required:
+      - attemptId
+      - disposition
+      - source
+      - complete
+      - executionSettled
+      - custodyFlushed
+      - observedAt
+      type: object
     ChatFileReferenceLine:
       properties:
         kind:
@@ -19745,6 +20134,40 @@ components:
           type: array
       required:
       - agents
+      type: object
+    ChatWakeAttempt:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        errorCode:
+          type: string
+        id:
+          type: string
+        ownerGeneration:
+          type: string
+        phase:
+          enum:
+          - waking
+          - draining
+          - ready
+          - blocked
+          type: string
+        sessionId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+        version:
+          format: int64
+          type: integer
+      required:
+      - id
+      - sessionId
+      - phase
+      - version
+      - createdAt
+      - updatedAt
       type: object
     ClaimPRRequest:
       properties:
@@ -26194,6 +26617,14 @@ components:
           type: array
         pending:
           $ref: '#/components/schemas/AgentSettingsOperation'
+        pendingDeliveries:
+          items:
+            $ref: '#/components/schemas/ChatDeliveryAttempt'
+          type: array
+        reconciliations:
+          items:
+            $ref: '#/components/schemas/AgentSettingsReconciliation'
+          type: array
         restartRequired:
           type: boolean
         revision:
@@ -26203,6 +26634,10 @@ components:
           type: string
         settings:
           $ref: '#/components/schemas/AgentSettings'
+        wakeAttempts:
+          items:
+            $ref: '#/components/schemas/ChatWakeAttempt'
+          type: array
         writerRecovery:
           $ref: '#/components/schemas/AgentSettingsWriterRecovery'
       required:

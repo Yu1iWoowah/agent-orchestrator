@@ -44,6 +44,16 @@ func (c setterOnlySettingsConversation) CanHibernate(ctx context.Context) (bool,
 	return c.host.CanHibernate(ctx)
 }
 func (c setterOnlySettingsConversation) Hibernate() error { return c.host.Hibernate() }
+
+// The controlled provider supplies per-turn evidence separately from the
+// staged reset surface under test; production ACP does not gain this method.
+func (c setterOnlySettingsConversation) ReconciliationEvidence(ctx context.Context, owner domain.AgentSettingsOwner) (ports.AgentSettingsReconciliationEvidence, error) {
+	provider, ok := c.staged.(ports.ChatAgentSettingsReconciliationEvidence)
+	if !ok {
+		return ports.AgentSettingsReconciliationEvidence{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
+	return provider.ReconciliationEvidence(ctx, owner)
+}
 func (c setterOnlySettingsConversation) PrepareAgentSettings(ctx context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
 	if !c.resetSupported || source != c.source || target != c.target {
 		return domain.AgentSettingsProviderPlan{}, ports.ErrAgentSettingsUnsupported

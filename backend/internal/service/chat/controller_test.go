@@ -86,6 +86,10 @@ func boundedSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {
 /* ---- a fake conversation the controller can drive ---------------------- */
 
 type fakeConversation struct {
+	deliveryNow      func() time.Time
+	deliveryPrepared bool
+	deliveryReceipts map[string]domain.ChatDeliveryReceipt
+
 	// noNetwork makes SandboxAllowsNetwork report a sandbox with no network.
 	noNetwork bool
 	// networkMode, when set, is the one approval mode whose sandbox has network.
@@ -306,8 +310,22 @@ func (f *fakeConversation) SendTurn(_ context.Context, msg ports.ChatUserMessage
 	f.mu.Lock()
 	f.sendCalls++
 	if f.sendErr != nil {
+		sendErr := f.sendErr
 		f.mu.Unlock()
-		return ports.ChatTurnRef{}, f.sendErr
+		var rejection interface{ ChatRefusal() bool }
+		if errors.As(sendErr, &rejection) && rejection.ChatRefusal() {
+			receipt := f.fakeDeliveryReceipt(msg.DeliveryAttemptID, "", false)
+			if receipt != nil {
+				receipt.Disposition = domain.ChatDeliveryNotSent
+				receipt.Source = "not_forwarded"
+				receipt.Complete = true
+				f.mu.Lock()
+				f.deliveryReceipts[msg.DeliveryAttemptID] = *receipt
+				f.mu.Unlock()
+			}
+			return ports.ChatTurnRef{Delivery: receipt}, sendErr
+		}
+		return ports.ChatTurnRef{}, sendErr
 	}
 	f.sent = append(f.sent, msg)
 	f.turnSeq++
@@ -317,7 +335,8 @@ func (f *fakeConversation) SendTurn(_ context.Context, msg ports.ChatUserMessage
 	if onSend != nil {
 		onSend(providerTurnID)
 	}
-	return ports.ChatTurnRef{ProviderTurnID: providerTurnID}, nil
+	receipt := f.fakeDeliveryReceipt(msg.DeliveryAttemptID, providerTurnID, false)
+	return ports.ChatTurnRef{ProviderTurnID: providerTurnID, Delivery: receipt}, nil
 }
 
 // sentTexts is what actually reached the provider, in order. Queuing is only real
@@ -381,6 +400,20 @@ func (f *fakeConversation) Close() error {
 
 func (f *fakeConversation) emit(events ...ports.ChatEvent) {
 	for _, event := range events {
+		if event.Kind == ports.ChatEventTurnCompleted {
+			f.mu.Lock()
+			var attempt string
+			for id, r := range f.deliveryReceipts {
+				if r.ProviderTurnID == event.ProviderTurnID {
+					attempt = id
+					break
+				}
+			}
+			f.mu.Unlock()
+			if attempt != "" {
+				event.Delivery = f.fakeDeliveryReceipt(attempt, event.ProviderTurnID, true)
+			}
+		}
 		f.events <- event
 	}
 }
@@ -3234,6 +3267,7 @@ func newHarnessWithConversationAndStoreForHarness(
 	conv ports.ChatConversation,
 	wrapStore func(*sqlite.Store) chatsvc.Store,
 	agentHarness domain.AgentHarness,
+	configureOptions ...func(*chatsvc.Options),
 ) *harness {
 	t.Helper()
 	st := openStore(t)
@@ -3272,7 +3306,7 @@ func newHarnessWithConversationAndStoreForHarness(
 		counter   int
 	)
 	chatStore := wrapStore(st)
-	svc := chatsvc.New(chatsvc.Options{
+	options := chatsvc.Options{
 		Store:      chatStore,
 		Reader:     fullSnapshotReader(st),
 		PageReader: boundedSnapshotReader(st),
@@ -3297,7 +3331,15 @@ func newHarnessWithConversationAndStoreForHarness(
 			h.reconciled = append(h.reconciled, id)
 			return h.reconcileErr
 		},
-	})
+	}
+	for _, configure := range configureOptions {
+		configure(&options)
+	}
+	if provider, ok := conv.(interface{ setDeliveryClock(func() time.Time, bool) }); ok {
+		_, deferred := conv.(ports.ChatDeferredTurnStarter)
+		provider.setDeliveryClock(options.Now, deferred)
+	}
+	svc := chatsvc.New(options)
 
 	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID:     testSession,
@@ -5232,6 +5274,9 @@ func TestServiceStopAllClosesHealthyControllerAfterStuckStreamExhaustsShutdownCo
 		_ = svc.Stop(context.Background(), healthySession)
 	})
 
+	if err := svc.PreflightShutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	svc.StopAll(ctx)
@@ -5346,6 +5391,9 @@ func TestServiceStopAllReturnsByDeadlineWhenControllerGateIsHeld(t *testing.T) {
 		t.Fatal("Stop did not acquire the held session gate")
 	}
 
+	if err := svc.PreflightShutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	const shutdownTimeout = 40 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

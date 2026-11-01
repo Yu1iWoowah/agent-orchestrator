@@ -296,6 +296,10 @@ func (c *Controller) PromoteQueuedTurn(
 		Text: queued.Text, Content: content, Origin: queued.Origin,
 		ClientMessageID: queued.ClientMessageID,
 	}
+	if c.outboundQuiescing() {
+		release()
+		return PromoteQueuedTurnResult{}, ports.ErrChatShutdownNotSettled
+	}
 	ref, err := steerer.Steer(ctx, target, excerptDeliveryMessage(msg))
 	if err != nil {
 		classified := classify(err)
@@ -392,6 +396,9 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 }
 
 func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
+	if c.outboundQuiescing() {
+		return SteerResult{}, ports.ErrChatShutdownNotSettled
+	}
 	if err := validateReplacementControlMessage(ctx, c.sessionID, c.generation, msg); err != nil {
 		return SteerResult{}, err
 	}
@@ -663,13 +670,12 @@ func (c *Controller) SteerOrSend(
 	}
 	turn, err := c.sendLocked(ctx, msg, false, override, queuedBatchIDs(batch))
 	if err != nil {
-		if len(batch) > 0 {
-			if failErr := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID,
-				queuedBatchIDs(batch), ErrSteerDeliveryUncertain.Error(), c.now()); failErr != nil {
-				c.log.Error("failed to settle fallback batch", "error", failErr)
-			}
+		// Dispatch owns the reservation. An uncertain fallback must not make its
+		// members failed or replayable; inputs never attempted are simply released.
+		if len(batch) > 0 && turn.ID == "" {
+			_ = c.store.ReleaseQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID, queuedBatchIDs(batch))
 		}
-		return SteerOrSendResult{}, err
+		return SteerOrSendResult{Turn: turn}, err
 	}
 	if turn.ID == "" && len(batch) > 0 {
 		if err := c.store.ReleaseQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID, queuedBatchIDs(batch)); err != nil {

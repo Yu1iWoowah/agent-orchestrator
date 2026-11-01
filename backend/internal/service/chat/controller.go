@@ -17,6 +17,7 @@ package chat
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -225,12 +226,24 @@ type Controller struct {
 	harness                     domain.AgentHarness
 	settingsObservationOwner    domain.AgentSettingsOwner
 	settingsDispatchSnapshot    *domain.AgentSettingsTurnSnapshot
-	settingsValidator           ports.ChatAgentSettingsValidator // guarded by mu
-	settingsMutator             ports.ChatAgentSettingsMutator   // guarded by mu
-	settingsRecheckQueued       bool                             // guarded by mu; at most one waiting recheck
-	settingsRecheckRequested    bool                             // guarded by mu; don't lose a wake while the executor runs
-	settingsWaitingForWork      bool                             // guarded by mu; provider work release wakes reconciliation
-	settingsInitializationError error                            // guarded by sendMu; failed cold replay fences dispatch
+	settingsValidator           ports.ChatAgentSettingsValidator    // guarded by mu
+	settingsMutator             ports.ChatAgentSettingsMutator      // guarded by mu
+	settingsRecheckQueued       bool                                // guarded by mu; at most one waiting recheck
+	settingsRecheckRequested    bool                                // guarded by mu; don't lose a wake while the executor runs
+	settingsWaitingForWork      bool                                // guarded by mu; provider work release wakes reconciliation
+	settingsInitializationError error                               // guarded by sendMu; failed cold replay fences dispatch
+	settingsAttempt             *domain.AgentSettingsReconciliation // guarded by sendMu
+	settingsAttemptRunning      bool                                // guarded by sendMu
+	settingsRetrySourceVersion  int64                               // guarded by sendMu
+	settingsRetrySourceID       string                              // guarded by sendMu
+	settingsExecutorID          string                              // guarded by sendMu
+	after                       func(time.Duration) <-chan time.Time
+	deliveryCheckMu             sync.Mutex
+	deliveryWake                chan struct{} // guarded by mu
+	deliveryMonitorStarted      bool          // guarded by mu
+	deliveryImmediate           bool          // guarded by mu
+	deliveryQuiescing           bool          // guarded by mu
+	pendingDeliveryID           string        // guarded by mu; original primary execution
 
 	conv                   ports.ChatConversation
 	store                  Store
@@ -1585,7 +1598,7 @@ func (c *Controller) sendLocked(
 			return domain.ConversationTurn{}, err
 		}
 	}
-	shouldQueue := queueWhenBusy && (c.busy() || queuedAhead || settingsBlocked)
+	shouldQueue := queueWhenBusy && (c.busy() || queuedAhead || settingsBlocked || c.outboundQuiescing())
 	markedSending := false
 	if !shouldQueue {
 		c.setSendingTurn(turnID)
@@ -1709,8 +1722,24 @@ func (c *Controller) retryTurnLocked(ctx context.Context, turnID string, autoRes
 	if source.ConversationID != c.conversation.ID {
 		return domain.ConversationTurn{}, fmt.Errorf("%w: %s", domain.ErrNoConversationTurn, turnID)
 	}
+	unverified := false
+	if journal, ok := c.store.(chatDeliveryJournal); ok {
+		attempt, lookupErr := journal.ChatDeliveryAttemptForTurn(ctx, c.sessionID, source.ID)
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return domain.ConversationTurn{}, lookupErr
+		}
+		if lookupErr == nil {
+			unverified = attempt.Disposition != domain.ChatDeliveryNotSent && (attempt.Disposition != domain.ChatDeliveryAccepted || !attempt.ExecutionSettled)
+		}
+	}
 	if source.State != domain.TurnStateFailed || source.RolledBackAt != nil {
+		if unverified && (source.State == domain.TurnStateQueued || source.State == domain.TurnStateRunning) {
+			return domain.ConversationTurn{}, ErrRetryDeliveryUncertain
+		}
 		return domain.ConversationTurn{}, fmt.Errorf("%w: %s", ErrTurnNotRetryable, turnID)
+	}
+	if unverified {
+		return domain.ConversationTurn{}, ErrRetryDeliveryUncertain
 	}
 
 	prompt, err := c.store.RetryPrompt(ctx, c.conversation.ID, turnID)
@@ -1993,7 +2022,7 @@ func (c *Controller) DispatchingTurnIDs() []string {
 func (c *Controller) busy() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pendingTurnID != "" || c.compactionPending
+	return c.pendingTurnID != "" || c.pendingDeliveryID != "" || c.compactionPending
 }
 
 // dispatch hands a recorded turn to the provider. Callers must hold sendMu.
@@ -2005,6 +2034,9 @@ func (c *Controller) dispatch(
 	claimed bool,
 	followers []string,
 ) (domain.ConversationTurn, error) {
+	if c.outboundQuiescing() {
+		return c.queuedDispatchReceipt(turnID, requestedAt), nil
+	}
 	if err := c.rejectPendingAgentSettings(ctx); err != nil {
 		return domain.ConversationTurn{}, err
 	}
@@ -2021,32 +2053,23 @@ func (c *Controller) dispatch(
 		msg.SettingsSnapshot = &frame
 		ids := append([]string{turnID}, followers...)
 		if err := c.store.RecordTurnSettingsSnapshot(ctx, c.conversation.ID, c.generation, ids, *settingsSnapshot); err != nil {
-			reason := "dispatch settings could not be recorded"
-			if len(followers) > 0 {
-				if failErr := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID, ids, reason, c.now()); failErr != nil {
-					return domain.ConversationTurn{}, errors.Join(err, failErr)
-				}
-			} else if failErr := c.store.SettleTurnByID(context.WithoutCancel(ctx), turnID, domain.TurnStateFailed, reason, c.now()); failErr != nil {
-				return domain.ConversationTurn{}, errors.Join(err, failErr)
-			}
-			return domain.ConversationTurn{}, fmt.Errorf("%w: record dispatch settings: %w", errDispatchNotSent, err)
+			return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
 		}
 	}
 	if err := c.store.RecordProviderInput(ctx, turnID, msg.Text); err != nil {
-		if len(followers) > 0 {
-			ids := append([]string{turnID}, followers...)
-			if failErr := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID, ids,
-				"batch provider input could not be recorded: "+err.Error(), c.now()); failErr != nil {
-				c.log.Error("failed to settle unrecorded queued batch", "error", failErr)
-			}
-		} else if settleErr := c.store.SettleTurnByID(context.WithoutCancel(ctx), turnID,
-			domain.TurnStateFailed, "provider input could not be recorded: "+err.Error(), c.now()); settleErr != nil {
-			c.log.Error("failed to settle unrecorded provider input", "error", settleErr)
-		}
-		return domain.ConversationTurn{}, fmt.Errorf("%w: record provider input: %w", errDispatchNotSent, err)
+		return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
+	}
+	members := append([]string{turnID}, followers...)
+	delivery, created, err := c.reserveDeliveryLocked(ctx, members)
+	if err != nil || !created {
+		c.log.Warn("delivery reservation retained input", "session", c.sessionID, "turn", turnID, "code", "CHAT_DELIVERY_RESERVATION_UNAVAILABLE")
+		return c.queuedDispatchReceipt(turnID, requestedAt), nil //nolint:nilerr // Durable intake stays queued when reservation cannot be recorded.
+	}
+	if delivery != nil {
+		msg.DeliveryAttemptID = delivery.ID
 	}
 	failFollowers := func(reason string) {
-		if len(followers) == 0 {
+		if delivery != nil || len(followers) == 0 {
 			return
 		}
 		if err := c.store.FailQueuedBatch(context.WithoutCancel(ctx), c.conversation.ID, followers, reason, c.now()); err != nil {
@@ -2059,6 +2082,7 @@ func (c *Controller) dispatch(
 	// deferred start crosses the provider boundary only after binding succeeds.
 	if !hasDeferredStart && !claimed {
 		if err := c.store.MarkTurnDispatching(ctx, turnID); err != nil {
+			_ = c.recordLocalNotForwarded(context.WithoutCancel(ctx), delivery, "")
 			if errors.Is(err, domain.ErrReplacementIntakeFenced) {
 				return c.queuedDispatchReceipt(turnID, requestedAt), nil
 			}
@@ -2073,9 +2097,31 @@ func (c *Controller) dispatch(
 	c.dispatchedApproval, c.hasDispatchedApproval = msg.Settings.Approval, true
 	c.mu.Unlock()
 	ref, err := c.conv.SendTurn(ctx, msg)
+	if !hasDeferredStart && delivery != nil && ref.Delivery != nil {
+		if _, recordErr := c.recordDeliveryReceipt(context.WithoutCancel(ctx), *ref.Delivery); recordErr != nil {
+			c.log.Warn("delivery receipt needs reconciliation", "session", c.sessionID, "attempt", delivery.ID, "code", "CHAT_DELIVERY_RECEIPT_UNSTORED")
+		}
+	}
 	if err != nil {
 		if hasDeferredStart && errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+			_ = c.recordLocalNotForwarded(context.WithoutCancel(ctx), delivery, "")
 			return c.requeueUnsentTurn(ctx, turnID, "", followers, requestedAt)
+		}
+		if delivery != nil {
+			journal, _ := c.store.(chatDeliveryJournal) // reserveDeliveryLocked proved support.
+			latest, readErr := journal.ChatDeliveryAttempt(context.WithoutCancel(ctx), c.sessionID, delivery.ID)
+			if readErr == nil && latest.Disposition == domain.ChatDeliveryNotSent {
+				c.mu.Lock()
+				c.dispatchingTurnID = ""
+				c.mu.Unlock()
+				return c.queuedDispatchReceipt(turnID, requestedAt), fmt.Errorf("send turn: %w", err)
+			}
+			c.mu.Lock()
+			c.pendingDeliveryID = delivery.ID
+			c.dispatchingTurnID = ""
+			c.mu.Unlock()
+			c.wakeDeliveryMonitor(false)
+			return c.queuedDispatchReceipt(turnID, requestedAt), ports.ErrChatDeliveryUnverified
 		}
 		failFollowers("batch delivery to provider is uncertain: " + err.Error())
 		c.mu.Lock()
@@ -2103,6 +2149,24 @@ func (c *Controller) dispatch(
 			CompletedAt:        &completedAt,
 		}, fmt.Errorf("send turn: %w", err)
 	}
+	if delivery != nil {
+		// Reload after a possible eager acknowledgement, then record the local
+		// correlation before a deferred driver is permitted to forward anything.
+		journal, _ := c.store.(chatDeliveryJournal) // reserveDeliveryLocked proved support.
+		latest, loadErr := journal.ChatDeliveryAttempt(context.WithoutCancel(ctx), c.sessionID, delivery.ID)
+		if loadErr == nil {
+			latest, loadErr = c.bindDeliveryPrepared(context.WithoutCancel(ctx), latest, ref.ProviderTurnID)
+		}
+		if loadErr != nil {
+			if hasDeferredStart {
+				deferred.DiscardDeferredTurn(ref.ProviderTurnID)
+				_ = c.recordLocalNotForwarded(context.WithoutCancel(ctx), delivery, ref.ProviderTurnID)
+			}
+			c.log.Warn("prepared delivery binding retained input", "session", c.sessionID, "attempt", delivery.ID, "code", "CHAT_DELIVERY_BIND_UNSTORED")
+			return c.queuedDispatchReceipt(turnID, requestedAt), nil
+		}
+		delivery = &latest
+	}
 
 	if err := c.store.BindTurnToProvider(ctx, turnID, ref.ProviderTurnID, c.now()); err != nil {
 		c.mu.Lock()
@@ -2112,6 +2176,7 @@ func (c *Controller) dispatch(
 		c.mu.Unlock()
 		if hasDeferredStart {
 			deferred.DiscardDeferredTurn(ref.ProviderTurnID)
+			_ = c.recordLocalNotForwarded(context.WithoutCancel(ctx), delivery, ref.ProviderTurnID)
 			// Bind failed before StartDeferredTurn could send anything. Restore
 			// the whole reservation, including dispatch snapshots, for a later
 			// Ready/drain. Eager drivers may already have accepted the prompt.
@@ -2130,6 +2195,13 @@ func (c *Controller) dispatch(
 				return turn, fmt.Errorf("%w: bind turn: %w", errRetryQueuedDispatch, err)
 			}
 			return turn, fmt.Errorf("bind turn: %w", errors.Join(err, requeueErr))
+		}
+		if delivery != nil {
+			c.mu.Lock()
+			c.pendingDeliveryID = delivery.ID
+			c.mu.Unlock()
+			c.wakeDeliveryMonitor(false)
+			return c.queuedDispatchReceipt(turnID, requestedAt), ports.ErrChatDeliveryUnverified
 		}
 		failFollowers("batch provider binding is uncertain: " + err.Error())
 		return domain.ConversationTurn{}, fmt.Errorf("bind turn: %w", err)
@@ -2156,7 +2228,15 @@ func (c *Controller) dispatch(
 		if err := deferred.StartDeferredTurn(ref.ProviderTurnID); err != nil {
 			if errors.Is(err, ports.ErrChatTurnNotSentBusy) {
 				deferred.DiscardDeferredTurn(ref.ProviderTurnID)
+				_ = c.recordLocalNotForwarded(context.WithoutCancel(ctx), delivery, ref.ProviderTurnID)
 				return c.requeueUnsentTurn(ctx, turnID, ref.ProviderTurnID, followers, requestedAt)
+			}
+			if delivery != nil {
+				c.mu.Lock()
+				c.pendingDeliveryID = delivery.ID
+				c.mu.Unlock()
+				c.wakeDeliveryMonitor(false)
+				return c.queuedDispatchReceipt(turnID, requestedAt), ports.ErrChatDeliveryUnverified
 			}
 			failFollowers("batch provider start is uncertain: " + err.Error())
 			c.mu.Lock()
@@ -2186,6 +2266,17 @@ func (c *Controller) dispatch(
 	}, nil
 }
 
+// No provider call has occurred, so a transient recording error retains the
+// original queue and its piggyback ownership without failing sibling inputs.
+func (c *Controller) preserveBeforeProviderIO(ctx context.Context, id string, followers []string, at time.Time) (domain.ConversationTurn, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := c.store.RequeueUnsentTurn(cleanupCtx, c.conversation.ID, id, "", followers); err != nil {
+		return c.queuedDispatchReceipt(id, at), fmt.Errorf("%w: preserve unforwarded input: %w", errRetryQueuedDispatch, err)
+	}
+	return c.queuedDispatchReceipt(id, at), nil
+}
+
 func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID string, followers []string, at time.Time) (domain.ConversationTurn, error) {
 	c.mu.Lock()
 	if c.dispatchingTurnID == id {
@@ -2200,7 +2291,16 @@ func (c *Controller) requeueUnsentTurn(ctx context.Context, id, providerID strin
 	// store writer-lock acquisition is not context-aware.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := c.store.RequeueUnsentTurn(cleanupCtx, c.conversation.ID, id, providerID, followers); err != nil {
+	alreadyRequeued := false
+	if journal, ok := c.store.(chatDeliveryJournal); ok {
+		a, err := journal.ChatDeliveryAttemptForTurn(cleanupCtx, c.sessionID, id)
+		alreadyRequeued = err == nil && a.Disposition == domain.ChatDeliveryNotSent
+	}
+	var requeueErr error
+	if !alreadyRequeued {
+		requeueErr = c.store.RequeueUnsentTurn(cleanupCtx, c.conversation.ID, id, providerID, followers)
+	}
+	if err := requeueErr; err != nil {
 		reason := "unsent input could not be requeued: " + err.Error()
 		settleCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancelSettle()
@@ -2367,7 +2467,7 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 	c.mu.Lock()
 	cutoff := c.cancelQueuedAt
 	c.cancelQueuedAt = time.Time{}
-	busy := c.pendingTurnID != ""
+	busy := c.pendingTurnID != "" || c.pendingDeliveryID != "" || c.deliveryQuiescing
 	handoff := c.handoff
 	c.mu.Unlock()
 
@@ -2740,6 +2840,9 @@ func (c *Controller) Compact(ctx context.Context) (ports.ChatCompactionResult, e
 	c.mu.Lock()
 	c.compactionPending = true
 	c.mu.Unlock()
+	if c.outboundQuiescing() {
+		return ports.ChatCompactionResult{}, ports.ErrChatShutdownNotSettled
+	}
 	result, err := compactor.Compact(ctx)
 	if err != nil {
 		c.mu.Lock()
@@ -3070,6 +3173,13 @@ func (c *Controller) Rollback(ctx context.Context, turnID string) (int, error) {
 // their historical process-close behavior. The persistent host replays detached
 // output and unresolved provider requests to the replacement controller.
 func (c *Controller) Close(ctx context.Context) error {
+	if err := c.PreflightShutdown(ctx); err != nil {
+		return err
+	}
+	return c.closeAfterPreflight(ctx)
+}
+
+func (c *Controller) closeAfterPreflight(ctx context.Context) error {
 	c.mu.Lock()
 	c.explicitClose = true
 	c.mu.Unlock()
@@ -3248,6 +3358,11 @@ func (c *Controller) projectUnit(
 		c.sendMu.Lock()
 	}
 	project := func() (bool, bool, error) {
+		if event.Delivery != nil {
+			if _, err := c.recordDeliveryReceipt(ctx, *event.Delivery); err != nil {
+				return false, false, err
+			}
+		}
 		if coalescible(event) {
 			projected, err := c.projectDeltas(ctx, unit)
 			return projected, false, err
@@ -3847,6 +3962,9 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 // draining may call the provider, so either one inside the store transaction
 // would hold the single writer connection across another subsystem.
 func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, primaryTurn bool) {
+	if event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady {
+		c.wakeDeliveryMonitor(true)
+	}
 	now := c.now()
 	switch event.Kind {
 	case ports.ChatEventTurnStarted:

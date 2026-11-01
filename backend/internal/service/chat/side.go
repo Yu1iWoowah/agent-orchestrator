@@ -87,6 +87,8 @@ type SideCreateRequest struct {
 }
 
 type sideRuntime struct {
+	outboundUnverified bool // guarded by mu; side ledger integration belongs to PR3
+
 	side            domain.SideConversation
 	conv            ports.ChatConversation
 	cancel          context.CancelFunc
@@ -108,6 +110,9 @@ type sideRuntime struct {
 }
 
 type sideManager struct {
+	quiescing bool // guarded by mu
+	opening   int  // guarded by mu
+
 	service     *Service
 	store       SideStore
 	mu          sync.Mutex
@@ -641,6 +646,15 @@ func (s *Service) validateSideReferences(ctx context.Context, session domain.Ses
 }
 
 func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver ports.ChatDriver) {
+	m.mu.Lock()
+	if m.quiescing {
+		m.mu.Unlock()
+		return
+	}
+	m.opening++
+	m.mu.Unlock()
+	defer func() { m.mu.Lock(); m.opening--; m.mu.Unlock() }()
+
 	if side.PolicyVersion != sidePolicyVersion {
 		m.failOpen(side, ErrSidePolicyRecreate)
 		return
@@ -840,6 +854,15 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 }
 
 func (m *sideManager) restore(ctx context.Context, side domain.SideConversation) {
+	m.mu.Lock()
+	if m.quiescing {
+		m.mu.Unlock()
+		return
+	}
+	m.opening++
+	m.mu.Unlock()
+	defer func() { m.mu.Lock(); m.opening--; m.mu.Unlock() }()
+
 	defer func() {
 		m.mu.Lock()
 		if cancel := m.restoring[side.ID]; cancel != nil {
@@ -1245,6 +1268,10 @@ func (m *sideManager) schedule() {
 		}
 		for m.ctx.Err() == nil {
 			m.mu.Lock()
+			if m.quiescing {
+				m.mu.Unlock()
+				break
+			}
 			excluded := make(map[string]bool)
 			sides, err := m.store.ListOpenSidesForRun(m.ctx, m.runID)
 			if err != nil {
@@ -1379,6 +1406,9 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 	if turn.DispatchAttempt > 0 {
 		providerRequestID = fmt.Sprintf("%s:retry:%d", turn.ClientMessageID, turn.DispatchAttempt)
 	}
+	runtime.mu.Lock()
+	runtime.outboundUnverified = true
+	runtime.mu.Unlock()
 	ref, err := runtime.conv.SendTurn(ctx, ports.ChatUserMessage{Text: text, Content: content,
 		ClientMessageID: providerRequestID, Origin: domain.MessageOriginHuman,
 		SettingsSnapshot: &frame, Settings: ports.ChatTurnSettings{Model: side.Model, Effort: side.Effort}})
@@ -1809,13 +1839,22 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 	if !ok || !runtime.conv.Capabilities().Has(ports.ChatCapabilityCompaction) {
 		return ports.ChatCompactionResult{}, ErrCompactionUnsupported
 	}
+	s.sides.mu.Lock()
+	quiescing := s.sides.quiescing
+	if quiescing {
+		s.sides.mu.Unlock()
+		return ports.ChatCompactionResult{}, ports.ErrChatShutdownNotSettled
+	}
 	runtime.mu.Lock()
 	if runtime.activeTurnID != "" || runtime.compacting {
 		runtime.mu.Unlock()
+		s.sides.mu.Unlock()
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}
 	runtime.compacting = true
+	runtime.outboundUnverified = true
 	runtime.mu.Unlock()
+	s.sides.mu.Unlock()
 	result, err := compactor.Compact(ctx)
 	if err != nil {
 		runtime.mu.Lock()

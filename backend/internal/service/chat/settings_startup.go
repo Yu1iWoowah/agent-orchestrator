@@ -15,7 +15,10 @@ import (
 func (c *Controller) initializeAgentSettings(ctx context.Context) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	c.settingsInitializationError = c.initializeAgentSettingsLocked(ctx)
+	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, func(ctx context.Context) (bool, error) {
+		err := c.initializeAgentSettingsLocked(ctx)
+		return err != nil, err
+	})
 	if c.settingsInitializationError != nil {
 		c.log.Warn("Chat settings initialization keeps dispatch fenced", "session", c.sessionID, "reason", "agent_settings_unavailable")
 	}
@@ -64,6 +67,9 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	if !quiet {
 		return fmt.Errorf("%w: provider_quiescence_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
+	if err := c.qualifySettingsEvidenceLocked(ctx, nil); err != nil {
+		return err
+	}
 	owner := ownerForSettings(current)
 	replay := op
 	replay.Source = current.Settings
@@ -81,7 +87,10 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	if baseline, ok := c.conv.(ports.ChatAgentSettingsRecoveryPreparer); ok {
 		// Per-turn wire needs only the committed preference and a fresh baseline.
 		// A completed operation's source may no longer be offered by the provider.
-		plan, err = baseline.PrepareAgentSettingsRecovery(ctx, current.Settings)
+		err = c.settingsRPC(ctx, "preparing", false, func(ctx context.Context) error {
+			plan, err = baseline.PrepareAgentSettingsRecovery(ctx, current.Settings)
+			return err
+		})
 		if err == nil && (plan.Source != current.Settings || plan.Target != current.Settings || plan.ProviderConversationID != owner.ProviderConversationID) {
 			return ports.ErrAgentSettingsConflict
 		}
@@ -92,7 +101,10 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 		if bindingChanged {
 			source = current.Settings
 		}
-		plan, err = provider.PrepareAgentSettings(ctx, source, current.Settings)
+		err = c.settingsRPC(ctx, "preparing", false, func(ctx context.Context) error {
+			plan, err = provider.PrepareAgentSettings(ctx, source, current.Settings)
+			return err
+		})
 	}
 	if err != nil {
 		return providerSettingsError(err)
@@ -101,11 +113,16 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 		if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {
 			return err
 		}
-		if err := provider.ApplyAgentSettingsStep(ctx, plan, step, false); err != nil {
+		if err := c.settingsRPC(ctx, string(step), step != domain.AgentSettingsVerifying, func(ctx context.Context) error {
+			return provider.ApplyAgentSettingsStep(ctx, plan, step, false)
+		}); err != nil {
 			return providerSettingsError(err)
 		}
 	}
 	if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {
+		return err
+	}
+	if err := c.qualifySettingsEvidenceLocked(ctx, &current.Settings); err != nil {
 		return err
 	}
 	c.adoptAgentSettings(current.Settings)

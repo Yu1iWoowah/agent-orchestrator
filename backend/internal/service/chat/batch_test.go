@@ -488,7 +488,7 @@ func TestSteerRefusalFallsBackWithPendingBatch(t *testing.T) {
 	}
 }
 
-func TestFailedSteerFallbackSettlesClaimedBatch(t *testing.T) {
+func TestUnverifiedSteerFallbackPreservesClaimedBatch(t *testing.T) {
 	h, provider := steerHarness(t)
 	ctx := context.Background()
 	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
@@ -509,8 +509,12 @@ func TestFailedSteerFallbackSettlesClaimedBatch(t *testing.T) {
 		t.Fatalf("failed fallback left a queued message: %v", err)
 	}
 	settled, err := h.st.TurnByID(ctx, queued.ID)
-	if err != nil || settled.State != domain.TurnStateFailed {
-		t.Fatalf("claimed batch receipt = %+v, %v", settled, err)
+	if err != nil || settled.State == domain.TurnStateFailed {
+		t.Fatalf("unverified batch input was failed: %+v, %v", settled, err)
+	}
+	attempt, lookupErr := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, queued.ID)
+	if lookupErr != nil || attempt.Disposition == domain.ChatDeliveryAccepted || len(attempt.TurnIDs) < 2 {
+		t.Fatalf("missing original batch reservation: %+v %v", attempt, lookupErr)
 	}
 }
 

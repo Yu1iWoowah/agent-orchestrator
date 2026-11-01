@@ -333,10 +333,23 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	if !controller.sendMu.TryLock() {
 		return false, nil
 	}
+	controller.setOutboundQuiescing(true)
+	defer controller.setOutboundQuiescing(false)
+	checkCtx, checkCancel := controller.deadlineContext(ctx, 10*time.Second)
+	defer checkCancel()
+	for !controller.deliveryCheckMu.TryLock() {
+		select {
+		case <-checkCtx.Done():
+			controller.sendMu.Unlock()
+			return false, ports.ErrChatShutdownNotSettled
+		case <-time.After(time.Millisecond):
+		}
+	}
+	defer controller.deliveryCheckMu.Unlock()
 	controller.mu.Lock()
 	busy := controller.state != ports.ChatControllerReady ||
 		controller.handoff != controllerHandoffNone ||
-		controller.pendingTurnID != "" || controller.dispatchingTurnID != "" ||
+		controller.pendingTurnID != "" || controller.pendingDeliveryID != "" || controller.dispatchingTurnID != "" ||
 		controller.compactionPending || controller.hasWorkLocked()
 	controller.mu.Unlock()
 	if busy {
@@ -387,6 +400,10 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	if !opts.enabled(s) {
 		controller.sendMu.Unlock()
 		return false, nil
+	}
+	if err := controller.settleOutboundLocked(ctx); err != nil {
+		controller.sendMu.Unlock()
+		return false, err
 	}
 	// Persist the intent while intake is fenced. A failed or contested write
 	// leaves the provider alive; a crash during shutdown can finish it on boot.
@@ -545,6 +562,12 @@ func (s *Service) workingController(ctx context.Context, id domain.SessionID) (*
 // With wakeAsleep false, admission returns errAsleep rather than waking inline:
 // a relay may hold the input lease that the resume itself waits to drain.
 func (s *Service) admitControllerWork(ctx context.Context, id domain.SessionID, wakeAsleep bool, kind controllerWork) (*Controller, func(), error) {
+	s.mu.RLock()
+	quiescing := s.shutdownQuiescing
+	s.mu.RUnlock()
+	if quiescing && kind == controllerProviderWork {
+		return nil, nil, ports.ErrChatShutdownNotSettled
+	}
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	for {
 		if !gate.tryLock() {
@@ -590,6 +613,10 @@ func (s *Service) admitControllerWork(ctx context.Context, id domain.SessionID, 
 					case <-ctx.Done():
 						return nil, nil, ctx.Err()
 					}
+				}
+				if kind == controllerProviderWork && controller.outboundQuiescing() {
+					gate.unlock()
+					return nil, nil, ports.ErrChatShutdownNotSettled
 				}
 				if !stopped {
 					release := controller.beginWork(kind)
@@ -741,49 +768,37 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 			delete(s.backgroundWakes, id)
 			s.wakeMu.Unlock()
 		}()
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		attempt, recordErr := s.beginWakeAttempt(ctx, id)
+		if recordErr != nil {
+			s.log.Warn("chat wake diagnosis unavailable; input preserved", "session", id, "code", "CHAT_WAKE_JOURNAL_UNAVAILABLE")
+			return
+		}
 		if err := s.wakeHibernated(ctx, id); err != nil {
+			_ = s.saveWakeAttempt(ctx, attempt, "blocked", "CHAT_WAKE_UNAVAILABLE")
 			if errors.Is(err, domain.ErrReplacementIntakeFenced) {
-				return
-			}
-			if s.stoppedForUpdate(id) {
-				s.log.Warn("chat session could not wake during a harness update; queued messages kept for its resume", "session", id, "err", err)
 				return
 			}
 			if s.versionSwitchFailed(ctx, id, err) {
 				return
 			}
-			s.log.Warn("chat session could not wake; failing its queued messages", "session", id, "err", err)
-			s.failQueuedTurns(ctx, id, fmt.Sprintf("could not wake the agent: %v", err))
+			s.log.Warn("chat session could not wake; queued inputs preserved", "session", id, "code", "CHAT_WAKE_UNAVAILABLE")
 			return
 		}
 		if version, switched := s.takeVersionSwitch(id); switched {
 			s.observeVersionSwitch(id, version, "succeeded")
 		}
+		if err := s.saveWakeAttempt(ctx, attempt, "draining", ""); err != nil {
+			return
+		}
 		if err := s.DrainQueued(ctx, id); err != nil {
-			s.log.Warn("chat session woke but could not deliver its queued messages", "session", id, "err", err)
-			s.failQueuedTurns(ctx, id, fmt.Sprintf("could not deliver the message: %v", err))
+			_ = s.saveWakeAttempt(ctx, attempt, "blocked", "CHAT_DRAIN_UNAVAILABLE")
+			s.log.Warn("chat session woke but queued inputs remain fenced", "session", id, "code", "CHAT_DRAIN_UNAVAILABLE")
+			return
 		}
+		_ = s.saveWakeAttempt(ctx, attempt, "ready", "")
 	}()
-}
-
-func (s *Service) failQueuedTurns(ctx context.Context, id domain.SessionID, message string) {
-	conversation, err := s.store.ConversationForSession(ctx, id)
-	if err != nil {
-		return
-	}
-	for {
-		queued, err := s.store.NextQueuedTurn(ctx, conversation.ID)
-		if errors.Is(err, domain.ErrNoQueuedTurn) {
-			return
-		}
-		if err != nil {
-			return
-		}
-		if err := s.store.SettleTurnByID(ctx, queued.TurnID, domain.TurnStateFailed, message, s.now()); err != nil {
-			return
-		}
-	}
 }
 
 // isWaking also covers a session stopped for an update, so the start that
@@ -797,12 +812,4 @@ func (s *Service) isWaking(id domain.SessionID) bool {
 		delete(s.updateStops, id)
 	}
 	return s.waking[id] > 0 || s.updateStops[id]
-}
-
-// stoppedForUpdate reports whether an update stopped id and nothing has
-// started it again since.
-func (s *Service) stoppedForUpdate(id domain.SessionID) bool {
-	s.wakeMu.Lock()
-	defer s.wakeMu.Unlock()
-	return s.updateStops[id]
 }
