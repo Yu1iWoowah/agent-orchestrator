@@ -241,6 +241,9 @@ func TestInputCustodyReplacementAllowsEmptyKeysAndRegisteredProviderWrites(t *te
 						t.Fatalf("registered non-held provider write blocked: %v", err)
 					}
 				}
+				if err := s.InputCustodyStorageCompatibility(t.Context()); err != nil {
+					t.Fatalf("registered provider writes failed preflight: %v", err)
+				}
 				if _, err := s.HoldConversationInput(t.Context(), domain.InputCustodyVersion{TurnID: "protected", Owner: "owner", Revision: 1}, domain.InputHoldVersion{Key: "delivery", Owner: "owner"}, "unknown", "hold", testNow); err != nil {
 					t.Fatal(err)
 				}
@@ -262,5 +265,72 @@ func TestInputCustodyReplacementAllowsEmptyKeysAndRegisteredProviderWrites(t *te
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestInputCustodyRejectsChangedPayloadConversation(t *testing.T) {
+	for _, c := range []struct{ table, id string }{
+		{"conversation_messages", "message-protected"},
+		{"conversation_activities", "activity-protected"},
+		{"conversation_turns", "protected"},
+	} {
+		for _, route := range []string{"api", "sql"} {
+			t.Run(c.table+"/"+route, func(t *testing.T) {
+				s, db := inputReplacementFixture(t, "registered", false)
+				if _, err := db.Exec(`INSERT INTO projects(id,path,registered_at) VALUES('other-project','other-project',CURRENT_TIMESTAMP);
+INSERT INTO conversations(id,scope,project_id,created_at,updated_at) VALUES('other-context','project','other-project',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`); err != nil {
+					t.Fatal(err)
+				}
+				const snapshot = `SELECT json_array(owner,revision,last_action_key,original_conversation_id,message_ids_json,activity_ids_json) FROM conversation_input_custody WHERE turn_id='protected'`
+				var before, after string
+				if err := db.QueryRow(snapshot).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				if c.table == "conversation_turns" {
+					// Moving both the turn and its payload must not change the
+					// conversation identity already recorded by register.
+					for _, table := range []string{"conversation_messages", "conversation_activities"} {
+						if _, err := db.Exec("UPDATE " + table + " SET conversation_id='other-context' WHERE turn_id='protected'"); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if _, err := db.Exec("UPDATE "+c.table+" SET conversation_id='other-context' WHERE id=?", c.id); err != nil {
+					t.Fatalf("could not reproduce registered conversation change with guards intact: %v", err)
+				}
+				var violations int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil || violations != 0 {
+					t.Fatalf("fixture must retain valid FK references: %d %v", violations, err)
+				}
+				if c.table != "conversation_turns" {
+					var visible int
+					if err := db.QueryRow("SELECT COUNT(*) FROM "+c.table+" p JOIN conversation_turns t ON t.id=p.turn_id AND t.conversation_id=p.conversation_id WHERE p.id=?", c.id).Scan(&visible); err != nil || visible != 0 {
+						t.Fatalf("fixture must hide the moved payload from its canonical turn: %d %v", visible, err)
+					}
+				}
+				if err := s.InputCustodyStorageCompatibility(t.Context()); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) {
+					t.Errorf("preflight accepted changed conversation: %v", err)
+				}
+				if route == "api" {
+					_, err := s.HoldConversationInput(t.Context(), domain.InputCustodyVersion{TurnID: "protected", Owner: "owner", Revision: 1}, domain.InputHoldVersion{Key: "delivery", Owner: "owner"}, "unknown", "hold", testNow)
+					if !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) {
+						t.Errorf("hold accepted changed conversation: %v", err)
+					}
+				} else {
+					_, err := db.Exec(`INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,hold_key,hold_owner,hold_version,reason,created_at)
+VALUES('hold','protected','hold','owner',1,'delivery','owner',0,'unknown',CURRENT_TIMESTAMP)`)
+					if err == nil || !strings.Contains(err.Error(), "INPUT_CUSTODY_PAYLOAD_CHANGED") {
+						t.Errorf("SQL hold accepted changed conversation: %v", err)
+					}
+				}
+				if err := db.QueryRow(snapshot).Scan(&after); err != nil || after != before {
+					t.Errorf("failed hold changed custody baseline: %s -> %s: %v", before, after, err)
+				}
+				var actions, holds, held int
+				if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM conversation_input_actions),(SELECT COUNT(*) FROM conversation_input_holds),(SELECT COUNT(*) FROM conversation_turns WHERE id='protected' AND state='held')`).Scan(&actions, &holds, &held); err != nil || actions != 1 || holds != 0 || held != 0 {
+					t.Errorf("failed hold committed facts: actions=%d holds=%d held=%d: %v", actions, holds, held, err)
+				}
+			})
+		}
 	}
 }

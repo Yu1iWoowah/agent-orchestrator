@@ -13,11 +13,13 @@ import (
 const inputCustodyStateConsistent = `-- name: InputCustodyStateConsistent :one
 SELECT CAST(NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE
  (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN conversation_turns t ON t.id=c.turn_id
+  WHERE t.conversation_id<>c.original_conversation_id)
  AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.message_ids_json) expected
-  LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id AND payload.conversation_id=c.original_conversation_id
   WHERE payload.id IS NULL)
  AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.activity_ids_json) expected
-  LEFT JOIN conversation_activities payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  LEFT JOIN conversation_activities payload ON payload.id=expected.value AND payload.turn_id=c.turn_id AND payload.conversation_id=c.original_conversation_id
   WHERE payload.id IS NULL)
  AS INTEGER) AS consistent
 `
@@ -36,16 +38,16 @@ SELECT CAST(
  AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c
   LEFT JOIN conversation_turns t ON t.id=c.turn_id
   LEFT JOIN conversation_input_actions a ON a.action_key=c.last_action_key
-  WHERE c.turn_id=?1 AND (t.id IS NULL OR a.action_key IS NULL))
+  WHERE c.turn_id=?1 AND (t.id IS NULL OR a.action_key IS NULL OR t.conversation_id<>c.original_conversation_id))
  AND NOT EXISTS(SELECT 1 FROM conversation_input_holds h
   LEFT JOIN conversation_input_custody c ON c.turn_id=h.turn_id
   LEFT JOIN conversation_input_actions a ON a.action_key=h.last_action_key
   WHERE h.turn_id=?1 AND (c.turn_id IS NULL OR a.action_key IS NULL))
  AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.message_ids_json) expected
-  LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id AND payload.conversation_id=c.original_conversation_id
   WHERE c.turn_id=?1 AND payload.id IS NULL)
  AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.activity_ids_json) expected
-  LEFT JOIN conversation_activities payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  LEFT JOIN conversation_activities payload ON payload.id=expected.value AND payload.turn_id=c.turn_id AND payload.conversation_id=c.original_conversation_id
   WHERE c.turn_id=?1 AND payload.id IS NULL)
  AS INTEGER) AS consistent
 `
