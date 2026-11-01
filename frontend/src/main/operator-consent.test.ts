@@ -1,13 +1,14 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
 import { createServer, type Socket } from "node:net";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MessageBoxOptions } from "electron";
-import { connectOperatorConsent } from "./operator-consent";
+import { connectOperatorConsent, operatorConsentLabels } from "./operator-consent";
 
 function fixedPlan() {
 	return {
@@ -19,7 +20,7 @@ function fixedPlan() {
 
 // Protocol tests use explicit fake dialog results. These are not native gesture
 // qualification or proof against XTEST / same-uid OS process control.
-async function fixture(options: { plan?: object; respond: (options: MessageBoxOptions) => number | Promise<number> }) {
+async function fixture(options: { plan?: object; zh?: boolean; respond: (options: MessageBoxOptions) => number | Promise<number> }) {
 	const directory = await mkdtemp(join(tmpdir(), "oc-"));
 	const address = process.platform === "win32" ? `\\\\.\\pipe\\ao-oc-${randomUUID()}` : join(directory, "s");
 	const frames: { type: string; requestId?: unknown; requestRef?: unknown; challenge?: unknown; digest?: unknown }[] = [];
@@ -53,7 +54,7 @@ async function fixture(options: { plan?: object; respond: (options: MessageBoxOp
 	server.listen(address);
 	await once(server, "listening");
 	const show = vi.fn(async (dialog: MessageBoxOptions) => ({ response: await options.respond(dialog), checkboxChecked: false }));
-	const link = connectOperatorConsent({ address, ownedToken: "private-owned-token", show, zh: () => false });
+	const link = connectOperatorConsent({ address, ownedToken: "private-owned-token", show, zh: () => options.zh ?? false });
 	await vi.waitFor(() => expect(frames.some((frame) => frame.type === "ready")).toBe(true));
 	return { frames, show, link, plan, async close() {
 		link.dispose();
@@ -91,7 +92,9 @@ describe("private operator confirmation UI", () => {
 		try {
 			const result = await f.link.reviewNext();
 			expect(result).toBeUndefined();
-			const calls = f.show.mock.calls.map(([options]) => options);
+			const allCalls = f.show.mock.calls.map(([options]) => options);
+			const calls = allCalls.filter((options) => options.type === "question");
+			expect(allCalls.at(-1)?.message).toBe("Confirmation recorded for this plan.");
 			expect(calls.slice(0, -1).map((options) => options.detail).join("")).toBe(JSON.stringify(plan, null, 2));
 			expect(calls.length).toBeGreaterThan(3);
 			expect(calls.slice(0, -1).every((options) => (options.detail?.length ?? 0) <= 1000 && (options.detail?.match(/\n/g)?.length ?? 0) <= 12)).toBe(true);
@@ -116,4 +119,75 @@ describe("private operator confirmation UI", () => {
 			expect(f.show.mock.calls.every(([options]) => options.type === "info")).toBe(true);
 		} finally { await f.close(); }
 	});
+});
+
+it("uses zh-TW labels and acknowledges recorded consent without claiming execution", async () => {
+	expect(operatorConsentLabels(true)).toEqual({ menu: "操作者確認", review: "檢視下一個固定操作計畫…", notReady: "本機確認 issuer 尚未就緒。" });
+	expect(operatorConsentLabels(false).review).toBe("Review next fixed action plan…");
+	const f = await fixture({ zh: true, respond: () => 1 });
+	try {
+		await f.link.reviewNext();
+		expect(f.show.mock.calls.at(-1)?.[0]).toMatchObject({ type: "info", message: "已記錄此計畫的確認。", detail: "這只記錄同意，不會自動執行操作。" });
+	} finally { await f.close(); }
+});
+
+async function retryFixture(rejection?: string) {
+	const directory = await mkdtemp(join(tmpdir(), "or-"));
+	const address = process.platform === "win32" ? `\\\\.\\pipe\\ao-or-${randomUUID()}` : join(directory, "s");
+	const sockets = new Set<Socket>();
+	let attempts = 0;
+	const server = createServer((socket) => {
+		attempts++;
+		sockets.add(socket);
+		socket.once("close", () => sockets.delete(socket));
+		socket.once("data", () => {
+			if (rejection) socket.end(`${JSON.stringify({ type: "operator-hello-rejected", code: rejection })}\n`);
+		});
+	});
+	server.listen(address);
+	await once(server, "listening");
+	const link = connectOperatorConsent({ address, show: async () => ({ response: 0, checkboxChecked: false }), zh: () => false });
+	return { attempts: () => attempts, open: () => sockets.size, async close() {
+		link.dispose();
+		for (const socket of sockets) socket.destroy();
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(directory, { recursive: true, force: true });
+	} };
+}
+
+async function waitForIO(check: () => boolean) {
+	for (let i = 0; i < 500 && !check(); i++) await realSleep(1);
+	expect(check()).toBe(true);
+	await realSleep(1);
+}
+
+it.each(["OPERATOR_PEER_UNQUALIFIED", "OPERATOR_TOKEN_INVALID", "OPERATOR_PLATFORM_UNVERIFIED", "OPERATOR_PROTOCOL_INVALID"])("stops retrying after permanent rejection %s", async (code) => {
+	vi.useFakeTimers();
+	const f = await retryFixture(code);
+	try {
+		await waitForIO(() => f.attempts() === 1);
+		await waitForIO(() => f.open() === 0);
+		await vi.advanceTimersByTimeAsync(3_600_000);
+		expect(f.attempts()).toBe(1);
+	} finally { await f.close(); vi.useRealTimers(); }
+});
+
+it.each([undefined, "OPERATOR_PIN_PENDING", "OPERATOR_ISSUER_BUSY"])("bounds retries with exponential backoff for %s", async (code) => {
+	vi.useFakeTimers();
+	const f = await retryFixture(code);
+	try {
+		await waitForIO(() => f.attempts() === 1);
+		for (const [index, delay] of [2_000, 4_000, 8_000, 16_000, 30_000].entries()) {
+			if (code === undefined) await vi.advanceTimersByTimeAsync(5_000);
+			await waitForIO(() => f.open() === 0);
+			await vi.advanceTimersByTimeAsync(delay - 1);
+			expect(f.attempts()).toBe(index + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			await waitForIO(() => f.attempts() === index + 2);
+		}
+		if (code === undefined) await vi.advanceTimersByTimeAsync(5_000);
+		await waitForIO(() => f.open() === 0);
+		await vi.advanceTimersByTimeAsync(3_600_000);
+		expect(f.attempts()).toBe(6);
+	} finally { await f.close(); vi.useRealTimers(); }
 });

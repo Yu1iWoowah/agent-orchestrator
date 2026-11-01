@@ -15,7 +15,8 @@ runtime 收據前，private native channel 拒絕握手、不 mint，readiness �
 封裝桌面主程序為 owned daemon 產生獨立隨機 C0 token，透過 inherited stdin
 交付一次。它與 Browser／diagnostics token 不同。stdin marker 或 caller 自選的
 nonce 本身不構成 native 身分：owned 與 attach 都須通過下列 OS peer／程式內容驗證，
-owned 另驗私有 token。mint 材料不落地至檔案、環境、run file、log、artifact 或 renderer。
+owned 若提供私有 token，僅作額外負向檢查：錯值拒絕；省略時仍走相同 native peer 權威鏈。
+因此 owned token 不增加 authority，也不是 native 身分證明。mint 材料不落地至檔案、環境、run file、log、artifact 或 renderer。
 
 C0 使用既有 Browser runtime IPC listener 的獨立協定；不共用 Browser grant／command。
 HTTP 與 mobile API 不提供 prepare、challenge、mint、confirm、consume 入口。
@@ -26,8 +27,10 @@ OS peer 來源分別為 Linux `SO_PEERCRED` 與 `/proc/<pid>/exe`、macOS
 `GetNamedPipeClientProcessId`、process image 與相同 user SID。macOS 使用
 [Apple proc_pidpath 對應的 kernel 查詢](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c)，不以 argv 判定 executable。
 
-daemon 啟動時將所屬封裝程式的 executable、macOS Electron framework 與 `app.asar`
-的 digest 固定於記憶體。peer 必須符合這些程式內容；digest 不是可 mint credential。
+daemon 啟動後在背景將所屬封裝程式的 executable、macOS Electron framework 與 `app.asar`
+的 digest 固定於記憶體，不阻擋其他 listener 啟動；pin 完成前握手與 readiness fail closed。
+peer executable basename 須與 pinned 名稱相同，內容也必須相符；每個相異檔案只 hash 一次。
+digest 不是可 mint credential。已佔用 issuer 的多餘連線在 hash 前拒絕。
 Electron v1 fuse 必須關閉 RunAsNode／main inspector，並開啟 ASAR integrity／
 OnlyLoadAppFromAsar；universal binary 每個 slice 都要符合。相同 AppImage 重新 mount
 可配對；缺資訊、內容改變、未知 fuse 或通用未封裝 dev Electron，兩種模式均 fail closed。
@@ -43,7 +46,13 @@ native dialog 不證明物理人類身分；fake dialog 測試不構成真人手
 操作者從 native **Operator confirmation → Review next fixed action plan** 選單
 （`CommandOrControl+Alt+Shift+O`）主動檢視全部欄位：purpose、subject、固定 batch、
 scope、revisions、risk codes、digests 與 expiry。頁面同時限制字數與行數，不截斷計畫；
-所有 dialog 預設取消。最後一頁另顯示各 purpose 的固定風險說明、digest、期限及 OS 邊界。
+所有確認 dialog 預設取消。最後一頁另顯示各 purpose 的固定風險說明、digest、期限及 OS 邊界；
+成功後以原生提示回饋「已記錄此計畫的確認」，不宣稱已執行。選單／提示支援 en 與 zh-TW。
+
+Review next 以每個 issuer epoch 的記憶體 cursor 前進，末端循環；Cancel 不撤銷計畫，也不會
+阻擋後面的計畫。同 daemon／issuer epoch 的 live consent 不再列入，過期或舊 issuer consent
+仍可重新檢視，domain deadline 不變。永久拒絕（包括版本／peer 不符）停止重連；
+暫時 busy／pin pending／沒有 hello 回應最多六次嘗試，間隔 2／4／8／16／30 秒。
 
 challenge 只存在記憶體，綁 request／digest，最長五分鐘或 domain 計畫更早的期限。
 consent 自 mint 起也最多五分鐘，受相同 domain deadline 限制。mint 在交易中重驗
@@ -66,6 +75,8 @@ replay 再建立一份 reservation。
 
 ## Consumer 交易與 readiness
 
+mint 僅由 bootstrap 將 `Store.NativeOperatorIssuer()` 專用 adapter 交給 broker；
+一般 Store 與 domain ports 不直接暴露 Confirm 方法。同程序程式碼不構成安全 sandbox。
 完成 admission 後，domain 呼叫 `PrepareOperatorAction`。native 確認後，
 `GetOperatorActionConsent` 只為完整相符的計畫回傳私有 reference。
 `ConsumeInActionTransaction` 必須加入 domain reservation 的同一 SQLite 交易。
@@ -96,3 +107,8 @@ Linux 真人確認與完整桌面選單／dialog 視覺仍須另附收據，全�
 啟用交付。macOS／Windows 沒有真實 runtime 收據，維持未驗、fail closed 的已知缺口；
 日後取得收據並核准移除平台 gate 前，不得啟用。跨 OS `go test -c` 只證明編譯；
 實作授權、runtime readiness 與實際 acceptance 狀態分開記錄。
+
+Linux fixture 須以 `node_modules/electron/dist/agent-orchestrator` 真正執行，不能改名為
+`electron` 通過 basename 檢查。主機 AppArmor 必須明確允許該自有 lab executable 的
+user namespace；只有 `.../dist/electron` 的既有 profile 不足。需要環境授權時停下回報，
+不得以 no-sandbox 或放寬 basename 避開。

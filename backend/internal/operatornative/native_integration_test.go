@@ -174,7 +174,7 @@ func TestC0NativeFixtureDaemon(t *testing.T) {
 	if _, err := s.PrepareOperatorAction(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
-	b := New(s, token)
+	b := New(s.NativeOperatorIssuer(), token)
 	browser := browserruntime.New(slog.New(slog.NewTextHandler(io.Discard, nil)), "not-a-c0-credential")
 	browser.SetNativeHandler(b.Handle)
 	ln, err := net.Listen("unix", filepath.Join(stateRoot, "s"))

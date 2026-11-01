@@ -18,9 +18,20 @@ func (s *Store) operatorIssuer() string {
 	return s.operatorIssuerEpoch
 }
 
+// NativeOperatorIssuer is the bootstrap-only adapter passed to the private
+// broker. Ordinary Store/domain ports deliberately have no mint method.
+type NativeOperatorIssuer struct{ store *Store }
+
+// NativeOperatorIssuer isolates bootstrap's private mint capability from the
+// ordinary Store and domain ports. It must not be wired to HTTP controllers.
+func (s *Store) NativeOperatorIssuer() *NativeOperatorIssuer {
+	return &NativeOperatorIssuer{store: s}
+}
+
 // NextNativeOperatorAction selects one pending admitted plan for native review.
-func (s *Store) NextNativeOperatorAction(ctx context.Context) (domain.OperatorRequestRef, error) {
-	row, err := s.qr.NextNativeOperatorConfirmation(ctx, gen.NextNativeOperatorConfirmationParams{DaemonEpoch: s.operatorEpoch, ValidUntilMs: s.operatorNow().UnixMilli()})
+func (n *NativeOperatorIssuer) NextNativeOperatorAction(ctx context.Context, after domain.OperatorRequestRef) (domain.OperatorRequestRef, error) {
+	s := n.store
+	row, err := s.qr.NextNativeOperatorConfirmation(ctx, gen.NextNativeOperatorConfirmationParams{DaemonEpoch: s.operatorEpoch, NowMs: s.operatorNow().UnixMilli(), IssuerEpoch: s.operatorIssuer(), AfterRef: string(after)})
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", domain.ErrOperatorActionNotFound
 	}
@@ -68,7 +79,8 @@ func (s *Store) GetOperatorActionConsent(ctx context.Context, plan domain.Operat
 // SetNativeOperatorIssuer is wired only to the private native protocol. Taking
 // the writer lock serializes epoch replacement with mint and domain consume.
 // An empty epoch disconnects the issuer; durable accepted actions remain valid.
-func (s *Store) SetNativeOperatorIssuer(ctx context.Context, epoch string) error {
+func (n *NativeOperatorIssuer) SetNativeOperatorIssuer(ctx context.Context, epoch string) error {
+	s := n.store
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err
 	}
@@ -81,7 +93,8 @@ func (s *Store) SetNativeOperatorIssuer(ctx context.Context, epoch string) error
 
 // NativeOperatorPlan returns only a fixed, live domain-admitted plan. A native
 // review cannot rearm a stale daemon plan or extend its domain authority.
-func (s *Store) NativeOperatorPlan(ctx context.Context, ref domain.OperatorRequestRef) (domain.OperatorActionPlan, error) {
+func (n *NativeOperatorIssuer) NativeOperatorPlan(ctx context.Context, ref domain.OperatorRequestRef) (domain.OperatorActionPlan, error) {
+	s := n.store
 	if !domain.OperatorReferenceValid(string(ref)) {
 		return domain.OperatorActionPlan{}, domain.ErrOperatorPlanInvalid
 	}
@@ -109,7 +122,8 @@ func (s *Store) NativeOperatorPlan(ctx context.Context, ref domain.OperatorReque
 // ConfirmNativeOperatorPlan is called only after the private issuer verifies
 // its in-memory challenge and native dialog response. It repeats the immutable
 // plan, epoch, revocation and time checks inside the mint transaction.
-func (s *Store) ConfirmNativeOperatorPlan(ctx context.Context, ref domain.OperatorRequestRef, digest, epoch string) (domain.OperatorConsentRef, error) {
+func (n *NativeOperatorIssuer) ConfirmNativeOperatorPlan(ctx context.Context, ref domain.OperatorRequestRef, digest, epoch string) (domain.OperatorConsentRef, error) {
+	s := n.store
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return "", err
 	}

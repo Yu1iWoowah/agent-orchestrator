@@ -30,5 +30,5 @@ const executable = path.join(directory, "electron");
 await flipFuses(executable, { version: FuseVersion.V1, [FuseV1Options.RunAsNode]: false, [FuseV1Options.EnableNodeCliInspectArguments]: false, [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true, [FuseV1Options.OnlyLoadAppFromAsar]: true });
 await fs.copyFile(executable, path.join(directory, "agent-orchestrator"));
 await fs.mkdir(path.join(directory, "resources/daemon"), { recursive: true, mode: 0o700 });
-console.log(`Native fixture: ${executable}`);
+console.log(`Native fixture: ${path.join(directory, "agent-orchestrator")}`);
 console.log(`Compile operatornative tests to: ${path.join(directory, "resources/daemon/ao")}`);

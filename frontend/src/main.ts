@@ -1,5 +1,5 @@
 import { appDiagnosticsDialog } from "./main/app-diagnostics-dialog";
-import { connectOperatorConsent } from "./main/operator-consent";
+import { connectOperatorConsent, operatorConsentLabels } from "./main/operator-consent";
 import { AppDiagnosticsMain } from "./main/app-diagnostics";
 import { DIAGNOSTIC_CHANNEL, diagnosticId } from "./shared/app-diagnostics";
 import { SideCloseRecovery } from "./main/side-close";
@@ -939,13 +939,16 @@ async function createWindowInternal(): Promise<void> {
 		Menu.setApplicationMenu(buildLinuxAppMenu());
 		mainWindow.setMenuBarVisibility(false);
 	}
+	const operatorRunFile = runFilePath();
+	operatorConsentZh = operatorRunFile ? (await readUiSettings(path.dirname(operatorRunFile))).locale === "zh-TW" : false;
+	const labels = operatorConsentLabels(operatorConsentZh);
 	const operatorMenu = Menu.getApplicationMenu();
 	if (operatorMenu && !operatorMenu.getMenuItemById("operator-confirmation")) {
-		operatorMenu.append(new MenuItem({ id: "operator-confirmation", label: "Operator confirmation", submenu: [{
-			label: "Review next fixed action plan…", accelerator: "CommandOrControl+Alt+Shift+O",
+		operatorMenu.append(new MenuItem({ id: "operator-confirmation", label: labels.menu, submenu: [{
+			id: "operator-review", label: labels.review, accelerator: "CommandOrControl+Alt+Shift+O",
 			click: () => {
 				if (operatorConsentLink) void operatorConsentLink.reviewNext();
-				else void dialog.showMessageBox({ type: "info", message: "The native confirmation issuer is not ready." });
+				else void dialog.showMessageBox({ type: "info", title: operatorConsentZh ? "本機操作確認" : "Local action confirmation", message: operatorConsentLabels(operatorConsentZh).notReady });
 			},
 		}] }));
 		Menu.setApplicationMenu(operatorMenu);
@@ -1511,6 +1514,7 @@ if (process.platform !== "win32") {
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
 const appDiagnosticsToken = randomBytes(32).toString("base64url");
+let operatorConsentZh = false;
 const operatorConsentToken = randomBytes(32).toString("base64url");
 let operatorConsentLink: ReturnType<typeof connectOperatorConsent> | undefined;
 let operatorConsentIdentity: string | undefined;
@@ -1534,9 +1538,7 @@ function establishOperatorConsentLink(): void {
 		const identity = `${info.pid}:${info.startedAtMs}:${info.browserRuntimeAddress}:${!!daemonProcess}`;
 		if (identity === operatorConsentIdentity) return;
 		disposeOperatorConsentLink();
-		let zh = false;
-		void readUiSettings(path.dirname(rfp)).then((settings) => { zh = settings.locale === "zh-TW"; });
-		operatorConsentLink = connectOperatorConsent({ address: info.browserRuntimeAddress, ownedToken: daemonProcess ? operatorConsentToken : undefined, zh: () => zh,
+		operatorConsentLink = connectOperatorConsent({ address: info.browserRuntimeAddress, ownedToken: daemonProcess ? operatorConsentToken : undefined, zh: () => operatorConsentZh,
 			show: (options) => {
 				const win = mainWindow;
 				if (!win || win.isDestroyed()) return Promise.reject(new Error("OPERATOR_WINDOW_UNAVAILABLE"));
@@ -3287,6 +3289,14 @@ ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 		const runFile = runFilePath();
 	const result = !runFile ? coerceUiSettings(settings) : await writeUiSettings(path.dirname(runFile), settings);
 	trayController?.setLocale(result.locale);
+	operatorConsentZh = result.locale === "zh-TW";
+	const labels = operatorConsentLabels(operatorConsentZh);
+	const menu = Menu.getApplicationMenu();
+	const operatorItem = menu?.getMenuItemById("operator-confirmation");
+	const reviewItem = menu?.getMenuItemById("operator-review");
+	if (operatorItem) operatorItem.label = labels.menu;
+	if (reviewItem) reviewItem.label = labels.review;
+	if (menu) Menu.setApplicationMenu(menu);
 	soundNotificationsEnabled = result.soundNotificationsEnabled;
 	terminalShellPreference = result.terminalShell;
 	shellEnvPromise = null;

@@ -1,6 +1,7 @@
 package operatornative
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,5 +65,58 @@ func TestDesktopPinSurvivesAppImageMountReplacement(t *testing.T) {
 	}
 	if anchor.verifyFiles(next) == nil {
 		t.Fatal("different executable/framework accepted")
+	}
+}
+
+func TestDesktopPinRejectsRenamedExecutable(t *testing.T) {
+	daemon, exe := installedFixture(t, t.TempDir())
+	anchor, err := pinDesktop(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed := filepath.Join(filepath.Dir(exe), "other-application")
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(renamed, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if anchor.verifyFiles(renamed) == nil {
+		t.Fatal("renamed executable admitted")
+	}
+}
+
+func TestDesktopDigestsUseDistinctFiles(t *testing.T) {
+	_, exe := installedFixture(t, t.TempDir())
+	files := desktopFiles(exe)
+	seen := map[string]bool{}
+	for _, file := range files {
+		if seen[file] {
+			t.Fatal("same file hashed twice", file)
+		}
+		seen[file] = true
+	}
+	expected := 2
+	if runtime.GOOS == "darwin" {
+		expected = 3
+	}
+	if len(files) != expected {
+		t.Fatalf("hash inputs: %v", files)
+	}
+}
+
+func TestNativePinRunsInBackground(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	verifier := startNativePeerVerifier(func() (desktopAnchor, error) { close(started); <-release; return desktopAnchor{}, errUnqualified })
+	<-started
+	if !errors.Is(verifier.status(), errPinPending) {
+		t.Fatal("background pin did not remain pending")
+	}
+	close(release)
+	<-verifier.done
+	if !errors.Is(verifier.status(), errUnqualified) {
+		t.Fatal("failed pin did not remain closed")
 	}
 }

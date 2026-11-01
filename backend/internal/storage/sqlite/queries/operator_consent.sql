@@ -4,8 +4,13 @@ SELECT * FROM operator_confirmation_requests WHERE action_key=?;
 SELECT * FROM operator_confirmation_requests WHERE request_ref=?;
 -- name: NextNativeOperatorConfirmation :one
 SELECT r.* FROM operator_confirmation_requests r
-WHERE r.daemon_epoch=? AND r.revoked_at_ms IS NULL AND r.valid_until_ms>?
-AND NOT EXISTS (SELECT 1 FROM operator_consents c WHERE c.request_ref=r.request_ref AND c.consumed_at_ms IS NOT NULL)
+WHERE r.daemon_epoch=sqlc.arg(daemon_epoch) AND r.revoked_at_ms IS NULL AND r.valid_until_ms>sqlc.arg(now_ms)
+AND (CAST(sqlc.arg(after_ref) AS TEXT)='' OR (r.created_at_ms,r.request_ref) >
+    (SELECT created_at_ms,request_ref FROM operator_confirmation_requests WHERE request_ref=sqlc.arg(after_ref)))
+AND NOT EXISTS (SELECT 1 FROM operator_consents c WHERE c.request_ref=r.request_ref AND
+    (c.consumed_at_ms IS NOT NULL OR (c.invalidated_at_ms IS NULL
+    AND c.daemon_epoch=sqlc.arg(daemon_epoch) AND c.issuer_epoch=sqlc.arg(issuer_epoch)
+    AND c.minted_at_ms<=sqlc.arg(now_ms) AND c.expires_at_ms>sqlc.arg(now_ms))))
 ORDER BY r.created_at_ms,r.request_ref LIMIT 1;
 -- name: InsertOperatorConfirmation :exec
 INSERT INTO operator_confirmation_requests(request_ref,action_key,project_id,purpose,plan_json,plan_digest,daemon_epoch,valid_until_ms,created_at_ms)

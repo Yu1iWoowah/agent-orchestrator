@@ -87,7 +87,7 @@ func mintOperatorFixture(t *testing.T, s *Store, plan domain.OperatorActionPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := s.ConfirmNativeOperatorPlan(context.Background(), receipt.RequestRef, digest, s.operatorIssuer())
+	ref, err := s.NativeOperatorIssuer().ConfirmNativeOperatorPlan(context.Background(), receipt.RequestRef, digest, s.operatorIssuer())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,4 +619,35 @@ func TestOperatorConsentNanosecondExpiryReplay(t *testing.T) {
 		}
 	})
 	assertOperatorCounts(t, s, 1, 1)
+}
+
+func TestOrdinaryStoreDoesNotExposeNativeMint(t *testing.T) {
+	type nativeMinter interface {
+		ConfirmNativeOperatorPlan(context.Context, domain.OperatorRequestRef, string, string) (domain.OperatorConsentRef, error)
+	}
+	s := &Store{}
+	if _, ok := any(s).(nativeMinter); ok {
+		t.Fatal("ordinary domain store exposes native mint")
+	}
+	if _, ok := any(s.NativeOperatorIssuer()).(nativeMinter); !ok {
+		t.Fatal("bootstrap native adapter missing mint")
+	}
+}
+
+func TestNativeReviewNextIncludesExpiredConsent(t *testing.T) {
+	s, _ := operatorFixture(t)
+	plan := operatorPlan(domain.ConsentSettingsPermissions)
+	receipt, err := s.PrepareOperatorAction(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = mintOperatorFixture(t, s, plan)
+	issuer := s.NativeOperatorIssuer()
+	if _, err := issuer.NextNativeOperatorAction(context.Background(), ""); !errors.Is(err, domain.ErrOperatorActionNotFound) {
+		t.Fatalf("live consent selected: %v", err)
+	}
+	s.operatorNow = func() time.Time { return operatorTestTime.Add(6 * time.Minute) }
+	if got, err := issuer.NextNativeOperatorAction(context.Background(), ""); err != nil || got != receipt.RequestRef {
+		t.Fatalf("expired consent hidden: %s %v", got, err)
+	}
 }

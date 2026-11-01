@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"runtime"
@@ -20,7 +21,7 @@ import (
 type nativeStore interface {
 	SetNativeOperatorIssuer(context.Context, string) error
 	NativeOperatorPlan(context.Context, domain.OperatorRequestRef) (domain.OperatorActionPlan, error)
-	NextNativeOperatorAction(context.Context) (domain.OperatorRequestRef, error)
+	NextNativeOperatorAction(context.Context, domain.OperatorRequestRef) (domain.OperatorRequestRef, error)
 	ConfirmNativeOperatorPlan(context.Context, domain.OperatorRequestRef, string, string) (domain.OperatorConsentRef, error)
 }
 
@@ -56,6 +57,8 @@ type Broker struct {
 	challenges map[domain.OperatorRequestRef]challenge
 	now        func() time.Time
 	verifyPeer func(net.Conn) error
+	pinStatus  func() error
+	cursor     domain.OperatorRequestRef
 	// Set once at construction. Other platforms need real native receipts
 	// before their issuer can be enabled; code pinning alone is insufficient.
 	platformVerified bool
@@ -63,7 +66,12 @@ type Broker struct {
 
 // New binds the native store to a private owned token and pinned attach code.
 func New(store nativeStore, ownedToken string) *Broker {
-	return &Broker{store: store, token: ownedToken, now: time.Now, challenges: map[domain.OperatorRequestRef]challenge{}, verifyPeer: newNativePeerVerifier(), platformVerified: runtime.GOOS == "linux"}
+	b := &Broker{store: store, token: ownedToken, now: time.Now, challenges: map[domain.OperatorRequestRef]challenge{}, platformVerified: runtime.GOOS == "linux"}
+	if b.platformVerified {
+		verifier := newNativePeerVerifier()
+		b.pinStatus, b.verifyPeer = verifier.status, verifier.verify
+	}
+	return b
 }
 
 func readFrame(raw []byte) (frame, error) {
@@ -90,44 +98,64 @@ func send(conn net.Conn, out frame) error {
 // This connection never joins the Browser broker or its session command path.
 func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner, raw []byte) {
 	defer func() { _ = conn.Close() }()
+	reject := func(code string) { _ = send(conn, frame{Type: "operator-hello-rejected", Code: code}) }
 	if !b.platformVerified {
+		reject("OPERATOR_PLATFORM_UNVERIFIED")
 		return
 	}
 	hello, err := readFrame(raw)
 	if err != nil || hello.Type != "operator-hello" || hello.Version != 1 {
+		reject("OPERATOR_PROTOCOL_INVALID")
 		return
 	}
-	// The stdin marker is a transport instruction, not native identity. Even an
-	// owned token chosen by a CLI bootstrap cannot qualify a shell as issuer.
-	if b.verifyPeer(conn) != nil {
-		return
-	}
-	if hello.Token != "" {
-		if len(b.token) < 32 || subtle.ConstantTimeCompare([]byte(hello.Token), []byte(b.token)) != 1 {
-			return
-		}
-	}
+	// Reserve the slot before any file IO. Extra connections cannot trigger a
+	// full bundle hash while an issuer (or another handshake) owns it.
 	b.mu.Lock()
 	if b.conn != nil {
 		b.mu.Unlock()
+		reject("OPERATOR_ISSUER_BUSY")
 		return
 	}
-	epoch := uuid.NewString()
-	b.conn, b.epoch = conn, epoch
-	b.ready = false
-	b.challenges = map[domain.OperatorRequestRef]challenge{}
+	b.conn = conn
 	b.mu.Unlock()
+	installed := false
 	defer func() {
 		b.mu.Lock()
-		b.ready = false
-		b.epoch = ""
+		b.ready, b.epoch, b.cursor = false, "", ""
 		b.challenges = map[domain.OperatorRequestRef]challenge{}
 		b.mu.Unlock()
-		_ = b.store.SetNativeOperatorIssuer(context.Background(), "")
+		if installed {
+			_ = b.store.SetNativeOperatorIssuer(context.Background(), "")
+		}
 		b.mu.Lock()
 		b.conn = nil
 		b.mu.Unlock()
 	}()
+	if err := b.pinStatus(); err != nil {
+		if errors.Is(err, errPinPending) {
+			reject("OPERATOR_PIN_PENDING")
+		} else {
+			reject("OPERATOR_PEER_UNQUALIFIED")
+		}
+		return
+	}
+	// A caller-chosen stdin token never establishes native identity. If a token
+	// is supplied it is an additional negative check, after kernel/code identity.
+	if b.verifyPeer(conn) != nil {
+		reject("OPERATOR_PEER_UNQUALIFIED")
+		return
+	}
+	if hello.Token != "" && (len(b.token) < 32 || subtle.ConstantTimeCompare([]byte(hello.Token), []byte(b.token)) != 1) {
+		reject("OPERATOR_TOKEN_INVALID")
+		return
+	}
+	b.mu.Lock()
+	epoch := uuid.NewString()
+	b.epoch, b.cursor = epoch, ""
+	b.ready = false
+	b.challenges = map[domain.OperatorRequestRef]challenge{}
+	b.mu.Unlock()
+	installed = true
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if b.store.SetNativeOperatorIssuer(ctx, epoch) != nil {
@@ -141,7 +169,6 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 		if !scan.Scan() {
 			return
 		}
-		// C0 plans and frames are substantially smaller than Browser snapshots.
 		if len(scan.Bytes()) > 65536 {
 			return
 		}
@@ -174,11 +201,15 @@ func (b *Broker) handle(ctx context.Context, in frame) frame {
 	switch in.Type {
 	case "review-next", "review":
 		epoch := b.epoch
+		after := b.cursor
 		b.mu.Unlock()
 		ref := in.RequestRef
 		if in.Type == "review-next" {
 			var err error
-			ref, err = b.store.NextNativeOperatorAction(ctx)
+			ref, err = b.store.NextNativeOperatorAction(ctx, after)
+			if errors.Is(err, domain.ErrOperatorActionNotFound) && after != "" {
+				ref, err = b.store.NextNativeOperatorAction(ctx, "")
+			}
 			if err != nil {
 				return frame{Type: "error", Code: "OPERATOR_ACTION_UNAVAILABLE"}
 			}
@@ -203,6 +234,9 @@ func (b *Broker) handle(ctx context.Context, in frame) frame {
 		}
 		c := challenge{value: uuid.NewString(), digest: digest, expires: minTime(plan.ValidUntil, b.now().Add(domain.OperatorConsentLifetime))}
 		b.challenges[ref] = c
+		if in.Type == "review-next" {
+			b.cursor = ref
+		}
 		return frame{Type: "review-plan", RequestRef: ref, Challenge: c.value, Digest: digest, Plan: &plan}
 	case "confirm":
 		c, ok := b.challenges[in.RequestRef]
@@ -244,7 +278,7 @@ func (b *Broker) GetAuthorityReadiness(required []domain.OperatorPurpose, scope 
 		out.Reason = "native_platform_unverified"
 		return out
 	}
-	if !b.ready || b.epoch == "" || !b.now().Before(b.liveUntil) {
+	if b.pinStatus() != nil || !b.ready || b.epoch == "" || !b.now().Before(b.liveUntil) {
 		return out
 	}
 	out.IssuerEpoch = b.epoch

@@ -62,7 +62,18 @@ func desktopArchive(executable string) string {
 
 // A desktop anchor pins the complete trusted app at daemon boot. Including the
 // framework matters on macOS, where the launcher itself does not hold fuses.
-type desktopAnchor struct{ executable, image, archive [32]byte }
+type desktopAnchor struct {
+	name    string
+	digests [][32]byte
+}
+
+func desktopFiles(executable string) []string {
+	files := []string{executable}
+	if image := executableImage(executable); image != executable {
+		files = append(files, image)
+	}
+	return append(files, desktopArchive(executable))
+}
 
 func pinDesktop(daemon string) (desktopAnchor, error) {
 	var anchor desktopAnchor
@@ -70,49 +81,82 @@ func pinDesktop(daemon string) (desktopAnchor, error) {
 	if err != nil || !qualifiedFuses(expected) {
 		return anchor, errUnqualified
 	}
-	anchor.executable, err = fileDigest(expected)
-	if err != nil {
-		return anchor, errUnqualified
+	anchor.name = filepath.Base(expected)
+	for _, file := range desktopFiles(expected) {
+		digest, err := fileDigest(file)
+		if err != nil {
+			return desktopAnchor{}, err
+		}
+		anchor.digests = append(anchor.digests, digest)
 	}
-	anchor.image, err = fileDigest(executableImage(expected))
-	if err != nil {
-		return anchor, errUnqualified
-	}
-	anchor.archive, err = fileDigest(desktopArchive(expected))
-	return anchor, err
+	return anchor, nil
 }
 
 func (anchor desktopAnchor) verifyFiles(actual string) error {
-	for _, item := range []struct {
-		path   string
-		digest [32]byte
-	}{
-		{actual, anchor.executable}, {executableImage(actual), anchor.image}, {desktopArchive(actual), anchor.archive},
-	} {
-		hash, err := fileDigest(item.path)
-		if err != nil || hash != item.digest {
+	if filepath.Base(actual) != anchor.name {
+		return errUnqualified
+	}
+	files := desktopFiles(actual)
+	if len(files) != len(anchor.digests) {
+		return errUnqualified
+	}
+	for i, file := range files {
+		hash, err := fileDigest(file)
+		if err != nil || hash != anchor.digests[i] {
 			return errUnqualified
 		}
 	}
 	return nil
 }
 
-// Pin before the original AppImage mount disappears. Digests are non-secret,
-// memory-only facts; OS peer identity, not a claimed path or PID, selects files.
-func newNativePeerVerifier() func(net.Conn) error {
-	self, err := os.Executable()
-	if err != nil {
-		return func(net.Conn) error { return errUnqualified }
-	}
-	anchor, err := pinDesktop(self)
-	if err != nil {
-		return func(net.Conn) error { return errUnqualified }
-	}
-	return func(conn net.Conn) error {
-		actual, err := nativePeerExecutable(conn)
+// Capture the original bundle in the background before its AppImage mount
+// disappears. Listener startup never waits on filesystem scans or hashing.
+var errPinPending = errors.New("operator native bundle pin pending")
+
+type nativePeerVerifier struct {
+	done   chan struct{}
+	anchor desktopAnchor
+	err    error
+}
+
+func startNativePeerVerifier(pin func() (desktopAnchor, error)) *nativePeerVerifier {
+	v := &nativePeerVerifier{done: make(chan struct{})}
+	go func() {
+		defer close(v.done)
+		v.anchor, v.err = pin()
+	}()
+	return v
+}
+
+func newNativePeerVerifier() *nativePeerVerifier {
+	return startNativePeerVerifier(func() (desktopAnchor, error) {
+		self, err := os.Executable()
 		if err != nil {
+			return desktopAnchor{}, err
+		}
+		return pinDesktop(self)
+	})
+}
+
+func (v *nativePeerVerifier) status() error {
+	select {
+	case <-v.done:
+		if v.err != nil {
 			return errUnqualified
 		}
-		return anchor.verifyFiles(actual)
+		return nil
+	default:
+		return errPinPending
 	}
+}
+
+func (v *nativePeerVerifier) verify(conn net.Conn) error {
+	if err := v.status(); err != nil {
+		return err
+	}
+	actual, err := nativePeerExecutable(conn)
+	if err != nil {
+		return errUnqualified
+	}
+	return v.anchor.verifyFiles(actual)
 }

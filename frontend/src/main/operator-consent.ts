@@ -30,7 +30,7 @@ type Plan = Readonly<{
 	riskCodes: readonly string[];
 }>;
 type Review = Readonly<{ requestRef: string; challenge: string; digest: string; plan: Plan; explanation: { en: string; zh: string; riskEn: string; riskZh: string } }>;
-type Reply = { kind: "hello" | "pong" | "confirmed" | "cancelled"; requestId?: string } | { kind: "review"; review: Review; requestId: string } | { kind: "error"; requestId?: string };
+type Reply = { kind: "rejected"; retryable: boolean } | { kind: "hello" | "pong" | "confirmed" | "cancelled"; requestId?: string } | { kind: "review"; review: Review; requestId: string } | { kind: "error"; requestId?: string };
 type NativeDialog = (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -81,6 +81,7 @@ function parseReply(text: string): Reply {
 		case "operator-hello-ok":
 			if (value.version !== 1) throw new Error("OPERATOR_PROTOCOL_INVALID");
 			return { kind: "hello" };
+		case "operator-hello-rejected": return { kind: "rejected", retryable: value.code === "OPERATOR_PIN_PENDING" || value.code === "OPERATOR_ISSUER_BUSY" };
 		case "pong": return { kind: "pong" };
 		case "review-plan": return { kind: "review", review: parseReview(value), requestId: reference(requestId) };
 		case "confirmed": return { kind: "confirmed", requestId };
@@ -90,12 +91,19 @@ function parseReply(text: string): Reply {
 	}
 }
 
+export function operatorConsentLabels(zh: boolean) {
+	return zh ? { menu: "操作者確認", review: "檢視下一個固定操作計畫…", notReady: "本機確認 issuer 尚未就緒。" } :
+		{ menu: "Operator confirmation", review: "Review next fixed action plan…", notReady: "The native confirmation issuer is not ready." };
+}
+
 // Only Electron main calls this. No credential, plan or confirm method crosses
 // preload, renderer, Browser automation, ordinary HTTP, environment or files.
 export function connectOperatorConsent(options: { address: string; ownedToken?: string; show: NativeDialog; zh: () => boolean }) {
 	let disposed = false;
 	let connected = false;
 	let busy = false;
+	let retryCount = 0;
+	let stopRetry = false;
 	let retry: ReturnType<typeof setTimeout> | undefined;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	let socket: ReturnType<typeof connect> | undefined;
@@ -113,6 +121,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 		if (disposed) return;
 		const current = connect({ path: options.address });
 		socket = current;
+		const handshake = setTimeout(() => current.destroy(), 5_000);
 		const decoder = new StringDecoder("utf8");
 		let buffer = "";
 		current.once("connect", () => send({ type: "operator-hello", version: 1, token: options.ownedToken }));
@@ -130,9 +139,14 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 					if (reply.kind === "hello") {
 						if (connected) throw new Error("OPERATOR_PROTOCOL_INVALID");
 						connected = true;
+						retryCount = 0;
+						clearTimeout(handshake);
 						lifetime = new AbortController();
 						send({ type: "ready" });
 						heartbeat = setInterval(() => send({ type: "ping" }), 5_000);
+					} else if (reply.kind === "rejected") {
+						if (!reply.retryable) stopRetry = true;
+						current.destroy();
 					} else if (reply.kind !== "pong" && pending && reply.requestId === pending.id) {
 						const receiver = pending;
 						clearTimeout(receiver.timer);
@@ -140,14 +154,18 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 						receiver.resolve(reply);
 					}
 				}
-			} catch { current.destroy(); }
+			} catch { stopRetry = true; current.destroy(); }
 		});
 		current.once("close", () => {
 			connected = false;
+			clearTimeout(handshake);
 			lifetime.abort();
 			clearInterval(heartbeat);
 			if (pending) { clearTimeout(pending.timer); pending.reject(); }
-			if (!disposed) retry = setTimeout(start, 2_000);
+			if (!disposed && !stopRetry) {
+				retryCount++;
+				if (retryCount < 6) retry = setTimeout(start, Math.min(2_000 * 2 ** (retryCount - 1), 30_000));
+			}
 		});
 	};
 	start();
@@ -198,6 +216,8 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 				if (result.response !== 1) { await call({ type: "cancel", requestRef: review.requestRef }); return; }
 				const receipt = await call({ type: "confirm", requestRef: review.requestRef, challenge: review.challenge, digest: review.digest });
 				if (receipt.kind !== "confirmed") throw new Error("OPERATOR_CONFIRMATION_INVALID");
+				if (!disposed && !signal.aborted) await options.show({ type: "info", title: zh ? "本機操作確認" : "Local action confirmation",
+					message: zh ? "已記錄此計畫的確認。" : "Confirmation recorded for this plan.", detail: zh ? "這只記錄同意，不會自動執行操作。" : "This records consent; it does not automatically execute the action.", defaultId: 0, cancelId: 0, noLink: true, signal }).catch(() => undefined);
 			} catch {
 				if (!disposed) await options.show({ type: "info", title: zh ? "本機操作確認" : "Local action confirmation", message: zh ? "目前沒有可確認的計畫，或 native issuer 無法驗證。" : "No confirmable plan is available, or the native issuer could not be qualified.", detail: zh ? "不會自動執行或降級確認。請檢查計畫期限與桌面連線。" : "No action or fallback confirmation occurred. Check plan expiry and the desktop connection." }).catch(() => undefined);
 			} finally { busy = false; }

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -34,10 +33,11 @@ func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 	if err := s.UpsertProject(context.Background(), domain.ProjectRecord{ID: "project", Path: dir, RegisteredAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	b := New(s, testToken)
+	b := New(s.NativeOperatorIssuer(), testToken)
 	// Protocol fixtures inject peer qualification only here. The real Electron
 	// integration uses New unchanged and verifies kernel identity + pinned code.
 	b.verifyPeer = func(net.Conn) error { return nil }
+	b.pinStatus = func() error { return nil }
 	return b, s, dir
 }
 
@@ -71,8 +71,8 @@ func TestNativeUnverifiedPlatformFailsClosed(t *testing.T) {
 			c := dialNative(t, b, hello)
 			_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
 			var reply frame
-			if err := c.decoder.Decode(&reply); err != io.EOF {
-				t.Fatalf("unverified platform did not close native channel: %+v %v", reply, err)
+			if err := c.decoder.Decode(&reply); err != nil || reply.Type != "operator-hello-rejected" || reply.Code != "OPERATOR_PLATFORM_UNVERIFIED" {
+				t.Fatalf("unverified platform did not reject native channel: %+v %v", reply, err)
 			}
 		})
 	}
@@ -294,7 +294,7 @@ func TestNativeRejectsMissingPairingAndOtherCapabilities(t *testing.T) {
 			c := dialNative(t, b, frame{Type: "operator-hello", Version: 1, Token: token})
 			_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
 			var out frame
-			if c.decoder.Decode(&out) == nil {
+			if err := c.decoder.Decode(&out); err != nil || out.Type != "operator-hello-rejected" {
 				t.Fatal("unqualified caller got a native channel")
 			}
 		})
@@ -303,11 +303,11 @@ func TestNativeRejectsMissingPairingAndOtherCapabilities(t *testing.T) {
 
 func TestNativeCLIBootstrapTokenAloneIsNotAnIssuer(t *testing.T) {
 	_, store, _ := nativeFixture(t)
-	b := New(store, testToken)
+	b := New(store.NativeOperatorIssuer(), testToken)
 	c := dialNative(t, b, frame{Type: "operator-hello", Version: 1, Token: testToken})
 	_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
 	var response frame
-	if c.decoder.Decode(&response) == nil {
+	if err := c.decoder.Decode(&response); err != nil || response.Type != "operator-hello-rejected" {
 		t.Fatal("caller-chosen stdin token bypassed native peer qualification")
 	}
 }
@@ -338,5 +338,82 @@ func TestNativeThreePurposeFamiliesAndCancellation(t *testing.T) {
 		if err := s.RevokeUnused(context.Background(), receipt.RequestRef); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestNativeReviewNextAdvancesAfterCancelOrConfirm(t *testing.T) {
+	for _, decision := range []string{"cancel", "confirm"} {
+		t.Run(decision, func(t *testing.T) {
+			b, s, _ := nativeFixture(t)
+			c := readyNative(t, b)
+			a := planFor(domain.ConsentSettingsPermissions)
+			first, err := s.PrepareOperatorAction(context.Background(), a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2 * time.Millisecond)
+			secondPlan := a
+			secondPlan.ActionKey = "second-action"
+			second, err := s.PrepareOperatorAction(context.Background(), secondPlan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review := c.call(t, frame{Type: "review-next"})
+			if review.RequestRef != first.RequestRef {
+				t.Fatalf("first review: %+v", review)
+			}
+			reply := c.call(t, frame{Type: decision, RequestRef: review.RequestRef, Challenge: review.Challenge, Digest: review.Digest})
+			if reply.Type != "cancelled" && reply.Type != "confirmed" {
+				t.Fatalf("decision: %+v", reply)
+			}
+			next := c.call(t, frame{Type: "review-next"})
+			if next.Type != "review-plan" || next.RequestRef != second.RequestRef {
+				t.Fatalf("next plan blocked: %+v", next)
+			}
+			if decision == "confirm" {
+				// Wraparound must still exclude A's live consent, without a domain consume.
+				next = c.call(t, frame{Type: "review-next"})
+				if next.RequestRef != second.RequestRef {
+					t.Fatalf("live consent reviewed again: %+v", next)
+				}
+				_ = c.conn.Close()
+				<-c.done
+				c = readyNative(t, b)
+				next = c.call(t, frame{Type: "review-next"})
+				if next.RequestRef != first.RequestRef {
+					t.Fatalf("stale issuer consent was hidden: %+v", next)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeBusyConnectionDoesNotVerifyPeer(t *testing.T) {
+	b, _, _ := nativeFixture(t)
+	_ = readyNative(t, b)
+	b.verifyPeer = func(net.Conn) error { t.Error("occupied issuer triggered peer IO"); return errUnqualified }
+	extra := dialNative(t, b, frame{Type: "operator-hello", Version: 1})
+	if reply := extra.receive(t); reply.Type != "operator-hello-rejected" || reply.Code != "OPERATOR_ISSUER_BUSY" {
+		t.Fatalf("busy rejection: %+v", reply)
+	}
+}
+
+func TestNativePinPendingFailsClosedWithoutBlocking(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("platform gate independently rejects non-Linux")
+	}
+	release := make(chan struct{})
+	verifier := startNativePeerVerifier(func() (desktopAnchor, error) { <-release; return desktopAnchor{}, nil })
+	defer close(release)
+	b := New(nil, testToken)
+	b.pinStatus, b.verifyPeer = verifier.status, verifier.verify
+	b.ready, b.epoch, b.liveUntil = true, "issuer", time.Now().Add(time.Minute)
+	plan := planFor(domain.ConsentSettingsPermissions)
+	if b.GetAuthorityReadiness([]domain.OperatorPurpose{plan.Purpose}, plan.Scope).AuthorityGo {
+		t.Fatal("ready before background pin completed")
+	}
+	c := dialNative(t, b, frame{Type: "operator-hello", Version: 1, Token: testToken})
+	if reply := c.receive(t); reply.Type != "operator-hello-rejected" || reply.Code != "OPERATOR_PIN_PENDING" {
+		t.Fatalf("pending pin did not fail closed: %+v", reply)
 	}
 }
