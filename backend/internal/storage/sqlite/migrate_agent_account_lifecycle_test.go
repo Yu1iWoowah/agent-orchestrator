@@ -3,8 +3,6 @@ package sqlite
 import (
 	"testing"
 	"time"
-
-	"github.com/pressly/goose/v3"
 )
 
 func TestLifecycleMigrationPreservesMetadataAndHistoricalBindings(t *testing.T) {
@@ -49,7 +47,7 @@ func TestLifecycleMigrationPreservesMetadataAndHistoricalBindings(t *testing.T) 
 		t.Fatal("journal accepted arbitrary provider error text")
 	}
 	gooseMu.Lock()
-	rollbackErr := goose.DownTo(db, "migrations", 20261028193324307)
+	rollbackErr := migrateDownTo(db, 20261028193324307)
 	gooseMu.Unlock()
 	if rollbackErr == nil {
 		t.Fatal("downgrade erased durable lifecycle facts")

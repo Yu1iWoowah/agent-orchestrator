@@ -39,7 +39,7 @@ func TestMigrateRepairsInterleavedAutomationsHistory(t *testing.T) {
 				goose.SetBaseFS(fstest.MapFS{
 					"migrations/0159_automations.sql": &fstest.MapFile{Data: contents},
 				})
-				err = goose.Up(db, "migrations")
+				err = migrateUpTo(db, goose.MaxVersion)
 				goose.SetBaseFS(migrationsFS)
 				gooseMu.Unlock()
 				if err != nil {

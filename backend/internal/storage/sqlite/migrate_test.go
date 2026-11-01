@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
@@ -184,6 +182,9 @@ func TestUsageSchemaUpgradePreservesEarlierPRData(t *testing.T) {
 	// Reproduce the wider tables and burned migration history created by an
 	// earlier checkout of this PR.
 	if _, err := db.Exec(`
+INSERT INTO projects(id,path,registered_at) VALUES('usage-project','isolated-usage-project',CURRENT_TIMESTAMP);
+INSERT INTO sessions(id,project_id,num,activity_last_at,created_at,updated_at)
+VALUES('session-1','usage-project',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
 CREATE TABLE usage_bindings (
     id INTEGER PRIMARY KEY, session_id TEXT, harness TEXT, native_root_id TEXT,
     initial_model_id TEXT NOT NULL DEFAULT '', state TEXT,
@@ -743,7 +744,7 @@ VALUES ('codewhale-project-1', 'codewhale-project', 1, 'codewhale', ?, ?, ?);
 	if _, err := db.Exec(`DELETE FROM sessions WHERE id = 'codewhale-project-1'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.DownTo(db, "migrations", 192); err != nil {
+	if err := migrateDownTo(db, 192); err != nil {
 		t.Fatalf("down migration 193: %v", err)
 	}
 	if _, err := db.Exec(`

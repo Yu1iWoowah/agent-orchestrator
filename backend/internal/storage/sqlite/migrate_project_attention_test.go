@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/pressly/goose/v3"
 )
 
 func TestProjectAttentionUpgradeCDCDownAndReopen(t *testing.T) {
@@ -83,7 +81,7 @@ func TestProjectAttentionUpgradeCDCDownAndReopen(t *testing.T) {
 		t.Fatal("provider deletion did not dirty the notification snapshot")
 	}
 	exec(`INSERT INTO attention_report_questions(report_id,question_id,forwarded_by,created_at) VALUES('report','existing','historical-orchestrator',CURRENT_TIMESTAMP)`)
-	if err := goose.DownTo(db, "migrations", base); err != nil {
+	if err := migrateDownTo(db, base); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'project_attention_%' AND type IN ('table','trigger')`).Scan(&total); err != nil || total != 0 {

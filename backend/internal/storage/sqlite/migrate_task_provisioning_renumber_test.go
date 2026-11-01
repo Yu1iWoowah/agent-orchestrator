@@ -65,7 +65,7 @@ func TestMigrateRepairsRenumberedTaskProvisioningHistory(t *testing.T) {
 				gooseMu.Unlock()
 				t.Fatalf("set goose dialect: %v", err)
 			}
-			if err := goose.Up(db, "migrations"); err != nil {
+			if err := migrateUpTo(db, goose.MaxVersion); err != nil {
 				gooseMu.Unlock()
 				t.Fatalf("apply historical migrations: %v", err)
 			}

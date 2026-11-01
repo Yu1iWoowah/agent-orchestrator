@@ -22,7 +22,7 @@ func TestAccountRuntimeMigrationPreservesUnknownLegacyAndBlocksUnsafeDowngrade(t
 	goose.SetLogger(goose.NopLogger())
 	err = goose.SetDialect("sqlite3")
 	if err == nil {
-		err = goose.DownTo(db, "migrations", 20261029104125598)
+		err = migrateDownTo(db, 20261029104125598)
 	}
 	gooseMu.Unlock()
 	if err == nil {

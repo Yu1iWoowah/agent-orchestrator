@@ -93,7 +93,7 @@ func TestMigrateTUISettingsRecoveryOwnsGateAndHistoryCannotBeDiscarded(t *testin
 			goose.SetLogger(goose.NopLogger())
 			err := goose.SetDialect("sqlite3")
 			if err == nil {
-				err = goose.DownTo(db, "migrations", tuiSettingsBaseVersion)
+				err = migrateDownTo(db, tuiSettingsBaseVersion)
 			}
 			gooseMu.Unlock()
 			if err == nil {

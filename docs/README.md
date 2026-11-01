@@ -23,6 +23,7 @@ in [gemini-cli.md](gemini-cli.md).
 | [backend-code-structure.md](backend-code-structure.md) | Package ownership rules for the Go backend: domain, services, ports, adapters, storage, HTTP, CLI, and daemon wiring. |
 | [cli/README.md](cli/README.md)                         | CLI commands and daemon control surface.                                                                              |
 | [session-agent-settings.md](session-agent-settings.md) | Settings API, Chat scheduling, explicit TUI restart consent, recovery fences and compatibility limits. |
+| [shared-input-custody.md](shared-input-custody.md) | S0 shared held schema、storage 介面、migration 依賴清冊與 backout 邊界。 |
 | [cloud-development.md](cloud-development.md)           | Current public Cloud sources, local stack, tests, and hosted-environment boundaries. |
 | [cloud-refactor.md](cloud-refactor.md)                 | Historical split design for shared Cloud contracts and UI; not the current setup guide. |
 | [self-hosted-remote.md](self-hosted-remote.md)         | Experimental multi-host setup, client workflow, security boundary, and current limits.                                  |

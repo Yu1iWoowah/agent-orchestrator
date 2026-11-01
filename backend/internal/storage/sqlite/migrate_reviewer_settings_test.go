@@ -63,7 +63,7 @@ func TestReviewerSettingsDowngradeCannotErasePreferencesOrPassSnapshot(t *testin
 			}
 			gooseMu.Lock()
 			goose.SetBaseFS(migrationsFS)
-			err := goose.DownTo(db, "migrations", reviewerSettingsVersion-1)
+			err := migrateDownTo(db, reviewerSettingsVersion-1)
 			gooseMu.Unlock()
 			if err == nil {
 				t.Fatal("downgrade erased reviewer settings evidence")
