@@ -363,3 +363,34 @@ it("expires long-unconfirmed inactive edits while protecting an editor in anothe
 	release(); first.getState().prune();
 	expect(createQuestionDraftStore(localStorage).getState().entries[active]).toBeUndefined();
 });
+
+
+it("restores both notes and freezes them through unknown-result retries", () => {
+	localStorage.clear();
+	const store = createQuestionDraftStore(localStorage); const key = ready(store);
+	const field = store.getState().entries[key].fields.target;
+	store.getState().setField(key, "target", { ...field, notes: "  選 A，但 PR3 先不要做\n原文  " });
+	store.getState().setNotes(key, "  總補充\n反問  ");
+	const restored = createQuestionDraftStore(localStorage);
+	expect(restored.getState().entries[key].fields.target.notes).toBe("  選 A，但 PR3 先不要做\n原文  ");
+	expect(restored.getState().entries[key].notes).toBe("  總補充\n反問  ");
+	const answer = restored.getState().begin(key, "with-notes", 1);
+	expect(answer?.notes).toBe("  總補充\n反問  ");
+	expect(answer?.answers[0].notes).toBe("  選 A，但 PR3 先不要做\n原文  ");
+	restored.getState().setNotes(key, "cannot change frozen answer");
+	const pending = createQuestionDraftStore(localStorage);
+	expect(pending.getState().entries[key].phase.state).toBe("unknown");
+	expect(pending.getState().retry(key, Date.now())).toEqual(answer);
+});
+
+it("retains a notes-only unfinished draft across reload and storage removal", () => {
+	localStorage.clear(); const store = createQuestionDraftStore(localStorage);
+	const key = store.getState().ensure(sessionQuestionFixture());
+	store.getState().setNotes(key, "Please clarify before I choose");
+	const restored = createQuestionDraftStore(localStorage);
+	expect(restored.getState().entries[key].notes).toBe("Please clarify before I choose");
+	localStorage.removeItem(`${questionDraftStorageKey}:${key}`);
+	restored.getState().syncStorage(`${questionDraftStorageKey}:${key}`, null);
+	expect(restored.getState().entries[key].notes).toBe("Please clarify before I choose");
+	expect(restored.getState().begin(key, "incomplete", Date.now())).toBeUndefined();
+});

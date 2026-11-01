@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sessionQuestionFixture } from "../test/fixtures/session-question";
-import { emptyQuestionFields, parseSessionQuestion, parseSessionQuestionPage, questionAnswers } from "./session-questions";
+import { emptyQuestionFields, parseSessionQuestion, parseSessionQuestionPage, parseQuestionReceipt, parseQuestionSubmission, questionAnswers } from "./session-questions";
 
 describe("structured question boundary", () => {
 	it("keeps all grouped questions and starts with zero selections", () => {
@@ -106,5 +106,35 @@ describe("grouped answer construction", () => {
 		expect(questionAnswers(payload, fields).errors.target).toBe("otherTooLong");
 		fields.target.otherText = " \n";
 		expect(questionAnswers(payload, fields).errors.target).toBe("otherRequired");
+	});
+});
+
+
+describe("answer notes", () => {
+	it("keeps single-choice notes and overall notes verbatim and omits blank optional inputs", () => {
+		const question = sessionQuestionFixture(); const fields = emptyQuestionFields(question.payload);
+		fields.target = { selectedOptionIds: ["stage"], otherSelected: false, otherText: "", notes: "  選 A，但 PR3 先不要做\n原文 🚀  " };
+		fields.checks.selectedOptionIds = ["test"];
+		fields.checks.notes = " \n";
+		const notes = "  總補充\n可以明天做嗎？  ";
+		const built = questionAnswers(question.payload, fields, notes);
+		expect(built.errors).toEqual({}); expect(built.answers[0].notes).toBe(fields.target.notes);
+		expect(built.answers[1]).not.toHaveProperty("notes"); expect(built.notes).toBe(notes);
+		const submission = { questionId: question.id, expectedVersion: question.version, clientAnswerId: "reply", answers: built.answers, notes };
+		expect(parseQuestionSubmission(submission, question)).toEqual(submission);
+		const receipt = { clientAnswerId: "reply", questionVersion: question.version, answers: built.answers, notes, savedAt: "2026-10-29T01:00:00Z", deliveryState: "queued" };
+		expect(parseQuestionReceipt(receipt, submission)).toEqual(receipt);
+		for (const changed of [{ ...receipt, notes: "changed" }, { ...receipt, answers: [{ ...built.answers[0], notes: "changed" }, built.answers[1]] }]) expect(() => parseQuestionReceipt(changed, submission)).toThrow();
+		expect(parseSessionQuestion({ ...question, state: "answered", answer: receipt }, "session").answer).toEqual(receipt);
+	});
+	it("validates Unicode notes limits independently of required choices", () => {
+		const { payload } = sessionQuestionFixture(); const fields = emptyQuestionFields(payload);
+		fields.target.notes = "only notes";
+		expect(questionAnswers(payload, fields).errors.target).toBe("required");
+		fields.target.selectedOptionIds = ["stage"]; fields.checks.selectedOptionIds = ["test"];
+		fields.target.notes = "🚀".repeat(4000);
+		expect(questionAnswers(payload, fields, fields.target.notes).errors).toEqual({});
+		fields.target.notes += "🚀";
+		expect(questionAnswers(payload, fields, fields.target.notes).errors).toEqual({ target: "notesTooLong", $notes: "notesTooLong" });
 	});
 });

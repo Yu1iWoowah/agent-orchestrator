@@ -366,6 +366,11 @@ func ParseAttentionAnswer(raw []byte) (AttentionAnswerSubmission, error) {
 	if len(input.Answers) < 1 || len(input.Answers) > 4 {
 		return input, attentionInvalid("answers", "must contain 1–4 answers")
 	}
+	if input.Notes != nil {
+		if err := attentionTextBound("notes", *input.Notes, 4000); err != nil {
+			return input, err
+		}
+	}
 	for i := range input.Answers {
 		if input.Answers[i].SelectedOptionIDs == nil {
 			input.Answers[i].SelectedOptionIDs = []string{}
@@ -416,6 +421,11 @@ func CanonicalAttentionAnswers(payload AttentionQuestionPayload, answers []Atten
 		}
 		if answer.OtherText != nil {
 			if err := attentionTextBound("answers."+question.Key+".otherText", *answer.OtherText, 4000); err != nil {
+				return nil, err
+			}
+		}
+		if answer.Notes != nil {
+			if err := attentionTextBound("answers."+question.Key+".notes", *answer.Notes, 4000); err != nil {
 				return nil, err
 			}
 		}

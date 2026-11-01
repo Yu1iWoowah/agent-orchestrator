@@ -217,6 +217,7 @@ type AttentionAnswer struct {
 	DeliveredAt      sql.NullTime
 	LastError        string
 	DeliveryAttempts int64
+	Notes            sql.NullString
 }
 
 type AttentionNotificationReceipt struct {

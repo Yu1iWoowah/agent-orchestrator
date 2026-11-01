@@ -59,6 +59,7 @@ type AttentionAnswerReceipt struct {
 	ClientAnswerID  string                    `json:"clientAnswerId"`
 	QuestionVersion int64                     `json:"questionVersion"`
 	Answers         []AttentionQuestionAnswer `json:"answers"`
+	Notes           *string                   `json:"notes,omitempty" minLength:"1" maxLength:"4000"`
 	SavedAt         time.Time                 `json:"savedAt"`
 	DeliveryState   string                    `json:"deliveryState" enum:"queued,delivered,failed"`
 	DeliveredAt     *time.Time                `json:"deliveredAt,omitempty"`

@@ -36,7 +36,7 @@ window.fetch = async (input, init) => {
 			question = { ...question, version: 2, payload: { ...question.payload, explanation: "The deployment scope changed. Please confirm the new version." } };
 			return Response.json({ code: "QUESTION_CHANGED", message: "Changed" }, { status: 409 });
 		}
-		const receipt: components["schemas"]["AttentionAnswerReceipt"] = { clientAnswerId: submission.clientAnswerId, questionVersion: submission.expectedVersion, answers: submission.answers, savedAt: "2026-10-29T00:01:00Z", deliveryState: "queued" };
+		const receipt: components["schemas"]["AttentionAnswerReceipt"] = { clientAnswerId: submission.clientAnswerId, questionVersion: submission.expectedVersion, answers: submission.answers, notes: submission.notes, savedAt: "2026-10-29T00:01:00Z", deliveryState: "queued" };
 		if (answerMode === "conflict-answered" || answerMode === "conflict-cancelled") {
 			question = { ...question, state: answerMode === "conflict-answered" ? "answered" : "cancelled",
 				answer: answerMode === "conflict-answered" ? { ...receipt, clientAnswerId: "external-answer" } : undefined };
