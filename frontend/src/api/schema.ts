@@ -6051,6 +6051,7 @@ export interface components {
             /** @enum {string} */
             deliveryState: "queued" | "delivered" | "failed";
             lastError?: string;
+            notes?: null | string;
             /** Format: int64 */
             questionVersion: number;
             /** Format: date-time */
@@ -6061,6 +6062,7 @@ export interface components {
             clientAnswerId: string;
             /** Format: int64 */
             expectedVersion: number;
+            notes?: null | string;
             questionId: string;
         };
         AttentionAuthorization: {
@@ -6097,6 +6099,7 @@ export interface components {
             question: string;
         };
         AttentionQuestionAnswer: {
+            notes?: null | string;
             otherText?: null | string;
             questionKey: string;
             selectedOptionIds: string[];
@@ -8219,6 +8222,7 @@ export interface components {
             /** @enum {string} */
             deliveryState: "queued" | "delivered" | "failed";
             lastError?: string;
+            notes?: null | string;
             /** Format: int64 */
             questionVersion: number;
             /** Format: date-time */

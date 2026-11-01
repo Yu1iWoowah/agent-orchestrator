@@ -55,9 +55,9 @@ fetches. Never use previews for secrets or instructions that approve a tool.
 
 Limits use Unicode code points: title 120, overall explanation 8000, header 24,
 question 2000, per-question explanation 4000, label 80, option description 1000,
-preview 8192 and Other answer 4000. The entire create/revise request JSON,
+preview 8192, Other answer 4000, and each optional notes field 4000. The entire create/revise request JSON,
 including its command envelope, is at most 128 KiB; answer JSON is at most
-32 KiB. Required text must be nonblank. Unknown members,
+256 KiB. Required text must be nonblank. Unknown members,
 schema versions, duplicate keys, explicit nulls and invalid types are rejected.
 
 For `--kind authorization`, also provide an `authorization` object with required
@@ -89,7 +89,8 @@ Example `answer.json` (read the current question before answering):
   "questionId": "ask_example",
   "expectedVersion": 1,
   "clientAnswerId": "answer-unique-1",
-  "answers": [{"questionKey":"target","selectedOptionIds":["staging"]}]
+  "answers": [{"questionKey":"target","selectedOptionIds":["staging"],"notes":"Stage first; hold PR3."}],
+  "notes": "Can we deploy tomorrow?"
 }
 ```
 
@@ -101,6 +102,14 @@ token. Keep it across uncertain retries; retrying the same payload returns the
 saved receipt and does not enqueue another delivery. Reusing it for a different
 answer returns 409. On 409, reload and ask the user to choose from the fresh
 version; do not silently map old choices onto a changed question.
+
+Each answer may include optional `notes` alongside a selected option or Other,
+including on single-select questions. Top-level `notes` add context or a follow-up
+for the entire group. Both are optional, must be nonblank when supplied, and keep
+their original whitespace and newlines. They do not replace a required choice or
+change the Other selection rules. The origin session receives each note directly
+after its answer and the overall note last. Saved notes are visible in `get` and
+`list --state history --json`; `read` only marks a question read.
 
 Saving answers and closing the question is atomic. `queued` means saved with
 delivery still pending; only `delivered` confirms semantic acceptance by the

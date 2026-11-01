@@ -10,13 +10,14 @@ export type QuestionDraftPhase =
 	| { state: "submitting"; answer: Submission; startedAt: number }
 	| { state: "unknown"; answer: Submission; nextRetryAt: number; message?: string }
 	| { state: "conflict"; message: string };
-export interface QuestionDraft { scope: QuestionScope; question: SessionQuestion; fields: QuestionFields; phase: QuestionDraftPhase; updatedAt: number; confirmedAt?: number }
+export interface QuestionDraft { scope: QuestionScope; question: SessionQuestion; fields: QuestionFields; notes?: string; phase: QuestionDraftPhase; updatedAt: number; confirmedAt?: number }
 type SourceScope = Omit<QuestionScope, "version">;
 interface QuestionDraftState {
 	entries: Record<string, QuestionDraft>;
 	storageAvailable: boolean;
 	ensure: (question: SessionQuestion, hostId?: string) => string;
 	setField: (key: string, promptKey: string, field: QuestionField) => void;
+	setNotes: (key: string, notes: string) => void;
 	begin: (key: string, clientAnswerId: string, at: number) => Submission | undefined;
 	retry: (key: string, at: number) => Submission | undefined;
 	unknown: (key: string, clientAnswerId: string, message: string, at: number) => void;
@@ -36,7 +37,7 @@ const unconfirmedRetention = 30 * 24 * 60 * 60 * 1000;
 const leasePrefix = "ao.question.editors.v1:";
 const retention = 7 * 24 * 60 * 60 * 1000;
 const storageKey = (key: string) => `${questionDraftStorageKey}:${key}`;
-const hasFields = (entry: QuestionDraft) => Object.values(entry.fields).some((field) => field.selectedOptionIds.length || field.otherSelected || field.otherText);
+const hasFields = (entry: QuestionDraft) => Boolean(entry.notes) || Object.values(entry.fields).some((field) => field.selectedOptionIds.length || field.otherSelected || field.otherText || field.notes);
 const isPending = (entry: QuestionDraft) => entry.phase.state === "submitting" || entry.phase.state === "unknown";
 const protectsInput = (entry: QuestionDraft) => isPending(entry) || entry.phase.state === "editing" && hasFields(entry);
 const sameSource = (a: SourceScope, b: SourceScope) => (a.hostId ?? null) === (b.hostId ?? null) && a.sessionId === b.sessionId && a.questionId === b.questionId;
@@ -51,8 +52,9 @@ function savedFields(value: unknown, question: SessionQuestion): QuestionFields 
 		const field = value[prompt.key];
 		if (!isRecord(field) || !Array.isArray(field.selectedOptionIds) ||
 			!field.selectedOptionIds.every((id: unknown) => typeof id === "string") ||
-			typeof field.otherSelected !== "boolean" || typeof field.otherText !== "string") throw new Error("Invalid field");
-		fields[prompt.key] = { selectedOptionIds: field.selectedOptionIds, otherSelected: field.otherSelected, otherText: field.otherText };
+			typeof field.otherSelected !== "boolean" || typeof field.otherText !== "string" ||
+			(field.notes !== undefined && typeof field.notes !== "string")) throw new Error("Invalid field");
+		fields[prompt.key] = { selectedOptionIds: field.selectedOptionIds, otherSelected: field.otherSelected, otherText: field.otherText, ...(field.notes !== undefined ? { notes: field.notes } : {}) };
 	}
 	return fields;
 }
@@ -67,6 +69,8 @@ function parseDraft(key: string, value: unknown): QuestionDraft | undefined {
 		if (question.state !== "open") return;
 		const scope: QuestionScope = { hostId: value.scope.hostId, sessionId: question.originSessionId, questionId: question.id, version: question.version };
 		if (value.scope.questionId !== question.id || value.scope.version !== question.version || questionDraftKey(scope) !== key) return;
+		if (value.notes !== undefined && typeof value.notes !== "string") return;
+		const notes = value.notes;
 		const fields = savedFields(value.fields, question);
 		let phase: QuestionDraftPhase;
 		switch (value.phase.state) {
@@ -77,7 +81,7 @@ function parseDraft(key: string, value: unknown): QuestionDraft | undefined {
 			default: return;
 		}
 		const confirmedAt = typeof value.confirmedAt === "number" && Number.isFinite(value.confirmedAt) ? Math.min(value.confirmedAt, Date.now()) : undefined;
-		const entry = { scope, question, fields, phase, updatedAt, confirmedAt };
+		const entry = { scope, question, fields, ...(notes !== undefined ? { notes } : {}), phase, updatedAt, confirmedAt };
 		return hasFields(entry) || isPending(entry) ? entry : undefined;
 	} catch { /* Invalid saved input never becomes an automatic answer. */ }
 	return undefined;
@@ -228,13 +232,14 @@ export function createQuestionDraftStore(storage: Storage) {
 				entry.phase.state !== "editing" ? entry : { ...entry,
 					fields: { ...entry.fields, [promptKey]: { ...field, selectedOptionIds: [...field.selectedOptionIds] } }, phase: { state: "editing" },
 				}),
+			setNotes: (key, notes) => change(key, (entry) => entry.phase.state !== "editing" ? entry : { ...entry, notes, phase: { state: "editing" } }),
 			begin: (key, clientAnswerId, at) => {
 				const entry = get().entries[key];
 				if (!entry || entry.phase.state !== "editing" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(clientAnswerId)) return;
-				const built = questionAnswers(entry.question.payload, entry.fields);
+				const built = questionAnswers(entry.question.payload, entry.fields, entry.notes);
 				if (Object.keys(built.errors).length) return;
-				const answer = { questionId: entry.scope.questionId, expectedVersion: entry.scope.version, clientAnswerId, answers: built.answers };
-				if (new TextEncoder().encode(JSON.stringify(answer)).length > 32 * 1024) {
+				const answer = { questionId: entry.scope.questionId, expectedVersion: entry.scope.version, clientAnswerId, answers: built.answers, ...(built.notes ? { notes: built.notes } : {}) };
+				if (new TextEncoder().encode(JSON.stringify(answer)).length > 256 * 1024) {
 					change(key, (current) => ({ ...current, phase: { state: "editing", errorCode: "answerTooLarge" } })); return;
 				}
 				change(key, (current) => ({ ...current, phase: { state: "submitting", answer, startedAt: at } }));

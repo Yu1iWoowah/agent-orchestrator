@@ -586,3 +586,51 @@ func TestAttentionQuestionCancelReasonUnicodeBoundary(t *testing.T) {
 		t.Fatalf("Unicode reason boundary: state=%s error=%v", got.State, err)
 	}
 }
+
+func TestAttentionQuestionNotesPersistAndReachOriginVerbatim(t *testing.T) {
+	for _, overall := range []bool{false, true} {
+		t.Run(fmt.Sprint(overall), func(t *testing.T) {
+			s, session, _ := conversationFixture(t)
+			ctx := context.Background()
+			question, _, err := s.CreateAttentionQuestion(ctx, askCreate(session), histClock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			per := "  選 A，但 PR3 先不要做\n保留原文 🚀  "
+			total := "  請先回答這個反問？\n" + strings.Repeat("界", 3980)
+			answer := askAnswer(question.ID)
+			answer.Answers[0].Notes = &per
+			if overall {
+				answer.Notes = &total
+			}
+			for range 2 {
+				receipt, err := s.AnswerAttentionQuestion(ctx, session, answer, histClock)
+				if err != nil || receipt.Answers[0].Notes == nil || *receipt.Answers[0].Notes != per || overall && (receipt.Notes == nil || *receipt.Notes != total) {
+					t.Fatalf("receipt %+v %v", receipt, err)
+				}
+			}
+			got, err := s.GetAttentionQuestion(ctx, session, question.ID)
+			if err != nil || got.Answer == nil || got.Answer.Answers[0].Notes == nil || *got.Answer.Answers[0].Notes != per {
+				t.Fatalf("read %+v %v", got, err)
+			}
+			page, err := s.ListAttentionQuestions(ctx, session, domain.AttentionQuestionQuery{State: "history"}, histClock)
+			if err != nil || len(page.Items) != 1 || page.Items[0].Answer.Answers[0].Notes == nil || *page.Items[0].Answer.Answers[0].Notes != per {
+				t.Fatalf("list %+v %v", page, err)
+			}
+			pending, err := s.PendingAttentionAnswers(ctx, 10)
+			if err != nil || len(pending) != 1 || !strings.Contains(pending[0].Message, "Notes [target]:\n"+per) || overall && !strings.HasSuffix(pending[0].Message, "Overall notes:\n"+total+"\n") {
+				t.Fatalf("delivery %+v %v", pending, err)
+			}
+			changed := "changed"
+			answer.Answers[0].Notes = &changed
+			if _, err := s.AnswerAttentionQuestion(ctx, session, answer, histClock); !errors.Is(err, domain.ErrAttentionQuestionConflict) {
+				t.Fatalf("changed per-question retry: %v", err)
+			}
+			answer.Answers[0].Notes = &per
+			answer.Notes = &changed
+			if _, err := s.AnswerAttentionQuestion(ctx, session, answer, histClock); !errors.Is(err, domain.ErrAttentionQuestionConflict) {
+				t.Fatalf("changed overall retry: %v", err)
+			}
+		})
+	}
+}

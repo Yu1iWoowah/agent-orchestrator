@@ -152,7 +152,7 @@ func (c *QuestionsController) list(w http.ResponseWriter, r *http.Request) {
 func (c *QuestionsController) answer(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, domain.MaxAttentionAnswerBytes))
 	if err != nil {
-		writeQuestionError(w, r, &domain.AttentionValidationError{Field: "answers", Message: "Answer JSON exceeds 32 KiB or cannot be read"})
+		writeQuestionError(w, r, &domain.AttentionValidationError{Field: "answers", Message: "Answer JSON exceeds 256 KiB or cannot be read"})
 		return
 	}
 	submission, err := domain.ParseAttentionAnswer(raw)

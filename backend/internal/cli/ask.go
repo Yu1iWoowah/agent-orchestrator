@@ -258,6 +258,12 @@ func newAskQuestionCommand(ctx *commandContext, options *askOptions, action stri
 		}
 		return printAskResponse(cmd, options, response, action)
 	}}
+	if action == "answer" {
+		cmd.Long = "Answer every prompt. Each answer may include optional notes alongside a choice or Other; top-level notes apply to the whole group. Notes and Other each allow 1–4000 Unicode characters, with non-whitespace content."
+		cmd.Example = `  ao ask answer ask-1 --payload-file answer.json
+  # answer.json:
+  # {"questionId":"ask-1","expectedVersion":1,"clientAnswerId":"reply-1","answers":[{"questionKey":"target","selectedOptionIds":["stage"],"notes":"Stage first; hold PR3."}],"notes":"Can we deploy tomorrow?"}`
+	}
 	if action == "answer" || action == "revise" {
 		cmd.Flags().StringVar(&file, "payload-file", "", "UTF-8 JSON file, or - for stdin")
 	}

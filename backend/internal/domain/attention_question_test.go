@@ -347,12 +347,12 @@ func TestAttentionGroupedAnswers(t *testing.T) {
 func TestAttentionAnswerIdentityAndBytes(t *testing.T) {
 	input := AttentionAnswerSubmission{QuestionID: "question-id", ExpectedVersion: 1, ClientAnswerID: "client-answer-id", Answers: []AttentionQuestionAnswer{{QuestionKey: "Q1", SelectedOptionIDs: []string{"first"}}}}
 	raw := attentionJSON(t, input)
-	padded := append(bytes.Clone(raw), bytes.Repeat([]byte(" "), 32*1024-len(raw))...)
+	padded := append(bytes.Clone(raw), bytes.Repeat([]byte(" "), MaxAttentionAnswerBytes-len(raw))...)
 	if _, err := ParseAttentionAnswer(padded); err != nil {
 		t.Fatal(err)
 	}
 	for name, raw := range map[string][]byte{
-		"over 32 KiB":       append(padded, ' '),
+		"over byte limit":   append(padded, ' '),
 		"unknown field":     bytes.Replace(raw, []byte(`"expectedVersion":1`), []byte(`"expectedVersion":1,"actor":"agent-says-user"`), 1),
 		"zero version":      bytes.Replace(raw, []byte(`"expectedVersion":1`), []byte(`"expectedVersion":0`), 1),
 		"unsafe version":    bytes.Replace(raw, []byte(`"expectedVersion":1`), []byte(`"expectedVersion":9007199254740992`), 1),
@@ -388,5 +388,58 @@ func TestAttentionJSONMemberNamesAreCaseSensitive(t *testing.T) {
 	raw := []byte(`{"questionId":"question","ExpectedVersion":1,"clientAnswerId":"answer","answers":[{"questionKey":"target","selectedOptionIds":["staging"]}]}`)
 	if _, err := ParseAttentionAnswer(raw); err == nil {
 		t.Fatal("case alias accepted in answer envelope")
+	}
+}
+
+func TestAttentionAnswerNotes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		notes *string
+		valid bool
+	}{
+		{"legacy", nil, true}, {"verbatim", attentionText("  選 A，但 PR3 先不要做\n第二行 🚀  "), true},
+		{"empty", attentionText(""), false}, {"whitespace", attentionText(" \n\t"), false},
+		{"limit", attentionText(strings.Repeat("🚀", 4000)), true}, {"over limit", attentionText(strings.Repeat("🚀", 4001)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := AttentionAnswerSubmission{QuestionID: "question", ExpectedVersion: 1, ClientAnswerID: "reply", Answers: []AttentionQuestionAnswer{{QuestionKey: "Q1", SelectedOptionIDs: []string{"first"}, Notes: tc.notes}}}
+			got, err := CanonicalAttentionAnswers(testAttentionPayload(), input.Answers)
+			if (err == nil) != tc.valid {
+				t.Fatalf("per-question notes: %v", err)
+			}
+			if err == nil && tc.notes != nil && (got[0].Notes == nil || *got[0].Notes != *tc.notes) {
+				t.Fatal("notes changed")
+			}
+			input.Answers[0].Notes = nil
+			input.Notes = tc.notes
+			parsed, err := ParseAttentionAnswer(attentionJSON(t, input))
+			if (err == nil) != tc.valid {
+				t.Fatalf("overall notes: %v", err)
+			}
+			if err == nil && tc.notes != nil && (parsed.Notes == nil || *parsed.Notes != *tc.notes) {
+				t.Fatal("overall notes changed")
+			}
+		})
+	}
+	if err := ValidateAttentionAnswers(testAttentionPayload(), []AttentionQuestionAnswer{{QuestionKey: "Q1", Notes: attentionText("notes alone")}}); err == nil {
+		t.Fatal("notes replaced required answer")
+	}
+}
+
+func TestAttentionAnswerAllTextFieldsAtLimit(t *testing.T) {
+	input := AttentionAnswerSubmission{QuestionID: "question", ExpectedVersion: 1, ClientAnswerID: "reply", Notes: attentionText(strings.Repeat("<", 4000))}
+	payload := testAttentionPayload()
+	payload.Questions = nil
+	for i := range 4 {
+		prompt := testAttentionPayload().Questions[0]
+		prompt.Key = fmt.Sprintf("Q%d", i)
+		payload.Questions = append(payload.Questions, prompt)
+		input.Answers = append(input.Answers, AttentionQuestionAnswer{QuestionKey: prompt.Key, SelectedOptionIDs: []string{}, OtherText: attentionText(strings.Repeat("<", 4000)), Notes: attentionText(strings.Repeat("🚀", 4000))})
+	}
+	if _, err := ParseAttentionAnswer(attentionJSON(t, input)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAttentionAnswers(payload, input.Answers); err != nil {
+		t.Fatal(err)
 	}
 }
