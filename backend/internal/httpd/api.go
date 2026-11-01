@@ -24,6 +24,8 @@ import (
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
+	OperatorConsentAuthority controllers.OperatorConsentAuthority
+
 	GuardianObservability controllers.GuardianQueryService
 
 	OrchestratorReplacements controllers.OrchestratorReplacementService
@@ -136,6 +138,8 @@ func normalizeAPIDeps(deps APIDeps, log *slog.Logger) APIDeps {
 // API owns one controller per resource and is the single Register call the
 // router invokes to mount the /api/v1 surface.
 type API struct {
+	operatorConsentAuthority controllers.OperatorConsentAuthority
+
 	agentSettings    *controllers.AgentSettingsController
 	appDiagnostics   *controllers.AppDiagnosticsController
 	projectDocuments *controllers.ProjectDocumentsController
@@ -234,16 +238,19 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		settings:       &controllers.SettingsController{Svc: deps.Settings},
 		dev:            &controllers.DevController{Import: deps.DevImport},
 		appDiagnostics: &controllers.AppDiagnosticsController{Svc: deps.AppDiagnostics},
-		browser:        &controllers.BrowserController{Svc: deps.Browser, Chrome: deps.BrowserChrome},
-		system:         &controllers.SystemController{Checks: deps.SystemChecks},
-		identity:       &controllers.IdentityController{HostID: deps.HostID},
-		endpoints:      &controllers.EndpointsController{Source: deps.Endpoints},
-		telemetryID:    &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},
-		systemInstall:  &controllers.SystemInstallController{Installer: deps.Installer},
-		agentAuth:      &controllers.AgentAuthController{Svc: deps.AgentAuth},
-		linkPreview:    &controllers.LinkPreviewController{Svc: deps.LinkPreview},
-		github:         &controllers.GitHubController{Svc: deps.GitHub},
-		events:         &EventsController{Source: deps.CDC, Live: deps.Events},
+
+		operatorConsentAuthority: deps.OperatorConsentAuthority,
+
+		browser:       &controllers.BrowserController{Svc: deps.Browser, Chrome: deps.BrowserChrome},
+		system:        &controllers.SystemController{Checks: deps.SystemChecks},
+		identity:      &controllers.IdentityController{HostID: deps.HostID},
+		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
+		telemetryID:   &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},
+		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
+		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
+		linkPreview:   &controllers.LinkPreviewController{Svc: deps.LinkPreview},
+		github:        &controllers.GitHubController{Svc: deps.GitHub},
+		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
 
@@ -283,7 +290,7 @@ func (a *API) Register(root chi.Router) {
 	root.Route("/api/v1", func(r chi.Router) {
 		// Serve the OpenAPI document from the same origin as the routes it describes.
 		r.Get("/openapi.yaml", apispec.ServeYAML)
-		r.Get("/operator-consent/readiness", controllers.OperatorConsentReadiness)
+		r.Get("/operator-consent/readiness", controllers.OperatorConsentReadinessHandler(a.operatorConsentAuthority))
 
 		r.Group(func(r chi.Router) {
 			// Large base64 bodies can spend longer than the ordinary REST budget

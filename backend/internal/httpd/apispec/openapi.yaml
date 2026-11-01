@@ -4917,6 +4917,31 @@ paths:
   /api/v1/operator-consent/readiness:
     get:
       operationId: getOperatorConsentReadiness
+      parameters:
+      - description: Required closed-registry purposes; repeat for multiple purposes.
+        in: query
+        name: purpose
+        schema:
+          description: Required closed-registry purposes; repeat for multiple purposes.
+          items:
+            type: string
+          type: array
+      - in: query
+        name: projectRef
+        schema:
+          type: string
+      - in: query
+        name: ownerRef
+        schema:
+          type: string
+      - in: query
+        name: branchRef
+        schema:
+          type: string
+      - in: query
+        name: nativeRef
+        schema:
+          type: string
       responses:
         "200":
           content:
@@ -4924,7 +4949,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OperatorConsentReadinessResponse'
           description: OK
-      summary: Read operator confirmation qualification (PR1 is unavailable)
+      summary: Read purpose-specific native operator confirmation qualification
       tags:
       - system
   /api/v1/orchestrator/replacements/{operationId}:

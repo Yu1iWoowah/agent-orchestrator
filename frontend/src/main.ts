@@ -1,4 +1,5 @@
 import { appDiagnosticsDialog } from "./main/app-diagnostics-dialog";
+import { connectOperatorConsent } from "./main/operator-consent";
 import { AppDiagnosticsMain } from "./main/app-diagnostics";
 import { DIAGNOSTIC_CHANNEL, diagnosticId } from "./shared/app-diagnostics";
 import { SideCloseRecovery } from "./main/side-close";
@@ -17,6 +18,7 @@ import {
 	dialog,
 	ipcMain,
 	Menu,
+	MenuItem,
 	nativeTheme,
 	net,
 	nativeImage,
@@ -713,6 +715,7 @@ function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state !== "ready" || daemonStatus.state !== "ready" || nextStatus.port !== daemonStatus.port || nextStatus.pid !== daemonStatus.pid) daemonAttachmentGeneration++;
 	if (nextStatus.state !== "ready") disposeBrowserRuntimeLink();
 	if (nextStatus.state !== "ready") {
+		disposeOperatorConsentLink();
 		disposeAppDiagnosticsLink();
 		if (sideStateTimer) clearInterval(sideStateTimer);
 		sideStateTimer = undefined;
@@ -935,6 +938,17 @@ async function createWindowInternal(): Promise<void> {
 	} else if (process.platform === "linux") {
 		Menu.setApplicationMenu(buildLinuxAppMenu());
 		mainWindow.setMenuBarVisibility(false);
+	}
+	const operatorMenu = Menu.getApplicationMenu();
+	if (operatorMenu && !operatorMenu.getMenuItemById("operator-confirmation")) {
+		operatorMenu.append(new MenuItem({ id: "operator-confirmation", label: "Operator confirmation", submenu: [{
+			label: "Review next fixed action plan…", accelerator: "CommandOrControl+Alt+Shift+O",
+			click: () => {
+				if (operatorConsentLink) void operatorConsentLink.reviewNext();
+				else void dialog.showMessageBox({ type: "info", message: "The native confirmation issuer is not ready." });
+			},
+		}] }));
+		Menu.setApplicationMenu(operatorMenu);
 	}
 
 	// Harden navigation: never let renderer/terminal content open in-app windows or
@@ -1194,6 +1208,7 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
 
 	mainWindow.on("closed", () => {
+		disposeOperatorConsentLink();
 		appDiagnosticsMain.resetDocument("APP_WINDOW_GONE");
 		disposeAppDiagnosticsLink();
 		chatDraftRisks = [];
@@ -1496,6 +1511,42 @@ if (process.platform !== "win32") {
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
 const appDiagnosticsToken = randomBytes(32).toString("base64url");
+const operatorConsentToken = randomBytes(32).toString("base64url");
+let operatorConsentLink: ReturnType<typeof connectOperatorConsent> | undefined;
+let operatorConsentIdentity: string | undefined;
+
+function disposeOperatorConsentLink(): void {
+	operatorConsentLink?.dispose();
+	operatorConsentLink = undefined;
+	operatorConsentIdentity = undefined;
+}
+
+function establishOperatorConsentLink(): void {
+	if (!mainWindow || mainWindow.isDestroyed()) {
+		disposeOperatorConsentLink();
+		return;
+	}
+	const rfp = runFilePath();
+	if (!rfp) return;
+	try {
+		const info = parseRunFile(readFileSync(rfp, "utf8"));
+		if (!info?.browserRuntimeAddress) return;
+		const identity = `${info.pid}:${info.startedAtMs}:${info.browserRuntimeAddress}:${!!daemonProcess}`;
+		if (identity === operatorConsentIdentity) return;
+		disposeOperatorConsentLink();
+		let zh = false;
+		void readUiSettings(path.dirname(rfp)).then((settings) => { zh = settings.locale === "zh-TW"; });
+		operatorConsentLink = connectOperatorConsent({ address: info.browserRuntimeAddress, ownedToken: daemonProcess ? operatorConsentToken : undefined, zh: () => zh,
+			show: (options) => {
+				const win = mainWindow;
+				if (!win || win.isDestroyed()) return Promise.reject(new Error("OPERATOR_WINDOW_UNAVAILABLE"));
+				return dialog.showMessageBox(win, options);
+			},
+		});
+		operatorConsentIdentity = identity;
+	} catch { disposeOperatorConsentLink(); }
+}
+app.once("will-quit", disposeOperatorConsentLink);
 const appDiagnosticsMain = new AppDiagnosticsMain({
 	instanceId: appRunId,
 	rendererURL: rendererUrl,
@@ -1773,6 +1824,7 @@ function disposeAppDiagnosticsLink(): void {
 }
 
 function establishAppDiagnosticsLink(): void {
+	establishOperatorConsentLink();
 	if (!mainWindow || mainWindow.isDestroyed() || !getShellWebContents()) {
 		disposeAppDiagnosticsLink();
 		return;
@@ -2451,7 +2503,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	// worker processes when it spawns them.
 	if (child.stdin) {
 		child.stdin.on("error", () => undefined);
-		child.stdin.end(privateRuntimeHandoff(browserRuntimeToken, appDiagnosticsToken));
+		child.stdin.end(privateRuntimeHandoff(browserRuntimeToken, appDiagnosticsToken, operatorConsentToken));
 	} else {
 		console.warn("AO: browser runtime token handoff pipe was unavailable");
 	}

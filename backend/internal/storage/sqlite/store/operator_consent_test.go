@@ -13,7 +13,6 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
@@ -76,42 +75,23 @@ func operatorPlan(purpose domain.OperatorPurpose) domain.OperatorActionPlan {
 	return domain.OperatorActionPlan{Protocol: domain.OperatorConsentProtocol, Purpose: purpose, Domain: d, ActionKey: "action-1", SubjectRef: "subject-1", ParticipantRefs: []string{"session-1"}, Scope: domain.OperatorActionScope{ProjectRef: "project-1", OwnerRef: "owner-1", BranchRef: "branch-1", NativeRef: "native-1"}, ExpectedRevisions: map[string]int64{"owner": 4, "recovery_epoch": 2}, PayloadDigest: strings.Repeat("a", 64), EffectDigest: strings.Repeat("b", 64), ValidUntil: operatorTestTime.Add(10 * time.Minute), RiskCodes: []string{"MANUAL_RECOVERY"}}
 }
 
-// mintOperatorFixture is deliberately compiled only in tests. There is no
-// production issuer/mint method, challenge material, HTTP or CLI equivalent.
+// Core contract fixtures exercise the production mint transaction. They do not
+// supply native gesture or attach qualification evidence.
 func mintOperatorFixture(t *testing.T, s *Store, plan domain.OperatorActionPlan) domain.OperatorConsentRef {
 	t.Helper()
-	var ref string
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	err := s.inTxDB(context.Background(), "test-only mint", func(q *gen.Queries, raw gen.DBTX) error {
-		row, err := q.GetOperatorConfirmationByKey(context.Background(), plan.ActionKey)
-		if err != nil {
-			return err
-		}
-		now := s.operatorNow().UnixMilli()
-		if row.DaemonEpoch != s.operatorEpoch || row.RevokedAtMs.Valid || row.ValidUntilMs <= now {
-			return domain.ErrOperatorConsentUnavailable
-		}
-		existing, err := q.GetLiveOperatorConsent(context.Background(), row.RequestRef)
-		if err == nil && (existing.ConsumedAtMs.Valid || existing.DaemonEpoch == s.operatorEpoch && existing.IssuerEpoch == s.operatorIssuerEpoch && existing.ExpiresAtMs > now) {
-			ref = existing.ConsentRef
-			return nil
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err = q.InvalidateUnusedOperatorConsents(context.Background(), gen.InvalidateUnusedOperatorConsentsParams{RequestRef: row.RequestRef, InvalidatedAtMs: sql.NullInt64{Int64: now, Valid: true}}); err != nil {
-			return err
-		}
-		ref = uuid.NewString()
-		expires := min(row.ValidUntilMs, now+domain.OperatorConsentLifetime.Milliseconds())
-		_, err = raw.ExecContext(context.Background(), `INSERT INTO operator_consents(consent_ref,request_ref,plan_digest,daemon_epoch,issuer_epoch,minted_at_ms,expires_at_ms) VALUES(?,?,?,?,?,?,?)`, ref, row.RequestRef, row.PlanDigest, s.operatorEpoch, s.operatorIssuerEpoch, now, expires)
-		return err
-	})
+	receipt, err := s.GetOperatorAction(context.Background(), plan.ActionKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return domain.OperatorConsentRef(ref)
+	_, digest, err := domain.CanonicalOperatorPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := s.ConfirmNativeOperatorPlan(context.Background(), receipt.RequestRef, digest, s.operatorIssuer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ref
 }
 
 func reserveOperatorFixture(s *Store, ref domain.OperatorConsentRef, p domain.OperatorActionPlan, failAt string) (domain.OperatorConsumption, error) {

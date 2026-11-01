@@ -4531,7 +4531,7 @@ type ReplacementRetainedRetryView struct {
 }
 
 // OperatorConsentReadinessResponse exposes qualification state, never authority
-// materials. C0-PR1 always reports authorityGo=false and an empty purpose set.
+// materials. Missing native qualification always reports authorityGo=false.
 type OperatorConsentReadinessResponse domain.OperatorAuthorityReadiness
 
 // GuardianObservabilityResponse is the metadata-only, local query contract.

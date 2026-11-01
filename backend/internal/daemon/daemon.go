@@ -49,6 +49,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
 	usagepipeline "github.com/aoagents/agent-orchestrator/backend/internal/observe/usage"
+	"github.com/aoagents/agent-orchestrator/backend/internal/operatornative"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/presence"
 	"github.com/aoagents/agent-orchestrator/backend/internal/preview"
@@ -140,10 +141,12 @@ func Run(buildVersion string) error {
 	log := newLogger()
 	var browserRuntimeToken string
 	var appRuntimeToken string
+	var operatorRuntimeToken string
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
 		var credentials appruntime.Credentials
 		credentials, err = appruntime.ReadCredentials(os.Stdin)
 		browserRuntimeToken, appRuntimeToken = credentials.BrowserToken, credentials.AppToken
+		operatorRuntimeToken = credentials.OperatorToken
 		if err != nil {
 			return err
 		}
@@ -214,6 +217,8 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	operatorBroker := operatornative.New(store, operatorRuntimeToken)
+	browserBroker.SetNativeHandler(operatorBroker.Handle)
 	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
@@ -1164,6 +1169,7 @@ func Run(buildVersion string) error {
 			},
 		}),
 		AppDiagnostics:           appDiagnosticsAPI,
+		OperatorConsentAuthority: operatorBroker,
 		Browser:                  browserService,
 		BrowserChrome:            browserChrome,
 		LinkPreview:              linkpreviewsvc.New(nil),

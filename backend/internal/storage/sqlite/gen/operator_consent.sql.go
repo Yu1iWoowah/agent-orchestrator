@@ -163,6 +163,36 @@ func (q *Queries) InvalidateUnusedOperatorConsents(ctx context.Context, arg Inva
 	return err
 }
 
+const nextNativeOperatorConfirmation = `-- name: NextNativeOperatorConfirmation :one
+SELECT r.request_ref, r.action_key, r.project_id, r.purpose, r.plan_json, r.plan_digest, r.daemon_epoch, r.valid_until_ms, r.revoked_at_ms, r.created_at_ms FROM operator_confirmation_requests r
+WHERE r.daemon_epoch=? AND r.revoked_at_ms IS NULL AND r.valid_until_ms>?
+AND NOT EXISTS (SELECT 1 FROM operator_consents c WHERE c.request_ref=r.request_ref AND c.consumed_at_ms IS NOT NULL)
+ORDER BY r.created_at_ms,r.request_ref LIMIT 1
+`
+
+type NextNativeOperatorConfirmationParams struct {
+	DaemonEpoch  string
+	ValidUntilMs int64
+}
+
+func (q *Queries) NextNativeOperatorConfirmation(ctx context.Context, arg NextNativeOperatorConfirmationParams) (OperatorConfirmationRequest, error) {
+	row := q.db.QueryRowContext(ctx, nextNativeOperatorConfirmation, arg.DaemonEpoch, arg.ValidUntilMs)
+	var i OperatorConfirmationRequest
+	err := row.Scan(
+		&i.RequestRef,
+		&i.ActionKey,
+		&i.ProjectID,
+		&i.Purpose,
+		&i.PlanJson,
+		&i.PlanDigest,
+		&i.DaemonEpoch,
+		&i.ValidUntilMs,
+		&i.RevokedAtMs,
+		&i.CreatedAtMs,
+	)
+	return i, err
+}
+
 const rearmOperatorConfirmation = `-- name: RearmOperatorConfirmation :exec
 UPDATE operator_confirmation_requests SET daemon_epoch=? WHERE request_ref=? AND revoked_at_ms IS NULL
 `
