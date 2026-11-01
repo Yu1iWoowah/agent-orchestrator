@@ -1233,6 +1233,7 @@ func Run(buildVersion string) error {
 		}()
 	}
 	var usageDone <-chan struct{}
+	var guardianDone <-chan struct{}
 
 	// Late-bind: the LAN listener shares the exact loopback router instance so
 	// the LAN surface and loopback surface never drift apart.
@@ -1253,6 +1254,9 @@ func Run(buildVersion string) error {
 
 	if usagePipeline != nil {
 		usageDone = usagePipeline.Start(ctx)
+	}
+	if roots, err := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir); err == nil {
+		guardianDone = startGuardianObservation(ctx, store, roots, log)
 	}
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
 	const supervisorGrace = 5 * time.Second
@@ -1426,6 +1430,9 @@ func Run(buildVersion string) error {
 	chatCancel()
 	if usageDone != nil {
 		<-usageDone
+	}
+	if guardianDone != nil {
+		<-guardianDone
 	}
 	if usagePricing != nil {
 		usagePricing.Wait()
