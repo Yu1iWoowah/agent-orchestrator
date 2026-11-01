@@ -52,16 +52,14 @@ func (s *Service) configureAgentSettingsController(c *Controller) {
 	c.mu.Unlock()
 }
 
-// QueueAgentSettings admits/wakes through the normal lifecycle boundary, then
-// releases its own work lease before testing quiescence. Durable owner CAS and
-// the controller's handoff state fence replacement; this request must not count
-// itself as a running provider operation.
+// QueueAgentSettings pins the admitted generation throughout acceptance and
+// execution without counting its own request as provider activity.
 func (s *Service) QueueAgentSettings(ctx context.Context, op domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
-	c, release, err := s.workingController(ctx, op.SessionID)
+	c, release, err := s.admitControllerWork(ctx, op.SessionID, true, controllerIntake)
 	if err != nil {
 		return domain.AgentSettingsOperation{}, err
 	}
-	release()
+	defer release()
 	return c.QueueAgentSettings(ctx, op)
 }
 
@@ -229,16 +227,30 @@ func (c *Controller) CancelAgentSettings(ctx context.Context, id string, version
 func (c *Controller) queueSettingsRecheck() {
 	c.mu.Lock()
 	if c.settingsRecheckQueued {
+		c.settingsRecheckRequested = true
 		c.mu.Unlock()
 		return
 	}
 	c.settingsRecheckQueued = true
+	c.work[controllerReconciliation]++
 	c.mu.Unlock()
 	go func() {
+		defer func() {
+			c.mu.Lock()
+			c.settingsRecheckQueued = false
+			c.work[controllerReconciliation]--
+			recheck := c.settingsRecheckRequested || c.settingsWaitingForWork && c.work[controllerProviderWork] == 0
+			c.settingsRecheckRequested = false
+			c.mu.Unlock()
+			if recheck {
+				c.queueSettingsRecheck()
+			}
+		}()
 		c.sendMu.Lock()
 		defer c.sendMu.Unlock()
 		c.mu.Lock()
-		c.settingsRecheckQueued = false
+		c.settingsRecheckRequested = false
+		c.settingsWaitingForWork = false
 		stopped := c.state == ports.ChatControllerStopped
 		c.mu.Unlock()
 		if stopped {
@@ -270,7 +282,8 @@ func settingsSelection(wire ports.ChatTurnSettings) domain.AgentSettings {
 
 func (c *Controller) settingsQuiescent(ctx context.Context) (bool, error) {
 	c.mu.Lock()
-	busy := c.state != ports.ChatControllerReady || c.handoff != controllerHandoffNone || c.pendingTurnID != "" || c.dispatchingTurnID != "" || c.compactionPending || c.operations != 0
+	busy := c.state != ports.ChatControllerReady || c.handoff != controllerHandoffNone || c.pendingTurnID != "" || c.dispatchingTurnID != "" || c.compactionPending || c.work[controllerProviderWork] != 0
+	c.settingsWaitingForWork = c.work[controllerProviderWork] != 0
 	c.mu.Unlock()
 	if busy {
 		return false, nil

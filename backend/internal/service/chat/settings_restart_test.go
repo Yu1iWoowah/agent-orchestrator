@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func restartJournalController(t *testing.T, h *harness, validator *journalValidator, provider ports.ChatConversation) *chatsvc.Controller {
@@ -260,9 +261,7 @@ func TestSettingsCommittedColdResumeRepreparesWireOrKeepsFence(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if len(replacement.sentTexts()) != 1 {
-				t.Fatal("cold resume lost or duplicated prompt")
-			}
+			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(replacement.sentTexts()) == 1 })
 			replacement.mu.Lock()
 			defer replacement.mu.Unlock()
 			if replacement.sent[0].Settings.FastMode != domain.AgentFastOff || replacement.sent[0].Settings.Model != "new-model" {
@@ -291,8 +290,9 @@ func TestSettingsColdReplayRechecksInputsAfterFinalProviderStep(t *testing.T) {
 	if _, err := controller.Send(t.Context(), ports.ChatUserMessage{Text: "after startup input change"}); err != nil {
 		t.Fatal(err)
 	}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(replacement.sentTexts()) == 1 })
 	if replacement.prepareCalls.Load() != 2 {
-		t.Fatal("cold replay dispatched using inputs invalidated during final provider step")
+		t.Fatal("cold replay did not requalify inputs before dispatch")
 	}
 }
 

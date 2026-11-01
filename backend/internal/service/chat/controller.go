@@ -228,6 +228,8 @@ type Controller struct {
 	settingsValidator           ports.ChatAgentSettingsValidator // guarded by mu
 	settingsMutator             ports.ChatAgentSettingsMutator   // guarded by mu
 	settingsRecheckQueued       bool                             // guarded by mu; at most one waiting recheck
+	settingsRecheckRequested    bool                             // guarded by mu; don't lose a wake while the executor runs
+	settingsWaitingForWork      bool                             // guarded by mu; provider work release wakes reconciliation
 	settingsInitializationError error                            // guarded by sendMu; failed cold replay fences dispatch
 
 	conv                   ports.ChatConversation
@@ -280,8 +282,9 @@ type Controller struct {
 	sendingTurnID string
 	// A compact request can be accepted before its provider turn starts.
 	compactionPending bool
-	// Provider calls keep automatic hibernation out without blocking explicit Kill.
-	operations int
+	// Every work kind pins this generation against automatic hibernation.
+	// Only provider work participates in settings quiescence.
+	work [controllerWorkKinds]int
 	// ackedTurnID is the turn the PROVIDER has confirmed it started, which lags
 	// pendingTurnID by the round trip between turn/start returning and the
 	// turn-started notification arriving. Interrupt needs the distinction: a
@@ -348,15 +351,42 @@ type Controller struct {
 	closeErr error
 }
 
-func (c *Controller) beginOperation() func() {
+type controllerWork uint8
+
+const (
+	controllerProviderWork controllerWork = iota
+	controllerIntake
+	controllerRead
+	controllerReconciliation
+	controllerWorkKinds
+)
+
+func (c *Controller) beginWork(kind controllerWork) func() {
 	c.mu.Lock()
-	c.operations++
+	c.work[kind]++
 	c.mu.Unlock()
+	var once sync.Once
 	return func() {
-		c.mu.Lock()
-		c.operations--
-		c.mu.Unlock()
+		once.Do(func() {
+			c.mu.Lock()
+			c.work[kind]--
+			recheck := kind == controllerProviderWork && c.work[kind] == 0 && c.settingsWaitingForWork
+			c.mu.Unlock()
+			if recheck {
+				c.queueSettingsRecheck()
+			}
+		})
 	}
+}
+
+// Callers hold mu. Intake/read/reconciliation still prevent retiring the owner.
+func (c *Controller) hasWorkLocked() bool {
+	for _, count := range c.work {
+		if count != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrNoActiveTurn reports an interrupt with nothing to cancel.
@@ -1529,7 +1559,8 @@ func (c *Controller) sendLocked(
 	if handoff {
 		return domain.ConversationTurn{}, ErrControllerHandoff
 	}
-	settingsBlocked, settingsErr := c.reconcileAgentSettingsLocked(ctx)
+	settingsErr := c.rejectPendingAgentSettings(ctx)
+	settingsBlocked := settingsErr != nil
 	if settingsErr != nil {
 		c.log.Warn("Chat settings keep dispatch fenced", "session", c.sessionID, "reason", "agent_settings_unavailable")
 	}
@@ -1610,6 +1641,9 @@ func (c *Controller) sendLocked(
 	}
 
 	if shouldQueue {
+		if settingsBlocked {
+			c.queueSettingsRecheck()
+		}
 		// AppendUserMessage wrote it as queued, which is exactly where it belongs
 		// until the running turn ends. drain picks it up from there.
 		c.mu.Lock()

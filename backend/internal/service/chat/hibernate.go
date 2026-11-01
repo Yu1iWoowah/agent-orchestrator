@@ -310,7 +310,7 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	}
 	// Inventory is provider I/O. Keep hibernation out with an operation count,
 	// while allowing new views, sends and explicit Kill to proceed.
-	release := controller.beginOperation()
+	release := controller.beginWork(controllerProviderWork)
 	gate.unlock()
 	ready, err := hibernator.CanHibernate(ctx)
 	release()
@@ -337,7 +337,7 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	busy := controller.state != ports.ChatControllerReady ||
 		controller.handoff != controllerHandoffNone ||
 		controller.pendingTurnID != "" || controller.dispatchingTurnID != "" ||
-		controller.compactionPending || controller.operations != 0
+		controller.compactionPending || controller.hasWorkLocked()
 	controller.mu.Unlock()
 	if busy {
 		controller.sendMu.Unlock()
@@ -527,7 +527,7 @@ func (s *Service) readingController(ctx context.Context, id domain.SessionID) (*
 		gate.unlock()
 		return nil, domain.SessionRecord{}, nil, ErrNoController
 	}
-	release := controller.beginOperation()
+	release := controller.beginWork(controllerRead)
 	gate.unlock()
 	return controller, rec, release, nil
 }
@@ -539,13 +539,12 @@ var errAsleep = errors.New("chat session is asleep")
 // workingController admits provider work under the start/stop gate, then
 // releases that gate so explicit Kill can interrupt a stuck provider call.
 func (s *Service) workingController(ctx context.Context, id domain.SessionID) (*Controller, func(), error) {
-	return s.admitController(ctx, id, true)
+	return s.admitControllerWork(ctx, id, true, controllerProviderWork)
 }
 
-// admitController is workingController. With wakeAsleep false, a hibernated
-// session returns errAsleep instead of being woken inline: the caller may hold
-// the session's input lease, which the resume waits to drain.
-func (s *Service) admitController(ctx context.Context, id domain.SessionID, wakeAsleep bool) (*Controller, func(), error) {
+// With wakeAsleep false, admission returns errAsleep rather than waking inline:
+// a relay may hold the input lease that the resume itself waits to drain.
+func (s *Service) admitControllerWork(ctx context.Context, id domain.SessionID, wakeAsleep bool, kind controllerWork) (*Controller, func(), error) {
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	for {
 		if !gate.tryLock() {
@@ -593,7 +592,7 @@ func (s *Service) admitController(ctx context.Context, id domain.SessionID, wake
 					}
 				}
 				if !stopped {
-					release := controller.beginOperation()
+					release := controller.beginWork(kind)
 					gate.unlock()
 					return controller, release, nil
 				}

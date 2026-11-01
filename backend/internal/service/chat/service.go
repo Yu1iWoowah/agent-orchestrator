@@ -1476,7 +1476,7 @@ func (s *Service) Send(
 			if readErr == nil && !latest.IsTerminated && latest.ProvisionState.WithDefault() == domain.SessionProvisionReady {
 				var controller *Controller
 				var release func()
-				controller, release, err = s.workingController(ctx, id)
+				controller, release, err = s.admitControllerWork(ctx, id, true, controllerIntake)
 				if err == nil {
 					if hydrateErr := hydrateExcerptReferences(ctx, controller, &msg); hydrateErr != nil {
 						err = hydrateErr
@@ -1493,7 +1493,7 @@ func (s *Service) Send(
 	} else {
 		var controller *Controller
 		var release func()
-		controller, release, err = s.workingController(ctx, id)
+		controller, release, err = s.admitControllerWork(ctx, id, true, controllerIntake)
 		if err == nil {
 			if hydrateErr := hydrateExcerptReferences(ctx, controller, &msg); hydrateErr != nil {
 				err = hydrateErr
@@ -3032,7 +3032,7 @@ func (s *Service) relayChatTurn(
 			// The store refused a stale queue append: the session woke after the
 			// read, so its controller takes the message.
 		}
-		controller, release, err := s.admitController(ctx, id, false)
+		controller, release, err := s.admitControllerWork(ctx, id, false, controllerIntake)
 		if errors.Is(err, errAsleep) {
 			// Hibernation finished after the read: queue it after all.
 			continue
