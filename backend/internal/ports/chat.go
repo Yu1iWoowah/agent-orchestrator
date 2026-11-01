@@ -1091,6 +1091,8 @@ func (f *chatProviderFailure) Unwrap() error { return f.cause }
 type ChatEvent struct {
 	// Delivery is an exact native receipt, independent of local lifecycle events.
 	Delivery *domain.ChatDeliveryReceipt
+	// GuardianReview is a metadata whitelist, independent of activity detail.
+	GuardianReview *domain.GuardianReview
 
 	// ProviderInitiated identifies a turn started by the harness, without an AO
 	// user submission. The projector records its trigger as a system activity.

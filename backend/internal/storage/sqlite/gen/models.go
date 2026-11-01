@@ -232,6 +232,7 @@ type AttentionAnswer struct {
 	DeliveredAt      sql.NullTime
 	LastError        string
 	DeliveryAttempts int64
+	Notes            sql.NullString
 }
 
 type AttentionNotificationReceipt struct {
@@ -646,6 +647,11 @@ type GuardianEpoch struct {
 	FirstSeenAt    time.Time
 }
 
+type GuardianIngestionState struct {
+	ID       int64
+	Sequence int64
+}
+
 type GuardianPosition struct {
 	EpochID          int64
 	FileIdentity     string
@@ -689,6 +695,44 @@ type GuardianRequest struct {
 	CheckpointGeneration int64
 	CheckpointOffset     int64
 	Conflict             int64
+	IngestionSequence    int64
+}
+
+type GuardianReview struct {
+	EpochID           int64
+	ParentThreadID    string
+	ReviewID          string
+	ParentTurnID      string
+	TargetItemID      sql.NullString
+	Action            string
+	Status            string
+	DecisionSource    string
+	StartedAt         sql.NullTime
+	CompletedAt       sql.NullTime
+	FirstSeenAt       time.Time
+	RetentionAt       time.Time
+	SawStarted        int64
+	SawCompleted      int64
+	Conflict          int64
+	IngestionSequence int64
+}
+
+type GuardianReviewPending struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
 }
 
 type GuardianThread struct {
@@ -757,6 +801,32 @@ type Notification struct {
 	ResolvedAt  sql.NullTime
 	DismissedAt sql.NullTime
 	SourceKey   string
+}
+
+type OperatorConfirmationRequest struct {
+	RequestRef   string
+	ActionKey    string
+	ProjectID    string
+	Purpose      string
+	PlanJson     string
+	PlanDigest   string
+	DaemonEpoch  string
+	ValidUntilMs int64
+	RevokedAtMs  sql.NullInt64
+	CreatedAtMs  int64
+}
+
+type OperatorConsent struct {
+	ConsentRef      string
+	RequestRef      string
+	PlanDigest      string
+	DaemonEpoch     string
+	IssuerEpoch     string
+	MintedAtMs      int64
+	ExpiresAtMs     int64
+	InvalidatedAtMs sql.NullInt64
+	ConsumedAtMs    sql.NullInt64
+	ReservationRef  string
 }
 
 type OrchestratorReplacement struct {

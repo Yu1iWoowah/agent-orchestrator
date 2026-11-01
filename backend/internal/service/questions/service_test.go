@@ -62,13 +62,17 @@ func TestQuestionsSaveBeforeDeliveryAndRecoverSameMessageAfterRestart(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := domain.AttentionAnswerSubmission{QuestionID: q.ID, ExpectedVersion: 1, ClientAnswerID: "answer-1", Answers: []domain.AttentionQuestionAnswer{{QuestionKey: "target", SelectedOptionIDs: []string{"stage"}}}}
+	per, total := "  選 A，但 PR3 先不要做\n原文  ", "  總補充\n請先回答反問？  "
+	answer := domain.AttentionAnswerSubmission{QuestionID: q.ID, ExpectedVersion: 1, ClientAnswerID: "answer-1", Notes: &total, Answers: []domain.AttentionQuestionAnswer{{QuestionKey: "target", SelectedOptionIDs: []string{"stage"}, Notes: &per}}}
 	receipt, err := svc.Answer(ctx, session, answer)
 	if err != nil || receipt.DeliveryState != "queued" || len(target.keys) != 0 {
 		t.Fatalf("save did not precede delivery: %+v %v calls=%d", receipt, err, len(target.keys))
 	}
 	if err = svc.DeliverPending(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if len(target.messages) != 1 || !strings.Contains(target.messages[0], "Notes [target]:\n"+per) || !strings.HasSuffix(target.messages[0], "Overall notes:\n"+total+"\n") {
+		t.Fatalf("origin lost notes: %v", target.messages)
 	}
 	got, err := svc.Get(ctx, session, q.ID)
 	if err != nil || got.State != "answered" || got.Answer == nil || got.Answer.DeliveryState != "queued" || got.Answer.LastError == "" {

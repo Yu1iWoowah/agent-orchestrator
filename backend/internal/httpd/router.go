@@ -450,3 +450,22 @@ func mountAwake(r chi.Router, c *controllers.AwakeController) {
 	r.Delete("/api/v1/awake/history", c.ClearHistory)
 	r.Post("/api/v1/awake/downloads", c.Downloads)
 }
+
+// Observation metadata and purge are native-loopback control operations.
+func mountGuardianObservation(r chi.Router, svc controllers.GuardianQueryService) {
+	c := &controllers.GuardianController{Svc: svc}
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if !localControlRequest(req) {
+					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
+					return
+				}
+				w.Header().Set("Cache-Control", "no-store")
+				next.ServeHTTP(w, req)
+			})
+		})
+		r.Get("/sessions/{sessionId}/guardian-observability", c.Get)
+		r.Delete("/sessions/{sessionId}/guardian-observability", c.Delete)
+	})
+}

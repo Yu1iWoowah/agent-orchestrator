@@ -51,11 +51,12 @@ type AttentionAuthorization struct {
 	Evidence []string `json:"evidence" minItems:"1" maxItems:"4"`
 }
 
-// AttentionQuestionAnswer records selected IDs and optional user-authored Other text.
+// AttentionQuestionAnswer records selected IDs and optional user-authored Other text and notes.
 type AttentionQuestionAnswer struct {
 	QuestionKey       string   `json:"questionKey" minLength:"1" maxLength:"64"`
 	SelectedOptionIDs []string `json:"selectedOptionIds" maxItems:"4"`
 	OtherText         *string  `json:"otherText,omitempty" minLength:"1" maxLength:"4000"`
+	Notes             *string  `json:"notes,omitempty" minLength:"1" maxLength:"4000"`
 }
 
 // AttentionAnswerSubmission binds a complete answer group to a source version and retry ID.
@@ -64,12 +65,13 @@ type AttentionAnswerSubmission struct {
 	ExpectedVersion int64                     `json:"expectedVersion" minimum:"1" maximum:"9007199254740991"`
 	ClientAnswerID  string                    `json:"clientAnswerId" minLength:"1" maxLength:"128"`
 	Answers         []AttentionQuestionAnswer `json:"answers" minItems:"1" maxItems:"4"`
+	Notes           *string                   `json:"notes,omitempty" minLength:"1" maxLength:"4000"`
 }
 
 // Question JSON and version bounds are shared by CLI, HTTP and storage validation.
 const (
 	MaxAttentionCreateBytes           = 128 * 1024
-	MaxAttentionAnswerBytes           = 32 * 1024
+	MaxAttentionAnswerBytes           = 256 * 1024
 	MaxAttentionQuestionVersion int64 = 1<<53 - 1
 )
 

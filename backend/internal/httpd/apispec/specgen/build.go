@@ -160,6 +160,19 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"ControllersOperatorConsentReadinessResponse":          "OperatorConsentReadinessResponse",
+	"DomainOperatorPurpose":                                "OperatorPurpose",
+	"ControllersGuardianPurgeQuery":                        "GuardianPurgeQuery",
+	"ControllersGuardianObservabilityResponse":             "GuardianObservabilityResponse",
+	"ControllersGuardianObservabilityQuery":                "GuardianObservabilityQuery",
+	"ControllersGuardianPurgeResponse":                     "GuardianPurgeResponse",
+	"GuardianWindow":                                       "GuardianWindow",
+	"GuardianCapability":                                   "GuardianCapability",
+	"GuardianTotals":                                       "GuardianTotals",
+	"GuardianDistribution":                                 "GuardianDistribution",
+	"GuardianReconciliation":                               "GuardianReconciliation",
+	"GuardianDetail":                                       "GuardianDetail",
+	"GuardianCounters":                                     "GuardianCounters",
 	"ControllersChangeReviewerAgentSettingsPayload":        "ChangeReviewerAgentSettingsPayload",
 	"ControllersReviewerAgentSettingsResponse":             "ReviewerAgentSettingsResponse",
 	"ControllersReviewerSettingsOperationResponse":         "ReviewerSettingsOperationResponse",
@@ -892,6 +905,7 @@ type operation struct {
 
 func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
+	ops = append(ops, operation{method: http.MethodGet, path: "/api/v1/operator-consent/readiness", id: "getOperatorConsentReadiness", summary: "Read operator confirmation qualification (PR1 is unavailable)", tag: "system", resps: []respUnit{{http.StatusOK, controllers.OperatorConsentReadinessResponse{}}}})
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, projectDocumentOperations()...)
@@ -904,6 +918,7 @@ func operations() []operation {
 	ops = append(ops, reportOperations()...)
 	ops = append(ops, questionOperations()...)
 	ops = append(ops, usageOperations()...)
+	ops = append(ops, guardianOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
 	ops = append(ops, fsOperations()...)
@@ -4214,5 +4229,12 @@ func appDiagnosticsOperations() []operation {
 		{method: http.MethodGet, path: prefix + "/snapshots/{snapshotId}", id: "getAppSnapshot", tag: "system", summary: "Read a snapshot owned by this diagnostic grant", pathParams: []any{header, controllers.AppSnapshotIDParam{}}, resps: response(200, diag.Record{})},
 		{method: http.MethodGet, path: prefix + "/audit", id: "getAppDiagnosticsAudit", tag: "system", summary: "Read this diagnostic grant's local audit records", pathParams: []any{header}, resps: response(200, diag.AuditLog{})},
 		{method: http.MethodDelete, path: prefix + "/grants/{grantId}", id: "revokeAppDiagnosticsGrant", tag: "system", summary: "Revoke the caller's diagnostic grant and remove its snapshots", pathParams: []any{header, controllers.AppGrantIDParam{}}, resps: response(200, controllers.AppDiagnosticsRevokeResponse{})},
+	}
+}
+
+func guardianOperations() []operation {
+	return []operation{
+		{method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/guardian-observability", id: "getGuardianObservability", tag: "sessions", summary: "Read local metadata-only guardian observations", pathParams: []any{controllers.GuardianObservabilityQuery{}}, resps: []respUnit{{http.StatusOK, controllers.GuardianObservabilityResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
+		{method: http.MethodDelete, path: "/api/v1/sessions/{sessionId}/guardian-observability", id: "purgeGuardianObservability", tag: "sessions", summary: "Purge local guardian observation metadata", pathParams: []any{controllers.GuardianPurgeQuery{}}, resps: []respUnit{{http.StatusOK, controllers.GuardianPurgeResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 	}
 }

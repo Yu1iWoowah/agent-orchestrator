@@ -4914,6 +4914,19 @@ paths:
       summary: Stream notification changes
       tags:
       - notifications
+  /api/v1/operator-consent/readiness:
+    get:
+      operationId: getOperatorConsentReadiness
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorConsentReadinessResponse'
+          description: OK
+      summary: Read operator confirmation qualification (PR1 is unavailable)
+      tags:
+      - system
   /api/v1/orchestrator/replacements/{operationId}:
     get:
       operationId: getOrchestratorReplacement
@@ -11670,6 +11683,122 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Exit the agent while preserving its AO session
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/guardian-observability:
+    delete:
+      operationId: purgeGuardianObservability
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardianPurgeResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Purge local guardian observation metadata
+      tags:
+      - sessions
+    get:
+      operationId: getGuardianObservability
+      parameters:
+      - in: query
+        name: since
+        schema:
+          format: date-time
+          type: string
+      - in: query
+        name: until
+        schema:
+          format: date-time
+          type: string
+      - in: query
+        name: details
+        schema:
+          type: boolean
+      - in: query
+        name: limit
+        schema:
+          maximum: 500
+          minimum: 1
+          type: integer
+      - in: query
+        name: cursor
+        schema:
+          maxLength: 2048
+          type: string
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardianObservabilityResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read local metadata-only guardian observations
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/history:
@@ -18990,6 +19119,12 @@ components:
           type: string
         lastError:
           type: string
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         questionVersion:
           format: int64
           type: integer
@@ -19020,6 +19155,12 @@ components:
           maximum: 9.007199254740991e+15
           minimum: 1
           type: integer
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         questionId:
           maxLength: 128
           minLength: 1
@@ -19140,6 +19281,12 @@ components:
       type: object
     AttentionQuestionAnswer:
       properties:
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         otherText:
           maxLength: 4000
           minLength: 1
@@ -23097,10 +23244,412 @@ components:
       - repoPath
       - approvedActions
       type: object
+    GuardianCapability:
+      properties:
+        context_decisions:
+          type: string
+        direct_review_links:
+          type: string
+        provider:
+          type: string
+        review_availability:
+          type: string
+        review_events:
+          type: string
+      required:
+      - provider
+      - review_events
+      - review_availability
+      - direct_review_links
+      - context_decisions
+      type: object
+    GuardianCounters:
+      properties:
+        cache_write_input_tokens:
+          type:
+          - "null"
+          - integer
+        cached_input_tokens:
+          type:
+          - "null"
+          - integer
+        input_tokens:
+          type:
+          - "null"
+          - integer
+        output_tokens:
+          type:
+          - "null"
+          - integer
+        reasoning_output_tokens:
+          type:
+          - "null"
+          - integer
+        total_tokens:
+          type:
+          - "null"
+          - integer
+      required:
+      - input_tokens
+      - cached_input_tokens
+      - cache_write_input_tokens
+      - output_tokens
+      - reasoning_output_tokens
+      - total_tokens
+      type: object
+    GuardianDetail:
+      properties:
+        action:
+          type:
+          - "null"
+          - string
+        availability:
+          additionalProperties:
+            type: string
+          type:
+          - object
+          - "null"
+        cli_version:
+          type:
+          - "null"
+          - string
+        completed_at:
+          format: date-time
+          type:
+          - "null"
+          - string
+        decision_source:
+          type:
+          - "null"
+          - string
+        evidence_kind:
+          type:
+          - "null"
+          - string
+        first_seen_at:
+          format: date-time
+          type: string
+        kind:
+          type: string
+        model_id:
+          type:
+          - "null"
+          - string
+        model_source:
+          type:
+          - "null"
+          - string
+        native_epoch:
+          format: int64
+          type: integer
+        provider_at:
+          format: date-time
+          type:
+          - "null"
+          - string
+        reconciliation:
+          type: string
+        response_id:
+          type:
+          - "null"
+          - string
+        review_id:
+          type:
+          - "null"
+          - string
+        root_turn_id:
+          type:
+          - "null"
+          - string
+        started_at:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          type:
+          - "null"
+          - string
+        target_item_id:
+          type:
+          - "null"
+          - string
+        thread_id:
+          type: string
+        tokens:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/GuardianCounters'
+            type: object
+        turn_id:
+          type: string
+        unavailable_reason:
+          type: string
+      required:
+      - kind
+      - native_epoch
+      - thread_id
+      - turn_id
+      - review_id
+      - response_id
+      - root_turn_id
+      - target_item_id
+      - action
+      - status
+      - decision_source
+      - model_id
+      - model_source
+      - cli_version
+      - provider_at
+      - started_at
+      - completed_at
+      - first_seen_at
+      - tokens
+      - availability
+      - reconciliation
+      - evidence_kind
+      - unavailable_reason
+      type: object
+    GuardianDistribution:
+      properties:
+        excluded_conflicts:
+          format: int64
+          type: integer
+        requests:
+          format: int64
+          type: integer
+        reviews:
+          format: int64
+          type: integer
+        totals:
+          $ref: '#/components/schemas/GuardianTotals'
+        unmatched_requests:
+          format: int64
+          type: integer
+        value:
+          type: string
+      required:
+      - value
+      - requests
+      - reviews
+      - unmatched_requests
+      - excluded_conflicts
+      - totals
+      type: object
     GuardianObservabilityConfig:
       properties:
         enabled:
           type: boolean
+      type: object
+    GuardianObservabilityResponse:
+      properties:
+        anomalies:
+          additionalProperties:
+            format: int64
+            type: integer
+          type:
+          - object
+          - "null"
+        by_action:
+          items:
+            $ref: '#/components/schemas/GuardianDistribution'
+          type: array
+        by_guardian_thread:
+          items:
+            $ref: '#/components/schemas/GuardianDistribution'
+          type: array
+        by_model:
+          items:
+            $ref: '#/components/schemas/GuardianDistribution'
+          type: array
+        by_version:
+          items:
+            $ref: '#/components/schemas/GuardianDistribution'
+          type: array
+        cache_buckets:
+          items:
+            $ref: '#/components/schemas/GuardianDistribution'
+          type: array
+        capability:
+          $ref: '#/components/schemas/GuardianCapability'
+        coverage:
+          type: string
+        details:
+          items:
+            $ref: '#/components/schemas/GuardianDetail'
+          type: array
+        enabled:
+          type: boolean
+        exact_review_links:
+          format: int64
+          type: integer
+        excluded_conflicts:
+          format: int64
+          type: integer
+        incomplete_reviews:
+          format: int64
+          type: integer
+        ledger_reconciliation:
+          $ref: '#/components/schemas/GuardianReconciliation'
+        limit:
+          type: integer
+        next_cursor:
+          type: string
+        requests:
+          format: int64
+          type: integer
+        reset_reason:
+          type:
+          - "null"
+          - string
+        reuse_state:
+          type: string
+        reviews:
+          format: int64
+          type: integer
+        schema_version:
+          type: integer
+        totals:
+          $ref: '#/components/schemas/GuardianTotals'
+        transcript_mode:
+          type:
+          - "null"
+          - string
+        unavailable_reason:
+          type: string
+        unmatched_requests:
+          format: int64
+          type: integer
+        window:
+          $ref: '#/components/schemas/GuardianWindow'
+      required:
+      - schema_version
+      - enabled
+      - window
+      - capability
+      - coverage
+      - anomalies
+      - requests
+      - reviews
+      - exact_review_links
+      - unmatched_requests
+      - excluded_conflicts
+      - incomplete_reviews
+      - totals
+      - cache_buckets
+      - by_model
+      - by_version
+      - by_action
+      - ledger_reconciliation
+      - reuse_state
+      - transcript_mode
+      - reset_reason
+      - unavailable_reason
+      - limit
+      type: object
+    GuardianPurgeResponse:
+      properties:
+        purged:
+          type: boolean
+      required:
+      - purged
+      type: object
+    GuardianReconciliation:
+      properties:
+        difference:
+          type:
+          - "null"
+          - integer
+        ledger_input_sum:
+          type:
+          - "null"
+          - integer
+        request_input_sum:
+          type:
+          - "null"
+          - integer
+        state:
+          type: string
+        unavailable_reason:
+          type: string
+      required:
+      - state
+      - request_input_sum
+      - ledger_input_sum
+      - difference
+      - unavailable_reason
+      type: object
+    GuardianTotals:
+      properties:
+        cache_write_input_tokens:
+          type:
+          - "null"
+          - integer
+        cached_input_tokens:
+          type:
+          - "null"
+          - integer
+        input_tokens:
+          type:
+          - "null"
+          - integer
+        known_fields:
+          additionalProperties:
+            format: int64
+            type: integer
+          type:
+          - object
+          - "null"
+        output_tokens:
+          type:
+          - "null"
+          - integer
+        overflow_fields:
+          items:
+            type: string
+          type: array
+        reasoning_output_tokens:
+          type:
+          - "null"
+          - integer
+        total_tokens:
+          type:
+          - "null"
+          - integer
+        uncached_input_tokens:
+          type:
+          - "null"
+          - integer
+        unknown_fields:
+          additionalProperties:
+            format: int64
+            type: integer
+          type:
+          - object
+          - "null"
+      required:
+      - input_tokens
+      - cached_input_tokens
+      - uncached_input_tokens
+      - cache_write_input_tokens
+      - output_tokens
+      - reasoning_output_tokens
+      - total_tokens
+      - known_fields
+      - unknown_fields
+      - overflow_fields
+      type: object
+    GuardianWindow:
+      properties:
+        since:
+          format: date-time
+          type: string
+        until:
+          format: date-time
+          type: string
+      required:
+      - since
+      - until
       type: object
     HarnessDefault:
       properties:
@@ -24068,6 +24617,45 @@ components:
             (Terminal N).
           type: string
       type: object
+    OperatorConsentReadinessResponse:
+      properties:
+        authorityGo:
+          type: boolean
+        coreDelivered:
+          type: boolean
+        expiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        issuerEpoch:
+          type: string
+        nativeIssuerDelivered:
+          type: boolean
+        protocol:
+          type: string
+        purposeSet:
+          items:
+            type: string
+          type: array
+        qualificationRef:
+          type: string
+        reason:
+          type: string
+        registryVersion:
+          type: integer
+      required:
+      - protocol
+      - registryVersion
+      - coreDelivered
+      - nativeIssuerDelivered
+      - authorityGo
+      - purposeSet
+      - issuerEpoch
+      - expiresAt
+      - qualificationRef
+      - reason
+      type: object
     OrchestratorHandoffConfig:
       properties:
         documentPath:
@@ -24994,6 +25582,12 @@ components:
           type: string
         lastError:
           type: string
+        notes:
+          maxLength: 4000
+          minLength: 1
+          type:
+          - "null"
+          - string
         questionVersion:
           format: int64
           type: integer

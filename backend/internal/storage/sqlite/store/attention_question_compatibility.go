@@ -42,7 +42,7 @@ func questionContext(question domain.AttentionQuestionRecord) string {
 	return out.String()
 }
 
-func questionAnswerContext(question domain.AttentionQuestionRecord, answers []domain.AttentionQuestionAnswer) string {
+func questionAnswerContext(question domain.AttentionQuestionRecord, answers []domain.AttentionQuestionAnswer, notes *string) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "The user answered question %s (version %d). This is human direction, not approval of any provider tool request.\n\n%s", question.ID, question.Version, questionContext(question))
 	for i, answer := range answers {
@@ -58,6 +58,12 @@ func questionAnswerContext(question domain.AttentionQuestionRecord, answers []do
 		if answer.OtherText != nil {
 			fmt.Fprintf(&out, "- Other: %s\n", *answer.OtherText)
 		}
+		if answer.Notes != nil {
+			fmt.Fprintf(&out, "Notes [%s]:\n%s\n", prompt.Key, *answer.Notes)
+		}
+	}
+	if notes != nil {
+		fmt.Fprintf(&out, "\nOverall notes:\n%s\n", *notes)
 	}
 	return out.String()
 }

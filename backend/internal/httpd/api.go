@@ -25,7 +25,8 @@ import (
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
-	ShutdownPreflight func(context.Context) error
+	ShutdownPreflight     func(context.Context) error
+	GuardianObservability controllers.GuardianQueryService
 
 	OrchestratorReplacements controllers.OrchestratorReplacementService
 
@@ -284,6 +285,7 @@ func (a *API) Register(root chi.Router) {
 	root.Route("/api/v1", func(r chi.Router) {
 		// Serve the OpenAPI document from the same origin as the routes it describes.
 		r.Get("/openapi.yaml", apispec.ServeYAML)
+		r.Get("/operator-consent/readiness", controllers.OperatorConsentReadiness)
 
 		r.Group(func(r chi.Router) {
 			// Large base64 bodies can spend longer than the ordinary REST budget
@@ -342,6 +344,7 @@ func (a *API) Register(root chi.Router) {
 			a.desktop.Register(r)
 			a.appDiagnostics.Register(r)
 			a.usage.Register(r)
+			mountGuardianObservation(r, a.deps.GuardianObservability)
 			a.prs.Register(r)
 			a.reviews.Register(r)
 			a.notifications.Register(r)

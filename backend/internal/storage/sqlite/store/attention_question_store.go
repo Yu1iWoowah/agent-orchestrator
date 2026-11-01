@@ -190,6 +190,9 @@ func questionRecord(ctx context.Context, q *gen.Queries, row gen.AttentionQuesti
 
 func questionReceipt(row gen.AttentionAnswer) (domain.AttentionAnswerReceipt, error) {
 	result := domain.AttentionAnswerReceipt{ClientAnswerID: row.ClientAnswerID, QuestionVersion: row.QuestionVersion, SavedAt: row.SavedAt, DeliveryState: row.DeliveryState, DeliveredAt: questionTime(row.DeliveredAt), LastError: row.LastError}
+	if row.Notes.Valid {
+		result.Notes = &row.Notes.String
+	}
 	err := json.Unmarshal([]byte(row.AnswersJson), &result.Answers)
 	return result, err
 }
@@ -360,8 +363,12 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 		if err != nil {
 			return err
 		}
-		message := questionAnswerContext(question, answers)
-		answer, err := q.InsertAttentionAnswer(ctx, gen.InsertAttentionAnswerParams{QuestionID: row.ID, ClientAnswerID: submission.ClientAnswerID, QuestionVersion: submission.ExpectedVersion, AnswersJson: string(answerJSON), Fingerprint: fingerprint, Message: message, SavedAt: at.UTC()})
+		message := questionAnswerContext(question, answers, submission.Notes)
+		var notes sql.NullString
+		if submission.Notes != nil {
+			notes = sql.NullString{String: *submission.Notes, Valid: true}
+		}
+		answer, err := q.InsertAttentionAnswer(ctx, gen.InsertAttentionAnswerParams{QuestionID: row.ID, ClientAnswerID: submission.ClientAnswerID, QuestionVersion: submission.ExpectedVersion, AnswersJson: string(answerJSON), Fingerprint: fingerprint, Message: message, SavedAt: at.UTC(), Notes: notes})
 		if err != nil {
 			return err
 		}
