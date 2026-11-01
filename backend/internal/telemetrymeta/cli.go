@@ -27,6 +27,7 @@ var routineInternalCLICommands = []string{
 	"ao session top",
 	"ao session get",
 	"ao session history",
+	"ao session guardian-observability",
 	"ao project ls",
 	"ao project get",
 	"ao project documents info",
@@ -230,4 +231,6 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao project orchestration set": {},
 	"ao smoke list":                {},
 	"ao smoke set":                 {},
+
+	"ao session guardian-observability purge": {},
 }

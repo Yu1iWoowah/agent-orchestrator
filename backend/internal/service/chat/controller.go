@@ -223,6 +223,7 @@ type Controller struct {
 	conversation                domain.ConversationRecord
 	generation                  string
 	harness                     domain.AgentHarness
+	guardianLaunchedAt          time.Time
 	settingsObservationOwner    domain.AgentSettingsOwner
 	settingsDispatchSnapshot    *domain.AgentSettingsTurnSnapshot
 	settingsValidator           ports.ChatAgentSettingsValidator // guarded by mu
@@ -416,6 +417,7 @@ func newController(
 		reviewID:               reviewOwnerID(owner),
 		conversation:           conversation,
 		generation:             generation,
+		guardianLaunchedAt:     now(),
 		harness:                harness,
 		conv:                   conv,
 		store:                  store,
@@ -3181,6 +3183,15 @@ func (c *Controller) projectUnit(
 	persistent bool,
 ) bool {
 	event := unit[0]
+	if event.GuardianReview != nil && c.harness == domain.HarnessCodex && c.reviewID == "" {
+		if sink, ok := c.store.(interface {
+			RecordGuardianReview(context.Context, domain.GuardianReviewScope, domain.GuardianReview, time.Time) error
+		}); ok {
+			if err := sink.RecordGuardianReview(ctx, domain.GuardianReviewScope{SessionID: c.sessionID, Generation: c.generation, AccountID: c.settingsObservationOwner.AccountID, NativeRootID: c.settingsObservationOwner.ProviderConversationID, LaunchedAt: c.guardianLaunchedAt}, *event.GuardianReview, c.now()); err != nil {
+				c.log.Warn("guardian review observation incomplete", "code", "collection_failed")
+			}
+		}
+	}
 	if event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped &&
 		errors.Is(event.Err, ports.ErrChatRecoveryInconclusive) {
 		// A lost attachment is not proof the persistent provider stopped. Keep

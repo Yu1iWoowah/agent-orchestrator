@@ -388,6 +388,7 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			return nil
 		}
 		return []ports.ChatEvent{{
+			GuardianReview: guardianReviewMetadata(p.ThreadID, p.TurnID, p.ReviewID, p.TargetItemID, string(p.Action.Type), string(p.Review.Status), "", p.StartedAtMs, 0, false),
 			Kind:           ports.ChatEventActivityStarted,
 			ProviderTurnID: p.TurnID,
 			ProviderItemID: reviewItemID(p.ReviewID),
@@ -404,6 +405,7 @@ func normalizeNotification(n notification, now time.Time) []ports.ChatEvent {
 			return nil
 		}
 		return []ports.ChatEvent{{
+			GuardianReview: guardianReviewMetadata(p.ThreadID, p.TurnID, p.ReviewID, p.TargetItemID, string(p.Action.Type), string(p.Review.Status), string(p.DecisionSource), p.StartedAtMs, p.CompletedAtMs, true),
 			Kind:           ports.ChatEventActivityCompleted,
 			ProviderTurnID: p.TurnID,
 			ProviderItemID: reviewItemID(p.ReviewID),

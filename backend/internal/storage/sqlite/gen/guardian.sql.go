@@ -95,6 +95,7 @@ func (q *Queries) DeleteExpiredGuardianAnomalyStates(ctx context.Context, cutoff
 
 const deleteExpiredGuardianEpochs = `-- name: DeleteExpiredGuardianEpochs :exec
 DELETE FROM guardian_epochs WHERE guardian_epochs.first_seen_at<=?1
+AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_threads t WHERE t.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_positions p WHERE p.epoch_id=guardian_epochs.id)
 AND NOT EXISTS(SELECT 1 FROM guardian_anomaly_states a WHERE a.epoch_id=guardian_epochs.id)
@@ -150,9 +151,19 @@ func (q *Queries) DeleteExpiredGuardianRequests(ctx context.Context, cutoff time
 	return err
 }
 
+const deleteExpiredGuardianReviews = `-- name: DeleteExpiredGuardianReviews :exec
+DELETE FROM guardian_reviews WHERE retention_at<=?
+`
+
+func (q *Queries) DeleteExpiredGuardianReviews(ctx context.Context, retentionAt time.Time) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredGuardianReviews, retentionAt)
+	return err
+}
+
 const deleteExpiredGuardianThreads = `-- name: DeleteExpiredGuardianThreads :exec
 DELETE FROM guardian_threads WHERE guardian_threads.retention_at<=?1
 AND NOT EXISTS(SELECT 1 FROM guardian_requests r WHERE r.epoch_id=guardian_threads.epoch_id AND r.thread_id=guardian_threads.thread_id)
+AND NOT EXISTS(SELECT 1 FROM guardian_reviews r WHERE r.epoch_id=guardian_threads.epoch_id AND r.parent_thread_id=guardian_threads.thread_id)
 AND NOT EXISTS(SELECT 1 FROM guardian_turn_models m WHERE m.epoch_id=guardian_threads.epoch_id AND m.thread_id=guardian_threads.thread_id)
 `
 
@@ -314,6 +325,39 @@ func (q *Queries) GetGuardianPosition(ctx context.Context, arg GetGuardianPositi
 		&i.SourceModifiedAt,
 		&i.Discarding,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getGuardianReview = `-- name: GetGuardianReview :one
+SELECT epoch_id, parent_thread_id, review_id, parent_turn_id, target_item_id, "action", status, decision_source, started_at, completed_at, first_seen_at, retention_at, saw_started, saw_completed, "conflict" FROM guardian_reviews WHERE epoch_id=? AND parent_thread_id=? AND review_id=?
+`
+
+type GetGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+}
+
+func (q *Queries) GetGuardianReview(ctx context.Context, arg GetGuardianReviewParams) (GuardianReview, error) {
+	row := q.db.QueryRowContext(ctx, getGuardianReview, arg.EpochID, arg.ParentThreadID, arg.ReviewID)
+	var i GuardianReview
+	err := row.Scan(
+		&i.EpochID,
+		&i.ParentThreadID,
+		&i.ReviewID,
+		&i.ParentTurnID,
+		&i.TargetItemID,
+		&i.Action,
+		&i.Status,
+		&i.DecisionSource,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.FirstSeenAt,
+		&i.RetentionAt,
+		&i.SawStarted,
+		&i.SawCompleted,
+		&i.Conflict,
 	)
 	return i, err
 }
@@ -807,6 +851,180 @@ func (q *Queries) ListGuardianRequests(ctx context.Context, epochID int64) ([]Gu
 	return items, nil
 }
 
+const pageGuardianRequests = `-- name: PageGuardianRequests :many
+SELECT CAST(printf('%020d:%s:%s',r.epoch_id,r.thread_id,r.response_id) AS TEXT) AS sequence,r.cli_version, r.epoch_id, r.thread_id, r.turn_id, r.response_id, r.root_turn_id, r.model_id, r.input_tokens, r.cached_tokens, r.cache_write_tokens, r.output_tokens, r.reasoning_tokens, r.total_tokens, r.provider_at, r.first_seen_at, r.source_generation, r.source_offset, r.checkpoint_generation, r.checkpoint_offset, r."conflict" FROM guardian_requests r
+JOIN guardian_epochs e ON e.id=r.epoch_id
+WHERE e.session_id=?1 AND r.provider_at>=?2 AND r.provider_at<?3
+ AND r.first_seen_at<?3 AND r.provider_at>?4 AND r.first_seen_at>?4
+ AND CAST(printf('%020d:%s:%s',r.epoch_id,r.thread_id,r.response_id) AS TEXT)>CAST(?5 AS TEXT)
+ORDER BY sequence LIMIT 500
+`
+
+type PageGuardianRequestsParams struct {
+	SessionID      string
+	SinceAt        time.Time
+	UntilAt        time.Time
+	RetentionFloor time.Time
+	AfterSequence  string
+}
+
+type PageGuardianRequestsRow struct {
+	Sequence             string
+	CliVersion           string
+	EpochID              int64
+	ThreadID             string
+	TurnID               string
+	ResponseID           string
+	RootTurnID           sql.NullString
+	ModelID              sql.NullString
+	InputTokens          sql.NullInt64
+	CachedTokens         sql.NullInt64
+	CacheWriteTokens     sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ReasoningTokens      sql.NullInt64
+	TotalTokens          sql.NullInt64
+	ProviderAt           time.Time
+	FirstSeenAt          time.Time
+	SourceGeneration     int64
+	SourceOffset         int64
+	CheckpointGeneration int64
+	CheckpointOffset     int64
+	Conflict             int64
+}
+
+func (q *Queries) PageGuardianRequests(ctx context.Context, arg PageGuardianRequestsParams) ([]PageGuardianRequestsRow, error) {
+	rows, err := q.db.QueryContext(ctx, pageGuardianRequests,
+		arg.SessionID,
+		arg.SinceAt,
+		arg.UntilAt,
+		arg.RetentionFloor,
+		arg.AfterSequence,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PageGuardianRequestsRow{}
+	for rows.Next() {
+		var i PageGuardianRequestsRow
+		if err := rows.Scan(
+			&i.Sequence,
+			&i.CliVersion,
+			&i.EpochID,
+			&i.ThreadID,
+			&i.TurnID,
+			&i.ResponseID,
+			&i.RootTurnID,
+			&i.ModelID,
+			&i.InputTokens,
+			&i.CachedTokens,
+			&i.CacheWriteTokens,
+			&i.OutputTokens,
+			&i.ReasoningTokens,
+			&i.TotalTokens,
+			&i.ProviderAt,
+			&i.FirstSeenAt,
+			&i.SourceGeneration,
+			&i.SourceOffset,
+			&i.CheckpointGeneration,
+			&i.CheckpointOffset,
+			&i.Conflict,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pageGuardianReviews = `-- name: PageGuardianReviews :many
+SELECT CAST(printf('%020d:%s:%s',r.epoch_id,r.parent_thread_id,r.review_id) AS TEXT) AS sequence,r.epoch_id, r.parent_thread_id, r.review_id, r.parent_turn_id, r.target_item_id, r."action", r.status, r.decision_source, r.started_at, r.completed_at, r.first_seen_at, r.retention_at, r.saw_started, r.saw_completed, r."conflict" FROM guardian_reviews r
+JOIN guardian_epochs e ON e.id=r.epoch_id
+WHERE e.session_id=?1 AND r.retention_at>=?2 AND r.retention_at<?3
+ AND r.first_seen_at<?3 AND r.retention_at>?4
+ AND CAST(printf('%020d:%s:%s',r.epoch_id,r.parent_thread_id,r.review_id) AS TEXT)>CAST(?5 AS TEXT)
+ORDER BY sequence LIMIT 500
+`
+
+type PageGuardianReviewsParams struct {
+	SessionID      string
+	SinceAt        time.Time
+	UntilAt        time.Time
+	RetentionFloor time.Time
+	AfterSequence  string
+}
+
+type PageGuardianReviewsRow struct {
+	Sequence       string
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
+}
+
+func (q *Queries) PageGuardianReviews(ctx context.Context, arg PageGuardianReviewsParams) ([]PageGuardianReviewsRow, error) {
+	rows, err := q.db.QueryContext(ctx, pageGuardianReviews,
+		arg.SessionID,
+		arg.SinceAt,
+		arg.UntilAt,
+		arg.RetentionFloor,
+		arg.AfterSequence,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PageGuardianReviewsRow{}
+	for rows.Next() {
+		var i PageGuardianReviewsRow
+		if err := rows.Scan(
+			&i.Sequence,
+			&i.EpochID,
+			&i.ParentThreadID,
+			&i.ReviewID,
+			&i.ParentTurnID,
+			&i.TargetItemID,
+			&i.Action,
+			&i.Status,
+			&i.DecisionSource,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.FirstSeenAt,
+			&i.RetentionAt,
+			&i.SawStarted,
+			&i.SawCompleted,
+			&i.Conflict,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const purgeGuardianAnomalies = `-- name: PurgeGuardianAnomalies :exec
 DELETE FROM guardian_anomalies WHERE session_id=?
 `
@@ -967,6 +1185,54 @@ func (q *Queries) PutGuardianPosition(ctx context.Context, arg PutGuardianPositi
 		arg.ReplayDiscarding,
 		arg.ReplayAgain,
 		arg.UpdatedAt,
+	)
+	return err
+}
+
+const putGuardianReview = `-- name: PutGuardianReview :exec
+INSERT INTO guardian_reviews(epoch_id,parent_thread_id,review_id,parent_turn_id,target_item_id,action,status,decision_source,started_at,completed_at,first_seen_at,retention_at,saw_started,saw_completed,conflict)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(epoch_id,parent_thread_id,review_id) DO UPDATE SET
+ status=excluded.status,decision_source=excluded.decision_source,started_at=excluded.started_at,
+ completed_at=excluded.completed_at,retention_at=excluded.retention_at,
+ saw_started=excluded.saw_started,saw_completed=excluded.saw_completed,conflict=excluded.conflict
+`
+
+type PutGuardianReviewParams struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
+}
+
+func (q *Queries) PutGuardianReview(ctx context.Context, arg PutGuardianReviewParams) error {
+	_, err := q.db.ExecContext(ctx, putGuardianReview,
+		arg.EpochID,
+		arg.ParentThreadID,
+		arg.ReviewID,
+		arg.ParentTurnID,
+		arg.TargetItemID,
+		arg.Action,
+		arg.Status,
+		arg.DecisionSource,
+		arg.StartedAt,
+		arg.CompletedAt,
+		arg.FirstSeenAt,
+		arg.RetentionAt,
+		arg.SawStarted,
+		arg.SawCompleted,
+		arg.Conflict,
 	)
 	return err
 }

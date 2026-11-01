@@ -3793,6 +3793,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/guardian-observability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read local metadata-only guardian observations */
+        get: operations["getGuardianObservability"];
+        put?: never;
+        post?: never;
+        /** Purge local guardian observation metadata */
+        delete: operations["purgeGuardianObservability"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/history": {
         parameters: {
             query?: never;
@@ -7477,8 +7495,135 @@ export interface components {
             remoteUrl?: string;
             repoPath: string;
         };
+        GuardianCapability: {
+            context_decisions: string;
+            direct_review_links: string;
+            provider: string;
+            review_availability: string;
+            review_events: string;
+        };
+        GuardianCounters: {
+            cache_write_input_tokens: null | number;
+            cached_input_tokens: null | number;
+            input_tokens: null | number;
+            output_tokens: null | number;
+            reasoning_output_tokens: null | number;
+            total_tokens: null | number;
+        };
+        GuardianDetail: {
+            action: null | string;
+            availability: {
+                [key: string]: string;
+            } | null;
+            cli_version: null | string;
+            /** Format: date-time */
+            completed_at: null | string;
+            decision_source: null | string;
+            evidence_kind: null | string;
+            /** Format: date-time */
+            first_seen_at: string;
+            kind: string;
+            model_id: null | string;
+            model_source: null | string;
+            /** Format: int64 */
+            native_epoch: number;
+            /** Format: date-time */
+            provider_at: null | string;
+            reconciliation: string;
+            response_id: null | string;
+            review_id: null | string;
+            root_turn_id: null | string;
+            /** Format: date-time */
+            started_at: null | string;
+            status: null | string;
+            target_item_id: null | string;
+            thread_id: string;
+            tokens: null | components["schemas"]["GuardianCounters"];
+            turn_id: string;
+            unavailable_reason: string;
+        };
+        GuardianDistribution: {
+            /** Format: int64 */
+            excluded_conflicts: number;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            reviews: number;
+            totals: components["schemas"]["GuardianTotals"];
+            /** Format: int64 */
+            unmatched_requests: number;
+            value: string;
+        };
         GuardianObservabilityConfig: {
             enabled?: boolean;
+        };
+        GuardianObservabilityResponse: {
+            anomalies: {
+                [key: string]: number;
+            } | null;
+            by_action: components["schemas"]["GuardianDistribution"][];
+            by_guardian_thread?: components["schemas"]["GuardianDistribution"][];
+            by_model: components["schemas"]["GuardianDistribution"][];
+            by_version: components["schemas"]["GuardianDistribution"][];
+            cache_buckets: components["schemas"]["GuardianDistribution"][];
+            capability: components["schemas"]["GuardianCapability"];
+            coverage: string;
+            details?: components["schemas"]["GuardianDetail"][];
+            enabled: boolean;
+            /** Format: int64 */
+            exact_review_links: number;
+            /** Format: int64 */
+            excluded_conflicts: number;
+            /** Format: int64 */
+            incomplete_reviews: number;
+            ledger_reconciliation: components["schemas"]["GuardianReconciliation"];
+            limit: number;
+            next_cursor?: string;
+            /** Format: int64 */
+            requests: number;
+            reset_reason: null | string;
+            reuse_state: string;
+            /** Format: int64 */
+            reviews: number;
+            schema_version: number;
+            totals: components["schemas"]["GuardianTotals"];
+            transcript_mode: null | string;
+            unavailable_reason: string;
+            /** Format: int64 */
+            unmatched_requests: number;
+            window: components["schemas"]["GuardianWindow"];
+        };
+        GuardianPurgeResponse: {
+            purged: boolean;
+        };
+        GuardianReconciliation: {
+            difference: null | number;
+            ledger_input_sum: null | number;
+            request_input_sum: null | number;
+            state: string;
+            unavailable_reason: string;
+        };
+        GuardianTotals: {
+            cache_write_input_tokens: null | number;
+            cached_input_tokens: null | number;
+            input_tokens: null | number;
+            known_fields: {
+                [key: string]: number;
+            } | null;
+            output_tokens: null | number;
+            overflow_fields: string[];
+            reasoning_output_tokens: null | number;
+            total_tokens: null | number;
+            uncached_input_tokens: null | number;
+            unknown_fields: {
+                [key: string]: number;
+            } | null;
+        };
+        GuardianWindow: {
+            /** Format: date-time */
+            since: string;
+            /** Format: date-time */
+            until: string;
         };
         HarnessDefault: {
             disabledModels?: string[];
@@ -24704,6 +24849,137 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getGuardianObservability: {
+        parameters: {
+            query?: {
+                since?: string;
+                until?: string;
+                details?: boolean;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardianObservabilityResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    purgeGuardianObservability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardianPurgeResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

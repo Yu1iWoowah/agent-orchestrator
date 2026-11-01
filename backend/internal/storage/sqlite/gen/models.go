@@ -641,6 +641,24 @@ type GuardianRequest struct {
 	Conflict             int64
 }
 
+type GuardianReview struct {
+	EpochID        int64
+	ParentThreadID string
+	ReviewID       string
+	ParentTurnID   string
+	TargetItemID   sql.NullString
+	Action         string
+	Status         string
+	DecisionSource string
+	StartedAt      sql.NullTime
+	CompletedAt    sql.NullTime
+	FirstSeenAt    time.Time
+	RetentionAt    time.Time
+	SawStarted     int64
+	SawCompleted   int64
+	Conflict       int64
+}
+
 type GuardianThread struct {
 	EpochID     int64
 	ThreadID    string
