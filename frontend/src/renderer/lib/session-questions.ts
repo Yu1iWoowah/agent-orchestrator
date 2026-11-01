@@ -6,9 +6,9 @@ export type QuestionPayload = components["schemas"]["AttentionQuestionPayload"];
 export type QuestionAnswer = components["schemas"]["AttentionQuestionAnswer"];
 export type QuestionReceipt = components["schemas"]["AttentionAnswerReceipt"];
 export type QuestionPage = components["schemas"]["QuestionPageResponse"];
-export interface QuestionField { selectedOptionIds: string[]; otherSelected: boolean; otherText: string }
+export interface QuestionField { selectedOptionIds: string[]; otherSelected: boolean; otherText: string; notes?: string }
 export type QuestionFields = Record<string, QuestionField>;
-export type QuestionFieldError = "required" | "single" | "unknown" | "otherRequired" | "otherTooLong";
+export type QuestionFieldError = "required" | "single" | "unknown" | "otherRequired" | "otherTooLong" | "notesTooLong";
 
 export class InvalidQuestionResponse extends Error {
 	constructor() { super("Invalid structured question response."); }
@@ -70,11 +70,12 @@ function isAnswer(value: unknown): value is QuestionAnswer {
 	return isRecord(value) && isToken(value.questionKey, 64) &&
 		Array.isArray(value.selectedOptionIds) && value.selectedOptionIds.length <= 4 &&
 		value.selectedOptionIds.every((id: unknown) => isToken(id, 64)) &&
-		(value.otherText === undefined || isText(value.otherText, 4000));
+		(value.otherText === undefined || isText(value.otherText, 4000)) &&
+		(value.notes === undefined || isText(value.notes, 4000));
 }
 
 function isReceipt(value: unknown): value is QuestionReceipt {
-	return isRecord(value) && isToken(value.clientAnswerId, 128) &&
+	return isRecord(value) && (value.notes === undefined || isText(value.notes, 4000)) && isToken(value.clientAnswerId, 128) &&
 		isVersion(value.questionVersion) && isDate(value.savedAt) &&
 		typeof value.deliveryState === "string" && ["queued", "delivered", "failed"].includes(value.deliveryState) &&
 		optionalDate(value.deliveredAt) && optionalString(value.lastError) &&
@@ -100,9 +101,9 @@ function isQuestion(value: unknown): value is SessionQuestion {
 	const fields: QuestionFields = {};
 	for (const answer of value.answer.answers) {
 		if (!value.payload.questions.some((prompt) => prompt.key === answer.questionKey)) return false;
-		fields[answer.questionKey] = { selectedOptionIds: answer.selectedOptionIds, otherSelected: answer.otherText !== undefined, otherText: answer.otherText ?? "" };
+		fields[answer.questionKey] = { selectedOptionIds: answer.selectedOptionIds, otherSelected: answer.otherText !== undefined, otherText: answer.otherText ?? "", notes: answer.notes ?? undefined };
 	}
-	return Object.keys(questionAnswers(value.payload, fields).errors).length === 0;
+	return Object.keys(questionAnswers(value.payload, fields, value.answer.notes ?? undefined).errors).length === 0;
 }
 
 export function parseSessionQuestion(value: unknown, sessionId: string): SessionQuestion {
@@ -122,32 +123,32 @@ export function parseSessionQuestionPage(value: unknown, sessionId: string): Que
 
 function canonicalAnswers(answers: QuestionAnswer[]) {
 	return answers.map((answer) => ({ questionKey: answer.questionKey,
-		selectedOptionIds: [...answer.selectedOptionIds].sort(), otherText: answer.otherText ?? undefined,
+		selectedOptionIds: [...answer.selectedOptionIds].sort(), otherText: answer.otherText ?? undefined, notes: answer.notes,
 	})).sort((a, b) => a.questionKey.localeCompare(b.questionKey));
 }
 
 export function parseQuestionReceipt(value: unknown, expected: components["schemas"]["AttentionAnswerSubmission"]): QuestionReceipt {
 	if (!isReceipt(value) || value.clientAnswerId !== expected.clientAnswerId ||
-		value.questionVersion !== expected.expectedVersion ||
+		value.questionVersion !== expected.expectedVersion || value.notes !== expected.notes ||
 		JSON.stringify(canonicalAnswers(value.answers)) !== JSON.stringify(canonicalAnswers(expected.answers))) throw new InvalidQuestionResponse();
 	return value;
 }
 
 export function parseQuestionSubmission(value: unknown, question: SessionQuestion): components["schemas"]["AttentionAnswerSubmission"] {
 	if (!isRecord(value) || value.questionId !== question.id || value.expectedVersion !== question.version ||
-		!isToken(value.clientAnswerId, 128) || !Array.isArray(value.answers) ||
+		!isToken(value.clientAnswerId, 128) || (value.notes !== undefined && !isText(value.notes, 4000)) || !Array.isArray(value.answers) ||
 		value.answers.length !== question.payload.questions.length) throw new InvalidQuestionResponse();
 	const answers: unknown[] = value.answers;
 	if (!answers.every(isAnswer) || new Set(answers.map((answer) => answer.questionKey)).size !== answers.length) throw new InvalidQuestionResponse();
 	const fields: QuestionFields = {};
 	for (const answer of answers) {
 		if (!question.payload.questions.some((prompt) => prompt.key === answer.questionKey)) throw new InvalidQuestionResponse();
-		fields[answer.questionKey] = { selectedOptionIds: answer.selectedOptionIds, otherSelected: answer.otherText !== undefined, otherText: answer.otherText ?? "" };
+		fields[answer.questionKey] = { selectedOptionIds: answer.selectedOptionIds, otherSelected: answer.otherText !== undefined, otherText: answer.otherText ?? "", notes: answer.notes ?? undefined };
 	}
-	const built = questionAnswers(question.payload, fields);
+	const built = questionAnswers(question.payload, fields, value.notes);
 	if (Object.keys(built.errors).length) throw new InvalidQuestionResponse();
-	const submission = { questionId: question.id, expectedVersion: question.version, clientAnswerId: value.clientAnswerId, answers: built.answers };
-	if (new TextEncoder().encode(JSON.stringify(submission)).length > 32 * 1024) throw new InvalidQuestionResponse();
+	const submission = { questionId: question.id, expectedVersion: question.version, clientAnswerId: value.clientAnswerId, answers: built.answers, ...(built.notes ? { notes: built.notes } : {}) };
+	if (new TextEncoder().encode(JSON.stringify(submission)).length > 256 * 1024) throw new InvalidQuestionResponse();
 	return submission;
 }
 
@@ -157,9 +158,10 @@ export function emptyQuestionFields(payload: QuestionPayload): QuestionFields {
 	}]));
 }
 
-export function questionAnswers(payload: QuestionPayload, fields: QuestionFields): { answers: QuestionAnswer[]; errors: Record<string, QuestionFieldError> } {
+export function questionAnswers(payload: QuestionPayload, fields: QuestionFields, notes = ""): { answers: QuestionAnswer[]; notes?: string; errors: Record<string, QuestionFieldError> } {
 	const answers: QuestionAnswer[] = [];
 	const errors: Record<string, QuestionFieldError> = {};
+	if (notes.trim() && Array.from(notes).length > 4000) errors.$notes = "notesTooLong";
 	for (const prompt of payload.questions) {
 		const field = fields[prompt.key];
 		if (!field || (!field.selectedOptionIds.length && !field.otherSelected)) { errors[prompt.key] = "required"; continue; }
@@ -168,10 +170,12 @@ export function questionAnswers(payload: QuestionPayload, fields: QuestionFields
 		if (!prompt.multiSelect && field.selectedOptionIds.length + Number(field.otherSelected) !== 1) { errors[prompt.key] = "single"; continue; }
 		if (field.otherSelected && !field.otherText.trim()) { errors[prompt.key] = "otherRequired"; continue; }
 		if (field.otherSelected && Array.from(field.otherText).length > 4000) { errors[prompt.key] = "otherTooLong"; continue; }
+		if (field.notes?.trim() && Array.from(field.notes).length > 4000) { errors[prompt.key] = "notesTooLong"; continue; }
 		answers.push({ questionKey: prompt.key,
 			selectedOptionIds: prompt.options.filter((option) => field.selectedOptionIds.includes(option.id)).map((option) => option.id),
 			...(field.otherSelected ? { otherText: field.otherText } : {}),
+			...(field.notes?.trim() ? { notes: field.notes } : {}),
 		});
 	}
-	return { answers: Object.keys(errors).length ? [] : answers, errors };
+	return { answers: Object.keys(errors).length ? [] : answers, ...(notes.trim() ? { notes } : {}), errors };
 }

@@ -2,9 +2,12 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 const askPayload = `{"schemaVersion":1,"title":"Choose target","explanation":"Deployment needs your decision","questions":[{"key":"target","header":"Target","question":"Where?","options":[{"id":"staging","label":"Staging","description":"Test first","recommended":true},{"id":"production","label":"Production","description":"User-facing deployment"}]}]}`
@@ -585,4 +589,151 @@ func TestAttentionQuestionCancelReasonUnicodeBoundary(t *testing.T) {
 	if err != nil || got.State != "cancelled" || got.CloseReason != reason {
 		t.Fatalf("Unicode reason boundary: state=%s error=%v", got.State, err)
 	}
+}
+
+func TestAttentionQuestionNotesPersistAndReachOriginVerbatim(t *testing.T) {
+	for _, overall := range []bool{false, true} {
+		t.Run(fmt.Sprint(overall), func(t *testing.T) {
+			s, session, _ := conversationFixture(t)
+			ctx := context.Background()
+			question, _, err := s.CreateAttentionQuestion(ctx, askCreate(session), histClock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			per := "  選 A，但 PR3 先不要做\n保留原文 🚀  "
+			total := "  請先回答這個反問？\n" + strings.Repeat("界", 3980)
+			answer := askAnswer(question.ID)
+			answer.Answers[0].Notes = &per
+			if overall {
+				answer.Notes = &total
+			}
+			for range 2 {
+				receipt, err := s.AnswerAttentionQuestion(ctx, session, answer, histClock)
+				if err != nil || receipt.Answers[0].Notes == nil || *receipt.Answers[0].Notes != per || overall && (receipt.Notes == nil || *receipt.Notes != total) {
+					t.Fatalf("receipt %+v %v", receipt, err)
+				}
+			}
+			got, err := s.GetAttentionQuestion(ctx, session, question.ID)
+			if err != nil || got.Answer == nil || got.Answer.Answers[0].Notes == nil || *got.Answer.Answers[0].Notes != per {
+				t.Fatalf("read %+v %v", got, err)
+			}
+			page, err := s.ListAttentionQuestions(ctx, session, domain.AttentionQuestionQuery{State: "history"}, histClock)
+			if err != nil || len(page.Items) != 1 || page.Items[0].Answer.Answers[0].Notes == nil || *page.Items[0].Answer.Answers[0].Notes != per {
+				t.Fatalf("list %+v %v", page, err)
+			}
+			pending, err := s.PendingAttentionAnswers(ctx, 10)
+			if err != nil || len(pending) != 1 || !strings.Contains(pending[0].Message, "Notes [target]:\n"+per) || overall && !strings.HasSuffix(pending[0].Message, "Overall notes:\n"+total+"\n") {
+				t.Fatalf("delivery %+v %v", pending, err)
+			}
+			changed := "changed"
+			answer.Answers[0].Notes = &changed
+			if _, err := s.AnswerAttentionQuestion(ctx, session, answer, histClock); !errors.Is(err, domain.ErrAttentionQuestionConflict) {
+				t.Fatalf("changed per-question retry: %v", err)
+			}
+			answer.Answers[0].Notes = &per
+			answer.Notes = &changed
+			if _, err := s.AnswerAttentionQuestion(ctx, session, answer, histClock); !errors.Is(err, domain.ErrAttentionQuestionConflict) {
+				t.Fatalf("changed overall retry: %v", err)
+			}
+		})
+	}
+}
+
+func TestAttentionQuestionOverallNotesPreserveLegacyAnswerArray(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s := sqlitetest.MustOpenAt(t, dir)
+	seedProject(t, s, "hist")
+	record := sampleRecord("hist")
+	record.Mode = domain.SessionModeChat
+	session, err := s.CreateSession(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	question, _, err := s.CreateAttentionQuestion(ctx, askCreate(session.ID), histClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	per, overall := "  選 A，但 PR3 先不要做\n原文 🚀  ", "  總補充\n請先回答這個反問？  "
+	answer := askAnswer(question.ID)
+	answer.Answers[0].Notes, answer.Notes = &per, &overall
+	original, err := s.AnswerAttentionQuestion(ctx, session.ID, answer, histClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "ao.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	for _, tc := range []struct {
+		name, query string
+		arg         any
+	}{
+		{"legacy_get", "SELECT a.answers_json FROM attention_questions q JOIN attention_answers a ON a.question_id=q.id WHERE q.id=?", question.ID},
+		{"legacy_list_all", "SELECT a.answers_json FROM attention_questions q JOIN attention_answers a ON a.question_id=q.id WHERE q.origin_session_id=? ORDER BY q.sequence DESC", session.ID},
+		{"legacy_history", "SELECT a.answers_json FROM attention_questions q JOIN attention_answers a ON a.question_id=q.id WHERE q.origin_session_id=? AND q.state!='open' ORDER BY q.sequence DESC", session.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := raw.QueryContext(ctx, tc.query, tc.arg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rows.Close() }()
+			count := 0
+			for rows.Next() {
+				var saved string
+				if err := rows.Scan(&saved); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasPrefix(saved, "[") {
+					t.Fatalf("legacy daemon requires an answer array, got %s", saved)
+				}
+				var legacy []struct {
+					QuestionKey       string   `json:"questionKey"`
+					SelectedOptionIDs []string `json:"selectedOptionIds"`
+					OtherText         *string  `json:"otherText,omitempty"`
+				}
+				if err := json.Unmarshal([]byte(saved), &legacy); err != nil {
+					t.Fatalf("legacy answer decoder: %v", err)
+				}
+				if len(legacy) != 1 || legacy[0].QuestionKey != "target" || len(legacy[0].SelectedOptionIDs) != 1 || legacy[0].SelectedOptionIDs[0] != "staging" {
+					t.Fatalf("legacy answer changed: %+v", legacy)
+				}
+				count++
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("legacy result count = %d, want 1", count)
+			}
+		})
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("upgrade_preserves_notes_and_retry", func(t *testing.T) {
+		upgraded, err := sqlite.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = upgraded.Close() }()
+		got, err := upgraded.GetAttentionQuestion(ctx, session.ID, question.ID)
+		if err != nil || got.Answer == nil || !reflect.DeepEqual(*got.Answer, original) {
+			t.Fatalf("upgraded receipt changed: %+v %v", got, err)
+		}
+		if got.Answer.Notes == nil || *got.Answer.Notes != overall || got.Answer.Answers[0].Notes == nil || *got.Answer.Answers[0].Notes != per {
+			t.Fatal("upgraded notes lost their original text")
+		}
+		for range 2 {
+			retry, err := upgraded.AnswerAttentionQuestion(ctx, session.ID, answer, histClock)
+			if err != nil || !reflect.DeepEqual(retry, original) {
+				t.Fatalf("retry receipt changed: %+v %v", retry, err)
+			}
+		}
+	})
 }

@@ -168,3 +168,39 @@ func TestProjectAttentionAPIValidatesAudienceAndProjectScope(t *testing.T) {
 		}
 	}
 }
+
+func TestQuestionsAPINotesRoundTripAndValidation(t *testing.T) {
+	for _, notes := range []string{`""`, `" \n"`, `"` + strings.Repeat("界", 4001) + `"`, `"  選 A，但 PR3 先不要做\n原文 🚀  "`} {
+		for _, field := range []string{"prompt", "overall"} {
+			t.Run(field+notes[:2], func(t *testing.T) {
+				server, path := questionAPIServer(t)
+				_, status, _ := doRequest(t, server, "POST", path, `{"clientKey":"deploy","audience":"user","kind":"question","payload":`+questionAPIPayload+`}`)
+				if status != http.StatusCreated {
+					t.Fatal(status)
+				}
+				answer := `{"questionId":"ask-1","expectedVersion":1,"clientAnswerId":"reply","answers":[{"questionKey":"target","selectedOptionIds":["stage"]`
+				if field == "prompt" {
+					answer += `,"notes":` + notes + `}]}`
+				} else {
+					answer += `}],"notes":` + notes + `}`
+				}
+				body, status, _ := doRequest(t, server, "POST", path+"/ask-1/answer", answer)
+				if !strings.Contains(notes, "PR3") {
+					if status != http.StatusBadRequest || !reportContainsAll(string(body), "QUESTION_INVALID", "notes", "requestId") {
+						t.Fatalf("invalid %d %s", status, body)
+					}
+					return
+				}
+				if status != http.StatusOK || !strings.Contains(string(body), `"notes":`+notes) {
+					t.Fatalf("answer %d %s", status, body)
+				}
+				for _, route := range []string{path + "/ask-1", path + "?state=history"} {
+					body, status, _ = doRequest(t, server, "GET", route, "")
+					if status != http.StatusOK || !strings.Contains(string(body), `"notes":`+notes) {
+						t.Fatalf("read %d %s", status, body)
+					}
+				}
+			})
+		}
+	}
+}
