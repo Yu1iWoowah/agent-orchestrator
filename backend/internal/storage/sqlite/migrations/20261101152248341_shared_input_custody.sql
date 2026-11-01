@@ -135,12 +135,11 @@ BEGIN
  -- Validate the saved identity before hold can refresh its payload ID snapshot.
  SELECT CASE WHEN EXISTS(SELECT 1 FROM conversation_input_custody c
   JOIN conversation_turns t ON t.id=c.turn_id WHERE c.turn_id=NEW.turn_id AND (
-   t.conversation_id<>c.original_conversation_id
-   OR EXISTS(SELECT 1 FROM json_each(c.message_ids_json) expected
-    LEFT JOIN conversation_messages p ON p.id=expected.value AND p.turn_id=c.turn_id AND p.conversation_id=c.original_conversation_id
+   EXISTS(SELECT 1 FROM json_each(c.message_ids_json) expected
+    LEFT JOIN conversation_messages p ON p.id=expected.value AND p.turn_id=c.turn_id AND p.conversation_id=t.conversation_id
     WHERE p.id IS NULL)
    OR EXISTS(SELECT 1 FROM json_each(c.activity_ids_json) expected
-    LEFT JOIN conversation_activities p ON p.id=expected.value AND p.turn_id=c.turn_id AND p.conversation_id=c.original_conversation_id
+    LEFT JOIN conversation_activities p ON p.id=expected.value AND p.turn_id=c.turn_id AND p.conversation_id=t.conversation_id
     WHERE p.id IS NULL)))
   THEN RAISE(ABORT,'INPUT_CUSTODY_PAYLOAD_CHANGED') END;
  SELECT CASE WHEN NEW.kind = 'register' AND (NEW.expected_revision <> 0 OR NEW.expected_owner <> '' OR NEW.target_owner = ''
