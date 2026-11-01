@@ -67,6 +67,9 @@ func (m *contextMutex) Unlock() {
 
 type conversationProjectionTxKey struct{}
 
+// conversationProjectionDBKey carries the same native transaction for SAVEPOINTs.
+type conversationProjectionDBKey struct{}
+
 // conversationWriter returns the transaction-bound query set when a provider
 // event projection is in progress. Otherwise it acquires the ordinary single
 // writer lock. This makes the existing focused store methods composable inside

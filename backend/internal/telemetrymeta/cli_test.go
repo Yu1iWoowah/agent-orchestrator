@@ -89,3 +89,19 @@ func TestCLIActorTypeKeepsConservativeFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestGuardianReadIsRoutineButPurgeIsNot(t *testing.T) {
+	for _, command := range []string{"ao session guardian-observability", "AO  SESSION  GUARDIAN-OBSERVABILITY"} {
+		if !IsRoutineInternalCLICommand(command) {
+			t.Errorf("query should be routine: %q", command)
+		}
+	}
+	for _, command := range []string{"ao session guardian-observability purge", "AO SESSION GUARDIAN-OBSERVABILITY PURGE", "ao session guardian-observability purge session-1 --yes"} {
+		if IsRoutineInternalCLICommand(command) {
+			t.Errorf("destructive purge classified as routine: %q", command)
+		}
+	}
+	if got := CLIActorType("", "ao session guardian-observability purge"); got != "user" {
+		t.Fatalf("purge actor = %q", got)
+	}
+}

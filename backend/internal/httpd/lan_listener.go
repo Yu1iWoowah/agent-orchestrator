@@ -114,6 +114,10 @@ func isLANControlBlockedRequest(method, path string) bool {
 // beneath it ("/api/v1/mobile/status") but must not catch unrelated siblings
 // such as "/api/v1/mobileapp".
 func isLANControlBlockedPath(path string) bool {
+	if strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(strings.TrimSuffix(path, "/"), "/guardian-observability") {
+		return true
+	}
+
 	projectPath := strings.TrimSuffix(path, "/")
 	if strings.HasPrefix(projectPath, "/api/v1/projects/") && (strings.HasSuffix(projectPath, "/orchestrator/replacements") || strings.Contains(projectPath, "/orchestrator/replacements/")) {
 		return true

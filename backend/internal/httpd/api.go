@@ -24,6 +24,8 @@ import (
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
+	GuardianObservability controllers.GuardianQueryService
+
 	OrchestratorReplacements controllers.OrchestratorReplacementService
 
 	AgentSettings      controllers.AgentSettingsReader
@@ -340,6 +342,7 @@ func (a *API) Register(root chi.Router) {
 			a.desktop.Register(r)
 			a.appDiagnostics.Register(r)
 			a.usage.Register(r)
+			mountGuardianObservation(r, a.deps.GuardianObservability)
 			a.prs.Register(r)
 			a.reviews.Register(r)
 			a.notifications.Register(r)
