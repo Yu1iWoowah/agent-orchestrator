@@ -13,16 +13,14 @@ import (
 // prove append-only history, so this durable pass also visits unrelated lines.
 func (s *Service) verifyPrefix(ctx context.Context, f io.ReadSeeker, b *domain.GuardianBatch, records int, bytes int64) error {
 	c := &b.Cursor
-	if !c.ReplayDiscarding {
-		partial, err := startsInsideLine(ctx, f, c.ReplayOffset)
-		if err != nil {
-			return err
-		}
-		c.ReplayDiscarding = partial
-		if partial && c.ReplayOffset > c.ReadStartOffset {
-			c.ReplayAgain = true
-		}
+	partial, err := startsInsideLine(ctx, f, c.ReplayOffset)
+	if err != nil {
+		return err
 	}
+	if partial != c.ReplayDiscarding && c.ReplayOffset > c.ReadStartOffset {
+		c.ReplayAgain = true
+	}
+	c.ReplayDiscarding = partial
 	if _, err := f.Seek(c.ReplayOffset, io.SeekStart); err != nil {
 		return err
 	}

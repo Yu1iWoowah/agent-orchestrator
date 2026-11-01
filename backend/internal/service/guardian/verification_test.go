@@ -87,7 +87,9 @@ func TestGrowthVerificationPreservesOversizeDiscardingAcrossRestart(t *testing.T
 		f.now = f.now.Add(time.Minute)
 		f.collect()
 	}
-	if len(f.requests()) != 2 || f.codes()[domain.GuardianCoverageGap] != 0 {
+	c, err := f.store.GuardianCursor(context.Background(), f.owners()[0].EpochID, "guardian")
+	must(t, err)
+	if len(f.requests()) != 2 || f.codes()[domain.GuardianCoverageGap] != 0 || c.ReplayUntil != 0 {
 		t.Fatal("verification parsed a discarded line fragment or invented a budget gap")
 	}
 }
