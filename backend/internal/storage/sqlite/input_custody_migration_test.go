@@ -191,9 +191,67 @@ func TestSharedInputMigrationUpgradesNewerMainWithoutS0(t *testing.T) {
 	}
 }
 
+func TestSharedInputMigrationPreservesReorderedForeignKeyViolations(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+	seedSharedInputMigration(t, db)
+	mustExec(t, db, `PRAGMA foreign_keys=OFF`)
+	mustExec(t, db, `UPDATE conversation_turns SET handled_by_session_id='legacy-session',promoted_to_turn_id='legacy-promotion',retry_of_turn_id='legacy-retry' WHERE id='base'`)
+	mustExec(t, db, `PRAGMA foreign_keys=ON`)
+	before := sharedInputForeignKeyViolations(t, db)
+	if len(before) != 3 {
+		t.Fatalf("expected three legacy turn FK orphans: %v", before)
+	}
+	for _, version := range []int64{sharedInputCustodyVersion, sharedInputCustodyVersion - 1, sharedInputCustodyVersion} {
+		// Legacy repairs can retain equivalent FKs in a different declaration
+		// order. Move one inline FK to the end without changing columns or data.
+		var definition string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name='conversation_turns' AND type='table'`).Scan(&definition); err != nil {
+			t.Fatal(err)
+		}
+		const reference = `REFERENCES conversations(id) ON DELETE CASCADE`
+		if strings.Count(definition, reference) != 1 {
+			t.Fatalf("unexpected conversation FK definition: %s", definition)
+		}
+		definition = strings.Replace(definition, reference, "", 1)
+		end := strings.LastIndex(definition, ")")
+		definition = definition[:end] + ", FOREIGN KEY(conversation_id) " + reference + definition[end:]
+		mustExec(t, db, `PRAGMA writable_schema=ON`)
+		if _, err := db.Exec(`UPDATE sqlite_master SET sql=? WHERE name='conversation_turns' AND type='table'`, definition); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, db, `PRAGMA writable_schema=RESET`)
+		var idBefore, idAfter int
+		if err := db.QueryRow(`SELECT id FROM pragma_foreign_key_list('conversation_turns') WHERE "from"='handled_by_session_id'`).Scan(&idBefore); err != nil {
+			t.Fatal(err)
+		}
+		if version == sharedInputCustodyVersion {
+			upTo(t, db, version)
+		} else {
+			downTo(t, db, version)
+		}
+		if err := db.QueryRow(`SELECT id FROM pragma_foreign_key_list('conversation_turns') WHERE "from"='handled_by_session_id'`).Scan(&idAfter); err != nil || idBefore == idAfter {
+			t.Fatalf("fixture did not change FK numbering: %d -> %d: %v", idBefore, idAfter, err)
+		}
+		if after := sharedInputForeignKeyViolations(t, db); !reflect.DeepEqual(before, after) {
+			t.Fatalf("migration changed legacy FK violations: %v -> %v", before, after)
+		}
+		var facts string
+		if err := db.QueryRow(`SELECT t.handled_by_session_id||':'||t.promoted_to_turn_id||':'||t.retry_of_turn_id||':'||t.rowid||':'||m.text FROM conversation_turns t JOIN conversation_messages m ON m.turn_id=t.id WHERE t.id='base'`).Scan(&facts); err != nil || facts != "legacy-session:legacy-promotion:legacy-retry:11:original bytes" {
+			t.Fatalf("migration changed legacy input: %q %v", facts, err)
+		}
+		var foreignKeys int
+		if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+			t.Fatalf("FK enforcement not restored: %d %v", foreignKeys, err)
+		}
+	}
+}
+
 func sharedInputForeignKeyViolations(t *testing.T, db *sql.DB) []string {
 	t.Helper()
-	rows, err := db.Query(`SELECT "table"||':'||rowid||':'||parent||':'||fkid FROM pragma_foreign_key_check ORDER BY 1`)
+	rows, err := db.Query(`SELECT fk."table"||':'||fk.rowid||':'||fk.parent||':'||
+ (SELECT json_group_array(json_array("from","to")) FROM
+  (SELECT "from","to" FROM pragma_foreign_key_list(fk."table") WHERE id=fk.fkid ORDER BY seq))
+ FROM pragma_foreign_key_check fk ORDER BY 1`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,14 +276,28 @@ func TestSharedInputMigrationRejectsNewForeignKeyViolations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, direction := range []string{"up", "down"} {
-		t.Run(direction, func(t *testing.T) {
+	for _, tc := range []struct {
+		direction  string
+		sameParent bool
+	}{{"up", false}, {"down", false}, {"up", true}, {"down", true}} {
+		name := tc.direction
+		if tc.sameParent {
+			name += "/same_parent"
+		}
+		t.Run(name, func(t *testing.T) {
+			direction := tc.direction
 			version := sharedInputCustodyVersion - 1
 			if direction == "down" {
 				version = sharedInputCustodyVersion
 			}
 			db := openMigratedDatabaseCopy(t, version)
 			seedSharedInputMigration(t, db)
+			if tc.sameParent {
+				mustExec(t, db, `PRAGMA foreign_keys=OFF`)
+				mustExec(t, db, `UPDATE conversation_turns SET retry_of_turn_id='legacy-retry' WHERE id='base'`)
+				mustExec(t, db, `PRAGMA foreign_keys=ON`)
+			}
+			foreignKeysBefore := sharedInputForeignKeyViolations(t, db)
 			before := sharedInputObjects(t, db)
 			var ledgerBefore int64
 			if err := db.QueryRow(`SELECT MAX(id) FROM goose_db_version`).Scan(&ledgerBefore); err != nil {
@@ -237,8 +309,13 @@ func TestSharedInputMigrationRejectsNewForeignKeyViolations(t *testing.T) {
 				part = 1
 			}
 			// Simulate a rebuild that loses a turn's parent after taking its FK baseline.
-			parts[part] = strings.Replace(parts[part], "CREATE TEMP TABLE shared_input_fk_check", `UPDATE conversation_turns SET conversation_id='missing-parent' WHERE id='base';
-CREATE TEMP TABLE shared_input_fk_check`, 1)
+			fault := `UPDATE conversation_turns SET conversation_id='missing-parent' WHERE id='base';`
+			if tc.sameParent {
+				// The row already has an orphan FK to conversation_turns, but a
+				// second source column becoming invalid must still be rejected.
+				fault = `UPDATE conversation_turns SET promoted_to_turn_id='missing-parent' WHERE id='base';`
+			}
+			parts[part] = strings.Replace(parts[part], "CREATE TEMP TABLE shared_input_fk_check", fault+"\nCREATE TEMP TABLE shared_input_fk_check", 1)
 			fs := fstest.MapFS{filename: {Data: []byte(strings.Join(parts, "-- +goose Down"))}}
 			err := func() error {
 				gooseMu.Lock()
@@ -258,7 +335,12 @@ CREATE TEMP TABLE shared_input_fk_check`, 1)
 			if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
 				t.Fatal("FK failure did not roll back complete schema")
 			}
-			assertSharedInputRows(t, db)
+			if !tc.sameParent {
+				assertSharedInputRows(t, db)
+			}
+			if after := sharedInputForeignKeyViolations(t, db); !reflect.DeepEqual(foreignKeysBefore, after) {
+				t.Fatalf("FK failure did not roll back data: %v -> %v", foreignKeysBefore, after)
+			}
 			var ledgerAfter int64
 			if err := db.QueryRow(`SELECT MAX(id) FROM goose_db_version`).Scan(&ledgerAfter); err != nil || ledgerAfter != ledgerBefore {
 				t.Fatalf("FK failure committed migration ledger: %d -> %d: %v", ledgerBefore, ledgerAfter, err)

@@ -14,9 +14,12 @@ INSERT INTO shared_input_fk_tables
   name IN ('conversation_turns','conversation_input_custody','conversation_input_holds')
   OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
  );
-CREATE TEMP TABLE shared_input_fk_before("table" TEXT,rowid INTEGER,parent TEXT,fkid INTEGER);
+-- FK IDs depend on declaration order; identify each FK by ordered column pairs.
+CREATE TEMP TABLE shared_input_fk_before("table" TEXT,rowid INTEGER,parent TEXT,columns_json TEXT);
 INSERT INTO shared_input_fk_before
-SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+SELECT fk."table",fk.rowid,fk.parent,
+ (SELECT json_group_array(json_array("from","to")) FROM
+  (SELECT "from","to" FROM pragma_foreign_key_list(t.name) WHERE id=fk.fkid ORDER BY seq))
  FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk;
 DROP TRIGGER attention_turn_changed;
 DROP TRIGGER conversation_turn_settings_snapshot_cdc;
@@ -647,7 +650,9 @@ INSERT INTO shared_input_fk_tables
   OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
  );
 INSERT INTO shared_input_fk_check SELECT NOT EXISTS(
- SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+ SELECT fk."table",fk.rowid,fk.parent,
+ (SELECT json_group_array(json_array("from","to")) FROM
+  (SELECT "from","to" FROM pragma_foreign_key_list(t.name) WHERE id=fk.fkid ORDER BY seq))
  FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk
  EXCEPT SELECT * FROM shared_input_fk_before
 );
@@ -669,9 +674,12 @@ INSERT INTO shared_input_fk_tables
   name IN ('conversation_turns','conversation_input_custody','conversation_input_holds')
   OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
  );
-CREATE TEMP TABLE shared_input_fk_before("table" TEXT,rowid INTEGER,parent TEXT,fkid INTEGER);
+-- FK IDs depend on declaration order; identify each FK by ordered column pairs.
+CREATE TEMP TABLE shared_input_fk_before("table" TEXT,rowid INTEGER,parent TEXT,columns_json TEXT);
 INSERT INTO shared_input_fk_before
-SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+SELECT fk."table",fk.rowid,fk.parent,
+ (SELECT json_group_array(json_array("from","to")) FROM
+  (SELECT "from","to" FROM pragma_foreign_key_list(t.name) WHERE id=fk.fkid ORDER BY seq))
  FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk;
 CREATE TEMP TABLE shared_input_down_check(ok INTEGER CHECK(ok = 1));
 -- Binary backout keeps this schema; Down is only safe before its first use.
@@ -1104,7 +1112,9 @@ INSERT INTO shared_input_fk_tables
   OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
  );
 INSERT INTO shared_input_fk_check SELECT NOT EXISTS(
- SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+ SELECT fk."table",fk.rowid,fk.parent,
+ (SELECT json_group_array(json_array("from","to")) FROM
+  (SELECT "from","to" FROM pragma_foreign_key_list(t.name) WHERE id=fk.fkid ORDER BY seq))
  FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk
  EXCEPT SELECT * FROM shared_input_fk_before
 );
