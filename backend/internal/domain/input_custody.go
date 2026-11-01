@@ -5,8 +5,12 @@ import (
 	"time"
 )
 
-// ErrInputCustodyConflict rejects stale, mismatched or unqualified actions.
+// ErrInputCustodyConflict rejects stale or mismatched actions.
 var ErrInputCustodyConflict = errors.New("input custody action conflicts with durable state")
+
+// ErrInputCustodyStorageIncompatible identifies missing guards, disabled writer
+// FK enforcement or corrupt shared facts, independently of an action's CAS.
+var ErrInputCustodyStorageIncompatible = errors.New("input custody storage is incompatible")
 
 // InputCustodyVersion identifies the exact ledger custodian, not a provider
 // acceptance or permission to dispatch. Owner is a coordinator-owned reference.

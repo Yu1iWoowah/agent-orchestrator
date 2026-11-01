@@ -182,9 +182,6 @@ func TestUsageSchemaUpgradePreservesEarlierPRData(t *testing.T) {
 	// Reproduce the wider tables and burned migration history created by an
 	// earlier checkout of this PR.
 	if _, err := db.Exec(`
-INSERT INTO projects(id,path,registered_at) VALUES('usage-project','isolated-usage-project',CURRENT_TIMESTAMP);
-INSERT INTO sessions(id,project_id,num,activity_last_at,created_at,updated_at)
-VALUES('session-1','usage-project',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
 CREATE TABLE usage_bindings (
     id INTEGER PRIMARY KEY, session_id TEXT, harness TEXT, native_root_id TEXT,
     initial_model_id TEXT NOT NULL DEFAULT '', state TEXT,

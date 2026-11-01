@@ -6,6 +6,18 @@
 CREATE TEMP TABLE shared_input_fk_mode(ok INTEGER CHECK(ok=1));
 INSERT INTO shared_input_fk_mode SELECT foreign_keys=0 FROM pragma_foreign_keys;
 DROP TABLE shared_input_fk_mode;
+-- Preserve legacy violations; inspect only the rebuilt table, its children,
+-- and shared custody tables. Materialize names before scanning their rows.
+CREATE TEMP TABLE shared_input_fk_tables(name TEXT PRIMARY KEY);
+INSERT INTO shared_input_fk_tables
+ SELECT name FROM main.sqlite_master m WHERE type='table' AND (
+  name IN ('conversation_turns','conversation_input_custody','conversation_input_holds')
+  OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
+ );
+CREATE TEMP TABLE shared_input_fk_before("table" TEXT,rowid INTEGER,parent TEXT,fkid INTEGER);
+INSERT INTO shared_input_fk_before
+SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+ FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk;
 DROP TRIGGER attention_turn_changed;
 DROP TRIGGER conversation_turn_settings_snapshot_cdc;
 DROP TRIGGER conversation_turns_auto_resume_cdc_update;
@@ -220,6 +232,10 @@ BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 
 CREATE TRIGGER conversation_input_action_apply AFTER INSERT ON conversation_input_actions
 BEGIN
+ -- Capture routing before delete removes the turn; a later failure rolls back CDC too.
+ INSERT INTO change_log(project_id,session_id,event_type,payload,created_at)
+ SELECT s.project_id,s.id,'session_updated',json_object('id',s.id,'sessionId',s.id,'conversationId',t.conversation_id,'inputCustodyChanged',json('true')),NEW.created_at
+ FROM conversation_turns t JOIN sessions s ON s.id=t.handled_by_session_id WHERE t.id=NEW.turn_id;
  INSERT INTO conversation_input_custody(turn_id,owner,revision,original_state,original_conversation_id,original_branch_id,
   original_session_id,original_generation,original_sequence,requested_at,last_action_key)
  SELECT id,NEW.target_owner,1,state,conversation_id,branch_id,handled_by_session_id,controller_generation,intake_sequence,requested_at,NEW.action_key
@@ -239,12 +255,6 @@ BEGIN
  DELETE FROM conversation_activities WHERE turn_id=NEW.turn_id AND NEW.kind='delete';
  DELETE FROM conversation_input_holds WHERE turn_id=NEW.turn_id AND NEW.kind='delete';
  DELETE FROM conversation_turns WHERE id=NEW.turn_id AND NEW.kind='delete';
-END;
-CREATE TRIGGER conversation_input_action_cdc AFTER INSERT ON conversation_input_actions
-BEGIN
- INSERT INTO change_log(project_id,session_id,event_type,payload,created_at)
- SELECT s.project_id,s.id,'session_updated',json_object('id',s.id,'sessionId',s.id,'conversationId',t.conversation_id,'inputCustodyChanged',json('true')),NEW.created_at
- FROM conversation_turns t JOIN sessions s ON s.id=t.handled_by_session_id WHERE t.id=NEW.turn_id;
 END;
 
 CREATE VIEW orchestrator_replacement_held_turns AS
@@ -587,8 +597,20 @@ BEGIN
  SELECT RAISE(ABORT, 'ORCHESTRATOR_REPLACEMENT_INTAKE_FENCED');
 END;
 CREATE TEMP TABLE shared_input_fk_check(ok INTEGER CHECK(ok = 1));
-INSERT INTO shared_input_fk_check SELECT NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check);
+DELETE FROM shared_input_fk_tables;
+INSERT INTO shared_input_fk_tables
+ SELECT name FROM main.sqlite_master m WHERE type='table' AND (
+  name IN ('conversation_turns','conversation_input_custody','conversation_input_holds')
+  OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
+ );
+INSERT INTO shared_input_fk_check SELECT NOT EXISTS(
+ SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+ FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk
+ EXCEPT SELECT * FROM shared_input_fk_before
+);
 DROP TABLE shared_input_fk_check;
+DROP TABLE shared_input_fk_before;
+DROP TABLE shared_input_fk_tables;
 -- +goose StatementEnd
 
 -- +goose Down
@@ -596,6 +618,18 @@ DROP TABLE shared_input_fk_check;
 CREATE TEMP TABLE shared_input_fk_mode(ok INTEGER CHECK(ok=1));
 INSERT INTO shared_input_fk_mode SELECT foreign_keys=0 FROM pragma_foreign_keys;
 DROP TABLE shared_input_fk_mode;
+-- Preserve legacy violations; inspect only the rebuilt table, its children,
+-- and shared custody tables. Materialize names before scanning their rows.
+CREATE TEMP TABLE shared_input_fk_tables(name TEXT PRIMARY KEY);
+INSERT INTO shared_input_fk_tables
+ SELECT name FROM main.sqlite_master m WHERE type='table' AND (
+  name IN ('conversation_turns','conversation_input_custody','conversation_input_holds')
+  OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
+ );
+CREATE TEMP TABLE shared_input_fk_before("table" TEXT,rowid INTEGER,parent TEXT,fkid INTEGER);
+INSERT INTO shared_input_fk_before
+SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+ FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk;
 CREATE TEMP TABLE shared_input_down_check(ok INTEGER CHECK(ok = 1));
 -- Binary backout keeps this schema; Down is only safe before its first use.
 INSERT INTO shared_input_down_check SELECT NOT EXISTS(SELECT 1 FROM conversation_input_actions) AND NOT EXISTS(SELECT 1 FROM conversation_input_custody) AND NOT EXISTS(SELECT 1 FROM conversation_input_holds) AND NOT EXISTS(SELECT 1 FROM conversation_turns WHERE state = 'held');
@@ -644,7 +678,6 @@ DROP TRIGGER conversation_input_activity_update;
 DROP TRIGGER conversation_input_activity_delete;
 DROP TRIGGER conversation_input_activity_insert;
 DROP TRIGGER conversation_input_action_apply;
-DROP TRIGGER conversation_input_action_cdc;
 DROP TABLE conversation_input_holds;
 DROP TABLE conversation_input_custody;
 DROP TABLE conversation_input_actions;
@@ -1019,6 +1052,18 @@ BEGIN
  SELECT RAISE(ABORT, 'ORCHESTRATOR_REPLACEMENT_INTAKE_FENCED');
 END;
 CREATE TEMP TABLE shared_input_fk_check(ok INTEGER CHECK(ok = 1));
-INSERT INTO shared_input_fk_check SELECT NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check);
+DELETE FROM shared_input_fk_tables;
+INSERT INTO shared_input_fk_tables
+ SELECT name FROM main.sqlite_master m WHERE type='table' AND (
+  name IN ('conversation_turns','conversation_input_custody','conversation_input_holds')
+  OR EXISTS(SELECT 1 FROM pragma_foreign_key_list(m.name) fk WHERE fk."table"='conversation_turns')
+ );
+INSERT INTO shared_input_fk_check SELECT NOT EXISTS(
+ SELECT fk."table",fk.rowid,fk.parent,fk.fkid
+ FROM shared_input_fk_tables t JOIN pragma_foreign_key_check(t.name) fk
+ EXCEPT SELECT * FROM shared_input_fk_before
+);
 DROP TABLE shared_input_fk_check;
+DROP TABLE shared_input_fk_before;
+DROP TABLE shared_input_fk_tables;
 -- +goose StatementEnd

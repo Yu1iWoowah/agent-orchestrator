@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestInputCustodyPreservesMixedInputsAcrossTransferAndReturn(t *testing.T) {
@@ -268,6 +270,81 @@ func TestInputCustodyExplicitDeleteRetainsActionHistory(t *testing.T) {
 	}
 }
 
+func TestInputCustodyActionsIgnoreUnrelatedForeignKeyOrphans(t *testing.T) {
+	ctx := t.Context()
+	s, db, rec := settingsStartFixture(t, "")
+	if _, err := db.Exec(`CREATE TABLE legacy_orphans(id INTEGER PRIMARY KEY, project_id TEXT REFERENCES projects(id)); INSERT INTO legacy_orphans VALUES(1,'missing-project')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendUserMessage(ctx, "start-context", rec.ID, "generation-1", domain.ConversationMessage{ID: "message", Text: "original", Origin: domain.MessageOriginHuman}, "turn", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InputCustodyStorageCompatibility(ctx); err != nil {
+		t.Fatalf("unrelated orphan poisoned preflight: %v", err)
+	}
+	for range 2 {
+		if _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); err != nil {
+			t.Fatalf("unrelated orphan poisoned register/replay: %v", err)
+		}
+	}
+	if _, err := s.HoldConversationInput(ctx, domain.InputCustodyVersion{TurnID: "turn", Owner: "owner", Revision: 1}, domain.InputHoldVersion{Key: "hold", Owner: "owner"}, "unknown", "hold", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TransferInputCustody(ctx, domain.InputCustodyVersion{TurnID: "turn", Owner: "owner", Revision: 2}, "target", "transfer", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReleaseConversationInput(ctx, domain.InputCustodyVersion{TurnID: "turn", Owner: "target", Revision: 3}, domain.InputHoldVersion{Key: "hold", Owner: "owner", Version: 1}, domain.TurnStateQueued, "release", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteConversationInput(ctx, domain.InputCustodyVersion{TurnID: "turn", Owner: "target", Revision: 4}, "delete", testNow); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM legacy_orphans`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("action changed legacy data: %d %v", count, err)
+	}
+}
+
+func TestInputCustodyActionsEmitCDCRegardlessOfTriggerCreationOrder(t *testing.T) {
+	ctx := t.Context()
+	s, db, rec := settingsStartFixture(t, "")
+	if _, err := s.AppendUserMessage(ctx, "start-context", rec.ID, "generation-1", domain.ConversationMessage{ID: "message", Text: "original", Origin: domain.MessageOriginHuman}, "turn", testNow); err != nil {
+		t.Fatal(err)
+	}
+	// Changing an AFTER trigger's creation order must not lose delete's event.
+	var apply string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name='conversation_input_action_apply'`).Scan(&apply); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER conversation_input_action_apply`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(apply); err != nil {
+		t.Fatal(err)
+	}
+	for i, action := range []func() error{
+		func() error { _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); return err },
+		func() error {
+			_, err := s.TransferInputCustody(ctx, domain.InputCustodyVersion{TurnID: "turn", Owner: "owner", Revision: 1}, "target", "transfer", testNow)
+			return err
+		},
+		func() error {
+			_, err := s.DeleteConversationInput(ctx, domain.InputCustodyVersion{TurnID: "turn", Owner: "target", Revision: 2}, "delete", testNow)
+			return err
+		},
+	} {
+		for range 2 {
+			if err := action(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM change_log WHERE session_id=? AND json_extract(payload,'$.inputCustodyChanged')=1 AND json_extract(payload,'$.conversationId')='start-context'`, rec.ID).Scan(&count); err != nil || count != i+1 {
+			t.Fatalf("CDC after action %d/replay: got %d, want %d: %v", i, count, i+1, err)
+		}
+	}
+}
+
 func TestInputCustodyMissingGuardFailsBeforeWriting(t *testing.T) {
 	ctx := t.Context()
 	s, db, rec := settingsStartFixture(t, "")
@@ -277,14 +354,86 @@ func TestInputCustodyMissingGuardFailsBeforeWriting(t *testing.T) {
 	if _, err := db.Exec(`DROP TRIGGER conversation_input_turn_delete`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InputCustodyStorageCompatibility(ctx); err == nil {
-		t.Fatal("incomplete schema qualified")
+	if err := s.InputCustodyStorageCompatibility(ctx); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
+		t.Fatalf("missing guard must differ from CAS conflict: %v", err)
 	}
-	if _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); !errors.Is(err, domain.ErrInputCustodyConflict) {
+	if _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
 		t.Fatalf("write was not fenced: %v", err)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM conversation_input_actions`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed gate wrote a receipt: %d %v", count, err)
+	}
+}
+
+func TestInputCustodyChecksWriterForeignKeyEnforcement(t *testing.T) {
+	for _, writerEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writer=%t", writerEnabled), func(t *testing.T) {
+			ctx := t.Context()
+			s, reader, rec := settingsStartFixture(t, "")
+			if _, err := s.AppendUserMessage(ctx, "start-context", rec.ID, "generation-1", domain.ConversationMessage{ID: "message", Text: "original", Origin: domain.MessageOriginHuman}, "turn", testNow); err != nil {
+				t.Fatal(err)
+			}
+			var seq int
+			var name, path string
+			if err := reader.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
+				t.Fatal(err)
+			}
+			writer, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = writer.Close() })
+			writer.SetMaxOpenConns(1)
+			reader.SetMaxOpenConns(1)
+			if _, err := writer.Exec(fmt.Sprintf(`PRAGMA foreign_keys=%t`, writerEnabled)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reader.Exec(fmt.Sprintf(`PRAGMA foreign_keys=%t`, !writerEnabled)); err != nil {
+				t.Fatal(err)
+			}
+			s = sqlitestore.NewStore(writer, reader)
+			for _, check := range []func() error{
+				func() error { return s.InputCustodyStorageCompatibility(ctx) },
+				func() error { _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); return err },
+			} {
+				err := check()
+				if writerEnabled && err != nil {
+					t.Fatalf("disabled reader poisoned enabled writer: %v", err)
+				}
+				if !writerEnabled && (!errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict)) {
+					t.Fatalf("disabled writer qualified through enabled reader: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestInputCustodyActionsCheckOnlyTheirTargetTurn(t *testing.T) {
+	ctx := t.Context()
+	s, db, rec := settingsStartFixture(t, "")
+	for _, id := range []string{"valid", "corrupt"} {
+		if _, err := s.AppendUserMessage(ctx, "start-context", rec.ID, "generation-1", domain.ConversationMessage{ID: "message-" + id, Text: id, Origin: domain.MessageOriginHuman}, id, testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var guard string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name='conversation_input_turn_update'`).Scan(&guard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER conversation_input_turn_update; UPDATE conversation_turns SET state='held' WHERE id='corrupt'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(guard); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InputCustodyStorageCompatibility(ctx); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) {
+		t.Fatalf("preflight missed global held/hold inconsistency: %v", err)
+	}
+	if _, err := s.RegisterInputCustody(ctx, "valid", "owner", "register-valid", testNow); err != nil {
+		t.Fatalf("unrelated corrupt turn blocked healthy target: %v", err)
+	}
+	if _, err := s.RegisterInputCustody(ctx, "corrupt", "owner", "register-corrupt", testNow); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
+		t.Fatalf("target corruption must be rejected independently of CAS: %v", err)
 	}
 }

@@ -16,13 +16,13 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 
 `ReleaseConversationInput` 要求 custodian/revision 與 hold 的 ledger owner/version；最後一層 hold 解除後才採用呼叫者已核准的 target state。API 不自行判斷 unknown 是否可重送，也不授予 linked resend 或延後權限。`DeleteConversationInput` 是獨立的 custody-qualified retention action，一般 cleanup 或 session cascade 不能冒充它。
 
-同一 action key／相同 request 只回傳原 revision，不重播；同 key 不同 request、錯 owner 或過期版本拒絕。`InputCustodyStorageCompatibility` 檢查 guards、held view、FK 與 held/hold 一致性；它不代表 provider 或 host qualification。
+同一 action key／相同 request 只回傳原 revision，不重播；同 key 不同 request、錯 owner 或過期版本拒絕。`InputCustodyStorageCompatibility` 在 writer transaction 檢查 guards、held view、writer FK enforcement、shared custody/holds 的 FK 與全表 held/hold 一致性；它不代表 provider 或 host qualification。一般 action 只檢查 schema、writer FK enforcement 與目標 turn 的 held/hold、custody/hold 關聯，不掃其他 turn 或無關資料表。缺少 guard、writer FK 停用或相關 facts 損壞回傳 `ErrInputCustodyStorageIncompatible`，與 `ErrInputCustodyConflict` 的 CAS／request 衝突區分。
 
 ## Migration 與依賴清冊
 
 唯一 DDL：`backend/internal/storage/sqlite/migrations/20261101152248341_shared_input_custody.sql`。其他 owner 消費此 schema，不再重建 turn CHECK／shared hold／view。
 
-`migrateUpTo` 在原有啟動資料鎖與單一 writer 邊界下先完成舊 migrations，僅 S0 重建期間暫停 FK enforcement。Goose 在原生 transaction 內完成 DDL、FK 校驗與 migration version；失敗全回滾，最後恢復原 pragma。migration 自身拒絕以 FK enforcement 仍開啟的模式直接重建，避免 cascade 丟失歷史關聯。提交前沒有 writer 能看到移除 guard 的中間態。
+`migrateUpTo` 在原有啟動資料鎖與單一 writer 邊界下先完成舊 migrations，僅 S0 重建期間暫停 FK enforcement。Up／Down 先保存 turn、直接引用 turn 的子表及 shared custody/holds 的 FK baseline；重建後以 `EXCEPT` 僅拒絕新增違規，保留既有孤兒列，不掃 usage／review 等無關資料。Goose 在原生 transaction 內完成 DDL、這項 FK 差集校驗與 migration version；失敗全回滾，最後恢復原 pragma。migration 自身拒絕以 FK enforcement 仍開啟的模式直接重建，避免 cascade 丟失歷史關聯。提交前沒有 writer 能看到移除 guard 的中間態。
 
 重建保留 turn 全部欄位、rowid、PK、五個具名索引與全部 FK。FK 包含 sessions/conversations/review、自身 retry/promotion、messages/activities 的 SET NULL，以及 branches 的 fork/replaced/replacement 三個關聯。
 
@@ -33,10 +33,10 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 | 其他 turn triggers | `attention_turn_changed`, `conversation_turn_settings_snapshot_cdc`, `conversation_turns_auto_resume_cdc_update`, `conversation_turns_branch_insert`, `conversation_turns_cdc_update`。另兩個 turn triggers 已計入上述 18 個。 |
 | 5 turn indexes | `conversation_turns_auto_resume`, `idx_conversation_turns_branch`, `idx_conversation_turns_conversation`, `idx_conversation_turns_provider`, `idx_conversation_turns_retry_source`。 |
 | 新增 guards | `conversation_input_*`：immutable action、custody/hold CAS、held turn state/identity/promotion/delete、message/activity 變更與 replacement INSERT 防繞過。 |
-| 新增 CDC | `conversation_input_action_cdc` 經既有 DB trigger／change_log 路徑通知，不手動另發 CDC。 |
+| 新增 CDC | `conversation_input_action_apply` 在變更／刪除 turn 之前寫入 `change_log`，與 mutation 同筆 transaction，失敗全回滾；不依賴多個 AFTER triggers 的執行順序。 |
 | sqlc | `queries/input_custody.sql` 與產生的 `gen/input_custody.sql.go`／`gen/models.go`；SQLite catalog／PRAGMA gate 留在 storage 邊界。 |
 
-`input_custody_migration_test.go` 比對重建前後全部既有 sqlite_master 定義；只允許 held CHECK 與 view UNION 差異。故障案例包含 DDL 中段及 Goose ledger 提交，驗證完整 schema、FK、input 順序與 version 一起回復。
+`input_custody_migration_test.go` 比對重建前後全部既有 sqlite_master 定義；只允許 held CHECK 與 view UNION 差異。故障案例包含 DDL 中段、Goose ledger 提交與 Up／Down 新增 FK 違規，驗證完整 schema、FK、input 順序與 version 一起回復；既有無關／turn 子表孤兒列的 up/down/up 亦保留原資料。
 
 ## Backout 與 Down
 
@@ -44,7 +44,7 @@ binary backout 保留新 schema，不執行 Down；全部 shared holds、原 rea
 
 Down 僅允許從未使用 shared schema 的 DB：沒有 custody、hold、action history 或 held turn。即使明確刪除 input，critical action history 仍阻止 Down。不得靠刪 receipt 或改 DB 移除 guard；可讀 metadata 不等於 provider/host 控制權已通過資格。
 
-依 A-Q1，A31 queued/held custody transfer 在 storage 介面與測試驗證；正式 handoff routing／owner CAS 接入由 PR1，delivery release 政策由 settings/delivery coordinator 負責，後續各自重跑混版整合門檻。
+依 A-Q1，A31 queued/held custody transfer 在 storage 介面與測試驗證；正式 handoff routing／owner CAS 接入由 PR1，delivery release 政策由 settings/delivery coordinator 負責，後續各自重跑混版整合門檻。舊批次更新若未篩選 state，或 session／conversation cascade 碰到 held turn，會因 `INPUT_HELD` 中止；PR1／147 接入時必須定義批次／cascade 的處理與使用者處置，S0 不放寬 guard。
 
 ## 重跑 Linux binary／host 探針
 

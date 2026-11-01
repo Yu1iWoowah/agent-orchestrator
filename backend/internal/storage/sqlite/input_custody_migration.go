@@ -13,7 +13,7 @@ const sharedInputCustodyVersion int64 = 20261101152248341
 // migrateUpTo runs under gooseMu, before publishing either connection pool to
 // services. The daemon's data-dir/lifecycle lock excludes an older controller.
 // Only the turn rebuild disables FK enforcement, before Goose opens its native
-// transaction; its SQL checks every FK before committing schema and version.
+// transaction; its SQL rejects new FK violations in the rebuilt dependency set.
 func migrateUpTo(db *sql.DB, version int64, opts ...goose.OptionsFunc) error {
 	if version < sharedInputCustodyVersion {
 		return goose.UpTo(db, "migrations", version, opts...)

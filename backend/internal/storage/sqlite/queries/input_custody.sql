@@ -23,3 +23,17 @@ ORDER BY t.requested_at,t.rowid;
 -- name: InputCustodyStateConsistent :one
 SELECT CAST(NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE
  (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1)) AS INTEGER) AS consistent;
+
+-- name: InputCustodyTurnConsistent :one
+SELECT CAST(
+ NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE t.id=sqlc.arg(turn_id) AND
+  (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c
+  LEFT JOIN conversation_turns t ON t.id=c.turn_id
+  LEFT JOIN conversation_input_actions a ON a.action_key=c.last_action_key
+  WHERE c.turn_id=sqlc.arg(turn_id) AND (t.id IS NULL OR a.action_key IS NULL))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_holds h
+  LEFT JOIN conversation_input_custody c ON c.turn_id=h.turn_id
+  LEFT JOIN conversation_input_actions a ON a.action_key=h.last_action_key
+  WHERE h.turn_id=sqlc.arg(turn_id) AND (c.turn_id IS NULL OR a.action_key IS NULL))
+ AS INTEGER) AS consistent;

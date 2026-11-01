@@ -68,9 +68,19 @@ func (s *Store) applyInputCustodyAction(ctx context.Context, action gen.InsertIn
 	}
 	_, unlock := s.conversationWriter(ctx)
 	defer unlock()
-	err := s.inTx(ctx, "input custody action", func(q *gen.Queries) error {
-		if err := inputCustodyStorageCompatibilityGate(ctx, q, s.readDB); err != nil {
+	err := s.inTxDB(ctx, "input custody action", func(q *gen.Queries, db gen.DBTX) error {
+		if db == nil {
+			db, _ = ctx.Value(conversationProjectionDBKey{}).(gen.DBTX)
+		}
+		if err := inputCustodySchemaGate(ctx, db); err != nil {
 			return err
+		}
+		consistent, err := q.InputCustodyTurnConsistent(ctx, action.TurnID)
+		if err != nil {
+			return fmt.Errorf("%w: target input: %w", domain.ErrInputCustodyStorageIncompatible, err)
+		}
+		if consistent != 1 {
+			return fmt.Errorf("%w: target input facts", domain.ErrInputCustodyStorageIncompatible)
 		}
 		prior, err := q.SelectInputCustodyAction(ctx, action.ActionKey)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -97,15 +107,37 @@ func (s *Store) applyInputCustodyAction(ctx context.Context, action gen.InsertIn
 // InputCustodyStorageCompatibility is the shared-schema preflight. It never
 // qualifies a provider or host, and it does not authorize releasing a hold.
 func (s *Store) InputCustodyStorageCompatibility(ctx context.Context) error {
-	return inputCustodyStorageCompatibilityGate(ctx, s.conversationReader(ctx), s.readDB)
+	_, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	return s.inTxDB(ctx, "input custody preflight", func(q *gen.Queries, db gen.DBTX) error {
+		if db == nil {
+			db, _ = ctx.Value(conversationProjectionDBKey{}).(gen.DBTX)
+		}
+		if err := inputCustodySchemaGate(ctx, db); err != nil {
+			return err
+		}
+		var referencesValid int
+		if err := db.QueryRowContext(ctx, `SELECT CAST(
+ NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check('conversation_input_custody'))
+ AND NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check('conversation_input_holds')) AS INTEGER)`).Scan(&referencesValid); err != nil {
+			return fmt.Errorf("%w: shared references: %w", domain.ErrInputCustodyStorageIncompatible, err)
+		}
+		consistent, err := q.InputCustodyStateConsistent(ctx)
+		if err != nil {
+			return fmt.Errorf("%w: shared state: %w", domain.ErrInputCustodyStorageIncompatible, err)
+		}
+		if referencesValid != 1 || consistent != 1 {
+			return fmt.Errorf("%w: shared input facts", domain.ErrInputCustodyStorageIncompatible)
+		}
+		return nil
+	})
 }
 
 // SQLite's catalog and pragma table functions are not application tables known
-// to sqlc. Inspect the committed schema through the reader pool; check the
-// action transaction's hold facts separately through its transaction-bound q.
+// to sqlc. Check catalog and per-connection FK enforcement through the actual
+// writer transaction; action facts are checked separately by indexed turn ID.
 const inputCustodySchemaReadySQL = `SELECT CAST(
  (SELECT foreign_keys FROM pragma_foreign_keys) = 1
- AND NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check)
  AND (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
   'conversation_input_action_validate',
   'conversation_input_action_no_update',
@@ -125,23 +157,21 @@ const inputCustodySchemaReadySQL = `SELECT CAST(
   'conversation_input_activity_update',
   'conversation_input_activity_delete',
   'conversation_input_activity_insert',
-  'conversation_input_action_apply',
-  'conversation_input_action_cdc'
- )) = 20
+  'conversation_input_action_apply'
+ )) = 19
  AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='view' AND name='orchestrator_replacement_held_turns' AND instr(sql,'conversation_input_holds') > 0)
  AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='replacement_turn_dispatch_fence') AS INTEGER)`
 
-func inputCustodyStorageCompatibilityGate(ctx context.Context, q *gen.Queries, schema gen.DBTX) error {
+func inputCustodySchemaGate(ctx context.Context, schema gen.DBTX) error {
+	if schema == nil {
+		return fmt.Errorf("%w: writer transaction required", domain.ErrInputCustodyStorageIncompatible)
+	}
 	var ready int
 	if err := schema.QueryRowContext(ctx, inputCustodySchemaReadySQL).Scan(&ready); err != nil {
-		return fmt.Errorf("input custody schema compatibility: %w", err)
+		return fmt.Errorf("%w: schema: %w", domain.ErrInputCustodyStorageIncompatible, err)
 	}
-	consistent, err := q.InputCustodyStateConsistent(ctx)
-	if err != nil {
-		return fmt.Errorf("input custody state compatibility: %w", err)
-	}
-	if ready != 1 || consistent != 1 {
-		return fmt.Errorf("input custody storage compatibility: %w", domain.ErrInputCustodyConflict)
+	if ready != 1 {
+		return fmt.Errorf("%w: schema or writer FK enforcement", domain.ErrInputCustodyStorageIncompatible)
 	}
 	return nil
 }

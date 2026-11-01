@@ -22,6 +22,28 @@ func (q *Queries) InputCustodyStateConsistent(ctx context.Context) (int64, error
 	return consistent, err
 }
 
+const inputCustodyTurnConsistent = `-- name: InputCustodyTurnConsistent :one
+SELECT CAST(
+ NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE t.id=?1 AND
+  (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c
+  LEFT JOIN conversation_turns t ON t.id=c.turn_id
+  LEFT JOIN conversation_input_actions a ON a.action_key=c.last_action_key
+  WHERE c.turn_id=?1 AND (t.id IS NULL OR a.action_key IS NULL))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_holds h
+  LEFT JOIN conversation_input_custody c ON c.turn_id=h.turn_id
+  LEFT JOIN conversation_input_actions a ON a.action_key=h.last_action_key
+  WHERE h.turn_id=?1 AND (c.turn_id IS NULL OR a.action_key IS NULL))
+ AS INTEGER) AS consistent
+`
+
+func (q *Queries) InputCustodyTurnConsistent(ctx context.Context, turnID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, inputCustodyTurnConsistent, turnID)
+	var consistent int64
+	err := row.Scan(&consistent)
+	return consistent, err
+}
+
 const insertInputCustodyAction = `-- name: InsertInputCustodyAction :exec
 INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,
  target_owner,hold_key,hold_owner,hold_version,reason,target_state,created_at)

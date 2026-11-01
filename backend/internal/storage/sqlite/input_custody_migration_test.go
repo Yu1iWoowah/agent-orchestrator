@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/pressly/goose/v3"
 )
@@ -102,6 +103,116 @@ func TestSharedInputMigrationPreservesInventoryAndUpDownUp(t *testing.T) {
 		t.Fatal("up/down/up did not restore complete guarded schema")
 	}
 	assertSharedInputRows(t, db)
+}
+
+func TestSharedInputMigrationPreservesExistingForeignKeyViolations(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+	seedSharedInputMigration(t, db)
+	for _, statement := range []string{
+		`PRAGMA foreign_keys=OFF`,
+		`CREATE TABLE legacy_orphans(id INTEGER PRIMARY KEY, project_id TEXT REFERENCES projects(id))`,
+		`INSERT INTO legacy_orphans VALUES(1,'missing-project')`,
+		`INSERT INTO conversation_messages(id,conversation_id,turn_id,sequence,role,origin,text,created_at,updated_at) VALUES('old-orphan','conversation','missing-turn',2,'user','human','legacy input',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		`PRAGMA foreign_keys=ON`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := sharedInputForeignKeyViolations(t, db)
+	if len(before) != 2 {
+		t.Fatalf("expected unrelated and existing turn FK orphans: %v", before)
+	}
+	for _, version := range []int64{sharedInputCustodyVersion, sharedInputCustodyVersion - 1, sharedInputCustodyVersion} {
+		if version == sharedInputCustodyVersion {
+			upTo(t, db, version)
+		} else {
+			downTo(t, db, version)
+		}
+		if after := sharedInputForeignKeyViolations(t, db); !reflect.DeepEqual(before, after) {
+			t.Fatalf("migration changed legacy FK violations: %v -> %v", before, after)
+		}
+		var text string
+		if err := db.QueryRow(`SELECT text FROM conversation_messages WHERE id='old-orphan'`).Scan(&text); err != nil || text != "legacy input" {
+			t.Fatalf("lost legacy input: %q %v", text, err)
+		}
+	}
+}
+
+func sharedInputForeignKeyViolations(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT "table"||':'||rowid||':'||parent||':'||fkid FROM pragma_foreign_key_check ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var result []string
+	for rows.Next() {
+		var item string
+		if err := rows.Scan(&item); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestSharedInputMigrationRejectsNewForeignKeyViolations(t *testing.T) {
+	const filename = "migrations/20261101152248341_shared_input_custody.sql"
+	source, err := migrationsFS.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, direction := range []string{"up", "down"} {
+		t.Run(direction, func(t *testing.T) {
+			version := sharedInputCustodyVersion - 1
+			if direction == "down" {
+				version = sharedInputCustodyVersion
+			}
+			db := openMigratedDatabaseCopy(t, version)
+			seedSharedInputMigration(t, db)
+			before := sharedInputObjects(t, db)
+			var ledgerBefore int64
+			if err := db.QueryRow(`SELECT MAX(id) FROM goose_db_version`).Scan(&ledgerBefore); err != nil {
+				t.Fatal(err)
+			}
+			parts := strings.SplitN(string(source), "-- +goose Down", 2)
+			part := 0
+			if direction == "down" {
+				part = 1
+			}
+			// Simulate a rebuild that loses a turn's parent after taking its FK baseline.
+			parts[part] = strings.Replace(parts[part], "CREATE TEMP TABLE shared_input_fk_check", `UPDATE conversation_turns SET conversation_id='missing-parent' WHERE id='base';
+CREATE TEMP TABLE shared_input_fk_check`, 1)
+			fs := fstest.MapFS{filename: {Data: []byte(strings.Join(parts, "-- +goose Down"))}}
+			err := func() error {
+				gooseMu.Lock()
+				defer gooseMu.Unlock()
+				goose.SetBaseFS(fs)
+				defer goose.SetBaseFS(migrationsFS)
+				return withInputRebuildForeignKeys(db, func() error {
+					if direction == "down" {
+						return goose.DownTo(db, "migrations", sharedInputCustodyVersion-1)
+					}
+					return goose.UpTo(db, "migrations", sharedInputCustodyVersion)
+				})
+			}()
+			if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+				t.Fatalf("new FK violation did not reject rebuild: %v", err)
+			}
+			if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
+				t.Fatal("FK failure did not roll back complete schema")
+			}
+			assertSharedInputRows(t, db)
+			var ledgerAfter int64
+			if err := db.QueryRow(`SELECT MAX(id) FROM goose_db_version`).Scan(&ledgerAfter); err != nil || ledgerAfter != ledgerBefore {
+				t.Fatalf("FK failure committed migration ledger: %d -> %d: %v", ledgerBefore, ledgerAfter, err)
+			}
+		})
+	}
 }
 
 func TestSharedInputMigrationFailureRollsBackCompleteSchemaAndLedger(t *testing.T) {
