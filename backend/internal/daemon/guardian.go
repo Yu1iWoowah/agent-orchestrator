@@ -89,3 +89,7 @@ func guardianHistoryRoots(candidates []string) ([]string, error) {
 	}
 	return roots, nil
 }
+
+func guardianQuery(store *sqlite.Store) *guardiansvc.QueryService {
+	return guardiansvc.NewQuery(store, nil)
+}

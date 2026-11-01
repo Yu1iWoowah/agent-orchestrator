@@ -12,6 +12,10 @@ func NormalizeCommandPath(commandPath string) string {
 // routine desktop/agent plumbing rather than product usage.
 func IsRoutineInternalCLICommand(commandPath string) bool {
 	normalized := NormalizeCommandPath(commandPath)
+	// This query has a destructive child; only its exact command path is routine.
+	if normalized == "ao session guardian-observability" {
+		return true
+	}
 	for _, routine := range routineInternalCLICommands {
 		if normalized == routine || strings.HasPrefix(normalized, routine+" ") {
 			return true
@@ -230,4 +234,6 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao project orchestration set": {},
 	"ao smoke list":                {},
 	"ao smoke set":                 {},
+
+	"ao session guardian-observability purge": {},
 }

@@ -62,6 +62,9 @@ func (s *Service) Collect(ctx context.Context) error {
 		}
 		s.lastCleanup = now
 	}
+	if err := s.store.ReplayGuardianReviews(ctx, now); err != nil {
+		return err
+	}
 	owners, err := s.store.GuardianOwners(ctx, now)
 	if err != nil {
 		return err
