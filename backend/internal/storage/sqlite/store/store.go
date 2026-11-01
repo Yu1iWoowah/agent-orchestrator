@@ -6,6 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
@@ -18,11 +21,14 @@ import (
 // CDC is captured by DB triggers (migration 0001), NOT by this layer: the store
 // never writes change_log, it only reads it for the CDC poller.
 type Store struct {
-	writeDB *sql.DB
-	readDB  *sql.DB
-	qw      *gen.Queries // bound to the single writer connection
-	qr      *gen.Queries // bound to the reader pool
-	writeMu *contextMutex
+	writeDB             *sql.DB
+	readDB              *sql.DB
+	qw                  *gen.Queries // bound to the single writer connection
+	qr                  *gen.Queries // bound to the reader pool
+	writeMu             *contextMutex
+	operatorEpoch       string
+	operatorIssuerEpoch string
+	operatorNow         func() time.Time
 }
 
 type contextMutex struct {
@@ -87,11 +93,13 @@ func (s *Store) conversationReader(ctx context.Context) *gen.Queries {
 // NewStore wraps an opened writer + reader *sql.DB (see Open) as a Store.
 func NewStore(writeDB, readDB *sql.DB) *Store {
 	return &Store{
-		writeDB: writeDB,
-		readDB:  readDB,
-		qw:      gen.New(writeDB),
-		qr:      gen.New(readDB),
-		writeMu: newContextMutex(),
+		writeDB:       writeDB,
+		readDB:        readDB,
+		qw:            gen.New(writeDB),
+		qr:            gen.New(readDB),
+		writeMu:       newContextMutex(),
+		operatorEpoch: uuid.NewString(),
+		operatorNow:   time.Now,
 	}
 }
 
