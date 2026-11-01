@@ -11,28 +11,47 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
-// RecordGuardianReview rechecks controller, policy and durable native ownership
-// in one transaction. Observation failures never change an approval decision.
+// RecordGuardianReview applies a validated observation. A queued observation is
+// removed only in the same transaction that commits its retained fact.
 func (s *Store) RecordGuardianReview(ctx context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, now time.Time) error {
-	enabled, err := s.qr.GuardianSessionEnabled(ctx, scope.SessionID)
+	_, err := s.recordGuardianReview(ctx, scope, r, now, false)
+	return err
+}
+
+// QueueGuardianReview participates in the archive/projection transaction. Only
+// the metadata whitelist is queued; a committed activity cannot lose this fact.
+func (s *Store) QueueGuardianReview(ctx context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, now time.Time) (bool, error) {
+	return s.recordGuardianReview(ctx, scope, r, now, true)
+}
+
+func (s *Store) recordGuardianReview(ctx context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, now time.Time, pending bool) (bool, error) {
+	enabled, err := s.conversationReader(ctx).GuardianSessionEnabled(ctx, scope.SessionID)
 	if err != nil || !enabled {
-		return err
+		return false, err
 	}
 	if !r.InvalidMetadata && !r.Valid() {
-		return errors.New("invalid guardian review")
+		return false, errors.New("invalid guardian review")
 	}
-	session, generation := scope.SessionID, scope.Generation
 	now = now.UTC()
-	if err := s.writeMu.LockContext(ctx); err != nil {
-		return err
+	// Archive callbacks already own the writer and pass its transaction in ctx.
+	if _, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); !ok {
+		if err := s.writeMu.LockContext(ctx); err != nil {
+			return false, err
+		}
+		defer s.writeMu.Unlock()
 	}
-	defer s.writeMu.Unlock()
-	return s.inTx(ctx, "guardian review", func(q *gen.Queries) error {
+	session := scope.SessionID
+	recorded := false
+	err = s.inTx(ctx, "guardian review", func(q *gen.Queries) error {
+		enabled, err := q.GuardianSessionEnabled(ctx, scope.SessionID)
+		if err != nil || !enabled {
+			return err
+		}
 		current, err := q.GetSession(ctx, session)
 		if err != nil {
 			return err
 		}
-		if current.ControllerGeneration != generation || current.SessionMode != "chat" {
+		if current.ControllerGeneration != scope.Generation || current.SessionMode != "chat" {
 			return nil
 		}
 		candidates, err := q.ListGuardianReviewCandidates(ctx, session)
@@ -86,21 +105,13 @@ func (s *Store) RecordGuardianReview(ctx context.Context, scope domain.GuardianR
 			r.EpochID = o.EpochID
 			r.FirstSeenAt = now
 			r.RetentionAt = *at
-			old, err := q.GetGuardianReview(ctx, gen.GetGuardianReviewParams{EpochID: o.EpochID, ParentThreadID: r.ParentThreadID, ReviewID: r.ReviewID})
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			if err == nil {
-				previous := guardianReview(old)
-				r = mergeGuardianReview(previous, r)
-				if reflect.DeepEqual(previous, r) {
-					return nil
-				}
-			}
-			return q.PutGuardianReview(ctx, gen.PutGuardianReviewParams{EpochID: r.EpochID, ParentThreadID: r.ParentThreadID, ReviewID: r.ReviewID, ParentTurnID: r.ParentTurnID, TargetItemID: nullableStringPtr(r.TargetItemID), Action: r.Action, Status: r.Status, DecisionSource: r.DecisionSource, StartedAt: guardianTime(r.StartedAt), CompletedAt: guardianTime(r.CompletedAt), FirstSeenAt: r.FirstSeenAt, RetentionAt: r.RetentionAt, SawStarted: guardianBool(r.SawStarted), SawCompleted: guardianBool(r.SawCompleted), Conflict: guardianBool(r.Conflict)})
+			err := s.putGuardianReview(ctx, q, r, pending)
+			recorded = err == nil
+			return err
 		}
 		return addGuardianAnomaly(ctx, q, session, domain.GuardianOwnerUnresolved, 1, now)
 	})
+	return recorded, err
 }
 
 func mergeGuardianReview(old, next domain.GuardianReview) domain.GuardianReview {
@@ -124,6 +135,7 @@ func mergeGuardianReview(old, next domain.GuardianReview) domain.GuardianReview 
 		old.Status = next.Status
 		old.DecisionSource = next.DecisionSource
 	}
+	old.Conflict = old.Conflict || next.Conflict
 	old.SawStarted = old.SawStarted || next.SawStarted
 	old.SawCompleted = old.SawCompleted || next.SawCompleted
 	return old
@@ -153,4 +165,75 @@ func guardianReview(r gen.GuardianReview) domain.GuardianReview {
 		target = &r.TargetItemID.String
 	}
 	return domain.GuardianReview{EpochID: r.EpochID, ParentThreadID: r.ParentThreadID, ReviewID: r.ReviewID, ParentTurnID: r.ParentTurnID, TargetItemID: target, Action: r.Action, Status: r.Status, DecisionSource: r.DecisionSource, StartedAt: guardianTimePtr(r.StartedAt), CompletedAt: guardianTimePtr(r.CompletedAt), FirstSeenAt: r.FirstSeenAt, RetentionAt: r.RetentionAt, SawStarted: r.SawStarted != 0, SawCompleted: r.SawCompleted != 0, Conflict: r.Conflict != 0}
+}
+
+// putGuardianReview merges pending and retained facts without refreshing their
+// first observation time. Pending removal and retained insertion are atomic.
+func (s *Store) putGuardianReview(ctx context.Context, q *gen.Queries, r domain.GuardianReview, pending bool) error {
+	key := gen.GetPendingGuardianReviewParams{EpochID: r.EpochID, ParentThreadID: r.ParentThreadID, ReviewID: r.ReviewID}
+	queued, err := q.GetPendingGuardianReview(ctx, key)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		r = mergeGuardianReview(pendingGuardianReview(queued), r)
+	}
+	params := gen.PutGuardianReviewParams{EpochID: r.EpochID, ParentThreadID: r.ParentThreadID, ReviewID: r.ReviewID, ParentTurnID: r.ParentTurnID, TargetItemID: nullableStringPtr(r.TargetItemID), Action: r.Action, Status: r.Status, DecisionSource: r.DecisionSource, StartedAt: guardianTime(r.StartedAt), CompletedAt: guardianTime(r.CompletedAt), FirstSeenAt: r.FirstSeenAt, RetentionAt: r.RetentionAt, SawStarted: guardianBool(r.SawStarted), SawCompleted: guardianBool(r.SawCompleted), Conflict: guardianBool(r.Conflict)}
+	if pending {
+		return q.PutPendingGuardianReview(ctx, gen.PutPendingGuardianReviewParams(params))
+	}
+	old, err := q.GetGuardianReview(ctx, gen.GetGuardianReviewParams(key))
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		previous := guardianReview(old)
+		r = mergeGuardianReview(previous, r)
+		if reflect.DeepEqual(previous, r) {
+			return q.DeletePendingGuardianReview(ctx, gen.DeletePendingGuardianReviewParams(key))
+		}
+		params.Status = r.Status
+		params.DecisionSource = r.DecisionSource
+		params.StartedAt = guardianTime(r.StartedAt)
+		params.CompletedAt = guardianTime(r.CompletedAt)
+		params.RetentionAt = r.RetentionAt
+		params.SawStarted = guardianBool(r.SawStarted)
+		params.SawCompleted = guardianBool(r.SawCompleted)
+		params.Conflict = guardianBool(r.Conflict)
+	}
+	if err := q.PutGuardianReview(ctx, params); err != nil {
+		return err
+	}
+	return q.DeletePendingGuardianReview(ctx, gen.DeletePendingGuardianReviewParams(key))
+}
+
+func pendingGuardianReview(r gen.GuardianReviewPending) domain.GuardianReview {
+	return guardianReview(gen.GuardianReview{EpochID: r.EpochID, ParentThreadID: r.ParentThreadID, ReviewID: r.ReviewID, ParentTurnID: r.ParentTurnID, TargetItemID: r.TargetItemID, Action: r.Action, Status: r.Status, DecisionSource: r.DecisionSource, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, FirstSeenAt: r.FirstSeenAt, RetentionAt: r.RetentionAt, SawStarted: r.SawStarted, SawCompleted: r.SawCompleted, Conflict: r.Conflict})
+}
+
+// ReplayGuardianReviews recovers already validated observations, including after
+// a controller generation changes. Epoch deletion (purge) cascades to pending.
+func (s *Store) ReplayGuardianReviews(ctx context.Context, now time.Time) error {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "guardian review recovery", func(q *gen.Queries) error {
+		rows, err := q.ListPendingGuardianReviews(ctx)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if !row.RetentionAt.After(now.Add(-domain.GuardianRetention)) {
+				if err := q.DeletePendingGuardianReview(ctx, gen.DeletePendingGuardianReviewParams{EpochID: row.EpochID, ParentThreadID: row.ParentThreadID, ReviewID: row.ReviewID}); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := s.putGuardianReview(ctx, q, pendingGuardianReview(row), false); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

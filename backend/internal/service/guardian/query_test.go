@@ -118,7 +118,7 @@ type groupedQueryStore struct {
 func (s *groupedQueryStore) GuardianAnomalies(context.Context, domain.SessionID) (map[domain.GuardianCode]int64, error) {
 	return s.anomalies, nil
 }
-func (s *groupedQueryStore) PageGuardianFacts(_ context.Context, _ domain.SessionID, _, _, _ time.Time, kind, after string) ([]domain.GuardianFact, error) {
+func (s *groupedQueryStore) PageGuardianFacts(_ context.Context, _ domain.SessionID, _, _, _ time.Time, kind, after string, _ int64) ([]domain.GuardianFact, error) {
 	page := make([]domain.GuardianFact, 0, 500)
 	for _, fact := range s.facts {
 		if fact.Kind == kind && fact.Sequence > after {
@@ -164,5 +164,72 @@ func TestQueryGroupGapCountsOnceWithoutMutatingStoredAnomalies(t *testing.T) {
 	must(t, err)
 	if report.Anomalies[domain.GuardianCoverageGap] != math.MaxInt64 {
 		t.Fatal("coverage count overflowed")
+	}
+}
+
+func TestGuardianHistoricalWindowUsesEventTime(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	f.chat()
+	f.recordReview(f.review("late-review", "networkAccess", true))
+	f.write("guardian", f.meta("guardian", "root", true, f.base)+f.request("late-request", "turn", 100, 20))
+	f.collect()
+	svc := NewQuery(f.store, func() time.Time { return f.now })
+	for _, tc := range []struct {
+		name              string
+		at                time.Time
+		requests, reviews int64
+	}{
+		{"request", f.base.Add(2 * time.Minute), 1, 0},
+		{"review", f.base.Add(time.Minute), 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, details := range []bool{false, true} {
+				report, err := svc.Query(context.Background(), f.session.ID, QueryOptions{Since: tc.at, Until: tc.at.Add(time.Second), Details: details})
+				must(t, err)
+				if report.Requests != tc.requests || report.Reviews != tc.reviews {
+					t.Errorf("historic facts requests/reviews = %d/%d, want %d/%d", report.Requests, report.Reviews, tc.requests, tc.reviews)
+				}
+				if details && len(report.Details) != 1 {
+					t.Errorf("historic details = %d, want 1", len(report.Details))
+				}
+				exclusive, err := svc.Query(context.Background(), f.session.ID, QueryOptions{Since: tc.at.Add(-time.Second), Until: tc.at})
+				must(t, err)
+				if exclusive.Requests != 0 || exclusive.Reviews != 0 {
+					t.Fatal("until must be exclusive")
+				}
+			}
+		})
+	}
+}
+
+func TestGuardianHistoricalCursorExcludesLaterIngestion(t *testing.T) {
+	f := newFixture(t)
+	f.enable(true)
+	f.chat()
+	f.recordReview(f.review("review-a", "networkAccess", true))
+	f.write("guardian", f.meta("guardian", "root", true, f.base)+f.request("request-a", "turn", 100, 20))
+	f.collect()
+	service := NewQuery(f.store, func() time.Time { return f.now })
+	options := QueryOptions{Since: f.base, Until: f.base.Add(3 * time.Minute), Details: true, Limit: 1}
+	first, err := service.Query(context.Background(), f.session.ID, options)
+	must(t, err)
+	if len(first.Details) != 1 || first.NextCursor == "" || first.Requests != 1 || first.Reviews != 1 {
+		t.Fatal("initial late-ingestion page missing")
+	}
+	// Ingest event times inside the same historical window after page one.
+	f.now = f.now.Add(time.Minute)
+	f.recordReview(f.review("review-b", "execve", true))
+	f.append("guardian", f.request("request-b", "turn", 200, 10))
+	f.collect()
+	next, err := service.Query(context.Background(), f.session.ID, QueryOptions{Details: true, Limit: 1, Cursor: first.NextCursor})
+	must(t, err)
+	if next.Requests != 1 || next.Reviews != 1 || len(next.Details) != 1 || next.Details[0].ReviewID == nil || *next.Details[0].ReviewID != "review-a" || next.NextCursor != "" {
+		t.Fatalf("later ingestion changed cursor membership: %+v", next)
+	}
+	fresh, err := service.Query(context.Background(), f.session.ID, options)
+	must(t, err)
+	if fresh.Requests != 2 || fresh.Reviews != 2 {
+		t.Fatalf("fresh snapshot misses facts: %d/%d", fresh.Requests, fresh.Reviews)
 	}
 }

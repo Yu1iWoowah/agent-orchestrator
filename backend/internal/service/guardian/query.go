@@ -16,7 +16,8 @@ import (
 type QueryStore interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
-	PageGuardianFacts(context.Context, domain.SessionID, time.Time, time.Time, time.Time, string, string) ([]domain.GuardianFact, error)
+	PageGuardianFacts(context.Context, domain.SessionID, time.Time, time.Time, time.Time, string, string, int64) ([]domain.GuardianFact, error)
+	GuardianSnapshot(context.Context) (int64, error)
 	GuardianAnomalies(context.Context, domain.SessionID) (map[domain.GuardianCode]int64, error)
 	PurgeGuardian(context.Context, domain.SessionID, time.Time) error
 }
@@ -166,6 +167,7 @@ type pageToken struct {
 	Window   Window           `json:"w"`
 	Kind     string           `json:"k"`
 	Sequence string           `json:"n"`
+	Snapshot *int64           `json:"i"`
 }
 
 func invalidQuery() error {
@@ -204,7 +206,7 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 		if err != nil {
 			return Report{}, invalidQuery()
 		}
-		if json.Unmarshal(raw, &token) != nil || token.Session != id || (token.Kind != "request" && token.Kind != "review") || token.Sequence == "" || len(token.Sequence) > 800 || token.Window.Since.IsZero() || token.Window.Until.IsZero() || !token.Window.Since.Before(token.Window.Until) || token.Window.Until.After(now) {
+		if json.Unmarshal(raw, &token) != nil || token.Session != id || (token.Kind != "request" && token.Kind != "review") || token.Snapshot == nil || *token.Snapshot < 0 || token.Sequence == "" || len(token.Sequence) > 800 || token.Window.Since.IsZero() || token.Window.Until.IsZero() || !token.Window.Since.Before(token.Window.Until) || token.Window.Until.After(now) {
 			return Report{}, invalidQuery()
 		}
 		if !o.Since.IsZero() && !o.Since.Equal(token.Window.Since) || !o.Until.IsZero() && !o.Until.Equal(token.Window.Until) {
@@ -249,6 +251,16 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 		report.Capability.ReviewEvents = "supported"
 		report.Capability.ReviewAvailability = "missing_event"
 	}
+	snapshot, err := s.store.GuardianSnapshot(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	if token.Snapshot != nil {
+		if *token.Snapshot > snapshot {
+			return Report{}, invalidQuery()
+		}
+		snapshot = *token.Snapshot
+	}
 	storedAnomalies, err := s.store.GuardianAnomalies(ctx, id)
 	if err != nil {
 		return Report{}, err
@@ -272,7 +284,7 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 			if err := ctx.Err(); err != nil {
 				return Report{}, err
 			}
-			facts, e := s.store.PageGuardianFacts(ctx, id, o.Since, o.Until, now.Add(-domain.GuardianRetention), kind, after)
+			facts, e := s.store.PageGuardianFacts(ctx, id, o.Since, o.Until, now.Add(-domain.GuardianRetention), kind, after, snapshot)
 			if e != nil {
 				return Report{}, e
 			}
@@ -329,7 +341,7 @@ func (s *QueryService) Query(ctx context.Context, id domain.SessionID, o QueryOp
 				if o.Details && (kind > token.Kind || kind == token.Kind && fact.Sequence > token.Sequence) {
 					if len(report.Details) < report.Limit {
 						report.Details = append(report.Details, detail(fact))
-						last = pageToken{Session: id, Window: report.Window, Kind: kind, Sequence: fact.Sequence}
+						last = pageToken{Session: id, Window: report.Window, Kind: kind, Sequence: fact.Sequence, Snapshot: &snapshot}
 					} else {
 						more = true
 					}

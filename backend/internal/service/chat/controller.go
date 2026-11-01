@@ -3183,15 +3183,9 @@ func (c *Controller) projectUnit(
 	persistent bool,
 ) bool {
 	event := unit[0]
-	if event.GuardianReview != nil && c.harness == domain.HarnessCodex && c.reviewID == "" {
-		if sink, ok := c.store.(interface {
-			RecordGuardianReview(context.Context, domain.GuardianReviewScope, domain.GuardianReview, time.Time) error
-		}); ok {
-			if err := sink.RecordGuardianReview(ctx, domain.GuardianReviewScope{SessionID: c.sessionID, Generation: c.generation, AccountID: c.settingsObservationOwner.AccountID, NativeRootID: c.settingsObservationOwner.ProviderConversationID, LaunchedAt: c.guardianLaunchedAt}, *event.GuardianReview, c.now()); err != nil {
-				c.log.Warn("guardian review observation incomplete", "code", "collection_failed")
-			}
-		}
-	}
+	observedAt := c.now()
+	queuedReview := false
+
 	if event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped &&
 		errors.Is(event.Err, ports.ErrChatRecoveryInconclusive) {
 		// A lost attachment is not proof the persistent provider stopped. Keep
@@ -3229,13 +3223,13 @@ func (c *Controller) projectUnit(
 			projected, err := c.projectDeltas(ctx, unit)
 			return projected, false, err
 		}
-		return c.projectEvent(ctx, event)
+		return c.projectEventWithGuardian(ctx, event, &queuedReview)
 	}
 	projected, primaryTurn, err := project()
 	// A terminal receipt compacts the entire prompt, so it cannot pass a
 	// failed earlier projection. Retry transient store errors in order; if
 	// still failing, detach and leave the journal for a replacement controller.
-	for attempt := 0; err != nil && persistent && attempt < 3; attempt++ {
+	for attempt := 0; err != nil && (persistent || queuedReview || errors.Is(err, errGuardianReviewCapture)) && attempt < 3; attempt++ {
 		time.Sleep(20 * time.Millisecond)
 		projected, primaryTurn, err = project()
 	}
@@ -3244,8 +3238,8 @@ func (c *Controller) projectUnit(
 			err = acknowledger.AcknowledgeProviderEvent(ctx, committed.ProviderEventID)
 		}
 	}
-	if err != nil && persistent {
-		c.log.Error("persistent chat projection stopped; provider retained for replay",
+	if err != nil && (persistent || queuedReview || errors.Is(err, errGuardianReviewCapture)) {
+		c.log.Error("chat projection stopped",
 			"session", c.sessionID, "kind", event.Kind, "error", err)
 		c.mu.Lock()
 		c.preserveProviderOnStop = true
@@ -3264,6 +3258,9 @@ func (c *Controller) projectUnit(
 		c.log.Error("failed to project chat event",
 			"session", c.sessionID, "kind", event.Kind, "error", err)
 	} else if projected {
+		if queuedReview {
+			c.applyGuardianReview(ctx, event, observedAt)
+		}
 		c.afterProject(ctx, event, primaryTurn)
 	}
 	if lifecycle {
@@ -3281,10 +3278,57 @@ func (c *Controller) cleanupOwnedControllerWork(ctx context.Context, now time.Ti
 	return err
 }
 
+var errGuardianReviewCapture = errors.New("guardian review durable capture failed")
+
+type guardianReviewSink interface {
+	QueueGuardianReview(context.Context, domain.GuardianReviewScope, domain.GuardianReview, time.Time) (bool, error)
+	RecordGuardianReview(context.Context, domain.GuardianReviewScope, domain.GuardianReview, time.Time) error
+}
+
+func (c *Controller) guardianReviewSink(event ports.ChatEvent) (guardianReviewSink, bool) {
+	if event.GuardianReview == nil || c.harness != domain.HarnessCodex || c.reviewID != "" {
+		return nil, false
+	}
+	sink, ok := c.store.(guardianReviewSink)
+	return sink, ok
+}
+func (c *Controller) guardianReviewScope() domain.GuardianReviewScope {
+	return domain.GuardianReviewScope{SessionID: c.sessionID, Generation: c.generation, AccountID: c.settingsObservationOwner.AccountID, NativeRootID: c.settingsObservationOwner.ProviderConversationID, LaunchedAt: c.guardianLaunchedAt}
+}
+func (c *Controller) applyGuardianReview(ctx context.Context, event ports.ChatEvent, at time.Time) {
+	sink, ok := c.guardianReviewSink(event)
+	if !ok {
+		return
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := sink.RecordGuardianReview(ctx, c.guardianReviewScope(), *event.GuardianReview, at); err == nil {
+			return
+		}
+	}
+	// The collector can recover the transactionally queued whitelist after restart.
+	c.log.Warn("guardian review observation pending", "code", "collection_failed")
+}
+
 // projectEvent archives one normalized provider event and applies its durable
 // projection in the same SQLite transaction.
 func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
-	projected, err := c.archive(ctx, event, func(txCtx context.Context) error { return c.apply(txCtx, event) })
+	return c.projectEventWithGuardian(ctx, event, nil)
+}
+
+func (c *Controller) projectEventWithGuardian(ctx context.Context, event ports.ChatEvent, queued *bool) (bool, bool, error) {
+	projected, err := c.archive(ctx, event, func(txCtx context.Context) error {
+		if sink, ok := c.guardianReviewSink(event); ok {
+			accepted, err := sink.QueueGuardianReview(txCtx, c.guardianReviewScope(), *event.GuardianReview, c.now())
+			if err != nil {
+				// Never propagate storage error text into generic projection logging.
+				return errGuardianReviewCapture
+			}
+			if queued != nil {
+				*queued = accepted
+			}
+		}
+		return c.apply(txCtx, event)
+	})
 	if err != nil || !projected {
 		return projected, false, err
 	}

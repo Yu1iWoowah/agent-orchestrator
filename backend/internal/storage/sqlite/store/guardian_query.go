@@ -10,10 +10,10 @@ import (
 
 // PageGuardianFacts reads a fixed-size page without collection, file access or
 // writes. The service selects the explicit public whitelist from these rows.
-func (s *Store) PageGuardianFacts(ctx context.Context, id domain.SessionID, since, until, floor time.Time, kind, after string) ([]domain.GuardianFact, error) {
+func (s *Store) PageGuardianFacts(ctx context.Context, id domain.SessionID, since, until, floor time.Time, kind, after string, snapshot int64) ([]domain.GuardianFact, error) {
 	facts := make([]domain.GuardianFact, 0)
 	if kind == "request" {
-		rows, err := s.qr.PageGuardianRequests(ctx, gen.PageGuardianRequestsParams{SessionID: string(id), SinceAt: since.UTC(), UntilAt: until.UTC(), RetentionFloor: floor.UTC(), AfterSequence: after})
+		rows, err := s.qr.PageGuardianRequests(ctx, gen.PageGuardianRequestsParams{SessionID: string(id), SinceAt: since.UTC(), UntilAt: until.UTC(), RetentionFloor: floor.UTC(), AfterSequence: after, SnapshotSequence: snapshot})
 		if err != nil {
 			return nil, err
 		}
@@ -22,7 +22,7 @@ func (s *Store) PageGuardianFacts(ctx context.Context, id domain.SessionID, sinc
 			facts = append(facts, domain.GuardianFact{Kind: kind, Sequence: r.Sequence, Request: &request})
 		}
 	} else {
-		rows, err := s.qr.PageGuardianReviews(ctx, gen.PageGuardianReviewsParams{SessionID: string(id), SinceAt: since.UTC(), UntilAt: until.UTC(), RetentionFloor: floor.UTC(), AfterSequence: after})
+		rows, err := s.qr.PageGuardianReviews(ctx, gen.PageGuardianReviewsParams{SessionID: string(id), SinceAt: since.UTC(), UntilAt: until.UTC(), RetentionFloor: floor.UTC(), AfterSequence: after, SnapshotSequence: snapshot})
 		if err != nil {
 			return nil, err
 		}
@@ -32,4 +32,9 @@ func (s *Store) PageGuardianFacts(ctx context.Context, id domain.SessionID, sinc
 		}
 	}
 	return facts, nil
+}
+
+// GuardianSnapshot returns the last committed ingestion sequence.
+func (s *Store) GuardianSnapshot(ctx context.Context) (int64, error) {
+	return s.qr.GuardianSnapshot(ctx)
 }

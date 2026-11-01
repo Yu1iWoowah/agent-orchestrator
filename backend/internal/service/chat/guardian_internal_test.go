@@ -1,11 +1,13 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,18 +16,40 @@ import (
 )
 
 type guardianProjectionStore struct {
+	queueFailures int
+	declineQueue  bool
 	Store
 	scopes         []domain.GuardianReviewScope
+	queuedScopes   []domain.GuardianReviewScope
+	queuedReviews  []domain.GuardianReview
+	queuedAt       []time.Time
 	reviews        []domain.GuardianReview
 	observedAt     []time.Time
 	activities     []domain.ConversationActivity
 	observationErr error
+	activityErr    error
+	failuresLeft   int
+}
+
+func (s *guardianProjectionStore) QueueGuardianReview(_ context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, at time.Time) (bool, error) {
+	if s.queueFailures > 0 {
+		s.queueFailures--
+		return false, errors.New("private transient sentinel")
+	}
+	s.queuedScopes = append(s.queuedScopes, scope)
+	s.queuedReviews = append(s.queuedReviews, r)
+	s.queuedAt = append(s.queuedAt, at)
+	return !s.declineQueue, nil
 }
 
 func (s *guardianProjectionStore) RecordGuardianReview(_ context.Context, scope domain.GuardianReviewScope, r domain.GuardianReview, at time.Time) error {
 	s.scopes = append(s.scopes, scope)
 	s.reviews = append(s.reviews, r)
 	s.observedAt = append(s.observedAt, at)
+	if s.failuresLeft > 0 {
+		s.failuresLeft--
+		return errors.New("private transient sentinel")
+	}
 	return s.observationErr
 }
 func (s *guardianProjectionStore) ProjectProviderEvent(ctx context.Context, _ string, _ domain.SessionID, _, _, _, _ string, _ time.Time, project func(context.Context) error) (bool, error) {
@@ -35,6 +59,9 @@ func (s *guardianProjectionStore) ProjectReviewProviderEvent(ctx context.Context
 	return true, project(ctx)
 }
 func (s *guardianProjectionStore) UpsertActivity(_ context.Context, _, _ string, a domain.ConversationActivity, _ time.Time) error {
+	if s.activityErr != nil {
+		return s.activityErr
+	}
 	s.activities = append(s.activities, a)
 	return nil
 }
@@ -42,6 +69,7 @@ func (s *guardianProjectionStore) UpsertActivity(_ context.Context, _, _ string,
 type guardianProjectionConversation struct{ ports.ChatConversation }
 
 func (guardianProjectionConversation) ProviderConversationID() string { return "native-root" }
+func (guardianProjectionConversation) Close() error                   { return nil }
 
 func TestGuardianReviewProjectUnitScopeGatesAndFailureIsolation(t *testing.T) {
 	launched := time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC)
@@ -54,7 +82,7 @@ func TestGuardianReviewProjectUnitScopeGatesAndFailureIsolation(t *testing.T) {
 		{name: "Codex root controller", harness: domain.HarnessCodex, want: 1},
 		{name: "other harness", harness: domain.HarnessClaudeCode},
 		{name: "reviewer owner", harness: domain.HarnessCodex, reviewer: true},
-		{name: "observation failure preserves activity", harness: domain.HarnessCodex, fail: true, want: 1},
+		{name: "observation failure preserves activity", harness: domain.HarnessCodex, fail: true, want: 3},
 		{name: "unrelated event", harness: domain.HarnessCodex, missing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,14 +109,73 @@ func TestGuardianReviewProjectUnitScopeGatesAndFailureIsolation(t *testing.T) {
 			if len(store.scopes) != tc.want {
 				t.Fatalf("observation calls = %d, want %d", len(store.scopes), tc.want)
 			}
-			if tc.want == 1 {
+			wantQueued := 0
+			if tc.want > 0 {
+				wantQueued = 1
+			}
+			if len(store.queuedScopes) != wantQueued {
+				t.Fatalf("queued calls = %d, want %d", len(store.queuedScopes), wantQueued)
+			}
+			if tc.want > 0 {
 				expected := domain.GuardianReviewScope{SessionID: "session", Generation: "generation", AccountID: "account", NativeRootID: "native-root", LaunchedAt: launched}
-				if store.scopes[0] != expected || !reflect.DeepEqual(store.reviews[0], *review) || !store.observedAt[0].Equal(now) {
+				if store.queuedScopes[0] != expected || !reflect.DeepEqual(store.queuedReviews[0], *review) || !store.queuedAt[0].Equal(now) || store.scopes[0] != expected || !reflect.DeepEqual(store.reviews[0], *review) || !store.observedAt[0].Equal(now) {
 					t.Fatalf("wrong observation scope/fact: %+v", store.scopes[0])
 				}
 			}
 			if len(store.activities) != 1 || store.activities[0].Kind != domain.ActivityKindAutoReview || store.activities[0].Status != domain.ActivityStatusCompleted || store.activities[0].ProviderItemID != event.ProviderItemID {
 				t.Fatalf("activity projection lost: %+v", store.activities)
+			}
+		})
+	}
+}
+
+func TestGuardianReviewTransientFailureRetriedWithoutAck(t *testing.T) {
+	for _, phase := range []string{"capture", "apply", "exhausted", "ignored", "ignored projection failure"} {
+		t.Run(phase, func(t *testing.T) {
+			now := time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC)
+			store := &guardianProjectionStore{}
+			switch phase {
+			case "capture":
+				store.queueFailures = 1
+			case "apply":
+				store.failuresLeft = 1
+			case "exhausted":
+				store.observationErr = errors.New("private transient sentinel")
+			case "ignored projection failure":
+				store.declineQueue = true
+				store.activityErr = errors.New("synthetic activity projection failure")
+			default:
+				store.declineQueue = true
+			}
+			var logs bytes.Buffer
+			c := newController("session", domain.SessionConversationOwner("session"), domain.ConversationRecord{ID: "conversation"}, "generation", domain.HarnessCodex, guardianProjectionConversation{}, store, nil, slog.New(slog.NewTextHandler(&logs, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil)
+			c.settingsObservationOwner = c.observationOwner("account")
+			r := &domain.GuardianReview{ReviewID: "review", ParentThreadID: "native-root", ParentTurnID: "turn", Action: "execve", Status: "approved", StartedAt: &now, SawCompleted: true}
+			event := ports.ChatEvent{Kind: ports.ChatEventActivityCompleted, ProviderTurnID: "turn", ProviderItemID: "auto-review:review", ActivityKind: domain.ActivityKindAutoReview, ActivityStatus: domain.ActivityStatusCompleted, GuardianReview: r}
+			if !c.projectUnit(context.Background(), []ports.ChatEvent{event}, nil, false) {
+				t.Fatal("stream stopped")
+			}
+			wantCalls := 1
+			switch phase {
+			case "apply":
+				wantCalls = 2
+			case "exhausted":
+				wantCalls = 3
+			case "ignored", "ignored projection failure":
+				wantCalls = 0
+			}
+			if len(store.scopes) != wantCalls || store.failuresLeft != 0 || store.queueFailures != 0 {
+				t.Fatalf("transient observation calls = %d, want %d (retry succeeds)", len(store.scopes), wantCalls)
+			}
+			wantActivities := 1
+			if phase == "ignored projection failure" {
+				wantActivities = 0
+			}
+			if len(store.activities) != wantActivities {
+				t.Fatal("activity missing or duplicated")
+			}
+			if strings.Contains(logs.String(), "private transient sentinel") {
+				t.Fatal("error content leaked")
 			}
 		})
 	}

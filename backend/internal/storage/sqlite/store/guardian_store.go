@@ -303,7 +303,7 @@ func (s *Store) CleanupGuardian(ctx context.Context, now time.Time) error {
 		deletePositions := func(ctx context.Context, at time.Time) error {
 			return q.DeleteExpiredGuardianPositions(ctx, gen.DeleteExpiredGuardianPositionsParams{Cutoff: at, ActiveEpochIds: activeEpochs})
 		}
-		for _, f := range []func(context.Context, time.Time) error{q.AdvanceAllGuardianWatermarks, q.DeleteExpiredGuardianAnomalyStates, q.DeleteExpiredGuardianReviews, q.DeleteExpiredGuardianRequests, q.DeleteExpiredGuardianModels, q.ClearExpiredGuardianThreadMetadata, q.DeleteExpiredGuardianThreads, deletePositions, q.DeleteExpiredGuardianEpochs, q.DeleteExpiredGuardianAnomalies} {
+		for _, f := range []func(context.Context, time.Time) error{q.AdvanceAllGuardianWatermarks, q.DeleteExpiredGuardianAnomalyStates, q.DeleteExpiredGuardianReviews, q.DeleteExpiredPendingGuardianReviews, q.DeleteExpiredGuardianRequests, q.DeleteExpiredGuardianModels, q.ClearExpiredGuardianThreadMetadata, q.DeleteExpiredGuardianThreads, deletePositions, q.DeleteExpiredGuardianEpochs, q.DeleteExpiredGuardianAnomalies} {
 			if err := f(ctx, cutoff); err != nil {
 				return err
 			}
