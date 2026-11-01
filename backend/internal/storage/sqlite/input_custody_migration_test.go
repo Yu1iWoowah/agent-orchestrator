@@ -139,6 +139,58 @@ func TestSharedInputMigrationPreservesExistingForeignKeyViolations(t *testing.T)
 	}
 }
 
+func TestSharedInputMigrationUpgradesNewerMainWithoutS0(t *testing.T) {
+	dir := t.TempDir()
+	db := openMigratedDatabaseCopyAt(t, dir, sharedInputCustodyVersion-1, pragmas)
+	seedSharedInputMigration(t, db)
+	const laterMigration = "migrations/20261101165111979_operator_consent_core.sql"
+	source, err := migrationsFS.ReadFile(laterMigration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A newer main can ship while S0 remains in review. Reproduce its ledger
+	// and schema without applying S0, rather than testing only fresh installs.
+	if err := func() error {
+		gooseMu.Lock()
+		defer gooseMu.Unlock()
+		goose.SetBaseFS(fstest.MapFS{laterMigration: {Data: source}})
+		defer goose.SetBaseFS(migrationsFS)
+		return goose.Up(db, "migrations")
+	}(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO operator_confirmation_requests(request_ref,action_key,project_id,purpose,plan_json,plan_digest,daemon_epoch,valid_until_ms,created_at_ms)
+ VALUES('later-request','later-action','project','test','{}',?,'prior-epoch',100000,1)`, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	before := sharedInputObjects(t, db)
+	if err := migrate(db); err != nil {
+		t.Fatalf("newer main could not apply missing S0: %v", err)
+	}
+	assertSharedInputRows(t, db)
+	after := sharedInputObjects(t, db)
+	for name, definition := range before {
+		if strings.Contains(name, ":operator_") && after[name] != definition {
+			t.Errorf("late S0 changed newer main object %s", name)
+		}
+	}
+	var digest string
+	if err := db.QueryRow(`SELECT plan_digest FROM operator_confirmation_requests WHERE request_ref='later-request'`).Scan(&digest); err != nil || digest != strings.Repeat("a", 64) {
+		t.Fatalf("late S0 lost newer main data: %q %v", digest, err)
+	}
+	var applied int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id=? AND is_applied=1`, sharedInputCustodyVersion).Scan(&applied); err != nil || applied != 1 {
+		t.Fatalf("late S0 ledger: %d %v", applied, err)
+	}
+	store, err := OpenPreMigrated(dir)
+	if err != nil {
+		t.Fatalf("late S0 did not retain newer main's migration high-water mark: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func sharedInputForeignKeyViolations(t *testing.T, db *sql.DB) []string {
 	t.Helper()
 	rows, err := db.Query(`SELECT "table"||':'||rowid||':'||parent||':'||fkid FROM pragma_foreign_key_check ORDER BY 1`)
