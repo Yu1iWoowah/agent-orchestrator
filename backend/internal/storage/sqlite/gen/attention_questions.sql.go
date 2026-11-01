@@ -162,7 +162,7 @@ func (q *Queries) FindAttentionQuestionKey(ctx context.Context, arg FindAttentio
 }
 
 const getAttentionAnswer = `-- name: GetAttentionAnswer :one
-SELECT question_id, client_answer_id, question_version, answers_json, fingerprint, message, saved_at, delivery_state, delivered_at, last_error, delivery_attempts FROM attention_answers WHERE question_id=?
+SELECT question_id, client_answer_id, question_version, answers_json, fingerprint, message, saved_at, delivery_state, delivered_at, last_error, delivery_attempts, notes FROM attention_answers WHERE question_id=?
 `
 
 func (q *Queries) GetAttentionAnswer(ctx context.Context, questionID string) (AttentionAnswer, error) {
@@ -180,6 +180,7 @@ func (q *Queries) GetAttentionAnswer(ctx context.Context, questionID string) (At
 		&i.DeliveredAt,
 		&i.LastError,
 		&i.DeliveryAttempts,
+		&i.Notes,
 	)
 	return i, err
 }
@@ -223,8 +224,8 @@ func (q *Queries) GetAttentionQuestion(ctx context.Context, arg GetAttentionQues
 }
 
 const insertAttentionAnswer = `-- name: InsertAttentionAnswer :one
-INSERT INTO attention_answers(question_id,client_answer_id,question_version,answers_json,fingerprint,message,saved_at)
-VALUES(?,?,?,?,?,?,?) RETURNING question_id, client_answer_id, question_version, answers_json, fingerprint, message, saved_at, delivery_state, delivered_at, last_error, delivery_attempts
+INSERT INTO attention_answers(question_id,client_answer_id,question_version,answers_json,fingerprint,message,saved_at,notes)
+VALUES(?,?,?,?,?,?,?,?8) RETURNING question_id, client_answer_id, question_version, answers_json, fingerprint, message, saved_at, delivery_state, delivered_at, last_error, delivery_attempts, notes
 `
 
 type InsertAttentionAnswerParams struct {
@@ -235,6 +236,7 @@ type InsertAttentionAnswerParams struct {
 	Fingerprint     string
 	Message         string
 	SavedAt         time.Time
+	Notes           sql.NullString
 }
 
 func (q *Queries) InsertAttentionAnswer(ctx context.Context, arg InsertAttentionAnswerParams) (AttentionAnswer, error) {
@@ -246,6 +248,7 @@ func (q *Queries) InsertAttentionAnswer(ctx context.Context, arg InsertAttention
 		arg.Fingerprint,
 		arg.Message,
 		arg.SavedAt,
+		arg.Notes,
 	)
 	var i AttentionAnswer
 	err := row.Scan(
@@ -260,6 +263,7 @@ func (q *Queries) InsertAttentionAnswer(ctx context.Context, arg InsertAttention
 		&i.DeliveredAt,
 		&i.LastError,
 		&i.DeliveryAttempts,
+		&i.Notes,
 	)
 	return i, err
 }
@@ -392,7 +396,7 @@ func (q *Queries) ListAttentionQuestions(ctx context.Context, arg ListAttentionQ
 }
 
 const pendingAttentionAnswers = `-- name: PendingAttentionAnswers :many
-SELECT attention_answers.question_id, attention_answers.client_answer_id, attention_answers.question_version, attention_answers.answers_json, attention_answers.fingerprint, attention_answers.message, attention_answers.saved_at, attention_answers.delivery_state, attention_answers.delivered_at, attention_answers.last_error, attention_answers.delivery_attempts,q.origin_session_id,q.origin_harness FROM attention_answers JOIN attention_questions q ON q.id=attention_answers.question_id
+SELECT attention_answers.question_id, attention_answers.client_answer_id, attention_answers.question_version, attention_answers.answers_json, attention_answers.fingerprint, attention_answers.message, attention_answers.saved_at, attention_answers.delivery_state, attention_answers.delivered_at, attention_answers.last_error, attention_answers.delivery_attempts, attention_answers.notes,q.origin_session_id,q.origin_harness FROM attention_answers JOIN attention_questions q ON q.id=attention_answers.question_id
 WHERE attention_answers.delivery_state='queued' ORDER BY delivery_attempts,saved_at,question_id LIMIT ?
 `
 
@@ -423,6 +427,7 @@ func (q *Queries) PendingAttentionAnswers(ctx context.Context, limit int64) ([]P
 			&i.AttentionAnswer.DeliveredAt,
 			&i.AttentionAnswer.LastError,
 			&i.AttentionAnswer.DeliveryAttempts,
+			&i.AttentionAnswer.Notes,
 			&i.OriginSessionID,
 			&i.OriginHarness,
 		); err != nil {

@@ -188,22 +188,12 @@ func questionRecord(ctx context.Context, q *gen.Queries, row gen.AttentionQuesti
 	return result, nil
 }
 
-// Legacy answers remain arrays; groups with notes use an envelope in the same JSON column.
-type savedQuestionAnswers struct {
-	Answers []domain.AttentionQuestionAnswer `json:"answers"`
-	Notes   *string                          `json:"notes"`
-}
-
 func questionReceipt(row gen.AttentionAnswer) (domain.AttentionAnswerReceipt, error) {
 	result := domain.AttentionAnswerReceipt{ClientAnswerID: row.ClientAnswerID, QuestionVersion: row.QuestionVersion, SavedAt: row.SavedAt, DeliveryState: row.DeliveryState, DeliveredAt: questionTime(row.DeliveredAt), LastError: row.LastError}
-	var err error
-	if strings.HasPrefix(strings.TrimSpace(row.AnswersJson), "[") {
-		err = json.Unmarshal([]byte(row.AnswersJson), &result.Answers)
-	} else {
-		var saved savedQuestionAnswers
-		err = json.Unmarshal([]byte(row.AnswersJson), &saved)
-		result.Answers, result.Notes = saved.Answers, saved.Notes
+	if row.Notes.Valid {
+		result.Notes = &row.Notes.String
 	}
+	err := json.Unmarshal([]byte(row.AnswersJson), &result.Answers)
 	return result, err
 }
 
@@ -369,16 +359,16 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 		if err != nil {
 			return err
 		}
-		var saved any = answers
-		if submission.Notes != nil {
-			saved = savedQuestionAnswers{Answers: answers, Notes: submission.Notes}
-		}
-		answerJSON, err := json.Marshal(saved)
+		answerJSON, err := json.Marshal(answers)
 		if err != nil {
 			return err
 		}
 		message := questionAnswerContext(question, answers, submission.Notes)
-		answer, err := q.InsertAttentionAnswer(ctx, gen.InsertAttentionAnswerParams{QuestionID: row.ID, ClientAnswerID: submission.ClientAnswerID, QuestionVersion: submission.ExpectedVersion, AnswersJson: string(answerJSON), Fingerprint: fingerprint, Message: message, SavedAt: at.UTC()})
+		var notes sql.NullString
+		if submission.Notes != nil {
+			notes = sql.NullString{String: *submission.Notes, Valid: true}
+		}
+		answer, err := q.InsertAttentionAnswer(ctx, gen.InsertAttentionAnswerParams{QuestionID: row.ID, ClientAnswerID: submission.ClientAnswerID, QuestionVersion: submission.ExpectedVersion, AnswersJson: string(answerJSON), Fingerprint: fingerprint, Message: message, SavedAt: at.UTC(), Notes: notes})
 		if err != nil {
 			return err
 		}
