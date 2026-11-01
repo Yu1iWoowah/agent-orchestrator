@@ -7,7 +7,7 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 | 物件 | 責任 |
 | --- | --- |
 | `conversation_turns.state = 'held'` | 離開舊版 queued／running／failed 派送與 Retry 集合；保留原 turn ID、payload 關聯及 provider evidence。 |
-| `conversation_input_custody` | 原 state、conversation、branch、session、controller generation、intake sequence、requested time；目前 custodian 與 CAS revision。 |
+| `conversation_input_custody` | 原 state、conversation、branch、session、controller generation、intake sequence、requested time；目前 custodian 與 CAS revision；register／hold 當下 message/activity IDs，供遺失／改綁檢查，不複製 payload 內容。 |
 | `conversation_input_holds` | 每個 hold key 的 ledger owner、reason、version 與 active fact；custody 移交不改寫這些欄位。 |
 | `conversation_input_actions` | 不可變、具名且冪等的 register／hold／release／transfer／delete receipt。不是 provider delivery ledger。 |
 | `orchestrator_replacement_held_turns` | 保留全部 v1 分支，UNION shared active holds；synthetic `shared:` operation ID 不會成為 v1 active operation。 |
@@ -16,7 +16,9 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 
 `ReleaseConversationInput` 要求 custodian/revision 與 hold 的 ledger owner/version；最後一層 hold 解除後才採用呼叫者已核准的 target state。API 不自行判斷 unknown 是否可重送，也不授予 linked resend 或延後權限。`DeleteConversationInput` 是獨立的 custody-qualified retention action，一般 cleanup 或 session cascade 不能冒充它。
 
-同一 action key／相同 request 只回傳原 revision，不重播；同 key 不同 request、錯 owner 或過期版本拒絕。`InputCustodyStorageCompatibility` 在 writer transaction 檢查 guards、held view、writer FK enforcement、shared custody/holds 的 FK 與全表 held/hold 一致性；它不代表 provider 或 host qualification。一般 action 只檢查 schema、writer FK enforcement 與目標 turn 的 held/hold、custody/hold 關聯，不掃其他 turn 或無關資料表。缺少 guard、writer FK 停用或相關 facts 損壞回傳 `ErrInputCustodyStorageIncompatible`，與 `ErrInputCustodyConflict` 的 CAS／request 衝突區分。
+同一 action key／相同 request 只回傳原 revision，不重播；同 key 不同 request、錯 owner 或過期版本拒絕。`InputCustodyStorageCompatibility` 在 writer transaction 檢查 guards、held view、writer FK enforcement、shared custody/holds 的 FK 與全表 held/hold 一致性；它不代表 provider 或 host qualification。一般 action 只檢查 schema、writer FK enforcement 與目標 turn 的 held/hold、custody/hold 關聯及已保存 payload IDs，不掃其他 turn 或無關資料表。缺少 guard、writer FK 停用或相關 facts 損壞回傳 `ErrInputCustodyStorageIncompatible`，與 `ErrInputCustodyConflict` 的 CAS／request 衝突區分。
+
+INSERT／UPDATE 的 replacement guards 逐一檢查 PK、conversation/sequence、非空 client/request/provider 唯一鍵的衝突受害列，保護 held 與已登記 custody 的原 row，無須 recursive_triggers=1。空鍵不參與 partial unique 衝突，普通未登記列與非 held provider 更新仍沿用 v1 行為。register 保存現有 message/activity IDs，hold 重新保存當下完整 IDs；若原 row 遺失或改綁，preflight 與目標 turn action gate 回傳 storage incompatibility。兩個 `(turn_id,id)` 索引支援此保存，不掃全 message/activity 表。
 
 ## Migration 與依賴清冊
 
@@ -33,6 +35,7 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 | 其他 turn triggers | `attention_turn_changed`, `conversation_turn_settings_snapshot_cdc`, `conversation_turns_auto_resume_cdc_update`, `conversation_turns_branch_insert`, `conversation_turns_cdc_update`。另兩個 turn triggers 已計入上述 18 個。 |
 | 5 turn indexes | `conversation_turns_auto_resume`, `idx_conversation_turns_branch`, `idx_conversation_turns_conversation`, `idx_conversation_turns_provider`, `idx_conversation_turns_retry_source`。 |
 | 新增 guards | `conversation_input_*`：immutable action、custody/hold CAS、held turn state/identity/promotion/delete、message/activity 變更與 replacement INSERT 防繞過。 |
+| payload 索引 | `conversation_input_messages_turn`、`conversation_input_activities_turn`；與 action／active-hold 索引合計四個 shared 索引，Down 全部移除。 |
 | 新增 CDC | `conversation_input_action_apply` 在變更／刪除 turn 之前寫入 `change_log`，與 mutation 同筆 transaction，失敗全回滾；不依賴多個 AFTER triggers 的執行順序。 |
 | sqlc | `queries/input_custody.sql` 與產生的 `gen/input_custody.sql.go`／`gen/models.go`；SQLite catalog／PRAGMA gate 留在 storage 邊界。 |
 

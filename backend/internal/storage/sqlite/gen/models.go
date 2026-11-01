@@ -459,6 +459,8 @@ type ConversationInputCustody struct {
 	OriginalGeneration     string
 	OriginalSequence       int64
 	RequestedAt            time.Time
+	MessageIdsJson         string
+	ActivityIdsJson        string
 	LastActionKey          string
 }
 

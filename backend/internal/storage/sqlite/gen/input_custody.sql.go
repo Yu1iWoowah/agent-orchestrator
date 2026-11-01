@@ -12,7 +12,14 @@ import (
 
 const inputCustodyStateConsistent = `-- name: InputCustodyStateConsistent :one
 SELECT CAST(NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE
- (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1)) AS INTEGER) AS consistent
+ (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.message_ids_json) expected
+  LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  WHERE payload.id IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.activity_ids_json) expected
+  LEFT JOIN conversation_activities payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  WHERE payload.id IS NULL)
+ AS INTEGER) AS consistent
 `
 
 func (q *Queries) InputCustodyStateConsistent(ctx context.Context) (int64, error) {
@@ -34,6 +41,12 @@ SELECT CAST(
   LEFT JOIN conversation_input_custody c ON c.turn_id=h.turn_id
   LEFT JOIN conversation_input_actions a ON a.action_key=h.last_action_key
   WHERE h.turn_id=?1 AND (c.turn_id IS NULL OR a.action_key IS NULL))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.message_ids_json) expected
+  LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  WHERE c.turn_id=?1 AND payload.id IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN json_each(c.activity_ids_json) expected
+  LEFT JOIN conversation_activities payload ON payload.id=expected.value AND payload.turn_id=c.turn_id
+  WHERE c.turn_id=?1 AND payload.id IS NULL)
  AS INTEGER) AS consistent
 `
 
@@ -86,7 +99,7 @@ func (q *Queries) InsertInputCustodyAction(ctx context.Context, arg InsertInputC
 }
 
 const listConversationInputCustody = `-- name: ListConversationInputCustody :many
-SELECT c.turn_id, c.owner, c.revision, c.original_state, c.original_conversation_id, c.original_branch_id, c.original_session_id, c.original_generation, c.original_sequence, c.requested_at, c.last_action_key FROM conversation_input_custody c
+SELECT c.turn_id, c.owner, c.revision, c.original_state, c.original_conversation_id, c.original_branch_id, c.original_session_id, c.original_generation, c.original_sequence, c.requested_at, c.message_ids_json, c.activity_ids_json, c.last_action_key FROM conversation_input_custody c
 JOIN conversation_turns t ON t.id = c.turn_id
 WHERE t.conversation_id = ?
 ORDER BY t.requested_at,t.rowid
@@ -112,6 +125,8 @@ func (q *Queries) ListConversationInputCustody(ctx context.Context, conversation
 			&i.OriginalGeneration,
 			&i.OriginalSequence,
 			&i.RequestedAt,
+			&i.MessageIdsJson,
+			&i.ActivityIdsJson,
 			&i.LastActionKey,
 		); err != nil {
 			return nil, err
@@ -128,7 +143,7 @@ func (q *Queries) ListConversationInputCustody(ctx context.Context, conversation
 }
 
 const selectInputCustody = `-- name: SelectInputCustody :one
-SELECT turn_id, owner, revision, original_state, original_conversation_id, original_branch_id, original_session_id, original_generation, original_sequence, requested_at, last_action_key FROM conversation_input_custody WHERE turn_id = ?
+SELECT turn_id, owner, revision, original_state, original_conversation_id, original_branch_id, original_session_id, original_generation, original_sequence, requested_at, message_ids_json, activity_ids_json, last_action_key FROM conversation_input_custody WHERE turn_id = ?
 `
 
 func (q *Queries) SelectInputCustody(ctx context.Context, turnID string) (ConversationInputCustody, error) {
@@ -145,6 +160,8 @@ func (q *Queries) SelectInputCustody(ctx context.Context, turnID string) (Conver
 		&i.OriginalGeneration,
 		&i.OriginalSequence,
 		&i.RequestedAt,
+		&i.MessageIdsJson,
+		&i.ActivityIdsJson,
 		&i.LastActionKey,
 	)
 	return i, err

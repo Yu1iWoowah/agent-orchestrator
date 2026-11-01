@@ -79,6 +79,8 @@ CREATE INDEX idx_conversation_turns_retry_source
     WHERE retry_of_turn_id IS NOT NULL;
 -- Custody is routing, not delivery evidence. Holds retain their ledger owner
 -- and version across custody moves; only their producer may authorize release.
+CREATE INDEX conversation_input_messages_turn ON conversation_messages(turn_id,id);
+CREATE INDEX conversation_input_activities_turn ON conversation_activities(turn_id,id);
 CREATE TABLE conversation_input_actions (
  action_key TEXT PRIMARY KEY CHECK(length(action_key) BETWEEN 1 AND 256),
  turn_id TEXT NOT NULL CHECK(length(turn_id) BETWEEN 1 AND 256),
@@ -106,6 +108,8 @@ CREATE TABLE conversation_input_custody (
  original_generation TEXT NOT NULL,
  original_sequence INTEGER NOT NULL,
  requested_at TIMESTAMP NOT NULL,
+ message_ids_json TEXT NOT NULL CHECK(json_valid(message_ids_json) AND json_type(message_ids_json)='array'),
+ activity_ids_json TEXT NOT NULL CHECK(json_valid(activity_ids_json) AND json_type(activity_ids_json)='array'),
  last_action_key TEXT NOT NULL REFERENCES conversation_input_actions(action_key)
 );
 CREATE TABLE conversation_input_holds (
@@ -152,7 +156,9 @@ WHEN EXISTS(SELECT 1 FROM conversation_input_custody WHERE turn_id=NEW.turn_id)
  WHERE a.action_key=NEW.last_action_key AND a.kind='register' AND a.turn_id=NEW.turn_id AND a.target_owner=NEW.owner
  AND NEW.revision=1 AND NEW.original_state=t.state AND NEW.original_conversation_id=t.conversation_id
  AND NEW.original_branch_id=t.branch_id AND NEW.original_session_id=t.handled_by_session_id
- AND NEW.original_generation=t.controller_generation AND NEW.original_sequence=t.intake_sequence AND NEW.requested_at=t.requested_at)
+ AND NEW.original_generation=t.controller_generation AND NEW.original_sequence=t.intake_sequence AND NEW.requested_at=t.requested_at
+ AND NEW.message_ids_json=(SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id))
+ AND NEW.activity_ids_json=(SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id)))
 BEGIN SELECT RAISE(ABORT,'INPUT_CUSTODY_FENCED'); END;
 CREATE TRIGGER conversation_input_custody_update BEFORE UPDATE ON conversation_input_custody
 WHEN NEW.turn_id IS NOT OLD.turn_id OR NEW.original_state IS NOT OLD.original_state
@@ -161,7 +167,9 @@ WHEN NEW.turn_id IS NOT OLD.turn_id OR NEW.original_state IS NOT OLD.original_st
  OR NEW.original_sequence IS NOT OLD.original_sequence OR NEW.requested_at IS NOT OLD.requested_at
  OR NOT EXISTS(SELECT 1 FROM conversation_input_actions a WHERE a.action_key=NEW.last_action_key AND a.turn_id=OLD.turn_id
   AND a.kind <> 'register' AND a.expected_owner=OLD.owner AND a.expected_revision=OLD.revision AND NEW.revision=OLD.revision+1
-  AND NEW.owner=CASE WHEN a.kind='transfer' THEN a.target_owner ELSE OLD.owner END)
+  AND NEW.owner=CASE WHEN a.kind='transfer' THEN a.target_owner ELSE OLD.owner END
+ AND NEW.message_ids_json=CASE WHEN a.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE OLD.message_ids_json END
+ AND NEW.activity_ids_json=CASE WHEN a.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE OLD.activity_ids_json END)
 BEGIN SELECT RAISE(ABORT,'INPUT_CUSTODY_FENCED'); END;
 CREATE TRIGGER conversation_input_custody_delete BEFORE DELETE ON conversation_input_custody
 WHEN NOT EXISTS(SELECT 1 FROM conversation_input_actions WHERE action_key=OLD.last_action_key AND turn_id=OLD.turn_id AND kind='delete')
@@ -200,34 +208,67 @@ WHEN EXISTS(SELECT 1 FROM conversation_input_custody WHERE turn_id=OLD.id)
  WHERE c.turn_id=OLD.id AND a.kind='delete')
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 
+-- Protect every unique-key victim before SQLite REPLACE can delete it, even with recursive_triggers=0.
 CREATE TRIGGER conversation_input_message_insert BEFORE INSERT ON conversation_messages
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds WHERE turn_id=NEW.turn_id AND active=1)
- OR EXISTS(SELECT 1 FROM conversation_messages m JOIN conversation_input_holds h ON h.turn_id=m.turn_id WHERE m.id=NEW.id AND h.active=1)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.id=NEW.id)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.client_message_id<>'' AND p.client_message_id<>'' AND p.conversation_id=NEW.conversation_id AND p.client_message_id=NEW.client_message_id)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id)
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
+-- Protect every unique-key victim before SQLite REPLACE can delete it, even with recursive_triggers=0.
 CREATE TRIGGER conversation_input_message_update BEFORE UPDATE ON conversation_messages
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
  JOIN conversation_input_actions a ON a.action_key=c.last_action_key
  WHERE h.turn_id IN (OLD.turn_id,NEW.turn_id) AND h.active=1 AND a.kind<>'delete')
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.id=NEW.id AND p.id<>OLD.id)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.id<>OLD.id)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.client_message_id<>'' AND p.client_message_id<>'' AND p.conversation_id=NEW.conversation_id AND p.client_message_id=NEW.client_message_id AND p.id<>OLD.id)
+ OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id AND p.id<>OLD.id)
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 CREATE TRIGGER conversation_input_message_delete BEFORE DELETE ON conversation_messages
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
  JOIN conversation_input_actions a ON a.action_key=c.last_action_key
  WHERE h.turn_id=OLD.turn_id AND h.active=1 AND a.kind<>'delete')
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
+-- Protect every unique-key victim before SQLite REPLACE can delete it, even with recursive_triggers=0.
 CREATE TRIGGER conversation_input_activity_update BEFORE UPDATE ON conversation_activities
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
  JOIN conversation_input_actions a ON a.action_key=c.last_action_key
  WHERE h.turn_id IN (OLD.turn_id,NEW.turn_id) AND h.active=1 AND a.kind<>'delete')
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.id=NEW.id AND p.id<>OLD.id)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.id<>OLD.id)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.request_id<>'' AND p.request_id<>'' AND p.conversation_id=NEW.conversation_id AND p.request_id=NEW.request_id AND p.id<>OLD.id)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id AND p.id<>OLD.id)
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 CREATE TRIGGER conversation_input_activity_delete BEFORE DELETE ON conversation_activities
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
  JOIN conversation_input_actions a ON a.action_key=c.last_action_key
  WHERE h.turn_id=OLD.turn_id AND h.active=1 AND a.kind<>'delete')
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
+-- Protect every unique-key victim before SQLite REPLACE can delete it, even with recursive_triggers=0.
 CREATE TRIGGER conversation_input_activity_insert BEFORE INSERT ON conversation_activities
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds WHERE turn_id=NEW.turn_id AND active=1)
- OR EXISTS(SELECT 1 FROM conversation_activities a JOIN conversation_input_holds h ON h.turn_id=a.turn_id
-  WHERE a.id=NEW.id AND h.active=1)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.id=NEW.id)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.request_id<>'' AND p.request_id<>'' AND p.conversation_id=NEW.conversation_id AND p.request_id=NEW.request_id)
+ OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id)
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 
 CREATE TRIGGER conversation_input_action_apply AFTER INSERT ON conversation_input_actions
@@ -237,11 +278,13 @@ BEGIN
  SELECT s.project_id,s.id,'session_updated',json_object('id',s.id,'sessionId',s.id,'conversationId',t.conversation_id,'inputCustodyChanged',json('true')),NEW.created_at
  FROM conversation_turns t JOIN sessions s ON s.id=t.handled_by_session_id WHERE t.id=NEW.turn_id;
  INSERT INTO conversation_input_custody(turn_id,owner,revision,original_state,original_conversation_id,original_branch_id,
-  original_session_id,original_generation,original_sequence,requested_at,last_action_key)
- SELECT id,NEW.target_owner,1,state,conversation_id,branch_id,handled_by_session_id,controller_generation,intake_sequence,requested_at,NEW.action_key
+  original_session_id,original_generation,original_sequence,requested_at,last_action_key,message_ids_json,activity_ids_json)
+ SELECT id,NEW.target_owner,1,state,conversation_id,branch_id,handled_by_session_id,controller_generation,intake_sequence,requested_at,NEW.action_key,(SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id)),(SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id))
  FROM conversation_turns WHERE id=NEW.turn_id AND NEW.kind='register';
  UPDATE conversation_input_custody SET revision=revision+1,last_action_key=NEW.action_key,
-  owner=CASE WHEN NEW.kind='transfer' THEN NEW.target_owner ELSE owner END
+  owner=CASE WHEN NEW.kind='transfer' THEN NEW.target_owner ELSE owner END,
+  message_ids_json=CASE WHEN NEW.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE message_ids_json END,
+  activity_ids_json=CASE WHEN NEW.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE activity_ids_json END
  WHERE turn_id=NEW.turn_id AND NEW.kind<>'register';
  INSERT INTO conversation_input_holds(turn_id,hold_key,ledger_owner,reason,version,active,last_action_key)
  SELECT NEW.turn_id,NEW.hold_key,NEW.hold_owner,NEW.reason,NEW.hold_version+1,1,NEW.action_key WHERE NEW.kind='hold'
@@ -681,6 +724,8 @@ DROP TRIGGER conversation_input_action_apply;
 DROP TABLE conversation_input_holds;
 DROP TABLE conversation_input_custody;
 DROP TABLE conversation_input_actions;
+DROP INDEX conversation_input_messages_turn;
+DROP INDEX conversation_input_activities_turn;
 CREATE TABLE conversation_turns_next (
     id                     TEXT PRIMARY KEY,
     conversation_id        TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
