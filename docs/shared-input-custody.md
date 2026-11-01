@@ -18,7 +18,7 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 
 同一 action key／相同 request 只回傳原 revision，不重播；同 key 不同 request、錯 owner 或過期版本拒絕。`InputCustodyStorageCompatibility` 在 writer transaction 檢查 guards、held view、writer FK enforcement、shared custody/holds 的 FK 與全表 held/hold 一致性；它不代表 provider 或 host qualification。一般 action 只檢查 schema、writer FK enforcement 與目標 turn 的 held/hold、custody/hold 關聯及已保存 payload IDs，不掃其他 turn 或無關資料表。缺少 guard、writer FK 停用或相關 facts 損壞回傳 `ErrInputCustodyStorageIncompatible`，與 `ErrInputCustodyConflict` 的 CAS／request 衝突區分。
 
-INSERT／UPDATE 的 replacement guards 逐一檢查 PK、conversation/sequence、非空 client/request/provider 唯一鍵的衝突受害列，保護 held 與已登記 custody 的原 row，無須 recursive_triggers=1。空鍵不參與 partial unique 衝突，普通未登記列與非 held provider 更新仍沿用 v1 行為。register 保存現有 message/activity IDs，hold 重新保存當下完整 IDs；若原 row 遺失或改綁，preflight 與目標 turn action gate 回傳 storage incompatibility。兩個 `(turn_id,id)` 索引支援此保存，不掃全 message/activity 表。
+INSERT／UPDATE 的 replacement guards 逐一檢查 PK、conversation/sequence、非空 client/request/provider 唯一鍵的衝突受害列，保護 held 與已登記 custody 的原 row，無須 recursive_triggers=1。空鍵不參與 partial unique 衝突，普通未登記列與非 held provider 更新仍沿用 v1 行為。register 保存現有 message/activity IDs，hold 重新保存當下完整 IDs；若原 row 遺失或改綁，preflight 與目標 turn action gate 回傳 storage incompatibility。兩個 `(conversation_id,turn_id,id)` 索引與明確 conversation 條件支援此保存，維持 v1 lineage 查詢的 conversation 範圍，不掃全 message/activity 表。
 
 ## Migration 與依賴清冊
 

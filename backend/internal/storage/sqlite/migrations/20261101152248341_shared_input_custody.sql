@@ -79,8 +79,8 @@ CREATE INDEX idx_conversation_turns_retry_source
     WHERE retry_of_turn_id IS NOT NULL;
 -- Custody is routing, not delivery evidence. Holds retain their ledger owner
 -- and version across custody moves; only their producer may authorize release.
-CREATE INDEX conversation_input_messages_turn ON conversation_messages(turn_id,id);
-CREATE INDEX conversation_input_activities_turn ON conversation_activities(turn_id,id);
+CREATE INDEX conversation_input_messages_turn ON conversation_messages(conversation_id,turn_id,id);
+CREATE INDEX conversation_input_activities_turn ON conversation_activities(conversation_id,turn_id,id);
 CREATE TABLE conversation_input_actions (
  action_key TEXT PRIMARY KEY CHECK(length(action_key) BETWEEN 1 AND 256),
  turn_id TEXT NOT NULL CHECK(length(turn_id) BETWEEN 1 AND 256),
@@ -157,8 +157,8 @@ WHEN EXISTS(SELECT 1 FROM conversation_input_custody WHERE turn_id=NEW.turn_id)
  AND NEW.revision=1 AND NEW.original_state=t.state AND NEW.original_conversation_id=t.conversation_id
  AND NEW.original_branch_id=t.branch_id AND NEW.original_session_id=t.handled_by_session_id
  AND NEW.original_generation=t.controller_generation AND NEW.original_sequence=t.intake_sequence AND NEW.requested_at=t.requested_at
- AND NEW.message_ids_json=(SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id))
- AND NEW.activity_ids_json=(SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id)))
+ AND NEW.message_ids_json=(SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id))
+ AND NEW.activity_ids_json=(SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id)))
 BEGIN SELECT RAISE(ABORT,'INPUT_CUSTODY_FENCED'); END;
 CREATE TRIGGER conversation_input_custody_update BEFORE UPDATE ON conversation_input_custody
 WHEN NEW.turn_id IS NOT OLD.turn_id OR NEW.original_state IS NOT OLD.original_state
@@ -168,8 +168,8 @@ WHEN NEW.turn_id IS NOT OLD.turn_id OR NEW.original_state IS NOT OLD.original_st
  OR NOT EXISTS(SELECT 1 FROM conversation_input_actions a WHERE a.action_key=NEW.last_action_key AND a.turn_id=OLD.turn_id
   AND a.kind <> 'register' AND a.expected_owner=OLD.owner AND a.expected_revision=OLD.revision AND NEW.revision=OLD.revision+1
   AND NEW.owner=CASE WHEN a.kind='transfer' THEN a.target_owner ELSE OLD.owner END
- AND NEW.message_ids_json=CASE WHEN a.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE OLD.message_ids_json END
- AND NEW.activity_ids_json=CASE WHEN a.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE OLD.activity_ids_json END)
+ AND NEW.message_ids_json=CASE WHEN a.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id)) ELSE OLD.message_ids_json END
+ AND NEW.activity_ids_json=CASE WHEN a.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id)) ELSE OLD.activity_ids_json END)
 BEGIN SELECT RAISE(ABORT,'INPUT_CUSTODY_FENCED'); END;
 CREATE TRIGGER conversation_input_custody_delete BEFORE DELETE ON conversation_input_custody
 WHEN NOT EXISTS(SELECT 1 FROM conversation_input_actions WHERE action_key=OLD.last_action_key AND turn_id=OLD.turn_id AND kind='delete')
@@ -279,12 +279,12 @@ BEGIN
  FROM conversation_turns t JOIN sessions s ON s.id=t.handled_by_session_id WHERE t.id=NEW.turn_id;
  INSERT INTO conversation_input_custody(turn_id,owner,revision,original_state,original_conversation_id,original_branch_id,
   original_session_id,original_generation,original_sequence,requested_at,last_action_key,message_ids_json,activity_ids_json)
- SELECT id,NEW.target_owner,1,state,conversation_id,branch_id,handled_by_session_id,controller_generation,intake_sequence,requested_at,NEW.action_key,(SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id)),(SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id))
+ SELECT id,NEW.target_owner,1,state,conversation_id,branch_id,handled_by_session_id,controller_generation,intake_sequence,requested_at,NEW.action_key,(SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id)),(SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id))
  FROM conversation_turns WHERE id=NEW.turn_id AND NEW.kind='register';
  UPDATE conversation_input_custody SET revision=revision+1,last_action_key=NEW.action_key,
   owner=CASE WHEN NEW.kind='transfer' THEN NEW.target_owner ELSE owner END,
-  message_ids_json=CASE WHEN NEW.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE message_ids_json END,
-  activity_ids_json=CASE WHEN NEW.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE turn_id=NEW.turn_id ORDER BY id)) ELSE activity_ids_json END
+  message_ids_json=CASE WHEN NEW.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_messages WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id)) ELSE message_ids_json END,
+  activity_ids_json=CASE WHEN NEW.kind='hold' THEN (SELECT json_group_array(id) FROM (SELECT id FROM conversation_activities WHERE conversation_id=(SELECT conversation_id FROM conversation_turns WHERE id=NEW.turn_id) AND turn_id=NEW.turn_id ORDER BY id)) ELSE activity_ids_json END
  WHERE turn_id=NEW.turn_id AND NEW.kind<>'register';
  INSERT INTO conversation_input_holds(turn_id,hold_key,ledger_owner,reason,version,active,last_action_key)
  SELECT NEW.turn_id,NEW.hold_key,NEW.hold_owner,NEW.reason,NEW.hold_version+1,1,NEW.action_key WHERE NEW.kind='hold'
