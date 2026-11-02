@@ -45,6 +45,14 @@ func (c *Controller) SendMuHeldForTest() bool {
 	return false
 }
 
+// AdvanceDeliveryClockForTest cannot jump time between calculating the next
+// delivery timer's delay and registering it with the injected clock.
+func (c *Controller) AdvanceDeliveryClockForTest(advance func()) {
+	c.deliveryCheckMu.Lock()
+	defer c.deliveryCheckMu.Unlock()
+	advance()
+}
+
 // DetachIncompleteForTest simulates a daemon disappearing without settling its
 // provider work. Normal Close/StopAll must pass preflight instead. Keeping this
 // in test code prevents an unverified normal-shutdown escape hatch.

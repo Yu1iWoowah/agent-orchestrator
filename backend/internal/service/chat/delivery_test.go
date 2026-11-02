@@ -310,7 +310,7 @@ func TestDeliveryProgressRecoveryAllowsFreshAttentionOnNextSilence(t *testing.T)
 		t.Fatal(err)
 	}
 	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(30 * time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
 		return e == nil && a.AttentionID != ""
@@ -327,7 +327,7 @@ func TestDeliveryProgressRecoveryAllowsFreshAttentionOnNextSilence(t *testing.T)
 		t.Fatalf("recovered progress left old question open: %+v %v", old, err)
 	}
 	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(30 * time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
 		return e == nil && a.AttentionID != "" && a.AttentionID != blocked.AttentionID
