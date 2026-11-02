@@ -479,6 +479,13 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 	return nil
 }
 
+// PendingCompactionID retains the original command until qualified settlement.
+func (c *conversation) PendingCompactionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.compactingTurnID
+}
+
 // SendTurn prepares the long-lived ACP prompt request. AO's controller starts it
 // through StartDeferredTurn only after the provider turn id is durable.
 func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {

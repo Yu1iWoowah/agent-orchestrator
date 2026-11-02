@@ -89,7 +89,13 @@ func TestUnknownCompactionReconnectRetainsFenceWithoutCallerHint(t *testing.T) {
 	if err := c.ActivateLiveReconnect(t.Context(), "command"); err != nil {
 		t.Fatal(err)
 	}
+	if id := c.PendingCompactionID(); id != "command" {
+		t.Fatalf("reconnect did not expose original compaction ownership: %q", id)
+	}
 	c.finishPrompt("command", acpsdk.PromptResponse{}, &acpsdk.RequestError{Code: -32603, Message: "outcome unknown", Data: map[string]any{persistenthost.ACPEventIDMetaKey: "host-result"}})
+	if id := c.PendingCompactionID(); id != "command" {
+		t.Fatalf("unknown reply erased original compaction ownership: %q", id)
+	}
 	if _, err := c.SendTurn(t.Context(), ports.ChatUserMessage{Text: "keep queued"}); !errors.Is(err, ports.ErrChatTurnNotSentBusy) {
 		t.Fatalf("reconnect lost unknown compaction admission fence: %v", err)
 	}

@@ -1120,6 +1120,13 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 				return nil, err
 			}
 		}
+		// An archived unknown reply is deduplicated on replay. Restore this
+		// admission gate before publishing, rather than waiting for projection.
+		if tracker, ok := conv.(ports.ChatCompactionTracker); ok && providerTurnID != "" && tracker.PendingCompactionID() == providerTurnID {
+			controller.mu.Lock()
+			controller.compactionPending = true
+			controller.mu.Unlock()
+		}
 	}
 	if cfg.ProviderConversationID != "" && cfg.HistoryMode != ports.ChatHistoryDeferred && (!liveReconnect || replacementLookup) {
 		// The provider's native thread is the continuity authority across TUI and

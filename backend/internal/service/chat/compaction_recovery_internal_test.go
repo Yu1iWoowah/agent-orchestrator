@@ -304,6 +304,34 @@ func TestSuccessfulCustodySurvivesAttentionCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestEmptyCustodyFlushKeepsUntrackedNativeAttention(t *testing.T) {
+	questions := &compactionQuestionStore{}
+	conv := &backgroundCompactionCheck{settled: true}
+	c := &Controller{conv: conv, store: questions, sessionID: "session", pendingTurnID: "unknown-compact", state: ports.ChatControllerBusy, now: time.Now, log: slog.New(slog.DiscardHandler)}
+	if err := c.outboundAttention(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := questions.ListAttentionQuestions(t.Context(), c.sessionID, domain.AttentionQuestionQuery{}, time.Now())
+	// Empty custody is allowed to succeed without proving an untracked native
+	// operation ended. Reconnected controllers can still own that running turn.
+	if _, err := c.flushOutbound(t.Context(), conv, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	after, err := questions.ListAttentionQuestions(t.Context(), c.sessionID, domain.AttentionQuestionQuery{}, time.Now())
+	if err != nil || after.Open != 1 || after.Items[0].ID != before.Items[0].ID {
+		t.Fatalf("empty custody erased the blocked operation's only attention: %+v %v", after, err)
+	}
+	c.pendingTurnID = ""
+	c.state = ports.ChatControllerReady
+	if _, err := c.flushOutbound(t.Context(), conv, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	after, err = questions.ListAttentionQuestions(t.Context(), c.sessionID, domain.AttentionQuestionQuery{}, time.Now())
+	if err != nil || after.Open != 0 {
+		t.Fatalf("settled native work retained its old attention: %+v %v", after, err)
+	}
+}
+
 func TestSettledSideShutdownSurvivesAttentionCleanupFailure(t *testing.T) {
 	var logs bytes.Buffer
 	questions := &compactionQuestionStore{}

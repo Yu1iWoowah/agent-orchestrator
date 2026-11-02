@@ -157,7 +157,13 @@ func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliv
 		}
 	}
 	if err == nil && (canReconcile || len(keys) == 0) {
-		c.clearOutboundAttention(ctx)
+		c.mu.Lock()
+		untrackedNative := len(keys) == 0 && (c.pendingTurnID != "" || c.compactionPending || c.state == ports.ChatControllerBusy)
+		c.mu.Unlock()
+		// Empty custody is not terminal evidence for untracked native work.
+		if !untrackedNative {
+			c.clearOutboundAttention(ctx)
+		}
 	}
 	return receipts, err
 }

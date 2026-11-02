@@ -23,6 +23,12 @@ type ChatCompactionReceipt struct {
 	Outcome   ChatCompactionOutcome `json:"outcome"`
 }
 
+// ChatCompactionTracker exposes the original pending command after live reconnect.
+// An empty identity does not prove execution settlement.
+type ChatCompactionTracker interface {
+	PendingCompactionID() string
+}
+
 type chatCompactionKey struct{}
 
 // WithChatCompactionID correlates one command with live native completion.

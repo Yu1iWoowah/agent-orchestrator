@@ -158,8 +158,16 @@ func TestACPUnknownCompactionRequiresExplicitExitAcrossReconnect(t *testing.T) {
 	if second.State() != ports.ChatControllerBusy {
 		t.Fatal("reconnect forgot the durable unknown fence")
 	}
+	beforePreflight, err := st.ListAttentionQuestions(ctx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
+	if err != nil || beforePreflight.Open != 1 {
+		t.Fatalf("reconnect lost the unknown attention: %+v %v", beforePreflight, err)
+	}
 	if err := secondService.PreflightShutdown(ctx); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
 		t.Fatalf("unknown compaction passed normal shutdown: %v", err)
+	}
+	afterPreflight, err := st.ListAttentionQuestions(ctx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
+	if err != nil || afterPreflight.Open != 1 || afterPreflight.Items[0].ID != beforePreflight.Items[0].ID || second.State() != ports.ChatControllerBusy {
+		t.Fatalf("rejected shutdown erased the unknown attention: %+v %v state=%s", afterPreflight, err, second.State())
 	}
 	if err := secondService.Stop(ctx, testSession); err != nil {
 		t.Fatalf("explicit user Exit was unreachable: %v", err)
