@@ -164,10 +164,18 @@ type Broker struct {
 	client            string
 	clientVersion     string
 	verifyPeer        func(net.Conn) error
+	nativeHandler     func(context.Context, net.Conn, *bufio.Scanner, []byte)
 	exclusive         bool
 	pongAt            time.Time
 
 	liveness livenessConfig
+}
+
+// SetNativeHandler routes a separate native protocol over this existing IPC
+// listener. It never inherits Browser tokens, grants, commands or peer trust.
+// Install it before Serve. The handler owns authentication and connection close.
+func (b *Broker) SetNativeHandler(handler func(context.Context, net.Conn, *bufio.Scanner, []byte)) {
+	b.nativeHandler = handler
 }
 
 // New creates an empty browser command broker.
@@ -341,6 +349,13 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 	// instead of guessing from how long the socket stays open (#6466). Older
 	// runtimes ignore both frames.
 	helloFrame := scanner.Bytes()
+	var protocol struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(helloFrame, &protocol) == nil && protocol.Type == "operator-hello" && b.nativeHandler != nil {
+		b.nativeHandler(ctx, conn, scanner, helloFrame)
+		return
+	}
 	if rejection := helloRejection(helloFrame, b.token); rejection != nil {
 		_ = writeHelloReply(conn, wireMessage{Type: "hello-rejected", Error: rejection})
 		_ = conn.Close()

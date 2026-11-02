@@ -1861,7 +1861,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read operator confirmation qualification (PR1 is unavailable) */
+        /** Read purpose-specific native operator confirmation qualification */
         get: operations["getOperatorConsentReadiness"];
         put?: never;
         post?: never;
@@ -16871,7 +16871,14 @@ export interface operations {
     };
     getOperatorConsentReadiness: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Required closed-registry purposes; repeat for multiple purposes. */
+                purpose?: string[];
+                projectRef?: string;
+                ownerRef?: string;
+                branchRef?: string;
+                nativeRef?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

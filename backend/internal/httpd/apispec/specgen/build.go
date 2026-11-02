@@ -898,7 +898,7 @@ type operation struct {
 
 func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
-	ops = append(ops, operation{method: http.MethodGet, path: "/api/v1/operator-consent/readiness", id: "getOperatorConsentReadiness", summary: "Read operator confirmation qualification (PR1 is unavailable)", tag: "system", resps: []respUnit{{http.StatusOK, controllers.OperatorConsentReadinessResponse{}}}})
+	ops = append(ops, operation{method: http.MethodGet, path: "/api/v1/operator-consent/readiness", id: "getOperatorConsentReadiness", summary: "Read purpose-specific native operator confirmation qualification", tag: "system", pathParams: []any{controllers.OperatorConsentReadinessQuery{}}, resps: []respUnit{{http.StatusOK, controllers.OperatorConsentReadinessResponse{}}}})
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, projectDocumentOperations()...)
