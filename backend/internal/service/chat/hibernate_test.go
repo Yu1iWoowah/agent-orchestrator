@@ -28,6 +28,7 @@ type hibernationConversation struct {
 	markerErr               error
 	rejectMarker            bool
 	shutdownErr             error
+	flushErr                error
 	hostShutdownErr         error
 	backgroundRunning       bool
 	backgroundErr           error
@@ -97,6 +98,35 @@ func (c *hibernationConversation) SetTitle(context.Context, string) error { retu
 
 func (c *hibernationConversation) Compact(context.Context) (ports.ChatCompactionResult, error) {
 	return ports.ChatCompactionResult{}, nil
+}
+
+func (c *hibernationConversation) FenceAndFlushOutbound(ctx context.Context, keys []ports.ChatDeliveryLookup) ([]domain.ChatDeliveryReceipt, error) {
+	if c.flushErr != nil {
+		return nil, c.flushErr
+	}
+	return c.fakeConversation.FenceAndFlushOutbound(ctx, keys)
+}
+
+func TestHibernateSucceedsAfterCustodyDespiteAttentionCleanupFailure(t *testing.T) {
+	var failed *failingAttentionCancelStore
+	h, conv := hibernationHarnessWith(t, domain.TurnStateCompleted, func(opts *chatsvc.Options) {
+		opts.HibernationEnabled = func() bool { return true }
+		failed = &failingAttentionCancelStore{Store: opts.Store.(*store.Store)}
+		opts.Store = failed
+	})
+	conv.flushErr = ports.ErrChatDeliveryUnverified
+	if err := h.svc.PreflightShutdown(t.Context()); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+		t.Fatal(err)
+	}
+	page, err := h.st.ListAttentionQuestions(t.Context(), testSession, domain.AttentionQuestionQuery{}, h.now())
+	if err != nil || page.Open != 1 {
+		t.Fatalf("missing outbound diagnosis: %+v %v", page, err)
+	}
+	conv.flushErr = nil
+	hibernated, err := h.svc.HibernateChat(t.Context(), testSession)
+	if err != nil || !hibernated || conv.calls.Load() != 1 || failed.cancellations.Load() == 0 {
+		t.Fatalf("diagnostic failure prevented hibernation: slept=%v error=%v stops=%d cleanup=%d", hibernated, err, conv.calls.Load(), failed.cancellations.Load())
+	}
 }
 
 func settledHibernationHarness(t *testing.T, state domain.TurnState, gate ...func() bool) (*harness, *hibernationConversation) {

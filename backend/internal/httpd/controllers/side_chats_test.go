@@ -22,9 +22,15 @@ import (
 
 type sideHTTPService struct {
 	*chatsvc.Service
-	calls   int
-	created chatsvc.SideCreateRequest
-	sent    ports.ChatUserMessage
+	calls      int
+	created    chatsvc.SideCreateRequest
+	sent       ports.ChatUserMessage
+	compactErr error
+}
+
+func (s *sideHTTPService) CompactSideChat(context.Context, domain.SessionID, string) (ports.ChatCompactionResult, error) {
+	s.calls++
+	return ports.ChatCompactionResult{}, s.compactErr
 }
 
 func (s *sideHTTPService) ListIndependentSideChats(context.Context, domain.SessionID) ([]domain.SideConversation, error) {
@@ -100,5 +106,26 @@ func TestSideChatHTTPMapsUnavailableOwnershipToConflict(t *testing.T) {
 	sideHTTPRouter(svc).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/session/conversation/side-chats/wrong", nil))
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CHAT_SIDE_UNAVAILABLE") {
 		t.Fatal(response.Code, response.Body.String())
+	}
+}
+
+func TestSideCompactionHTTPDistinguishesReconciliationFromAdmission(t *testing.T) {
+	for _, reconciled := range []bool{true, false} {
+		svc := &sideHTTPService{Service: chatsvc.New(chatsvc.Options{})}
+		if reconciled {
+			svc.compactErr = chatsvc.ErrSideCompactionReconciled
+		}
+		response := httptest.NewRecorder()
+		sideHTTPRouter(svc).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/session/conversation/side-chats/side/compact", nil))
+		if reconciled {
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CHAT_SIDE_COMPACTION_RECONCILED") || !strings.Contains(response.Body.String(), "no new compaction was started") || !strings.Contains(response.Body.String(), "submit /compact again") {
+				t.Fatalf("reconciliation looked accepted: %d %s", response.Code, response.Body.String())
+			}
+		} else if response.Code != http.StatusAccepted {
+			t.Fatalf("new compact was not accepted: %d %s", response.Code, response.Body.String())
+		}
+		if svc.calls != 1 {
+			t.Fatalf("unexpected compact calls: %d", svc.calls)
+		}
 	}
 }

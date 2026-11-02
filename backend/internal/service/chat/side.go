@@ -34,6 +34,8 @@ var (
 	ErrSideNotReady = errors.New("side provider is not ready; retry the connection")
 	// ErrSidePolicyRecreate prevents resuming an unverified or uncertain boundary.
 	ErrSidePolicyRecreate = errors.New("side-chat safety boundary cannot be verified; close this side and create a new one")
+	// ErrSideCompactionReconciled requires a new request after settling an earlier compaction.
+	ErrSideCompactionReconciled = errors.New("previous side compaction is settled; no new compaction was started; submit /compact again to start one")
 )
 
 // SideStore is the launch-scoped in-memory storage boundary. Side rows never become
@@ -1888,7 +1890,7 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 	runtime.mu.Unlock()
 	if pending {
 		if s.sides.reconcileCompaction(ctx, runtime, true) {
-			return ports.ChatCompactionResult{}, nil
+			return ports.ChatCompactionResult{}, ErrSideCompactionReconciled
 		}
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}

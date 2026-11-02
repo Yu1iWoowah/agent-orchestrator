@@ -68,3 +68,9 @@ func (c *Controller) outboundAttention(ctx context.Context, settled bool) error 
 	}
 	return outboundAttention(ctx, c.store, c.sessionID, "conversation:"+c.ConversationID(), settled, c.now())
 }
+
+func (c *Controller) clearOutboundAttention(ctx context.Context) {
+	if err := c.outboundAttention(ctx, true); err != nil {
+		c.log.Warn("outbound attention cleanup failed", "session", c.sessionID, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+	}
+}

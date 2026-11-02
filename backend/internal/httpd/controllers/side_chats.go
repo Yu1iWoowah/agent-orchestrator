@@ -37,6 +37,8 @@ func sideID(r *http.Request) string { return chi.URLParam(r, "sideId") }
 
 func writeSideChatError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, chatsvc.ErrSideCompactionReconciled):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_SIDE_COMPACTION_RECONCILED", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrSideNameLimit):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_SIDE_NAME_LIMIT", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrSidePolicyRecreate):

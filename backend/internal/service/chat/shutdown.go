@@ -80,12 +80,10 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 			return ports.ErrChatShutdownNotSettled
 		}
 		err := reconciler.ReconcileOutbound(ctx)
-		if attentionErr := c.outboundAttention(ctx, err == nil); attentionErr != nil {
-			return errors.Join(ports.ErrChatShutdownNotSettled, attentionErr)
-		}
 		if err != nil {
 			return errors.Join(ports.ErrChatShutdownNotSettled, err)
 		}
+		c.clearOutboundAttention(ctx)
 		c.mu.Lock()
 		c.compactionPending = false
 		c.mu.Unlock()
@@ -159,9 +157,7 @@ func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliv
 		}
 	}
 	if err == nil && (canReconcile || len(keys) == 0) {
-		if attentionErr := c.outboundAttention(ctx, true); attentionErr != nil {
-			return nil, attentionErr
-		}
+		c.clearOutboundAttention(ctx)
 	}
 	return receipts, err
 }

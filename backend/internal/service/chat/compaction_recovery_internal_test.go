@@ -1,9 +1,12 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -177,7 +180,8 @@ func TestUnknownSideCompactionVisibleAndRetryReconcilesAfterAttach(t *testing.T)
 	if err != nil || len(recovered) != 1 {
 		t.Fatalf("recover: %+v %v", recovered, err)
 	}
-	live := &recoveringCompactionConversation{compactErr: errors.New("must not launch another compact"), recoveredSideCloseConversation: recoveredSideCloseConversation{events: make(chan ports.ChatEvent)}}
+	var launches atomic.Int64
+	live := &recoveringCompactionConversation{onCompact: func() { launches.Add(1) }, recoveredSideCloseConversation: recoveredSideCloseConversation{events: make(chan ports.ChatEvent)}}
 	if !after.sides.attach(recovered[0], live) {
 		t.Fatal("attach failed")
 	}
@@ -196,8 +200,11 @@ func TestUnknownSideCompactionVisibleAndRetryReconcilesAfterAttach(t *testing.T)
 		t.Fatal("retry replaced original ID")
 	}
 	live.idle.Store(true)
-	if _, err := after.CompactSideChat(t.Context(), side.SessionID, side.ID); err != nil {
-		t.Fatalf("native reconciliation unavailable during normal use: %v", err)
+	if _, err := after.CompactSideChat(t.Context(), side.SessionID, side.ID); !errors.Is(err, ErrSideCompactionReconciled) {
+		t.Fatalf("reconciliation must require a new request: %v", err)
+	}
+	if launches.Load() != 0 {
+		t.Fatal("reconciliation started another compact")
 	}
 	page, _ = questions.ListAttentionQuestions(t.Context(), side.SessionID, domain.AttentionQuestionQuery{}, time.Now())
 	if page.Open != 0 {
@@ -206,6 +213,12 @@ func TestUnknownSideCompactionVisibleAndRetryReconcilesAfterAttach(t *testing.T)
 	current, _ = after.ExportSideChatLaunch(t.Context(), "d9")
 	if current[0].CompactionID != "" || *current[0].OutboundUnverified {
 		t.Fatal("settled original stayed reserved")
+	}
+	if _, err := after.CompactSideChat(t.Context(), side.SessionID, side.ID); err != nil {
+		t.Fatal(err)
+	}
+	if launches.Load() != 1 {
+		t.Fatal("explicit new request did not start exactly one compact")
 	}
 }
 func TestCompactionQuiescingRaceDoesNotLeavePending(t *testing.T) {
@@ -248,7 +261,47 @@ func (c *backgroundCompactionCheck) FenceAndFlushOutbound(context.Context, []por
 }
 func (c *backgroundCompactionCheck) ReconcileOutbound(context.Context) error {
 	c.queries++
+	if c.settled {
+		return nil
+	}
 	return ports.ErrChatDeliveryUnverified
+}
+
+func TestSuccessfulCustodySurvivesAttentionCleanupFailure(t *testing.T) {
+	for _, mode := range []string{"background", "shutdown", "compact-preflight"} {
+		t.Run(mode, func(t *testing.T) {
+			var logs bytes.Buffer
+			questions := &compactionQuestionStore{cancelErr: errors.New("private storage sentinel")}
+			conv := &backgroundCompactionCheck{settled: true}
+			c := &Controller{conv: conv, store: questions, now: time.Now, after: time.After, log: slog.New(slog.NewTextHandler(&logs, nil))}
+			if err := c.outboundAttention(t.Context(), false); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if mode == "compact-preflight" {
+				c.compactionPending = true
+				err = c.PreflightShutdown(t.Context())
+			} else {
+				_, err = c.flushOutbound(t.Context(), conv, nil, mode == "shutdown")
+			}
+			if err != nil || c.compactionPending {
+				t.Fatalf("diagnostic cleanup invalidated custody: %v", err)
+			}
+			if !strings.Contains(logs.String(), "CHAT_ATTENTION_CLEANUP_FAILED") || strings.Contains(logs.String(), "private storage sentinel") {
+				t.Fatalf("cleanup diagnosis is missing or unsafe: %s", logs.String())
+			}
+			questions.mu.Lock()
+			questions.cancelErr = nil
+			questions.mu.Unlock()
+			if _, err := c.flushOutbound(t.Context(), conv, nil, false); err != nil {
+				t.Fatal(err)
+			}
+			page, err := questions.ListAttentionQuestions(t.Context(), "", domain.AttentionQuestionQuery{}, time.Now())
+			if err != nil || page.Open != 0 {
+				t.Fatalf("cleanup did not converge after recovery: %+v %v", page, err)
+			}
+		})
+	}
 }
 func TestBackgroundHibernateDoesNotPromptOrReadNativeHistory(t *testing.T) {
 	conv := &backgroundCompactionCheck{}
