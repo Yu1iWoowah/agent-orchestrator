@@ -34,7 +34,7 @@ INSERT／UPDATE 的 replacement guards 逐一檢查 PK、conversation/sequence�
 | 2 views | `orchestrator_replacement_released_sessions` 保留 activated-native-writer 最後定義；`orchestrator_replacement_held_turns` 保留 v1 分支並加入 shared hold。 |
 | 其他 turn triggers | `attention_turn_changed`, `conversation_turn_settings_snapshot_cdc`, `conversation_turns_auto_resume_cdc_update`, `conversation_turns_branch_insert`, `conversation_turns_cdc_update`。另兩個 turn triggers 已計入上述 18 個。 |
 | 5 turn indexes | `conversation_turns_auto_resume`, `idx_conversation_turns_branch`, `idx_conversation_turns_conversation`, `idx_conversation_turns_provider`, `idx_conversation_turns_retry_source`。 |
-| 新增 guards | `conversation_input_*`：immutable action、custody/hold CAS、held turn state/identity/promotion/delete、message/activity 變更與 replacement INSERT 防繞過。 |
+| 新增 guards | 共 21 個 `conversation_input_*` triggers；immutable action、custody/hold CAS、held turn state/identity/promotion/delete、message/activity 變更與 replacement INSERT 防繞過。 |
 | payload 索引 | `conversation_input_messages_turn`、`conversation_input_activities_turn`；與 action／active-hold 索引合計四個 shared 索引，Down 全部移除。 |
 | 新增 CDC | `conversation_input_action_apply` 在變更／刪除 turn 之前寫入 `change_log`，與 mutation 同筆 transaction，失敗全回滾；不依賴多個 AFTER triggers 的執行順序。 |
 | sqlc | `queries/input_custody.sql` 與產生的 `gen/input_custody.sql.go`／`gen/models.go`；SQLite catalog／PRAGMA gate 留在 storage 邊界。 |
@@ -62,3 +62,5 @@ python3 test/shared-input-custody-compat.py \
 腳本只建立全新 HOME、DB、linked worktree 與 loopback daemon，使用 `test/fixtures/input-custody-codex.py`，不讀既有 AO／provider 資料。預期 read=200、兩筆 held Retry=409、普通送訊=202、exit-agent=200；`thread/resume` 保持原 thread，既有 queued 與新普通 input 都進 provider，held I/O=0，停止後原 input／hold／action facts 不變。每個結果列 binary SHA-256，最後停止自己的 daemon 並清除 fixture；`--keep` 僅供診斷。
 
 探針執行待測 binary 的真實 daemon／chat-host，外部 Codex provider 使用離線替身。這是 shared-schema 相容驗證，不替代正式 provider 的 freshness、權限、handoff lifecycle 或真內容演練，也不授權啟用新路徑。
+
+一般 payload 更新仍由 `conversation_input_message_update`／`conversation_input_activity_update` 檢查 held 內容保全；較重的唯一鍵受害列檢查分到 `conversation_input_message_replacement_update`／`conversation_input_activity_replacement_update`，只在 `UPDATE OF id,conversation_id,sequence,client_message_id/request_id,provider_item_id` 時編譯。未修改唯一鍵的更新不可能替換另一列；INSERT replacement 保護與全部 held 欄位保護不變。writer compatibility gate 要求兩組 guard 同時存在，Down 一併移除。

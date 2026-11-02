@@ -238,7 +238,10 @@ CREATE TRIGGER conversation_input_message_update BEFORE UPDATE ON conversation_m
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
  JOIN conversation_input_actions a ON a.action_key=c.last_action_key
  WHERE h.turn_id IN (OLD.turn_id,NEW.turn_id) AND h.active=1 AND a.kind<>'delete')
- OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
+-- Only key updates can replace a distinct protected payload.
+CREATE TRIGGER conversation_input_message_replacement_update BEFORE UPDATE OF id,conversation_id,sequence,client_message_id,provider_item_id ON conversation_messages
+WHEN EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
   WHERE p.id=NEW.id AND p.id<>OLD.id)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
   WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.id<>OLD.id)
@@ -257,7 +260,10 @@ CREATE TRIGGER conversation_input_activity_update BEFORE UPDATE ON conversation_
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
  JOIN conversation_input_actions a ON a.action_key=c.last_action_key
  WHERE h.turn_id IN (OLD.turn_id,NEW.turn_id) AND h.active=1 AND a.kind<>'delete')
- OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
+BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
+-- Only key updates can replace a distinct protected payload.
+CREATE TRIGGER conversation_input_activity_replacement_update BEFORE UPDATE OF id,conversation_id,sequence,request_id,provider_item_id ON conversation_activities
+WHEN EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
   WHERE p.id=NEW.id AND p.id<>OLD.id)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
   WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.id<>OLD.id)
@@ -734,8 +740,10 @@ DROP TRIGGER conversation_input_turn_update;
 DROP TRIGGER conversation_input_turn_delete;
 DROP TRIGGER conversation_input_message_insert;
 DROP TRIGGER conversation_input_message_update;
+DROP TRIGGER conversation_input_message_replacement_update;
 DROP TRIGGER conversation_input_message_delete;
 DROP TRIGGER conversation_input_activity_update;
+DROP TRIGGER conversation_input_activity_replacement_update;
 DROP TRIGGER conversation_input_activity_delete;
 DROP TRIGGER conversation_input_activity_insert;
 DROP TRIGGER conversation_input_action_apply;

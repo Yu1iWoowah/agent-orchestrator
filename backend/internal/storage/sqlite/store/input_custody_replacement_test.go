@@ -160,6 +160,47 @@ func TestInputCustodyReplacementUniqueKeys(t *testing.T) {
 	}
 }
 
+func TestInputCustodyReplacementUpdatesProtectIDAndConversationKeys(t *testing.T) {
+	for _, mode := range []string{"held", "registered"} {
+		for _, payload := range []struct{ table, original, ordinary, key, value string }{
+			{"conversation_messages", "message-protected", "message-ordinary", "client_message_id", "stable-key"},
+			{"conversation_activities", "activity-protected", "activity-ordinary", "request_id", "request-key"},
+		} {
+			for _, column := range []string{"id", "conversation_id"} {
+				t.Run(mode+"/"+payload.table+"/"+column, func(t *testing.T) {
+					s, db := inputReplacementFixture(t, mode, false)
+					before := inputPayloadRow(t, db, payload.table, payload.original)
+					value := payload.original
+					if column == "conversation_id" {
+						if _, err := db.Exec(`INSERT INTO projects(id,path,registered_at) VALUES('other-project','other-project',CURRENT_TIMESTAMP);
+INSERT INTO conversations(id,scope,project_id,created_at,updated_at) VALUES('other-context','project','other-project',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := db.Exec("UPDATE "+payload.table+" SET conversation_id='other-context',"+payload.key+"=? WHERE id=?", payload.value, payload.ordinary); err != nil {
+							t.Fatal(err)
+						}
+						value = "start-context"
+					}
+					_, err := db.Exec("UPDATE OR REPLACE "+payload.table+" SET "+column+"=? WHERE id=?", value, payload.ordinary)
+					if err == nil || !strings.Contains(err.Error(), "INPUT_HELD") {
+						t.Fatalf("protected %s replacement through %s: %v", mode, column, err)
+					}
+					if after := inputPayloadRow(t, db, payload.table, payload.original); after != before {
+						t.Fatal("replacement changed protected payload")
+					}
+					var count int
+					if err := db.QueryRow("SELECT COUNT(*) FROM "+payload.table+" WHERE id=?", payload.ordinary).Scan(&count); err != nil || count != 1 {
+						t.Fatalf("aborted replacement changed ordinary payload: count=%d err=%v", count, err)
+					}
+					if err := s.InputCustodyStorageCompatibility(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestInputCustodyGateRejectsLostPayloadAfterReplacement(t *testing.T) {
 	for _, verb := range []string{"INSERT", "UPDATE"} {
 		for _, c := range inputReplacementCases {
@@ -170,6 +211,9 @@ func TestInputCustodyGateRejectsLostPayloadAfterReplacement(t *testing.T) {
 					kind = "activity"
 				}
 				name := "conversation_input_" + kind + "_" + strings.ToLower(verb)
+				if verb == "UPDATE" {
+					name = "conversation_input_" + kind + "_replacement_update"
+				}
 				var guard string
 				if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name=?`, name).Scan(&guard); err != nil {
 					t.Fatal(err)

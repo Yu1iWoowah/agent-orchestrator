@@ -153,12 +153,14 @@ const inputCustodySchemaReadySQL = `SELECT CAST(
   'conversation_input_turn_delete',
   'conversation_input_message_insert',
   'conversation_input_message_update',
+  'conversation_input_message_replacement_update',
   'conversation_input_message_delete',
   'conversation_input_activity_update',
+  'conversation_input_activity_replacement_update',
   'conversation_input_activity_delete',
   'conversation_input_activity_insert',
   'conversation_input_action_apply'
- )) = 19
+ )) = 21
  AND (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('conversation_input_messages_turn','conversation_input_activities_turn'))=2
  AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='view' AND name='orchestrator_replacement_held_turns' AND instr(sql,'conversation_input_holds') > 0)
  AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='replacement_turn_dispatch_fence') AS INTEGER)`

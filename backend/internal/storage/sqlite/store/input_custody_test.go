@@ -163,9 +163,14 @@ func TestInputCustodyLegacySQLCannotMutateHeldButOrdinaryQueueWorks(t *testing.T
 		`UPDATE conversation_turns SET controller_generation='bypass' WHERE id='held'`,
 		`UPDATE conversation_turns SET branch_id='bypass' WHERE id='held'`,
 		`UPDATE conversation_messages SET text='lost' WHERE turn_id='held'`,
+		`UPDATE conversation_messages SET revision=revision+1 WHERE turn_id='held'`,
+		`UPDATE conversation_messages SET branch_id='bypass' WHERE turn_id='held'`,
 		`UPDATE conversation_messages SET turn_id=NULL WHERE turn_id='held'`,
 		`DELETE FROM conversation_messages WHERE turn_id='held'`,
 		`UPDATE conversation_activities SET turn_id='ordinary' WHERE id='held-activity'`,
+		`UPDATE conversation_activities SET summary='lost' WHERE id='held-activity'`,
+		`UPDATE conversation_activities SET status='failed',revision=revision+1 WHERE id='held-activity'`,
+		`UPDATE conversation_activities SET branch_id='bypass' WHERE id='held-activity'`,
 		`DELETE FROM conversation_activities WHERE id='held-activity'`,
 		`INSERT OR REPLACE INTO conversation_activities(id,conversation_id,turn_id,sequence,kind,status,summary,created_at,updated_at) VALUES('held-activity','start-context','ordinary',3,'command','completed','replaced',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
 		`DELETE FROM conversation_turns WHERE id='held'`,
@@ -346,23 +351,27 @@ func TestInputCustodyActionsEmitCDCRegardlessOfTriggerCreationOrder(t *testing.T
 }
 
 func TestInputCustodyMissingGuardFailsBeforeWriting(t *testing.T) {
-	ctx := t.Context()
-	s, db, rec := settingsStartFixture(t, "")
-	if _, err := s.AppendUserMessage(ctx, "start-context", rec.ID, "generation-1", domain.ConversationMessage{ID: "message", Text: "original", Origin: domain.MessageOriginHuman}, "turn", testNow); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP TRIGGER conversation_input_turn_delete`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.InputCustodyStorageCompatibility(ctx); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
-		t.Fatalf("missing guard must differ from CAS conflict: %v", err)
-	}
-	if _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
-		t.Fatalf("write was not fenced: %v", err)
-	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM conversation_input_actions`).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("failed gate wrote a receipt: %d %v", count, err)
+	for _, guard := range []string{"conversation_input_turn_delete", "conversation_input_message_update", "conversation_input_message_replacement_update", "conversation_input_activity_update", "conversation_input_activity_replacement_update"} {
+		t.Run(guard, func(t *testing.T) {
+			ctx := t.Context()
+			s, db, rec := settingsStartFixture(t, "")
+			if _, err := s.AppendUserMessage(ctx, "start-context", rec.ID, "generation-1", domain.ConversationMessage{ID: "message", Text: "original", Origin: domain.MessageOriginHuman}, "turn", testNow); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec("DROP TRIGGER " + guard); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.InputCustodyStorageCompatibility(ctx); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
+				t.Fatalf("missing guard must differ from CAS conflict: %v", err)
+			}
+			if _, err := s.RegisterInputCustody(ctx, "turn", "owner", "register", testNow); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) || errors.Is(err, domain.ErrInputCustodyConflict) {
+				t.Fatalf("write was not fenced: %v", err)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM conversation_input_actions`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("failed gate wrote a receipt: %d %v", count, err)
+			}
+		})
 	}
 }
 
