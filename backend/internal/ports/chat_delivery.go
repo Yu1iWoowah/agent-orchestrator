@@ -34,3 +34,11 @@ type ChatDeliveryObserver interface {
 type ChatDeliveryAcknowledger interface {
 	AcknowledgeDeliveryAttempt(context.Context, ChatDeliveryLookup) error
 }
+
+// ChatOutboundReconciler obtains fresh native state for an uncovered operation
+// from its original host. Nil requires positive idle/terminal evidence and a
+// successful host flush, never an empty local in-flight flag or an RPC ACK.
+// This does not change canonical delivery dispositions.
+type ChatOutboundReconciler interface {
+	ReconcileOutbound(context.Context) error
+}

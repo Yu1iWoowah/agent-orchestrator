@@ -1904,7 +1904,11 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		s.mu.Unlock()
 	default:
 	}
-	return errors.Join(err, s.clearHibernation(ctx, id))
+	err = errors.Join(err, s.clearHibernation(ctx, id))
+	if err == nil {
+		err = controller.outboundAttention(ctx, true)
+	}
+	return err
 }
 
 // StopForOwner closes a typed-owner controller without touching its parent
@@ -1944,6 +1948,9 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 		}
 		s.mu.Unlock()
 	default:
+	}
+	if err == nil {
+		err = controller.outboundAttention(ctx, true)
 	}
 	return err
 }

@@ -1305,7 +1305,7 @@ func (m *sideManager) schedule() {
 					continue
 				}
 				runtime.mu.Lock()
-				excluded[side.ID] = runtime.dispatchBlocked || runtime.compacting || runtime.activeTurnID != ""
+				excluded[side.ID] = runtime.dispatchBlocked || runtime.compacting || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != ""
 				runtime.mu.Unlock()
 			}
 			turn, side, found, err := m.store.ClaimNextSideTurn(m.ctx, m.runID, excluded, m.service.now())
@@ -1315,7 +1315,7 @@ func (m *sideManager) schedule() {
 			}
 			runtime := m.runtimes[side.ID]
 			runtime.mu.Lock()
-			if runtime.compacting || runtime.activeTurnID != "" {
+			if runtime.compacting || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != "" {
 				runtime.mu.Unlock()
 				_ = m.store.RequeueSideTurn(m.ctx, side.ID, turn.ID)
 				m.mu.Unlock()
@@ -1873,7 +1873,7 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 		return ports.ChatCompactionResult{}, ports.ErrChatShutdownNotSettled
 	}
 	runtime.mu.Lock()
-	if runtime.activeTurnID != "" || runtime.compacting {
+	if runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified {
 		runtime.mu.Unlock()
 		s.sides.mu.Unlock()
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
@@ -1965,6 +1965,11 @@ func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) 
 		}
 	}
 	s.sides.store.CompleteSideHostCleanup(ctx, sideID)
+	if s.stopProviderHost != nil {
+		if err := outboundAttention(ctx, s.store, owned.SessionID, "side:"+sideID, true, s.now()); err != nil {
+			return err
+		}
+	}
 	s.sides.announce(sideID)
 	s.sides.deleteRegisteredFork(ctx, side, side.ProviderForkID)
 	s.sides.signal()

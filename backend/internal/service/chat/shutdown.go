@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -60,11 +61,31 @@ func (c *Controller) PreflightShutdown(ctx context.Context) error {
 // detach and managed update/hibernate; neither may manufacture a missing receipt.
 func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 	c.mu.Lock()
-	uncovered := c.settingsAttempt != nil && c.settingsAttempt.EffectPending || c.compactionPending || c.work[controllerProviderWork] > 0 || c.settingsAttemptRunning || c.dispatchingTurnID != ""
+	compacting := c.compactionPending
+	uncovered := c.settingsAttempt != nil && c.settingsAttempt.EffectPending || c.work[controllerProviderWork] > 0 || c.settingsAttemptRunning || c.dispatchingTurnID != ""
 	nativeInFlight := c.pendingTurnID != "" || c.state == ports.ChatControllerBusy
 	c.mu.Unlock()
 	if uncovered {
 		return ports.ErrChatShutdownNotSettled
+	}
+	if compacting {
+		if err := c.outboundAttention(ctx, false); err != nil {
+			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+		}
+		reconciler, ok := c.conv.(ports.ChatOutboundReconciler)
+		if !ok {
+			return ports.ErrChatShutdownNotSettled
+		}
+		err := reconciler.ReconcileOutbound(ctx)
+		if attentionErr := c.outboundAttention(ctx, err == nil); attentionErr != nil {
+			return errors.Join(ports.ErrChatShutdownNotSettled, attentionErr)
+		}
+		if err != nil {
+			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+		}
+		c.mu.Lock()
+		c.compactionPending = false
+		c.mu.Unlock()
 	}
 	observer, supported := c.conv.(ports.ChatDeliveryObserver)
 	journal, managed := c.store.(chatDeliveryJournal)
@@ -78,7 +99,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 		if nativeInFlight {
 			return ports.ErrChatShutdownNotSettled
 		}
-		_, err := observer.FenceAndFlushOutbound(ctx, nil)
+		_, err := c.flushOutbound(ctx, observer, nil)
 		if err != nil {
 			return errors.Join(ports.ErrChatShutdownNotSettled, err)
 		}
@@ -92,9 +113,9 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 	for _, a := range attempts {
 		keys = append(keys, deliveryLookup(a))
 	}
-	receipts, err := observer.FenceAndFlushOutbound(ctx, keys)
+	receipts, err := c.flushOutbound(ctx, observer, keys)
 	if err != nil || len(receipts) != len(keys) {
-		return ports.ErrChatShutdownNotSettled
+		return errors.Join(ports.ErrChatShutdownNotSettled, err)
 	}
 	preserver, preserves := c.conv.(ports.ChatProviderPreserver)
 	preserves = preserves && preserver.PreservesProviderOnClose()
@@ -115,6 +136,31 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 		return ports.ErrChatShutdownNotSettled
 	}
 	return nil
+}
+
+// Record an already-observed custody failure before a native read can consume
+// the remaining shutdown budget. A successful read still requires another flush.
+func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliveryObserver, keys []ports.ChatDeliveryLookup) ([]domain.ChatDeliveryReceipt, error) {
+	receipts, err := observer.FenceAndFlushOutbound(ctx, keys)
+	reconciler, canReconcile := c.conv.(ports.ChatOutboundReconciler)
+	diagnose := canReconcile || len(keys) == 0
+	if err != nil && diagnose {
+		if attentionErr := c.outboundAttention(ctx, false); attentionErr != nil {
+			return nil, errors.Join(err, attentionErr)
+		}
+		if canReconcile {
+			if queryErr := reconciler.ReconcileOutbound(ctx); queryErr != nil {
+				return nil, errors.Join(err, queryErr)
+			}
+			receipts, err = observer.FenceAndFlushOutbound(ctx, keys)
+		}
+	}
+	if err == nil && diagnose {
+		if attentionErr := c.outboundAttention(ctx, true); attentionErr != nil {
+			return nil, attentionErr
+		}
+	}
+	return receipts, err
 }
 
 // PreflightShutdown fences every controller before checking any participant.
@@ -158,10 +204,9 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 		s.sides.mu.Lock()
 		s.sides.quiescing = true
 		uncovered := len(s.sides.restoring) > 0 || s.sides.opening > 0
+		runtimes := make([]*sideRuntime, 0, len(s.sides.runtimes))
 		for _, runtime := range s.sides.runtimes {
-			runtime.mu.Lock()
-			uncovered = uncovered || runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified
-			runtime.mu.Unlock()
+			runtimes = append(runtimes, runtime)
 		}
 		if store, ok := s.sides.store.(*memorySideStore); ok {
 			for _, id := range store.unverifiedSides() {
@@ -171,6 +216,42 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			}
 		}
 		s.sides.mu.Unlock()
+		checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		for _, runtime := range runtimes {
+			runtime.mu.Lock()
+			id := runtime.compactionID
+			canCheck := id != "" && runtime.outboundUnverified && runtime.activeTurnID == "" && !runtime.dispatchBlocked
+			runtime.mu.Unlock()
+			if canCheck {
+				if _, ok := s.store.(outboundAttentionStore); ok {
+					if err := outboundAttention(checkCtx, s.store, runtime.side.SessionID, "side:"+runtime.side.ID, false, s.now()); err != nil {
+						return errors.Join(ports.ErrChatShutdownNotSettled, err)
+					}
+				}
+				if reconciler, ok := runtime.conv.(ports.ChatOutboundReconciler); ok {
+					err := reconciler.ReconcileOutbound(checkCtx)
+					if err == nil {
+						runtime.mu.Lock()
+						if runtime.compactionID == id && runtime.activeTurnID == "" && !runtime.dispatchBlocked {
+							runtime.compacting = false
+							runtime.compactionID = ""
+							s.sides.setOutboundUnverifiedLocked(runtime, false)
+						}
+						runtime.mu.Unlock()
+					}
+				}
+			}
+			runtime.mu.Lock()
+			pending := runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified
+			uncovered = uncovered || pending
+			runtime.mu.Unlock()
+			if _, ok := s.store.(outboundAttentionStore); ok {
+				if err := outboundAttention(checkCtx, s.store, runtime.side.SessionID, "side:"+runtime.side.ID, !pending, s.now()); err != nil {
+					return errors.Join(ports.ErrChatShutdownNotSettled, err)
+				}
+			}
+		}
 		if uncovered {
 			return ports.ErrChatShutdownNotSettled
 		}

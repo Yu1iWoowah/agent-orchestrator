@@ -42,7 +42,7 @@ type deliveryJournal struct {
 	// Native in-flight sets drain on response/terminal; never discard a live
 	// correlation merely to cap a cache and permanently lose proof of quiescence.
 	waiting    map[string]deliveryWait // native pending approvals/tools
-	executions map[string]bool         // native turns without a matched reservation
+	executions map[string]string       // native turns without a matched reservation
 
 	checkpointDirty bool // disk checkpoint can be repaired from authoritative memory
 	mu              sync.Mutex
@@ -52,6 +52,7 @@ type deliveryJournal struct {
 	records         map[string]deliveryRecord
 	requests        map[string]string
 	unsettled       map[string]nativeDeliveryGap
+	readChecks      map[string]nativeDeliveryRead
 	uncovered       map[string]string
 }
 
@@ -60,7 +61,7 @@ func newDeliveryJournal(path, epoch string) (*deliveryJournal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &deliveryJournal{waiting: map[string]deliveryWait{}, executions: map[string]bool{}, epoch: epoch, file: f, records: map[string]deliveryRecord{}, requests: map[string]string{}, uncovered: map[string]string{}, unsettled: map[string]nativeDeliveryGap{}}, nil
+	return &deliveryJournal{waiting: map[string]deliveryWait{}, executions: map[string]string{}, epoch: epoch, file: f, records: map[string]deliveryRecord{}, requests: map[string]string{}, uncovered: map[string]string{}, unsettled: map[string]nativeDeliveryGap{}}, nil
 }
 
 // compact keeps only live or unacknowledged evidence. The host never restores
@@ -140,6 +141,11 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 
 	outbound := e.Method == "session/prompt" || e.Method == "turn/start" || e.Method == "turn/steer" || e.Method == "thread/compact/start" || e.Method == "thread/rollback" || e.Method == "thread/revert" || e.Method == "thread/fork"
 	if !outbound {
+		if e.Method == "thread/read" {
+			j.mu.Lock()
+			j.prepareDeliveryRead(string(e.ID), e.Params)
+			j.mu.Unlock()
+		}
 		switch e.Method {
 		case "initialize", "authenticate", "session/new", "session/load", "session/resume", "session/list",
 			"session/set_mode", "session/set_model", "session/set_config_option",
@@ -261,6 +267,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if e.Method == "" && len(e.ID) > 0 {
+		j.observeDeliveryRead(string(e.ID), e.Result, e.Error)
 		j.observeUncoveredResponse(string(e.ID), e.Result, e.Error)
 		attempt, ok := j.requests[string(e.ID)]
 		delete(j.requests, string(e.ID))
@@ -345,7 +352,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 		}
 		j.observeUncoveredEvent(e.Method, e.Params.ThreadID, native, e.Params.Item.Type)
 		if e.Method == "turn/started" {
-			j.executions[native] = true
+			j.executions[native] = e.Params.ThreadID
 		}
 		if e.Method == "turn/completed" {
 			delete(j.executions, native)

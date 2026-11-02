@@ -58,8 +58,15 @@ func TestE2E_DaemonBindsPortWithRecoverableChatReviewer(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		if processalive.Alive(pid) {
-			t.Errorf("fixture native provider still alive after host cleanup: pid=%d", pid)
+		// The final host reply can precede OS reaping. Wait for this exact
+		// fixture PID within the original cleanup budget; a live PID still fails.
+		for processalive.Alive(pid) {
+			select {
+			case <-ctx.Done():
+				t.Errorf("fixture native provider still alive after host cleanup: pid=%d: %v", pid, ctx.Err())
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
 	})
 	st, err := sqlitetest.Open(e.dataDir)
