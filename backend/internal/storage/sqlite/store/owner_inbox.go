@@ -175,7 +175,8 @@ func (c *OwnerInboxCore) CompareAndSwapOwner(ctx context.Context, previous int64
 func (c *OwnerInboxCore) AcceptReport(ctx context.Context, intent domain.InboxReportIntent) (domain.InboxReceipt, error) {
 	r := intent.Report
 	r.Outputs = append([]domain.ReportOutput{}, r.Outputs...)
-	if intent.Key == "" {
+	r.SessionDisplayName = ""
+	if intent.Key == "" || r.DeliveryState != domain.ReportPending {
 		return domain.InboxReceipt{}, domain.ErrInvalidReport
 	}
 	if err := r.Validate(); err != nil {
@@ -188,13 +189,13 @@ func (c *OwnerInboxCore) AcceptReport(ctx context.Context, intent domain.InboxRe
 		Outputs       []domain.ReportOutput
 	}{r.State, r.Note, r.Message, r.Outputs})
 	var receipt domain.InboxReceipt
-	err := c.transaction(ctx, func(q *gen.Queries, db gen.DBTX) error {
+	err := c.transaction(ctx, func(_ *gen.Queries, db gen.DBTX) error {
 		prior, hash, found, err := inboxAction(ctx, db, r.ProjectID, key)
 		if err != nil {
 			return err
 		}
 		if found {
-			if hash != fingerprint {
+			if hash != fingerprint || prior.Stage != "accept" {
 				return domain.ErrOwnerInboxConflict
 			}
 			receipt = prior
@@ -207,15 +208,11 @@ func (c *OwnerInboxCore) AcceptReport(ctx context.Context, intent domain.InboxRe
 		if !worker {
 			return domain.ErrInvalidReport
 		}
-		if _, err := q.CreateReport(ctx, gen.CreateReportParams{ID: r.ID, SessionID: string(r.SessionID), ProjectID: string(r.ProjectID), State: string(r.State), Note: r.Note, Message: r.Message, CreatedAt: r.CreatedAt, AvailableAt: r.AvailableAt, SettlementDeadline: nullTime(r.SettlementDeadline), RepeatCount: r.RepeatCount}); err != nil {
+		payload, err := json.Marshal(r)
+		if err != nil {
 			return err
 		}
-		for i, o := range r.Outputs {
-			if err := q.CreateReportOutput(ctx, gen.CreateReportOutputParams{ReportID: r.ID, Position: int64(i), Kind: string(o.Kind), Reference: o.Reference, Label: o.Label}); err != nil {
-				return err
-			}
-		}
-		if _, err := db.ExecContext(ctx, `INSERT INTO owner_inbox_sources(report_id,project_id,sender_id,caller_key,fingerprint,source_version) VALUES(?,?,?,?,?,1)`, r.ID, r.ProjectID, r.SessionID, intent.Key, fingerprint); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO owner_inbox_sources(report_id,project_id,sender_id,caller_key,fingerprint,source_version,report_json) VALUES(?,?,?,?,?,1,?)`, r.ID, r.ProjectID, r.SessionID, intent.Key, fingerprint, string(payload)); err != nil {
 			return err
 		}
 		receipt = domain.InboxReceipt{ProjectID: r.ProjectID, Key: key, Stage: "accept", ReportID: r.ID}
@@ -301,7 +298,7 @@ func (c *OwnerInboxCore) ClaimBatch(ctx context.Context, plan domain.InboxBatchP
 		}
 		for i, member := range plan.Members {
 			var valid bool
-			if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM owner_inbox_sources s JOIN reports r ON r.id=s.report_id WHERE s.report_id=? AND s.project_id=? AND s.source_version=? AND r.delivery_state='pending')`, member.ReportID, plan.ProjectID, member.Version).Scan(&valid); err != nil {
+			if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=? AND project_id=? AND source_version=? AND acknowledged_at IS NULL)`, member.ReportID, plan.ProjectID, member.Version).Scan(&valid); err != nil {
 				return err
 			}
 			if !valid {
@@ -335,6 +332,9 @@ func (c *OwnerInboxCore) ClaimBatch(ctx context.Context, plan domain.InboxBatchP
 
 // BindAcceptAndAckAO commits canonical input, participants, mapping and AO ACK.
 func (c *OwnerInboxCore) BindAcceptAndAckAO(ctx context.Context, plan domain.InboxInputPlan) (domain.InboxReceipt, error) {
+	if (plan.UserText != nil) != (plan.ExistingTurnID != "") {
+		return domain.InboxReceipt{}, domain.ErrOwnerInboxConflict
+	}
 	if plan.ProjectID == "" || plan.ProjectID != plan.Owner.ProjectID || plan.Key == "" || plan.BatchKey == "" || plan.At.IsZero() || plan.TurnID == "" || plan.MessageID == "" || plan.ClientMessageID == "" {
 		return domain.InboxReceipt{}, domain.ErrOwnerInboxConflict
 	}
@@ -359,6 +359,9 @@ func (c *OwnerInboxCore) BindAcceptAndAckAO(ctx context.Context, plan domain.Inb
 		}
 		// A competing direct/piggyback attempt must look up the canonical batch,
 		// never enlist twice or allocate a second input with a fresh action key.
+		if err := checkInboxOwner(ctx, db, plan.Owner); err != nil {
+			return err
+		}
 		var textHash string
 		var policy int64
 		if err := db.QueryRowContext(ctx, `SELECT text_hash,policy_revision FROM owner_inbox_batches WHERE project_id=? AND batch_key=?`, plan.ProjectID, plan.BatchKey).Scan(&textHash, &policy); err != nil {
@@ -377,18 +380,18 @@ func (c *OwnerInboxCore) BindAcceptAndAckAO(ctx context.Context, plan domain.Inb
 			if !found {
 				return domain.ErrOwnerInboxConflict
 			}
+			if plan.ExistingTurnID != "" && plan.ExistingTurnID != prior.TurnID {
+				return domain.ErrOwnerInboxInputNotBound
+			}
 			receipt = prior
 			return saveInboxActionKey(ctx, db, plan.Key, prior, fingerprint)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err := checkInboxOwner(ctx, db, plan.Owner); err != nil {
-			return err
-		}
-		if policy != plan.Owner.PolicyRevision {
-			return domain.ErrOwnerInboxConflict
-		}
+		// The admitted current owner completes the original immutable plan.
+		// S receives both the batch policy and current owner policy for its gate.
+		plan.BatchPolicyRevision = policy
 		intake, metadata, err := c.transactionParticipants(db)
 		if err != nil {
 			return err
@@ -403,11 +406,11 @@ func (c *OwnerInboxCore) BindAcceptAndAckAO(ctx context.Context, plan domain.Inb
 		versions := make([]domain.InboxSourceVersion, 0, len(members))
 		for _, m := range members {
 			var version int64
-			var state string
-			if err := db.QueryRowContext(ctx, `SELECT s.source_version,r.delivery_state FROM owner_inbox_sources s JOIN reports r ON r.id=s.report_id WHERE s.report_id=? AND s.project_id=?`, m.ReportID, plan.ProjectID).Scan(&version, &state); err != nil {
+			var acknowledged bool
+			if err := db.QueryRowContext(ctx, `SELECT source_version,acknowledged_at IS NOT NULL FROM owner_inbox_sources WHERE report_id=? AND project_id=?`, m.ReportID, plan.ProjectID).Scan(&version, &acknowledged); err != nil {
 				return err
 			}
-			if version != m.SourceVersion || state != "pending" {
+			if version != m.SourceVersion || acknowledged {
 				return domain.ErrOwnerInboxConflict
 			}
 			versions = append(versions, domain.InboxSourceVersion{ReportID: m.ReportID, Version: version})
@@ -441,7 +444,7 @@ func (c *OwnerInboxCore) BindAcceptAndAckAO(ctx context.Context, plan domain.Inb
 			return err
 		}
 		for _, m := range members {
-			res, err := db.ExecContext(ctx, `UPDATE reports SET delivery_state='acknowledged',acknowledged_at=?,delivery_batch_id=?,claim_token=?,claimed_at=? WHERE id=? AND delivery_state='pending'`, plan.At, plan.BatchKey, "owner-inbox:"+plan.BatchKey, plan.At, m.ReportID)
+			res, err := db.ExecContext(ctx, `UPDATE owner_inbox_sources SET acknowledged_at=? WHERE report_id=? AND acknowledged_at IS NULL`, plan.At, m.ReportID)
 			if err != nil {
 				return err
 			}

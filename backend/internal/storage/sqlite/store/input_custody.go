@@ -82,7 +82,11 @@ func (s *Store) applyInputCustodyAction(ctx context.Context, action gen.InsertIn
 		if consistent != 1 {
 			return fmt.Errorf("%w: target input facts", domain.ErrInputCustodyStorageIncompatible)
 		}
-		if action.Kind == "register" {
+		prior, err := q.SelectInputCustodyAction(ctx, action.ActionKey)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if errors.Is(err, sql.ErrNoRows) && action.Kind == "register" {
 			// SQLite uses an undefined NEW.rowid sentinel before auto-ID INSERT.
 			// Registering that physical payload row would fence unrelated writes.
 			var sentinel bool
@@ -94,10 +98,6 @@ func (s *Store) applyInputCustodyAction(ctx context.Context, action gen.InsertIn
 			if sentinel {
 				return fmt.Errorf("%w: payload rowid sentinel", domain.ErrInputCustodyStorageIncompatible)
 			}
-		}
-		prior, err := q.SelectInputCustodyAction(ctx, action.ActionKey)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
 		}
 		if err == nil {
 			if prior.TurnID != action.TurnID || prior.Kind != action.Kind || prior.ExpectedOwner != action.ExpectedOwner ||

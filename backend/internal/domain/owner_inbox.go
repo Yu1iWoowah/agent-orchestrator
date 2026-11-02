@@ -9,6 +9,7 @@ import (
 // routing and missing transaction participants without claiming provider delivery.
 var (
 	ErrOwnerInboxConflict           = errors.New("owner inbox revision or intent conflict")
+	ErrOwnerInboxInputNotBound      = errors.New("owner inbox batch belongs to another input; preserve this user input")
 	ErrOwnerRoutingUnavailable      = errors.New("routing_unavailable")
 	ErrOwnerInboxParticipantMissing = errors.New("owner inbox intake participant unavailable")
 )
@@ -70,6 +71,9 @@ type InboxInputPlan struct {
 	RuntimeQualificationRef string
 	HeadRevision            int64
 	LedgerRevision          int64
+	// BatchPolicyRevision is filled by H from the immutable claim plan.
+	// Owner.PolicyRevision identifies the current owner admission separately.
+	BatchPolicyRevision int64
 	// Members is populated by H from its fixed batch before S evaluates intake.
 	Members []InboxSourceVersion
 	At      time.Time
@@ -91,11 +95,12 @@ type InboxReceipt struct {
 
 // InboxMetadataPlan scopes enlistment to immutable source versions and stage.
 type InboxMetadataPlan struct {
-	ProjectID      ProjectID
-	Stage          string
-	Owner          InboxOwner
-	BatchKey       string
-	Sources        []InboxSourceVersion
+	ProjectID ProjectID
+	Stage     string
+	Owner     InboxOwner
+	BatchKey  string
+	Sources   []InboxSourceVersion
+	// PolicyRevision pins the batch summary plan; Owner carries current admission.
 	PolicyRevision int64
 }
 

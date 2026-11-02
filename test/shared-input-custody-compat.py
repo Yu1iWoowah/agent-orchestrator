@@ -28,17 +28,21 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--scratch-parent", type=Path, required=True)
     parser.add_argument("--prefix", default="s0-")
+    parser.add_argument("--owner-inbox-source", action="store_true")
+    parser.add_argument("--owner-inbox-due", action="store_true")
     parser.add_argument(
         "--keep",
         action="store_true",
         help="Keep the synthetic fixture after stopping its daemon",
     )
     args = parser.parse_args()
+    if args.owner_inbox_due and not args.owner_inbox_source:
+        parser.error("--owner-inbox-due requires --owner-inbox-source")
     repo = Path(__file__).resolve().parents[1]
     binary = args.binary.resolve(strict=True)
     d = Path(tempfile.mkdtemp(prefix=args.prefix, dir=args.scratch_parent))
     try:
-        exercise(repo, binary, d)
+        exercise(repo, binary, d, args.owner_inbox_source, args.owner_inbox_due)
     finally:
         if args.keep:
             print("Fixture:", d)
@@ -46,7 +50,7 @@ def main():
             shutil.rmtree(d)
 
 
-def exercise(repo, binary, d):
+def exercise(repo, binary, d, owner_inbox_source=False, owner_inbox_due=False):
     label = hashlib.sha256(binary.read_bytes()).hexdigest()
     for part in ["h", "t", "data", "bin", "ws"]:
         (d / part).mkdir(mode=0o700)
@@ -123,6 +127,26 @@ def exercise(repo, binary, d):
     c.execute(
         "INSERT INTO conversation_branches(id,conversation_id,session_id,provider_conversation_id,created_at) VALUES('branch','conversation','compat-1','thread-1',CURRENT_TIMESTAMP)"
     )
+    if owner_inbox_source:
+        c.execute("INSERT INTO sessions(id,project_id,num,kind,harness,session_mode,activity_last_at,created_at,updated_at) VALUES('compat-worker','compat',2,'worker','codex','chat',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
+        c.execute("INSERT INTO reports(id,session_id,project_id,state,note,created_at,available_at) VALUES('compat-report','compat-worker','compat','checkpoint','LEGACY_REPORT_COMPATIBLE',CURRENT_TIMESTAMP,datetime('now',?))", ("+0 seconds" if owner_inbox_due else "+1 hour",))
+        columns = {row[1] for row in c.execute("PRAGMA table_info(owner_inbox_sources)")}
+        if "report_json" in columns:
+            payload = json.dumps({
+                "ID": "h-unbound", "SessionID": "compat-worker", "ProjectID": "compat",
+                "State": "checkpoint", "Note": "NEVER_SEND_H_REPORT",
+                "DeliveryState": "pending", "CreatedAt": "2026-11-02T00:00:00Z",
+                "AvailableAt": "2026-11-02T00:00:00Z", "RepeatCount": 1, "Outputs": [],
+            })
+            c.execute("INSERT INTO owner_inbox_sources(report_id,project_id,sender_id,caller_key,fingerprint,source_version,report_json) VALUES('h-unbound','compat','compat-worker','h-caller','fixture',1,?)", (payload,))
+        else:
+            c.execute("INSERT INTO reports(id,session_id,project_id,state,note,created_at,available_at) VALUES('h-unbound','compat-worker','compat','checkpoint','NEVER_SEND_H_REPORT',CURRENT_TIMESTAMP,'2026-11-02 00:00:00')")
+            c.execute("INSERT INTO owner_inbox_sources(report_id,project_id,sender_id,caller_key,fingerprint,source_version) VALUES('h-unbound','compat','compat-worker','h-caller','fixture',1)")
+        receipt = json.dumps({
+            "ProjectID": "compat", "Key": "fixture-h-accept", "Stage": "accept",
+            "ReportID": "h-unbound", "SafeReason": "routing_unavailable",
+        })
+        c.execute("INSERT INTO owner_inbox_actions(project_id,action_key,stage,fingerprint,receipt_json) VALUES('compat','fixture-h-accept','accept','fixture',?)", (receipt,))
     for seq, tid in enumerate(["held", "unknown", "ordinary-queued"], 1):
         c.execute(
             "INSERT INTO conversation_turns(id,conversation_id,handled_by_session_id,controller_generation,state,requested_at,branch_id,intake_sequence,provider_turn_id) VALUES(?,'conversation','compat-1','generation-1',?,CURRENT_TIMESTAMP,'branch',?,?)",
@@ -173,6 +197,10 @@ def exercise(repo, binary, d):
         }
 
     before = snapshot()
+    h_before = (
+        c.execute("SELECT * FROM owner_inbox_sources ORDER BY report_id").fetchall()
+        if owner_inbox_source else []
+    )
     shutil.copyfile(repo / "test/fixtures/input-custody-codex.py", d / "bin/codex")
     (d / "bin/codex").chmod(0o700)
     (d / "h/.codex").mkdir(mode=0o700)
@@ -246,6 +274,13 @@ def exercise(repo, binary, d):
             time.sleep(0.1)
         else:
             raise RuntimeError("daemon not ready")
+        if owner_inbox_due:
+            for _ in range(100):
+                if c.execute("SELECT delivery_state FROM reports WHERE id='compat-report'").fetchone() == ("acknowledged",):
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError("RunDue did not ACK the ordinary report with an unbound H source present")
         results = {}
         for path, body in [
             ("/api/v1/sessions/compat-1/conversation", None),
@@ -293,6 +328,10 @@ def exercise(repo, binary, d):
             and ("ORDINARY_CAN_SEND" in dispatched)
         ), dispatched
         assert "NEVER_SEND_" not in dispatched, dispatched
+        if owner_inbox_source:
+            assert "LEGACY_REPORT_COMPATIBLE" in dispatched, dispatched
+            assert c.execute("SELECT delivery_state FROM reports WHERE id='compat-report'").fetchone() == ("acknowledged",), "legacy report was not ACKed"
+            assert c.execute("SELECT * FROM owner_inbox_sources ORDER BY report_id").fetchall() == h_before, "legacy binary changed H source"
         assert any(
             (
                 x.get("method") == "thread/resume"
@@ -312,6 +351,8 @@ def exercise(repo, binary, d):
                     "heldProviderStarts": 0,
                     "ordinaryProviderStarts": len(starts),
                     "sameNativeResume": True,
+                    "unboundHSourceLegacyPiggyback": owner_inbox_source and not owner_inbox_due,
+                    "unboundHSourceLegacyRunDue": owner_inbox_due,
                 }
             )
         )

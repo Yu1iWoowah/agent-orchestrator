@@ -919,12 +919,14 @@ type OwnerInboxMember struct {
 }
 
 type OwnerInboxSource struct {
-	ReportID      string
-	ProjectID     string
-	SenderID      string
-	CallerKey     string
-	Fingerprint   string
-	SourceVersion int64
+	ReportID       string
+	ProjectID      string
+	SenderID       string
+	CallerKey      string
+	Fingerprint    string
+	SourceVersion  int64
+	ReportJson     string
+	AcknowledgedAt sql.NullTime
 }
 
 type PR struct {

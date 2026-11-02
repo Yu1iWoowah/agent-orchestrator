@@ -12,12 +12,17 @@ CREATE TABLE project_orchestrator_owners (
 ) WITHOUT ROWID;
 
 CREATE TABLE owner_inbox_sources (
- report_id TEXT PRIMARY KEY REFERENCES reports(id),
+ report_id TEXT PRIMARY KEY,
  project_id TEXT NOT NULL REFERENCES projects(id),
- sender_id TEXT NOT NULL REFERENCES sessions(id),
+ sender_id TEXT NOT NULL,
  caller_key TEXT NOT NULL,
  fingerprint TEXT NOT NULL,
  source_version INTEGER NOT NULL CHECK(source_version>0),
+ report_json TEXT NOT NULL CHECK(json_valid(report_json)),
+ acknowledged_at DATETIME,
+ CHECK(json_extract(report_json,'$.ID') IS report_id
+   AND json_extract(report_json,'$.ProjectID') IS project_id
+   AND json_extract(report_json,'$.SessionID') IS sender_id),
  UNIQUE(project_id,sender_id,caller_key)
 ) WITHOUT ROWID;
 
@@ -80,7 +85,7 @@ END;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
-CREATE TRIGGER owner_inbox_sources_update_fence BEFORE UPDATE ON owner_inbox_sources BEGIN
+CREATE TRIGGER owner_inbox_sources_update_fence BEFORE UPDATE OF report_id,project_id,sender_id,caller_key,fingerprint,source_version,report_json ON owner_inbox_sources BEGIN
  SELECT RAISE(ABORT,'OWNER_INBOX_IMMUTABLE');
 END;
 -- +goose StatementEnd
@@ -93,7 +98,9 @@ END;
 
 -- +goose StatementBegin
 CREATE TRIGGER owner_inbox_sources_replace_fence BEFORE INSERT ON owner_inbox_sources
-WHEN EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=NEW.report_id OR (project_id=NEW.project_id AND sender_id=NEW.sender_id AND caller_key=NEW.caller_key)) BEGIN
+WHEN NEW.acknowledged_at IS NOT NULL
+ OR EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=NEW.report_id OR (project_id=NEW.project_id AND sender_id=NEW.sender_id AND caller_key=NEW.caller_key))
+ OR EXISTS(SELECT 1 FROM reports WHERE id=NEW.report_id) BEGIN
  SELECT RAISE(ABORT,'OWNER_INBOX_IMMUTABLE');
 END;
 -- +goose StatementEnd
@@ -162,41 +169,12 @@ WHEN EXISTS(SELECT 1 FROM owner_inbox_actions WHERE project_id=NEW.project_id AN
 END;
 -- +goose StatementEnd
 
+-- H sources live outside reports: old binaries cannot schedule or claim them.
 -- +goose StatementBegin
-CREATE TRIGGER owner_inbox_report_source_fence BEFORE UPDATE OF id,session_id,project_id,state,note,message,created_at ON reports
-WHEN EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=OLD.id)
- AND (OLD.id IS NOT NEW.id OR OLD.session_id IS NOT NEW.session_id OR OLD.project_id IS NOT NEW.project_id OR OLD.state IS NOT NEW.state OR OLD.note IS NOT NEW.note OR OLD.message IS NOT NEW.message OR OLD.created_at IS NOT NEW.created_at) BEGIN
- SELECT RAISE(ABORT,'OWNER_INBOX_SOURCE_IMMUTABLE');
-END;
--- +goose StatementEnd
-
--- +goose StatementBegin
-CREATE TRIGGER owner_inbox_report_ack_fence BEFORE UPDATE OF delivery_state,acknowledged_at,delivery_batch_id ON reports
-WHEN EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=OLD.id)
- AND NOT (OLD.delivery_state='pending' AND NEW.delivery_state='acknowledged'
- AND EXISTS(SELECT 1 FROM owner_inbox_members m JOIN owner_inbox_acceptances a ON a.project_id=m.project_id AND a.batch_key=m.batch_key WHERE m.report_id=OLD.id AND a.batch_key=NEW.delivery_batch_id)) BEGIN
+CREATE TRIGGER owner_inbox_report_ack_fence BEFORE UPDATE OF acknowledged_at ON owner_inbox_sources
+WHEN NOT (OLD.acknowledged_at IS NULL AND NEW.acknowledged_at IS NOT NULL
+ AND EXISTS(SELECT 1 FROM owner_inbox_members m JOIN owner_inbox_acceptances a ON a.project_id=m.project_id AND a.batch_key=m.batch_key WHERE m.report_id=OLD.report_id AND m.project_id=OLD.project_id)) BEGIN
  SELECT RAISE(ABORT,'OWNER_INBOX_ACK_FENCED');
-END;
--- +goose StatementEnd
-
--- +goose StatementBegin
-CREATE TRIGGER owner_inbox_output_insert_fence BEFORE INSERT ON report_outputs
-WHEN EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=NEW.report_id) BEGIN
- SELECT RAISE(ABORT,'OWNER_INBOX_SOURCE_IMMUTABLE');
-END;
--- +goose StatementEnd
-
--- +goose StatementBegin
-CREATE TRIGGER owner_inbox_output_update_fence BEFORE UPDATE ON report_outputs
-WHEN EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=OLD.report_id OR report_id=NEW.report_id) BEGIN
- SELECT RAISE(ABORT,'OWNER_INBOX_SOURCE_IMMUTABLE');
-END;
--- +goose StatementEnd
-
--- +goose StatementBegin
-CREATE TRIGGER owner_inbox_output_delete_fence BEFORE DELETE ON report_outputs
-WHEN EXISTS(SELECT 1 FROM owner_inbox_sources WHERE report_id=OLD.report_id) BEGIN
- SELECT RAISE(ABORT,'OWNER_INBOX_SOURCE_IMMUTABLE');
 END;
 -- +goose StatementEnd
 
@@ -229,11 +207,7 @@ DROP TRIGGER owner_inbox_acceptances_update_fence;
 DROP TRIGGER owner_inbox_acceptances_delete_fence;
 DROP TRIGGER owner_inbox_acceptances_replace_fence;
 DROP TRIGGER owner_inbox_action_replace_fence;
-DROP TRIGGER owner_inbox_report_source_fence;
 DROP TRIGGER owner_inbox_report_ack_fence;
-DROP TRIGGER owner_inbox_output_insert_fence;
-DROP TRIGGER owner_inbox_output_update_fence;
-DROP TRIGGER owner_inbox_output_delete_fence;
 DROP TRIGGER owner_inbox_report_replace_fence;
 DROP TRIGGER owner_inbox_action_cdc;
 DROP TRIGGER owner_inbox_action_no_delete;

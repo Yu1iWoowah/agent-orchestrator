@@ -8,9 +8,11 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 	storeadapter "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
@@ -58,6 +60,15 @@ func (f inboxFixture) accept(t *testing.T, key, id string) domain.InboxReceipt {
 		t.Fatal(err)
 	}
 	return r
+}
+
+func (f inboxFixture) source(t *testing.T) gen.OwnerInboxSource {
+	t.Helper()
+	source, err := gen.New(f.db).SelectInboxSource(t.Context(), gen.SelectInboxSourceParams{ProjectID: string(f.worker.ProjectID), SenderID: string(f.worker.ID), CallerKey: "caller-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }
 
 func (f inboxFixture) plan() domain.InboxBatchPlan {
@@ -141,8 +152,35 @@ func inboxCount(t *testing.T, db *sql.DB, query string, want int) {
 func TestHOwnerInboxSourceGuard(t *testing.T) {
 	f := newInboxFixture(t)
 	f.accept(t, "caller-1", "report-1")
-	if _, err := f.db.Exec(`UPDATE reports SET note='changed after intake' WHERE id='report-1'`); err == nil {
-		t.Fatal("accepted source content was rewritten")
+	for _, statement := range []string{
+		`UPDATE owner_inbox_sources SET report_json='{}' WHERE report_id='report-1'`,
+		`UPDATE owner_inbox_sources SET acknowledged_at=CURRENT_TIMESTAMP WHERE report_id='report-1'`,
+		`INSERT INTO owner_inbox_sources(report_id,project_id,sender_id,caller_key,fingerprint,source_version,report_json,acknowledged_at) SELECT 'forged',project_id,sender_id,'forged',fingerprint,source_version,json_set(report_json,'$.ID','forged'),CURRENT_TIMESTAMP FROM owner_inbox_sources`,
+	} {
+		if _, err := f.db.Exec(statement); err == nil {
+			t.Fatalf("accepted source content/ACK was forged: %s", statement)
+		}
+	}
+	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources WHERE acknowledged_at IS NULL`, 1)
+}
+
+func TestHOwnerInboxRejectsNonPendingIntake(t *testing.T) {
+	for _, state := range []domain.ReportDeliveryState{domain.ReportClaimed, domain.ReportAcknowledged} {
+		t.Run(string(state), func(t *testing.T) {
+			f := newInboxFixture(t)
+			r := domain.ReportRecord{ID: "pre-delivered", SessionID: f.worker.ID, ProjectID: f.worker.ProjectID, State: domain.ReportCheckpoint, Note: "intake cannot claim delivery", CreatedAt: testNow, AvailableAt: testNow, RepeatCount: 1, DeliveryState: state, ClaimToken: "earlier", ClaimedAt: testNow}
+			if state == domain.ReportAcknowledged {
+				r.AcknowledgedAt = testNow
+			}
+			if err := r.Validate(); err != nil {
+				t.Fatalf("invalid report fixture: %v", err)
+			}
+			if _, err := f.core.AcceptReport(t.Context(), domain.InboxReportIntent{Key: "pre-delivered", Report: r}); !errors.Is(err, domain.ErrInvalidReport) {
+				t.Fatalf("intake accepted non-pending delivery: %v", err)
+			}
+			inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources`, 0)
+			inboxCount(t, f.db, `SELECT count(*) FROM reports`, 0)
+		})
 	}
 }
 
@@ -170,8 +208,29 @@ func TestHOwnerInboxAcceptReplayAndRoutingUnavailable(t *testing.T) {
 	if !errors.Is(err, domain.ErrOwnerRoutingUnavailable) {
 		t.Fatalf("unresolved claim: %v", err)
 	}
-	inboxCount(t, f.db, `SELECT count(*) FROM reports`, 1)
+	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources`, 1)
 	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_acceptances`, 0)
+}
+
+func TestHOwnerInboxAcceptRejectsReceiptFromAnotherStage(t *testing.T) {
+	seed := newInboxFixture(t)
+	receipt := seed.accept(t, "caller-1", "report-1")
+	var fingerprint, payload string
+	if err := seed.db.QueryRow(`SELECT fingerprint,json_set(receipt_json,'$.Stage','claim') FROM owner_inbox_actions WHERE project_id=? AND action_key=?`, receipt.ProjectID, receipt.Key).Scan(&fingerprint, &payload); err != nil {
+		t.Fatal(err)
+	}
+	f := newInboxFixture(t)
+	if f.worker.ID != seed.worker.ID || f.worker.ProjectID != seed.worker.ProjectID {
+		t.Fatal("receipt fixture must retain sender identity")
+	}
+	if _, err := f.db.Exec(`INSERT INTO owner_inbox_actions(project_id,action_key,stage,fingerprint,receipt_json) VALUES(?,?,'claim',?,?)`, receipt.ProjectID, receipt.Key, fingerprint, payload); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.core.AcceptReport(t.Context(), domain.InboxReportIntent{Key: "caller-1", Report: domain.ReportRecord{ID: "report-1", SessionID: f.worker.ID, ProjectID: f.worker.ProjectID, State: domain.ReportCheckpoint, Note: "work recorded", CreatedAt: testNow, AvailableAt: testNow, DeliveryState: domain.ReportPending, RepeatCount: 1}})
+	if !errors.Is(err, domain.ErrOwnerInboxConflict) {
+		t.Fatalf("accept reused another stage's receipt: %v", err)
+	}
+	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources`, 0)
 }
 
 func TestHOwnerInboxAtomicParticipants(t *testing.T) {
@@ -184,7 +243,7 @@ func TestHOwnerInboxAtomicParticipants(t *testing.T) {
 				if err == nil {
 					t.Fatal("metadata failure committed")
 				}
-				inboxCount(t, f.db, `SELECT count(*) FROM reports`, 0)
+				inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources`, 0)
 				inboxCount(t, f.db, `SELECT count(*) FROM fixture_u1_metadata`, 0)
 				return
 			}
@@ -204,7 +263,7 @@ func TestHOwnerInboxAtomicParticipants(t *testing.T) {
 			}
 			f.participants(stage == "S-bind", stage == "U1-bind")
 			if stage == "H-commit" {
-				if _, err := f.db.Exec(`CREATE TRIGGER fixture_h_failure BEFORE UPDATE ON reports WHEN NEW.delivery_state='acknowledged' BEGIN SELECT RAISE(ABORT,'fixture H failure after participants');END;`); err != nil {
+				if _, err := f.db.Exec(`CREATE TRIGGER fixture_h_failure BEFORE UPDATE ON owner_inbox_sources WHEN NEW.acknowledged_at IS NOT NULL BEGIN SELECT RAISE(ABORT,'fixture H failure after participants');END;`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -215,7 +274,7 @@ func TestHOwnerInboxAtomicParticipants(t *testing.T) {
 				inboxCount(t, f.db, `SELECT count(*) FROM `+table, 0)
 			}
 			inboxCount(t, f.db, `SELECT count(*) FROM conversation_turns WHERE id='inbox-turn'`, 0)
-			inboxCount(t, f.db, `SELECT count(*) FROM reports WHERE delivery_state='pending'`, 1)
+			inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources WHERE acknowledged_at IS NULL`, 1)
 			if _, found, err := f.core.GetByActionKey(t.Context(), f.worker.ProjectID, "bind-1"); err != nil || found {
 				t.Fatalf("uncommitted receipt found=%v err=%v", found, err)
 			}
@@ -230,6 +289,18 @@ func TestHOwnerInboxDirectPiggybackReplayAndOwnerEpoch(t *testing.T) {
 	if _, err := f.core.ClaimBatch(t.Context(), f.plan()); err != nil {
 		t.Fatal(err)
 	}
+	userText := "a concurrent user instruction"
+	piggyback := f.input()
+	piggyback.Key = "path-1"
+	piggyback.TurnID = "path-turn-1"
+	piggyback.MessageID = "path-message-1"
+	piggyback.ClientMessageID = "piggyback-client"
+	piggyback.ExistingTurnID = piggyback.TurnID
+	piggyback.UserText = &userText
+	piggyback.Text = domain.AppendWorkerReportContext(userText, piggyback.SummaryText)
+	if _, err := f.s.AppendUserMessage(t.Context(), piggyback.Owner.ConversationID, piggyback.Owner.SessionID, piggyback.Owner.Generation, domain.ConversationMessage{ID: piggyback.MessageID, Text: piggyback.Text, ClientMessageID: piggyback.ClientMessageID, Origin: domain.MessageOriginHuman}, piggyback.TurnID, piggyback.At); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	results := make([]domain.InboxReceipt, 2)
 	errs := make([]error, 2)
@@ -242,14 +313,13 @@ func TestHOwnerInboxDirectPiggybackReplayAndOwnerEpoch(t *testing.T) {
 			p.TurnID = fmt.Sprintf("path-turn-%d", i)
 			p.MessageID = fmt.Sprintf("path-message-%d", i)
 			if i == 1 {
-				userText := "a concurrent user instruction"
-				p.UserText = &userText
+				p = piggyback
 			}
 			results[i], errs[i] = f.core.BindAcceptAndAckAO(t.Context(), p)
 		}(i)
 	}
 	wg.Wait()
-	if errs[0] != nil || errs[1] != nil || !reflect.DeepEqual(results[0], results[1]) {
+	if errs[0] != nil || (errs[1] != nil && !errors.Is(errs[1], domain.ErrOwnerInboxInputNotBound)) || (errs[1] == nil && !reflect.DeepEqual(results[0], results[1])) {
 		t.Fatalf("race: receipts=%+v errors=%v", results, errs)
 	}
 	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_acceptances`, 1)
@@ -267,11 +337,131 @@ func TestHOwnerInboxDirectPiggybackReplayAndOwnerEpoch(t *testing.T) {
 	p := f.input()
 	p.Key = results[0].Key
 	if p.Key == "path-1" {
-		userText := "a concurrent user instruction"
-		p.UserText = &userText
+		p = piggyback
 	}
 	if replay, err := f.core.BindAcceptAndAckAO(t.Context(), p); err != nil || !reflect.DeepEqual(replay, prior) {
 		t.Fatalf("lost-response replay: %+v %v", replay, err)
+	}
+}
+
+func TestHOwnerInboxRejectsMismatchedPiggybackPlan(t *testing.T) {
+	for _, userOnly := range []bool{true, false} {
+		t.Run(fmt.Sprintf("user-only=%t", userOnly), func(t *testing.T) {
+			f := newInboxFixture(t)
+			f.participants(false, false)
+			f.accept(t, "caller-1", "report-1")
+			if _, err := f.core.ClaimBatch(t.Context(), f.plan()); err != nil {
+				t.Fatal(err)
+			}
+			p := f.input()
+			userText := "preserve human authorship"
+			if userOnly {
+				p.UserText = &userText
+			} else {
+				// Even a valid existing input cannot be bound without UserText.
+				p.ExistingTurnID = p.TurnID
+				if _, err := f.s.AppendUserMessage(t.Context(), p.Owner.ConversationID, p.Owner.SessionID, p.Owner.Generation, domain.ConversationMessage{ID: p.MessageID, Text: p.Text, ClientMessageID: p.ClientMessageID, Origin: domain.MessageOriginHuman}, p.TurnID, p.At); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var before int64
+			if err := f.db.QueryRow(`SELECT count(*) FROM change_log`).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.core.BindAcceptAndAckAO(t.Context(), p); !errors.Is(err, domain.ErrOwnerInboxConflict) {
+				t.Errorf("mismatched input accepted: %v", err)
+			}
+			var after int64
+			if err := f.db.QueryRow(`SELECT count(*) FROM change_log`).Scan(&after); err != nil || before != after {
+				t.Fatalf("invalid input wrote rows: changes %d -> %d: %v", before, after, err)
+			}
+			existing := 0
+			if !userOnly {
+				existing = 1
+			}
+			inboxCount(t, f.db, `SELECT count(*) FROM conversation_turns`, existing)
+			inboxCount(t, f.db, `SELECT count(*) FROM conversation_messages`, existing)
+			inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_actions`, 2)
+			inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources WHERE acknowledged_at IS NULL`, 1)
+			inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_acceptances`, 0)
+			inboxCount(t, f.db, `SELECT count(*) FROM fixture_s_intake`, 0)
+			inboxCount(t, f.db, `SELECT count(*) FROM fixture_u1_metadata WHERE stage='bind'`, 0)
+		})
+	}
+}
+
+type inboxLegacyDelivery struct{ submissions int }
+
+func (d *inboxLegacyDelivery) Submit(context.Context, domain.SessionID, string, string) error {
+	d.submissions++
+	return nil
+}
+func (*inboxLegacyDelivery) Interrupt(context.Context, domain.SessionID) error { return nil }
+
+func TestHOwnerInboxLegacyReportCoexistence(t *testing.T) {
+	for _, path := range []string{"batch", "single", "piggyback", "due"} {
+		t.Run(path, func(t *testing.T) {
+			f := newInboxFixture(t)
+			f.accept(t, "caller-1", "report-1") // Durable, unbound and earliest due.
+			before := f.source(t)
+			now := testNow.Add(time.Minute)
+			if _, err := f.s.CreateReport(t.Context(), domain.ReportRecord{ID: "ordinary", SessionID: f.worker.ID, ProjectID: f.worker.ProjectID, State: domain.ReportCheckpoint, Note: "legacy result", CreatedAt: testNow.Add(time.Second), AvailableAt: testNow.Add(time.Second), DeliveryState: domain.ReportPending, RepeatCount: 1}); err != nil {
+				t.Fatal(err)
+			}
+			scheduled, err := f.s.ListPendingReportSchedule(t.Context(), 1)
+			if err != nil || len(scheduled) != 1 || scheduled[0].ID != "ordinary" {
+				t.Errorf("global schedule selected H source: %+v %v", scheduled, err)
+			}
+			pending, err := f.s.ListPendingReports(t.Context(), now, 10)
+			if err != nil || len(pending) != 1 || pending[0].ID != "ordinary" {
+				t.Errorf("legacy pending includes H source: %+v %v", pending, err)
+			}
+			if _, claimed, err := f.s.ClaimReport(t.Context(), "report-1", "must-not-claim", now); err != nil || claimed {
+				t.Errorf("single claim touched H source: claimed=%t err=%v", claimed, err)
+			}
+			delivery := &inboxLegacyDelivery{}
+			coordinator := reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{Store: f.s, Delivery: delivery, Now: func() time.Time { return now }, NewToken: func() string { return "legacy-token" }})
+			switch path {
+			case "batch":
+				claimed, err := f.s.ClaimPendingReportBatch(t.Context(), f.worker.ProjectID, "legacy-token", now)
+				if err != nil || len(claimed) != 1 || claimed[0].ID != "ordinary" {
+					t.Fatalf("batch blocked by H source: %+v %v", claimed, err)
+				}
+				if n, err := f.s.AcknowledgeReportBatch(t.Context(), f.worker.ProjectID, "legacy-token", now); err != nil || n != 1 {
+					t.Fatalf("legacy batch ACK: %d %v", n, err)
+				}
+			case "single":
+				if _, claimed, err := f.s.ClaimReport(t.Context(), "ordinary", "legacy-token", now); err != nil || !claimed {
+					t.Fatalf("legacy claim: %t %v", claimed, err)
+				}
+				if _, acked, err := f.s.AcknowledgeReport(t.Context(), "ordinary", "legacy-token", now); err != nil || !acked {
+					t.Fatalf("legacy ACK: %t %v", acked, err)
+				}
+			case "piggyback":
+				batch, err := coordinator.PreparePiggyback(t.Context(), f.owner.SessionID)
+				if err != nil || len(batch.Reports) != 1 || batch.Reports[0].ID != "ordinary" {
+					t.Fatalf("piggyback blocked by H source: %+v %v", batch, err)
+				}
+				if err := coordinator.AcceptPiggyback(t.Context(), batch); err != nil {
+					t.Fatal(err)
+				}
+			case "due":
+				if _, err := coordinator.RunDue(t.Context()); err != nil || delivery.submissions != 1 {
+					t.Fatalf("due delivery blocked by H source: submissions=%d err=%v", delivery.submissions, err)
+				}
+			}
+			after := f.source(t)
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("H source changed: before=%+v after=%+v", before, after)
+			}
+			ordinary, found, err := f.s.GetReport(t.Context(), "ordinary")
+			if err != nil || !found || ordinary.DeliveryState != domain.ReportAcknowledged {
+				t.Fatalf("ordinary report not ACKed: %+v found=%t err=%v", ordinary, found, err)
+			}
+			if remaining, err := f.s.ListPendingReportSchedule(t.Context(), 1); err != nil || len(remaining) != 0 {
+				t.Fatalf("H source rescheduled: %+v %v", remaining, err)
+			}
+		})
 	}
 }
 
@@ -348,8 +538,8 @@ func TestHOwnerInboxFixedPlansAndImmutableReceipts(t *testing.T) {
 		`DELETE FROM owner_inbox_actions`,
 		`UPDATE owner_inbox_members SET source_version=2`,
 		`UPDATE owner_inbox_sources SET source_version=2`,
-		`UPDATE reports SET delivery_state='pending' WHERE id='report-1'`,
-		`INSERT OR REPLACE INTO reports SELECT * FROM reports WHERE id='report-1'`,
+		`UPDATE owner_inbox_sources SET acknowledged_at=NULL WHERE report_id='report-1'`,
+		`INSERT OR REPLACE INTO owner_inbox_sources SELECT * FROM owner_inbox_sources WHERE report_id='report-1'`,
 	} {
 		if _, err := f.db.Exec(statement); err == nil {
 			t.Fatalf("immutable fact changed: %s", statement)
@@ -392,7 +582,7 @@ func TestHOwnerInboxDeclaredMetadataCannotDisappear(t *testing.T) {
 	if !errors.Is(err, domain.ErrOwnerInboxParticipantMissing) {
 		t.Fatalf("advertised metadata silently disabled: %v", err)
 	}
-	inboxCount(t, f.db, `SELECT count(*) FROM reports`, 0)
+	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources`, 0)
 }
 
 func TestHOwnerInboxHeldIntakeWithoutU1(t *testing.T) {
@@ -410,7 +600,7 @@ func TestHOwnerInboxHeldIntakeWithoutU1(t *testing.T) {
 	}
 	inboxCount(t, f.db, `SELECT count(*) FROM conversation_turns WHERE id='inbox-turn' AND state='held'`, 1)
 	inboxCount(t, f.db, `SELECT count(*) FROM conversation_input_holds WHERE turn_id='inbox-turn' AND active=1`, 1)
-	inboxCount(t, f.db, `SELECT count(*) FROM reports WHERE delivery_state='acknowledged'`, 1)
+	inboxCount(t, f.db, `SELECT count(*) FROM owner_inbox_sources WHERE acknowledged_at IS NOT NULL`, 1)
 	if err := f.s.InputCustodyStorageCompatibility(t.Context()); err != nil {
 		t.Fatal(err)
 	}

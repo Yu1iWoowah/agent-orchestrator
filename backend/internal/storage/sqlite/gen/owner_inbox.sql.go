@@ -89,7 +89,7 @@ func (q *Queries) SelectInboxOwner(ctx context.Context, projectID string) (Proje
 }
 
 const selectInboxSource = `-- name: SelectInboxSource :one
-SELECT report_id, project_id, sender_id, caller_key, fingerprint, source_version FROM owner_inbox_sources WHERE project_id=? AND sender_id=? AND caller_key=?
+SELECT report_id, project_id, sender_id, caller_key, fingerprint, source_version, report_json, acknowledged_at FROM owner_inbox_sources WHERE project_id=? AND sender_id=? AND caller_key=?
 `
 
 type SelectInboxSourceParams struct {
@@ -108,6 +108,8 @@ func (q *Queries) SelectInboxSource(ctx context.Context, arg SelectInboxSourcePa
 		&i.CallerKey,
 		&i.Fingerprint,
 		&i.SourceVersion,
+		&i.ReportJson,
+		&i.AcknowledgedAt,
 	)
 	return i, err
 }

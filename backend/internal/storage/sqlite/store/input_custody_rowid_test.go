@@ -161,6 +161,9 @@ func TestInputCustodyRowIDDefaultSentinelFailsClosed(t *testing.T) {
 			if err := gen.New(db).InsertInputCustodyAction(t.Context(), gen.InsertInputCustodyActionParams{ActionKey: "register", TurnID: "protected", Kind: "register", TargetOwner: "owner", CreatedAt: testNow}); err != nil {
 				t.Fatal(err)
 			}
+			if receipt, err := s.RegisterInputCustody(t.Context(), "protected", "owner", "register", testNow); err != nil || receipt.Revision != 1 {
+				t.Fatalf("historical sentinel registration replay: %+v %v", receipt, err)
+			}
 			before := inputPayloadRow(t, db, c.table, c.original)
 			normal := c
 			normal.value = ""

@@ -19,9 +19,25 @@ joint cell. SQLite fixtures do not implement S eligibility or qualify a provider
 | BindAcceptAndAckAO | Atomically create canonical queued input or verify existing piggyback input, enlist S intake/hold and optional U1 metadata, map input and ACK reports. Missing S participant refuses before input creation; any error rolls back all effects. |
 | GetByActionKey | Return original references after response loss or owner changes. Replay never enlists metadata or creates an input twice. Receipt is AO acceptance, not L2 or an outbound permit. |
 
-A receipt returned to a losing piggyback caller acknowledges the report batch only;
-it does not acknowledge or discard that caller’s separate user intent. The real
-H/S Send integration must preserve that intent without copying the reports again.
+A piggyback input that loses to another canonical input receives
+`ErrOwnerInboxInputNotBound`. Its existing human input remains intact; no alias,
+second S intake or ACK is created. The real H/S Send integration must preserve
+that intent without copying the reports again.
+
+H source payloads and outputs live in immutable `owner_inbox_sources.report_json`,
+with a separate guarded `acknowledged_at` fact. They are absent from `reports`, so
+old binary pending, scheduling, claim and restart recovery SQL cannot select them.
+New legacy queries also exclude H IDs. Ordinary reports can still be delivered
+and piggybacked while H sources remain unchanged and unacknowledged. Direct bind has no
+user text or existing turn; piggyback requires both and verifies a canonical input
+already created by the human intake path. Mismatched plans fail before a transaction.
+
+A claimed batch retains its original policy, ordered members and summary.
+The currently admitted owner can complete that plan after a policy revision bump;
+S receives the original `BatchPolicyRevision` and current `Owner.PolicyRevision`.
+It must still enforce current eligibility and the later outbound gate. Stale owner
+admission fails; existing same-key receipts remain read-only replayable. A new
+alias must pass current owner admission before writing an action or CDC.
 
 The lock order is shared writer → SQLite transaction → H/S/U1 SQL. Public core
 methods refuse ambient provider-projection transactions. Callers must not hold
@@ -29,6 +45,9 @@ chat/piggyback/private participant locks. Storage alone constructs the narrow,
 already transaction-bound intake and metadata participants. They cannot expose
 SQL, commit/rollback, reentry, reconciliation, native UI or provider I/O to H.
 The only current participant injection entrypoint is compiled in `_test.go`.
+Same-context reentry into core methods, context-aware writer locks and report
+writers fails immediately. Other legacy Store writers are not certified reentrant;
+participants must use only their transaction-bound port, never public Store APIs.
 
 The owner CAS helper is a disabled-core primitive, not the production
 spawn/script/writer-lease/candidate/parked/return bridge. Full admission and
@@ -83,3 +102,30 @@ authorize another send. Real TUI timeout/defer acceptance is not yet verified.
 Outstanding H-PR1 work includes owner/candidate/v2/parked/attention and DTO/
 lifecycle integration, v1/script owner bridges, production participant registration
 and consumer migration. H-prefixed tests identify H fixtures, not S acceptance.
+
+## PR #67 review follow-ups
+
+Existing custody registration receipts are looked up before the new-registration
+rowid sentinel check; historical sentinel registrations remain replayable and
+guarded. AcceptReport also verifies the replay receipt's accept stage.
+
+H sender IDs are immutable provenance, not foreign keys that pin worker deletion.
+The remaining owner/project/acceptance references retain NO ACTION behavior to
+prevent cascades from discarding durable history. No production caller creates
+these facts. An explicit retention
+and lifecycle policy, including owner release and qualified input deletion, must
+be implemented and tested before activation; adding cascades here would destroy
+the receipt/hold evidence this core promises to preserve.
+
+An existing piggyback turn blocked by a v1 replacement fence still fails closed
+with OwnerInbox conflict or the original storage error. A typed, retry-safe
+replacement-fence classification belongs with the real H/S Send integration,
+where intake ownership and retry disposition can be decided together. This core
+does not infer a retry or release from an error string.
+
+AcceptReport's contract outbox obligation is not implemented in this core stage;
+it requires the production H coordinator, owner resolution and retry disposition,
+and remains a pre-activation requirement. The source receipt is immutable history:
+`routing_unavailable` describes intake time, not current routing health. Current
+routing/alert projection and reconciliation after owner resolution remain future
+integration work; consumers must not treat the old safe reason as live status.
