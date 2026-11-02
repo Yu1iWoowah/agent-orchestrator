@@ -88,6 +88,8 @@ const (
 	// TurnStateCancelled marks a queued turn the user withdrew from the dock
 	// before dispatch. Stop and handoff still settle the queue as interrupted.
 	TurnStateCancelled TurnState = "cancelled"
+	// TurnStateHeld preserves an input outside legacy dispatch and retry sets.
+	TurnStateHeld TurnState = "held"
 )
 
 // Terminal reports whether no further work is expected on the turn.

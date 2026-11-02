@@ -365,7 +365,7 @@ func migrate(db *sql.DB) error {
 	// renumbered later (notably across fast-moving Nightly releases). Apply
 	// those embedded migrations instead of permanently wedging daemon startup
 	// on goose's out-of-order-history guard.
-	if err := goose.Up(db, "migrations", goose.WithAllowMissing()); err != nil {
+	if err := migrateUpTo(db, goose.MaxVersion, goose.WithAllowMissing()); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)

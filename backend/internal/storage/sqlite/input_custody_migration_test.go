@@ -1,0 +1,448 @@
+package sqlite
+
+import (
+	"database/sql"
+	"reflect"
+	"strings"
+	"testing"
+	"testing/fstest"
+
+	"github.com/pressly/goose/v3"
+)
+
+func seedSharedInputMigration(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, statement := range []string{
+		`INSERT INTO projects(id,path,registered_at) VALUES('project','isolated-project',CURRENT_TIMESTAMP)`,
+		`INSERT INTO sessions(id,project_id,num,activity_last_at,created_at,updated_at) VALUES('worker','project',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		`INSERT INTO conversations(id,scope,project_id,session_id,current_session_id,created_at,updated_at) VALUES('conversation','session','project','worker','worker',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		`INSERT INTO conversation_turns(rowid,id,conversation_id,handled_by_session_id,state,requested_at,intake_sequence) VALUES(11,'base','conversation','worker','queued','2026-11-01T00:00:00Z',1)`,
+		`INSERT INTO conversation_turns(rowid,id,conversation_id,handled_by_session_id,state,requested_at,retry_of_turn_id,intake_sequence) VALUES(22,'retry','conversation','worker','failed','2026-11-01T00:00:00Z','base',2)`,
+		`INSERT INTO conversation_turns(rowid,id,conversation_id,handled_by_session_id,state,requested_at,promoted_to_turn_id,intake_sequence) VALUES(33,'promoted','conversation','worker','completed','2026-11-01T00:00:00Z','base',3)`,
+		`INSERT INTO conversation_messages(id,conversation_id,turn_id,sequence,role,origin,text,delivery_content_json,created_at,updated_at) VALUES('message','conversation','base',1,'user','human','original bytes','[{"type":"text","text":"attachment"}]',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		`INSERT INTO conversation_branches(id,conversation_id,session_id,fork_after_turn_id,replaced_turn_id,replacement_turn_id,created_at) VALUES('branch','conversation','worker','base','retry','promoted',CURRENT_TIMESTAMP)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed %s: %v", statement, err)
+		}
+	}
+}
+
+func sharedInputObjects(t *testing.T, db *sql.DB) map[string]string {
+	t.Helper()
+	rows, err := db.Query(`SELECT type||':'||name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	result := map[string]string{}
+	for rows.Next() {
+		var key, definition string
+		if err := rows.Scan(&key, &definition); err != nil {
+			t.Fatal(err)
+		}
+		result[key] = definition
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func assertSharedInputRows(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var order, linked string
+	if err := db.QueryRow(`SELECT group_concat(id||':'||rowid,',') FROM (SELECT id,rowid FROM conversation_turns ORDER BY requested_at,rowid)`).Scan(&order); err != nil || order != "base:11,retry:22,promoted:33" {
+		t.Fatalf("queue rowid order = %q %v", order, err)
+	}
+	if err := db.QueryRow(`SELECT m.turn_id||':'||m.text||':'||b.fork_after_turn_id||':'||b.replaced_turn_id||':'||b.replacement_turn_id FROM conversation_messages m JOIN conversation_branches b ON b.id='branch' WHERE m.id='message'`).Scan(&linked); err != nil || linked != "base:original bytes:base:retry:promoted" {
+		t.Fatalf("FK links or input bytes = %q %v", linked, err)
+	}
+	var count, foreignKeys int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("FK violations = %d %v", count, err)
+	}
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+		t.Fatalf("FK enforcement not restored: %d %v", foreignKeys, err)
+	}
+}
+
+func TestSharedInputMigrationPreservesInventoryAndUpDownUp(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+	seedSharedInputMigration(t, db)
+	before := sharedInputObjects(t, db)
+	upTo(t, db, sharedInputCustodyVersion)
+	after := sharedInputObjects(t, db)
+	for key, definition := range before {
+		got := after[key]
+		switch key {
+		case "table:conversation_turns":
+			got = strings.ReplaceAll(got, "'cancelled', 'held'", "'cancelled'")
+		case "view:orchestrator_replacement_held_turns":
+			got = strings.Split(got, "\nUNION\nSELECT 'shared:'")[0]
+		}
+		if got != definition {
+			t.Errorf("changed existing object %s:\nwant %s\ngot %s", key, definition, got)
+		}
+	}
+	assertSharedInputRows(t, db)
+	downTo(t, db, sharedInputCustodyVersion-1)
+	if reverted := sharedInputObjects(t, db); !reflect.DeepEqual(before, reverted) {
+		for key, definition := range before {
+			if reverted[key] != definition {
+				t.Errorf("Down changed %s", key)
+			}
+		}
+		if len(before) != len(reverted) {
+			t.Errorf("Down object count %d, want %d", len(reverted), len(before))
+		}
+	}
+	assertSharedInputRows(t, db)
+	upTo(t, db, sharedInputCustodyVersion)
+	if reapplied := sharedInputObjects(t, db); !reflect.DeepEqual(after, reapplied) {
+		t.Fatal("up/down/up did not restore complete guarded schema")
+	}
+	assertSharedInputRows(t, db)
+}
+
+func TestSharedInputMigrationPreservesExistingForeignKeyViolations(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+	seedSharedInputMigration(t, db)
+	for _, statement := range []string{
+		`PRAGMA foreign_keys=OFF`,
+		`CREATE TABLE legacy_orphans(id INTEGER PRIMARY KEY, project_id TEXT REFERENCES projects(id))`,
+		`INSERT INTO legacy_orphans VALUES(1,'missing-project')`,
+		`INSERT INTO conversation_messages(id,conversation_id,turn_id,sequence,role,origin,text,created_at,updated_at) VALUES('old-orphan','conversation','missing-turn',2,'user','human','legacy input',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		`PRAGMA foreign_keys=ON`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := sharedInputForeignKeyViolations(t, db)
+	if len(before) != 2 {
+		t.Fatalf("expected unrelated and existing turn FK orphans: %v", before)
+	}
+	for _, version := range []int64{sharedInputCustodyVersion, sharedInputCustodyVersion - 1, sharedInputCustodyVersion} {
+		if version == sharedInputCustodyVersion {
+			upTo(t, db, version)
+		} else {
+			downTo(t, db, version)
+		}
+		if after := sharedInputForeignKeyViolations(t, db); !reflect.DeepEqual(before, after) {
+			t.Fatalf("migration changed legacy FK violations: %v -> %v", before, after)
+		}
+		var text string
+		if err := db.QueryRow(`SELECT text FROM conversation_messages WHERE id='old-orphan'`).Scan(&text); err != nil || text != "legacy input" {
+			t.Fatalf("lost legacy input: %q %v", text, err)
+		}
+	}
+}
+
+func TestSharedInputMigrationUpgradesNewerMainWithoutS0(t *testing.T) {
+	dir := t.TempDir()
+	db := openMigratedDatabaseCopyAt(t, dir, sharedInputCustodyVersion-1, pragmas)
+	seedSharedInputMigration(t, db)
+	const laterMigration = "migrations/20261101165111979_operator_consent_core.sql"
+	source, err := migrationsFS.ReadFile(laterMigration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A newer main can ship while S0 remains in review. Reproduce its ledger
+	// and schema without applying S0, rather than testing only fresh installs.
+	if err := func() error {
+		gooseMu.Lock()
+		defer gooseMu.Unlock()
+		goose.SetBaseFS(fstest.MapFS{laterMigration: {Data: source}})
+		defer goose.SetBaseFS(migrationsFS)
+		return goose.Up(db, "migrations")
+	}(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO operator_confirmation_requests(request_ref,action_key,project_id,purpose,plan_json,plan_digest,daemon_epoch,valid_until_ms,created_at_ms)
+ VALUES('later-request','later-action','project','test','{}',?,'prior-epoch',100000,1)`, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	before := sharedInputObjects(t, db)
+	if err := migrate(db); err != nil {
+		t.Fatalf("newer main could not apply missing S0: %v", err)
+	}
+	assertSharedInputRows(t, db)
+	after := sharedInputObjects(t, db)
+	for name, definition := range before {
+		if strings.Contains(name, ":operator_") && after[name] != definition {
+			t.Errorf("late S0 changed newer main object %s", name)
+		}
+	}
+	var digest string
+	if err := db.QueryRow(`SELECT plan_digest FROM operator_confirmation_requests WHERE request_ref='later-request'`).Scan(&digest); err != nil || digest != strings.Repeat("a", 64) {
+		t.Fatalf("late S0 lost newer main data: %q %v", digest, err)
+	}
+	var applied int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id=? AND is_applied=1`, sharedInputCustodyVersion).Scan(&applied); err != nil || applied != 1 {
+		t.Fatalf("late S0 ledger: %d %v", applied, err)
+	}
+	store, err := OpenPreMigrated(dir)
+	if err != nil {
+		t.Fatalf("late S0 did not retain newer main's migration high-water mark: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSharedInputMigrationPreservesReorderedForeignKeyViolations(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+	seedSharedInputMigration(t, db)
+	mustExec(t, db, `PRAGMA foreign_keys=OFF`)
+	mustExec(t, db, `UPDATE conversation_turns SET handled_by_session_id='legacy-session',promoted_to_turn_id='legacy-promotion',retry_of_turn_id='legacy-retry' WHERE id='base'`)
+	mustExec(t, db, `PRAGMA foreign_keys=ON`)
+	before := sharedInputForeignKeyViolations(t, db)
+	if len(before) != 3 {
+		t.Fatalf("expected three legacy turn FK orphans: %v", before)
+	}
+	for _, version := range []int64{sharedInputCustodyVersion, sharedInputCustodyVersion - 1, sharedInputCustodyVersion} {
+		// Legacy repairs can retain equivalent FKs in a different declaration
+		// order. Move one inline FK to the end without changing columns or data.
+		var definition string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name='conversation_turns' AND type='table'`).Scan(&definition); err != nil {
+			t.Fatal(err)
+		}
+		const reference = `REFERENCES conversations(id) ON DELETE CASCADE`
+		if strings.Count(definition, reference) != 1 {
+			t.Fatalf("unexpected conversation FK definition: %s", definition)
+		}
+		definition = strings.Replace(definition, reference, "", 1)
+		end := strings.LastIndex(definition, ")")
+		definition = definition[:end] + ", FOREIGN KEY(conversation_id) " + reference + definition[end:]
+		mustExec(t, db, `PRAGMA writable_schema=ON`)
+		if _, err := db.Exec(`UPDATE sqlite_master SET sql=? WHERE name='conversation_turns' AND type='table'`, definition); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, db, `PRAGMA writable_schema=RESET`)
+		var idBefore, idAfter int
+		if err := db.QueryRow(`SELECT id FROM pragma_foreign_key_list('conversation_turns') WHERE "from"='handled_by_session_id'`).Scan(&idBefore); err != nil {
+			t.Fatal(err)
+		}
+		if version == sharedInputCustodyVersion {
+			upTo(t, db, version)
+		} else {
+			downTo(t, db, version)
+		}
+		if err := db.QueryRow(`SELECT id FROM pragma_foreign_key_list('conversation_turns') WHERE "from"='handled_by_session_id'`).Scan(&idAfter); err != nil || idBefore == idAfter {
+			t.Fatalf("fixture did not change FK numbering: %d -> %d: %v", idBefore, idAfter, err)
+		}
+		if after := sharedInputForeignKeyViolations(t, db); !reflect.DeepEqual(before, after) {
+			t.Fatalf("migration changed legacy FK violations: %v -> %v", before, after)
+		}
+		var facts string
+		if err := db.QueryRow(`SELECT t.handled_by_session_id||':'||t.promoted_to_turn_id||':'||t.retry_of_turn_id||':'||t.rowid||':'||m.text FROM conversation_turns t JOIN conversation_messages m ON m.turn_id=t.id WHERE t.id='base'`).Scan(&facts); err != nil || facts != "legacy-session:legacy-promotion:legacy-retry:11:original bytes" {
+			t.Fatalf("migration changed legacy input: %q %v", facts, err)
+		}
+		var foreignKeys int
+		if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+			t.Fatalf("FK enforcement not restored: %d %v", foreignKeys, err)
+		}
+	}
+}
+
+func sharedInputForeignKeyViolations(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT fk."table"||':'||fk.rowid||':'||fk.parent||':'||
+ (SELECT json_group_array(json_array("from","to")) FROM
+  (SELECT "from","to" FROM pragma_foreign_key_list(fk."table") WHERE id=fk.fkid ORDER BY seq))
+ FROM pragma_foreign_key_check fk ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var result []string
+	for rows.Next() {
+		var item string
+		if err := rows.Scan(&item); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestSharedInputMigrationRejectsNewForeignKeyViolations(t *testing.T) {
+	const filename = "migrations/20261101152248341_shared_input_custody.sql"
+	source, err := migrationsFS.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		direction  string
+		sameParent bool
+	}{{"up", false}, {"down", false}, {"up", true}, {"down", true}} {
+		name := tc.direction
+		if tc.sameParent {
+			name += "/same_parent"
+		}
+		t.Run(name, func(t *testing.T) {
+			direction := tc.direction
+			version := sharedInputCustodyVersion - 1
+			if direction == "down" {
+				version = sharedInputCustodyVersion
+			}
+			db := openMigratedDatabaseCopy(t, version)
+			seedSharedInputMigration(t, db)
+			if tc.sameParent {
+				mustExec(t, db, `PRAGMA foreign_keys=OFF`)
+				mustExec(t, db, `UPDATE conversation_turns SET retry_of_turn_id='legacy-retry' WHERE id='base'`)
+				mustExec(t, db, `PRAGMA foreign_keys=ON`)
+			}
+			foreignKeysBefore := sharedInputForeignKeyViolations(t, db)
+			before := sharedInputObjects(t, db)
+			var ledgerBefore int64
+			if err := db.QueryRow(`SELECT MAX(id) FROM goose_db_version`).Scan(&ledgerBefore); err != nil {
+				t.Fatal(err)
+			}
+			parts := strings.SplitN(string(source), "-- +goose Down", 2)
+			part := 0
+			if direction == "down" {
+				part = 1
+			}
+			// Simulate a rebuild that loses a turn's parent after taking its FK baseline.
+			fault := `UPDATE conversation_turns SET conversation_id='missing-parent' WHERE id='base';`
+			if tc.sameParent {
+				// The row already has an orphan FK to conversation_turns, but a
+				// second source column becoming invalid must still be rejected.
+				fault = `UPDATE conversation_turns SET promoted_to_turn_id='missing-parent' WHERE id='base';`
+			}
+			parts[part] = strings.Replace(parts[part], "CREATE TEMP TABLE shared_input_fk_check", fault+"\nCREATE TEMP TABLE shared_input_fk_check", 1)
+			fs := fstest.MapFS{filename: {Data: []byte(strings.Join(parts, "-- +goose Down"))}}
+			err := func() error {
+				gooseMu.Lock()
+				defer gooseMu.Unlock()
+				goose.SetBaseFS(fs)
+				defer goose.SetBaseFS(migrationsFS)
+				return withInputRebuildForeignKeys(db, func() error {
+					if direction == "down" {
+						return goose.DownTo(db, "migrations", sharedInputCustodyVersion-1)
+					}
+					return goose.UpTo(db, "migrations", sharedInputCustodyVersion)
+				})
+			}()
+			if err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+				t.Fatalf("new FK violation did not reject rebuild: %v", err)
+			}
+			if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
+				t.Fatal("FK failure did not roll back complete schema")
+			}
+			if !tc.sameParent {
+				assertSharedInputRows(t, db)
+			}
+			if after := sharedInputForeignKeyViolations(t, db); !reflect.DeepEqual(foreignKeysBefore, after) {
+				t.Fatalf("FK failure did not roll back data: %v -> %v", foreignKeysBefore, after)
+			}
+			var ledgerAfter int64
+			if err := db.QueryRow(`SELECT MAX(id) FROM goose_db_version`).Scan(&ledgerAfter); err != nil || ledgerAfter != ledgerBefore {
+				t.Fatalf("FK failure committed migration ledger: %d -> %d: %v", ledgerBefore, ledgerAfter, err)
+			}
+		})
+	}
+}
+
+func TestSharedInputMigrationFailureRollsBackCompleteSchemaAndLedger(t *testing.T) {
+	for _, collision := range []string{"ledger", "conversation_input_holds"} {
+		t.Run(collision, func(t *testing.T) {
+			db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+			seedSharedInputMigration(t, db)
+			fault := "CREATE TABLE " + collision + "(collision TEXT)"
+			undo := "DROP TABLE " + collision
+			if collision == "ledger" {
+				fault = `CREATE TRIGGER s0_ledger_fault BEFORE INSERT ON goose_db_version WHEN NEW.version_id=20261101152248341 BEGIN SELECT RAISE(ABORT,'S0_LEDGER_FAULT'); END`
+				undo = "DROP TRIGGER s0_ledger_fault"
+			}
+			if _, err := db.Exec(fault); err != nil {
+				t.Fatal(err)
+			}
+			before := sharedInputObjects(t, db)
+			if err := migrate(db); err == nil {
+				t.Fatal("injected rebuild collision succeeded")
+			}
+			if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
+				t.Fatal("failed rebuild exposed a changed or unguarded schema")
+			}
+			assertSharedInputRows(t, db)
+			var applied int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id=?`, sharedInputCustodyVersion).Scan(&applied); err != nil || applied != 0 {
+				t.Fatalf("failed schema committed its ledger: %d %v", applied, err)
+			}
+			if _, err := db.Exec(undo); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrate(db); err != nil {
+				t.Fatalf("recovery after rollback: %v", err)
+			}
+			assertSharedInputRows(t, db)
+		})
+	}
+}
+
+func TestSharedInputMigrationRefusesUnqualifiedDirectRebuild(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+	seedSharedInputMigration(t, db)
+	before := sharedInputObjects(t, db)
+	gooseMu.Lock()
+	err := goose.UpTo(db, "migrations", sharedInputCustodyVersion)
+	gooseMu.Unlock()
+	if err == nil {
+		t.Fatal("rebuild with live FK cascades succeeded")
+	}
+	if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
+		t.Fatal("direct rebuild changed schema before rejecting")
+	}
+	assertSharedInputRows(t, db)
+}
+
+func TestSharedInputDownRefusesCustodyOrHistoricalActions(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion)
+	seedSharedInputMigration(t, db)
+	if _, err := db.Exec(`INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,target_owner,created_at) VALUES('register','base','register','',0,'owner',CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	before := sharedInputObjects(t, db)
+	gooseMu.Lock()
+	err := migrateDownTo(db, sharedInputCustodyVersion-1)
+	gooseMu.Unlock()
+	if err == nil {
+		t.Fatal("Down discarded custody")
+	}
+	if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected Down removed a guard")
+	}
+	assertSharedInputRows(t, db)
+	if _, err := db.Exec(`INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,created_at) VALUES('delete','base','delete','owner',1,CURRENT_TIMESTAMP)`); err == nil {
+		// The FK-protected branch/retry links intentionally prevent this delete.
+		t.Fatal("explicit delete bypassed existing history FK protection")
+	}
+	for _, statement := range []string{
+		`DELETE FROM conversation_branches WHERE id='branch'`,
+		`DELETE FROM conversation_turns WHERE id IN ('retry','promoted')`,
+		`INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,created_at) VALUES('delete','base','delete','owner',1,CURRENT_TIMESTAMP)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var custody int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM conversation_input_custody`).Scan(&custody); err != nil || custody != 0 {
+		t.Fatalf("explicit delete left custody: %d %v", custody, err)
+	}
+	gooseMu.Lock()
+	err = migrateDownTo(db, sharedInputCustodyVersion-1)
+	gooseMu.Unlock()
+	if err == nil {
+		t.Fatal("Down discarded action history after explicit input deletion")
+	}
+	if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
+		t.Fatal("history-only rejected Down removed a guard")
+	}
+}

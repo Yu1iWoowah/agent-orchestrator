@@ -39,7 +39,7 @@ func TestExecutionBindingMigrationPreservesLegacyReviewerAndGuardsDowngrade(t *t
 			goose.SetLogger(goose.NopLogger())
 			err := goose.SetDialect("sqlite3")
 			if err == nil {
-				err = goose.DownTo(db, "migrations", 20261029033801026)
+				err = migrateDownTo(db, 20261029033801026)
 			}
 			gooseMu.Unlock()
 			if guard == "legacy" {

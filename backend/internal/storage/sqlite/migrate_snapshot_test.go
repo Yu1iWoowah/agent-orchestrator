@@ -84,7 +84,7 @@ func buildMigrationSnapshots(t *testing.T, version int64, fsys fs.FS) []byte {
 		if next <= migrationSnapshots.highest {
 			continue
 		}
-		if err := goose.UpTo(db, "migrations", next); err != nil {
+		if err := migrateUpTo(db, next); err != nil {
 			t.Fatalf("migrate to %d: %v", next, err)
 		}
 		snapshot, err := os.ReadFile(databasePath)
