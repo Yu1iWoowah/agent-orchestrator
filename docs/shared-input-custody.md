@@ -20,6 +20,10 @@ S0 提供獨立的 `ports.InputCustodyStore`，保留 queued／held／unknown in
 
 INSERT／UPDATE 的 replacement guards 逐一檢查 PK、conversation/sequence、非空 client/request/provider 唯一鍵的衝突受害列，保護 held 與已登記 custody 的原 row，無須 recursive_triggers=1。空鍵不參與 partial unique 衝突，普通未登記列與非 held provider 更新仍沿用 v1 行為。register 保存現有 message/activity IDs，hold 重新保存當下完整 IDs；若原 row 遺失或改綁，preflight 與目標 turn action gate 回傳 storage incompatibility。兩個 `(conversation_id,turn_id,id)` 索引與明確 conversation 條件支援此保存，維持 v1 lineage 查詢的 conversation 範圍，不掃全 message/activity 表。
 
+payload IDs 以 turn **目前的 conversation** 驗證；非 held 的已登記 turn 與其全部 payload 一起移動且維持關聯可通過，單獨改綁則拒絕。held 的位置變更仍受 guard。
+
+PR1 core 的 API 在 register 時拒絕 payload rowid=-1，以免之後同表的普通自動編號 INSERT 被保守阻擋；歷史已登記 sentinel 仍保留原 guards。新的 partial held index 與雙向 consistency 查詢見 [OwnerInbox core](owner-inbox-core.md)，不代表正式 routing 已啟用。
+
 ## Migration 與依賴清冊
 
 唯一 DDL：`backend/internal/storage/sqlite/migrations/20261101152248341_shared_input_custody.sql`。其他 owner 消費此 schema，不再重建 turn CHECK／shared hold／view。

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
 func TestInputCustodyReplacementRowIDs(t *testing.T) {
@@ -45,7 +46,12 @@ func TestInputCustodyReplacementRowIDs(t *testing.T) {
 									t.Fatal(err)
 								}
 							}
-							if mode != "ordinary" {
+							if mode != "ordinary" && negative {
+								// Historical S0 registration bypasses the newer API sentinel rejection.
+								if err := gen.New(db).InsertInputCustodyAction(t.Context(), gen.InsertInputCustodyActionParams{ActionKey: "register", TurnID: "protected", Kind: "register", TargetOwner: "owner", CreatedAt: testNow}); err != nil {
+									t.Fatal(err)
+								}
+							} else if mode != "ordinary" {
 								if _, err := s.RegisterInputCustody(t.Context(), "protected", "owner", "register", testNow); err != nil {
 									t.Fatal(err)
 								}
@@ -151,8 +157,12 @@ func TestInputCustodyRowIDDefaultSentinelFailsClosed(t *testing.T) {
 			if _, err := db.Exec("UPDATE "+c.table+" SET rowid=-1 WHERE id=?", c.original); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.RegisterInputCustody(t.Context(), "protected", "owner", "register", testNow); err != nil {
+			// Reproduce already-registered S0 data: the new API rejects new sentinel registration.
+			if err := gen.New(db).InsertInputCustodyAction(t.Context(), gen.InsertInputCustodyActionParams{ActionKey: "register", TurnID: "protected", Kind: "register", TargetOwner: "owner", CreatedAt: testNow}); err != nil {
 				t.Fatal(err)
+			}
+			if receipt, err := s.RegisterInputCustody(t.Context(), "protected", "owner", "register", testNow); err != nil || receipt.Revision != 1 {
+				t.Fatalf("historical sentinel registration replay: %+v %v", receipt, err)
 			}
 			before := inputPayloadRow(t, db, c.table, c.original)
 			normal := c

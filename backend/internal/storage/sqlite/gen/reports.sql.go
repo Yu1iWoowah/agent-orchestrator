@@ -107,8 +107,9 @@ func (q *Queries) AcknowledgeReportBatch(ctx context.Context, arg AcknowledgeRep
 const assignPendingReportsToBatch = `-- name: AssignPendingReportsToBatch :exec
 UPDATE reports
 SET delivery_batch_id = ?1
-WHERE project_id = ?2 AND delivery_state = 'pending'
+WHERE reports.project_id = ?2 AND delivery_state = 'pending'
   AND delivery_batch_id = ''
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 `
 
 type AssignPendingReportsToBatchParams struct {
@@ -126,8 +127,9 @@ UPDATE reports
 SET delivery_state = 'claimed', claim_token = ?1,
     claimed_at = ?2, delivery_attempts = delivery_attempts + 1,
     last_error = ''
-WHERE project_id = ?3 AND delivery_state = 'pending'
+WHERE reports.project_id = ?3 AND delivery_state = 'pending'
   AND delivery_batch_id = ?4
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 RETURNING id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id
 `
 
@@ -190,6 +192,7 @@ SET delivery_state = 'claimed', claim_token = ?1,
     claimed_at = ?2, delivery_attempts = delivery_attempts + 1,
     last_error = ''
 WHERE id = ?3 AND delivery_state = 'pending' AND available_at <= ?2
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 RETURNING id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id
 `
 
@@ -411,6 +414,7 @@ func (q *Queries) GetReportInterrupt(ctx context.Context, sessionID string) (tim
 const listPendingReportSchedule = `-- name: ListPendingReportSchedule :many
 SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id FROM reports
 WHERE delivery_state = 'pending'
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 ORDER BY available_at, created_at, id
 LIMIT ?
 `
@@ -459,6 +463,7 @@ func (q *Queries) ListPendingReportSchedule(ctx context.Context, limit int64) ([
 const listPendingReports = `-- name: ListPendingReports :many
 SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id FROM reports
 WHERE delivery_state = 'pending' AND available_at <= ?
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 ORDER BY created_at, id
 LIMIT ?
 `
@@ -511,7 +516,8 @@ func (q *Queries) ListPendingReports(ctx context.Context, arg ListPendingReports
 
 const listPendingReportsByProjectSchedule = `-- name: ListPendingReportsByProjectSchedule :many
 SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id FROM reports
-WHERE project_id = ? AND delivery_state = 'pending'
+WHERE reports.project_id = ? AND delivery_state = 'pending'
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 ORDER BY available_at, created_at, id
 LIMIT ?
 `

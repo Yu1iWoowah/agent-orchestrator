@@ -31,28 +31,32 @@ SELECT * FROM reports WHERE project_id = ? ORDER BY created_at, id;
 -- name: ListPendingReportSchedule :many
 SELECT * FROM reports
 WHERE delivery_state = 'pending'
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 ORDER BY available_at, created_at, id
 LIMIT ?;
 
 -- name: ListPendingReportsByProjectSchedule :many
 SELECT * FROM reports
-WHERE project_id = ? AND delivery_state = 'pending'
+WHERE reports.project_id = ? AND delivery_state = 'pending'
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 ORDER BY available_at, created_at, id
 LIMIT ?;
 
 -- name: AssignPendingReportsToBatch :exec
 UPDATE reports
 SET delivery_batch_id = sqlc.arg(delivery_batch_id)
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'pending'
-  AND delivery_batch_id = '';
+WHERE reports.project_id = sqlc.arg(project_id) AND delivery_state = 'pending'
+  AND delivery_batch_id = ''
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id);
 
 -- name: ClaimPendingReportsByBatch :many
 UPDATE reports
 SET delivery_state = 'claimed', claim_token = sqlc.arg(claim_token),
     claimed_at = sqlc.arg(claimed_at), delivery_attempts = delivery_attempts + 1,
     last_error = ''
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'pending'
+WHERE reports.project_id = sqlc.arg(project_id) AND delivery_state = 'pending'
   AND delivery_batch_id = sqlc.arg(delivery_batch_id)
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 RETURNING *;
 
 -- name: AcknowledgeReportBatch :many
@@ -89,6 +93,7 @@ ON CONFLICT(session_id) DO UPDATE SET last_interrupted_at = excluded.last_interr
 -- name: ListPendingReports :many
 SELECT * FROM reports
 WHERE delivery_state = 'pending' AND available_at <= ?
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 ORDER BY created_at, id
 LIMIT ?;
 
@@ -98,6 +103,7 @@ SET delivery_state = 'claimed', claim_token = sqlc.arg(claim_token),
     claimed_at = sqlc.arg(claimed_at), delivery_attempts = delivery_attempts + 1,
     last_error = ''
 WHERE id = sqlc.arg(id) AND delivery_state = 'pending' AND available_at <= sqlc.arg(claimed_at)
+  AND NOT EXISTS (SELECT 1 FROM owner_inbox_sources s WHERE s.report_id = reports.id)
 RETURNING *;
 
 -- name: AcknowledgeReport :one

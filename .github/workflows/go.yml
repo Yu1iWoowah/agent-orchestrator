@@ -141,7 +141,10 @@ jobs:
         if: matrix.shard == 1
         # Keep the full data volume and SQLite JSON guards, with an independent
         # 20m package budget instead of sharing it with the rest of shard 1.
-        run: go test -json -race -count=1 -timeout=20m -run '^TestReplacementByteCapacityPreservesSuccessorBinding$' ./internal/storage/sqlite/store
+        run: |
+          selected=$(go test -race -list '^TestReplacementByteCapacityPreservesSuccessorBinding$' ./internal/storage/sqlite/store | grep -E '^(Test|Example|Fuzz)' || true)
+          test "$selected" = 'TestReplacementByteCapacityPreservesSuccessorBinding'
+          go test -json -race -count=1 -timeout=20m -run '^TestReplacementByteCapacityPreservesSuccessorBinding$' ./internal/storage/sqlite/store
 
   sqlite-race:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
