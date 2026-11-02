@@ -10,6 +10,39 @@ transaction and shared I/O lane, the `delivery.unknown.defer` consumer,
 qualified native authority/Get UX, and every required Claude/Codex Chat/TUI/script
 joint cell. SQLite fixtures do not implement S eligibility or qualify a provider.
 
+## Activation prerequisites: report consumers
+
+H source payloads and outputs exist only in `owner_inbox_sources.report_json`;
+they are not projected into `reports` or `report_outputs`. Before adding any
+non-test caller to `AcceptReport`, every consumer below must read both legacy
+reports and H sources, or receive an equivalent H-owned projection. This applies
+even to an intake-only caller while claim/input/ACK remains disabled, including
+unbound sources whose receipt records `routing_unavailable`.
+
+- **Replacement handoff inventory and fence:** `ReadReplacementIntake` uses
+  `ListReportsByProject` and `ListReportOutputs` to inventory pending/claimed
+  reports. It currently omits unacknowledged H sources and their outputs.
+  `replacement_report_intake_insert` also watches only `reports`, so H intake
+  does not advance `intake_revision`. Replacement can therefore freeze while
+  silently omitting an H source. Both the inventory and revision fence must
+  include H intake; accepting a late H source must invalidate a stale freeze
+  decision in the same way as accepting a legacy report.
+- **Attention:** `attention_report_created` and `project_attention.sql` watch
+  or query only `reports`. H `needs_input`/`stuck` sources currently produce no
+  corresponding attention entry. H intake must feed the attention lifecycle
+  and its change/revision signal so those requests cannot disappear from view.
+- **Reported PR detection:** `ListReportedPRURLs` reads `pr_created` entries
+  from `report_outputs`. H outputs are absent, so their reported PRs are not
+  detected. The reported-PR consumer must also include H `pr_created` outputs.
+- **Report history:** `ListReportsByProject`, `ListReportsBySession` and their
+  report/output APIs omit H source content and outputs. Project/session history
+  must include H sources through the shared read/projection path, with current
+  AO ACK state taken from the guarded source fact rather than its intake snapshot.
+
+These are unimplemented activation gates, not properties certified by the core
+fixtures. All must be implemented and tested before the first non-test intake;
+S-G0 qualification alone does not restore these consumers.
+
 ## Typed transaction contract
 
 | Port | Durable result |
@@ -18,6 +51,12 @@ joint cell. SQLite fixtures do not implement S eligibility or qualify a provider
 | ClaimBatch | Check explicit owner/epoch/conversation/branch/generation/policy; fix ordered source versions and summary hash. The summary stays independent of user text; equivalent competing plans resolve to the original batch. |
 | BindAcceptAndAckAO | Atomically create canonical queued input or verify existing piggyback input, enlist S intake/hold and optional U1 metadata, map input and ACK reports. Missing S participant refuses before input creation; any error rolls back all effects. |
 | GetByActionKey | Return original references after response loss or owner changes. Replay never enlists metadata or creates an input twice. Receipt is AO acceptance, not L2 or an outbound permit. |
+
+`AcceptReport` identity is scoped by project/sender/caller key. Its payload
+fingerprint covers only state, note, message and ordered outputs; `CreatedAt`,
+`AvailableAt` and `RepeatCount` do not change that caller intent identity.
+A same-key retry returns the original source/receipt without replacing its
+timestamps, schedule or repeat count. A new intent requires a new caller key.
 
 A piggyback input that loses to another canonical input receives
 `ErrOwnerInboxInputNotBound`. Its existing human input remains intact; no alias,
