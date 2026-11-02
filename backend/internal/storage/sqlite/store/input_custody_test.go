@@ -351,7 +351,7 @@ func TestInputCustodyActionsEmitCDCRegardlessOfTriggerCreationOrder(t *testing.T
 }
 
 func TestInputCustodyMissingGuardFailsBeforeWriting(t *testing.T) {
-	for _, guard := range []string{"conversation_input_turn_delete", "conversation_input_message_update", "conversation_input_message_replacement_update", "conversation_input_activity_update", "conversation_input_activity_replacement_update"} {
+	for _, guard := range []string{"conversation_input_turn_delete", "conversation_input_message_insert", "conversation_input_activity_insert", "conversation_input_message_update", "conversation_input_message_replacement_update", "conversation_input_activity_update", "conversation_input_activity_replacement_update"} {
 		t.Run(guard, func(t *testing.T) {
 			ctx := t.Context()
 			s, db, rec := settingsStartFixture(t, "")

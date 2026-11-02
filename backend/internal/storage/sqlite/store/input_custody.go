@@ -138,6 +138,7 @@ func (s *Store) InputCustodyStorageCompatibility(ctx context.Context) error {
 // writer transaction; action facts are checked separately by indexed turn ID.
 const inputCustodySchemaReadySQL = `SELECT CAST(
  (SELECT foreign_keys FROM pragma_foreign_keys) = 1
+ AND (SELECT COUNT(*) FROM pragma_table_list WHERE schema='main' AND name IN ('conversation_input_actions','conversation_input_custody','conversation_input_holds') AND wr=1)=3
  AND (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
   'conversation_input_action_validate',
   'conversation_input_action_no_update',

@@ -2,12 +2,19 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/pressly/goose/v3"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func seedSharedInputMigration(t *testing.T, db *sql.DB) {
@@ -445,4 +452,125 @@ func TestSharedInputDownRefusesCustodyOrHistoricalActions(t *testing.T) {
 	if after := sharedInputObjects(t, db); !reflect.DeepEqual(before, after) {
 		t.Fatal("history-only rejected Down removed a guard")
 	}
+}
+
+// Recreate the catalog properties of unpublished S0 candidates, rather than
+// treating an already-applied migration ID as proof of current guard support.
+func TestSharedInputUnpublishedCandidateShapesFailClosed(t *testing.T) {
+	const filename = "migrations/20261101152248341_shared_input_custody.sql"
+	source, err := migrationsFS.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(source), ") WITHOUT ROWID;") != 3 {
+		t.Fatal("expected three rowid-less ledger definitions")
+	}
+	legacy := strings.ReplaceAll(string(source), ") WITHOUT ROWID;", ");")
+	for _, triggers := range []int{19, 21} {
+		for _, populated := range []bool{false, true} {
+			name := fmt.Sprintf("triggers=%d/held=%t", triggers, populated)
+			t.Run(name, func(t *testing.T) {
+				db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
+				seedSharedInputMigration(t, db)
+				originalSchema := sharedInputObjects(t, db)
+				func() {
+					gooseMu.Lock()
+					defer gooseMu.Unlock()
+					goose.SetBaseFS(fstest.MapFS{filename: {Data: []byte(legacy)}})
+					defer goose.SetBaseFS(migrationsFS)
+					err = withInputRebuildForeignKeys(db, func() error { return goose.UpTo(db, "migrations", sharedInputCustodyVersion) })
+				}()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if triggers == 19 {
+					// These two guards distinguish the unpublished 19-trigger catalog.
+					if _, err := db.Exec(`DROP TRIGGER conversation_input_message_replacement_update; DROP TRIGGER conversation_input_activity_replacement_update`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if populated {
+					if _, err := db.Exec(`INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,target_owner,created_at) VALUES('register','base','register','',0,'owner',CURRENT_TIMESTAMP);
+INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,expected_revision,hold_key,hold_owner,hold_version,reason,created_at) VALUES('hold','base','hold','owner',1,'delivery','owner',0,'unknown',CURRENT_TIMESTAMP)`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				beforeSchema := sharedInputObjects(t, db)
+				beforeFacts := sharedLegacyInputFacts(t, db)
+				func() { gooseMu.Lock(); defer gooseMu.Unlock(); err = migrateUpTo(db, sharedInputCustodyVersion) }()
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := sqlitestore.NewStore(db, db)
+				if err := s.InputCustodyStorageCompatibility(t.Context()); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) {
+					t.Fatalf("legacy catalog qualified: %v", err)
+				}
+				if _, err := s.RegisterInputCustody(t.Context(), "retry", "owner", "must-not-write", time.Now().UTC()); !errors.Is(err, domain.ErrInputCustodyStorageIncompatible) {
+					t.Fatalf("legacy catalog allowed an action: %v", err)
+				}
+				if !reflect.DeepEqual(beforeSchema, sharedInputObjects(t, db)) || !reflect.DeepEqual(beforeFacts, sharedLegacyInputFacts(t, db)) {
+					t.Fatal("upgrade/preflight changed unpublished candidate data")
+				}
+				gooseMu.Lock()
+				err = migrateDownTo(db, sharedInputCustodyVersion-1)
+				gooseMu.Unlock()
+				if triggers == 21 && !populated {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(originalSchema, sharedInputObjects(t, db)) {
+						t.Fatal("empty 21-trigger backout changed original schema")
+					}
+				} else {
+					if err == nil {
+						t.Fatal("unsupported or populated candidate Down succeeded")
+					}
+					if !reflect.DeepEqual(beforeSchema, sharedInputObjects(t, db)) || !reflect.DeepEqual(beforeFacts, sharedLegacyInputFacts(t, db)) {
+						t.Fatal("failed candidate Down did not fully roll back")
+					}
+				}
+				assertSharedInputRows(t, db)
+			})
+		}
+	}
+}
+
+func sharedLegacyInputFacts(t *testing.T, db *sql.DB) map[string]string {
+	t.Helper()
+	result := map[string]string{}
+	for _, table := range []string{"conversation_turns", "conversation_messages", "conversation_activities", "conversation_branches", "conversation_input_actions", "conversation_input_custody", "conversation_input_holds", "goose_db_version", "change_log"} {
+		rows, err := db.Query("SELECT rowid,* FROM " + table + " ORDER BY rowid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		columns, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var contents [][]any
+		for rows.Next() {
+			values := make([]any, len(columns))
+			targets := make([]any, len(columns))
+			for i := range values {
+				targets[i] = &values[i]
+			}
+			if err := rows.Scan(targets...); err != nil {
+				t.Fatal(err)
+			}
+			contents = append(contents, values)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(contents)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result[table] = string(encoded)
+	}
+	return result
 }

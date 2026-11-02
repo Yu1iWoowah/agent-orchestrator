@@ -82,7 +82,10 @@ func inputReplacementSQL(c inputReplacementCase, verb string) (string, []any) {
 	}
 	var sequence any = 99
 	key, provider := any(""), any("")
+	rowID := ""
 	switch c.column {
+	case "rowid", "_rowid_", "oid":
+		rowID = c.column
 	case "sequence":
 		sequence = c.value
 	case "provider_item_id":
@@ -90,12 +93,19 @@ func inputReplacementSQL(c inputReplacementCase, verb string) (string, []any) {
 	default:
 		key = c.value
 	}
+	query := `INSERT OR REPLACE INTO conversation_activities(id,conversation_id,turn_id,sequence,kind,status,summary,request_id,provider_item_id,created_at,updated_at)
+ VALUES('incoming','start-context','ordinary',?,'command','completed','replacement',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`
 	if c.table == "conversation_messages" {
-		return `INSERT OR REPLACE INTO conversation_messages(id,conversation_id,turn_id,sequence,role,origin,text,client_message_id,provider_item_id,created_at,updated_at)
- VALUES('incoming','start-context','ordinary',?,'user','human','replacement',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, []any{sequence, key, provider}
+		query = `INSERT OR REPLACE INTO conversation_messages(id,conversation_id,turn_id,sequence,role,origin,text,client_message_id,provider_item_id,created_at,updated_at)
+ VALUES('incoming','start-context','ordinary',?,'user','human','replacement',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`
 	}
-	return `INSERT OR REPLACE INTO conversation_activities(id,conversation_id,turn_id,sequence,kind,status,summary,request_id,provider_item_id,created_at,updated_at)
- VALUES('incoming','start-context','ordinary',?,'command','completed','replacement',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, []any{sequence, key, provider}
+	args := []any{sequence, key, provider}
+	if rowID != "" {
+		query = strings.Replace(query, "(id,", "("+rowID+",id,", 1)
+		query = strings.Replace(query, "VALUES('incoming'", "VALUES(?,'incoming'", 1)
+		args = append([]any{c.value}, args...)
+	}
+	return query, args
 }
 
 func inputPayloadRow(t *testing.T, db *sql.DB, table, id string) string {

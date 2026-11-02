@@ -98,7 +98,7 @@ CREATE TABLE conversation_input_actions (
  target_state TEXT NOT NULL DEFAULT '' CHECK(target_state IN ('','queued','running','completed','recovered','interrupted','failed','cancelled')),
  created_at TIMESTAMP NOT NULL,
  CHECK(length(expected_owner) <= 256 AND length(target_owner) <= 256 AND length(hold_key) <= 256 AND length(hold_owner) <= 256 AND length(reason) <= 128)
-);
+) WITHOUT ROWID;
 CREATE INDEX conversation_input_actions_turn ON conversation_input_actions(turn_id, expected_revision);
 CREATE TABLE conversation_input_custody (
  turn_id TEXT PRIMARY KEY REFERENCES conversation_turns(id) ON DELETE CASCADE,
@@ -114,7 +114,7 @@ CREATE TABLE conversation_input_custody (
  message_ids_json TEXT NOT NULL CHECK(json_valid(message_ids_json) AND json_type(message_ids_json)='array'),
  activity_ids_json TEXT NOT NULL CHECK(json_valid(activity_ids_json) AND json_type(activity_ids_json)='array'),
  last_action_key TEXT NOT NULL REFERENCES conversation_input_actions(action_key)
-);
+) WITHOUT ROWID;
 CREATE TABLE conversation_input_holds (
  turn_id TEXT NOT NULL REFERENCES conversation_input_custody(turn_id) ON DELETE CASCADE,
  hold_key TEXT NOT NULL CHECK(length(hold_key) BETWEEN 1 AND 256),
@@ -124,7 +124,7 @@ CREATE TABLE conversation_input_holds (
  active INTEGER NOT NULL CHECK(active IN (0,1)),
  last_action_key TEXT NOT NULL REFERENCES conversation_input_actions(action_key),
  PRIMARY KEY(turn_id, hold_key)
-);
+) WITHOUT ROWID;
 CREATE INDEX conversation_input_holds_active ON conversation_input_holds(turn_id) WHERE active = 1;
 
 CREATE TRIGGER conversation_input_action_validate BEFORE INSERT ON conversation_input_actions
@@ -225,7 +225,7 @@ BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 CREATE TRIGGER conversation_input_message_insert BEFORE INSERT ON conversation_messages
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds WHERE turn_id=NEW.turn_id AND active=1)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE p.id=NEW.id)
+  WHERE p.id=NEW.id OR p.rowid=NEW.rowid)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
   WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
@@ -240,15 +240,15 @@ WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_cus
  WHERE h.turn_id IN (OLD.turn_id,NEW.turn_id) AND h.active=1 AND a.kind<>'delete')
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 -- Only key updates can replace a distinct protected payload.
-CREATE TRIGGER conversation_input_message_replacement_update BEFORE UPDATE OF id,conversation_id,sequence,client_message_id,provider_item_id ON conversation_messages
+CREATE TRIGGER conversation_input_message_replacement_update BEFORE UPDATE OF id,rowid,_rowid_,oid,conversation_id,sequence,client_message_id,provider_item_id ON conversation_messages
 WHEN EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE p.id=NEW.id AND p.id<>OLD.id)
+  WHERE (p.id=NEW.id OR p.rowid=NEW.rowid) AND p.rowid<>OLD.rowid)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.id<>OLD.id)
+  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.rowid<>OLD.rowid)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE NEW.client_message_id<>'' AND p.client_message_id<>'' AND p.conversation_id=NEW.conversation_id AND p.client_message_id=NEW.client_message_id AND p.id<>OLD.id)
+  WHERE NEW.client_message_id<>'' AND p.client_message_id<>'' AND p.conversation_id=NEW.conversation_id AND p.client_message_id=NEW.client_message_id AND p.rowid<>OLD.rowid)
  OR EXISTS(SELECT 1 FROM conversation_messages p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id AND p.id<>OLD.id)
+  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id AND p.rowid<>OLD.rowid)
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 CREATE TRIGGER conversation_input_message_delete BEFORE DELETE ON conversation_messages
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
@@ -262,15 +262,15 @@ WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_cus
  WHERE h.turn_id IN (OLD.turn_id,NEW.turn_id) AND h.active=1 AND a.kind<>'delete')
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 -- Only key updates can replace a distinct protected payload.
-CREATE TRIGGER conversation_input_activity_replacement_update BEFORE UPDATE OF id,conversation_id,sequence,request_id,provider_item_id ON conversation_activities
+CREATE TRIGGER conversation_input_activity_replacement_update BEFORE UPDATE OF id,rowid,_rowid_,oid,conversation_id,sequence,request_id,provider_item_id ON conversation_activities
 WHEN EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE p.id=NEW.id AND p.id<>OLD.id)
+  WHERE (p.id=NEW.id OR p.rowid=NEW.rowid) AND p.rowid<>OLD.rowid)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.id<>OLD.id)
+  WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence AND p.rowid<>OLD.rowid)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE NEW.request_id<>'' AND p.request_id<>'' AND p.conversation_id=NEW.conversation_id AND p.request_id=NEW.request_id AND p.id<>OLD.id)
+  WHERE NEW.request_id<>'' AND p.request_id<>'' AND p.conversation_id=NEW.conversation_id AND p.request_id=NEW.request_id AND p.rowid<>OLD.rowid)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id AND p.id<>OLD.id)
+  WHERE NEW.provider_item_id<>'' AND p.provider_item_id<>'' AND p.conversation_id=NEW.conversation_id AND p.provider_item_id=NEW.provider_item_id AND p.rowid<>OLD.rowid)
 BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 CREATE TRIGGER conversation_input_activity_delete BEFORE DELETE ON conversation_activities
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_input_custody c ON c.turn_id=h.turn_id
@@ -281,7 +281,7 @@ BEGIN SELECT RAISE(ABORT,'INPUT_HELD'); END;
 CREATE TRIGGER conversation_input_activity_insert BEFORE INSERT ON conversation_activities
 WHEN EXISTS(SELECT 1 FROM conversation_input_holds WHERE turn_id=NEW.turn_id AND active=1)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
-  WHERE p.id=NEW.id)
+  WHERE p.id=NEW.id OR p.rowid=NEW.rowid)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id
   WHERE p.conversation_id=NEW.conversation_id AND p.sequence=NEW.sequence)
  OR EXISTS(SELECT 1 FROM conversation_activities p JOIN conversation_input_custody c ON c.turn_id=p.turn_id

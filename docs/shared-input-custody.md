@@ -63,4 +63,12 @@ python3 test/shared-input-custody-compat.py \
 
 探針執行待測 binary 的真實 daemon／chat-host，外部 Codex provider 使用離線替身。這是 shared-schema 相容驗證，不替代正式 provider 的 freshness、權限、handoff lifecycle 或真內容演練，也不授權啟用新路徑。
 
-一般 payload 更新仍由 `conversation_input_message_update`／`conversation_input_activity_update` 檢查 held 內容保全；較重的唯一鍵受害列檢查分到 `conversation_input_message_replacement_update`／`conversation_input_activity_replacement_update`，只在 `UPDATE OF id,conversation_id,sequence,client_message_id/request_id,provider_item_id` 時編譯。未修改唯一鍵的更新不可能替換另一列；INSERT replacement 保護與全部 held 欄位保護不變。writer compatibility gate 要求兩組 guard 同時存在，Down 一併移除。
+一般 payload 更新仍由 `conversation_input_message_update`／`conversation_input_activity_update` 檢查 held 內容保全；較重的唯一鍵受害列檢查分到 `conversation_input_message_replacement_update`／`conversation_input_activity_replacement_update`，只在 `UPDATE OF id,rowid,_rowid_,oid,conversation_id,sequence,client_message_id/request_id,provider_item_id` 時編譯。未修改唯一鍵的更新不可能替換另一列；INSERT replacement 保護與全部 held 欄位保護不變。writer compatibility gate 要求兩組 guard 同時存在，Down 一併移除。
+
+rowid table 的實體唯一鍵也受保護：INSERT guard 同時檢查 `NEW.rowid`，replacement UPDATE guard涵蓋 `rowid`／`_rowid_`／`oid` 三個別名，避免 `OR REPLACE` 在 recursive_triggers=0 時刪除已登記 payload。未增加trigger；gate與Down維持相同21個清冊。
+
+[SQLite對BEFORE INSERT的說明](https://sqlite.org/lang_createtrigger.html#cautions_on_the_use_of_before_triggers)指出，未明確指定整數rowid時，`NEW.rowid`未定義。目標SQLite以-1表示此狀態；若已登記payload的實體rowid恰為-1，本guard會保守拒絕同表未指定rowid的INSERT，保全原資料。這不是一般自動編號寫入無限制的保證；PR1接入前須處理此少見資料形狀。沒有custody的v1普通寫入（包含負rowid）及非衝突的明確rowid寫入仍可用。
+
+三個新shared ledger表以`WITHOUT ROWID`邏輯主鍵建置，避免隱含實體唯一鍵繞過immutable action／custody／hold保護；preflight以`pragma_table_list.wr`確認，仍維持3表、21個triggers。payload受害列排除自身時改用實體rowid，避免nullable文字id的NULL比較漏判。
+
+未發布候選schema不是升級來源：1f2aa5d5的19-trigger形狀，以及65de52fe的21-trigger／ROWID-ledger形狀，均無自動轉換；新preflight會回storage-incompatible且不寫facts。19-trigger Down因缺少後續guard而失敗並完整回滾；有custody／hold／action history的任何形狀也拒絕Down。只有空的21-trigger形狀可安全Down回舊schema後重建；不得刪除facts來取得Down資格。公開舊v1 binary仍以最新schema上的實測backout為界。
