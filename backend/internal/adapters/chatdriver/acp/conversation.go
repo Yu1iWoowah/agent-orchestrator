@@ -491,7 +491,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 	c.mu.Lock()
 	closed := c.closed
-	busy := c.prepared != nil || c.activeTurn != ""
+	busy := c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != ""
 	c.mu.Unlock()
 	if closed {
 		return ports.ChatTurnRef{}, errConversationClosed
@@ -509,7 +509,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	if c.closed {
 		return ports.ChatTurnRef{}, errConversationClosed
 	}
-	if c.prepared != nil || c.activeTurn != "" {
+	if c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != "" {
 		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	id := uuid.NewString()
@@ -826,6 +826,10 @@ func (c *conversation) finishPrompt(
 	isCompaction := c.compactingTurnID != "" && c.compactingTurnID == turnID
 	answered := len(c.messages) > 0 || len(c.tools) > 0
 	c.mu.Unlock()
+	var compaction *ports.ChatCompactionReceipt
+	if isCompaction {
+		compaction = &ports.ChatCompactionReceipt{CommandID: turnID, Outcome: compactionPromptOutcome(resp.StopReason, err)}
+	}
 	c.settleOpenItems(turnID)
 	interruptedLocally := false
 	if interrupt != nil && interrupt.turnID == turnID {
@@ -889,7 +893,7 @@ func (c *conversation) finishPrompt(
 		// reauthentication demand exists.
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{ReauthRecovered: true}})
 	}
-	if isCompaction {
+	if isCompaction && compaction.Outcome != ports.ChatCompactionUnknown {
 		if state == domain.TurnStateCompleted {
 			c.settleCompaction(turnID)
 		} else {
@@ -910,11 +914,12 @@ func (c *conversation) finishPrompt(
 		c.mu.Unlock()
 	}
 	compactionID := ""
-	if isCompaction && eventID != "" {
+	if compaction != nil && compaction.Outcome != ports.ChatCompactionUnknown && eventID != "" {
 		compactionID = turnID
 	}
 	c.emit(ports.ChatEvent{
 		CompactionID: compactionID,
+		Compaction:   compaction,
 		Kind:         ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, ProviderConversationID: c.ProviderConversationID(), TurnState: state, Err: turnErr,
 	})
@@ -992,7 +997,8 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 }
 
 func (c *conversation) runCompactionTurn(ctx context.Context, sessionID, turnID string) {
-	messageID := uuid.NewString()
+	// The host restores this identity after detach; keep the original command ID.
+	messageID := turnID
 	prompt := []acpsdk.ContentBlock{
 		acpsdk.TextBlock("/compact"),
 	}
@@ -1003,6 +1009,22 @@ func (c *conversation) runCompactionTurn(ctx context.Context, sessionID, turnID 
 	})
 
 	c.finishPrompt(turnID, resp, err)
+}
+
+func compactionPromptOutcome(reason acpsdk.StopReason, err error) ports.ChatCompactionOutcome {
+	if err != nil {
+		var requestErr *acpsdk.RequestError
+		if errors.As(err, &requestErr) && (requestErr.Code == -32601 || requestErr.Code == -32600 && strings.Contains(requestErr.Message, "unknown variant `session/prompt`")) {
+			return ports.ChatCompactionNotSent
+		}
+		return ports.ChatCompactionUnknown
+	}
+	switch reason {
+	case acpsdk.StopReasonEndTurn, acpsdk.StopReasonCancelled, acpsdk.StopReasonMaxTokens, acpsdk.StopReasonMaxTurnRequests, acpsdk.StopReasonRefusal:
+		return ports.ChatCompactionSettled
+	default:
+		return ports.ChatCompactionUnknown
+	}
 }
 
 func (c *conversation) settleCompaction(turnID string) {

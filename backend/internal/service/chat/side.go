@@ -1145,8 +1145,24 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 				if owner, ok := runtime.conv.(ports.ChatOutboundReconciler); ok {
 					sameOwner = runtime.compactionEpoch == owner.OutboundProviderEpoch()
 				}
-				compactionCompleted := sameOwner && noActiveTurn && runtime.compactionID != "" && event.CompactionID == runtime.compactionID && event.ProviderTurnID != ""
+				commandID := event.CompactionID
+				if event.Compaction != nil {
+					commandID = event.Compaction.CommandID
+				}
+				matchedCompaction := sameOwner && noActiveTurn && runtime.compactionID != "" && commandID == runtime.compactionID && event.ProviderTurnID != ""
+				compactionCompleted := matchedCompaction && event.Compaction != nil && event.CompactionID == commandID && (event.Compaction.Outcome == ports.ChatCompactionSettled || event.Compaction.Outcome == ports.ChatCompactionNotSent)
+				if matchedCompaction && !compactionCompleted {
+					runtime.compacting = false
+					m.setOutboundUnverifiedLocked(runtime, true)
+				}
 				runtime.mu.Unlock()
+				if matchedCompaction && !compactionCompleted {
+					diagnosticCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					m.diagnoseCompaction(diagnosticCtx, runtime)
+					cancel()
+					m.announce(runtime.side.ID)
+					m.signal()
+				}
 				if compactionCompleted {
 					// ACP hosts refuse another prompt until the terminal receipt is
 					// acknowledged, including receipts for compaction-only turns.
@@ -1938,8 +1954,8 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 			diagnosticCtx, cancel := context.WithTimeout(s.sides.ctx, 5*time.Second)
 			if !unknown {
 				s.sides.clearCompactionAttention(diagnosticCtx, runtime)
-			} else if attentionErr := outboundAttention(diagnosticCtx, s.store, session, "side:"+sideID, false, s.now()); attentionErr != nil {
-				s.log.Warn("side compaction diagnosis unavailable", "side", sideID, "code", "CHAT_ATTENTION_CREATE_FAILED")
+			} else {
+				s.sides.diagnoseCompaction(diagnosticCtx, runtime)
 			}
 			cancel()
 		}

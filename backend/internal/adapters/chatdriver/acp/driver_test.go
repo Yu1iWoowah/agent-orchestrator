@@ -4564,6 +4564,9 @@ func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
 				promptText += block.Text.Text
 			}
 		}
+		if params.MessageId == nil || *params.MessageId != "compact-command" {
+			t.Errorf("compaction lost original command ID: %v", params.MessageId)
+		}
 		compactionPromptReceived <- promptText
 
 		// Emit intermediate message chunk (should be suppressed by compaction turn)
@@ -4589,7 +4592,7 @@ func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
 	agent.mu.Unlock()
 
 	compactor := opened.(ports.ChatCompactor)
-	result, err := compactor.Compact(context.Background())
+	result, err := compactor.Compact(ports.WithChatCompactionID(context.Background(), "compact-command"))
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}

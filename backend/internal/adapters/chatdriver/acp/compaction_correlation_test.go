@@ -83,3 +83,70 @@ func TestCompactionPrechecksProveNotSent(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactionOutcomeRequiresNativeEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		reason          acpsdk.StopReason
+		err             *acpsdk.RequestError
+		responseFailure bool
+		want            ports.ChatCompactionOutcome
+	}{
+		{name: "native end", reason: acpsdk.StopReasonEndTurn, want: ports.ChatCompactionSettled},
+		{name: "native cancelled", reason: acpsdk.StopReasonCancelled, want: ports.ChatCompactionSettled},
+		{name: "native token limit", reason: acpsdk.StopReasonMaxTokens, want: ports.ChatCompactionSettled},
+		{name: "native request limit", reason: acpsdk.StopReasonMaxTurnRequests, want: ports.ChatCompactionSettled},
+		{name: "native refusal", reason: acpsdk.StopReasonRefusal, want: ports.ChatCompactionSettled},
+		{name: "native failed result", reason: acpsdk.StopReasonEndTurn, responseFailure: true, want: ports.ChatCompactionSettled},
+		{name: "missing stop reason", want: ports.ChatCompactionUnknown},
+		{name: "future stop reason", reason: "future", want: ports.ChatCompactionUnknown},
+		{name: "ordinary RPC error", err: &acpsdk.RequestError{Code: -32603, Message: "outcome unknown"}, want: ports.ChatCompactionUnknown},
+		{name: "validation RPC error", err: &acpsdk.RequestError{Code: -32602, Message: "invalid params"}, want: ports.ChatCompactionUnknown},
+		{name: "unsupported method", err: &acpsdk.RequestError{Code: -32601, Message: "method not found"}, want: ports.ChatCompactionNotSent},
+		{name: "unsupported variant", err: &acpsdk.RequestError{Code: -32600, Message: "unknown variant `session/prompt`"}, want: ports.ChatCompactionNotSent},
+		{name: "wrong variant", err: &acpsdk.RequestError{Code: -32600, Message: "unknown variant `session/load`"}, want: ports.ChatCompactionUnknown},
+		{name: "wrong code", err: &acpsdk.RequestError{Code: -32603, Message: "unknown variant `session/prompt`"}, want: ports.ChatCompactionUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &conversation{sessionID: "native", activeTurn: "command", compactingTurnID: "command", events: make(chan ports.ChatEvent, 16), log: slog.New(slog.DiscardHandler)}
+			response := acpsdk.PromptResponse{StopReason: tc.reason}
+			var promptErr error
+			if tc.err != nil {
+				tc.err.Data = map[string]any{persistenthost.ACPEventIDMetaKey: "host-result"}
+				promptErr = tc.err
+			} else {
+				response.Meta = map[string]any{persistenthost.ACPEventIDMetaKey: "host-result"}
+			}
+			if tc.responseFailure {
+				c.promptResponseFailure = func(acpsdk.PromptResponse) error { return errors.New("native operation failed") }
+			}
+			c.finishPrompt("command", response, promptErr)
+			var terminal *ports.ChatEvent
+			for len(c.events) > 0 {
+				event := <-c.events
+				if event.Kind == ports.ChatEventCompacted && tc.want == ports.ChatCompactionUnknown {
+					t.Fatal("unknown reply projected a completed compaction")
+				}
+				if event.Kind == ports.ChatEventTurnCompleted {
+					terminal = &event
+				}
+			}
+			if terminal == nil || terminal.Compaction == nil || terminal.Compaction.CommandID != "command" || terminal.Compaction.Outcome != tc.want {
+				t.Fatalf("missing or incorrect execution evidence: %+v", terminal)
+			}
+			if tc.want == ports.ChatCompactionUnknown {
+				if terminal.CompactionID != "" || c.compactingTurnID != "command" {
+					t.Fatal("unknown reply erased the original command or claimed settlement")
+				}
+				if _, err := c.SendTurn(t.Context(), ports.ChatUserMessage{Text: "next"}); !errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+					t.Fatalf("unknown compact allowed another native prompt: %v", err)
+				}
+			} else if terminal.CompactionID != "command" || c.compactingTurnID != "" {
+				t.Fatal("qualified terminal/refusal did not settle the command")
+			}
+			if tc.responseFailure && terminal.Err == nil {
+				t.Fatal("test did not exercise a failed native terminal")
+			}
+		})
+	}
+}

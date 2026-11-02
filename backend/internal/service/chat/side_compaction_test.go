@@ -27,7 +27,7 @@ func (c *sideCompactionReceiptConversation) Compact(ctx context.Context) (ports.
 	c.acked = false
 	c.mu.Unlock()
 	c.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "compaction",
-		CompactionID: ports.ChatCompactionID(ctx), ProviderEventID: "receipt", TurnState: domain.TurnStateCompleted}
+		CompactionID: ports.ChatCompactionID(ctx), Compaction: &ports.ChatCompactionReceipt{CommandID: ports.ChatCompactionID(ctx), Outcome: ports.ChatCompactionSettled}, ProviderEventID: "receipt", TurnState: domain.TurnStateCompleted}
 	return ports.ChatCompactionResult{}, nil
 }
 

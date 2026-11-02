@@ -96,7 +96,7 @@ func TestSideUnverifiedCompactionSurvivesRecovery(t *testing.T) {
 	}
 	// An empty custody flush is no execution receipt. Only the original native
 	// completion can retire this gap, including after recovery lost compacting.
-	reconnected.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: restored[0].CompactionID, ProviderTurnID: "original-compaction", TurnState: domain.TurnStateCompleted}
+	reconnected.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: restored[0].CompactionID, Compaction: &ports.ChatCompactionReceipt{CommandID: restored[0].CompactionID, Outcome: ports.ChatCompactionSettled}, ProviderTurnID: "original-compaction", TurnState: domain.TurnStateCompleted}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := after.PreflightShutdown(ctx); err == nil {
@@ -198,12 +198,12 @@ func TestSideUnknownCompactionRejectsRetryUntilOriginalSettles(t *testing.T) {
 	if err := svc.StopAll(ctx); !errors.Is(err, ports.ErrChatShutdownNotSettled) || conv.closed {
 		t.Fatalf("unknown lost: %v closed=%v", err, conv.closed)
 	}
-	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: "other", ProviderTurnID: "other", TurnState: domain.TurnStateCompleted}
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: "other", Compaction: &ports.ChatCompactionReceipt{CommandID: "other", Outcome: ports.ChatCompactionSettled}, ProviderTurnID: "other", TurnState: domain.TurnStateCompleted}
 	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "marker", TurnState: domain.TurnStateCompleted}
 	if err := svc.StopAll(ctx); !errors.Is(err, ports.ErrChatShutdownNotSettled) || conv.closed {
 		t.Fatalf("unrelated completion erased unknown: %v", err)
 	}
-	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: conv.ids[0], ProviderTurnID: "original", TurnState: domain.TurnStateCompleted}
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: conv.ids[0], Compaction: &ports.ChatCompactionReceipt{CommandID: conv.ids[0], Outcome: ports.ChatCompactionSettled}, ProviderTurnID: "original", TurnState: domain.TurnStateCompleted}
 	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "marker", TurnState: domain.TurnStateCompleted}
 	if err := svc.StopAll(ctx); err != nil || !conv.closed {
 		t.Fatalf("original completion did not settle: %v closed=%v", err, conv.closed)

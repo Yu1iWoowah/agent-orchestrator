@@ -5,6 +5,24 @@ import (
 	"errors"
 )
 
+// ChatCompactionOutcome separates execution evidence from RPC reply custody.
+type ChatCompactionOutcome string
+
+const (
+	// ChatCompactionUnknown requires further native evidence or explicit termination.
+	ChatCompactionUnknown ChatCompactionOutcome = "outcome_unknown"
+	// ChatCompactionSettled identifies an observed native execution terminal.
+	ChatCompactionSettled ChatCompactionOutcome = "settled"
+	// ChatCompactionNotSent identifies an explicit refusal before execution.
+	ChatCompactionNotSent ChatCompactionOutcome = "known_not_sent"
+)
+
+// ChatCompactionReceipt retains the original command even when its outcome is unknown.
+type ChatCompactionReceipt struct {
+	CommandID string
+	Outcome   ChatCompactionOutcome
+}
+
 type chatCompactionKey struct{}
 
 // WithChatCompactionID correlates one command with live native completion.

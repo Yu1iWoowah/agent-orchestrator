@@ -37,8 +37,16 @@ func TestCompactionCorrelatesOnlyItsNativeTerminalEvent(t *testing.T) {
 		t.Fatalf("unrelated terminal claimed known compaction: %+v", event)
 	}
 	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"original","status":"completed"}}}`)
-	if event := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted); event.CompactionID != "command" {
+	if event := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted); event.CompactionID != "command" || event.Compaction == nil || event.Compaction.Outcome != ports.ChatCompactionSettled {
 		t.Fatalf("original terminal lost command: %+v", event)
+	}
+	if _, err := conv.(ports.ChatCompactor).Compact(ports.WithChatCompactionID(t.Context(), "failed-command")); err != nil {
+		t.Fatal(err)
+	}
+	srv.push(`{"method":"item/completed","params":{"threadId":"thread-1","turnId":"failed-native","item":{"type":"contextCompaction","id":"failed-item"}}}`)
+	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"failed-native","status":"failed","error":{"message":"native terminal failure"}}}}`)
+	if event := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted); event.Err == nil || event.CompactionID != "failed-command" || event.Compaction == nil || event.Compaction.CommandID != "failed-command" || event.Compaction.Outcome != ports.ChatCompactionSettled {
+		t.Fatalf("failed native terminal lost settlement proof: %+v", event)
 	}
 }
 

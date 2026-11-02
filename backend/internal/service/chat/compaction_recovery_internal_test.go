@@ -409,7 +409,7 @@ func TestReplacementSideEpochCannotRetireOriginalCompaction(t *testing.T) {
 	if _, err := after.CompactSideChat(t.Context(), side.SessionID, side.ID); !errors.Is(err, ErrCompactionWhileBusy) {
 		t.Fatalf("replacement host idle cleared old action: %v", err)
 	}
-	replacement.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: originalID, ProviderTurnID: "new-host-turn", TurnState: domain.TurnStateCompleted}
+	replacement.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: originalID, Compaction: &ports.ChatCompactionReceipt{CommandID: originalID, Outcome: ports.ChatCompactionSettled}, ProviderTurnID: "new-host-turn", TurnState: domain.TurnStateCompleted}
 	replacement.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "marker", TurnState: domain.TurnStateCompleted}
 	current, _ := after.ExportSideChatLaunch(t.Context(), "d9")
 	if current[0].CompactionID != originalID || current[0].CompactionEpoch != "original-epoch" || !*current[0].OutboundUnverified {
@@ -424,5 +424,64 @@ func TestReplacementSideEpochCannotRetireOriginalCompaction(t *testing.T) {
 	page, _ := questions.ListAttentionQuestions(t.Context(), side.SessionID, domain.AttentionQuestionQuery{}, time.Now())
 	if page.Open != 1 {
 		t.Fatal("replacement host lost visible recovery exit")
+	}
+}
+
+func TestSideCompactionErrorReceiptNeedsExecutionEvidence(t *testing.T) {
+	for _, legacy := range []bool{true, false} {
+		t.Run(map[bool]string{true: "unclassified error", false: "ACP unknown outcome"}[legacy], func(t *testing.T) {
+			questions := &compactionQuestionStore{}
+			conv := &recoveringCompactionConversation{recoveredSideCloseConversation: recoveredSideCloseConversation{events: make(chan ports.ChatEvent)}}
+			conv.acknowledged = make(chan string, 1)
+			svc, side := newCompactionSide(t, conv, questions)
+			if _, err := svc.CompactSideChat(t.Context(), side.SessionID, side.ID); err != nil {
+				t.Fatal(err)
+			}
+			records, err := svc.ExportSideChatLaunch(t.Context(), "d9")
+			if err != nil || len(records) != 1 {
+				t.Fatalf("export: %+v %v", records, err)
+			}
+			id := records[0].CompactionID
+			event := ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: id, ProviderEventID: "error-receipt", TurnState: domain.TurnStateFailed, Err: errors.New("ordinary RPC error")}
+			if legacy {
+				event.CompactionID = id
+			} else {
+				event.Compaction = &ports.ChatCompactionReceipt{CommandID: id, Outcome: ports.ChatCompactionUnknown}
+			}
+			conv.events <- event
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "marker"}
+			page, err := questions.ListAttentionQuestions(t.Context(), side.SessionID, domain.AttentionQuestionQuery{}, time.Now())
+			if err != nil || page.Open != 1 {
+				t.Fatalf("unknown reply was not diagnosed immediately: %+v %v", page, err)
+			}
+			select {
+			case <-conv.acknowledged:
+				t.Fatal("unknown reply was acknowledged as execution settlement")
+			default:
+			}
+			records, _ = svc.ExportSideChatLaunch(t.Context(), "d9")
+			if records[0].CompactionID != id || !*records[0].OutboundUnverified {
+				t.Fatal("unknown reply erased recovery ownership")
+			}
+			if err := svc.StopAll(t.Context()); !errors.Is(err, ports.ErrChatShutdownNotSettled) || conv.closed {
+				t.Fatalf("unknown reply released shutdown: %v", err)
+			}
+			// A failed native operation can still have a qualified terminal. It is
+			// the evidence, not whether Err is nil, that releases the original gap.
+			outcome := ports.ChatCompactionSettled
+			if !legacy {
+				outcome = ports.ChatCompactionNotSent
+			}
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: id, ProviderEventID: "terminal-receipt", CompactionID: id,
+				Compaction: &ports.ChatCompactionReceipt{CommandID: id, Outcome: outcome}, TurnState: domain.TurnStateFailed, Err: errors.New("qualified native failure or refusal")}
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "terminal-marker"}
+			if err := svc.StopAll(t.Context()); err != nil || !conv.closed {
+				t.Fatalf("qualified terminal stayed blocked: %v", err)
+			}
+			page, err = questions.ListAttentionQuestions(t.Context(), side.SessionID, domain.AttentionQuestionQuery{}, time.Now())
+			if err != nil || page.Open != 0 {
+				t.Fatalf("qualified terminal left stale attention: %+v %v", page, err)
+			}
+		})
 	}
 }

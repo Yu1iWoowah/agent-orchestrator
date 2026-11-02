@@ -1091,6 +1091,8 @@ func (f *chatProviderFailure) Unwrap() error { return f.cause }
 type ChatEvent struct {
 	// CompactionID is attached only by the live adapter for the requested compaction.
 	CompactionID string
+	// Compaction carries execution evidence; a replay event ID is not settlement.
+	Compaction *ChatCompactionReceipt
 	// Delivery is an exact native receipt, independent of local lifecycle events.
 	Delivery *domain.ChatDeliveryReceipt
 	// GuardianReview is a metadata whitelist, independent of activity detail.

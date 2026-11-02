@@ -206,6 +206,7 @@ func (c *conversation) pump() {
 				}
 				if ev.Kind == ports.ChatEventTurnCompleted && c.compactionTurnID != "" && ev.ProviderTurnID == c.compactionTurnID {
 					ev.CompactionID = c.compactionID
+					ev.Compaction = &ports.ChatCompactionReceipt{CommandID: c.compactionID, Outcome: ports.ChatCompactionSettled}
 					c.compactionID, c.compactionTurnID, c.compactionEpoch = "", "", ""
 				}
 			}

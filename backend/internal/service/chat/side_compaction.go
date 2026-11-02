@@ -13,6 +13,12 @@ func (m *sideManager) clearCompactionAttention(ctx context.Context, runtime *sid
 	}
 }
 
+func (m *sideManager) diagnoseCompaction(ctx context.Context, runtime *sideRuntime) {
+	if err := outboundAttention(ctx, m.service.store, runtime.side.SessionID, "side:"+runtime.side.ID, false, m.service.now()); err != nil {
+		m.service.log.Warn("side compaction diagnosis unavailable", "side", runtime.side.ID, "code", "CHAT_ATTENTION_CREATE_FAILED")
+	}
+}
+
 // One original command remains reserved until its native evidence converges.
 // Intake can request this check without replaying the command or its questions.
 func (m *sideManager) reconcileCompaction(ctx context.Context, runtime *sideRuntime, force bool) bool {
@@ -39,9 +45,7 @@ func (m *sideManager) reconcileCompaction(ctx context.Context, runtime *sideRunt
 	if checkCtx.Err() != nil {
 		return false
 	}
-	if err := outboundAttention(checkCtx, m.service.store, runtime.side.SessionID, "side:"+runtime.side.ID, false, m.service.now()); err != nil {
-		m.service.log.Warn("side compaction diagnosis unavailable", "side", runtime.side.ID, "code", "CHAT_ATTENTION_CREATE_FAILED")
-	}
+	m.diagnoseCompaction(checkCtx, runtime)
 	reconciler, ok := runtime.conv.(ports.ChatOutboundReconciler)
 	if !ok || epoch == "" || reconciler.OutboundProviderEpoch() != epoch || reconciler.ReconcileOutbound(checkCtx) != nil {
 		return false
