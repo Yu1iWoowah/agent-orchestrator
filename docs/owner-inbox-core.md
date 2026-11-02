@@ -34,14 +34,18 @@ unbound sources whose receipt records `routing_unavailable`.
 - **Reported PR detection:** `ListReportedPRURLs` reads `pr_created` entries
   from `report_outputs`. H outputs are absent, so their reported PRs are not
   detected. The reported-PR consumer must also include H `pr_created` outputs.
-- **Report history:** `ListReportsByProject`, `ListReportsBySession` and their
-  report/output APIs omit H source content and outputs. Project/session history
-  must include H sources through the shared read/projection path, with current
-  AO ACK state taken from the guarded source fact rather than its intake snapshot.
+- **Report history and summary:** `GetReport`, `ListReportsByProject`,
+  `ListReportsBySession`, `ListReportOutputs` and their report/output APIs omit H
+  source content and outputs, including project summary and `ao report` history.
+  These read surfaces must include H sources through the shared read/projection
+  path, with current AO ACK state taken from the guarded source fact rather than
+  its intake snapshot.
 
 These are unimplemented activation gates, not properties certified by the core
 fixtures. All must be implemented and tested before the first non-test intake;
 S-G0 qualification alone does not restore these consumers.
+The legacy pending/schedule/claim readers must continue to exclude H sources;
+restoring read visibility must not make them eligible for legacy delivery.
 
 ## Typed transaction contract
 
@@ -77,6 +81,9 @@ S receives the original `BatchPolicyRevision` and current `Owner.PolicyRevision`
 It must still enforce current eligibility and the later outbound gate. Stale owner
 admission fails; existing same-key receipts remain read-only replayable. A new
 alias must pass current owner admission before writing an action or CDC.
+The real S response when `BatchPolicyRevision != Owner.PolicyRevision` is pending
+S-G0 X-ALIGN confirmation. Fixtures prove H's fixed-plan completion path, not the
+cross-contract accept/hold/reject policy; that policy must be aligned before use.
 
 The lock order is shared writer → SQLite transaction → H/S/U1 SQL. Public core
 methods refuse ambient provider-projection transactions. Callers must not hold
@@ -102,11 +109,28 @@ views, FKs, row order and all v1 replacement objects. Original report intake
 triggers remain unchanged. CDC is produced by SQL triggers. It adds no S delivery
 ledger or U1 metadata tables. No production caller creates managed report rows.
 
+This still-unmerged migration was rewritten in place after `ba8312f0`, without
+changing its version ID. A DB used by that draft can retain the old H schema;
+Goose will not rerun the revised migration at the same version.
+**Any DB that has ever been run with `ba8312f0` must not be reused**, even if its
+H tables are empty. Preserve such a DB unchanged for diagnosis and use a fresh
+isolated lab DB for current tests. No in-place upgrade, repair or Down path from
+that draft schema is qualified here.
+
 Binary backout preserves schema, receipts and holds. Down refuses after first
 owner/source/batch/action use. Empty up/down/up and refused Down are tested with
 the real migration. Neither metadata readability nor a fixture certifies the
 old binary/host owner/attention or G0 compatibility matrix; no version floor is
 raised. Full H-PR1 integration and activation remain pending S-G0 and joint tests.
+
+On downgrade to an old binary, H sources remain stored and protected but invisible
+to its report/history/summary, reported-PR, attention and replacement-intake
+readers; unbound H sources are not delivered by that binary either. Absence from
+those surfaces is not proof of deletion, AO ACK or an empty handoff inventory.
+Activation/backout qualification must provide explicit UI/`ao` disclosure of this
+protection difference and a qualified way to inspect the retained H facts.
+The mixed-version probes certify ordinary-report progress and preserved holds,
+not H visibility or replacement completeness on the old binary.
 
 TUI timeout after possible I/O must retain original input/attempt/mapping/AO ACK
 as unknown/held. This core has no generic release or outbound sender. S must
