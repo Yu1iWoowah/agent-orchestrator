@@ -885,6 +885,48 @@ type OrchestratorReplacementRepairSnapshot struct {
 	Payload     []byte
 }
 
+type OwnerInboxAcceptance struct {
+	ProjectID        string
+	BatchKey         string
+	TurnID           string
+	ActionKey        string
+	OwnerEpoch       int64
+	IntakeReceiptRef string
+}
+
+type OwnerInboxAction struct {
+	ProjectID   string
+	ActionKey   string
+	Stage       string
+	Fingerprint string
+	ReceiptJson string
+}
+
+type OwnerInboxBatch struct {
+	ProjectID      string
+	BatchKey       string
+	PlanHash       string
+	TextHash       string
+	PolicyRevision int64
+}
+
+type OwnerInboxMember struct {
+	ReportID      string
+	ProjectID     string
+	BatchKey      string
+	Position      int64
+	SourceVersion int64
+}
+
+type OwnerInboxSource struct {
+	ReportID      string
+	ProjectID     string
+	SenderID      string
+	CallerKey     string
+	Fingerprint   string
+	SourceVersion int64
+}
+
 type PR struct {
 	URL                      string
 	SessionID                domain.SessionID
@@ -1009,6 +1051,16 @@ type ProjectDocumentState struct {
 	ProjectID string
 	Revision  int64
 	StateJson string
+}
+
+type ProjectOrchestratorOwner struct {
+	ProjectID      string
+	SessionID      string
+	Epoch          int64
+	ConversationID string
+	BranchID       string
+	Generation     string
+	PolicyRevision int64
 }
 
 type ReplacementHumanIntakeReceipt struct {

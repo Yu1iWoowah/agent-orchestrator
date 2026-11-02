@@ -11,8 +11,10 @@ import (
 )
 
 const inputCustodyStateConsistent = `-- name: InputCustodyStateConsistent :one
-SELECT CAST(NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE
- (t.state='held') <> EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1))
+SELECT CAST(NOT EXISTS(SELECT 1 FROM conversation_turns t WHERE t.state='held'
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_holds h WHERE h.turn_id=t.id AND h.active=1))
+ AND NOT EXISTS(SELECT 1 FROM conversation_input_holds h JOIN conversation_turns t ON t.id=h.turn_id
+  WHERE h.active=1 AND t.state<>'held')
  AND NOT EXISTS(SELECT 1 FROM conversation_input_custody c JOIN conversation_turns t ON t.id=c.turn_id JOIN json_each(c.message_ids_json) expected
   LEFT JOIN conversation_messages payload ON payload.id=expected.value AND payload.turn_id=c.turn_id AND payload.conversation_id=t.conversation_id
   WHERE payload.id IS NULL)

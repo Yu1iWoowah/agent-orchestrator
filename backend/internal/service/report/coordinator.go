@@ -282,11 +282,6 @@ func (c *Coordinator) release(ctx context.Context, batch PreparedBatch, cause er
 	return cause
 }
 
-const (
-	chatReportOpen  = "<ao-worker-reports>"
-	chatReportClose = "</ao-worker-reports>"
-)
-
 // AppendToUserMessage places reports after the user's text in one semantic turn.
 // The envelope lets AO's Chat UI hide daemon-authored context while preserving
 // the exact prompt accepted by the provider for retry and recovery.
@@ -294,7 +289,7 @@ func (b PreparedBatch) AppendToUserMessage(message string) string {
 	if len(b.Reports) == 0 {
 		return message
 	}
-	return message + "\n\n" + chatReportOpen + "\n" + b.Render() + "\n" + chatReportClose
+	return domain.AppendWorkerReportContext(message, b.Render())
 }
 
 // IdempotencyKey returns the stable durable delivery identity.
