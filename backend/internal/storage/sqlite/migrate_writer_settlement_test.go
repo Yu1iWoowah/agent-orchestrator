@@ -35,7 +35,7 @@ VALUES('settled-op','worker','settlement','{}','cancelled',CURRENT_TIMESTAMP,CUR
 	goose.SetLogger(goose.NopLogger())
 	err := goose.SetDialect("sqlite3")
 	if err == nil {
-		err = goose.DownTo(db, "migrations", version-1)
+		err = migrateDownTo(db, version-1)
 	}
 	gooseMu.Unlock()
 	if err == nil {

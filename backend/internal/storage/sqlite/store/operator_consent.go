@@ -99,6 +99,7 @@ func (s *Store) GetOperatorAction(ctx context.Context, actionKey string) (domain
 }
 
 func (s *Store) operatorReceipt(ctx context.Context, q *gen.Queries, row gen.OperatorConfirmationRequest) (domain.OperatorActionReceipt, error) {
+	issuer := s.operatorIssuer()
 	result := domain.OperatorActionReceipt{RequestRef: domain.OperatorRequestRef(row.RequestRef), ActionKey: row.ActionKey, Purpose: domain.OperatorPurpose(row.Purpose), State: domain.OperatorActionPrepared, ValidUntil: time.UnixMilli(row.ValidUntilMs).UTC()}
 	consent, err := q.GetLiveOperatorConsent(ctx, row.RequestRef)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -116,7 +117,7 @@ func (s *Store) operatorReceipt(ctx context.Context, q *gen.Queries, row gen.Ope
 		result.State = domain.OperatorActionStale
 	case err == nil:
 		switch {
-		case consent.DaemonEpoch != s.operatorEpoch || consent.IssuerEpoch != s.operatorIssuerEpoch || s.operatorIssuerEpoch == "":
+		case consent.DaemonEpoch != s.operatorEpoch || consent.IssuerEpoch != issuer || issuer == "":
 			result.State = domain.OperatorActionStale
 		default:
 			result.State = domain.OperatorActionConfirmed
@@ -224,7 +225,7 @@ func (tx *operatorConsentTx) ConsumeInActionTransaction(ctx context.Context, ref
 		return result, nil
 	}
 	now := tx.store.operatorNow().UnixMilli()
-	if row.DaemonEpoch != tx.store.operatorEpoch || consent.DaemonEpoch != tx.store.operatorEpoch || consent.IssuerEpoch == "" || consent.IssuerEpoch != tx.store.operatorIssuerEpoch || consent.MintedAtMs > now || consent.ExpiresAtMs <= now || row.ValidUntilMs <= now || consent.ExpiresAtMs > row.ValidUntilMs {
+	if row.DaemonEpoch != tx.store.operatorEpoch || consent.DaemonEpoch != tx.store.operatorEpoch || consent.IssuerEpoch == "" || consent.IssuerEpoch != tx.store.operatorIssuer() || consent.MintedAtMs > now || consent.ExpiresAtMs <= now || row.ValidUntilMs <= now || consent.ExpiresAtMs > row.ValidUntilMs {
 		return domain.OperatorConsumption{}, domain.ErrOperatorConsentUnavailable
 	}
 	changed, err := tx.q.ConsumeOperatorConsent(ctx, gen.ConsumeOperatorConsentParams{ConsentRef: string(ref), ConsumedAtMs: sql.NullInt64{Int64: now, Valid: true}, ReservationRef: reservationRef})

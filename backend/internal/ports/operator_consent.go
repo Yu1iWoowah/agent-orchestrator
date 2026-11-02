@@ -7,11 +7,11 @@ import (
 )
 
 // OperatorConsentStore is for admitted domain services, not an HTTP mint API.
-// Production has no ConfirmFromNative implementation until the native issuer
-// and both owned/attach authority chains are delivered in C0-PR2.
+// Native mint lives on the private issuer channel; it is not a domain/HTTP API.
 type OperatorConsentStore interface {
 	PrepareOperatorAction(context.Context, domain.OperatorActionPlan) (domain.OperatorActionReceipt, error)
 	GetOperatorAction(context.Context, string) (domain.OperatorActionReceipt, error)
+	GetOperatorActionConsent(context.Context, domain.OperatorActionPlan) (domain.OperatorConsentRef, error)
 	RevokeUnused(context.Context, domain.OperatorRequestRef) error
 }
 

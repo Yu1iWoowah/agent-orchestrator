@@ -41,7 +41,7 @@ func TestMigratePRReviewPartialUpgrade(t *testing.T) {
 							Data: []byte("-- +goose Up\nALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT FALSE;\n-- +goose Down\n"),
 						},
 					})
-					if err := goose.Up(db, "migrations"); err != nil {
+					if err := migrateUpTo(db, goose.MaxVersion); err != nil {
 						t.Fatalf("apply intermediate migration: %v", err)
 					}
 				}()

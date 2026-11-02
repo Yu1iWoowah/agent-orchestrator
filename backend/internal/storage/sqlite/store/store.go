@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,7 @@ type Store struct {
 	writeMu             *contextMutex
 	operatorEpoch       string
 	operatorIssuerEpoch string
+	operatorIssuerMu    sync.RWMutex
 	operatorNow         func() time.Time
 }
 

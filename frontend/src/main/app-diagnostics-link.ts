@@ -4,8 +4,8 @@ import { connect, type NetConnectOpts } from "node:net";
 import { diagnosticId, isAppSnapshot, isDiagnosticAudit, type DiagnosticAudit, type AppSnapshot } from "../shared/app-diagnostics";
 
 /** Keep the legacy first line so an older daemon still authenticates Browser. */
-export function privateRuntimeHandoff(browserToken: string, appDiagnosticsToken: string): string {
-	return `${browserToken}\n${JSON.stringify({ version: 1, browserToken, appDiagnosticsToken })}\n`;
+export function privateRuntimeHandoff(browserToken: string, appDiagnosticsToken: string, operatorConsentToken?: string): string {
+	return `${browserToken}\n${JSON.stringify({ version: 1, browserToken, appDiagnosticsToken, operatorConsentToken })}\n`;
 }
 export type DiagnosticsLinkOptions = {
 	revoked?: (grantId: string) => void;

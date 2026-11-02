@@ -19,7 +19,7 @@ func upTo(t *testing.T, db *sql.DB, version int64) {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		t.Fatalf("set dialect: %v", err)
 	}
-	if err := goose.UpTo(db, "migrations", version); err != nil {
+	if err := migrateUpTo(db, version); err != nil {
 		t.Fatalf("migrate to %d: %v", version, err)
 	}
 }
@@ -33,7 +33,7 @@ func downTo(t *testing.T, db *sql.DB, version int64) {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		t.Fatalf("set dialect: %v", err)
 	}
-	if err := goose.DownTo(db, "migrations", version); err != nil {
+	if err := migrateDownTo(db, version); err != nil {
 		t.Fatalf("down to %d: %v", version, err)
 	}
 }
@@ -315,4 +315,18 @@ ON CONFLICT (session_id, harness) DO UPDATE SET
 	if reviewSessionTableCount != 0 {
 		t.Fatalf("review_session table count = %d, want 0", reviewSessionTableCount)
 	}
+}
+
+// migrateDownTo keeps the shared rebuild and its ledger in Goose's transaction.
+func migrateDownTo(db *sql.DB, version int64) error {
+	if version >= sharedInputCustodyVersion {
+		return goose.DownTo(db, "migrations", version)
+	}
+	if err := goose.DownTo(db, "migrations", sharedInputCustodyVersion); err != nil {
+		return err
+	}
+	if err := withInputRebuildForeignKeys(db, func() error { return goose.DownTo(db, "migrations", sharedInputCustodyVersion-1) }); err != nil {
+		return err
+	}
+	return goose.DownTo(db, "migrations", version)
 }
