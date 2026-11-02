@@ -290,7 +290,7 @@ func TestReservationFailureRetriesQueuedInputWithoutAnotherSend(t *testing.T) {
 	clock.awaitTimer(t, time.Second)
 	clock.advance(time.Second)
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return len(s.Turns) == 1 && s.Turns[0].ID == turn.ID && s.Turns[0].State == domain.TurnStateRunning
+		return len(s.Turns) == 1 && s.Turns[0].ID == turn.ID && s.Turns[0].State == domain.TurnStateRunning && len(conv.sentTexts()) == 1
 	})
 	if got := conv.sentTexts(); len(got) != 1 || got[0] != "retry durable intake" {
 		t.Fatalf("dispatch did not converge once: %v", got)

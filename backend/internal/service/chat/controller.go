@@ -3448,7 +3448,8 @@ func (c *Controller) projectUnit(
 		}
 		c.afterProject(ctx, event, primaryTurn)
 	} else if unknownCompaction(event) && (event.ProviderConversationID == "" || event.ProviderConversationID == c.conv.ProviderConversationID()) {
-		// Archive deduplication must not discard a failed diagnostic side effect.
+		// False also covers rejected ownership, not just archive deduplication.
+		// Repair rechecks the durable owner before any diagnostic write.
 		if c.diagnoseCompaction(ctx, event.ProviderTurnID) {
 			c.applyCommittedTurnLifecycle(event)
 		}

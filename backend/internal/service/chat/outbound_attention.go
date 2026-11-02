@@ -28,9 +28,18 @@ func (c *Controller) diagnoseCompaction(ctx context.Context, expectedTurnID stri
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if reader, ok := c.store.(interface {
+	if c.reviewID != "" {
+		reader, ok := c.store.(reviewerConversationStore)
+		if !ok {
+			return false
+		}
+		review, found, err := reader.GetReviewByID(checkCtx, c.reviewID)
+		if err != nil || !found || review.ControllerGeneration != c.generation || review.InterfaceMode != domain.ReviewerInterfaceChat || review.SessionID != c.sessionID {
+			return false
+		}
+	} else if reader, ok := c.store.(interface {
 		GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
-	}); ok && c.reviewID == "" {
+	}); ok {
 		record, found, err := reader.GetSession(checkCtx, c.sessionID)
 		if err != nil || !found || record.ControllerOwner().ControllerGeneration != c.generation {
 			return false

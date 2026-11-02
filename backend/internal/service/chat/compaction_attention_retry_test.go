@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -18,6 +21,97 @@ type transientCompactionAttentionStore struct {
 	*store.Store
 	fail  atomic.Bool
 	calls atomic.Int64
+}
+
+func TestReviewerUnknownCompactionRepairRequiresCurrentOwner(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		for _, ownership := range []string{"current", "replaced", "terminal-mode"} {
+			t.Run(fmt.Sprintf("%s/replay=%t", ownership, replay), func(t *testing.T) {
+				st := openStore(t)
+				at := time.Now()
+				const reviewID = "compaction-review"
+				if err := st.UpsertReview(t.Context(), domain.Review{ID: reviewID, SessionID: testSession, ProjectID: testProject, Harness: domain.ReviewerOpenCode, InterfaceMode: domain.ReviewerInterfaceChat, CreatedAt: at, UpdatedAt: at}); err != nil {
+					t.Fatal(err)
+				}
+				conv := newCompactingConversation()
+				conv.events = make(chan ports.ChatEvent)
+				questions := &transientCompactionAttentionStore{Store: st}
+				questions.fail.Store(replay)
+				svc := chatsvc.New(chatsvc.Options{Store: questions, Sessions: st, Reader: fullSnapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: conv}}, NewID: uuid.NewString, Log: slog.New(slog.DiscardHandler)})
+				owner := domain.ReviewConversationOwner(reviewID)
+				t.Cleanup(func() { _ = svc.StopForOwner(context.Background(), owner) })
+				ctrl, err := svc.Start(t.Context(), chatsvc.StartConfig{Owner: owner, SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessOpenCode, WorkspacePath: t.TempDir()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ctrl.Compact(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "review-compact", ProviderEventID: "start"})
+				awaitStoreSnapshot(t, st, ctrl.ConversationID(), func(s store.ConversationSnapshot) bool {
+					return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning && !ctrl.SendMuHeldForTest()
+				})
+				unknown := ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "review-compact", ProviderEventID: "unknown", TurnState: domain.TurnStateFailed, Err: errors.New("unknown RPC outcome"), Compaction: &ports.ChatCompactionReceipt{CommandID: "review-compact", Outcome: ports.ChatCompactionUnknown}}
+				var wantCalls int64
+				if replay {
+					conv.emit(unknown)
+					conv.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+					if questions.calls.Load() != 1 {
+						t.Fatalf("first diagnosis was not attempted: %d", questions.calls.Load())
+					}
+					wantCalls = 1
+					questions.fail.Store(false)
+				}
+				switch ownership {
+				case "replaced":
+					if ok, err := st.ClaimReviewChatController(t.Context(), reviewID, conv.ProviderConversationID(), "replacement-generation", time.Now()); err != nil || !ok {
+						t.Fatalf("takeover: %v %v", ok, err)
+					}
+				case "terminal-mode":
+					review, found, err := st.GetReviewByID(t.Context(), reviewID)
+					if err != nil || !found {
+						t.Fatalf("read original owner: %v %v", found, err)
+					}
+					review.InterfaceMode = domain.ReviewerInterfaceTUI
+					if err := st.UpsertReview(t.Context(), review); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wantOpen := int64(0)
+				if ownership == "current" {
+					wantOpen = 1
+					wantCalls++
+				}
+				var questionID string
+				for attempt := 0; attempt < 3; attempt++ {
+					conv.emit(unknown)
+					// The next unbuffered event follows completion of unknown projection.
+					conv.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+					page, err := st.ListAttentionQuestions(t.Context(), testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
+					if err != nil || page.Open != wantOpen || questions.calls.Load() != wantCalls {
+						t.Fatalf("repair crossed ownership: open=%d calls=%d want=%d/%d err=%v", page.Open, questions.calls.Load(), wantOpen, wantCalls, err)
+					}
+					if wantOpen == 1 {
+						if questionID != "" && page.Items[0].ID != questionID {
+							t.Fatal("replay replaced the existing question")
+						}
+						questionID = page.Items[0].ID
+					}
+				}
+				events, err := st.ProviderEventsSince(t.Context(), ctrl.ConversationID(), 0, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				archived := false
+				for _, event := range events {
+					archived = archived || event.ProviderEventID == unknown.ProviderEventID
+				}
+				if archived != (replay || ownership == "current") || len(conv.sentTexts()) != 0 {
+					t.Fatalf("repair changed archive ownership or sent native work: archived=%v sent=%v", archived, conv.sentTexts())
+				}
+			})
+		}
+	}
 }
 
 func (s *transientCompactionAttentionStore) CreateAttentionQuestion(ctx context.Context, in domain.AttentionQuestionCreate, at time.Time) (domain.AttentionQuestionRecord, bool, error) {
