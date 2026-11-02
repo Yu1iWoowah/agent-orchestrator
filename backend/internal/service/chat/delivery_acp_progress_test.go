@@ -67,7 +67,6 @@ func TestACPStreamingBeyondDeliveryDeadlineDoesNotCreateAttention(t *testing.T) 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	st := openStore(t)
-	clock := newSettingsTestClock()
 	dataDir := t.TempDir()
 	control := filepath.Join(dataDir, "progress")
 	cfg := acp.Config{Harness: domain.HarnessOpenCode, Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityApprovals: true, ports.ChatCapabilityInterrupt: true, ports.ChatCapabilityResume: true}, Probe: func(context.Context) error { return nil }, Launch: func(context.Context, acp.LaunchConfig) (acp.Launch, error) {
@@ -75,7 +74,7 @@ func TestACPStreamingBeyondDeliveryDeadlineDoesNotCreateAttention(t *testing.T) 
 	}}
 	logger := slog.New(slog.DiscardHandler)
 	var ids atomic.Uint64
-	svc := chatsvc.New(chatsvc.Options{Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: acp.New(cfg, logger)}, Activity: &recordingActivity{}, Log: logger, Now: clock.Now, After: clock.After, NewID: func() string { return fmt.Sprintf("progress-%d", ids.Add(1)) }, DataDir: dataDir})
+	svc := chatsvc.New(chatsvc.Options{Store: st, Reader: fullSnapshotReader(st), Sessions: st, Drivers: fakeRegistry{driver: acp.New(cfg, logger)}, Activity: &recordingActivity{}, Log: logger, NewID: func() string { return fmt.Sprintf("progress-%d", ids.Add(1)) }, DataDir: dataDir})
 	t.Cleanup(func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer stopCancel()
@@ -92,7 +91,15 @@ func TestACPStreamingBeyondDeliveryDeadlineDoesNotCreateAttention(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	started := time.Now()
 	for step := 1; step <= 3; step++ {
+		if step > 1 {
+			select {
+			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
 		if err := os.WriteFile(control, []byte(strconv.Itoa(step)), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -100,16 +107,21 @@ func TestACPStreamingBeyondDeliveryDeadlineDoesNotCreateAttention(t *testing.T) 
 			s, e := st.LoadConversationSnapshot(ctx, c.ConversationID())
 			return e == nil && len(s.Messages) == 2 && len(s.Messages[1].Text) == step
 		})
-		clock.awaitTimer(t, 30*time.Second)
-		clock.advance(31 * time.Second)
-		awaitACPReplay(ctx, t, "native progress refreshed deadline", func() bool {
-			a, e := st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
-			return e == nil && a.LastProgressAt.Equal(clock.Now())
-		})
-		a, err := st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
-		if err != nil || a.AttentionID != "" || a.BlockedSince != nil || a.Disposition != domain.ChatDeliveryUnknown || a.EvidenceLevel != 0 {
-			t.Fatalf("streaming ACP misclassified: %+v %v", a, err)
-		}
+	}
+	// Both processes use the OS clock. Exercise the real 30s silence query with
+	// native chunks at ~0/10/20s, rather than moving only the daemon clock.
+	select {
+	case <-time.After(time.Until(started.Add(31 * time.Second))):
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	awaitACPReplay(ctx, t, "native progress queried", func() bool {
+		a, e := st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
+		return e == nil && a.Receipt != nil && a.Receipt.ProgressSequence > 0
+	})
+	streaming, err := st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
+	if err != nil || streaming.AttentionID != "" || streaming.BlockedSince != nil || streaming.Disposition != domain.ChatDeliveryUnknown || streaming.EvidenceLevel != 0 || !streaming.LastProgressAt.Equal(streaming.Receipt.ObservedAt) {
+		t.Fatalf("streaming ACP misclassified or observation changed native time: %+v %v", streaming, err)
 	}
 	if err := os.WriteFile(control, []byte("4"), 0600); err != nil {
 		t.Fatal(err)

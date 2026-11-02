@@ -28676,6 +28676,8 @@ components:
           type: string
         cleanupOnly:
           type: boolean
+        compactionId:
+          type: string
         createKey:
           type: string
         decisionData:

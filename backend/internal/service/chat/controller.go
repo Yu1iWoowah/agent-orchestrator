@@ -240,14 +240,16 @@ type Controller struct {
 	settingsExecutorID          string                              // guarded by sendMu
 	after                       func(time.Duration) <-chan time.Time
 	deliveryCheckMu             sync.Mutex
-	deliveryReceiptMu           sync.Mutex    // serializes attention creation with terminal receipts
-	deliveryWake                chan struct{} // guarded by mu
-	deliveryMonitorStarted      bool          // guarded by mu
-	deliveryImmediate           bool          // guarded by mu
-	deliveryQuiescing           bool          // guarded by mu
-	deliveryRetryScheduled      bool          // guarded by mu
-	deliveryRetryDelay          time.Duration // guarded by mu
-	pendingDeliveryID           string        // guarded by mu; original primary execution
+	deliveryReceiptMu           sync.Mutex                          // serializes attention creation with terminal receipts
+	deliveryWake                chan struct{}                       // guarded by mu
+	deliveryMonitorStarted      bool                                // guarded by mu
+	deliveryImmediate           bool                                // guarded by mu
+	deliveryQuiescing           bool                                // guarded by mu
+	deliveryRetryScheduled      bool                                // guarded by mu
+	deliveryRetryDelay          time.Duration                       // guarded by mu
+	deliveryAcks                map[string]ports.ChatDeliveryLookup // guarded by mu; durable settled receipts awaiting host GC
+	deliveryAckRetryAt          time.Time                           // guarded by mu
+	pendingDeliveryID           string                              // guarded by mu; original primary execution
 
 	conv                   ports.ChatConversation
 	store                  Store
@@ -2066,6 +2068,11 @@ func (c *Controller) dispatch(
 	}
 	members := append([]string{turnID}, followers...)
 	delivery, created, err := c.reserveDeliveryLocked(ctx, members)
+	if errors.Is(err, errDeliveryPending) {
+		// The monitor follows the original attempt and wakes this exact queue on
+		// settlement. A timer must not repeatedly reserve or retire nonexistent rows.
+		return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
+	}
 	if err != nil || !created {
 		c.log.Warn("delivery reservation retained input", "session", c.sessionID, "turn", turnID, "code", "CHAT_DELIVERY_RESERVATION_UNAVAILABLE")
 		// No provider I/O occurred. If a reservation committed but its reply was
@@ -2528,7 +2535,8 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 				}
 				continue
 			}
-			return rejected, err
+			c.scheduleDeliveryRetry()
+			return rejected, fmt.Errorf("%w: prepare queued input: %w", errRetryQueuedDispatch, err)
 		}
 		break
 	}

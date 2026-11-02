@@ -465,7 +465,7 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 		if backgroundBusy {
 			c.backgroundTurn = providerTurnID
 		}
-		if c.liveState.ActiveCompaction {
+		if c.liveState.ActiveCompaction || ports.ChatCompactionID(ctx) != "" && ports.ChatCompactionID(ctx) == providerTurnID {
 			c.compactingTurnID = providerTurnID
 			c.compactionBefore = c.contextTokens
 		}
@@ -909,8 +909,13 @@ func (c *conversation) finishPrompt(
 		c.terminalEventID = eventID
 		c.mu.Unlock()
 	}
+	compactionID := ""
+	if isCompaction && eventID != "" {
+		compactionID = turnID
+	}
 	c.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
+		CompactionID: compactionID,
+		Kind:         ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, ProviderConversationID: c.ProviderConversationID(), TurnState: state, Err: turnErr,
 	})
 	// Release the turn before announcing readiness, not after. A consumer that
@@ -959,7 +964,10 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 		return ports.ChatCompactionResult{}, errors.New("ACP session is not open")
 	}
 	before := c.contextTokens
-	id := uuid.NewString()
+	id := ports.ChatCompactionID(ctx)
+	if id == "" {
+		id = uuid.NewString()
+	}
 	c.activeTurn = id
 	c.compactingTurnID = id
 	c.compactionBefore = before

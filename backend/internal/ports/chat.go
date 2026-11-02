@@ -1089,6 +1089,8 @@ func (f *chatProviderFailure) Unwrap() error { return f.cause }
 // Assistant message text is portable Markdown. Adapters convert native citation
 // annotations to links before emitting events or returning history.
 type ChatEvent struct {
+	// CompactionID is attached only by the live adapter for the requested compaction.
+	CompactionID string
 	// Delivery is an exact native receipt, independent of local lifecycle events.
 	Delivery *domain.ChatDeliveryReceipt
 	// GuardianReview is a metadata whitelist, independent of activity detail.

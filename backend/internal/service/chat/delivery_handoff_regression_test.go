@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,5 +130,80 @@ func TestPostClaimInvalidInputDoesNotFailSibling(t *testing.T) {
 	})
 	if got := conv.sentTexts(); len(got) != 3 || got[2] != "valid sibling" {
 		t.Fatalf("valid sibling not dispatched once: %v", got)
+	}
+}
+
+// Transcript and source-turn storage failures are retryable; neither invalidates
+// a queued excerpt or changes its original input/attachment receipt.
+type transientExcerptStore struct {
+	*store.Store
+	failMessages, failTurn atomic.Bool
+}
+
+func (s *transientExcerptStore) ConversationMessages(ctx context.Context, cid string) ([]domain.ConversationMessage, error) {
+	if s.failMessages.Load() {
+		return nil, errors.New("temporary excerpt read failure")
+	}
+	return s.Store.ConversationMessages(ctx, cid)
+}
+func (s *transientExcerptStore) TurnByID(ctx context.Context, id string) (domain.ConversationTurn, error) {
+	if s.failTurn.Load() {
+		return domain.ConversationTurn{}, errors.New("temporary source turn read failure")
+	}
+	return s.Store.TurnByID(ctx, id)
+}
+func TestQueuedExcerptTemporaryReadFailureRetriesOriginalInput(t *testing.T) {
+	for _, failTurn := range []bool{false, true} {
+		t.Run(map[bool]string{false: "transcript", true: "source-turn"}[failTurn], func(t *testing.T) {
+			clock := newSettingsTestClock()
+			conv := newFakeConversation()
+			var fault *transientExcerptStore
+			h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { fault = &transientExcerptStore{Store: st}; return fault }, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
+			seed, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "seed", ClientMessageID: "excerpt-source"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conv.emit(ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: seed.ProviderTurnID, ProviderItemID: "source", Text: "Selected source text."}, ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: seed.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+			snap := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				return len(s.Messages) == 2 && s.Turns[0].State == domain.TurnStateCompleted
+			})
+			source := snap.Messages[1]
+			active, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "active"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queued, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "keep original excerpt", ClientMessageID: "excerpt-retry", Origin: domain.MessageOriginHuman, Excerpts: []ports.ChatExcerptReference{{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision, Text: "Selected source"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := h.st.ListQueuedBatch(t.Context(), h.ctrl.ConversationID(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failTurn {
+				fault.failTurn.Store(true)
+			} else {
+				fault.failMessages.Store(true)
+			}
+			conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: active.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+			clock.awaitTimer(t, time.Second)
+			kept, err := h.st.ListQueuedBatch(t.Context(), h.ctrl.ConversationID(), 0)
+			if err != nil || len(kept) != 1 || kept[0].TurnID != queued.ID || kept[0].DeliveryContentJSON != original[0].DeliveryContentJSON || kept[0].ClientMessageID != "excerpt-retry" {
+				t.Fatalf("temporary read lost intake: %+v %v", kept, err)
+			}
+			if len(conv.sentTexts()) != 2 {
+				t.Fatal("temporary failure forwarded input")
+			}
+			fault.failMessages.Store(false)
+			fault.failTurn.Store(false)
+			clock.advance(time.Second)
+			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+				row, e := h.st.TurnByID(t.Context(), queued.ID)
+				return e == nil && row.State == domain.TurnStateRunning && row.ProviderTurnID != ""
+			})
+			if len(conv.sentTexts()) != 3 {
+				t.Fatalf("original input not retried once: %v", conv.sentTexts())
+			}
+		})
 	}
 }

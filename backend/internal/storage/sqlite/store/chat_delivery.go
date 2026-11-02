@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -157,19 +158,27 @@ func (s *Store) UpdateChatDelivery(ctx context.Context, next domain.ChatDelivery
 		if n != 1 {
 			return ports.ErrAgentSettingsConflict
 		}
-		// Close the diagnostic in the same transaction as the terminal receipt.
-		if next.AttentionID != "" && (next.ExecutionSettled || next.Disposition == domain.ChatDeliveryNotSent) {
-			question, err := questionRow(ctx, q, next.SessionID, next.AttentionID)
+		// Progress recovery closes this episode atomically. A later silence can
+		// create a fresh question instead of leaving a dismissed warning invisible.
+		attentionID := old.AttentionID
+		if attentionID == "" {
+			attentionID = next.AttentionID
+		}
+		recovered := old.BlockedSince != nil && next.BlockedSince == nil
+		if attentionID != "" && (recovered || next.ExecutionSettled || next.Disposition == domain.ChatDeliveryNotSent) {
+			question, err := questionRow(ctx, q, next.SessionID, attentionID)
 			if err != nil {
 				return err
 			}
-			if question.ClientKey != "delivery-"+next.ID {
+			if question.ClientKey != "delivery-"+next.ID && !strings.HasPrefix(question.ClientKey, "delivery-"+next.ID+"-") {
 				return ports.ErrAgentSettingsConflict
 			}
 			if question.State == "open" {
 				reason := "原執行已確認結束"
 				if next.Disposition == domain.ChatDeliveryNotSent {
 					reason = "原輸入已確認未送出"
+				} else if !next.ExecutionSettled {
+					reason = "原執行已恢復進度"
 				}
 				n, err := q.CloseAttentionQuestion(ctx, gen.CloseAttentionQuestionParams{ID: question.ID, OriginSessionID: string(next.SessionID), ExpectedVersion: question.Version, State: "cancelled", Actor: "agent", Reason: reason, At: sql.NullTime{Time: next.UpdatedAt.UTC(), Valid: true}})
 				if err != nil {
@@ -178,7 +187,7 @@ func (s *Store) UpdateChatDelivery(ctx context.Context, next domain.ChatDelivery
 				if n != 1 {
 					return ports.ErrAgentSettingsConflict
 				}
-				row, err := questionRow(ctx, q, next.SessionID, next.AttentionID)
+				row, err := questionRow(ctx, q, next.SessionID, attentionID)
 				if err != nil {
 					return err
 				}

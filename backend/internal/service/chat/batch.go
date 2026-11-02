@@ -72,7 +72,10 @@ func (c *Controller) queuedBatchInput(ctx context.Context, batch []domain.Queued
 			}
 			msg.Content = filtered
 			if err := hydrateQueuedExcerptReferences(ctx, c, &msg, queued); err != nil {
-				return ports.ChatUserMessage{}, batchInputError{queued.TurnID, err}
+				if errors.Is(err, ErrExcerptInvalid) || errors.Is(err, ErrExcerptStale) {
+					return ports.ChatUserMessage{}, batchInputError{queued.TurnID, err}
+				}
+				return ports.ChatUserMessage{}, fmt.Errorf("hydrate queued turn %s: %w", queued.TurnID, err)
 			}
 		}
 		msg = excerptDeliveryMessage(msg)

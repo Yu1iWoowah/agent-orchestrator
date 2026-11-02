@@ -296,3 +296,145 @@ func TestReservationFailureRetriesQueuedInputWithoutAnotherSend(t *testing.T) {
 		t.Fatalf("dispatch did not converge once: %v", got)
 	}
 }
+
+func TestDeliveryProgressRecoveryAllowsFreshAttentionOnNextSilence(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := newFakeConversation()
+	h := deliveryHarness(t, conv, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "long native work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	clock.advance(30 * time.Second)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+		return e == nil && a.AttentionID != ""
+	})
+	blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	conv.fakeDeliveryReceipt(attempt.ID, turn.ProviderTurnID, false)
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+		return e == nil && a.BlockedSince == nil && a.AttentionID == ""
+	})
+	old, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+	if err != nil || old.State == "open" {
+		t.Fatalf("recovered progress left old question open: %+v %v", old, err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	clock.advance(30 * time.Second)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+		return e == nil && a.AttentionID != "" && a.AttentionID != blocked.AttentionID
+	})
+	blockedAgain, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	fresh, err := h.st.GetAttentionQuestion(t.Context(), testSession, blockedAgain.AttentionID)
+	if err != nil || fresh.State != "open" {
+		t.Fatalf("later silence did not create new warning: %+v %v", fresh, err)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		q, e := h.st.GetAttentionQuestion(t.Context(), testSession, fresh.ID)
+		return e == nil && q.State != "open"
+	})
+}
+
+type originalDeliveryReservationStore struct {
+	*store.Store
+	calls        atomic.Int32
+	original     chan domain.ChatDeliveryAttempt
+	missingReads atomic.Int32
+}
+
+func (s *originalDeliveryReservationStore) ReserveChatDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (domain.ChatDeliveryAttempt, bool, error) {
+	if s.calls.Add(1) == 1 {
+		prior := a
+		prior.ID = "existing-attempt"
+		saved, _, err := s.Store.ReserveChatDelivery(ctx, prior)
+		if err != nil {
+			return a, false, err
+		}
+		s.original <- saved
+		return a, false, ports.ErrAgentSettingsConflict
+	}
+	return s.Store.ReserveChatDelivery(ctx, a)
+}
+func (s *originalDeliveryReservationStore) ChatDeliveryAttempt(ctx context.Context, id domain.SessionID, key string) (domain.ChatDeliveryAttempt, error) {
+	a, err := s.Store.ChatDeliveryAttempt(ctx, id, key)
+	if err != nil {
+		s.missingReads.Add(1)
+	}
+	return a, err
+}
+func TestReservationBlockedByOriginalAttemptWaitsForSettlement(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := newFakeConversation()
+	var fault *originalDeliveryReservationStore
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store {
+		fault = &originalDeliveryReservationStore{Store: st, original: make(chan domain.ChatDeliveryAttempt, 1)}
+		return fault
+	}, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "wait for exact prior attempt", ClientMessageID: "original-attempt"})
+	if err != nil || turn.State != domain.TurnStateQueued {
+		t.Fatalf("original intake lost: %+v %v", turn, err)
+	}
+	prior := <-fault.original
+	clock.awaitTimer(t, 30*time.Second)
+	clock.advance(60 * time.Second)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, prior.ID)
+		return e == nil && a.AttentionID != ""
+	})
+	if fault.calls.Load() != 1 || fault.missingReads.Load() != 1 || len(conv.sentTexts()) != 0 {
+		t.Fatalf("blocked input retried/retired nonexistent rows: reserve=%d missingReads=%d sent=%v", fault.calls.Load(), fault.missingReads.Load(), conv.sentTexts())
+	}
+	// Only native proof of non-delivery permits this original queued input to run.
+	conv.mu.Lock()
+	conv.deliveryReceipts = map[string]domain.ChatDeliveryReceipt{prior.ID: {AttemptID: prior.ID, ProviderEpoch: "fake-native-epoch", ProviderRequestID: "fake-rpc-" + prior.ID, Disposition: domain.ChatDeliveryNotSent, Source: "not_forwarded", Complete: true, ObservedAt: clock.Now()}}
+	conv.mu.Unlock()
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		row, e := h.st.TurnByID(t.Context(), turn.ID)
+		return e == nil && row.State == domain.TurnStateRunning && row.ProviderTurnID != ""
+	})
+	if fault.calls.Load() != 2 || len(conv.sentTexts()) != 1 {
+		t.Fatalf("settled original did not wake queue once: calls=%d sent=%v", fault.calls.Load(), conv.sentTexts())
+	}
+}
+
+type retryDeliveryAckConversation struct {
+	*fakeConversation
+	ackCalls atomic.Int32
+}
+
+func (c *retryDeliveryAckConversation) AcknowledgeDeliveryAttempt(context.Context, ports.ChatDeliveryLookup) error {
+	if c.ackCalls.Add(1) == 1 {
+		return errors.New("temporary host ACK failure")
+	}
+	return nil
+}
+func TestSettledDeliveryAckRetriesWithoutAnotherTurn(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &retryDeliveryAckConversation{fakeConversation: newFakeConversation()}
+	h := deliveryHarness(t, conv, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "one settled turn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return s.Turns[0].State == domain.TurnStateCompleted })
+	clock.awaitTimer(t, 5*time.Second)
+	clock.advance(5 * time.Second)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return conv.ackCalls.Load() == 2 })
+	if len(conv.sentTexts()) != 1 {
+		t.Fatal("ACK retry replayed input")
+	}
+	if err := h.svc.StopAll(t.Context()); err != nil {
+		t.Fatalf("settled ACK recovery blocked shutdown: %v", err)
+	}
+}

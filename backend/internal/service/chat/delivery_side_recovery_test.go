@@ -68,16 +68,35 @@ func TestSideUnverifiedCompactionSurvivesRecovery(t *testing.T) {
 	if err := after.StopAll(ctx); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
 		t.Fatalf("unattached recovered side disappeared from coverage: %v", err)
 	}
-	reconnected := &recoveredSideCloseConversation{events: make(chan ports.ChatEvent, 1)}
+	reconnected := &recoveredSideCloseConversation{events: make(chan ports.ChatEvent)}
 	if !after.sides.attach(recovered[0], reconnected) {
 		t.Fatal("attach failed")
 	}
 	if err := after.StopAll(ctx); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
 		t.Fatalf("side compaction gap lost across JSON recovery: StopAll=%v transportClosed=%v", err, reconnected.closed)
 	}
+	if restored[0].CompactionID == "" {
+		t.Fatal("recovery lost original command correlation")
+	}
+	// Historical replay and unrelated live/background completions prove nothing
+	// about this command. The unbuffered marker orders both before the check.
+	for _, event := range []ports.ChatEvent{
+		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "original-compaction", TurnState: domain.TurnStateCompleted},
+		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "background-turn", ProviderEventID: "background-receipt", CompactionID: "different-command", TurnState: domain.TurnStateCompleted},
+		{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "marker", TurnState: domain.TurnStateCompleted},
+	} {
+		select {
+		case reconnected.events <- event:
+		case <-time.After(2 * time.Second):
+			t.Fatal("side event consumer stopped")
+		}
+	}
+	if err := after.PreflightShutdown(ctx); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+		t.Fatalf("unrelated completion removed command fence: %v", err)
+	}
 	// An empty custody flush is no execution receipt. Only the original native
 	// completion can retire this gap, including after recovery lost compacting.
-	reconnected.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "original-compaction", TurnState: domain.TurnStateCompleted}
+	reconnected.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, CompactionID: restored[0].CompactionID, ProviderTurnID: "original-compaction", TurnState: domain.TurnStateCompleted}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := after.PreflightShutdown(ctx); err == nil {

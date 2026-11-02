@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -87,7 +89,8 @@ type SideCreateRequest struct {
 }
 
 type sideRuntime struct {
-	outboundUnverified bool // guarded by mu; side ledger integration belongs to PR3
+	compactionID       string // guarded by mu; persisted in recovery
+	outboundUnverified bool   // guarded by mu; side ledger integration belongs to PR3
 
 	side            domain.SideConversation
 	conv            ports.ChatConversation
@@ -898,7 +901,13 @@ func (m *sideManager) restore(ctx context.Context, side domain.SideConversation)
 		m.service.log.Warn("side restore: main controller unavailable", "side", side.ID, "error", err)
 		return
 	}
-	conv, err := driver.Resume(ctx, ports.ChatResumeConfig{
+	resumeCtx := ctx
+	compactionID := ""
+	if store, ok := m.store.(*memorySideStore); ok {
+		compactionID = store.outboundCompactionID(side.ID)
+		resumeCtx = ports.WithChatCompactionID(ctx, compactionID)
+	}
+	conv, err := driver.Resume(resumeCtx, ports.ChatResumeConfig{
 		SessionID: domain.SessionID(side.ProviderHostID), ProviderConversationID: side.ProviderForkID,
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
 		Model: side.Model, Effort: side.Effort, Permissions: cfg.Permissions,
@@ -925,7 +934,10 @@ func (m *sideManager) restore(ctx context.Context, side domain.SideConversation)
 				break
 			}
 		}
-		if err := activator.ActivateLiveReconnect(ctx, activeProviderID); err != nil {
+		if activeProviderID == "" {
+			activeProviderID = compactionID
+		}
+		if err := activator.ActivateLiveReconnect(resumeCtx, activeProviderID); err != nil {
 			_ = conv.Close()
 			m.service.log.Warn("side provider replay activation failed", "side", side.ID, "error", err)
 			_ = m.store.SetSideFailed(context.Background(), side.ID, side.Generation,
@@ -1028,6 +1040,7 @@ func (m *sideManager) attach(side domain.SideConversation, conv ports.ChatConver
 		messageIDs: make(map[string]string), activityIDs: make(map[string]string), activityText: make(map[string]string)}
 	if store, ok := m.store.(*memorySideStore); ok {
 		runtime.outboundUnverified = store.outboundUnverified(side.ID)
+		runtime.compactionID = store.outboundCompactionID(side.ID)
 	}
 	m.mu.Lock()
 	if m.runID != side.AppRunID || m.ctx.Err() != nil {
@@ -1119,7 +1132,7 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 			case ports.ChatEventTurnCompleted:
 				runtime.mu.Lock()
 				noActiveTurn := runtime.activeTurnID == ""
-				compactionCompleted := noActiveTurn && (runtime.compacting || runtime.outboundUnverified) && event.ProviderTurnID != ""
+				compactionCompleted := noActiveTurn && runtime.compactionID != "" && event.CompactionID == runtime.compactionID && event.ProviderTurnID != ""
 				runtime.mu.Unlock()
 				if compactionCompleted {
 					// ACP hosts refuse another prompt until the terminal receipt is
@@ -1137,6 +1150,7 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 					}
 					runtime.mu.Lock()
 					runtime.compacting = false
+					runtime.compactionID = ""
 					if !runtime.dispatchBlocked {
 						m.setOutboundUnverifiedLocked(runtime, false)
 					}
@@ -1865,10 +1879,12 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}
 	runtime.compacting = true
+	runtime.compactionID = uuid.NewString()
+	compactionID := runtime.compactionID
 	s.sides.setOutboundUnverifiedLocked(runtime, true)
 	runtime.mu.Unlock()
 	s.sides.mu.Unlock()
-	result, err := compactor.Compact(ctx)
+	result, err := compactor.Compact(ports.WithChatCompactionID(ctx, compactionID))
 	if err != nil {
 		runtime.mu.Lock()
 		runtime.compacting = false
@@ -2111,6 +2127,6 @@ func (s *Service) closeSessionSides(ctx context.Context, session domain.SessionI
 func (m *sideManager) setOutboundUnverifiedLocked(runtime *sideRuntime, value bool) {
 	runtime.outboundUnverified = value
 	if store, ok := m.store.(*memorySideStore); ok {
-		store.setOutboundUnverified(runtime.side.ID, value)
+		store.setOutboundUnverified(runtime.side.ID, value, runtime.compactionID)
 	}
 }

@@ -162,7 +162,7 @@ func TestACPDeliveryTracksNativeProgressUntilPromptResponse(t *testing.T) {
 	}
 }
 
-func TestUncoveredRequestConvergesOnNativeReply(t *testing.T) {
+func TestUncoveredRequestRequiresMatchingSettlement(t *testing.T) {
 	for _, method := range []string{"turn/steer", "thread/rollback", "thread/revert", "thread/fork", "thread/compact/start", "session/prompt", "turn/start"} {
 		for _, failure := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/error=%v", method, failure), func(t *testing.T) {
@@ -171,13 +171,16 @@ func TestUncoveredRequestConvergesOnNativeReply(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer j.file.Close()
-				if _, err = j.prepare([]byte(fmt.Sprintf(`{"id":7,"method":%q,"params":{}}`, method))); err != nil {
+				if _, err = j.prepare([]byte(fmt.Sprintf(`{"id":7,"method":%q,"params":{"threadId":"native","expectedTurnId":"native-turn"}}`, method))); err != nil {
 					t.Fatal(err)
 				}
 				if _, err = j.query(nil, true); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
 					t.Fatalf("in-flight request omitted: %v", err)
 				}
 				response := `{"id":7,"result":{}}`
+				if method == "turn/steer" {
+					response = `{"id":7,"result":{"turnId":"native-turn"}}`
+				}
 				if method == "session/prompt" {
 					response = `{"id":7,"result":{"stopReason":"end_turn"}}`
 				}
@@ -190,6 +193,36 @@ func TestUncoveredRequestConvergesOnNativeReply(t *testing.T) {
 				if err = j.observe([]byte(response)); err != nil {
 					t.Fatal(err)
 				}
+				if failure {
+					if _, err = j.query(nil, true); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+						t.Fatalf("RPC error erased unknown execution: %v", err)
+					}
+					return
+				}
+				if method == "thread/compact/start" || method == "turn/steer" {
+					if _, err = j.query(nil, true); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+						t.Fatalf("async ACK erased uncovered execution: %v", err)
+					}
+					if method == "thread/compact/start" {
+						for _, frame := range []string{
+							`{"method":"turn/started","params":{"threadId":"native","turn":{"id":"native-turn"}}}`,
+							`{"method":"item/started","params":{"threadId":"native","turnId":"native-turn","item":{"type":"contextCompaction","id":"compact"}}}`,
+						} {
+							if err = j.observe([]byte(frame)); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if err = j.observe([]byte(`{"method":"turn/completed","params":{"threadId":"native","turn":{"id":"unrelated-turn"}}}`)); err != nil {
+							t.Fatal(err)
+						}
+						if _, err = j.query(nil, true); err == nil {
+							t.Fatal("unrelated terminal erased compact gap")
+						}
+					}
+					if err = j.observe([]byte(`{"method":"turn/completed","params":{"threadId":"native","turn":{"id":"native-turn"}}}`)); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if method == "turn/start" && !failure {
 					if _, err = j.query(nil, true); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
 						t.Fatalf("native execution omitted: %v", err)
@@ -197,7 +230,7 @@ func TestUncoveredRequestConvergesOnNativeReply(t *testing.T) {
 					if err := j.observe([]byte(`{"id":99,"method":"item/commandExecution/requestApproval","params":{"turnId":"native-turn"}}`)); err != nil {
 						t.Fatal(err)
 					}
-					if err = j.observe([]byte(`{"method":"turn/completed","params":{"turn":{"id":"native-turn"}}}`)); err != nil {
+					if err = j.observe([]byte(`{"method":"turn/completed","params":{"threadId":"native","turn":{"id":"native-turn"}}}`)); err != nil {
 						t.Fatal(err)
 					}
 					if len(j.waiting) != 0 {
@@ -231,11 +264,11 @@ func TestDeliveryAppendFailureDoesNotStopProviderForwarding(t *testing.T) {
 	if len(h.detached) != 2 {
 		t.Fatalf("forwarded %d frames, want 2", len(h.detached))
 	}
-	if _, err = j.query([]ports.ChatDeliveryLookup{{AttemptID: "attempt"}}, false); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
-		t.Fatalf("unhealthy journal served qualified evidence: %v", err)
+	if got, err := j.query([]ports.ChatDeliveryLookup{{AttemptID: "attempt"}}, false); err != nil || !got[0].ExecutionSettled {
+		t.Fatalf("memory receipt lost: %+v %v", got, err)
 	}
 	frame, err := j.prepare([]byte(`{"id":2,"method":"turn/start","params":{"_meta":{"aoDeliveryAttempt":"later"}}}`))
-	if err != nil || strings.Contains(string(frame), DeliveryMetaKey) {
+	if len(frame) == 0 || strings.Contains(string(frame), DeliveryMetaKey) {
 		t.Fatalf("later prompt detached or leaked private metadata: %s %v", frame, err)
 	}
 }
@@ -262,8 +295,8 @@ func TestDeliveryJournalReclaimsOnlyAcknowledgedSettledEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(j.records) != 0 || len(j.requests) != 0 || len(j.waiting) != 0 || j.failed {
-		t.Fatalf("settled host state grew: records=%d requests=%d failed=%v", len(j.records), len(j.requests), j.failed)
+	if len(j.records) != 0 || len(j.requests) != 0 || len(j.waiting) != 0 {
+		t.Fatalf("settled host state grew: records=%d requests=%d", len(j.records), len(j.requests))
 	}
 	j.size = maxDeliveryJournalBytes
 	if _, err := j.prepare([]byte(`{"id":99999,"method":"turn/start","params":{"_meta":{"aoDeliveryAttempt":"after-compaction"}}}`)); err != nil {
@@ -289,5 +322,74 @@ func TestDeliveryPrepareFailureStillStripsPrivateMetadata(t *testing.T) {
 	}
 	if _, err := j.query(nil, true); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
 		t.Fatalf("failed journal claimed settled: %v", err)
+	}
+}
+
+func TestDeliveryCheckpointFailureRecoversWithoutLosingNativeReceipt(t *testing.T) {
+	j, err := newDeliveryJournal(filepath.Join(t.TempDir(), "journal"), "epoch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writable := j.file
+	defer writable.Close()
+	readonly, err := os.Open(writable.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readonly.Close()
+	j.file = readonly
+	_, err = j.prepare([]byte(`{"id":1,"method":"session/prompt","params":{"sessionId":"session","_meta":{"aoDeliveryAttempt":"attempt"}}}`))
+	if err == nil {
+		t.Fatal("fault did not reach checkpoint write")
+	}
+	if err := j.observe([]byte(`{"id":1,"result":{"stopReason":"end_turn"}}`)); err == nil {
+		t.Fatal("checkpoint unexpectedly writable")
+	}
+	key := []ports.ChatDeliveryLookup{{AttemptID: "attempt", ProviderEpoch: "epoch", ProviderRequestID: "1"}}
+	receipt, err := j.query(key, false)
+	if err != nil || len(receipt) != 1 || !receipt[0].ExecutionSettled {
+		t.Fatalf("checkpoint failure discarded native evidence: %+v %v", receipt, err)
+	}
+	if _, err := j.query(key, true); err == nil {
+		t.Fatal("unwritable checkpoint reported flushed")
+	}
+	if err := j.acknowledge(key); err != nil {
+		t.Fatalf("checkpoint failure blocked durable consumer ACK: %v", err)
+	}
+	j.file = writable
+	if _, err := j.query(nil, true); err != nil {
+		t.Fatalf("idle host did not recover after writable checkpoint: %v", err)
+	}
+	if _, err := j.prepare([]byte(`{"id":2,"method":"session/prompt","params":{"sessionId":"session","_meta":{"aoDeliveryAttempt":"later"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.observe([]byte(`{"id":2,"result":{"stopReason":"end_turn"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := j.query([]ports.ChatDeliveryLookup{{AttemptID: "later"}}, true)
+	if err != nil || !got[0].ExecutionSettled {
+		t.Fatalf("later turn remained poisoned: %+v %v", got, err)
+	}
+}
+
+func TestDeliveryCapacityReclaimsSettledWithoutPoisoningHost(t *testing.T) {
+	j, err := newDeliveryJournal(filepath.Join(t.TempDir(), "journal"), "epoch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.file.Close()
+	for i := range maxDeliveryRecords {
+		key := fmt.Sprintf("settled-%d", i)
+		j.records[key] = deliveryRecord{Receipt: domain.ChatDeliveryReceipt{AttemptID: key, ExecutionSettled: true, ObservedAt: time.Now()}}
+	}
+	if _, err := j.prepare([]byte(`{"id":1,"method":"session/prompt","params":{"sessionId":"session","_meta":{"aoDeliveryAttempt":"new"}}}`)); err != nil {
+		t.Fatalf("settled cache poisoned new turn: %v", err)
+	}
+	if err := j.observe([]byte(`{"id":1,"result":{"stopReason":"end_turn"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := j.query([]ports.ChatDeliveryLookup{{AttemptID: "new"}}, true)
+	if err != nil || !receipt[0].ExecutionSettled {
+		t.Fatalf("capacity poison persisted: %+v %v", receipt, err)
 	}
 }

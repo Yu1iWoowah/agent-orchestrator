@@ -1607,6 +1607,9 @@ func hydrateExcerptConversation(ctx context.Context, store Store, conversationID
 			return fmt.Errorf("%w: source message changed or no longer contains the selection; reselect it", ErrExcerptStale)
 		}
 		turn, err := store.TurnByID(ctx, source.TurnID)
+		if err != nil && !errors.Is(err, domain.ErrNoConversationTurn) {
+			return fmt.Errorf("read excerpt turn: %w", err)
+		}
 		if err != nil || turn.ConversationID != conversationID || turn.State != domain.TurnStateCompleted || turn.RolledBackAt != nil {
 			return fmt.Errorf("%w: source turn is not complete", ErrExcerptStale)
 		}

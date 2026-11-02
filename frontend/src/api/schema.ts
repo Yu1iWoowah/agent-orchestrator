@@ -9788,6 +9788,7 @@ export interface components {
             boundaryState?: string;
             boundaryTurnId?: string;
             cleanupOnly?: boolean;
+            compactionId?: string;
             createKey: string;
             decisionData?: {
                 [key: string]: string[];

@@ -31,6 +31,7 @@ type deliveryWait struct {
 }
 
 type deliveryRecord struct {
+	NativeThread  string                     `json:"nativeThread,omitempty"`
 	NativeSession string                     `json:"nativeSession,omitempty"`
 	Receipt       domain.ChatDeliveryReceipt `json:"receipt"`
 	Method        string                     `json:"method"`
@@ -38,17 +39,20 @@ type deliveryRecord struct {
 }
 
 type deliveryJournal struct {
+	// Native in-flight sets drain on response/terminal; never discard a live
+	// correlation merely to cap a cache and permanently lose proof of quiescence.
 	waiting    map[string]deliveryWait // native pending approvals/tools
 	executions map[string]bool         // native turns without a matched reservation
 
-	failed    bool // evidence failures never stop native I/O
-	mu        sync.Mutex
-	epoch     string
-	file      *os.File
-	size      int64
-	records   map[string]deliveryRecord
-	requests  map[string]string
-	uncovered map[string]string
+	checkpointDirty bool // disk checkpoint can be repaired from authoritative memory
+	mu              sync.Mutex
+	epoch           string
+	file            *os.File
+	size            int64
+	records         map[string]deliveryRecord
+	requests        map[string]string
+	unsettled       map[string]nativeDeliveryGap
+	uncovered       map[string]string
 }
 
 func newDeliveryJournal(path, epoch string) (*deliveryJournal, error) {
@@ -56,11 +60,11 @@ func newDeliveryJournal(path, epoch string) (*deliveryJournal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &deliveryJournal{waiting: map[string]deliveryWait{}, executions: map[string]bool{}, epoch: epoch, file: f, records: map[string]deliveryRecord{}, requests: map[string]string{}, uncovered: map[string]string{}}, nil
+	return &deliveryJournal{waiting: map[string]deliveryWait{}, executions: map[string]bool{}, epoch: epoch, file: f, records: map[string]deliveryRecord{}, requests: map[string]string{}, uncovered: map[string]string{}, unsettled: map[string]nativeDeliveryGap{}}, nil
 }
 
 // compact keeps only live or unacknowledged evidence. The host never restores
-// this file into a different epoch; a failed rewrite simply fences queries.
+// this file into a different epoch. A failed checkpoint never invalidates memory.
 func (j *deliveryJournal) compact() error {
 	if err := j.file.Truncate(0); err != nil {
 		return err
@@ -80,15 +84,22 @@ func (j *deliveryJournal) compact() error {
 	if err != nil {
 		return err
 	}
-	return j.file.Sync()
+	if err := j.file.Sync(); err != nil {
+		return err
+	}
+	j.checkpointDirty = false
+	return nil
 }
 
 func (j *deliveryJournal) append(r deliveryRecord) (resultErr error) {
 	defer func() {
 		if resultErr != nil {
-			j.failed = true
+			j.checkpointDirty = true
 		}
 	}()
+	if j.checkpointDirty {
+		return j.compact()
+	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -142,13 +153,7 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 			// An unclassified native method must not disappear from the denominator
 			// merely because its caller currently has no canonical delivery reservation.
 			j.mu.Lock()
-			if !j.failed {
-				if len(j.uncovered) >= maxDeliveryRecords {
-					j.failed = true
-				} else {
-					j.uncovered[string(e.ID)] = e.Method
-				}
-			}
+			j.trackUncovered(string(e.ID), e.Method, e.Params)
 			j.mu.Unlock()
 			return frame, nil
 		}
@@ -174,34 +179,44 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 	clean = append(clean, '\n')
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.failed {
-		return clean, nil
-	}
 	if attempt == "" {
-		if len(j.uncovered) >= maxDeliveryRecords {
-			j.failed = true
-			return clean, ports.ErrChatDeliveryUnverified
-		}
-		j.uncovered[string(e.ID)] = e.Method
+		j.trackUncovered(string(e.ID), e.Method, e.Params)
 		return clean, nil
 	}
 	if _, exists := j.records[attempt]; exists {
 		return nil, errDuplicateDeliveryAttempt
 	}
+	if len(j.records) >= maxDeliveryRecords {
+		var oldest string
+		for key, r := range j.records {
+			if r.Receipt.ExecutionSettled && (oldest == "" || r.Receipt.ObservedAt.Before(j.records[oldest].Receipt.ObservedAt)) {
+				oldest = key
+			}
+		}
+		if oldest != "" {
+			delete(j.records, oldest)
+		}
+	}
 	if len(j.records) >= maxDeliveryRecords || len(j.requests) >= maxDeliveryRecords {
-		j.failed = true
+		j.trackUncovered(string(e.ID), e.Method, e.Params)
 		return clean, ports.ErrChatDeliveryUnverified
 	}
 	receipt := domain.ChatDeliveryReceipt{AttemptID: attempt, ProviderRequestID: rpcCorrelation(e.ID), ProviderEpoch: j.epoch, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ObservedAt: time.Now().UTC()}
-	var session string
+	var session, thread string
 	_ = json.Unmarshal(e.Params["sessionId"], &session)
+	_ = json.Unmarshal(e.Params["threadId"], &thread)
 	safeReference := receipt
 	safeReference.ProviderTurnID = session
 	if safeReference.Validate() != nil {
-		j.failed = true
+		j.trackUncovered(string(e.ID), e.Method, e.Params)
 		return clean, ports.ErrChatDeliveryUnverified
 	}
-	record := deliveryRecord{Receipt: receipt, Method: e.Method, NativeSession: session}
+	safeReference.ProviderTurnID = thread
+	if safeReference.Validate() != nil {
+		j.trackUncovered(string(e.ID), e.Method, e.Params)
+		return clean, ports.ErrChatDeliveryUnverified
+	}
+	record := deliveryRecord{Receipt: receipt, Method: e.Method, NativeSession: session, NativeThread: thread}
 	// Retain the correlation in memory even if its durable checkpoint fails.
 	j.records[attempt], j.requests[string(e.ID)] = record, attempt
 	return clean, j.append(record)
@@ -227,6 +242,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 				ID string `json:"id"`
 			} `json:"turn"`
 			TurnID    string `json:"turnId"`
+			ThreadID  string `json:"threadId"`
 			SessionID string `json:"sessionId"`
 			Update    struct {
 				Kind   string `json:"sessionUpdate"`
@@ -244,28 +260,8 @@ func (j *deliveryJournal) observe(frame []byte) error {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	defer func() {
-		if len(j.waiting) > maxDeliveryRecords || len(j.executions) > maxDeliveryRecords {
-			j.failed = true
-		}
-	}()
-	if j.failed {
-		return nil
-	}
 	if e.Method == "" && len(e.ID) > 0 {
-		method := j.uncovered[string(e.ID)]
-		delete(j.uncovered, string(e.ID))
-		// An unreserved turn/start remains in-flight until its native terminal event.
-		if method == "turn/start" && len(e.Error) == 0 {
-			var native struct {
-				Turn struct {
-					ID string `json:"id"`
-				} `json:"turn"`
-			}
-			if json.Unmarshal(e.Result, &native) == nil && native.Turn.ID != "" {
-				j.executions[native.Turn.ID] = true
-			}
-		}
+		j.observeUncoveredResponse(string(e.ID), e.Result, e.Error)
 		attempt, ok := j.requests[string(e.ID)]
 		delete(j.requests, string(e.ID))
 		if !ok {
@@ -301,45 +297,44 @@ func (j *deliveryJournal) observe(frame []byte) error {
 		record.Receipt.ExecutionSettled = record.Method == "session/prompt"
 		record.Receipt.ObservedAt = time.Now().UTC()
 		record.Receipt.ProgressSequence++
-		if err := j.append(record); err != nil {
-			return err
-		}
 		j.records[attempt] = record
 		if record.Receipt.ExecutionSettled {
 			j.clearWaiting(attempt, record.NativeTurn)
 		}
-		return nil
+		return j.append(record)
 	}
 	if e.Params.SessionID != "" && (e.Method == "session/update" || e.Method == "session/request_permission") {
-		for attempt, record := range j.records {
-			if record.Method != "session/prompt" || record.NativeSession != e.Params.SessionID || record.Receipt.ExecutionSettled {
-				continue
-			}
-			progress := "running"
-			switch {
-			case e.Method == "session/request_permission":
-				progress = "approval"
-				if len(e.ID) > 0 {
-					j.waiting[string(e.ID)] = deliveryWait{AttemptID: attempt, Kind: progress}
-				}
-			case e.Params.Update.Kind == "tool_call" || e.Params.Update.Kind == "tool_call_update":
-				key := "acp-tool:" + attempt + ":" + e.Params.Update.ToolID
-				if e.Params.Update.Status == "completed" || e.Params.Update.Status == "failed" {
-					delete(j.waiting, key)
-				} else {
-					progress = "tool"
-					j.waiting[key] = deliveryWait{AttemptID: attempt, Kind: progress}
-				}
-			case e.Params.Update.Kind != "agent_message_chunk" && e.Params.Update.Kind != "agent_thought_chunk":
-				continue
-			}
-			record.Receipt.Progress = progress
-			record.Receipt.ProgressSequence++
-			record.Receipt.ObservedAt = time.Now().UTC()
-			j.records[attempt] = record
+		// Session broadcasts qualify only while one exact prompt RPC is active.
+		attempt := j.activeACPAttempt(e.Params.SessionID)
+		if attempt == "" {
+			return nil
 		}
+		record := j.records[attempt]
+		progress := "running"
+		switch {
+		case e.Method == "session/request_permission":
+			progress = "approval"
+			if len(e.ID) > 0 {
+				j.waiting[string(e.ID)] = deliveryWait{AttemptID: attempt, Kind: progress}
+			}
+		case e.Params.Update.Kind == "tool_call" || e.Params.Update.Kind == "tool_call_update":
+			key := "acp-tool:" + attempt + ":" + e.Params.Update.ToolID
+			if e.Params.Update.Status == "completed" || e.Params.Update.Status == "failed" {
+				delete(j.waiting, key)
+			} else {
+				progress = "tool"
+				j.waiting[key] = deliveryWait{AttemptID: attempt, Kind: progress}
+			}
+		case e.Params.Update.Kind != "agent_message_chunk" && e.Params.Update.Kind != "agent_thought_chunk":
+			return nil
+		}
+		record.Receipt.Progress = progress
+		record.Receipt.ProgressSequence++
+		record.Receipt.ObservedAt = time.Now().UTC()
+		j.records[attempt] = record
 		return nil
 	}
+
 	if e.Method != "" {
 		native := e.Params.Turn.ID
 		if native == "" {
@@ -348,6 +343,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 		if native == "" {
 			return nil
 		}
+		j.observeUncoveredEvent(e.Method, e.Params.ThreadID, native, e.Params.Item.Type)
 		if e.Method == "turn/started" {
 			j.executions[native] = true
 		}
@@ -365,7 +361,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 			delete(j.waiting, "item:"+e.Params.Item.ID)
 		}
 		for attempt, record := range j.records {
-			if record.NativeTurn == "" || record.NativeTurn != native || record.Receipt.Disposition != domain.ChatDeliveryAccepted {
+			if record.NativeTurn == "" || record.NativeTurn != native || record.NativeThread != "" && e.Params.ThreadID != "" && record.NativeThread != e.Params.ThreadID || record.Receipt.Disposition != domain.ChatDeliveryAccepted {
 				continue
 			}
 			delete(j.executions, native)
@@ -384,6 +380,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 			}
 			// Ordinary progress is already in the native replay stream. Checkpoint
 			// only terminal evidence here; explicit custody flush saves the latest state.
+			j.records[attempt] = record
 			if e.Method == "turn/completed" {
 				if err := j.append(record); err != nil {
 					return err
@@ -395,6 +392,22 @@ func (j *deliveryJournal) observe(frame []byte) error {
 	}
 
 	return nil
+}
+
+// ACP notifications lack a request ID. Multiple active prompts are ambiguous;
+// a completed/error request never borrows another prompt's session broadcasts.
+func (j *deliveryJournal) activeACPAttempt(session string) string {
+	active := ""
+	for _, attempt := range j.requests {
+		record := j.records[attempt]
+		if record.Method == "session/prompt" && record.NativeSession == session && !record.Receipt.ExecutionSettled {
+			if active != "" {
+				return ""
+			}
+			active = attempt
+		}
+	}
+	return active
 }
 
 func (j *deliveryJournal) clearWaiting(attempt, native string) {
@@ -410,9 +423,6 @@ func (j *deliveryJournal) clearWaiting(attempt, native string) {
 func (j *deliveryJournal) acknowledge(keys []ports.ChatDeliveryLookup) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.failed {
-		return ports.ErrChatDeliveryUnverified
-	}
 	for _, key := range keys {
 		record, ok := j.records[key.AttemptID]
 		if !ok {
@@ -431,15 +441,13 @@ func (j *deliveryJournal) acknowledge(keys []ports.ChatDeliveryLookup) error {
 func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) ([]domain.ChatDeliveryReceipt, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.failed {
-		return nil, ports.ErrChatDeliveryUnverified
-	}
 	if flush {
-		if len(j.uncovered) > 0 || len(j.executions) > 0 {
+		if len(j.uncovered) > 0 || len(j.unsettled) > 0 || len(j.executions) > 0 {
 			return nil, ports.ErrChatShutdownNotSettled
 		}
-		if err := j.file.Sync(); err != nil {
-			j.failed = true
+		// Rewrite the latest memory snapshot, including progress and retired records.
+		if err := j.compact(); err != nil {
+			j.checkpointDirty = true
 			return nil, ports.ErrChatDeliveryUnverified
 		}
 	}
@@ -450,21 +458,19 @@ func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) 
 			return nil, ports.ErrChatDeliveryUnverified
 		}
 		receipt := record.Receipt
+		if receipt.Progress == "approval" || receipt.Progress == "tool" {
+			receipt.Progress = "running"
+		}
+		active := record.Method != "session/prompt" || j.activeACPAttempt(record.NativeSession) == lookup.AttemptID
 		for _, wait := range j.waiting {
-			if !receipt.ExecutionSettled && (wait.AttemptID == lookup.AttemptID || record.NativeTurn != "" && wait.NativeTurn == record.NativeTurn) {
-				receipt.ObservedAt = time.Now().UTC()
+			if active && !receipt.ExecutionSettled && (wait.AttemptID == lookup.AttemptID || record.NativeTurn != "" && wait.NativeTurn == record.NativeTurn) {
 				if wait.Kind == "approval" || receipt.Progress != "approval" {
 					receipt.Progress = wait.Kind
 				}
 			}
 		}
 		receipt.CustodyFlushed = flush
-		if flush {
-			record.Receipt = receipt
-			if err := j.append(record); err != nil {
-				return nil, err
-			}
-		}
+
 		out = append(out, receipt)
 	}
 	return out, nil

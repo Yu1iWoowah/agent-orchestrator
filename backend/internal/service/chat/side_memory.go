@@ -30,7 +30,8 @@ var (
 // memorySideStore is deliberately process-local. Electron owns recovery across
 // supervised daemon restarts; AO never writes side transcripts or drafts to DB.
 type memorySideStore struct {
-	unverified  map[string]bool // guarded by mu; native outbound not yet settled
+	compactions map[string]string // guarded by mu
+	unverified  map[string]bool   // guarded by mu; native outbound not yet settled
 	mu          sync.Mutex
 	runID       string
 	closed      map[string]bool
@@ -47,6 +48,7 @@ type memorySideStore struct {
 // SideRecoveryRecord travels only between the daemon and Electron main process.
 // Electron holds it in RAM for this desktop launch and never writes it to disk.
 type SideRecoveryRecord struct {
+	CompactionID        string                  `json:"compactionId,omitempty"`
 	OutboundUnverified  *bool                   `json:"outboundUnverified"`
 	CleanupOnly         bool                    `json:"cleanupOnly,omitempty"`
 	HostStopped         bool                    `json:"hostStopped,omitempty"`
@@ -108,7 +110,7 @@ func (m *memorySideStore) export(runID string) []SideRecoveryRecord {
 			}
 		}
 		unverified := m.unverified[id]
-		out = append(out, SideRecoveryRecord{OutboundUnverified: &unverified, PolicyVersion: side.PolicyVersion, BoundaryTurnID: side.BoundaryTurnID, BoundaryState: side.BoundaryState, MessageProviderIDs: messageIDs, ActivityProviderIDs: activityIDs, DecisionData: decisions, Side: side, SourceProviderID: side.SourceProviderID, LaunchConfig: side.LaunchConfig, CreateKey: side.CreateKey, ProviderHostID: side.ProviderHostID,
+		out = append(out, SideRecoveryRecord{CompactionID: m.compactions[id], OutboundUnverified: &unverified, PolicyVersion: side.PolicyVersion, BoundaryTurnID: side.BoundaryTurnID, BoundaryState: side.BoundaryState, MessageProviderIDs: messageIDs, ActivityProviderIDs: activityIDs, DecisionData: decisions, Side: side, SourceProviderID: side.SourceProviderID, LaunchConfig: side.LaunchConfig, CreateKey: side.CreateKey, ProviderHostID: side.ProviderHostID,
 			ProviderForkID: side.ProviderForkID, NativeAnchorID: side.NativeAnchorID,
 			Harness: side.Harness, Generation: side.Generation,
 			ReferenceContext: side.ReferenceContext, ReferencePending: side.ReferencePending, SeedHistory: side.SeedHistory,
@@ -207,6 +209,10 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 			m.unverified = map[string]bool{}
 		}
 		m.unverified[side.ID] = record.OutboundUnverified == nil || *record.OutboundUnverified
+		if m.compactions == nil {
+			m.compactions = map[string]string{}
+		}
+		m.compactions[side.ID] = record.CompactionID
 		m.turns[side.ID] = make([]domain.SideTurn, 0, len(record.Turns))
 		for _, item := range record.Turns {
 			item.Turn.DispatchAttempt = item.DispatchAttempt
@@ -926,13 +932,17 @@ func (m *memorySideStore) PrepareSideBoundary(_ context.Context, sideID, turnID,
 	}
 }
 
-func (m *memorySideStore) setOutboundUnverified(id string, value bool) {
+func (m *memorySideStore) setOutboundUnverified(id string, value bool, compactionID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.unverified == nil {
 		m.unverified = map[string]bool{}
 	}
 	m.unverified[id] = value
+	if m.compactions == nil {
+		m.compactions = map[string]string{}
+	}
+	m.compactions[id] = compactionID
 }
 func (m *memorySideStore) outboundUnverified(id string) bool {
 	m.mu.Lock()
@@ -952,4 +962,10 @@ func (m *memorySideStore) unverifiedSides() []string {
 		}
 	}
 	return pending
+}
+
+func (m *memorySideStore) outboundCompactionID(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.compactions[id]
 }
