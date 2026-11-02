@@ -465,7 +465,7 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 		if backgroundBusy {
 			c.backgroundTurn = providerTurnID
 		}
-		if c.liveState.ActiveCompaction || ports.ChatCompactionID(ctx) != "" && ports.ChatCompactionID(ctx) == providerTurnID {
+		if c.liveState.ActiveCompaction || c.liveState.PendingCompaction || ports.ChatCompactionID(ctx) != "" && ports.ChatCompactionID(ctx) == providerTurnID {
 			c.compactingTurnID = providerTurnID
 			c.compactionBefore = c.contextTokens
 		}
@@ -1109,6 +1109,10 @@ func (c *conversation) Interrupt(ctx context.Context, providerTurnID string) err
 	c.mu.Lock()
 	active := c.activeTurn
 	sessionID := c.sessionID
+	if active == "" && c.compactingTurnID != "" {
+		c.mu.Unlock()
+		return ports.ErrChatDeliveryUnverified
+	}
 	if active == "" || c.settlingTurn == active || (providerTurnID != "" && providerTurnID != active) {
 		c.mu.Unlock()
 		return ports.ErrChatNoActiveTurn

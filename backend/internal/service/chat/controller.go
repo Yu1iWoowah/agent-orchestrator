@@ -3415,7 +3415,7 @@ func (c *Controller) projectUnit(
 		projected, primaryTurn, err = project()
 	}
 	for _, committed := range unit {
-		if err == nil && persistent && committed.ProviderEventID != "" {
+		if err == nil && persistent && committed.ProviderEventID != "" && !unknownCompaction(committed) {
 			err = acknowledger.AcknowledgeProviderEvent(ctx, committed.ProviderEventID)
 		}
 	}
@@ -3580,6 +3580,9 @@ func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, project
 	if event.Input != nil {
 		record["input"] = event.Input
 	}
+	if event.Compaction != nil {
+		record["compaction"] = event.Compaction
+	}
 	if event.Err != nil {
 		record["error"] = event.Err.Error()
 	}
@@ -3593,6 +3596,10 @@ func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, project
 	}
 	return c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
 		c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(), project)
+}
+
+func unknownCompaction(event ports.ChatEvent) bool {
+	return event.Kind == ports.ChatEventTurnCompleted && event.Compaction != nil && event.Compaction.Outcome == ports.ChatCompactionUnknown
 }
 
 // applyCommittedTurnLifecycle updates the controller's volatile ownership only
@@ -3629,6 +3636,11 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 				"session", c.sessionID, "completedTurn", event.ProviderTurnID,
 				"pendingTurn", c.pendingTurnID, "compactionPending", c.compactionPending)
 			return false
+		}
+		if unknownCompaction(event) {
+			c.compactionPending = true
+			c.state = ports.ChatControllerBusy
+			return true
 		}
 		c.compactionPending = false
 		c.pendingTurnID = ""
@@ -3699,6 +3711,11 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			}, now)
 
 	case ports.ChatEventTurnCompleted:
+		if unknownCompaction(event) {
+			// The RPC ended without proving the native operation ended. Keep the
+			// durable running turn so reconnect restores its admission fence.
+			return nil
+		}
 		message := ""
 		if event.Err != nil {
 			message = event.Err.Error()
@@ -4072,12 +4089,24 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)
 		}
 	case ports.ChatEventTurnCompleted:
+		if primaryTurn && unknownCompaction(event) {
+			diagnosticCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := c.outboundAttention(diagnosticCtx, false); err != nil {
+				c.log.Warn("compaction diagnosis unavailable", "session", c.sessionID, "code", "CHAT_ATTENTION_CREATE_FAILED")
+			}
+			cancel()
+			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.compaction.unverified", now)
+			return
+		}
 		reauthRequired := errors.Is(event.Err, ports.ErrChatAuthRequired)
 		if reauthRequired && c.onAccountChanged != nil {
 			c.onAccountChanged(c.sessionID, c.generation, c.harness)
 		}
 		if !primaryTurn {
 			return
+		}
+		if event.Compaction != nil {
+			c.clearOutboundAttention(ctx)
 		}
 		activityState := domain.ActivityIdle
 		activityEvent := "chat.turn.completed"

@@ -231,7 +231,10 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			runtime.mu.Unlock()
 			if _, ok := s.store.(outboundAttentionStore); ok {
 				if err := outboundAttention(checkCtx, s.store, runtime.side.SessionID, "side:"+runtime.side.ID, !pending, s.now()); err != nil {
-					return errors.Join(ports.ErrChatShutdownNotSettled, err)
+					if pending {
+						return errors.Join(ports.ErrChatShutdownNotSettled, err)
+					}
+					s.log.Warn("outbound attention cleanup failed", "side", runtime.side.ID, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
 				}
 			}
 		}

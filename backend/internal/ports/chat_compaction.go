@@ -19,8 +19,8 @@ const (
 
 // ChatCompactionReceipt retains the original command even when its outcome is unknown.
 type ChatCompactionReceipt struct {
-	CommandID string
-	Outcome   ChatCompactionOutcome
+	CommandID string                `json:"commandId"`
+	Outcome   ChatCompactionOutcome `json:"outcome"`
 }
 
 type chatCompactionKey struct{}

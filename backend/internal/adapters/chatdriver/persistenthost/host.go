@@ -138,6 +138,7 @@ type ACPState struct {
 	SessionID              string          `json:"sessionId,omitempty"`
 	ActivePrompt           bool            `json:"activePrompt,omitempty"`
 	ActiveCompaction       bool            `json:"activeCompaction,omitempty"`
+	PendingCompaction      bool            `json:"pendingCompaction,omitempty"`
 	PendingResultEventID   string          `json:"pendingResultEventId,omitempty"`
 	RetainUnpromptedEvents bool            `json:"retainUnpromptedEvents,omitempty"`
 }

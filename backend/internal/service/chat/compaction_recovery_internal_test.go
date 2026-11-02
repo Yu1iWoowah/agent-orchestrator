@@ -303,6 +303,24 @@ func TestSuccessfulCustodySurvivesAttentionCleanupFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestSettledSideShutdownSurvivesAttentionCleanupFailure(t *testing.T) {
+	var logs bytes.Buffer
+	questions := &compactionQuestionStore{}
+	conv := &recoveredSideCloseConversation{events: make(chan ports.ChatEvent)}
+	svc, side := newCompactionSide(t, conv, questions)
+	svc.log = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := outboundAttention(t.Context(), questions, side.SessionID, "side:"+side.ID, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	questions.cancelErr = errors.New("private storage sentinel")
+	if err := svc.StopAll(t.Context()); err != nil || !conv.closed {
+		t.Fatalf("settled side could not shut down after diagnostic cleanup failure: %v", err)
+	}
+	if !strings.Contains(logs.String(), "CHAT_ATTENTION_CLEANUP_FAILED") || strings.Contains(logs.String(), "private storage sentinel") {
+		t.Fatalf("missing or unsafe cleanup diagnosis: %s", logs.String())
+	}
+}
 func TestBackgroundHibernateDoesNotPromptOrReadNativeHistory(t *testing.T) {
 	conv := &backgroundCompactionCheck{}
 	questions := &compactionQuestionStore{}

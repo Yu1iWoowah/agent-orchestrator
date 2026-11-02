@@ -84,6 +84,20 @@ func TestCompactionPrechecksProveNotSent(t *testing.T) {
 	}
 }
 
+func TestUnknownCompactionReconnectRetainsFenceWithoutCallerHint(t *testing.T) {
+	c := &conversation{sessionID: "native", proc: &process{reconnected: true, gate: newGatedReader(strings.NewReader(""), false)}, liveState: &persistenthost.ACPState{PendingResultEventID: "host-result", PendingCompaction: true}, events: make(chan ports.ChatEvent, 16), log: slog.New(slog.DiscardHandler)}
+	if err := c.ActivateLiveReconnect(t.Context(), "command"); err != nil {
+		t.Fatal(err)
+	}
+	c.finishPrompt("command", acpsdk.PromptResponse{}, &acpsdk.RequestError{Code: -32603, Message: "outcome unknown", Data: map[string]any{persistenthost.ACPEventIDMetaKey: "host-result"}})
+	if _, err := c.SendTurn(t.Context(), ports.ChatUserMessage{Text: "keep queued"}); !errors.Is(err, ports.ErrChatTurnNotSentBusy) {
+		t.Fatalf("reconnect lost unknown compaction admission fence: %v", err)
+	}
+	if err := c.Interrupt(t.Context(), "command"); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
+		t.Fatalf("absence of active RPC was mistaken for execution settlement: %v", err)
+	}
+}
+
 func TestCompactionOutcomeRequiresNativeEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
