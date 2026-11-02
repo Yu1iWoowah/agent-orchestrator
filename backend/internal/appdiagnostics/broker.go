@@ -25,9 +25,10 @@ const RuntimeAddressEnv = "AO_APP_DIAGNOSTICS_ADDRESS"
 
 // Credentials are consumed exactly once from the app's private stdin pipe.
 type Credentials struct {
-	Version      int    `json:"version"`
-	BrowserToken string `json:"browserToken"`
-	AppToken     string `json:"appDiagnosticsToken"`
+	Version       int    `json:"version"`
+	BrowserToken  string `json:"browserToken"`
+	AppToken      string `json:"appDiagnosticsToken"`
+	OperatorToken string `json:"operatorConsentToken,omitempty"`
 }
 
 // ReadCredentials accepts the old Browser-only handoff without enabling diagnostics.
@@ -59,6 +60,9 @@ func ReadCredentials(r io.Reader) (Credentials, error) {
 
 	var out Credentials
 	if err := decode([]byte(data), &out); err != nil || out.Version != 1 || out.BrowserToken == "" || len(out.BrowserToken) > 256 || len(out.AppToken) < 32 || len(out.AppToken) > 256 || out.AppToken == out.BrowserToken || (legacy != "" && legacy != out.BrowserToken) {
+		return Credentials{}, errors.New("invalid runtime handoff")
+	}
+	if out.OperatorToken != "" && (len(out.OperatorToken) < 32 || len(out.OperatorToken) > 256 || out.OperatorToken == out.AppToken || out.OperatorToken == out.BrowserToken) {
 		return Credentials{}, errors.New("invalid runtime handoff")
 	}
 	return out, nil

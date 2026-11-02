@@ -133,7 +133,8 @@ func CanonicalOperatorPlan(p OperatorActionPlan) (string, string, error) {
 		seen[ref] = true
 	}
 	for ref, rev := range p.ExpectedRevisions {
-		if !OperatorReferenceValid(ref) || rev < 0 {
+		// The native Electron client must display the exact JSON revision.
+		if !OperatorReferenceValid(ref) || rev < 0 || rev >= 1<<53 {
 			return "", "", ErrOperatorPlanInvalid
 		}
 	}

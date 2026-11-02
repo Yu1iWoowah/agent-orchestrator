@@ -12,7 +12,7 @@ import (
 )
 
 func TestOperatorConsentMigrationUpDownUp(t *testing.T) {
-	const previous int64 = 20261101143810287
+	const previous int64 = 20261101144300192
 	const version int64 = 20261101165111979
 	db := openMigratedDatabaseCopy(t, previous)
 	for i := 0; i < 2; i++ {

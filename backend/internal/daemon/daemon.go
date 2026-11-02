@@ -49,6 +49,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
 	usagepipeline "github.com/aoagents/agent-orchestrator/backend/internal/observe/usage"
+	"github.com/aoagents/agent-orchestrator/backend/internal/operatornative"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/presence"
 	"github.com/aoagents/agent-orchestrator/backend/internal/preview"
@@ -122,6 +123,11 @@ var _ interface {
 // Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
 // graceful shutdown through the HTTP server and background workers.
 func Run(buildVersion string) error {
+	var operatorOwner *operatornative.Owner
+	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
+		operatorOwner = operatornative.CaptureOwner()
+		defer func() { _ = operatorOwner.Close() }()
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -140,10 +146,12 @@ func Run(buildVersion string) error {
 	log := newLogger()
 	var browserRuntimeToken string
 	var appRuntimeToken string
+	var operatorRuntimeToken string
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
 		var credentials appruntime.Credentials
 		credentials, err = appruntime.ReadCredentials(os.Stdin)
 		browserRuntimeToken, appRuntimeToken = credentials.BrowserToken, credentials.AppToken
+		operatorRuntimeToken = credentials.OperatorToken
 		if err != nil {
 			return err
 		}
@@ -214,6 +222,8 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	operatorBroker := operatornative.New(store.NativeOperatorIssuer(), operatorRuntimeToken, operatorOwner)
+	browserBroker.SetNativeHandler(operatorBroker.Handle)
 	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
@@ -1164,6 +1174,7 @@ func Run(buildVersion string) error {
 			},
 		}),
 		AppDiagnostics:           appDiagnosticsAPI,
+		OperatorConsentAuthority: operatorBroker,
 		Browser:                  browserService,
 		BrowserChrome:            browserChrome,
 		LinkPreview:              linkpreviewsvc.New(nil),
