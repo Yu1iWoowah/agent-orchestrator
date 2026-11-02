@@ -68,6 +68,8 @@ type serverRequestHandler func(context.Context, serverRequest) (any, error)
 // ErrConnClosed reports use of a connection whose process has exited.
 var ErrConnClosed = errors.New("app-server connection closed")
 
+var errRequestNotWritten = errors.New("request was not written")
+
 // conn is one live stdio connection to an app-server process.
 //
 // It is transport only: framing, request/response correlation, and fan-out. It
@@ -313,14 +315,21 @@ func (c *conn) answer(req serverRequest) {
 func (c *conn) write(v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("encode frame: %w", err)
+		return errors.Join(errRequestNotWritten, fmt.Errorf("encode frame: %w", err))
 	}
 	b = append(b, '\n')
 
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if _, err := c.w.Write(b); err != nil {
+	n, err := c.w.Write(b)
+	if err != nil {
+		if n == 0 {
+			return errors.Join(errRequestNotWritten, fmt.Errorf("write frame: %w", err))
+		}
 		return fmt.Errorf("write frame: %w", err)
+	}
+	if n != len(b) {
+		return io.ErrShortWrite
 	}
 	return nil
 }
@@ -328,13 +337,16 @@ func (c *conn) write(v any) error {
 // request sends a client->server request and waits for its response. The caller's
 // context bounds the wait; a late response is discarded by deliver.
 func (c *conn) request(ctx context.Context, method string, params, out any) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Join(errRequestNotWritten, err)
+	}
 	id := c.nextID.Add(1)
 	ch := make(chan frame, 1)
 
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return fmt.Errorf("%s: %w", method, ErrConnClosed)
+		return errors.Join(errRequestNotWritten, fmt.Errorf("%s: %w", method, ErrConnClosed))
 	}
 	c.pending[id] = ch
 	c.mu.Unlock()

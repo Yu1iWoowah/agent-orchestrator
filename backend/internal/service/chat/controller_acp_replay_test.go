@@ -164,8 +164,14 @@ func TestACPReplayProjectsExactlyOnceAcrossDaemonRestarts(t *testing.T) {
 			len(rows.Messages) == 2 && rows.Messages[1].Text == "~"
 	})
 	stopCtx, stopCancel := context.WithTimeout(ctx, 5*time.Second)
-	firstService.StopAll(stopCtx)
+	if err := firstService.StopAll(stopCtx); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+		t.Fatalf("unresolved ACP prompt returned normal shutdown: %v", err)
+	}
 	stopCancel()
+	if err := chatsvc.DetachIncompleteForTest(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	first.Wait()
 	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -202,6 +208,9 @@ func TestACPReplayProjectsExactlyOnceAcrossDaemonRestarts(t *testing.T) {
 		replayTurn, readErr := st.TurnByID(ctx, turn.ID)
 		if readErr != nil {
 			t.Fatal(readErr)
+		}
+		if replayTurn.State == domain.TurnStateFailed {
+			t.Fatalf("crash fixture or replay failed the original execution: %+v", replayTurn)
 		}
 		if second.State() == ports.ChatControllerStopped {
 			t.Fatalf("replay stopped before completion: %+v", replayTurn)

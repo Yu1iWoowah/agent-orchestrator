@@ -891,6 +891,7 @@ func (d *Driver) connectProcess(
 	}
 	gate := newGatedReader(transport.Stdout, !transport.Reconnected)
 	proc := &process{
+		delivery:                 transport.Delivery,
 		launchCapabilityVerifier: transport.LaunchCapabilityVerifier,
 		stdin:                    transport.Stdin, stdout: gate, gate: gate,
 		reconnected: transport.Reconnected, acpState: transport.ACPState,

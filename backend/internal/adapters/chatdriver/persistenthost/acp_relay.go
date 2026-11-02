@@ -299,6 +299,7 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 			}
 			r.promptResult = nil
 			r.state.PendingResultEventID = ""
+			r.state.PendingCompaction = false
 			r.clearPromptReplay()
 		}
 		return acpClientFrames{}, nil
@@ -338,6 +339,7 @@ func (r *acpRelay) clientFrame(ctx context.Context, frame []byte, generation uin
 	if method == "session/prompt" {
 		r.state.ActivePrompt = true
 		r.state.ActiveCompaction = isCompactionPrompt(envelope["params"])
+		r.state.PendingCompaction = false
 		r.state.PendingResultEventID = ""
 		r.cancelRequested = false
 		r.lastActivityAt = time.Now()
@@ -483,6 +485,7 @@ func (r *acpRelay) providerFrame(
 
 	if request.method == "session/prompt" {
 		r.state.ActivePrompt = false
+		r.state.PendingCompaction = r.state.ActiveCompaction
 		r.state.ActiveCompaction = false
 		r.cancelRequested = false
 		eventID := r.newEventID()

@@ -312,6 +312,26 @@ describe("side panel navigation and recovery", () => {
 		remove.mockResolvedValue({});
 	});
 
+	it("preserves the compact draft after reconciliation and waits for explicit resubmission", async () => {
+		const normalGet = get.getMockImplementation();
+		if (!normalGet) throw new Error("missing side API fixture");
+		get.mockImplementation((path: string, options?: object) => path.endsWith("/draft")
+			? { data: { contentJson: JSON.stringify({ version: 1, text: "/compact", attachments: [], references: [] }) } }
+			: normalGet(path, options));
+		post.mockResolvedValueOnce({ error: { error: { code: "CHAT_SIDE_COMPACTION_RECONCILED", message: "Previous compact settled; submit /compact again." } } });
+		render(<SidePanelHarness />);
+		const field = await screen.findByLabelText("Side chat question");
+		await waitFor(() => expect(lexicalEditorText(field)).toBe("/compact"));
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await screen.findByText("Send failed");
+		expect(lexicalEditorText(field)).toBe("/compact");
+		expect(post).toHaveBeenCalledTimes(1);
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await waitFor(() => expect(lexicalEditorText(field)).toBe(""));
+		expect(post).toHaveBeenCalledTimes(2);
+		expect(post.mock.calls.every(([path]) => path.endsWith("/compact"))).toBe(true);
+	});
+
 	it("ignores older-page results from a tab that is no longer active", async () => {
 		const normalGet = get.getMockImplementation()!;
 		const pending = new Map<string, (value: object) => void>();

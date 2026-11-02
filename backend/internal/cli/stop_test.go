@@ -2,7 +2,11 @@ package cli
 
 import (
 	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +146,24 @@ func TestWaitForStoppedReportsStoppedWhenRunFileGoneButProcessLingers(t *testing
 	}
 	if st.State != stateStopped {
 		t.Fatalf("state = %q, want stopped", st.State)
+	}
+}
+
+func TestShutdownWaitsForPreflightAndReportsNotSettled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2100 * time.Millisecond)
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"status":"shutdown_not_settled"}`))
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 50 * time.Millisecond
+	c := &commandContext{deps: Deps{HTTPClient: client}.withDefaults()}
+	err := c.requestShutdown(t.Context(), server.Listener.Addr().(*net.TCPAddr).Port)
+	if err == nil || !strings.Contains(err.Error(), "shutdown_not_settled") || !strings.Contains(err.Error(), "409") {
+		t.Fatalf("preflight refusal lost: %v", err)
+	}
+	if client.Timeout != 50*time.Millisecond {
+		t.Fatal("shutdown changed shared probe client timeout")
 	}
 }

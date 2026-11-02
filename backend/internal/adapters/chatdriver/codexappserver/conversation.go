@@ -93,7 +93,10 @@ type conversation struct {
 	// compactedTurn is the last turn a compaction was reported for, so a provider
 	// build that emits both the notification and the item reports one compaction
 	// once.
-	compactedTurn string
+	compactedTurn    string
+	compactionID     string // guarded by mu; retained until native completion
+	compactionTurnID string // guarded by mu; native compaction item correlation
+	compactionEpoch  string // guarded by mu; original provider owner
 
 	pumpDone     chan struct{}
 	eventsMu     sync.RWMutex
@@ -196,6 +199,19 @@ func (c *conversation) pump() {
 		// as an absolute instant and has to become a remaining duration, and a
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, now) {
+			c.mu.Lock()
+			if c.compactionID != "" && c.compactionEpoch == c.OutboundProviderEpoch() && (scope.ThreadID == "" || scope.ThreadID == c.threadID) {
+				if ev.Kind == ports.ChatEventCompacted && ev.ProviderTurnID != "" {
+					c.compactionTurnID = ev.ProviderTurnID
+				}
+				if ev.Kind == ports.ChatEventTurnCompleted && c.compactionTurnID != "" && ev.ProviderTurnID == c.compactionTurnID {
+					ev.CompactionID = c.compactionID
+					ev.Compaction = &ports.ChatCompactionReceipt{CommandID: c.compactionID, Outcome: ports.ChatCompactionSettled}
+					c.compactionID, c.compactionTurnID, c.compactionEpoch = "", "", ""
+				}
+			}
+			c.mu.Unlock()
+
 			ev = usageLimits.decorate(ev, now)
 			threadID := ev.ProviderConversationID
 			if threadID == "" {
@@ -354,6 +370,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 
 	params := map[string]any{
+		"_meta":    map[string]any{"aoDeliveryAttempt": msg.DeliveryAttemptID},
 		"threadId": c.threadID,
 		"input":    []any{map[string]any{"type": "text", "text": msg.Text}},
 	}
@@ -609,6 +626,9 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 
 	c.mu.Lock()
 	before := c.contextTokens
+	c.compactionID = ports.ChatCompactionID(ctx)
+	c.compactionEpoch = c.OutboundProviderEpoch()
+	c.compactionTurnID = ""
 	c.mu.Unlock()
 
 	// thread/compact/start takes the thread id and nothing else. Notably NOT a turn
@@ -617,6 +637,16 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	if err := c.conn.request(ctx, "thread/compact/start", map[string]any{
 		"threadId": c.threadID,
 	}, nil); err != nil {
+		var refusal *rpcError
+		notSent := errors.Is(err, errRequestNotWritten) || errors.As(err, &refusal) && (refusal.Code == -32601 || refusal.Code == -32600 && strings.Contains(refusal.Message, "unknown variant `thread/compact/start`"))
+		if notSent {
+			c.mu.Lock()
+			c.compactionID, c.compactionTurnID, c.compactionEpoch = "", "", ""
+			c.mu.Unlock()
+			err = errors.Join(ports.ErrChatCompactionNotSent, err)
+		}
+		// Keep the command/native-turn correlation after an unknown outcome. Late
+		// provider completion, not this caller's deadline, releases the side queue.
 		return ports.ChatCompactionResult{}, fmt.Errorf("thread/compact/start: %w", err)
 	}
 

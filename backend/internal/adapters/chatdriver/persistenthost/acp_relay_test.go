@@ -119,6 +119,25 @@ func TestACPRelayTracksActiveCompactionPrompt(t *testing.T) {
 	}
 }
 
+func TestACPRelayRetainsCompactionReplyCustodyUntilAck(t *testing.T) {
+	for _, response := range []string{`"result":{"stopReason":"end_turn"}`, `"error":{"code":-32603,"message":"outcome unknown"}`} {
+		t.Run(response, func(t *testing.T) {
+			relay := newTestACPRelay(t)
+			prompt := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"session-live","prompt":[{"type":"text","text":"/compact"}]}}`+"\n"), 1)
+			relayProviderFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":`+frameID(t, prompt)+`,`+response+"}\n"), 1, true)
+			state := relay.snapshot()
+			if state.ActivePrompt || state.ActiveCompaction || !state.PendingCompaction || state.PendingResultEventID == "" {
+				t.Fatalf("reply lost compaction recovery identity: %+v", state)
+			}
+			ack, _ := json.Marshal(map[string]any{"method": ACPPromptAckMethod, "params": map[string]string{"eventId": state.PendingResultEventID}})
+			relayClientFrame(t, relay, ack, 1)
+			if state := relay.snapshot(); state.PendingCompaction || state.PendingResultEventID != "" {
+				t.Fatalf("committed compaction reply retained: %+v", state)
+			}
+		})
+	}
+}
+
 func TestACPRelayGivesReplayedProviderRequestStableIdentity(t *testing.T) {
 	relay := newTestACPRelay(t)
 	frame := []byte(`{"jsonrpc":"2.0","id":"permission-7","method":"session/request_permission","params":{"sessionId":"s","options":[]}}` + "\n")

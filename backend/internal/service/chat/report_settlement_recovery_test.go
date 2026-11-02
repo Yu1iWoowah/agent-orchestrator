@@ -52,8 +52,8 @@ func TestCanceledSendSettlesPiggybackReports(t *testing.T) {
 				t.Fatalf("report: found=%v err=%v", found, err)
 			}
 			if mode == "pre-send-failed" {
-				if receipt.State != domain.TurnStateFailed || sendErr == nil || turn.State != domain.TurnStateFailed || conv.starts.Load() != 0 || report.DeliveryState != domain.ReportPending {
-					t.Errorf("canceled failed input stranded reports: state=%s starts=%d report=%s send-error=%v", turn.State, conv.starts.Load(), report.DeliveryState, sendErr)
+				if receipt.State != domain.TurnStateQueued || sendErr != nil || turn.State != domain.TurnStateQueued || conv.starts.Load() != 0 || report.DeliveryState != domain.ReportAcknowledged {
+					t.Errorf("canceled retained input lost report ownership: state=%s starts=%d report=%s send-error=%v", turn.State, conv.starts.Load(), report.DeliveryState, sendErr)
 				}
 				return
 			}

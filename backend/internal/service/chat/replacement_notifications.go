@@ -15,7 +15,7 @@ func (s *Service) DeliverReplacementChatWorkerFYI(ctx context.Context, id string
 	if !ok {
 		return domain.ErrReplacementStateInvalid
 	}
-	controller, release, err := s.admitController(ctx, target, false)
+	controller, release, err := s.admitControllerWork(ctx, target, false, controllerIntake)
 	if err != nil {
 		return err
 	}

@@ -406,3 +406,42 @@ func (c *Control) ValidateAgentSettings(ctx context.Context, op domain.AgentSett
 	fingerprint, err := c.selectionProof(ctx, op.SessionID, selection, rec.Harness == domain.HarnessClaudeCode)
 	return domain.AgentSettingsQualification{InputFingerprint: fingerprint, PolicyVersion: policy}, err
 }
+
+// RetryAttempt keeps the original preference operation and rechecks current
+// authority. A retry never carries native proof or supplies a new preference.
+type RetryAttempt struct {
+	AttemptID        string `json:"attemptId"`
+	ExpectedVersion  *int64 `json:"expectedVersion" nullable:"false" minimum:"0"`
+	ExpectedRevision *int64 `json:"expectedRevision" nullable:"false" minimum:"0"`
+}
+
+type reconciliationRetryRuntime interface {
+	RetryAgentSettings(context.Context, domain.SessionID, string, string, int64, int64) (domain.AgentSettingsReconciliation, error)
+}
+
+// Retry authorizes another reconciliation attempt without creating a new intent.
+func (c *Control) Retry(ctx context.Context, caller Caller, id domain.SessionID, operationID string, in RetryAttempt) (domain.AgentSettingsReconciliation, error) {
+	_, accepted, err := c.target(ctx, caller, id)
+	if err != nil {
+		return domain.AgentSettingsReconciliation{}, settingsError(err)
+	}
+	if in.AttemptID == "" || in.ExpectedVersion == nil || *in.ExpectedVersion < 0 || in.ExpectedRevision == nil || *in.ExpectedRevision < 0 {
+		return domain.AgentSettingsReconciliation{}, settingsError(ports.ErrAgentSettingsInvalid)
+	}
+	op, err := c.store.AgentSettingsOperation(ctx, id, operationID)
+	if err != nil {
+		return domain.AgentSettingsReconciliation{}, settingsError(err)
+	}
+	if accepted.Actor.Kind == domain.AgentSettingsActorOrchestrator && op.Actor != accepted.Actor {
+		return domain.AgentSettingsReconciliation{}, apierr.Forbidden("AGENT_SETTINGS_RETRY_DENIED", "Managed callers may only retry their own settings operation")
+	}
+	if op.Phase == domain.AgentSettingsCancelled || op.Phase == domain.AgentSettingsFailed {
+		return domain.AgentSettingsReconciliation{}, settingsError(ports.ErrAgentSettingsConflict)
+	}
+	runtime, ok := c.runtime.(reconciliationRetryRuntime)
+	if !ok || op.ApplyMode == domain.AgentSettingsRestart {
+		return domain.AgentSettingsReconciliation{}, settingsError(ports.ErrAgentSettingsUnsupported)
+	}
+	attempt, err := runtime.RetryAgentSettings(ctx, id, operationID, in.AttemptID, *in.ExpectedVersion, *in.ExpectedRevision)
+	return attempt, settingsError(err)
+}

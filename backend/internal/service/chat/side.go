@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -32,6 +34,8 @@ var (
 	ErrSideNotReady = errors.New("side provider is not ready; retry the connection")
 	// ErrSidePolicyRecreate prevents resuming an unverified or uncertain boundary.
 	ErrSidePolicyRecreate = errors.New("side-chat safety boundary cannot be verified; close this side and create a new one")
+	// ErrSideCompactionReconciled requires a new request after settling an earlier compaction.
+	ErrSideCompactionReconciled = errors.New("previous side compaction is settled; no new compaction was started; submit /compact again to start one")
 )
 
 // SideStore is the launch-scoped in-memory storage boundary. Side rows never become
@@ -87,6 +91,13 @@ type SideCreateRequest struct {
 }
 
 type sideRuntime struct {
+	compactionCheckMu   sync.Mutex
+	nextCompactionCheck time.Time
+
+	compactionEpoch    string
+	compactionID       string // guarded by mu; persisted in recovery
+	outboundUnverified bool   // guarded by mu; side ledger integration belongs to PR3
+
 	side            domain.SideConversation
 	conv            ports.ChatConversation
 	cancel          context.CancelFunc
@@ -108,6 +119,9 @@ type sideRuntime struct {
 }
 
 type sideManager struct {
+	quiescing bool // guarded by mu
+	opening   int  // guarded by mu
+
 	service     *Service
 	store       SideStore
 	mu          sync.Mutex
@@ -641,6 +655,15 @@ func (s *Service) validateSideReferences(ctx context.Context, session domain.Ses
 }
 
 func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver ports.ChatDriver) {
+	m.mu.Lock()
+	if m.quiescing {
+		m.mu.Unlock()
+		return
+	}
+	m.opening++
+	m.mu.Unlock()
+	defer func() { m.mu.Lock(); m.opening--; m.mu.Unlock() }()
+
 	if side.PolicyVersion != sidePolicyVersion {
 		m.failOpen(side, ErrSidePolicyRecreate)
 		return
@@ -840,6 +863,15 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 }
 
 func (m *sideManager) restore(ctx context.Context, side domain.SideConversation) {
+	m.mu.Lock()
+	if m.quiescing {
+		m.mu.Unlock()
+		return
+	}
+	m.opening++
+	m.mu.Unlock()
+	defer func() { m.mu.Lock(); m.opening--; m.mu.Unlock() }()
+
 	defer func() {
 		m.mu.Lock()
 		if cancel := m.restoring[side.ID]; cancel != nil {
@@ -875,7 +907,13 @@ func (m *sideManager) restore(ctx context.Context, side domain.SideConversation)
 		m.service.log.Warn("side restore: main controller unavailable", "side", side.ID, "error", err)
 		return
 	}
-	conv, err := driver.Resume(ctx, ports.ChatResumeConfig{
+	resumeCtx := ctx
+	compactionID := ""
+	if store, ok := m.store.(*memorySideStore); ok {
+		compactionID = store.outboundCompactionID(side.ID)
+		resumeCtx = ports.WithChatCompactionEpoch(ports.WithChatCompactionID(ctx, compactionID), store.outboundCompactionEpoch(side.ID))
+	}
+	conv, err := driver.Resume(resumeCtx, ports.ChatResumeConfig{
 		SessionID: domain.SessionID(side.ProviderHostID), ProviderConversationID: side.ProviderForkID,
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env,
 		Model: side.Model, Effort: side.Effort, Permissions: cfg.Permissions,
@@ -902,7 +940,10 @@ func (m *sideManager) restore(ctx context.Context, side domain.SideConversation)
 				break
 			}
 		}
-		if err := activator.ActivateLiveReconnect(ctx, activeProviderID); err != nil {
+		if activeProviderID == "" {
+			activeProviderID = compactionID
+		}
+		if err := activator.ActivateLiveReconnect(resumeCtx, activeProviderID); err != nil {
 			_ = conv.Close()
 			m.service.log.Warn("side provider replay activation failed", "side", side.ID, "error", err)
 			_ = m.store.SetSideFailed(context.Background(), side.ID, side.Generation,
@@ -1003,6 +1044,11 @@ func (m *sideManager) attach(side domain.SideConversation, conv ports.ChatConver
 	runtime := &sideRuntime{side: side, conv: conv, cancel: cancel, done: ctx.Done(), ctx: ctx,
 		completed: make(chan ports.ChatEvent, 8), messageText: make(map[string]string),
 		messageIDs: make(map[string]string), activityIDs: make(map[string]string), activityText: make(map[string]string)}
+	if store, ok := m.store.(*memorySideStore); ok {
+		runtime.outboundUnverified = store.outboundUnverified(side.ID)
+		runtime.compactionID = store.outboundCompactionID(side.ID)
+		runtime.compactionEpoch = store.outboundCompactionEpoch(side.ID)
+	}
 	m.mu.Lock()
 	if m.runID != side.AppRunID || m.ctx.Err() != nil {
 		m.mu.Unlock()
@@ -1048,6 +1094,7 @@ func (m *sideManager) attach(side domain.SideConversation, conv ports.ChatConver
 	m.runtimes[side.ID] = runtime
 	m.mu.Unlock()
 	go m.consumeEvents(ctx, runtime)
+	go m.reconcileCompaction(ctx, runtime, false)
 	if active != nil {
 		go func() {
 			m.awaitSideTurn(ctx, runtime, side, *active, active.ProviderTurnID)
@@ -1091,10 +1138,31 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 				ports.ChatEventInputRequested, ports.ChatEventInputResolved:
 				m.projectSideActivity(runtime, event)
 			case ports.ChatEventTurnCompleted:
+				runtime.compactionCheckMu.Lock()
 				runtime.mu.Lock()
 				noActiveTurn := runtime.activeTurnID == ""
-				compactionCompleted := noActiveTurn && runtime.compacting
+				sameOwner := true
+				if owner, ok := runtime.conv.(ports.ChatOutboundReconciler); ok {
+					sameOwner = runtime.compactionEpoch == owner.OutboundProviderEpoch()
+				}
+				commandID := event.CompactionID
+				if event.Compaction != nil {
+					commandID = event.Compaction.CommandID
+				}
+				matchedCompaction := sameOwner && noActiveTurn && runtime.compactionID != "" && commandID == runtime.compactionID && event.ProviderTurnID != ""
+				compactionCompleted := matchedCompaction && event.Compaction != nil && event.CompactionID == commandID && (event.Compaction.Outcome == ports.ChatCompactionSettled || event.Compaction.Outcome == ports.ChatCompactionNotSent)
+				if matchedCompaction && !compactionCompleted {
+					runtime.compacting = false
+					m.setOutboundUnverifiedLocked(runtime, true)
+				}
 				runtime.mu.Unlock()
+				if matchedCompaction && !compactionCompleted {
+					diagnosticCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					m.diagnoseCompaction(diagnosticCtx, runtime)
+					cancel()
+					m.announce(runtime.side.ID)
+					m.signal()
+				}
 				if compactionCompleted {
 					// ACP hosts refuse another prompt until the terminal receipt is
 					// acknowledged, including receipts for compaction-only turns.
@@ -1111,9 +1179,19 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 					}
 					runtime.mu.Lock()
 					runtime.compacting = false
+					runtime.compactionID = ""
+					runtime.compactionEpoch = ""
+					if !runtime.dispatchBlocked {
+						m.setOutboundUnverifiedLocked(runtime, false)
+					}
+					settled := !runtime.dispatchBlocked
 					runtime.mu.Unlock()
+					if settled {
+						m.clearCompactionAttention(ctx, runtime)
+					}
 					m.signal()
 				}
+				runtime.compactionCheckMu.Unlock()
 				if noActiveTurn {
 					continue
 				}
@@ -1245,6 +1323,10 @@ func (m *sideManager) schedule() {
 		}
 		for m.ctx.Err() == nil {
 			m.mu.Lock()
+			if m.quiescing {
+				m.mu.Unlock()
+				break
+			}
 			excluded := make(map[string]bool)
 			sides, err := m.store.ListOpenSidesForRun(m.ctx, m.runID)
 			if err != nil {
@@ -1258,7 +1340,7 @@ func (m *sideManager) schedule() {
 					continue
 				}
 				runtime.mu.Lock()
-				excluded[side.ID] = runtime.dispatchBlocked || runtime.compacting || runtime.activeTurnID != ""
+				excluded[side.ID] = runtime.dispatchBlocked || runtime.compacting || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != ""
 				runtime.mu.Unlock()
 			}
 			turn, side, found, err := m.store.ClaimNextSideTurn(m.ctx, m.runID, excluded, m.service.now())
@@ -1268,7 +1350,7 @@ func (m *sideManager) schedule() {
 			}
 			runtime := m.runtimes[side.ID]
 			runtime.mu.Lock()
-			if runtime.compacting || runtime.activeTurnID != "" {
+			if runtime.compacting || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != "" {
 				runtime.mu.Unlock()
 				_ = m.store.RequeueSideTurn(m.ctx, side.ID, turn.ID)
 				m.mu.Unlock()
@@ -1379,6 +1461,9 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 	if turn.DispatchAttempt > 0 {
 		providerRequestID = fmt.Sprintf("%s:retry:%d", turn.ClientMessageID, turn.DispatchAttempt)
 	}
+	runtime.mu.Lock()
+	m.setOutboundUnverifiedLocked(runtime, true)
+	runtime.mu.Unlock()
 	ref, err := runtime.conv.SendTurn(ctx, ports.ChatUserMessage{Text: text, Content: content,
 		ClientMessageID: providerRequestID, Origin: domain.MessageOriginHuman,
 		SettingsSnapshot: &frame, Settings: ports.ChatTurnSettings{Model: side.Model, Effort: side.Effort}})
@@ -1477,11 +1562,15 @@ func (m *sideManager) awaitSideTurn(ctx context.Context, runtime *sideRuntime, s
 				m.service.log.Warn("side turn settlement failed", "side", side.ID, "turn", turn.ID, "error", err)
 				return
 			}
+			settlementVerified := true
 			if event.ProviderEventID != "" {
 				if acknowledger, ok := runtime.conv.(ports.ChatProviderEventAcknowledger); ok {
 					ackCtx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 					err := acknowledger.AcknowledgeProviderEvent(ackCtx, event.ProviderEventID)
 					cancel()
+					if err != nil {
+						settlementVerified = false
+					}
 					if err != nil && m.ctx.Err() == nil {
 						m.service.log.Warn("side provider event acknowledgement failed", "side", side.ID, "turn", turn.ID, "error", err)
 						_ = m.store.SetSideFailed(context.Background(), side.ID, side.Generation,
@@ -1491,6 +1580,9 @@ func (m *sideManager) awaitSideTurn(ctx context.Context, runtime *sideRuntime, s
 			}
 			m.announce(side.ID)
 			runtime.mu.Lock()
+			if settlementVerified {
+				m.setOutboundUnverifiedLocked(runtime, false)
+			}
 			runtime.activeTurnID = ""
 			runtime.providerTurnID = ""
 			runtime.mu.Unlock()
@@ -1676,7 +1768,8 @@ func (s *Service) SendSideQuestion(ctx context.Context, session domain.SessionID
 		return domain.SideTurn{}, ErrSideNotReady
 	}
 	s.sides.mu.Lock()
-	connected := s.sides.runtimes[sideID] != nil
+	runtime := s.sides.runtimes[sideID]
+	connected := runtime != nil
 	s.sides.mu.Unlock()
 	if !connected && side.State != "opening" {
 		return domain.SideTurn{}, ErrSideNotReady
@@ -1695,6 +1788,9 @@ func (s *Service) SendSideQuestion(ctx context.Context, session domain.SessionID
 	if created {
 		s.sides.signal()
 		s.sides.announce(sideID)
+		if runtime != nil {
+			go s.sides.reconcileCompaction(s.sides.ctx, runtime, false)
+		}
 	}
 	return turn, nil
 }
@@ -1805,22 +1901,65 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 	if runtime == nil {
 		return ports.ChatCompactionResult{}, ErrSideUnavailable
 	}
+	runtime.mu.Lock()
+	pending := runtime.compactionID != "" && runtime.outboundUnverified && !runtime.compacting
+	runtime.mu.Unlock()
+	if pending {
+		if s.sides.reconcileCompaction(ctx, runtime, true) {
+			return ports.ChatCompactionResult{}, ErrSideCompactionReconciled
+		}
+		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
+	}
 	compactor, ok := runtime.conv.(ports.ChatCompactor)
 	if !ok || !runtime.conv.Capabilities().Has(ports.ChatCapabilityCompaction) {
 		return ports.ChatCompactionResult{}, ErrCompactionUnsupported
 	}
+	s.sides.mu.Lock()
+	quiescing := s.sides.quiescing
+	if quiescing {
+		s.sides.mu.Unlock()
+		return ports.ChatCompactionResult{}, ports.ErrChatShutdownNotSettled
+	}
 	runtime.mu.Lock()
-	if runtime.activeTurnID != "" || runtime.compacting {
+	if runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified {
 		runtime.mu.Unlock()
+		s.sides.mu.Unlock()
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}
 	runtime.compacting = true
+	runtime.compactionID = uuid.NewString()
+	if owner, ok := runtime.conv.(ports.ChatOutboundReconciler); ok {
+		runtime.compactionEpoch = owner.OutboundProviderEpoch()
+	}
+	compactionID := runtime.compactionID
+	s.sides.setOutboundUnverifiedLocked(runtime, true)
 	runtime.mu.Unlock()
-	result, err := compactor.Compact(ctx)
+	s.sides.mu.Unlock()
+	result, err := compactor.Compact(ports.WithChatCompactionID(ctx, compactionID))
 	if err != nil {
+		runtime.compactionCheckMu.Lock()
 		runtime.mu.Lock()
-		runtime.compacting = false
+		current := runtime.compactionID == compactionID
+		if current {
+			runtime.compacting = false
+			if errors.Is(err, ports.ErrChatCompactionNotSent) {
+				runtime.compactionID = ""
+				runtime.compactionEpoch = ""
+				s.sides.setOutboundUnverifiedLocked(runtime, false)
+			}
+		}
+		unknown := current && runtime.outboundUnverified
 		runtime.mu.Unlock()
+		if current && (runtime.ctx == nil || runtime.ctx.Err() == nil) {
+			diagnosticCtx, cancel := context.WithTimeout(s.sides.ctx, 5*time.Second)
+			if !unknown {
+				s.sides.clearCompactionAttention(diagnosticCtx, runtime)
+			} else {
+				s.sides.diagnoseCompaction(diagnosticCtx, runtime)
+			}
+			cancel()
+		}
+		runtime.compactionCheckMu.Unlock()
 		s.sides.signal()
 		return ports.ChatCompactionResult{}, err
 	}
@@ -1897,6 +2036,11 @@ func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) 
 		}
 	}
 	s.sides.store.CompleteSideHostCleanup(ctx, sideID)
+	if s.stopProviderHost != nil {
+		if err := outboundAttention(ctx, s.store, owned.SessionID, "side:"+sideID, true, s.now()); err != nil {
+			s.log.Warn("side outbound attention cleanup failed", "side", sideID, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+		}
+	}
 	s.sides.announce(sideID)
 	s.sides.deleteRegisteredFork(ctx, side, side.ProviderForkID)
 	s.sides.signal()
@@ -2053,4 +2197,12 @@ func (s *Service) closeSessionSides(ctx context.Context, session domain.SessionI
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// Callers hold runtime.mu; recovery exports the same fact before native I/O.
+func (m *sideManager) setOutboundUnverifiedLocked(runtime *sideRuntime, value bool) {
+	runtime.outboundUnverified = value
+	if store, ok := m.store.(*memorySideStore); ok {
+		store.setOutboundUnverified(runtime.side.ID, value, runtime.compactionID, runtime.compactionEpoch)
+	}
 }

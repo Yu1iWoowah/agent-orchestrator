@@ -715,12 +715,16 @@ func TestRetryTurnRefusesUnconfirmedDispatch(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Send with a failing provider = nil error, want the dispatch failure")
 	}
-	if turn.ID == "" || turn.State != domain.TurnStateFailed {
-		t.Fatalf("undispatched turn = %+v, want a failed turn with an AO id", turn)
+	if turn.ID == "" || turn.State == domain.TurnStateFailed {
+		t.Fatalf("unknown delivery lost durable input: %+v", turn)
 	}
-	snapshot := failedTurnSnapshot(t, h, turn.ID)
-	if settled, ok := turnByID(snapshot, turn.ID); !ok || settled.ProviderTurnID != "" {
-		t.Fatalf("failed turn provider id = %q, want empty (never accepted)", settled.ProviderTurnID)
+	saved, err := h.st.TurnByID(ctx, turn.ID)
+	if err != nil || saved.State == domain.TurnStateFailed || saved.ProviderTurnID != "" {
+		t.Fatalf("unknown execution was settled: %+v %v", saved, err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
+	if err != nil || attempt.Disposition == domain.ChatDeliveryAccepted {
+		t.Fatalf("local intake claimed L2: %+v %v", attempt, err)
 	}
 
 	if _, err := h.svc.RetryTurn(ctx, testSession, turn.ID); !errors.Is(err, chatsvc.ErrRetryDeliveryUncertain) {

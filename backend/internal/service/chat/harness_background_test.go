@@ -137,7 +137,7 @@ func TestAOPromptQueuesBehindHarnessTriggeredTurn(t *testing.T) {
 	}
 	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "background", TurnState: domain.TurnStateCompleted})
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return len(s.Turns) == 2 && s.Turns[1].State == domain.TurnStateRunning
+		return len(s.Turns) == 2 && s.Turns[1].State == domain.TurnStateRunning && len(conv.sentMessages()) == 1
 	})
 	if messages := conv.sentMessages(); len(messages) != 1 || messages[0].Text != "next user prompt" {
 		t.Fatalf("queued AO prompt was lost or duplicated: %+v", messages)

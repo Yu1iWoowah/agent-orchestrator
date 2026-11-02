@@ -72,7 +72,7 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 			invalidPreview := strings.HasPrefix(mode, "invalidPreview")
 			previewRejectsCurrent := invalidPreview && mode != "invalidPreviewOlderUncertain"
 			preSendFailure := strings.HasSuffix(mode, "settings") || strings.HasSuffix(mode, "input")
-			rejectedUnsent := preSendFailure || mode == "bindRequeue" || previewRejectsCurrent
+			rejectedUnsent := mode == "bindRequeue" || previewRejectsCurrent
 			conv := &uncertainDeferredConversation{bindDeferredConversation: &bindDeferredConversation{fakeConversation: newFakeConversation()}}
 			fault := &bindUnsentFaultStore{}
 			preSendFault := &queuedPreSendFaultStore{atInput: strings.HasSuffix(mode, "input"), invalidClientID: "accepted"}

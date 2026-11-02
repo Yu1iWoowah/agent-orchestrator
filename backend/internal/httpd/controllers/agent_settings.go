@@ -46,6 +46,7 @@ func (c *AgentSettingsController) Register(r chi.Router) {
 	r.Patch("/sessions/{sessionId}/agent-settings", c.change)
 	r.Get("/sessions/{sessionId}/agent-settings/operations/{operationId}", c.operation)
 	r.Post("/sessions/{sessionId}/agent-settings/operations/{operationId}/cancel", c.cancel)
+	r.Post("/sessions/{sessionId}/agent-settings/operations/{operationId}/retry", c.retry)
 	r.Post("/sessions/{sessionId}/agent-settings/operations/{operationId}/settle", c.settleWriter)
 }
 func (c *AgentSettingsController) read(w http.ResponseWriter, r *http.Request) {
@@ -171,4 +172,27 @@ func (c *AgentSettingsController) settleWriter(w http.ResponseWriter, r *http.Re
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, AgentSettingsWriterSettlementResponse{Operation: op, WriterStatus: "stopped"})
+}
+
+type agentSettingsAttemptRetry interface {
+	Retry(context.Context, agentsettings.Caller, domain.SessionID, string, agentsettings.RetryAttempt) (domain.AgentSettingsReconciliation, error)
+}
+
+func (c *AgentSettingsController) retry(w http.ResponseWriter, r *http.Request) {
+	control, ok := c.Control.(agentSettingsAttemptRetry)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/agent-settings/operations/{operationId}/retry")
+		return
+	}
+	var in RetryAgentSettingsAttemptPayload
+	if err := decodeAgentSettingsBody(w, r, &in); err != nil || in.AttemptID == "" || in.ExpectedVersion == nil || *in.ExpectedVersion < 0 || in.ExpectedRevision == nil || *in.ExpectedRevision < 0 {
+		envelope.WriteAPIError(w, r, 400, "bad_request", "AGENT_SETTINGS_INVALID", "attemptId, expectedVersion and expectedRevision are required", nil)
+		return
+	}
+	attempt, err := control.Retry(r.Context(), settingsCaller(r), domain.SessionID(chi.URLParam(r, "sessionId")), chi.URLParam(r, "operationId"), in)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, AgentSettingsAttemptResponse{Attempt: attempt})
 }

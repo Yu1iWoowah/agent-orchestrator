@@ -58,6 +58,10 @@ type journalConversation struct {
 	restoredPlan  domain.AgentSettingsProviderPlan
 }
 
+func (c *journalConversation) ReconciliationEvidence(_ context.Context, owner domain.AgentSettingsOwner) (ports.AgentSettingsReconciliationEvidence, error) {
+	return ports.AgentSettingsReconciliationEvidence{Kind: "per_turn_wire", Owner: owner, SourceRef: "fake.request.settings", PermissionVerified: true}, nil
+}
+
 func (c *journalConversation) CanHibernate(context.Context) (bool, error) { return c.quiet.Load(), nil }
 func (*journalConversation) Hibernate() error                             { return nil }
 func (c *journalConversation) PrepareAgentSettings(_ context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
@@ -331,7 +335,7 @@ func TestSettingsIntentionReturnsWhileProviderDispatchIsBlocked(t *testing.T) {
 	}
 }
 
-func TestSettingsPendingValidationFailureHasDurableSafeCode(t *testing.T) {
+func TestSettingsPendingValidationFailureHasDurableSafeAttemptCode(t *testing.T) {
 	h, conv, validator, commands := journalHarness(t)
 	conv.quiet.Store(false)
 	op, err := commands.QueueAgentSettings(t.Context(), journalIntent(t, h))
@@ -340,12 +344,16 @@ func TestSettingsPendingValidationFailureHasDurableSafeCode(t *testing.T) {
 	}
 	validator.denied.Store(true)
 	conv.quiet.Store(true)
-	if err := commands.RunAgentSettings(t.Context()); err != nil {
-		t.Fatal(err)
+	if err := commands.RunAgentSettings(t.Context()); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) {
+		t.Fatalf("transient validation result: %v", err)
 	}
 	failed, err := h.st.AgentSettingsOperation(t.Context(), testSession, op.ID)
-	if err != nil || failed.Phase != domain.AgentSettingsFailed || failed.ErrorCode != "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" || conv.stepCount() != 0 {
+	if err != nil || failed.Phase != domain.AgentSettingsPending || conv.stepCount() != 0 {
 		t.Fatalf("failure without reason: %+v %v", failed, err)
+	}
+	attempts, err := h.st.ListAgentSettingsReconciliations(t.Context(), testSession)
+	if err != nil || len(attempts) == 0 || attempts[0].Phase != "blocked" || attempts[0].ErrorCode != "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" {
+		t.Fatalf("missing durable attempt failure: %+v %v", attempts, err)
 	}
 }
 
@@ -415,21 +423,26 @@ func TestSettingsSchedulerRequiresPositiveQuiescenceAndRevalidates(t *testing.T)
 			}
 			validator.denied.Store(denied)
 			conv.quiet.Store(true)
-			if err := commands.RunAgentSettings(t.Context()); err != nil {
-				t.Fatal(err)
+			runErr := commands.RunAgentSettings(t.Context())
+			if denied && !errors.Is(runErr, ports.ErrAgentSettingsCapabilitiesUnavailable) || !denied && runErr != nil {
+				t.Fatalf("revalidation result: %v", runErr)
 			}
 			op, err = h.st.AgentSettingsOperation(t.Context(), testSession, op.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if denied {
-				if op.Phase != domain.AgentSettingsFailed || conv.stepCount() != 0 {
+				if op.Phase != domain.AgentSettingsPending || conv.stepCount() != 0 {
 					t.Fatalf("changed proof was used: %+v", op)
 				}
 			} else if op.Phase != domain.AgentSettingsApplied {
 				t.Fatalf("quiet operation not applied: %+v", op)
 			}
-			if len(conv.sentTexts()) != 1 {
+			if denied {
+				if len(conv.sentTexts()) != 0 {
+					t.Fatal("unavailable validation released the dispatch fence")
+				}
+			} else if len(conv.sentTexts()) != 1 {
 				t.Fatal("fenced prompt was not drained after safe outcome")
 			}
 		})

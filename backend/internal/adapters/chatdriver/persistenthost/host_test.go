@@ -60,6 +60,10 @@ func TestProviderHelper(t *testing.T) {
 		if json.Unmarshal(scanner.Bytes(), &frame) != nil {
 			continue
 		}
+		if frame.Method == "turn/start" {
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":%d,"result":{"turn":{"id":"native-delivery-turn"}}}`+"\n", frame.ID)
+			continue
+		}
 		if frame.Method == "emit-later" {
 			time.Sleep(50 * time.Millisecond)
 			_, _ = fmt.Fprintln(os.Stdout, `{"method":"turn/completed","params":{"turn":{"id":"survived"}}}`)

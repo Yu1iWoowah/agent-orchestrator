@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func restartJournalController(t *testing.T, h *harness, validator *journalValidator, provider ports.ChatConversation) *chatsvc.Controller {
@@ -43,6 +44,16 @@ func (c setterOnlySettingsConversation) CanHibernate(ctx context.Context) (bool,
 	return c.host.CanHibernate(ctx)
 }
 func (c setterOnlySettingsConversation) Hibernate() error { return c.host.Hibernate() }
+
+// The controlled provider supplies per-turn evidence separately from the
+// staged reset surface under test; production ACP does not gain this method.
+func (c setterOnlySettingsConversation) ReconciliationEvidence(ctx context.Context, owner domain.AgentSettingsOwner) (ports.AgentSettingsReconciliationEvidence, error) {
+	provider, ok := c.staged.(ports.ChatAgentSettingsReconciliationEvidence)
+	if !ok {
+		return ports.AgentSettingsReconciliationEvidence{}, ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
+	return provider.ReconciliationEvidence(ctx, owner)
+}
 func (c setterOnlySettingsConversation) PrepareAgentSettings(ctx context.Context, source, target domain.AgentSettings) (domain.AgentSettingsProviderPlan, error) {
 	if !c.resetSupported || source != c.source || target != c.target {
 		return domain.AgentSettingsProviderPlan{}, ports.ErrAgentSettingsUnsupported
@@ -260,9 +271,7 @@ func TestSettingsCommittedColdResumeRepreparesWireOrKeepsFence(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if len(replacement.sentTexts()) != 1 {
-				t.Fatal("cold resume lost or duplicated prompt")
-			}
+			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(replacement.sentTexts()) == 1 })
 			replacement.mu.Lock()
 			defer replacement.mu.Unlock()
 			if replacement.sent[0].Settings.FastMode != domain.AgentFastOff || replacement.sent[0].Settings.Model != "new-model" {
@@ -291,8 +300,9 @@ func TestSettingsColdReplayRechecksInputsAfterFinalProviderStep(t *testing.T) {
 	if _, err := controller.Send(t.Context(), ports.ChatUserMessage{Text: "after startup input change"}); err != nil {
 		t.Fatal(err)
 	}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(replacement.sentTexts()) == 1 })
 	if replacement.prepareCalls.Load() != 2 {
-		t.Fatal("cold replay dispatched using inputs invalidated during final provider step")
+		t.Fatal("cold replay did not requalify inputs before dispatch")
 	}
 }
 

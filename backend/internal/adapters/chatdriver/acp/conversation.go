@@ -46,6 +46,8 @@ var (
 )
 
 type preparedTurn struct {
+	deliveryAttemptID string
+
 	id              string
 	clientMessageID string
 	prompt          []acpsdk.ContentBlock
@@ -463,7 +465,7 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 		if backgroundBusy {
 			c.backgroundTurn = providerTurnID
 		}
-		if c.liveState.ActiveCompaction {
+		if c.liveState.ActiveCompaction || c.liveState.PendingCompaction || ports.ChatCompactionID(ctx) != "" && ports.ChatCompactionID(ctx) == providerTurnID {
 			c.compactingTurnID = providerTurnID
 			c.compactionBefore = c.contextTokens
 		}
@@ -475,6 +477,13 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 	c.mu.Unlock()
 	c.proc.gate.Open()
 	return nil
+}
+
+// PendingCompactionID retains the original command until qualified settlement.
+func (c *conversation) PendingCompactionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.compactingTurnID
 }
 
 // SendTurn prepares the long-lived ACP prompt request. AO's controller starts it
@@ -489,7 +498,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 	c.mu.Lock()
 	closed := c.closed
-	busy := c.prepared != nil || c.activeTurn != ""
+	busy := c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != ""
 	c.mu.Unlock()
 	if closed {
 		return ports.ChatTurnRef{}, errConversationClosed
@@ -507,11 +516,11 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	if c.closed {
 		return ports.ChatTurnRef{}, errConversationClosed
 	}
-	if c.prepared != nil || c.activeTurn != "" {
+	if c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != "" {
 		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	id := uuid.NewString()
-	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt}
+	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt, deliveryAttemptID: msg.DeliveryAttemptID}
 	return ports.ChatTurnRef{ProviderTurnID: id}, nil
 }
 
@@ -788,6 +797,7 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 		messageID = uuid.NewString()
 	}
 	resp, err := c.conn.Prompt(ctx, acpsdk.PromptRequest{
+		Meta:      map[string]any{persistenthost.DeliveryMetaKey: turn.deliveryAttemptID},
 		SessionId: acpsdk.SessionId(sessionID),
 		MessageId: &messageID,
 		Prompt:    turn.prompt,
@@ -823,6 +833,10 @@ func (c *conversation) finishPrompt(
 	isCompaction := c.compactingTurnID != "" && c.compactingTurnID == turnID
 	answered := len(c.messages) > 0 || len(c.tools) > 0
 	c.mu.Unlock()
+	var compaction *ports.ChatCompactionReceipt
+	if isCompaction {
+		compaction = &ports.ChatCompactionReceipt{CommandID: turnID, Outcome: compactionPromptOutcome(resp.StopReason, err)}
+	}
 	c.settleOpenItems(turnID)
 	interruptedLocally := false
 	if interrupt != nil && interrupt.turnID == turnID {
@@ -886,7 +900,7 @@ func (c *conversation) finishPrompt(
 		// reauthentication demand exists.
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{ReauthRecovered: true}})
 	}
-	if isCompaction {
+	if isCompaction && compaction.Outcome != ports.ChatCompactionUnknown {
 		if state == domain.TurnStateCompleted {
 			c.settleCompaction(turnID)
 		} else {
@@ -906,8 +920,14 @@ func (c *conversation) finishPrompt(
 		c.terminalEventID = eventID
 		c.mu.Unlock()
 	}
+	compactionID := ""
+	if compaction != nil && compaction.Outcome != ports.ChatCompactionUnknown && eventID != "" {
+		compactionID = turnID
+	}
 	c.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
+		CompactionID: compactionID,
+		Compaction:   compaction,
+		Kind:         ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, ProviderConversationID: c.ProviderConversationID(), TurnState: state, Err: turnErr,
 	})
 	// Release the turn before announcing readiness, not after. A consumer that
@@ -935,28 +955,31 @@ func (c *conversation) finishPrompt(
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
 	if err := ctx.Err(); err != nil {
-		return ports.ChatCompactionResult{}, err
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, err)
 	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errConversationClosed
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errConversationClosed)
 	}
 	if !c.capabilities.Has(ports.ChatCapabilityCompaction) {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errors.New("chat driver cannot compact history")
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errors.New("chat driver cannot compact history"))
 	}
 	if c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != "" {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errors.New("ACP conversation already has a turn in flight")
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errors.New("ACP conversation already has a turn in flight"))
 	}
 	sessionID := c.sessionID
 	if sessionID == "" {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errors.New("ACP session is not open")
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errors.New("ACP session is not open"))
 	}
 	before := c.contextTokens
-	id := uuid.NewString()
+	id := ports.ChatCompactionID(ctx)
+	if id == "" {
+		id = uuid.NewString()
+	}
 	c.activeTurn = id
 	c.compactingTurnID = id
 	c.compactionBefore = before
@@ -981,7 +1004,8 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 }
 
 func (c *conversation) runCompactionTurn(ctx context.Context, sessionID, turnID string) {
-	messageID := uuid.NewString()
+	// The host restores this identity after detach; keep the original command ID.
+	messageID := turnID
 	prompt := []acpsdk.ContentBlock{
 		acpsdk.TextBlock("/compact"),
 	}
@@ -992,6 +1016,22 @@ func (c *conversation) runCompactionTurn(ctx context.Context, sessionID, turnID 
 	})
 
 	c.finishPrompt(turnID, resp, err)
+}
+
+func compactionPromptOutcome(reason acpsdk.StopReason, err error) ports.ChatCompactionOutcome {
+	if err != nil {
+		var requestErr *acpsdk.RequestError
+		if errors.As(err, &requestErr) && (requestErr.Code == -32601 || requestErr.Code == -32600 && strings.Contains(requestErr.Message, "unknown variant `session/prompt`")) {
+			return ports.ChatCompactionNotSent
+		}
+		return ports.ChatCompactionUnknown
+	}
+	switch reason {
+	case acpsdk.StopReasonEndTurn, acpsdk.StopReasonCancelled, acpsdk.StopReasonMaxTokens, acpsdk.StopReasonMaxTurnRequests, acpsdk.StopReasonRefusal:
+		return ports.ChatCompactionSettled
+	default:
+		return ports.ChatCompactionUnknown
+	}
 }
 
 func (c *conversation) settleCompaction(turnID string) {
@@ -1076,6 +1116,10 @@ func (c *conversation) Interrupt(ctx context.Context, providerTurnID string) err
 	c.mu.Lock()
 	active := c.activeTurn
 	sessionID := c.sessionID
+	if active == "" && c.compactingTurnID != "" {
+		c.mu.Unlock()
+		return ports.ErrChatDeliveryUnverified
+	}
 	if active == "" || c.settlingTurn == active || (providerTurnID != "" && providerTurnID != active) {
 		c.mu.Unlock()
 		return ports.ErrChatNoActiveTurn

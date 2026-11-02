@@ -53,14 +53,17 @@ type Capabilities struct {
 
 // Snapshot combines durable preferences with independently qualified evidence.
 type Snapshot struct {
-	RestartRequired bool `json:"restartRequired,omitempty"`
+	WakeAttempts    []domain.ChatWakeAttempt `json:"wakeAttempts,omitempty"`
+	RestartRequired bool                     `json:"restartRequired,omitempty"`
 	domain.SessionAgentSettings
-	Capabilities       Capabilities                      `json:"capabilities"`
-	Pending            *domain.AgentSettingsOperation    `json:"pending,omitempty"`
-	Effective          domain.AgentSettingsEffective     `json:"effective"`
-	CurrentTurn        *domain.AgentSettingsTurnSnapshot `json:"currentTurn,omitempty"`
-	History            []HistoryEntry                    `json:"history,omitempty"`
-	WriterRecovery     *WriterRecovery                   `json:"writerRecovery,omitempty"`
+	Capabilities       Capabilities                         `json:"capabilities"`
+	Pending            *domain.AgentSettingsOperation       `json:"pending,omitempty"`
+	Effective          domain.AgentSettingsEffective        `json:"effective"`
+	CurrentTurn        *domain.AgentSettingsTurnSnapshot    `json:"currentTurn,omitempty"`
+	History            []HistoryEntry                       `json:"history,omitempty"`
+	Reconciliations    []domain.AgentSettingsReconciliation `json:"reconciliations,omitempty"`
+	PendingDeliveries  []domain.ChatDeliveryAttempt         `json:"pendingDeliveries,omitempty"`
+	WriterRecovery     *WriterRecovery                      `json:"writerRecovery,omitempty"`
 	catalogFingerprint string
 }
 

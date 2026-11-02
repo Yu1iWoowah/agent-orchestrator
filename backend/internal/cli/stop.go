@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -77,19 +79,29 @@ func (c *commandContext) stopDaemon(ctx context.Context, opts stopOptions) (daem
 }
 
 func (c *commandContext) requestShutdown(ctx context.Context, port int) error {
-	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	reqCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, fmt.Sprintf("http://%s:%d/shutdown", config.LoopbackHost, port), http.NoBody)
 	if err != nil {
 		return err
 	}
-	resp, err := c.deps.HTTPClient.Do(req)
+	// Keep the shared 2s probe client unchanged. Shutdown waits for the
+	// server's 10s preflight under the dedicated request context above.
+	client := *c.deps.HTTPClient
+	client.Timeout = 0
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var body struct {
+			Status string `json:"status"`
+		}
+		if resp.StatusCode == http.StatusConflict && json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body) == nil && body.Status == "shutdown_not_settled" {
+			return fmt.Errorf("HTTP 409: shutdown_not_settled: provider execution or delivery evidence is not settled; keep the daemon running and retry after reconciliation")
+		}
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
