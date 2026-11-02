@@ -106,7 +106,7 @@ func TestDeliveryStallQueriesOriginalAttemptAndKeepsAccepted(t *testing.T) {
 				t.Fatalf("native acknowledgement: %+v %v", a, err)
 			}
 			clock.awaitTimer(t, 30*time.Second)
-			clock.advance(30 * time.Second)
+			h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
 			select {
 			case key := <-conv.queryCount:
 				if key != a.ID {
