@@ -126,13 +126,21 @@ jobs:
         run: go test -json -race -count=1 -timeout=20m ./internal/session_manager
 
       - name: Test SQLite store shard
-        # Keep the real 512 MiB history boundary, including its SQLite JSON
-        # guards. Run every Store test once without one aggregate 20m budget.
+        # Exclude the byte-capacity test after computing the original modulo
+        # so every other test keeps its shard. It has its own budget below.
         run: |
           tests=$(go test -race -list . ./internal/storage/sqlite/store | grep -E '^(Test|Example|Fuzz)')
-          selected=$(printf '%s\n' "$tests" | awk -v shard=${{ matrix.shard }} '((NR - 1) % 4) == shard' | paste -sd '|' -)
+          selected=$(printf '%s\n' "$tests" | awk -v shard=${{ matrix.shard }} '
+            ((NR - 1) % 4) == shard && $0 != "TestReplacementByteCapacityPreservesSuccessorBinding"
+          ' | paste -sd '|' -)
           test -n "$selected"
           go test -json -race -count=1 -timeout=20m -run "^($selected)$" ./internal/storage/sqlite/store
+
+      - name: Test SQLite store 512 MiB history boundary
+        if: matrix.shard == 1
+        # Keep the full data volume and SQLite JSON guards, with an independent
+        # 20m package budget instead of sharing it with the rest of shard 1.
+        run: go test -json -race -count=1 -timeout=20m -run '^TestReplacementByteCapacityPreservesSuccessorBinding$' ./internal/storage/sqlite/store
 
   sqlite-race:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
