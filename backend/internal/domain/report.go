@@ -10,6 +10,12 @@ import (
 
 const reportDeliveryPrefix = `<ao-report-delivery id="`
 
+// AppendWorkerReportContext preserves the daemon-authored context envelope in a
+// user input while keeping the user's own text outside that envelope.
+func AppendWorkerReportContext(message, reports string) string {
+	return message + "\n\n<ao-worker-reports>\n" + reports + "\n</ao-worker-reports>"
+}
+
 // WrapReportDelivery marks an AO-authored report batch so provider prompt
 // hooks can correlate semantic acceptance with its durable delivery identity.
 func WrapReportDelivery(id, message string) string {

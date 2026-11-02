@@ -86,6 +86,19 @@ func (s *Store) applyInputCustodyAction(ctx context.Context, action gen.InsertIn
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		if errors.Is(err, sql.ErrNoRows) && action.Kind == "register" {
+			// SQLite uses an undefined NEW.rowid sentinel before auto-ID INSERT.
+			// Registering that physical payload row would fence unrelated writes.
+			var sentinel bool
+			if err := db.QueryRowContext(ctx, `SELECT EXISTS(
+ SELECT 1 FROM conversation_messages WHERE turn_id=? AND rowid=-1
+ UNION ALL SELECT 1 FROM conversation_activities WHERE turn_id=? AND rowid=-1)`, action.TurnID, action.TurnID).Scan(&sentinel); err != nil {
+				return err
+			}
+			if sentinel {
+				return fmt.Errorf("%w: payload rowid sentinel", domain.ErrInputCustodyStorageIncompatible)
+			}
+		}
 		if err == nil {
 			if prior.TurnID != action.TurnID || prior.Kind != action.Kind || prior.ExpectedOwner != action.ExpectedOwner ||
 				prior.ExpectedRevision != action.ExpectedRevision || prior.TargetOwner != action.TargetOwner || prior.HoldKey != action.HoldKey ||

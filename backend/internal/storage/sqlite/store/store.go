@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
@@ -48,6 +49,9 @@ func (m *contextMutex) Lock() {
 }
 
 func (m *contextMutex) LockContext(ctx context.Context) error {
+	if ctx.Value(ownerInboxTransactionKey{}) != nil {
+		return domain.ErrOwnerInboxConflict
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
