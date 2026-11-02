@@ -1,6 +1,11 @@
 package codexappserver
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -34,5 +39,58 @@ func TestCompactionCorrelatesOnlyItsNativeTerminalEvent(t *testing.T) {
 	srv.push(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"original","status":"completed"}}}`)
 	if event := nextEvent(t, conv.Events(), ports.ChatEventTurnCompleted); event.CompactionID != "command" {
 		t.Fatalf("original terminal lost command: %+v", event)
+	}
+}
+
+type compactionWriteFailure struct{ bytes int }
+
+func (w compactionWriteFailure) Write([]byte) (int, error) { return w.bytes, io.ErrClosedPipe }
+func (compactionWriteFailure) Close() error                { return nil }
+func TestCompactionWriteEvidenceDistinguishesPartialRequest(t *testing.T) {
+	for _, n := range []int{0, 1} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			connection := newConn(compactionWriteFailure{bytes: n}, reader, slog.New(slog.DiscardHandler), nil)
+			c := &conversation{conn: connection}
+			_, err := c.Compact(ports.WithChatCompactionID(t.Context(), "command"))
+			if errors.Is(err, ports.ErrChatCompactionNotSent) != (n == 0) {
+				t.Fatalf("bytes=%d misclassified: %v", n, err)
+			}
+			if (c.compactionID == "") != (n == 0) {
+				t.Fatalf("bytes=%d lost correlation: %s", n, c.compactionID)
+			}
+		})
+	}
+}
+func TestCompactionCancelledBeforeWriteIsNotSent(t *testing.T) {
+	c := &conversation{conn: &conn{}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := c.Compact(ports.WithChatCompactionID(ctx, "command"))
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ports.ErrChatCompactionNotSent) || c.compactionID != "" {
+		t.Fatalf("cancelled before write: %v id=%s", err, c.compactionID)
+	}
+}
+func TestCompactionNativeRefusalKeepsOnlyUnknownCorrelation(t *testing.T) {
+	for _, code := range []int{-32601, -32603} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			driver, server := newTestDriver(t)
+			server.replyError("thread/compact/start", code, "provider reply")
+			opened, err := driver.Start(t.Context(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer opened.Close()
+			c := opened.(*conversation)
+			_, err = c.Compact(ports.WithChatCompactionID(t.Context(), "command"))
+			if errors.Is(err, ports.ErrChatCompactionNotSent) != (code == -32601) {
+				t.Fatalf("native refusal: %v", err)
+			}
+			if (c.compactionID == "") != (code == -32601) {
+				t.Fatalf("unknown lost command correlation: %s", c.compactionID)
+			}
+		})
 	}
 }

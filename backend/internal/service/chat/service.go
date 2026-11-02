@@ -1865,6 +1865,15 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		if s.stopProviderHost != nil {
 			stopErr = s.stopProviderHost(ctx, id)
 		}
+		if _, canDiagnose := s.store.(outboundAttentionStore); s.stopProviderHost != nil && stopErr == nil && canDiagnose {
+			if conversation, lookupErr := s.store.ConversationForSession(ctx, id); lookupErr == nil {
+				if attentionErr := outboundAttention(ctx, s.store, id, "conversation:"+conversation.ID, true, s.now()); attentionErr != nil {
+					s.log.Warn("outbound attention cleanup failed", "session", id, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+				}
+			} else {
+				s.log.Warn("outbound attention owner unavailable", "session", id, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+			}
+		}
 		return errors.Join(stopErr, s.clearHibernation(ctx, id))
 	}
 	controller.mu.Lock()
@@ -1906,7 +1915,9 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 	}
 	err = errors.Join(err, s.clearHibernation(ctx, id))
 	if err == nil {
-		err = controller.outboundAttention(ctx, true)
+		if attentionErr := controller.outboundAttention(ctx, true); attentionErr != nil {
+			s.log.Warn("outbound attention cleanup failed", "session", id, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+		}
 	}
 	return err
 }
@@ -1950,7 +1961,9 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 	default:
 	}
 	if err == nil {
-		err = controller.outboundAttention(ctx, true)
+		if attentionErr := controller.outboundAttention(ctx, true); attentionErr != nil {
+			s.log.Warn("outbound attention cleanup failed", "session", controller.sessionID, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+		}
 	}
 	return err
 }

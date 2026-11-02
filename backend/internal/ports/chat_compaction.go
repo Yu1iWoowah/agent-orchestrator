@@ -1,6 +1,9 @@
 package ports
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 type chatCompactionKey struct{}
 
@@ -13,4 +16,21 @@ func WithChatCompactionID(ctx context.Context, id string) context.Context {
 func ChatCompactionID(ctx context.Context) string {
 	id, _ := ctx.Value(chatCompactionKey{}).(string)
 	return id
+}
+
+// ErrChatCompactionNotSent is positive proof that no compaction request reached
+// the provider. Cancellation after a write and ordinary RPC errors are unknown.
+var ErrChatCompactionNotSent = errors.New("compaction was not sent")
+
+type chatCompactionEpochKey struct{}
+
+// WithChatCompactionEpoch preserves the original provider owner across restore.
+func WithChatCompactionEpoch(ctx context.Context, epoch string) context.Context {
+	return context.WithValue(ctx, chatCompactionEpochKey{}, epoch)
+}
+
+// ChatCompactionEpoch returns the provider owner preserved for this command.
+func ChatCompactionEpoch(ctx context.Context) string {
+	epoch, _ := ctx.Value(chatCompactionEpochKey{}).(string)
+	return epoch
 }

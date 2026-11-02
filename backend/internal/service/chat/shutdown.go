@@ -52,14 +52,14 @@ func (c *Controller) PreflightShutdown(ctx context.Context) error {
 		}
 	}
 	defer c.deliveryCheckMu.Unlock()
-	err := c.settleOutboundLocked(checkCtx)
+	err := c.settleOutboundLocked(checkCtx, true)
 	settled = err == nil
 	return err
 }
 
 // Callers fence admission and hold sendMu. The same evidence applies to normal
 // detach and managed update/hibernate; neither may manufacture a missing receipt.
-func (c *Controller) settleOutboundLocked(ctx context.Context) error {
+func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) error {
 	c.mu.Lock()
 	compacting := c.compactionPending
 	uncovered := c.settingsAttempt != nil && c.settingsAttempt.EffectPending || c.work[controllerProviderWork] > 0 || c.settingsAttemptRunning || c.dispatchingTurnID != ""
@@ -69,6 +69,9 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 		return ports.ErrChatShutdownNotSettled
 	}
 	if compacting {
+		if !notify {
+			return ports.ErrChatShutdownNotSettled
+		}
 		if err := c.outboundAttention(ctx, false); err != nil {
 			return errors.Join(ports.ErrChatShutdownNotSettled, err)
 		}
@@ -99,7 +102,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 		if nativeInFlight {
 			return ports.ErrChatShutdownNotSettled
 		}
-		_, err := c.flushOutbound(ctx, observer, nil)
+		_, err := c.flushOutbound(ctx, observer, nil, notify)
 		if err != nil {
 			return errors.Join(ports.ErrChatShutdownNotSettled, err)
 		}
@@ -113,7 +116,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 	for _, a := range attempts {
 		keys = append(keys, deliveryLookup(a))
 	}
-	receipts, err := c.flushOutbound(ctx, observer, keys)
+	receipts, err := c.flushOutbound(ctx, observer, keys, notify)
 	if err != nil || len(receipts) != len(keys) {
 		return errors.Join(ports.ErrChatShutdownNotSettled, err)
 	}
@@ -140,10 +143,10 @@ func (c *Controller) settleOutboundLocked(ctx context.Context) error {
 
 // Record an already-observed custody failure before a native read can consume
 // the remaining shutdown budget. A successful read still requires another flush.
-func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliveryObserver, keys []ports.ChatDeliveryLookup) ([]domain.ChatDeliveryReceipt, error) {
+func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliveryObserver, keys []ports.ChatDeliveryLookup, notify bool) ([]domain.ChatDeliveryReceipt, error) {
 	receipts, err := observer.FenceAndFlushOutbound(ctx, keys)
 	reconciler, canReconcile := c.conv.(ports.ChatOutboundReconciler)
-	diagnose := canReconcile || len(keys) == 0
+	diagnose := notify && (canReconcile || len(keys) == 0)
 	if err != nil && diagnose {
 		if attentionErr := c.outboundAttention(ctx, false); attentionErr != nil {
 			return nil, errors.Join(err, attentionErr)
@@ -155,7 +158,7 @@ func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliv
 			receipts, err = observer.FenceAndFlushOutbound(ctx, keys)
 		}
 	}
-	if err == nil && diagnose {
+	if err == nil && (canReconcile || len(keys) == 0) {
 		if attentionErr := c.outboundAttention(ctx, true); attentionErr != nil {
 			return nil, attentionErr
 		}
@@ -224,23 +227,7 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			canCheck := id != "" && runtime.outboundUnverified && runtime.activeTurnID == "" && !runtime.dispatchBlocked
 			runtime.mu.Unlock()
 			if canCheck {
-				if _, ok := s.store.(outboundAttentionStore); ok {
-					if err := outboundAttention(checkCtx, s.store, runtime.side.SessionID, "side:"+runtime.side.ID, false, s.now()); err != nil {
-						return errors.Join(ports.ErrChatShutdownNotSettled, err)
-					}
-				}
-				if reconciler, ok := runtime.conv.(ports.ChatOutboundReconciler); ok {
-					err := reconciler.ReconcileOutbound(checkCtx)
-					if err == nil {
-						runtime.mu.Lock()
-						if runtime.compactionID == id && runtime.activeTurnID == "" && !runtime.dispatchBlocked {
-							runtime.compacting = false
-							runtime.compactionID = ""
-							s.sides.setOutboundUnverifiedLocked(runtime, false)
-						}
-						runtime.mu.Unlock()
-					}
-				}
+				s.sides.reconcileCompaction(checkCtx, runtime, true)
 			}
 			runtime.mu.Lock()
 			pending := runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified

@@ -40,5 +40,6 @@ type ChatDeliveryAcknowledger interface {
 // successful host flush, never an empty local in-flight flag or an RPC ACK.
 // This does not change canonical delivery dispositions.
 type ChatOutboundReconciler interface {
+	OutboundProviderEpoch() string
 	ReconcileOutbound(context.Context) error
 }

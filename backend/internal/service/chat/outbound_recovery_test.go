@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 type reconcilingOutboundConversation struct {
@@ -167,5 +168,72 @@ func TestShutdownUnknownOutboundAttentionPrecedesNativeReadTimeout(t *testing.T)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("preflight exceeded its deadline")
+	}
+}
+
+type failingAttentionCancelStore struct {
+	*store.Store
+	cancellations atomic.Int64
+}
+
+func (s *failingAttentionCancelStore) CancelAttentionQuestion(context.Context, domain.SessionID, string, int64, string, string, time.Time) (domain.AttentionQuestionRecord, error) {
+	s.cancellations.Add(1)
+	return domain.AttentionQuestionRecord{}, errors.New("attention cancellation unavailable")
+}
+func TestExplicitStopSucceedsWhenAttentionCleanupFails(t *testing.T) {
+	conv := &reconcilingOutboundConversation{fakeConversation: newFakeConversation()}
+	var failed *failingAttentionCancelStore
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { failed = &failingAttentionCancelStore{Store: st}; return failed }, domain.HarnessCodex)
+	if err := h.svc.PreflightShutdown(t.Context()); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+		t.Fatal(err)
+	}
+	var closed atomic.Bool
+	conv.onClose = func() { closed.Store(true) }
+	if err := h.svc.Stop(t.Context(), testSession); err != nil {
+		t.Fatalf("native stop succeeded but diagnostic cleanup returned failure: %v", err)
+	}
+	if !closed.Load() || failed.cancellations.Load() == 0 {
+		t.Fatal("test did not exercise successful native stop plus failed attention cleanup")
+	}
+}
+
+func (c *reconcilingOutboundConversation) OutboundProviderEpoch() string { return "fake-native-epoch" }
+
+type closeReplyLostConversation struct {
+	*reconcilingOutboundConversation
+}
+
+func (c *closeReplyLostConversation) Close() error {
+	_ = c.fakeConversation.Close()
+	return errors.New("shutdown reply lost after stream closed")
+}
+
+func TestStopRetryWithdrawsOriginalOutboundAttention(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &closeReplyLostConversation{&reconcilingOutboundConversation{fakeConversation: newFakeConversation()}}
+	var hostStops int
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { return st }, domain.HarnessCodex, func(o *chatsvc.Options) {
+		o.Now, o.After = clock.Now, clock.After
+		o.StopProviderHost = func(context.Context, domain.SessionID) error { hostStops++; return nil }
+	})
+	if err := h.svc.PreflightShutdown(t.Context()); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+		t.Fatal(err)
+	}
+	page, err := h.st.ListAttentionQuestions(t.Context(), testSession, domain.AttentionQuestionQuery{}, clock.Now())
+	if err != nil || page.Open != 1 {
+		t.Fatalf("missing attention: %+v %v", page, err)
+	}
+	if err := h.svc.Stop(t.Context(), testSession); err == nil {
+		t.Fatal("first close must report the lost reply")
+	}
+	if err := h.svc.Stop(t.Context(), testSession); err != nil {
+		t.Fatalf("explicit retry failed: %v", err)
+	}
+	if hostStops == 0 {
+		t.Fatal("retry did not confirm host stop")
+	}
+	page, err = h.st.ListAttentionQuestions(t.Context(), testSession, domain.AttentionQuestionQuery{}, clock.Now())
+	if err != nil || page.Open != 0 {
+		t.Fatalf("successful stop left stale attention: %+v %v", page, err)
 	}
 }

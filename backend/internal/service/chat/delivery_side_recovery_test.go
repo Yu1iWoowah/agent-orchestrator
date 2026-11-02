@@ -248,3 +248,5 @@ func TestSideCompactionRequiresNativeReconciliationBeforeStop(t *testing.T) {
 		t.Fatalf("native proof did not release compact: %v closed=%v", err, conv.closed)
 	}
 }
+
+func (c *nativeReconciledSideConversation) OutboundProviderEpoch() string { return "fake-native-epoch" }

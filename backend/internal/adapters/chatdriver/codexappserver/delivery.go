@@ -28,11 +28,24 @@ func (c *conversation) AcknowledgeDeliveryAttempt(ctx context.Context, key ports
 	return c.proc.delivery.AcknowledgeDeliveryAttempt(ctx, key)
 }
 
+func (c *conversation) OutboundProviderEpoch() string {
+	if c.proc == nil || c.proc.delivery == nil {
+		return ""
+	}
+	return c.proc.delivery.ProviderEpoch()
+}
+
 // ReconcileOutbound uses an includeTurns read through the original host. The
 // host correlates that native response with already-responded coverage gaps;
 // a cached status, another thread, or a failed read cannot release them.
 func (c *conversation) ReconcileOutbound(ctx context.Context) error {
 	if c.proc.delivery == nil {
+		return ports.ErrChatDeliveryUnverified
+	}
+	c.mu.Lock()
+	id, epoch := c.compactionID, c.compactionEpoch
+	c.mu.Unlock()
+	if id != "" && (epoch == "" || epoch != c.OutboundProviderEpoch()) {
 		return ports.ErrChatDeliveryUnverified
 	}
 	var response struct {

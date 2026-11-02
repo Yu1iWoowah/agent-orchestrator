@@ -1,6 +1,8 @@
 package acp
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -50,4 +52,34 @@ func TestRecoveredCompactionRetainsCorrelationAfterNativeResult(t *testing.T) {
 		}
 	}
 	t.Fatal("missing recovered completion")
+}
+
+func TestCompactionPrechecksProveNotSent(t *testing.T) {
+	for _, reason := range []string{"cancelled", "closed", "unsupported", "busy", "no-session"} {
+		t.Run(reason, func(t *testing.T) {
+			c := &conversation{sessionID: "session", capabilities: ports.ChatCapabilities{ports.ChatCapabilityCompaction: true}}
+			ctx := t.Context()
+			switch reason {
+			case "cancelled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			case "closed":
+				c.closed = true
+			case "unsupported":
+				c.capabilities = nil
+			case "busy":
+				c.activeTurn = "other"
+			case "no-session":
+				c.sessionID = ""
+			}
+			_, err := c.Compact(ports.WithChatCompactionID(ctx, "not-forwarded"))
+			if !errors.Is(err, ports.ErrChatCompactionNotSent) {
+				t.Fatalf("pre-I/O refusal retained unknown: %v", err)
+			}
+			if c.compactingTurnID != "" {
+				t.Fatalf("unsent command reserved: %s", c.compactingTurnID)
+			}
+		})
+	}
 }

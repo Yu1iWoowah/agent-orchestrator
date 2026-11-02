@@ -943,25 +943,25 @@ func (c *conversation) finishPrompt(
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
 	if err := ctx.Err(); err != nil {
-		return ports.ChatCompactionResult{}, err
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, err)
 	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errConversationClosed
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errConversationClosed)
 	}
 	if !c.capabilities.Has(ports.ChatCapabilityCompaction) {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errors.New("chat driver cannot compact history")
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errors.New("chat driver cannot compact history"))
 	}
 	if c.prepared != nil || c.activeTurn != "" || c.compactingTurnID != "" {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errors.New("ACP conversation already has a turn in flight")
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errors.New("ACP conversation already has a turn in flight"))
 	}
 	sessionID := c.sessionID
 	if sessionID == "" {
 		c.mu.Unlock()
-		return ports.ChatCompactionResult{}, errors.New("ACP session is not open")
+		return ports.ChatCompactionResult{}, errors.Join(ports.ErrChatCompactionNotSent, errors.New("ACP session is not open"))
 	}
 	before := c.contextTokens
 	id := ports.ChatCompactionID(ctx)

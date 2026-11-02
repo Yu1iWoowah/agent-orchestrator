@@ -386,8 +386,9 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	if err != nil {
 		return nil, err
 	}
+	conv.compactionID = ports.ChatCompactionID(ctx)
+	conv.compactionEpoch = ports.ChatCompactionEpoch(ctx)
 	if reconnected {
-		conv.compactionID = ports.ChatCompactionID(ctx)
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.

@@ -94,8 +94,9 @@ type conversation struct {
 	// build that emits both the notification and the item reports one compaction
 	// once.
 	compactedTurn    string
-	compactionID     string // guarded by mu; live command only
+	compactionID     string // guarded by mu; retained until native completion
 	compactionTurnID string // guarded by mu; native compaction item correlation
+	compactionEpoch  string // guarded by mu; original provider owner
 
 	pumpDone     chan struct{}
 	eventsMu     sync.RWMutex
@@ -199,13 +200,13 @@ func (c *conversation) pump() {
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, now) {
 			c.mu.Lock()
-			if c.compactionID != "" && (scope.ThreadID == "" || scope.ThreadID == c.threadID) {
+			if c.compactionID != "" && c.compactionEpoch == c.OutboundProviderEpoch() && (scope.ThreadID == "" || scope.ThreadID == c.threadID) {
 				if ev.Kind == ports.ChatEventCompacted && ev.ProviderTurnID != "" {
 					c.compactionTurnID = ev.ProviderTurnID
 				}
 				if ev.Kind == ports.ChatEventTurnCompleted && c.compactionTurnID != "" && ev.ProviderTurnID == c.compactionTurnID {
 					ev.CompactionID = c.compactionID
-					c.compactionID, c.compactionTurnID = "", ""
+					c.compactionID, c.compactionTurnID, c.compactionEpoch = "", "", ""
 				}
 			}
 			c.mu.Unlock()
@@ -625,6 +626,7 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	c.mu.Lock()
 	before := c.contextTokens
 	c.compactionID = ports.ChatCompactionID(ctx)
+	c.compactionEpoch = c.OutboundProviderEpoch()
 	c.compactionTurnID = ""
 	c.mu.Unlock()
 
@@ -634,9 +636,16 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	if err := c.conn.request(ctx, "thread/compact/start", map[string]any{
 		"threadId": c.threadID,
 	}, nil); err != nil {
-		c.mu.Lock()
-		c.compactionID, c.compactionTurnID = "", ""
-		c.mu.Unlock()
+		var refusal *rpcError
+		notSent := errors.Is(err, errRequestNotWritten) || errors.As(err, &refusal) && (refusal.Code == -32601 || refusal.Code == -32600 && strings.Contains(refusal.Message, "unknown variant `thread/compact/start`"))
+		if notSent {
+			c.mu.Lock()
+			c.compactionID, c.compactionTurnID, c.compactionEpoch = "", "", ""
+			c.mu.Unlock()
+			err = errors.Join(ports.ErrChatCompactionNotSent, err)
+		}
+		// Keep the command/native-turn correlation after an unknown outcome. Late
+		// provider completion, not this caller's deadline, releases the side queue.
 		return ports.ChatCompactionResult{}, fmt.Errorf("thread/compact/start: %w", err)
 	}
 

@@ -401,7 +401,7 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 		controller.sendMu.Unlock()
 		return false, nil
 	}
-	if err := controller.settleOutboundLocked(checkCtx); err != nil {
+	if err := controller.settleOutboundLocked(checkCtx, opts.forUpdate || opts.replacement != nil); err != nil {
 		controller.sendMu.Unlock()
 		return false, err
 	}

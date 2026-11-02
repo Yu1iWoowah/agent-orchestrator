@@ -54,7 +54,7 @@ func outboundAttention(ctx context.Context, store any, session domain.SessionID,
 	if settled || found {
 		return nil
 	}
-	payload, err := json.Marshal(domain.AttentionQuestionPayload{SchemaVersion: 1, Title: "原生操作尚待確認，暫時無法關閉", Explanation: "AO 保留原連線與操作。請檢查原執行，待執行結束或連線恢復後重試關閉；重試會重新查詢原生狀態。若無法取得證據，可使用 session 的 Exit agent、封存該 review 或關閉該 side chat 來明確停止原執行。僅確認提示不會解除保護，也不會重送內容。", Questions: []domain.AttentionPrompt{{Key: "outbound", Header: "關閉待確認", Question: "請確認已看到未結算操作；檢查原執行後可重試關閉。", Options: []domain.AttentionQuestionOption{{ID: "inspect", Label: "檢查原執行後重試關閉", Description: "保留原操作，重試時依原生證據查證。", Recommended: true}, {ID: "keep", Label: "保留原操作並等待", Description: "等待原生證據或連線恢復，再重試關閉。"}}}}})
+	payload, err := json.Marshal(domain.AttentionQuestionPayload{SchemaVersion: 1, Title: "原生操作尚待確認", Explanation: "AO 保留原連線與操作。新輸入會保留等待。請檢查原執行；可重試壓縮或再次送出問題以查證原操作，亦可在執行結束或連線恢復後重試關閉。若無法取得證據，可使用 session 的 Exit agent、封存該 review 或關閉該 side chat 來明確停止原執行。僅確認提示不會解除保護，也不會重送內容。", Questions: []domain.AttentionPrompt{{Key: "outbound", Header: "操作待確認", Question: "請確認已看到未結算操作；檢查原執行後可重試操作或關閉。", Options: []domain.AttentionQuestionOption{{ID: "inspect", Label: "檢查原執行後重試", Description: "保留原操作，重試時依原生證據查證。", Recommended: true}, {ID: "keep", Label: "保留原操作並等待", Description: "等待原生證據或連線恢復，再重試關閉。"}}}}})
 	if err != nil {
 		return err
 	}

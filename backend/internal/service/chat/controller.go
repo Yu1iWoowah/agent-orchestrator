@@ -2871,11 +2871,12 @@ func (c *Controller) Compact(ctx context.Context) (ports.ChatCompactionResult, e
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}
 	c.mu.Lock()
-	c.compactionPending = true
-	c.mu.Unlock()
-	if c.outboundQuiescing() {
+	if c.deliveryQuiescing {
+		c.mu.Unlock()
 		return ports.ChatCompactionResult{}, ports.ErrChatShutdownNotSettled
 	}
+	c.compactionPending = true
+	c.mu.Unlock()
 	result, err := compactor.Compact(ctx)
 	if err != nil {
 		c.mu.Lock()

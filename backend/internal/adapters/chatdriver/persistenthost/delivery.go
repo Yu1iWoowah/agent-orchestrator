@@ -486,6 +486,9 @@ func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) 
 // DeliveryClient uses the existing authenticated host control endpoint.
 type DeliveryClient struct{ descriptor Descriptor }
 
+// ProviderEpoch identifies this exact host process, including its start time.
+func (c *DeliveryClient) ProviderEpoch() string { return deliveryEpoch(c.descriptor) }
+
 // QueryDeliveryAttempt reads only the original host correlation.
 func (c *DeliveryClient) QueryDeliveryAttempt(ctx context.Context, key ports.ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error) {
 	receipts, err := c.call(ctx, []ports.ChatDeliveryLookup{key}, "delivery-query")
