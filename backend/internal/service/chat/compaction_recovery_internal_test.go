@@ -348,6 +348,16 @@ func TestSettledSideShutdownSurvivesAttentionCleanupFailure(t *testing.T) {
 	if !strings.Contains(logs.String(), "CHAT_ATTENTION_CLEANUP_FAILED") || strings.Contains(logs.String(), "private storage sentinel") {
 		t.Fatalf("missing or unsafe cleanup diagnosis: %s", logs.String())
 	}
+	questions.mu.Lock()
+	questions.cancelErr = nil
+	questions.mu.Unlock()
+	if err := svc.StopAll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	page, err := questions.ListAttentionQuestions(t.Context(), side.SessionID, domain.AttentionQuestionQuery{}, time.Now())
+	if err != nil || page.Open != 0 {
+		t.Fatalf("detached side lost its attention cleanup owner: %+v %v", page, err)
+	}
 }
 func TestBackgroundHibernateDoesNotPromptOrReadNativeHistory(t *testing.T) {
 	conv := &backgroundCompactionCheck{}

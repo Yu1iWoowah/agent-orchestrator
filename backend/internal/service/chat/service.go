@@ -1982,6 +1982,7 @@ func (s *Service) StopAll(ctx context.Context) error {
 	}
 	if s.sides != nil {
 		s.sides.stopAll()
+		s.sides.clearSettledAttention(ctx)
 	}
 	s.mu.Lock()
 	type shutdownTarget struct {

@@ -70,9 +70,20 @@ func TestACPCompactionErrorProviderHelper(t *testing.T) {
 }
 
 func TestACPUnknownCompactionRequiresExplicitExitAcrossReconnect(t *testing.T) {
+	runACPUnknownCompactionRecovery(t, false)
+}
+
+func TestACPUnknownCompactionAttentionRecoversAfterStoreFailure(t *testing.T) {
+	runACPUnknownCompactionRecovery(t, true)
+}
+
+func runACPUnknownCompactionRecovery(t *testing.T, failAttention bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	st := openStore(t)
+	questions := &transientCompactionAttentionStore{Store: st}
+	questions.fail.Store(failAttention)
 	dataDir, workspace := t.TempDir(), t.TempDir()
 	requests := filepath.Join(dataDir, "requests")
 	logger := slog.New(slog.DiscardHandler)
@@ -89,7 +100,7 @@ func TestACPUnknownCompactionRequiresExplicitExitAcrossReconnect(t *testing.T) {
 	}
 	var ids atomic.Uint64
 	newService := func() *chatsvc.Service {
-		svc := chatsvc.New(chatsvc.Options{Store: st, Reader: fullSnapshotReader(st), Sessions: st,
+		svc := chatsvc.New(chatsvc.Options{Store: questions, Reader: fullSnapshotReader(st), Sessions: st,
 			Drivers: fakeRegistry{driver: acp.New(cfg, logger)}, Activity: &recordingActivity{}, Log: logger, DataDir: dataDir,
 			NewID: func() string { return fmt.Sprintf("compact-%d", ids.Add(1)) },
 		})
@@ -117,10 +128,16 @@ func TestACPUnknownCompactionRequiresExplicitExitAcrossReconnect(t *testing.T) {
 	if _, err := first.Compact(ctx); err != nil {
 		t.Fatal(err)
 	}
-	awaitACPReplay(ctx, t, "unknown compaction attention", func() bool {
-		page, err := st.ListAttentionQuestions(ctx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
-		return err == nil && page.Open == 1 && strings.Contains(page.Items[0].Payload.Explanation, "Exit agent") && strings.Contains(page.Items[0].Payload.Explanation, "訊息")
-	})
+	if failAttention {
+		awaitACPReplay(ctx, t, "failed attention write completed", func() bool {
+			return questions.calls.Load() > 0 && !first.SendMuHeldForTest()
+		})
+	} else {
+		awaitACPReplay(ctx, t, "unknown compaction attention", func() bool {
+			page, err := st.ListAttentionQuestions(ctx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
+			return err == nil && page.Open == 1 && strings.Contains(page.Items[0].Payload.Explanation, "Exit agent") && strings.Contains(page.Items[0].Payload.Explanation, "訊息")
+		})
+	}
 	queued, err := first.Send(ctx, ports.ChatUserMessage{Text: "preserve this queued question"})
 	if err != nil || queued.State != domain.TurnStateQueued || first.State() != ports.ChatControllerBusy {
 		t.Fatalf("unknown compaction lost visible admission fence: %+v %v state=%s", queued, err, first.State())
@@ -146,6 +163,13 @@ func TestACPUnknownCompactionRequiresExplicitExitAcrossReconnect(t *testing.T) {
 	if err := chatsvc.DetachIncompleteForTest(ctx, first); err != nil {
 		t.Fatal(err)
 	}
+	if failAttention {
+		page, err := st.ListAttentionQuestions(ctx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
+		if err != nil || page.Open != 0 {
+			t.Fatalf("fault injection did not keep attention absent before reconnect: %+v %v", page, err)
+		}
+	}
+	questions.fail.Store(false)
 	secondService := newService()
 	start.ProviderConversationID, start.ReconnectOnly = first.ProviderConversationID(), true
 	second, err := secondService.Start(ctx, start)
@@ -158,6 +182,12 @@ func TestACPUnknownCompactionRequiresExplicitExitAcrossReconnect(t *testing.T) {
 	if second.State() != ports.ChatControllerBusy {
 		t.Fatal("reconnect forgot the durable unknown fence")
 	}
+	repairCtx, repairCancel := context.WithTimeout(ctx, 6*time.Second)
+	defer repairCancel()
+	awaitACPReplay(repairCtx, t, "same-host replay repaired attention", func() bool {
+		page, err := st.ListAttentionQuestions(repairCtx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
+		return err == nil && page.Open == 1
+	})
 	beforePreflight, err := st.ListAttentionQuestions(ctx, testSession, domain.AttentionQuestionQuery{State: "open"}, time.Now())
 	if err != nil || beforePreflight.Open != 1 {
 		t.Fatalf("reconnect lost the unknown attention: %+v %v", beforePreflight, err)

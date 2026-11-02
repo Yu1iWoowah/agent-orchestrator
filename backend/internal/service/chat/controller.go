@@ -301,6 +301,8 @@ type Controller struct {
 	sendingTurnID string
 	// A compact request can be accepted before its provider turn starts.
 	compactionPending bool
+	// A failed diagnosis can retry only for this original pending turn.
+	compactionAttentionTurnID string
 	// Every work kind pins this generation against automatic hibernation.
 	// Only provider work participates in settings quiescence.
 	work [controllerWorkKinds]int
@@ -1683,6 +1685,7 @@ func (c *Controller) sendLocked(
 			rejected, err := c.drainLockedWithLimit(ctx, true, 0)
 			return c.queuedReceiptAfterDrain(ctx, queuedTurn, rejected, err)
 		}
+		c.retryCompactionAttention(ctx)
 		return queuedTurn, nil
 	}
 
@@ -2493,6 +2496,7 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 	c.mu.Unlock()
 
 	if busy {
+		c.retryCompactionAttention(ctx)
 		// Something already claimed the agent, so this drain has nothing to do.
 		return rejected, nil
 	}
@@ -3443,6 +3447,11 @@ func (c *Controller) projectUnit(
 			c.applyGuardianReview(ctx, event, observedAt)
 		}
 		c.afterProject(ctx, event, primaryTurn)
+	} else if unknownCompaction(event) && (event.ProviderConversationID == "" || event.ProviderConversationID == c.conv.ProviderConversationID()) {
+		// Archive deduplication must not discard a failed diagnostic side effect.
+		if c.diagnoseCompaction(ctx, event.ProviderTurnID) {
+			c.applyCommittedTurnLifecycle(event)
+		}
 	}
 	if lifecycle {
 		c.sendMu.Unlock()
@@ -3644,6 +3653,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 		}
 		c.compactionPending = false
 		c.pendingTurnID = ""
+		c.compactionAttentionTurnID = ""
 		c.dispatchingTurnID = ""
 		c.retryUnsentOnReady = false
 		if c.ackedTurnID == event.ProviderTurnID {
@@ -4090,11 +4100,7 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		}
 	case ports.ChatEventTurnCompleted:
 		if primaryTurn && unknownCompaction(event) {
-			diagnosticCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := c.outboundAttention(diagnosticCtx, false); err != nil {
-				c.log.Warn("compaction diagnosis unavailable", "session", c.sessionID, "code", "CHAT_ATTENTION_CREATE_FAILED")
-			}
-			cancel()
+			c.diagnoseCompaction(ctx, event.ProviderTurnID)
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.compaction.unverified", now)
 			return
 		}

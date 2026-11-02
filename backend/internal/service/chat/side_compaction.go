@@ -13,6 +13,26 @@ func (m *sideManager) clearCompactionAttention(ctx context.Context, runtime *sid
 	}
 }
 
+// Only call after successful service-wide preflight while admission stays fenced.
+// SideStore retains the original owners after their live runtimes are detached.
+func (m *sideManager) clearSettledAttention(ctx context.Context) {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	sides, err := m.store.ListOpenSidesForRun(checkCtx, m.launchID())
+	if err != nil {
+		m.service.log.Warn("side attention cleanup unavailable", "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+		return
+	}
+	for _, side := range sides {
+		if checkCtx.Err() != nil {
+			return
+		}
+		if err := outboundAttention(checkCtx, m.service.store, side.SessionID, "side:"+side.ID, true, m.service.now()); err != nil {
+			m.service.log.Warn("side outbound attention cleanup failed", "side", side.ID, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
+		}
+	}
+}
+
 func (m *sideManager) diagnoseCompaction(ctx context.Context, runtime *sideRuntime) {
 	if err := outboundAttention(ctx, m.service.store, runtime.side.SessionID, "side:"+runtime.side.ID, false, m.service.now()); err != nil {
 		m.service.log.Warn("side compaction diagnosis unavailable", "side", runtime.side.ID, "code", "CHAT_ATTENTION_CREATE_FAILED")

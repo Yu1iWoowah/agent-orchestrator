@@ -13,6 +13,62 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// diagnoseCompaction repairs only the current owner's durable pending turn.
+// Successful repair is idempotent; a write failure stays eligible for retry.
+func (c *Controller) diagnoseCompaction(ctx context.Context, expectedTurnID string) bool {
+	c.mu.Lock()
+	id := c.pendingTurnID
+	matched := id != "" && id == expectedTurnID
+	if matched {
+		c.compactionAttentionTurnID = id
+	}
+	c.mu.Unlock()
+	if !matched {
+		return false
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if reader, ok := c.store.(interface {
+		GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
+	}); ok && c.reviewID == "" {
+		record, found, err := reader.GetSession(checkCtx, c.sessionID)
+		if err != nil || !found || record.ControllerOwner().ControllerGeneration != c.generation {
+			return false
+		}
+	}
+	running, err := c.store.ListVisibleRunningTurnProviderIDs(checkCtx, c.conversation.ID)
+	if err != nil {
+		c.log.Warn("compaction diagnosis unavailable", "session", c.sessionID, "code", "CHAT_ATTENTION_REPAIR_UNVERIFIED")
+		return false
+	}
+	for _, pending := range running {
+		if pending != id {
+			continue
+		}
+		if err := c.outboundAttention(checkCtx, false); err != nil {
+			c.log.Warn("compaction diagnosis unavailable", "session", c.sessionID, "code", "CHAT_ATTENTION_CREATE_FAILED")
+		} else {
+			c.mu.Lock()
+			if c.compactionAttentionTurnID == id {
+				c.compactionAttentionTurnID = ""
+			}
+			c.mu.Unlock()
+		}
+		return true
+	}
+	return false
+}
+
+func (c *Controller) retryCompactionAttention(ctx context.Context) {
+	c.mu.Lock()
+	id := c.compactionAttentionTurnID
+	matched := id != "" && id == c.pendingTurnID
+	c.mu.Unlock()
+	if matched {
+		c.diagnoseCompaction(ctx, id)
+	}
+}
+
 type outboundAttentionStore interface {
 	deliveryAttentionWriter
 	ListAttentionQuestions(context.Context, domain.SessionID, domain.AttentionQuestionQuery, time.Time) (domain.AttentionQuestionPage, error)
