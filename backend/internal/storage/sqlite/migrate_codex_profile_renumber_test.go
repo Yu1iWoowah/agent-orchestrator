@@ -70,7 +70,7 @@ func applyLegacyCodexProfileMigrations(t *testing.T, db *sql.DB, migrations []le
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		t.Fatalf("set goose dialect: %v", err)
 	}
-	if err := goose.Up(db, "migrations"); err != nil {
+	if err := migrateUpTo(db, goose.MaxVersion); err != nil {
 		t.Fatalf("apply legacy Codex profile migrations: %v", err)
 	}
 }

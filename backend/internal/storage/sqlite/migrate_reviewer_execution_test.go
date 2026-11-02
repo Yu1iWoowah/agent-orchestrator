@@ -48,7 +48,7 @@ func TestReviewerExecutionHistoryPreservesOldBindingsAndRejectsUnsafeDowngrade(t
 	goose.SetLogger(goose.NopLogger())
 	err := goose.SetDialect("sqlite3")
 	if err == nil {
-		err = goose.DownTo(db, "migrations", 20261029163259629)
+		err = migrateDownTo(db, 20261029163259629)
 	}
 	gooseMu.Unlock()
 	if err == nil {

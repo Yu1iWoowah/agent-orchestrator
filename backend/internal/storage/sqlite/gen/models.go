@@ -433,6 +433,47 @@ type ConversationEditDelivery struct {
 	ProviderWorkStarted int64
 }
 
+type ConversationInputAction struct {
+	ActionKey        string
+	TurnID           string
+	Kind             string
+	ExpectedOwner    string
+	ExpectedRevision int64
+	TargetOwner      string
+	HoldKey          string
+	HoldOwner        string
+	HoldVersion      int64
+	Reason           string
+	TargetState      string
+	CreatedAt        time.Time
+}
+
+type ConversationInputCustody struct {
+	TurnID                 string
+	Owner                  string
+	Revision               int64
+	OriginalState          string
+	OriginalConversationID string
+	OriginalBranchID       string
+	OriginalSessionID      string
+	OriginalGeneration     string
+	OriginalSequence       int64
+	RequestedAt            time.Time
+	MessageIdsJson         string
+	ActivityIdsJson        string
+	LastActionKey          string
+}
+
+type ConversationInputHold struct {
+	TurnID        string
+	HoldKey       string
+	LedgerOwner   string
+	Reason        string
+	Version       int64
+	Active        int64
+	LastActionKey string
+}
+
 type ConversationMessage struct {
 	ID                  string
 	ConversationID      string

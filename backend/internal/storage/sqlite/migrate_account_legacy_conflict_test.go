@@ -57,7 +57,7 @@ func TestLegacyConflictMigrationPreservesJournalAndGuardsDowngrade(t *testing.T)
 	goose.SetLogger(goose.NopLogger())
 	err = goose.SetDialect("sqlite3")
 	if err == nil {
-		err = goose.DownTo(db, "migrations", 20261029232658295)
+		err = migrateDownTo(db, 20261029232658295)
 	}
 	gooseMu.Unlock()
 	if err == nil {

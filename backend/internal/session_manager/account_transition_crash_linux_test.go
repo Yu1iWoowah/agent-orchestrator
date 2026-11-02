@@ -24,6 +24,16 @@ func TestAccountTransitionHardExitWriterMatrix(t *testing.T) {
 	for _, stage := range []string{"preflight", "source-stopped", "intent", "create-gap", "receipt", "binding", "rollback"} {
 		t.Run(stage, func(t *testing.T) {
 			root := t.TempDir()
+			// Migration is fixture setup, outside the hard-exit interval. Clone
+			// the parent's migrated template into an independent case database;
+			// the child still creates every session/transition/runtime fact.
+			fixture, err := sqlitetest.Open(filepath.Join(root, "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.Close(); err != nil {
+				t.Fatal(err)
+			}
 			runtime := &crashWriterRuntime{fakeRuntime: &fakeRuntime{}, root: root}
 			t.Cleanup(func() {
 				for _, id := range []string{"source", "target", "rollback"} {
@@ -104,7 +114,15 @@ func TestAccountTransitionCrashHelper(t *testing.T) {
 		t.Skip("subprocess helper")
 	}
 	ctx := context.Background()
-	db := sqlitetest.MustOpenAt(t, filepath.Join(root, "db"))
+	db, err := sqlite.OpenPreMigrated(filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	now := time.Now().UTC()
 	if err := db.UpsertProject(ctx, domain.ProjectRecord{ID: "fake", Path: root, RegisteredAt: now}); err != nil {
 		t.Fatal(err)
