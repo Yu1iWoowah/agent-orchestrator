@@ -20,12 +20,13 @@ function fixedPlan() {
 
 // Protocol tests use explicit fake dialog results. These are not native gesture
 // qualification or proof against XTEST / same-uid OS process control.
-async function fixture(options: { plan?: object; zh?: boolean; respond: (options: MessageBoxOptions) => number | Promise<number> }) {
+async function fixture(options: { plan?: object; plans?: readonly object[]; zh?: boolean; respond: (options: MessageBoxOptions) => number | Promise<number> }) {
 	const directory = await mkdtemp(join(tmpdir(), "oc-"));
 	const address = process.platform === "win32" ? `\\\\.\\pipe\\ao-oc-${randomUUID()}` : join(directory, "s");
 	const frames: { type: string; requestId?: unknown; requestRef?: unknown; challenge?: unknown; digest?: unknown }[] = [];
 	const sockets = new Set<Socket>();
 	const plan = options.plan ?? fixedPlan();
+	let reviewIndex = 0;
 	const server = createServer((socket) => {
 		sockets.add(socket);
 		socket.on("close", () => sockets.delete(socket));
@@ -44,7 +45,7 @@ async function fixture(options: { plan?: object; zh?: boolean; respond: (options
 				switch (value.type) {
 					case "operator-hello": send({ type: "operator-hello-ok", version: 1 }); break;
 					case "ready": case "ping": send({ type: "pong" }); break;
-					case "review-next": send({ type: "review-plan", requestId, requestRef: "request-1", challenge: "private-challenge", digest: "c".repeat(64), plan }); break;
+					case "review-next": send({ type: "review-plan", requestId, requestRef: `request-${++reviewIndex}`, challenge: "private-challenge", digest: "c".repeat(64), plan: options.plans?.[reviewIndex - 1] ?? plan }); break;
 					case "confirm": send({ type: "confirmed", requestId, consentRef: "never-to-renderer" }); break;
 					case "cancel": send({ type: "cancelled", requestId }); break;
 				}
@@ -119,6 +120,26 @@ describe("private operator confirmation UI", () => {
 			expect(f.show.mock.calls.every(([options]) => options.type === "info")).toBe(true);
 		} finally { await f.close(); }
 	});
+	it.each([
+		{ ...fixedPlan(), expectedRevisions: { permission: 2 ** 60 } },
+		{ ...fixedPlan(), purpose: "coord.policy.update" },
+		{ ...fixedPlan(), scope: null },
+	])("keeps the issuer connected and reviews the next plan after rejecting an undisplayable plan", async (invalid) => {
+		const next = { ...fixedPlan(), actionKey: "action-2" };
+		const f = await fixture({ plans: [invalid, next], respond: () => 1 });
+		try {
+			await f.link.reviewNext();
+			expect(f.show).toHaveBeenCalledOnce();
+			expect(f.show.mock.calls[0][0].type).toBe("info");
+			expect(f.frames.filter((frame) => frame.type === "cancel")).toEqual([expect.objectContaining({ requestRef: "request-1" })]);
+			expect(f.frames.some((frame) => frame.type === "confirm")).toBe(false);
+			await f.link.reviewNext();
+			expect(f.frames.filter((frame) => frame.type === "operator-hello")).toHaveLength(1);
+			expect(f.frames.filter((frame) => frame.type === "review-next")).toHaveLength(2);
+			expect(f.show.mock.calls.filter(([options]) => options.type === "question").slice(0, -1).map(([options]) => options.detail).join("")).toBe(JSON.stringify(next, null, 2));
+			expect(f.frames.filter((frame) => frame.type === "confirm")).toEqual([expect.objectContaining({ requestRef: "request-2" })]);
+		} finally { await f.close(); }
+	});
 });
 
 it("uses zh-TW labels and acknowledges recorded consent without claiming execution", async () => {
@@ -131,7 +152,7 @@ it("uses zh-TW labels and acknowledges recorded consent without claiming executi
 	} finally { await f.close(); }
 });
 
-async function retryFixture(rejection?: string) {
+async function retryFixture(rejection?: string | ((attempt: number) => string)) {
 	const directory = await mkdtemp(join(tmpdir(), "or-"));
 	const address = process.platform === "win32" ? `\\\\.\\pipe\\ao-or-${randomUUID()}` : join(directory, "s");
 	const sockets = new Set<Socket>();
@@ -141,7 +162,9 @@ async function retryFixture(rejection?: string) {
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));
 		socket.once("data", () => {
-			if (rejection) socket.end(`${JSON.stringify({ type: "operator-hello-rejected", code: rejection })}\n`);
+			const code = typeof rejection === "function" ? rejection(attempts) : rejection;
+			if (code === "accept") socket.write(`${JSON.stringify({ type: "operator-hello-ok", version: 1 })}\n`);
+			else if (code) socket.end(`${JSON.stringify({ type: "operator-hello-rejected", code })}\n`);
 		});
 	});
 	server.listen(address);
@@ -172,7 +195,7 @@ it.each(["OPERATOR_PEER_UNQUALIFIED", "OPERATOR_TOKEN_INVALID", "OPERATOR_PLATFO
 	} finally { await f.close(); vi.useRealTimers(); }
 });
 
-it.each([undefined, "OPERATOR_PIN_PENDING", "OPERATOR_ISSUER_BUSY"])("bounds retries with exponential backoff for %s", async (code) => {
+it.each([undefined, "OPERATOR_PIN_PENDING"])("bounds retries with exponential backoff for %s", async (code) => {
 	vi.useFakeTimers();
 	const f = await retryFixture(code);
 	try {
@@ -189,6 +212,24 @@ it.each([undefined, "OPERATOR_PIN_PENDING", "OPERATOR_ISSUER_BUSY"])("bounds ret
 		await waitForIO(() => f.open() === 0);
 		await vi.advanceTimersByTimeAsync(3_600_000);
 		expect(f.attempts()).toBe(6);
+	} finally { await f.close(); vi.useRealTimers(); }
+});
+
+it("keeps retrying BUSY beyond the failure limit with a capped backoff and can pair when the slot clears", async () => {
+	vi.useFakeTimers();
+	const f = await retryFixture((attempt) => attempt <= 8 ? "OPERATOR_ISSUER_BUSY" : "accept");
+	try {
+		await waitForIO(() => f.attempts() === 1);
+		for (const [index, delay] of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000, 30_000].entries()) {
+			await waitForIO(() => f.open() === 0);
+			await vi.advanceTimersByTimeAsync(delay - 1);
+			expect(f.attempts()).toBe(index + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			await waitForIO(() => f.attempts() === index + 2);
+		}
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.attempts()).toBe(9);
+		expect(f.open()).toBe(1);
 	} finally { await f.close(); vi.useRealTimers(); }
 });
 

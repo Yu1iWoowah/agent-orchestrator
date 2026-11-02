@@ -65,7 +65,10 @@ scope、revisions、risk codes、digests 與 expiry。頁面同時限制字數�
 Review next 以每個 issuer epoch 的記憶體 cursor 前進，末端循環；Cancel 不撤銷計畫，也不會
 阻擋後面的計畫。同 daemon／issuer epoch 的 live consent 不再列入，過期或舊 issuer consent
 仍可重新檢視，domain deadline 不變。永久拒絕（包括版本／peer 不符）停止重連；
-暫時 busy／pin pending／沒有 hello 回應最多六次嘗試，間隔 2／4／8／16／30 秒。
+pin pending／沒有 hello 回應最多六次嘗試，間隔 2／4／8／16／30 秒。
+BUSY 不計入失敗上限，仍按相同間隔退避，最多每 30 秒重試一次，直到 slot 釋出或 app 關閉。
+單筆 plan 內容無法顯示時，只取消該次 Review，保留連線與 cursor，下一次可檢視後續計畫。
+Prepare 拒絕超過 JavaScript 安全整數上限（2^53−1）的 revision，確保原生對話框能精確顯示。
 
 challenge 只存在記憶體，綁 request／digest，最長五分鐘或 domain 計畫更早的期限。
 consent 自 mint 起也最多五分鐘，受相同 domain deadline 限制。mint 在交易中重驗

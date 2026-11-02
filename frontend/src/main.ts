@@ -918,7 +918,6 @@ async function createWindowInternal(): Promise<void> {
 	// while autoHideMenuBar and setMenuBarVisibility(false) hide the menu strip.
 	if (process.platform === "win32") {
 		Menu.setApplicationMenu(buildWindowsAppMenu());
-		mainWindow.setAutoHideMenuBar(true);
 		mainWindow.setMenuBarVisibility(false);
 	} else if (process.platform === "darwin") {
 		Menu.setApplicationMenu(

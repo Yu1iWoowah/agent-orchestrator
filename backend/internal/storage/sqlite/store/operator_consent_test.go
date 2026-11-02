@@ -552,6 +552,7 @@ func TestOperatorConsentInvalidPlansAndCancellation(t *testing.T) {
 		"body":                  func(p *domain.OperatorActionPlan) { p.SubjectRef = "raw body\nnot a ref" },
 		"digest":                func(p *domain.OperatorActionPlan) { p.EffectDigest = "not a digest" },
 		"revision":              func(p *domain.OperatorActionPlan) { p.ExpectedRevisions = map[string]int64{"owner": -1} },
+		"unsafe_revision":       func(p *domain.OperatorActionPlan) { p.ExpectedRevisions = map[string]int64{"owner": 1 << 53} },
 		"empty_revisions":       func(p *domain.OperatorActionPlan) { p.ExpectedRevisions = nil },
 		"duplicate_participant": func(p *domain.OperatorActionPlan) { p.ParticipantRefs = []string{"one", "one"} },
 		"risk_body":             func(p *domain.OperatorActionPlan) { p.RiskCodes = []string{"raw message body"} },
@@ -571,6 +572,20 @@ func TestOperatorConsentInvalidPlansAndCancellation(t *testing.T) {
 	}
 	if _, err := s.GetOperatorAction(context.Background(), p.ActionKey); !errors.Is(err, domain.ErrOperatorActionNotFound) {
 		t.Fatalf("cancelled prepare persisted: %v", err)
+	}
+}
+
+func TestOperatorConsentSafeIntegerRevisionBoundary(t *testing.T) {
+	s, _ := operatorFixture(t)
+	plan := operatorPlan(domain.ConsentHandoffContext)
+	plan.ExpectedRevisions = map[string]int64{"owner": 1<<53 - 1}
+	prepared, err := s.PrepareOperatorAction(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("maximum exactly displayable revision rejected: %v", err)
+	}
+	got, err := s.NativeOperatorIssuer().NativeOperatorPlan(context.Background(), prepared.RequestRef)
+	if err != nil || got.ExpectedRevisions["owner"] != 1<<53-1 {
+		t.Fatalf("maximum revision changed: %+v %v", got, err)
 	}
 }
 

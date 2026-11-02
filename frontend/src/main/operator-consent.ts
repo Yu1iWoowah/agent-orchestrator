@@ -30,7 +30,7 @@ type Plan = Readonly<{
 	riskCodes: readonly string[];
 }>;
 type Review = Readonly<{ requestRef: string; challenge: string; digest: string; plan: Plan; explanation: { en: string; zh: string; riskEn: string; riskZh: string } }>;
-type Reply = { kind: "rejected"; retryable: boolean } | { kind: "hello" | "pong" | "confirmed" | "cancelled"; requestId?: string } | { kind: "review"; review: Review; requestId: string } | { kind: "error"; requestId?: string };
+type Reply = { kind: "rejected"; retryable: boolean; busy: boolean } | { kind: "hello" | "pong" | "confirmed" | "cancelled"; requestId?: string } | { kind: "review"; review: Review; requestId: string } | { kind: "invalid-review"; requestId: string; requestRef?: string } | { kind: "error"; requestId?: string };
 type NativeDialog = (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -81,9 +81,18 @@ function parseReply(text: string): Reply {
 		case "operator-hello-ok":
 			if (value.version !== 1) throw new Error("OPERATOR_PROTOCOL_INVALID");
 			return { kind: "hello" };
-		case "operator-hello-rejected": return { kind: "rejected", retryable: value.code === "OPERATOR_PIN_PENDING" || value.code === "OPERATOR_ISSUER_BUSY" };
+		case "operator-hello-rejected": return { kind: "rejected", retryable: value.code === "OPERATOR_PIN_PENDING" || value.code === "OPERATOR_ISSUER_BUSY", busy: value.code === "OPERATOR_ISSUER_BUSY" };
 		case "pong": return { kind: "pong" };
-		case "review-plan": return { kind: "review", review: parseReview(value), requestId: reference(requestId) };
+		case "review-plan": {
+			const id = reference(requestId);
+			try { return { kind: "review", review: parseReview(value), requestId: id }; }
+			catch {
+				// A bad plan must not retire this issuer or reset the server cursor.
+				let requestRef: string | undefined;
+				try { requestRef = reference(value.requestRef); } catch { /* No valid request to cancel. */ }
+				return { kind: "invalid-review", requestId: id, requestRef };
+			}
+		}
 		case "confirmed": return { kind: "confirmed", requestId };
 		case "cancelled": return { kind: "cancelled", requestId };
 		case "error": return { kind: "error", requestId };
@@ -116,6 +125,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 	let connected = false;
 	let busy = false;
 	let retryCount = 0;
+	let backoffCount = 0;
 	let stopRetry = false;
 	let retry: ReturnType<typeof setTimeout> | undefined;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -137,6 +147,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 		const handshake = setTimeout(() => current.destroy(), 5_000);
 		const decoder = new StringDecoder("utf8");
 		let buffer = "";
+		let issuerBusy = false;
 		current.once("connect", () => send({ type: "operator-hello", version: 1, token: options.ownedToken }));
 		current.on("error", () => current.destroy());
 		current.on("data", (data: Buffer) => {
@@ -153,12 +164,14 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 						if (connected) throw new Error("OPERATOR_PROTOCOL_INVALID");
 						connected = true;
 						retryCount = 0;
+						backoffCount = 0;
 						clearTimeout(handshake);
 						lifetime = new AbortController();
 						send({ type: "ready" });
 						heartbeat = setInterval(() => send({ type: "ping" }), 5_000);
 					} else if (reply.kind === "rejected") {
 						if (!reply.retryable) stopRetry = true;
+						issuerBusy = reply.busy;
 						current.destroy();
 					} else if (reply.kind !== "pong" && pending && reply.requestId === pending.id) {
 						const receiver = pending;
@@ -167,7 +180,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 						receiver.resolve(reply);
 					}
 				}
-			} catch { stopRetry = true; current.destroy(); }
+			} catch { if (!connected) stopRetry = true; current.destroy(); }
 		});
 		current.once("close", () => {
 			connected = false;
@@ -176,8 +189,9 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 			clearInterval(heartbeat);
 			if (pending) { clearTimeout(pending.timer); pending.reject(); }
 			if (!disposed && !stopRetry) {
-				retryCount++;
-				if (retryCount < 6) retry = setTimeout(start, Math.min(2_000 * 2 ** (retryCount - 1), 30_000));
+				if (!issuerBusy) retryCount++;
+				backoffCount = Math.min(backoffCount + 1, 5);
+				if (retryCount < 6) retry = setTimeout(start, Math.min(2_000 * 2 ** (backoffCount - 1), 30_000));
 			}
 		});
 	};
@@ -197,6 +211,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 			const zh = options.zh();
 			try {
 				const response = await call({ type: "review-next" });
+				if (response.kind === "invalid-review" && response.requestRef) await call({ type: "cancel", requestRef: response.requestRef });
 				if (response.kind !== "review") throw new Error("OPERATOR_ACTION_UNAVAILABLE");
 				const review = response.review;
 				const label = zh ? review.explanation.zh : review.explanation.en;
