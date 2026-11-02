@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -26,10 +29,75 @@ var inputReplacementCases = []inputReplacementCase{
 	{"activity-provider", "conversation_activities", "provider_item_id", "activity-protected", "activity-ordinary", "activity-key"},
 }
 
+var inputReplacementTemplates [2]struct {
+	sync.Once
+	data []byte
+}
+
 func inputReplacementFixture(t *testing.T, mode string, emptyKeys bool) (*sqlite.Store, *sql.DB) {
 	t.Helper()
+	index := 0
+	if emptyKeys {
+		index = 1
+	}
+	template := &inputReplacementTemplates[index]
+	template.Do(func() {
+		s, db := buildInputReplacementSeed(t, emptyKeys)
+		var path string
+		if err := db.QueryRow(`SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&path); err != nil {
+			t.Fatal(err)
+		}
+		// Close every pool before reading the main file, so all WAL data is
+		// checkpointed. Only immutable bytes are shared across test cases.
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template.data = data
+	})
+	if len(template.data) == 0 {
+		t.Fatal("input replacement fixture template is unavailable")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ao.db")
+	if err := os.WriteFile(path, template.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := sqlite.OpenPreMigrated(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	inputReplacementConnection(t, db)
 	ctx := t.Context()
-	s, db, rec := settingsStartFixture(t, "")
+	// Registration and hold remain part of each case, including its own
+	// payload witness and revision. The shared seed has neither fact.
+	if mode != "ordinary" {
+		if _, err := s.RegisterInputCustody(ctx, "protected", "owner", "register", testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode == "held" {
+		if _, err := s.HoldConversationInput(ctx, domain.InputCustodyVersion{TurnID: "protected", Owner: "owner", Revision: 1}, domain.InputHoldVersion{Key: "delivery", Owner: "owner"}, "outcome_unknown", "hold", testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s, db
+}
+
+func inputReplacementConnection(t *testing.T, db *sql.DB) {
+	t.Helper()
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA recursive_triggers=OFF`); err != nil {
 		t.Fatal(err)
@@ -38,6 +106,13 @@ func inputReplacementFixture(t *testing.T, mode string, emptyKeys bool) (*sqlite
 	if err := db.QueryRow(`PRAGMA recursive_triggers`).Scan(&recursive); err != nil || recursive != 0 {
 		t.Fatalf("replacement must be safe without recursive delete triggers: %d %v", recursive, err)
 	}
+}
+
+func buildInputReplacementSeed(t *testing.T, emptyKeys bool) (*sqlite.Store, *sql.DB) {
+	t.Helper()
+	ctx := t.Context()
+	s, db, rec := settingsStartFixture(t, "")
+	inputReplacementConnection(t, db)
 	for _, id := range []string{"protected", "ordinary"} {
 		client := ""
 		if !emptyKeys && id == "protected" {
@@ -58,16 +133,6 @@ func inputReplacementFixture(t *testing.T, mode string, emptyKeys bool) (*sqlite
  VALUES('activity-protected','start-context','protected',3,'command','completed','original evidence',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
  ('activity-ordinary','start-context','ordinary',4,'command','completed','ordinary evidence','','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, request, activity); err != nil {
 		t.Fatal(err)
-	}
-	if mode != "ordinary" {
-		if _, err := s.RegisterInputCustody(ctx, "protected", "owner", "register", testNow); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if mode == "held" {
-		if _, err := s.HoldConversationInput(ctx, domain.InputCustodyVersion{TurnID: "protected", Owner: "owner", Revision: 1}, domain.InputHoldVersion{Key: "delivery", Owner: "owner"}, "outcome_unknown", "hold", testNow); err != nil {
-			t.Fatal(err)
-		}
 	}
 	return s, db
 }

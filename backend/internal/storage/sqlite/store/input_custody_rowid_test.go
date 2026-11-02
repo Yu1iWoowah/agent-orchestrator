@@ -9,6 +9,30 @@ import (
 )
 
 func TestInputCustodyReplacementRowIDs(t *testing.T) {
+	for _, emptyKeys := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fixture-isolation/empty=%t", emptyKeys), func(t *testing.T) {
+			_, first := inputReplacementFixture(t, "registered", emptyKeys)
+			secondStore, second := inputReplacementFixture(t, "ordinary", emptyKeys)
+			before := inputPayloadRow(t, second, "conversation_messages", "message-ordinary")
+			if _, err := first.Exec(`UPDATE conversation_messages SET text='first fixture only' WHERE id='message-ordinary'`); err != nil {
+				t.Fatal(err)
+			}
+			var custody int
+			if err := second.QueryRow(`SELECT count(*) FROM conversation_input_custody`).Scan(&custody); err != nil || custody != 0 {
+				t.Fatalf("fixture inherited custody: count=%d err=%v", custody, err)
+			}
+			if got := inputPayloadRow(t, second, "conversation_messages", "message-ordinary"); got != before {
+				t.Fatal("fixture shares writable payload with another case")
+			}
+			_, third := inputReplacementFixture(t, "ordinary", emptyKeys)
+			if got := inputPayloadRow(t, third, "conversation_messages", "message-ordinary"); got != before {
+				t.Fatal("fixture mutation changed the seed template")
+			}
+			if err := secondStore.InputCustodyStorageCompatibility(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 	for _, mode := range []string{"held", "registered", "ordinary"} {
 		for _, c := range []inputReplacementCase{inputReplacementCases[0], inputReplacementCases[3]} {
 			for _, negative := range []bool{false, true} {

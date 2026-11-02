@@ -123,7 +123,7 @@ jobs:
 
       - name: Test session manager
         if: matrix.shard == 0
-        run: go test -race -count=1 -timeout=20m ./internal/session_manager
+        run: go test -json -race -count=1 -timeout=20m ./internal/session_manager
 
       - name: Test SQLite store shard
         # Keep the real 512 MiB history boundary, including its SQLite JSON
@@ -132,7 +132,7 @@ jobs:
           tests=$(go test -race -list . ./internal/storage/sqlite/store | grep -E '^(Test|Example|Fuzz)')
           selected=$(printf '%s\n' "$tests" | awk -v shard=${{ matrix.shard }} '((NR - 1) % 4) == shard' | paste -sd '|' -)
           test -n "$selected"
-          go test -race -count=1 -timeout=20m -run "^($selected)$" ./internal/storage/sqlite/store
+          go test -json -race -count=1 -timeout=20m -run "^($selected)$" ./internal/storage/sqlite/store
 
   sqlite-race:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
