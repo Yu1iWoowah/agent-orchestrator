@@ -6918,7 +6918,8 @@ func TestCompactionSettlementWithoutStartDrainsQueue(t *testing.T) {
 			}
 			conv.emit(ports.ChatEvent{Kind: kind, ProviderTurnID: "compact-turn", TurnState: domain.TurnStateCompleted})
 			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
+				// The claim becomes running before SendTurn reaches the provider.
+				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning && len(conv.sentTexts()) == 1
 			})
 			if got := conv.sentTexts(); len(got) != 1 || got[0] != "after compact" {
 				t.Fatalf("provider messages = %v", got)
