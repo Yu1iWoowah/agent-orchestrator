@@ -123,6 +123,11 @@ var _ interface {
 // Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
 // graceful shutdown through the HTTP server and background workers.
 func Run(buildVersion string) error {
+	var operatorOwner *operatornative.Owner
+	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
+		operatorOwner = operatornative.CaptureOwner()
+		defer func() { _ = operatorOwner.Close() }()
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -217,7 +222,7 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
-	operatorBroker := operatornative.New(store.NativeOperatorIssuer(), operatorRuntimeToken)
+	operatorBroker := operatornative.New(store.NativeOperatorIssuer(), operatorRuntimeToken, operatorOwner)
 	browserBroker.SetNativeHandler(operatorBroker.Handle)
 	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
 	if err != nil {

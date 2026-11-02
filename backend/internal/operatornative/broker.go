@@ -47,26 +47,28 @@ type challenge struct {
 // Broker serializes the one native issuer with epoch changes and mint. No
 // private credential, challenge or dialog result is reachable through HTTP.
 type Broker struct {
-	mu         sync.Mutex
-	store      nativeStore
-	token      string
-	conn       net.Conn
-	epoch      string
-	ready      bool
-	liveUntil  time.Time
-	challenges map[domain.OperatorRequestRef]challenge
-	now        func() time.Time
-	verifyPeer func(net.Conn) error
-	pinStatus  func() error
-	cursor     domain.OperatorRequestRef
+	mu            sync.Mutex
+	store         nativeStore
+	token         string
+	owner         *Owner
+	qualification string
+	conn          net.Conn
+	epoch         string
+	ready         bool
+	liveUntil     time.Time
+	challenges    map[domain.OperatorRequestRef]challenge
+	now           func() time.Time
+	verifyPeer    func(net.Conn) error
+	pinStatus     func() error
+	cursor        domain.OperatorRequestRef
 	// Set once at construction. Other platforms need real native receipts
 	// before their issuer can be enabled; code pinning alone is insufficient.
 	platformVerified bool
 }
 
 // New binds the native store to a private owned token and pinned attach code.
-func New(store nativeStore, ownedToken string) *Broker {
-	b := &Broker{store: store, token: ownedToken, now: time.Now, challenges: map[domain.OperatorRequestRef]challenge{}, platformVerified: runtime.GOOS == "linux"}
+func New(store nativeStore, ownedToken string, owner *Owner) *Broker {
+	b := &Broker{store: store, token: ownedToken, owner: owner, now: time.Now, challenges: map[domain.OperatorRequestRef]challenge{}, platformVerified: runtime.GOOS == "linux"}
 	if b.platformVerified {
 		verifier := newNativePeerVerifier()
 		b.pinStatus, b.verifyPeer = verifier.status, verifier.verify
@@ -108,6 +110,16 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 		reject("OPERATOR_PROTOCOL_INVALID")
 		return
 	}
+	// Tokenless peers cannot reserve even a transient slot while the original
+	// owner lives (including reconnect gaps). Unknown liveness fails closed.
+	if b.token != "" && hello.Token == "" && !b.owner.ended() {
+		reject("OPERATOR_TOKEN_REQUIRED")
+		return
+	}
+	if hello.Token != "" && (len(b.token) < 32 || subtle.ConstantTimeCompare([]byte(hello.Token), []byte(b.token)) != 1) {
+		reject("OPERATOR_TOKEN_INVALID")
+		return
+	}
 	// Reserve the slot before any file IO. Extra connections cannot trigger a
 	// full bundle hash while an issuer (or another handshake) owns it.
 	b.mu.Lock()
@@ -121,7 +133,7 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 	installed := false
 	defer func() {
 		b.mu.Lock()
-		b.ready, b.epoch, b.cursor = false, "", ""
+		b.ready, b.epoch, b.cursor, b.qualification = false, "", "", ""
 		b.challenges = map[domain.OperatorRequestRef]challenge{}
 		b.mu.Unlock()
 		if installed {
@@ -139,19 +151,14 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 		}
 		return
 	}
-	// A caller-chosen stdin token never establishes native identity. If a token
-	// is supplied it is an additional negative check, after kernel/code identity.
+	// A valid private token never replaces kernel peer and sealed-code identity.
 	if b.verifyPeer(conn) != nil {
 		reject("OPERATOR_PEER_UNQUALIFIED")
 		return
 	}
-	if hello.Token != "" && (len(b.token) < 32 || subtle.ConstantTimeCompare([]byte(hello.Token), []byte(b.token)) != 1) {
-		reject("OPERATOR_TOKEN_INVALID")
-		return
-	}
 	b.mu.Lock()
 	epoch := uuid.NewString()
-	b.epoch, b.cursor = epoch, ""
+	b.epoch, b.cursor, b.qualification = epoch, "", uuid.NewString()
 	b.ready = false
 	b.challenges = map[domain.OperatorRequestRef]challenge{}
 	b.mu.Unlock()
@@ -165,7 +172,7 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 		return
 	}
 	for {
-		_ = conn.SetReadDeadline(b.now().Add(15 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 		if !scan.Scan() {
 			return
 		}
@@ -284,7 +291,7 @@ func (b *Broker) GetAuthorityReadiness(required []domain.OperatorPurpose, scope 
 	out.IssuerEpoch = b.epoch
 	expiry := b.liveUntil
 	out.ExpiresAt = &expiry
-	out.QualificationRef = b.epoch
+	out.QualificationRef = b.qualification
 	if len(required) == 0 || len(required) > 9 || !domain.OperatorReferenceValid(scope.ProjectRef) || !domain.OperatorReferenceValid(scope.OwnerRef) || !domain.OperatorReferenceValid(scope.BranchRef) || !domain.OperatorReferenceValid(scope.NativeRef) {
 		out.Reason = "purpose_and_scope_required"
 		return out

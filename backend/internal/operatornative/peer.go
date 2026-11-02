@@ -77,7 +77,11 @@ func desktopFiles(executable string) []string {
 
 func pinDesktop(daemon string) (desktopAnchor, error) {
 	var anchor desktopAnchor
-	expected, err := packagedDesktop(daemon)
+	resolved, err := filepath.EvalSymlinks(daemon)
+	if err != nil {
+		return anchor, err
+	}
+	expected, err := packagedDesktop(resolved)
 	if err != nil || !qualifiedFuses(expected) {
 		return anchor, errUnqualified
 	}

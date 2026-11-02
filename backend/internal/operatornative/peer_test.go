@@ -120,3 +120,15 @@ func TestNativePinRunsInBackground(t *testing.T) {
 		t.Fatal("failed pin did not remain closed")
 	}
 }
+
+func TestDesktopPinResolvesDaemonSymlink(t *testing.T) {
+	daemon, exe := installedFixture(t, t.TempDir())
+	link := filepath.Join(t.TempDir(), "ao-link")
+	if err := os.Symlink(daemon, link); err != nil {
+		t.Skipf("symlink unavailable on this platform: %v", err)
+	}
+	anchor, err := pinDesktop(link)
+	if err != nil || anchor.verifyFiles(exe) != nil {
+		t.Fatalf("symlink launch did not resolve bundle: %v", err)
+	}
+}

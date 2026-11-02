@@ -1,5 +1,5 @@
 import { appDiagnosticsDialog } from "./main/app-diagnostics-dialog";
-import { connectOperatorConsent, operatorConsentLabels } from "./main/operator-consent";
+import { connectOperatorConsent, operatorConsentLabels, operatorConsentMenu } from "./main/operator-consent";
 import { AppDiagnosticsMain } from "./main/app-diagnostics";
 import { DIAGNOSTIC_CHANNEL, diagnosticId } from "./shared/app-diagnostics";
 import { SideCloseRecovery } from "./main/side-close";
@@ -918,6 +918,7 @@ async function createWindowInternal(): Promise<void> {
 	// while autoHideMenuBar and setMenuBarVisibility(false) hide the menu strip.
 	if (process.platform === "win32") {
 		Menu.setApplicationMenu(buildWindowsAppMenu());
+		mainWindow.setAutoHideMenuBar(true);
 		mainWindow.setMenuBarVisibility(false);
 	} else if (process.platform === "darwin") {
 		Menu.setApplicationMenu(
@@ -941,16 +942,12 @@ async function createWindowInternal(): Promise<void> {
 	}
 	const operatorRunFile = runFilePath();
 	operatorConsentZh = operatorRunFile ? (await readUiSettings(path.dirname(operatorRunFile))).locale === "zh-TW" : false;
-	const labels = operatorConsentLabels(operatorConsentZh);
 	const operatorMenu = Menu.getApplicationMenu();
 	if (operatorMenu && !operatorMenu.getMenuItemById("operator-confirmation")) {
-		operatorMenu.append(new MenuItem({ id: "operator-confirmation", label: labels.menu, submenu: [{
-			id: "operator-review", label: labels.review, accelerator: "CommandOrControl+Alt+Shift+O",
-			click: () => {
-				if (operatorConsentLink) void operatorConsentLink.reviewNext();
-				else void dialog.showMessageBox({ type: "info", title: operatorConsentZh ? "本機操作確認" : "Local action confirmation", message: operatorConsentLabels(operatorConsentZh).notReady });
-			},
-		}] }));
+		operatorMenu.append(new MenuItem(operatorConsentMenu(operatorConsentZh, () => {
+			if (operatorConsentLink) void operatorConsentLink.reviewNext();
+			else void dialog.showMessageBox({ type: "info", title: operatorConsentZh ? "本機操作確認" : "Local action confirmation", message: operatorConsentLabels(operatorConsentZh).notReady });
+		})));
 		Menu.setApplicationMenu(operatorMenu);
 	}
 

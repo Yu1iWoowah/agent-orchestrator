@@ -1,18 +1,18 @@
 import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
-import type { MessageBoxOptions, MessageBoxReturnValue } from "electron";
+import type { KeyboardEvent, MenuItemConstructorOptions, MessageBoxOptions, MessageBoxReturnValue } from "electron";
 
 const purposes = new Map([
- ["handoff.required_context", { en: "Confirm required handoff context", zh: "確認交接必要內容", riskEn: "This confirms the fixed context digest. It does not authorize handoff recovery or permission restoration.", riskZh: "僅確認固定內容 digest，不授權交接恢復或權限恢復。" }],
- ["handoff.retry_source_restore", { en: "Allow source restoration attempt", zh: "允許嘗試恢復來源", riskEn: "The handoff service must still verify the recovery epoch, owner and effect gate before restoring the source.", riskZh: "交接服務仍須重驗恢復 epoch、owner 與 effect gate，才可嘗試恢復來源。" }],
- ["handoff.recover_promote_verified_candidate", { en: "Allow promotion of the verified candidate", zh: "允許提升已驗證候選", riskEn: "This can change the handoff writer. Candidate verification and current authority remain the handoff service's responsibility.", riskZh: "後續可能改變交接 writer；候選驗證與目前 authority 仍由交接服務負責。" }],
- ["handoff.abandon_source_stopped", { en: "Allow abandoning the stopped source", zh: "允許放棄已停止的來源", riskEn: "This is the stopped-source exit, not permission to restart a source or restore session settings.", riskZh: "這是保留來源停止狀態的出口，不授權重新啟動來源或恢復 session 設定。" }],
- ["settings.rebind", { en: "Allow rebinding session settings", zh: "允許重新綁定 session 設定", riskEn: "Account, native and settings bindings may change. The settings service must recheck the fixed scope and revisions.", riskZh: "後續可能改變帳號、native 與設定綁定；設定服務須重驗固定 scope 與 revisions。" }],
- ["settings.rebind_idle_batch", { en: "Allow rebinding the fixed idle batch", zh: "允許重新綁定固定閒置清單", riskEn: "Only the listed batch is covered. Each item must pass its own eligibility checks before execution.", riskZh: "只涵蓋列出的固定清單；各項執行前仍須重驗資格，不得加入新 session。" }],
- ["settings.restore_permissions", { en: "Allow restoring session permissions", zh: "允許恢復 session 權限", riskEn: "Session permissions may change. Handoff recovery consent cannot replace this separate permission decision.", riskZh: "後續可能改變 session 權限；交接恢復同意不能替代這次獨立的權限決定。" }],
- ["delivery.unknown.defer", { en: "Allow deferring the unknown delivery", zh: "允許稍後處理 unknown delivery", riskEn: "The delivery remains uncertain. This must not mark it sent or delivered.", riskZh: "delivery 的不確定事實必須保留，不得標成 sent 或 delivered。" }],
- ["delivery.linked_resend", { en: "Allow the linked resend", zh: "允許有 lineage 的重新傳送", riskEn: "Resending can duplicate delivery. The original lineage and eligibility checks must be preserved.", riskZh: "重新傳送可能造成重複 delivery；必須保留原 lineage 並重驗資格。" }],
+	["handoff.required_context", { en: "Confirm required handoff context", zh: "確認交接必要內容", riskEn: "This confirms the fixed context digest. It does not authorize handoff recovery or permission restoration.", riskZh: "僅確認固定內容 digest，不授權交接恢復或權限恢復。" }],
+	["handoff.retry_source_restore", { en: "Allow source restoration attempt", zh: "允許嘗試恢復來源", riskEn: "The handoff service must still verify the recovery epoch, owner and effect gate before restoring the source.", riskZh: "交接服務仍須重驗恢復 epoch、owner 與 effect gate，才可嘗試恢復來源。" }],
+	["handoff.recover_promote_verified_candidate", { en: "Allow promotion of the verified candidate", zh: "允許提升已驗證候選", riskEn: "This can change the handoff writer. Candidate verification and current authority remain the handoff service's responsibility.", riskZh: "後續可能改變交接 writer；候選驗證與目前 authority 仍由交接服務負責。" }],
+	["handoff.abandon_source_stopped", { en: "Allow abandoning the stopped source", zh: "允許放棄已停止的來源", riskEn: "This is the stopped-source exit, not permission to restart a source or restore session settings.", riskZh: "這是保留來源停止狀態的出口，不授權重新啟動來源或恢復 session 設定。" }],
+	["settings.rebind", { en: "Allow rebinding session settings", zh: "允許重新綁定 session 設定", riskEn: "Account, native and settings bindings may change. The settings service must recheck the fixed scope and revisions.", riskZh: "後續可能改變帳號、native 與設定綁定；設定服務須重驗固定 scope 與 revisions。" }],
+	["settings.rebind_idle_batch", { en: "Allow rebinding the fixed idle batch", zh: "允許重新綁定固定閒置清單", riskEn: "Only the listed batch is covered. Each item must pass its own eligibility checks before execution.", riskZh: "只涵蓋列出的固定清單；各項執行前仍須重驗資格，不得加入新 session。" }],
+	["settings.restore_permissions", { en: "Allow restoring session permissions", zh: "允許恢復 session 權限", riskEn: "Session permissions may change. Handoff recovery consent cannot replace this separate permission decision.", riskZh: "後續可能改變 session 權限；交接恢復同意不能替代這次獨立的權限決定。" }],
+	["delivery.unknown.defer", { en: "Allow deferring the unknown delivery", zh: "允許稍後處理 unknown delivery", riskEn: "The delivery remains uncertain. This must not mark it sent or delivered.", riskZh: "delivery 的不確定事實必須保留，不得標成 sent 或 delivered。" }],
+	["delivery.linked_resend", { en: "Allow the linked resend", zh: "允許有 lineage 的重新傳送", riskEn: "Resending can duplicate delivery. The original lineage and eligibility checks must be preserved.", riskZh: "重新傳送可能造成重複 delivery；必須保留原 lineage 並重驗資格。" }],
 ]);
 
 type Plan = Readonly<{
@@ -94,6 +94,19 @@ function parseReply(text: string): Reply {
 export function operatorConsentLabels(zh: boolean) {
 	return zh ? { menu: "操作者確認", review: "檢視下一個固定操作計畫…", notReady: "本機確認 issuer 尚未就緒。" } :
 		{ menu: "Operator confirmation", review: "Review next fixed action plan…", notReady: "The native confirmation issuer is not ready." };
+}
+
+export function operatorConsentMenu(zh: boolean, review: () => void) {
+	const labels = operatorConsentLabels(zh);
+	return {
+		id: "operator-confirmation", label: labels.menu, submenu: [{
+			id: "operator-review", label: labels.review,
+			// No accelerator: Browser sendInputEvent must not open native Review.
+			click: (_item: unknown, _window: unknown, event: Pick<KeyboardEvent, "triggeredByAccelerator">) => {
+				if (!event.triggeredByAccelerator) review();
+			},
+		}],
+	} satisfies MenuItemConstructorOptions;
 }
 
 // Only Electron main calls this. No credential, plan or confirm method crosses

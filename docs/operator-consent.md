@@ -14,9 +14,18 @@ runtime 收據前，private native channel 拒絕握手、不 mint，readiness �
 
 封裝桌面主程序為 owned daemon 產生獨立隨機 C0 token，透過 inherited stdin
 交付一次。它與 Browser／diagnostics token 不同。stdin marker 或 caller 自選的
-nonce 本身不構成 native 身分：owned 與 attach 都須通過下列 OS peer／程式內容驗證，
-owned 若提供私有 token，僅作額外負向檢查：錯值拒絕；省略時仍走相同 native peer 權威鏈。
-因此 owned token 不增加 authority，也不是 native 身分證明。mint 材料不落地至檔案、環境、run file、log、artifact 或 renderer。
+nonce 本身不構成 native 身分。owned 的原 owner 程序仍存活時，hello 必須帶相符的
+私有 token；即使 peer／bundle 合格，空 token 也不能取得 issuer slot，包含視窗關閉與
+同一 owner 重連之間的空窗。token 仍不能取代 OS peer／程式內容驗證。
+
+Linux 在 daemon entry、讀 stdin 與 migrations 之前，用 pidfd 固定原始直接父程序的身分。
+production bundled／dev launch 都直接 spawn daemon；只有預期的桌面 basename 可成為
+該 watch 的 owner，並須與當次 bundle 的 executable／ASAR 為同一檔案身分。[pidfd](https://man7.org/linux/man-pages/man2/pidfd_open.2.html) 的
+exit／reap 事件確認原程序結束後，新 instance 才可不持舊 token，以 peer＋pin 重新配對
+為 attach。PID 重用不會把新程序當成舊 owner。CLI standalone daemon 沒有 owned token，
+直接走 attach。pidfd 不可用、非直接桌面父程序、捕捉時已失去 owner 或其他不明狀態，
+都不當成死亡證據：token 仍為必要條件，不能靠斷線降級；需要重新啟動合格 daemon。
+觀察 fd 關閉也不算 owner 結束。mint 材料不寫入檔案、環境、run file、log、artifact 或 renderer。
 
 C0 使用既有 Browser runtime IPC listener 的獨立協定；不共用 Browser grant／command。
 HTTP 與 mobile API 不提供 prepare、challenge、mint、confirm、consume 入口。
@@ -38,13 +47,17 @@ OnlyLoadAppFromAsar；universal binary 每個 slice 都要符合。相同 AppIma
 信任起點是 daemon 啟動時的受信任安裝 bundle；這是程式內容 pinning，並非 publisher
 signature attestation。保證限 AO API／session grant 隔離。相同 OS 帳號的 exec／讀檔、
 重打包或替換程式、程序記憶體／debug、XTEST 與其他 OS 注入仍屬殘餘風險。
+另依賴 Electron 對 packaged app 的 `NODE_OPTIONS` 過濾；目前 fuse 保留此環境選項，
+並未以 fuses 關閉全部 NODE_OPTIONS。正式 bundle 對 `--require` 等注入的過濾仍須
+實機收據確認，不能由 sealed fixture 或 fuse 檢查推定已通過。
 native dialog 不證明物理人類身分；fake dialog 測試不構成真人手勢或阻擋 OS 攻擊的證據。
 
 ## 固定計畫與效期
 
 `PrepareOperatorAction` 保存已 admission 的固定計畫，不自動彈窗或執行。
 操作者從 native **Operator confirmation → Review next fixed action plan** 選單
-（`CommandOrControl+Alt+Shift+O`）主動檢視全部欄位：purpose、subject、固定 batch、
+主動檢視全部欄位（Linux 的原生選單可用 Alt 開啟）。Review 不註冊 accelerator，
+click handler 也拒絕 accelerator 來源，避免 Browser view 合成按鍵直接開啟對話框：purpose、subject、固定 batch、
 scope、revisions、risk codes、digests 與 expiry。頁面同時限制字數與行數，不截斷計畫；
 所有確認 dialog 預設取消。最後一頁另顯示各 purpose 的固定風險說明、digest、期限及 OS 邊界；
 成功後以原生提示回饋「已記錄此計畫的確認」，不宣稱已執行。選單／提示支援 en 與 zh-TW。
@@ -86,7 +99,8 @@ consume 失敗會使該 scope 失敗；reservation 失敗則兩者 rollback。re
 
 `GetAuthorityReadiness(requiredPurposes, scope)` 要求 live、ready 的合格 native issuer、
 非空 closed purpose set，以及 project／owner／branch／native references。
-它回 issuer epoch、短期 heartbeat expiry 與 qualification reference。
+它回 issuer epoch、短期 heartbeat expiry 與獨立、不透明的 qualification reference；
+qualification reference 不等於 epoch，也不是可用來 mint 的 proof。
 `authorityGo=true` 表示本次程序能詢問此決定，不是 consent、domain eligibility，
 也不是全部 core acceptance 的交付證明。缺 bridge／pairing、liveness 過期、purpose
 未啟用或 scope 不完整時回 false。HTTP 唯讀入口接受重複 `purpose` 與 `projectRef`、
@@ -100,8 +114,17 @@ H 在 pause／export／candidate／stop／freeze 前必須 gate；S 人工恢復
 
 `test/fixtures/operator-native/prepare.mjs` 與 opt-in `TestC0NativeDesktopPairing`
 提供 Linux sealed core fixture，直接使用 production native UI／handoff 模組、真 SQLite、
-既有 IPC broker 與 OS peer 檢查。owned 用真 inherited stdin；attach daemon 保有未交給新 app
-的私有 token。自動測試只驗 pairing、材料暴露與 plan 維持 prepared，不模擬確認手勢。
+既有 IPC broker 與 OS peer 檢查。owned 用真 inherited stdin；attach 先由真 owner 啟動
+同一 daemon，確認 owner 程序退出後，再由不持舊 token 的新 app 配對。測試會開啟真
+native Review 並產生非空 challenge，再掃 HOME／workspace／run file／logs 與雙方環境。
+自動開 Review 只用於材料掃描，不算真人主動檢視；不按 Confirm，plan 維持 prepared。
+
+這不是完整 production 接線測試：fixture main.cjs 與 test daemon 沒有執行 production
+`main.ts` 的 establish／run-file／owned 判斷，或 `daemon.Run` 的完整啟動接線。
+真人 lab 必須使用 production main.ts 與 daemon.Run，不能只用 core fixture 代替。
+固定 plan 可由受限的測試 domain admission 提供，不新增產品 CLI／HTTP mint 入口。
+真人還須確認正式 bundle 的 NODE_OPTIONS 注入不生效，以及 Browser view 合成原
+快捷鍵不會開 Review。
 
 Linux 真人確認與完整桌面選單／dialog 視覺仍須另附收據，全部 acceptance 通過後才可
 啟用交付。macOS／Windows 沒有真實 runtime 收據，維持未驗、fail closed 的已知缺口；
@@ -110,5 +133,6 @@ Linux 真人確認與完整桌面選單／dialog 視覺仍須另附收據，全�
 
 Linux fixture 須以 `node_modules/electron/dist/agent-orchestrator` 真正執行，不能改名為
 `electron` 通過 basename 檢查。主機 AppArmor 必須明確允許該自有 lab executable 的
-user namespace；只有 `.../dist/electron` 的既有 profile 不足。需要環境授權時停下回報，
-不得以 no-sandbox 或放寬 basename 避開。
+user namespace；可用 `aa-exec -p <已存在且獲准的profile> -- <fixture>` 明確套用既有
+profile，維持 Chromium sandbox。沒有可用 profile 時回報環境限制，不改 basename
+或停用 sandbox。正式 ready／CI／merge 須等兩層 delta 審查及 Linux 真人收據完成。

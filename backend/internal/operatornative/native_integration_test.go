@@ -3,9 +3,8 @@ package operatornative
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -25,10 +24,11 @@ import (
 )
 
 type nativeFixtureState struct {
-	AuthorityGo  bool                       `json:"authorityGo"`
-	IssuerEpoch  string                     `json:"issuerEpoch"`
-	ActionState  domain.OperatorActionState `json:"actionState"`
-	MaterialSafe bool                       `json:"materialSafe"`
+	AuthorityGo      bool                       `json:"authorityGo"`
+	IssuerEpoch      string                     `json:"issuerEpoch"`
+	ActionState      domain.OperatorActionState `json:"actionState"`
+	MaterialSafe     bool                       `json:"materialSafe"`
+	ChallengeScanned bool                       `json:"challengeScanned"`
 }
 
 // The real native test is opt-in. Ordinary tests do not launch Electron, use
@@ -62,22 +62,59 @@ func TestC0NativeDesktopPairing(t *testing.T) {
 				t.Fatal(err)
 			}
 			if mode == "attach" {
-				cmd := exec.Command(self, "-test.run=^TestC0NativeFixtureDaemon$", "-test.timeout=5m")
-				cmd.Env = append(os.Environ(), "HOME="+root, "C0_NATIVE_CHILD=1", "C0_NATIVE_ROOT="+root, "C0_NATIVE_MODE=attach")
-				startNativeFixtureProcess(t, cmd, filepath.Join(root, ".ao", "daemon.log"))
+				ownerCmd := exec.Command(desktop, "--c0-owned", root, "--c0-owner-exit")
+				ownerCmd.Env = append(os.Environ(), "HOME="+root)
+				done := startNativeFixtureProcess(t, ownerCmd, filepath.Join(root, ".ao", "owner.log"))
+				select {
+				case <-done:
+				case <-time.After(90 * time.Second):
+					t.Fatal("original owner did not exit")
+				}
+				data, err := os.ReadFile(filepath.Join(root, ".ao", "running.json"))
+				var run struct {
+					PID int `json:"pid"`
+				}
+				if err != nil || json.Unmarshal(data, &run) != nil || run.PID <= 0 {
+					t.Fatal("original owner left no fixture daemon")
+				}
+				process, err := os.FindProcess(run.PID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The PID came from this private fixture's run file. Verify its image
+				// before retaining Go's process handle; no process-name or port kills.
+				actual, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", run.PID))
+				if err != nil || actual != self {
+					_ = process.Release()
+					t.Fatal("unexpected detached fixture daemon")
+				}
+				t.Cleanup(func() {
+					_ = process.Signal(syscall.SIGTERM)
+					for i := 0; i < 100; i++ {
+						if err := process.Signal(syscall.Signal(0)); err != nil {
+							break
+						}
+						time.Sleep(50 * time.Millisecond)
+					}
+					_ = process.Kill()
+					_ = process.Release()
+				})
 			}
-			cmd := exec.Command(desktop, "--c0-"+mode, root)
+			cmd := exec.Command(desktop, "--c0-"+mode, root, "--c0-review")
 			cmd.Env = append(os.Environ(), "HOME="+root)
 			startNativeFixtureProcess(t, cmd, filepath.Join(root, ".ao", "desktop.log"))
 			deadline := time.Now().Add(90 * time.Second)
 			for time.Now().Before(deadline) {
 				data, err := os.ReadFile(filepath.Join(root, ".ao", "status.json"))
 				var state nativeFixtureState
-				if err == nil && json.Unmarshal(data, &state) == nil && state.AuthorityGo && state.MaterialSafe {
+				if err == nil && json.Unmarshal(data, &state) == nil && state.AuthorityGo && state.MaterialSafe && state.ChallengeScanned {
+					if _, err := os.Stat(filepath.Join(root, ".ao", "review-open")); err != nil {
+						continue
+					}
 					if state.ActionState != domain.OperatorActionPrepared {
 						t.Fatal("pairing automatically confirmed an action")
 					}
-					t.Logf("real native %s pairing qualified; plan remains prepared; material scan passed", mode)
+					t.Logf("real native %s pairing and open Review qualified; plan remains prepared; nonempty challenge material scan passed", mode)
 					return
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -87,7 +124,7 @@ func TestC0NativeDesktopPairing(t *testing.T) {
 	}
 }
 
-func startNativeFixtureProcess(t *testing.T, cmd *exec.Cmd, logPath string) {
+func startNativeFixtureProcess(t *testing.T, cmd *exec.Cmd, logPath string) <-chan struct{} {
 	t.Helper()
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
@@ -98,8 +135,8 @@ func startNativeFixtureProcess(t *testing.T, cmd *exec.Cmd, logPath string) {
 		_ = log.Close()
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait(); _ = log.Close() }()
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); _ = log.Close(); close(done) }()
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
@@ -109,12 +146,15 @@ func startNativeFixtureProcess(t *testing.T, cmd *exec.Cmd, logPath string) {
 			<-done
 		}
 	})
+	return done
 }
 
 func TestC0NativeFixtureDaemon(t *testing.T) {
 	if os.Getenv("C0_NATIVE_CHILD") != "1" {
 		t.Skip("private native fixture child only")
 	}
+	owner := CaptureOwner()
+	defer func() { _ = owner.Close() }()
 	root := os.Getenv("C0_NATIVE_ROOT")
 	if root == "" {
 		t.Fatal("missing isolated root")
@@ -130,15 +170,8 @@ func TestC0NativeFixtureDaemon(t *testing.T) {
 		if token == "" {
 			t.Fatal("missing private inherited token")
 		}
-	} else {
-		// Model a daemon retaining its previous owner's private credential.
-		// The new desktop never receives this value and still must pair natively.
-		secret := make([]byte, 32)
-		if _, err := rand.Read(secret); err != nil {
-			t.Fatal(err)
-		}
-		token = hex.EncodeToString(secret)
-	}
+	} // A directly launched standalone attach daemon has no owned token.
+
 	s, err := sqlite.Open(filepath.Join(stateRoot, "data"))
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +207,7 @@ func TestC0NativeFixtureDaemon(t *testing.T) {
 	if _, err := s.PrepareOperatorAction(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
-	b := New(s.NativeOperatorIssuer(), token)
+	b := New(s.NativeOperatorIssuer(), token, owner)
 	browser := browserruntime.New(slog.New(slog.NewTextHandler(io.Discard, nil)), "not-a-c0-credential")
 	browser.SetNativeHandler(b.Handle)
 	ln, err := net.Listen("unix", filepath.Join(stateRoot, "s"))
@@ -204,8 +237,9 @@ func TestC0NativeFixtureDaemon(t *testing.T) {
 			for _, challenge := range b.challenges {
 				materials = append(materials, challenge.value)
 			}
+			scanned := len(b.challenges) > 0
 			b.mu.Unlock()
-			data, _ := json.Marshal(nativeFixtureState{AuthorityGo: readiness.AuthorityGo, IssuerEpoch: readiness.IssuerEpoch, ActionState: receipt.State, MaterialSafe: nativeMaterialsAbsent(root, materials) && nativePeerEnvironmentSafe(b, materials)})
+			data, _ := json.Marshal(nativeFixtureState{ChallengeScanned: scanned, AuthorityGo: readiness.AuthorityGo, IssuerEpoch: readiness.IssuerEpoch, ActionState: receipt.State, MaterialSafe: nativeMaterialsAbsent(root, materials) && nativePeerEnvironmentSafe(b, materials)})
 			tmp := filepath.Join(stateRoot, "status.tmp")
 			if os.WriteFile(tmp, data, 0600) == nil {
 				_ = os.Rename(tmp, filepath.Join(stateRoot, "status.json"))

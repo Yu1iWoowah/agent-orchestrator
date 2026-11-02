@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MessageBoxOptions } from "electron";
-import { connectOperatorConsent, operatorConsentLabels } from "./operator-consent";
+import { connectOperatorConsent, operatorConsentLabels, operatorConsentMenu } from "./operator-consent";
 
 function fixedPlan() {
 	return {
@@ -190,4 +190,18 @@ it.each([undefined, "OPERATOR_PIN_PENDING", "OPERATOR_ISSUER_BUSY"])("bounds ret
 		await vi.advanceTimersByTimeAsync(3_600_000);
 		expect(f.attempts()).toBe(6);
 	} finally { await f.close(); vi.useRealTimers(); }
+});
+
+
+it("native Review has no accelerator and rejects accelerator-triggered clicks", () => {
+	const review = vi.fn();
+	const menu = operatorConsentMenu(true, review);
+	expect(menu.label).toBe("操作者確認");
+	for (const item of menu.submenu) {
+		expect(item).not.toHaveProperty("accelerator");
+		item.click(undefined, undefined, { triggeredByAccelerator: true });
+		expect(review).not.toHaveBeenCalled();
+		item.click(undefined, undefined, { triggeredByAccelerator: false });
+	}
+	expect(review).toHaveBeenCalledOnce();
 });

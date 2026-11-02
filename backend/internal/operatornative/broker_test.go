@@ -33,7 +33,7 @@ func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 	if err := s.UpsertProject(context.Background(), domain.ProjectRecord{ID: "project", Path: dir, RegisteredAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	b := New(s.NativeOperatorIssuer(), testToken)
+	b := New(s.NativeOperatorIssuer(), testToken, nil)
 	// Protocol fixtures inject peer qualification only here. The real Electron
 	// integration uses New unchanged and verifies kernel identity + pinned code.
 	b.verifyPeer = func(net.Conn) error { return nil }
@@ -42,7 +42,7 @@ func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 }
 
 func TestNativePlatformQualification(t *testing.T) {
-	if New(nil, "").platformVerified != (runtime.GOOS == "linux") {
+	if New(nil, "", nil).platformVerified != (runtime.GOOS == "linux") {
 		t.Fatal("only Linux may qualify before other platform runtime receipts")
 	}
 }
@@ -50,7 +50,7 @@ func TestNativePlatformQualification(t *testing.T) {
 func TestNativeUnverifiedPlatformFailsClosed(t *testing.T) {
 	for _, mode := range []string{"owned", "attach"} {
 		t.Run(mode, func(t *testing.T) {
-			b := New(nil, testToken)
+			b := New(nil, testToken, nil)
 			// Exercise a closed release gate on every CI OS, even if all other
 			// readiness facts have been populated. No store call is permissible.
 			b.platformVerified = false
@@ -160,8 +160,12 @@ func TestNativeOwnedAuthorityAndRestart(t *testing.T) {
 		t.Fatal("ready without UI")
 	}
 	c := readyNative(t, b)
-	if !b.GetAuthorityReadiness([]domain.OperatorPurpose{plan.Purpose}, plan.Scope).AuthorityGo {
+	initialReadiness := b.GetAuthorityReadiness([]domain.OperatorPurpose{plan.Purpose}, plan.Scope)
+	if !initialReadiness.AuthorityGo {
 		t.Fatal("qualified owned issuer unavailable")
+	}
+	if initialReadiness.QualificationRef == "" || initialReadiness.QualificationRef == initialReadiness.IssuerEpoch {
+		t.Fatal("qualification reference aliases issuer epoch")
 	}
 	for _, purpose := range []domain.OperatorPurpose{domain.ConsentCoordPolicy, "wildcard.*"} {
 		if b.GetAuthorityReadiness([]domain.OperatorPurpose{purpose}, plan.Scope).AuthorityGo {
@@ -303,7 +307,7 @@ func TestNativeRejectsMissingPairingAndOtherCapabilities(t *testing.T) {
 
 func TestNativeCLIBootstrapTokenAloneIsNotAnIssuer(t *testing.T) {
 	_, store, _ := nativeFixture(t)
-	b := New(store.NativeOperatorIssuer(), testToken)
+	b := New(store.NativeOperatorIssuer(), testToken, nil)
 	c := dialNative(t, b, frame{Type: "operator-hello", Version: 1, Token: testToken})
 	_ = c.conn.SetReadDeadline(time.Now().Add(time.Second))
 	var response frame
@@ -392,7 +396,7 @@ func TestNativeBusyConnectionDoesNotVerifyPeer(t *testing.T) {
 	b, _, _ := nativeFixture(t)
 	_ = readyNative(t, b)
 	b.verifyPeer = func(net.Conn) error { t.Error("occupied issuer triggered peer IO"); return errUnqualified }
-	extra := dialNative(t, b, frame{Type: "operator-hello", Version: 1})
+	extra := dialNative(t, b, frame{Type: "operator-hello", Version: 1, Token: testToken})
 	if reply := extra.receive(t); reply.Type != "operator-hello-rejected" || reply.Code != "OPERATOR_ISSUER_BUSY" {
 		t.Fatalf("busy rejection: %+v", reply)
 	}
@@ -405,7 +409,7 @@ func TestNativePinPendingFailsClosedWithoutBlocking(t *testing.T) {
 	release := make(chan struct{})
 	verifier := startNativePeerVerifier(func() (desktopAnchor, error) { <-release; return desktopAnchor{}, nil })
 	defer close(release)
-	b := New(nil, testToken)
+	b := New(nil, testToken, nil)
 	b.pinStatus, b.verifyPeer = verifier.status, verifier.verify
 	b.ready, b.epoch, b.liveUntil = true, "issuer", time.Now().Add(time.Minute)
 	plan := planFor(domain.ConsentSettingsPermissions)
