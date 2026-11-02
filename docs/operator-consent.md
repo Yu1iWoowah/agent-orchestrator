@@ -129,20 +129,16 @@ native Review 並產生非空 challenge，再掃 HOME／workspace／run file／l
 這不是完整 production 接線測試：fixture main.cjs 與 test daemon 沒有執行 production
 `main.ts` 的 establish／run-file／owned 判斷，或 `daemon.Run` 的完整啟動接線。
 真人 lab 必須使用 production main.ts 與 daemon.Run，不能只用 core fixture 代替。
-Linux lab 的 basename 必須是 `agent-orchestrator`；在本主機以既有 profile 啟動：
-`aa-exec -p ao-dev-electron -- <lab>/node_modules/electron/dist/agent-orchestrator --ozone-platform=x11`。
-保留 Chromium sandbox，不修改 AppArmor／sysctl，也不使用 `--no-sandbox`。
+Linux lab 的 executable basename 必須是 `agent-orchestrator`，不得改名為 `electron`
+或停用 Chromium sandbox。平台安全原則必須允許所需 user namespace；環境不符時回報限制，
+不得繞過平台安全機制。主機專用的啟動方式應記錄在該次 lab 收據。
 固定 plan 可由受限的測試 domain admission 提供，不新增產品 CLI／HTTP mint 入口。
 真人還須確認正式 bundle 的 NODE_OPTIONS 注入不生效，以及 Browser view 合成原
 快捷鍵不會開 Review。
 
-Linux 真人確認與完整桌面選單／dialog 視覺仍須另附收據，全部 acceptance 通過後才可
+Linux 真人確認與完整桌面選單／dialog 視覺須附驗收收據，全部 acceptance 通過後才可
 啟用交付。macOS／Windows 沒有真實 runtime 收據，維持未驗、fail closed 的已知缺口；
 日後取得收據並核准移除平台 gate 前，不得啟用。跨 OS `go test -c` 只證明編譯；
 實作授權、runtime readiness 與實際 acceptance 狀態分開記錄。
 
-Linux fixture 須以 `node_modules/electron/dist/agent-orchestrator` 真正執行，不能改名為
-`electron` 通過 basename 檢查。主機 AppArmor 必須明確允許該自有 lab executable 的
-user namespace；可用 `aa-exec -p <已存在且獲准的profile> -- <fixture>` 明確套用既有
-profile，維持 Chromium sandbox。沒有可用 profile 時回報環境限制，不改 basename
-或停用 sandbox。正式 ready／CI／merge 須等兩層 delta 審查及 Linux 真人收據完成。
+正式 ready／CI／merge 須等兩層 delta 審查及 Linux 真人收據完成。

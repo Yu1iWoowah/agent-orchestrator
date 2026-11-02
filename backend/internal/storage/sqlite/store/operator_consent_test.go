@@ -666,3 +666,49 @@ func TestNativeReviewNextIncludesExpiredConsent(t *testing.T) {
 		t.Fatalf("expired consent hidden: %s %v", got, err)
 	}
 }
+
+func TestNativeConfirmRejectsExpiredPlanWithoutMinting(t *testing.T) {
+	s, _ := operatorFixture(t)
+	plan := operatorPlan(domain.ConsentSettingsPermissions)
+	receipt, err := s.PrepareOperatorAction(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, digest, err := domain.CanonicalOperatorPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.operatorNow = func() time.Time { return plan.ValidUntil }
+	ref, err := s.NativeOperatorIssuer().ConfirmNativeOperatorPlan(context.Background(), receipt.RequestRef, digest, s.operatorIssuer())
+	if ref != "" || !errors.Is(err, domain.ErrOperatorConsentUnavailable) {
+		t.Fatalf("expired native confirmation: consentPresent=%t err=%v", ref != "", err)
+	}
+	var count int
+	if err := s.readDB.QueryRowContext(context.Background(), "SELECT count(*) FROM operator_consents").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expired plan minted %d consents", count)
+	}
+}
+
+func TestNativeReviewNextExcludesExpiredPlan(t *testing.T) {
+	s, _ := operatorFixture(t)
+	expired := operatorPlan(domain.ConsentSettingsPermissions)
+	expired.ValidUntil = operatorTestTime.Add(time.Minute)
+	if _, err := s.PrepareOperatorAction(context.Background(), expired); err != nil {
+		t.Fatal(err)
+	}
+	s.operatorNow = func() time.Time { return operatorTestTime.Add(time.Millisecond) }
+	live := operatorPlan(domain.ConsentSettingsPermissions)
+	live.ActionKey = "live-action"
+	receipt, err := s.PrepareOperatorAction(context.Background(), live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.operatorNow = func() time.Time { return expired.ValidUntil }
+	got, err := s.NativeOperatorIssuer().NextNativeOperatorAction(context.Background(), "")
+	if err != nil || got != receipt.RequestRef {
+		t.Fatalf("Review next did not skip expired plan: got=%s want=%s err=%v", got, receipt.RequestRef, err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +46,36 @@ func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 func TestNativePlatformQualification(t *testing.T) {
 	if New(nil, "", nil).platformVerified != (runtime.GOOS == "linux") {
 		t.Fatal("only Linux may qualify before other platform runtime receipts")
+	}
+}
+
+func TestNativeExpiredChallengeCannotConfirmLivePlan(t *testing.T) {
+	b, s, _ := nativeFixture(t)
+	start := time.Now().UTC().Truncate(time.Millisecond)
+	var clock atomic.Int64
+	clock.Store(start.UnixMilli())
+	b.now = func() time.Time { return time.UnixMilli(clock.Load()) }
+	plan := planFor(domain.ConsentSettingsPermissions)
+	plan.ValidUntil = start.Add(10 * time.Minute)
+	if _, err := s.PrepareOperatorAction(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	c := readyNative(t, b)
+	review := c.call(t, frame{Type: "review-next"})
+	if review.Type != "review-plan" {
+		t.Fatalf("review: %+v", review)
+	}
+	clock.Store(start.Add(domain.OperatorConsentLifetime).UnixMilli())
+	if pong := c.call(t, frame{Type: "ping"}); pong.Type != "pong" {
+		t.Fatalf("heartbeat: %+v", pong)
+	}
+	got := c.call(t, frame{Type: "confirm", RequestRef: review.RequestRef, Challenge: review.Challenge, Digest: review.Digest})
+	if got.Type != "error" || got.Code != "OPERATOR_CONFIRMATION_INVALID" || got.ConsentRef != "" {
+		t.Fatalf("expired challenge accepted: type=%s code=%s consentPresent=%t", got.Type, got.Code, got.ConsentRef != "")
+	}
+	state, err := s.GetOperatorAction(context.Background(), plan.ActionKey)
+	if err != nil || state.State != domain.OperatorActionPrepared {
+		t.Fatalf("expired challenge changed live plan: %+v %v", state, err)
 	}
 }
 

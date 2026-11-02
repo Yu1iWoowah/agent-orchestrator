@@ -66,6 +66,22 @@ async function fixture(options: { plan?: object; plans?: readonly object[]; zh?:
 }
 
 describe("private operator confirmation UI", () => {
+	it("refuses the confirmation page when the plan expires during review", async () => {
+		let now = Date.now();
+		const deadline = now + 60_000;
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const f = await fixture({ plan: { ...fixedPlan(), validUntil: new Date(deadline).toISOString() }, respond: (options) => {
+			if (options.title === "Review fixed action plan") now = deadline;
+			return 1;
+		} });
+		try {
+			await f.link.reviewNext();
+			expect(f.show.mock.calls.some(([options]) => options.title === "Review fixed action plan")).toBe(true);
+			expect(f.show.mock.calls.map(([options]) => options.title)).not.toContain("Confirm local action");
+			expect(f.frames.some((frame) => frame.type === "confirm")).toBe(false);
+			expect(f.show.mock.calls.at(-1)?.[0]).toMatchObject({ type: "info", message: "No confirmable plan is available, or the native issuer could not be qualified." });
+		} finally { await f.close(); clock.mockRestore(); }
+	});
 	it("disposal aborts a pending native dialog without confirming or reopening a dialog", async () => {
 		const f = await fixture({ respond: (options) => new Promise<number>((resolve) => options.signal?.addEventListener("abort", () => resolve(0), { once: true })) });
 		try {
