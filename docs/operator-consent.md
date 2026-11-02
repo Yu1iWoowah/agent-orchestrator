@@ -67,6 +67,10 @@ Review next 以每個 issuer epoch 的記憶體 cursor 前進，末端循環；C
 仍可重新檢視，domain deadline 不變。永久拒絕（包括版本／peer 不符）停止重連；
 pin pending／沒有 hello 回應最多六次嘗試，間隔 2／4／8／16／30 秒。
 BUSY 不計入失敗上限，仍按相同間隔退避，最多每 30 秒重試一次，直到 slot 釋出或 app 關閉。
+未連線時點原生 Review，會顯示不可用原因及「重新連線」。原 owner 退出或 daemon 狀態恢復後，
+可手動重新開始配對（包含 TOKEN_REQUIRED 或自動重試耗盡）；仍須通過完整 token／peer／pin 檢查，
+不會自動開啟計畫或建立 consent。kernel peer／basename 在佔 slot 前檢查；hash 僅讀取
+一般檔案，大小必須符合 pin，Linux nonblocking／no-follow 開檔防止 FIFO 或 symlink 阻塞。
 單筆 plan 內容無法顯示時，只取消該次 Review，保留連線與 cursor，下一次可檢視後續計畫。
 Prepare 拒絕超過 JavaScript 安全整數上限（2^53−1）的 revision，確保原生對話框能精確顯示。
 
@@ -125,6 +129,9 @@ native Review 並產生非空 challenge，再掃 HOME／workspace／run file／l
 這不是完整 production 接線測試：fixture main.cjs 與 test daemon 沒有執行 production
 `main.ts` 的 establish／run-file／owned 判斷，或 `daemon.Run` 的完整啟動接線。
 真人 lab 必須使用 production main.ts 與 daemon.Run，不能只用 core fixture 代替。
+Linux lab 的 basename 必須是 `agent-orchestrator`；在本主機以既有 profile 啟動：
+`aa-exec -p ao-dev-electron -- <lab>/node_modules/electron/dist/agent-orchestrator --ozone-platform=x11`。
+保留 Chromium sandbox，不修改 AppArmor／sysctl，也不使用 `--no-sandbox`。
 固定 plan 可由受限的測試 domain admission 提供，不新增產品 CLI／HTTP mint 入口。
 真人還須確認正式 bundle 的 NODE_OPTIONS 注入不生效，以及 Browser view 合成原
 快捷鍵不會開 Review。

@@ -152,25 +152,39 @@ it("uses zh-TW labels and acknowledges recorded consent without claiming executi
 	} finally { await f.close(); }
 });
 
-async function retryFixture(rejection?: string | ((attempt: number) => string)) {
+async function retryFixture(rejection?: string | ((attempt: number) => string), response = 0) {
 	const directory = await mkdtemp(join(tmpdir(), "or-"));
 	const address = process.platform === "win32" ? `\\\\.\\pipe\\ao-or-${randomUUID()}` : join(directory, "s");
 	const sockets = new Set<Socket>();
 	let attempts = 0;
+	const frames: string[] = [];
 	const server = createServer((socket) => {
 		attempts++;
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));
-		socket.once("data", () => {
-			const code = typeof rejection === "function" ? rejection(attempts) : rejection;
-			if (code === "accept") socket.write(`${JSON.stringify({ type: "operator-hello-ok", version: 1 })}\n`);
-			else if (code) socket.end(`${JSON.stringify({ type: "operator-hello-rejected", code })}\n`);
+		let buffer = "";
+		socket.on("data", (data: Buffer) => {
+			buffer += data.toString("utf8");
+			for (;;) {
+				const end = buffer.indexOf("\n");
+				if (end < 0) break;
+				const value: unknown = JSON.parse(buffer.slice(0, end));
+				buffer = buffer.slice(end + 1);
+				if (typeof value !== "object" || value === null || !("type" in value) || typeof value.type !== "string") throw new Error("bad test frame");
+				frames.push(value.type);
+				if (value.type === "operator-hello") {
+					const code = typeof rejection === "function" ? rejection(attempts) : rejection;
+					if (code === "accept") socket.write(`${JSON.stringify({ type: "operator-hello-ok", version: 1 })}\n`);
+					else if (code) socket.end(`${JSON.stringify({ type: "operator-hello-rejected", code })}\n`);
+				} else if (value.type === "review-next" && "requestId" in value) socket.write(`${JSON.stringify({ type: "error", requestId: value.requestId })}\n`);
+			}
 		});
 	});
 	server.listen(address);
 	await once(server, "listening");
-	const link = connectOperatorConsent({ address, show: async () => ({ response: 0, checkboxChecked: false }), zh: () => false });
-	return { attempts: () => attempts, open: () => sockets.size, async close() {
+	const show = vi.fn(async (_options: MessageBoxOptions) => ({ response, checkboxChecked: false }));
+	const link = connectOperatorConsent({ address, show, zh: () => false });
+	return { link, show, frames, attempts: () => attempts, open: () => sockets.size, async close() {
 		link.dispose();
 		for (const socket of sockets) socket.destroy();
 		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -230,6 +244,35 @@ it("keeps retrying BUSY beyond the failure limit with a capped backoff and can p
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(f.attempts()).toBe(9);
 		expect(f.open()).toBe(1);
+	} finally { await f.close(); vi.useRealTimers(); }
+});
+
+it.each([
+	{ code: "OPERATOR_TOKEN_REQUIRED", attempts: 1 },
+	{ code: "OPERATOR_PIN_PENDING", attempts: 6 },
+])("can reconnect manually after $code stops automatic retries", async ({ code, attempts }) => {
+	vi.useFakeTimers();
+	const f = await retryFixture((attempt) => attempt <= attempts ? code : "accept", 1);
+	try {
+		await waitForIO(() => f.attempts() === 1);
+		for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000].slice(0, attempts - 1)) {
+			await waitForIO(() => f.open() === 0);
+			const previous = f.attempts();
+			await vi.advanceTimersByTimeAsync(delay);
+			await waitForIO(() => f.attempts() === previous + 1);
+		}
+		await waitForIO(() => f.open() === 0);
+		await vi.advanceTimersByTimeAsync(3_600_000);
+		expect(f.attempts()).toBe(attempts);
+		await f.link.reviewNext();
+		expect(f.show.mock.calls[0][0]).toMatchObject({ buttons: ["Cancel", "Reconnect"], defaultId: 0, cancelId: 0 });
+		expect(f.show.mock.calls[0][0].detail).toContain(code);
+		await waitForIO(() => f.frames.includes("ready"));
+		expect(f.attempts()).toBe(attempts + 1);
+		expect(f.frames).not.toContain("review-next");
+		await f.link.reviewNext();
+		expect(f.frames).toContain("review-next");
+		expect(f.frames).not.toContain("confirm");
 	} finally { await f.close(); vi.useRealTimers(); }
 });
 

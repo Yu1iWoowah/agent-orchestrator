@@ -30,8 +30,22 @@ type Plan = Readonly<{
 	riskCodes: readonly string[];
 }>;
 type Review = Readonly<{ requestRef: string; challenge: string; digest: string; plan: Plan; explanation: { en: string; zh: string; riskEn: string; riskZh: string } }>;
-type Reply = { kind: "rejected"; retryable: boolean; busy: boolean } | { kind: "hello" | "pong" | "confirmed" | "cancelled"; requestId?: string } | { kind: "review"; review: Review; requestId: string } | { kind: "invalid-review"; requestId: string; requestRef?: string } | { kind: "error"; requestId?: string };
+type Reply = { kind: "rejected"; retryable: boolean; busy: boolean; code: string } | { kind: "hello" | "pong" | "confirmed" | "cancelled"; requestId?: string } | { kind: "review"; review: Review; requestId: string } | { kind: "invalid-review"; requestId: string; requestRef?: string } | { kind: "error"; requestId?: string };
 type NativeDialog = (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
+
+const connectionReasons = new Map([
+	["OPERATOR_CONNECTING", { en: "Connecting to the daemon.", zh: "正在連線至 daemon。" }],
+	["OPERATOR_TOKEN_REQUIRED", { en: "This daemon still requires the original desktop owner's private connection.", zh: "此 daemon 仍要求原桌面 owner 的私有配對連線。" }],
+	["OPERATOR_TOKEN_INVALID", { en: "The private pairing credential does not match this daemon.", zh: "私有配對憑證與此 daemon 不符。" }],
+	["OPERATOR_ISSUER_BUSY", { en: "Another desktop connection occupies the issuer slot.", zh: "另一個桌面連線正在使用 issuer slot。" }],
+	["OPERATOR_PIN_PENDING", { en: "Desktop bundle verification is still running.", zh: "桌面 bundle 驗證尚未完成。" }],
+	["OPERATOR_PEER_UNQUALIFIED", { en: "The desktop's code identity could not be verified.", zh: "無法驗證桌面程式的身分與內容。" }],
+	["OPERATOR_PLATFORM_UNVERIFIED", { en: "Native confirmation has not been qualified on this platform.", zh: "此平台尚未完成本機確認驗收。" }],
+	["OPERATOR_HELLO_TIMEOUT", { en: "The daemon did not finish the connection handshake in time.", zh: "daemon 未在期限內完成連線握手。" }],
+	["OPERATOR_CONNECTION_FAILED", { en: "The daemon connection failed.", zh: "無法連線至 daemon。" }],
+	["OPERATOR_CONNECTION_CLOSED", { en: "The daemon connection closed.", zh: "daemon 連線已關閉。" }],
+	["OPERATOR_PROTOCOL_INVALID", { en: "The daemon sent an incompatible protocol message.", zh: "daemon 傳回不相容的協定訊息。" }],
+]);
 
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -81,7 +95,7 @@ function parseReply(text: string): Reply {
 		case "operator-hello-ok":
 			if (value.version !== 1) throw new Error("OPERATOR_PROTOCOL_INVALID");
 			return { kind: "hello" };
-		case "operator-hello-rejected": return { kind: "rejected", retryable: value.code === "OPERATOR_PIN_PENDING" || value.code === "OPERATOR_ISSUER_BUSY", busy: value.code === "OPERATOR_ISSUER_BUSY" };
+		case "operator-hello-rejected": return { kind: "rejected", retryable: value.code === "OPERATOR_PIN_PENDING" || value.code === "OPERATOR_ISSUER_BUSY", busy: value.code === "OPERATOR_ISSUER_BUSY", code: reference(value.code) };
 		case "pong": return { kind: "pong" };
 		case "review-plan": {
 			const id = reference(requestId);
@@ -127,6 +141,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 	let retryCount = 0;
 	let backoffCount = 0;
 	let stopRetry = false;
+	let unavailableReason = "OPERATOR_CONNECTING";
 	let retry: ReturnType<typeof setTimeout> | undefined;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	let socket: ReturnType<typeof connect> | undefined;
@@ -144,12 +159,13 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 		if (disposed) return;
 		const current = connect({ path: options.address });
 		socket = current;
-		const handshake = setTimeout(() => current.destroy(), 5_000);
+		unavailableReason = "OPERATOR_CONNECTING";
+		const handshake = setTimeout(() => { if (socket === current) unavailableReason = "OPERATOR_HELLO_TIMEOUT"; current.destroy(); }, 5_000);
 		const decoder = new StringDecoder("utf8");
 		let buffer = "";
 		let issuerBusy = false;
-		current.once("connect", () => send({ type: "operator-hello", version: 1, token: options.ownedToken }));
-		current.on("error", () => current.destroy());
+		current.once("connect", () => { if (!disposed && socket === current) send({ type: "operator-hello", version: 1, token: options.ownedToken }); });
+		current.on("error", () => { if (socket === current) unavailableReason = "OPERATOR_CONNECTION_FAILED"; current.destroy(); });
 		current.on("data", (data: Buffer) => {
 			if (disposed || socket !== current) return;
 			try {
@@ -170,6 +186,7 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 						send({ type: "ready" });
 						heartbeat = setInterval(() => send({ type: "ping" }), 5_000);
 					} else if (reply.kind === "rejected") {
+						unavailableReason = reply.code;
 						if (!reply.retryable) stopRetry = true;
 						issuerBusy = reply.busy;
 						current.destroy();
@@ -180,11 +197,13 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 						receiver.resolve(reply);
 					}
 				}
-			} catch { if (!connected) stopRetry = true; current.destroy(); }
+			} catch { unavailableReason = "OPERATOR_PROTOCOL_INVALID"; if (!connected) stopRetry = true; current.destroy(); }
 		});
 		current.once("close", () => {
-			connected = false;
 			clearTimeout(handshake);
+			if (socket !== current) return;
+			if (connected) unavailableReason = "OPERATOR_CONNECTION_CLOSED";
+			connected = false;
 			lifetime.abort();
 			clearInterval(heartbeat);
 			if (pending) { clearTimeout(pending.timer); pending.reject(); }
@@ -210,6 +229,20 @@ export function connectOperatorConsent(options: { address: string; ownedToken?: 
 			busy = true;
 			const zh = options.zh();
 			try {
+				if (!connected) {
+					const reason = connectionReasons.get(unavailableReason);
+					const result = await options.show({ type: "info", title: zh ? "本機操作確認" : "Local action confirmation",
+						message: zh ? "本機確認連線目前不可用。" : "The native confirmation connection is unavailable.",
+						detail: `${reason ? (zh ? reason.zh : reason.en) : unavailableReason}\n${unavailableReason}\n\n${zh ? "可在 daemon／owner 狀態改變後重新連線，再從原生選單檢視計畫；這不會建立同意。" : "Reconnect after daemon or owner state changes, then review from the native menu. Reconnecting does not record consent."}`,
+						buttons: zh ? ["取消", "重新連線"] : ["Cancel", "Reconnect"], defaultId: 0, cancelId: 0, noLink: true });
+					if (result.response === 1 && !disposed && !connected && (!socket || socket.destroyed)) {
+						clearTimeout(retry);
+						stopRetry = false;
+						retryCount = backoffCount = 0;
+						start();
+					}
+					return;
+				}
 				const response = await call({ type: "review-next" });
 				if (response.kind === "invalid-review" && response.requestRef) await call({ type: "cancel", requestRef: response.requestRef });
 				if (response.kind !== "review") throw new Error("OPERATOR_ACTION_UNAVAILABLE");

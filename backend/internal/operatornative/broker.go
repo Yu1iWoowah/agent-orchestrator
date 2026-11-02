@@ -59,6 +59,7 @@ type Broker struct {
 	challenges    map[domain.OperatorRequestRef]challenge
 	now           func() time.Time
 	verifyPeer    func(net.Conn) error
+	preflightPeer func(net.Conn) error
 	pinStatus     func() error
 	cursor        domain.OperatorRequestRef
 	// Set once at construction. Other platforms need real native receipts
@@ -72,6 +73,7 @@ func New(store nativeStore, ownedToken string, owner *Owner) *Broker {
 	if b.platformVerified {
 		verifier := newNativePeerVerifier()
 		b.pinStatus, b.verifyPeer = verifier.status, verifier.verify
+		b.preflightPeer = verifier.preflight
 	}
 	return b
 }
@@ -120,7 +122,19 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 		reject("OPERATOR_TOKEN_INVALID")
 		return
 	}
-	// Reserve the slot before any file IO. Extra connections cannot trigger a
+	if err := b.pinStatus(); err != nil {
+		if errors.Is(err, errPinPending) {
+			reject("OPERATOR_PIN_PENDING")
+		} else {
+			reject("OPERATOR_PEER_UNQUALIFIED")
+		}
+		return
+	}
+	if b.preflightPeer(conn) != nil {
+		reject("OPERATOR_PEER_UNQUALIFIED")
+		return
+	}
+	// Reserve the slot after cheap kernel checks, before bundle IO. Extra connections cannot trigger a
 	// full bundle hash while an issuer (or another handshake) owns it.
 	b.mu.Lock()
 	if b.conn != nil {
@@ -143,14 +157,6 @@ func (b *Broker) Handle(ctx context.Context, conn net.Conn, scan *bufio.Scanner,
 		b.conn = nil
 		b.mu.Unlock()
 	}()
-	if err := b.pinStatus(); err != nil {
-		if errors.Is(err, errPinPending) {
-			reject("OPERATOR_PIN_PENDING")
-		} else {
-			reject("OPERATOR_PEER_UNQUALIFIED")
-		}
-		return
-	}
 	// A valid private token never replaces kernel peer and sealed-code identity.
 	if b.verifyPeer(conn) != nil {
 		reject("OPERATOR_PEER_UNQUALIFIED")

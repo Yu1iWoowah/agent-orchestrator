@@ -87,6 +87,26 @@ func TestDesktopPinRejectsRenamedExecutable(t *testing.T) {
 	}
 }
 
+func TestDesktopPinRejectsSameSizeContentChange(t *testing.T) {
+	daemon, exe := installedFixture(t, t.TempDir())
+	anchor, err := pinDesktop(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := desktopArchive(exe)
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[0] ^= 1
+	if err := os.WriteFile(archive, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if anchor.verifyFiles(exe) == nil {
+		t.Fatal("same-size replacement bypassed digest verification")
+	}
+}
+
 func TestDesktopDigestsUseDistinctFiles(t *testing.T) {
 	_, exe := installedFixture(t, t.TempDir())
 	files := desktopFiles(exe)

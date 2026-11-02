@@ -10,6 +10,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func openDigestFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+}
+
 func nativePeerExecutable(conn net.Conn) (string, error) {
 	socket, ok := conn.(*net.UnixConn)
 	if !ok {

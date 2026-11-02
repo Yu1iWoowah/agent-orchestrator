@@ -37,6 +37,7 @@ func nativeFixture(t *testing.T) (*Broker, *sqlite.Store, string) {
 	// Protocol fixtures inject peer qualification only here. The real Electron
 	// integration uses New unchanged and verifies kernel identity + pinned code.
 	b.verifyPeer = func(net.Conn) error { return nil }
+	b.preflightPeer = func(net.Conn) error { return nil }
 	b.pinStatus = func() error { return nil }
 	return b, s, dir
 }
@@ -400,6 +401,26 @@ func TestNativeBusyConnectionDoesNotVerifyPeer(t *testing.T) {
 	if reply := extra.receive(t); reply.Type != "operator-hello-rejected" || reply.Code != "OPERATOR_ISSUER_BUSY" {
 		t.Fatalf("busy rejection: %+v", reply)
 	}
+}
+
+func TestNativePreflightRejectsBeforeReservingSlotOrHashing(t *testing.T) {
+	b, _, _ := nativeFixture(t)
+	b.preflightPeer = func(net.Conn) error {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.conn != nil {
+			t.Error("unqualified kernel peer already reserved the slot")
+		}
+		return errUnqualified
+	}
+	b.verifyPeer = func(net.Conn) error { t.Error("unqualified peer reached bundle hashing"); return nil }
+	c := dialNative(t, b, frame{Type: "operator-hello", Version: 1, Token: testToken})
+	if reply := c.receive(t); reply.Type != "operator-hello-rejected" || reply.Code != "OPERATOR_PEER_UNQUALIFIED" {
+		t.Fatalf("preflight rejection: %+v", reply)
+	}
+	b.preflightPeer = func(net.Conn) error { return nil }
+	b.verifyPeer = func(net.Conn) error { return nil }
+	_ = readyNative(t, b)
 }
 
 func TestNativePinPendingFailsClosedWithoutBlocking(t *testing.T) {

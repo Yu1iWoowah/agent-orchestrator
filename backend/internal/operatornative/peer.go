@@ -37,16 +37,27 @@ func packagedDesktop(daemon string) (string, error) {
 	return filepath.Join(base, name), nil
 }
 
-func fileDigest(path string) ([32]byte, error) {
+func fileDigest(path string, size int64) ([32]byte, error) {
 	var result [32]byte
-	f, err := os.Open(path)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != size {
+		return result, errUnqualified
+	}
+	f, err := openDigestFile(path)
 	if err != nil {
 		return result, err
 	}
 	defer func() { _ = f.Close() }()
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != size {
+		return result, errUnqualified
+	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, f); err != nil {
+	if _, err := io.CopyN(hash, f, size); err != nil {
 		return result, err
+	}
+	if info, err = f.Stat(); err != nil || info.Size() != size {
+		return result, errUnqualified
 	}
 	copy(result[:], hash.Sum(nil))
 	return result, nil
@@ -65,6 +76,7 @@ func desktopArchive(executable string) string {
 type desktopAnchor struct {
 	name    string
 	digests [][32]byte
+	sizes   []int64
 }
 
 func desktopFiles(executable string) []string {
@@ -87,11 +99,16 @@ func pinDesktop(daemon string) (desktopAnchor, error) {
 	}
 	anchor.name = filepath.Base(expected)
 	for _, file := range desktopFiles(expected) {
-		digest, err := fileDigest(file)
+		info, err := os.Lstat(file)
+		if err != nil || !info.Mode().IsRegular() {
+			return desktopAnchor{}, errUnqualified
+		}
+		digest, err := fileDigest(file, info.Size())
 		if err != nil {
 			return desktopAnchor{}, err
 		}
 		anchor.digests = append(anchor.digests, digest)
+		anchor.sizes = append(anchor.sizes, info.Size())
 	}
 	return anchor, nil
 }
@@ -101,11 +118,11 @@ func (anchor desktopAnchor) verifyFiles(actual string) error {
 		return errUnqualified
 	}
 	files := desktopFiles(actual)
-	if len(files) != len(anchor.digests) {
+	if len(files) != len(anchor.digests) || len(files) != len(anchor.sizes) {
 		return errUnqualified
 	}
 	for i, file := range files {
-		hash, err := fileDigest(file)
+		hash, err := fileDigest(file, anchor.sizes[i])
 		if err != nil || hash != anchor.digests[i] {
 			return errUnqualified
 		}
@@ -163,4 +180,16 @@ func (v *nativePeerVerifier) verify(conn net.Conn) error {
 		return errUnqualified
 	}
 	return v.anchor.verifyFiles(actual)
+}
+
+// Kernel identity and basename do not read or hash any bundle content.
+func (v *nativePeerVerifier) preflight(conn net.Conn) error {
+	if err := v.status(); err != nil {
+		return err
+	}
+	actual, err := nativePeerExecutable(conn)
+	if err != nil || filepath.Base(actual) != v.anchor.name {
+		return errUnqualified
+	}
+	return nil
 }
