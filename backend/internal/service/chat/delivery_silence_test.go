@@ -22,7 +22,7 @@ func TestSilenceBudgetUsesNativeProgressTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
 	eventAt := clock.Now()
 	conv.mu.Lock()
 	receipt := conv.deliveryReceipts[a.ID]
@@ -32,7 +32,7 @@ func TestSilenceBudgetUsesNativeProgressTime(t *testing.T) {
 	receipt.ObservedAt = eventAt
 	conv.deliveryReceipts[a.ID] = receipt
 	conv.mu.Unlock()
-	clock.advance(29 * time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(29 * time.Second) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		saved, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
 		return e == nil && saved.Receipt != nil && saved.Receipt.ProgressSequence == 1
@@ -48,7 +48,7 @@ func TestSilenceBudgetUsesNativeProgressTime(t *testing.T) {
 		t.Fatalf("deadline did not follow native event: %+v", saved)
 	}
 	clock.awaitTimer(t, time.Second)
-	clock.advance(time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, saved.ID)
 		return e == nil && a.AttentionID != "" && a.LastProgressAt.Equal(eventAt)
@@ -71,7 +71,7 @@ func TestNativeApprovalWaitKeepsEventTimeAndRecoversSilence(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
 	eventAt := clock.Now()
 	conv.mu.Lock()
 	r := conv.deliveryReceipts[a.ID]
@@ -80,7 +80,7 @@ func TestNativeApprovalWaitKeepsEventTimeAndRecoversSilence(t *testing.T) {
 	r.ObservedAt = eventAt
 	conv.deliveryReceipts[a.ID] = r
 	conv.mu.Unlock()
-	clock.advance(29 * time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(29 * time.Second) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		saved, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
 		return e == nil && saved.Receipt.Progress == "approval"
@@ -96,7 +96,7 @@ func TestNativeApprovalWaitKeepsEventTimeAndRecoversSilence(t *testing.T) {
 	r.Progress = "running"
 	conv.deliveryReceipts[a.ID] = r
 	conv.mu.Unlock()
-	clock.advance(time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
 	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		saved, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
