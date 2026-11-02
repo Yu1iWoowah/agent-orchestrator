@@ -198,6 +198,12 @@ func TestAsyncChatSpawnRealDrainFailureStaysRetryable(t *testing.T) {
 		t.Fatalf("failed opening turn left session state=%q error=%q; want retryable failure",
 			stored.ProvisionState, stored.ProvisionError)
 	}
+	// This legacy conversation has no delivery observer. Preserve the native
+	// dispatch error without manufacturing an unverifiable managed attempt.
+	attempts, err := st.PendingChatDeliveries(ctx, rec.ID)
+	if err != nil || len(attempts) != 0 {
+		t.Fatalf("unmanaged opening prompt reserved delivery: %+v %v", attempts, err)
+	}
 	if _, err := m.ResumeAgentWithMode(ctx, rec.ID); err != nil {
 		t.Fatalf("resume failed session before explicit turn retry: %v", err)
 	}

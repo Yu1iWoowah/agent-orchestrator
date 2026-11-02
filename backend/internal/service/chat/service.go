@@ -54,6 +54,11 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
+	shutdownPrepared bool // guarded by mu; admission stays fenced until detach
+
+	shutdownQuiescing   bool // guarded by mu
+	startingControllers int  // guarded by mu
+
 	store                   Store
 	settingsValidator       ports.ChatAgentSettingsValidator    // guarded by mu
 	settingsMutator         ports.ChatAgentSettingsMutator      // guarded by mu
@@ -68,6 +73,7 @@ type Service struct {
 	log                     *slog.Logger
 	newID                   IDFactory
 	now                     Clock
+	after                   func(time.Duration) <-chan time.Time
 	onAccountChanged        func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged  func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
@@ -177,6 +183,8 @@ type Options struct {
 	Log      *slog.Logger
 	NewID    IDFactory
 	Now      Clock
+	// After supplies timers for reconciliation and delivery observation tests.
+	After func(time.Duration) <-chan time.Time
 	// OnAccountChanged invalidates daemon-owned account readiness for the
 	// harness that emitted an account/updated notification.
 	OnAccountChanged func(domain.SessionID, string, domain.AgentHarness)
@@ -227,6 +235,7 @@ func New(opts Options) *Service {
 		log:                    log,
 		newID:                  opts.NewID,
 		now:                    now,
+		after:                  opts.After,
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onModelChanged:         opts.OnModelChanged,
@@ -417,6 +426,15 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 // startLocked is the launch implementation shared by ordinary starts and the
 // provider-switch saga. Callers must hold the typed controller gate.
 func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller, error) {
+	s.mu.Lock()
+	if s.shutdownQuiescing {
+		s.mu.Unlock()
+		return nil, ports.ErrChatShutdownNotSettled
+	}
+	s.startingControllers++
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.startingControllers--; s.mu.Unlock() }()
+
 	owner := conversationOwner(cfg)
 	if cfg.ReviewerSettings != nil && (owner.Kind != domain.ConversationOwnerReview || cfg.ReviewerSettings.Validate() != nil) {
 		return nil, ports.ErrAgentSettingsInvalid
@@ -1304,6 +1322,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	s.startConfigs[owner] = cloneStartConfig(cfg)
 	delete(s.awakeInterrupted, owner)
 	controller.start()
+	controller.startDeliveryMonitor()
 	s.mu.Unlock()
 
 	// Drop the registry entry when the provider stream ends, so a later command
@@ -1476,7 +1495,7 @@ func (s *Service) Send(
 			if readErr == nil && !latest.IsTerminated && latest.ProvisionState.WithDefault() == domain.SessionProvisionReady {
 				var controller *Controller
 				var release func()
-				controller, release, err = s.workingController(ctx, id)
+				controller, release, err = s.admitControllerWork(ctx, id, true, controllerIntake)
 				if err == nil {
 					if hydrateErr := hydrateExcerptReferences(ctx, controller, &msg); hydrateErr != nil {
 						err = hydrateErr
@@ -1493,7 +1512,7 @@ func (s *Service) Send(
 	} else {
 		var controller *Controller
 		var release func()
-		controller, release, err = s.workingController(ctx, id)
+		controller, release, err = s.admitControllerWork(ctx, id, true, controllerIntake)
 		if err == nil {
 			if hydrateErr := hydrateExcerptReferences(ctx, controller, &msg); hydrateErr != nil {
 				err = hydrateErr
@@ -1588,6 +1607,9 @@ func hydrateExcerptConversation(ctx context.Context, store Store, conversationID
 			return fmt.Errorf("%w: source message changed or no longer contains the selection; reselect it", ErrExcerptStale)
 		}
 		turn, err := store.TurnByID(ctx, source.TurnID)
+		if err != nil && !errors.Is(err, domain.ErrNoConversationTurn) {
+			return fmt.Errorf("read excerpt turn: %w", err)
+		}
 		if err != nil || turn.ConversationID != conversationID || turn.State != domain.TurnStateCompleted || turn.RolledBackAt != nil {
 			return fmt.Errorf("%w: source turn is not complete", ErrExcerptStale)
 		}
@@ -1882,7 +1904,11 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		s.mu.Unlock()
 	default:
 	}
-	return errors.Join(err, s.clearHibernation(ctx, id))
+	err = errors.Join(err, s.clearHibernation(ctx, id))
+	if err == nil {
+		err = controller.outboundAttention(ctx, true)
+	}
+	return err
 }
 
 // StopForOwner closes a typed-owner controller without touching its parent
@@ -1923,11 +1949,17 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 		s.mu.Unlock()
 	default:
 	}
+	if err == nil {
+		err = controller.outboundAttention(ctx, true)
+	}
 	return err
 }
 
 // StopAll closes every controller, for daemon shutdown.
-func (s *Service) StopAll(ctx context.Context) {
+func (s *Service) StopAll(ctx context.Context) error {
+	if err := s.PreflightShutdown(ctx); err != nil {
+		return err
+	}
 	if s.sides != nil {
 		s.sides.stopAll()
 	}
@@ -1946,6 +1978,7 @@ func (s *Service) StopAll(ctx context.Context) {
 		return strings.Compare(string(a.owner.Kind)+":"+a.owner.ID, string(b.owner.Kind)+":"+b.owner.ID)
 	})
 
+	var closeErrors []error
 	for _, target := range targets {
 		gate := s.controllerGate(target.owner)
 		// Take an uncontended gate immediately so an expired shared shutdown
@@ -1954,6 +1987,7 @@ func (s *Service) StopAll(ctx context.Context) {
 		if !gate.tryLock() {
 			if err := gate.lock(ctx); err != nil {
 				s.log.Error("failed to lock chat controller gate during shutdown", "session", target.id, "error", err)
+				closeErrors = append(closeErrors, ports.ErrChatShutdownNotSettled)
 				continue
 			}
 		}
@@ -1964,8 +1998,8 @@ func (s *Service) StopAll(ctx context.Context) {
 			gate.unlock()
 			continue
 		}
-		if err := target.controller.Close(ctx); err != nil {
-			s.log.Error("failed to close chat controller", "session", target.id, "error", err)
+		if err := target.controller.closeAfterPreflight(ctx); err != nil {
+			closeErrors = append(closeErrors, err)
 		}
 		select {
 		case <-target.controller.stopped:
@@ -1982,6 +2016,7 @@ func (s *Service) StopAll(ctx context.Context) {
 		}
 		gate.unlock()
 	}
+	return errors.Join(closeErrors...)
 }
 
 // Snapshot is the durable read model a client bootstraps from.
@@ -3032,7 +3067,7 @@ func (s *Service) relayChatTurn(
 			// The store refused a stale queue append: the session woke after the
 			// read, so its controller takes the message.
 		}
-		controller, release, err := s.admitController(ctx, id, false)
+		controller, release, err := s.admitControllerWork(ctx, id, false, controllerIntake)
 		if errors.Is(err, errAsleep) {
 			// Hibernation finished after the read: queue it after all.
 			continue

@@ -28,6 +28,7 @@ type Server struct {
 
 	shutdownRequested chan struct{}
 	shutdownOnce      sync.Once
+	shutdownPreflight func(context.Context) error
 }
 
 // NewWithDeps constructs a Server with API dependencies supplied by the daemon
@@ -64,10 +65,12 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 		log:               log,
 		listen:            ln,
 		shutdownRequested: make(chan struct{}),
+		shutdownPreflight: deps.ShutdownPreflight,
 	}
 	srv.http = &http.Server{
 		Handler: NewRouterWithControl(cfg, log, termMgr, deps, ControlDeps{
-			RequestShutdown: srv.requestShutdown,
+			RequestShutdown:   srv.requestShutdown,
+			ShutdownPreflight: deps.ShutdownPreflight,
 		}),
 		// ReadHeaderTimeout guards against slow-loris even on loopback;
 		// per-request body/handler timeouts are applied per-surface.
@@ -169,6 +172,15 @@ func (s *Server) boundPort() int {
 }
 
 func (s *Server) requestShutdown() {
+	if s.shutdownPreflight != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := s.shutdownPreflight(ctx)
+		cancel()
+		if err != nil {
+			s.log.Warn("shutdown not settled; daemon remains available")
+			return
+		}
+	}
 	s.shutdownOnce.Do(func() {
 		close(s.shutdownRequested)
 	})

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 )
@@ -143,6 +144,8 @@ type ACPState struct {
 
 // Transport is one authenticated attachment to a persistent provider host.
 type Transport struct {
+	Delivery *DeliveryClient
+
 	LaunchCapabilityVerifier string
 	Stdin                    io.WriteCloser
 	Stdout                   io.Reader
@@ -156,10 +159,13 @@ type hello struct {
 	Token   string `json:"token"`
 	Action  string `json:"action"`
 	// QuickStop on a shutdown: see ShutdownQuick.
-	QuickStop bool `json:"quickStop,omitempty"`
+	QuickStop  bool                       `json:"quickStop,omitempty"`
+	Deliveries []ports.ChatDeliveryLookup `json:"deliveries,omitempty"`
 }
 
 type helloResponse struct {
+	Deliveries []domain.ChatDeliveryReceipt `json:"deliveries,omitempty"`
+
 	LaunchCapabilityVerifier string    `json:"launchCapabilityVerifier,omitempty"`
 	ProviderStopped          bool      `json:"providerStopped,omitempty"`
 	OK                       bool      `json:"ok"`
@@ -494,6 +500,7 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 		}
 	}
 	return &Transport{
+		Delivery:                 &DeliveryClient{descriptor: d},
 		LaunchCapabilityVerifier: response.LaunchCapabilityVerifier,
 		Stdin:                    conn, Stdout: reader, Reconnected: reconnected,
 		NextRequestID: response.NextRequestID, ACPState: response.ACPState,
@@ -730,6 +737,12 @@ func Run(ctx context.Context, cfg Config) error {
 		detached: make([][]byte, 0, 64), pendingRequests: make(map[string]*pendingRequest),
 		shutdown: make(chan struct{}),
 	}
+	h.delivery, err = newDeliveryJournal(filepath.Join(filepath.Dir(path), "delivery.journal"), deliveryEpoch(d))
+	if err != nil {
+		_ = killProviderProcess(context.WithoutCancel(ctx), child)
+		return err
+	}
+	defer func() { _ = h.delivery.file.Close() }()
 	if cfg.Protocol == ProtocolACP {
 		h.acp, err = newACPRelay(ctx, filepath.Join(filepath.Dir(path), "acp-prompt.journal"))
 		if err != nil {
@@ -857,6 +870,8 @@ func confirmedProviderShutdown(platform string, cleanupErr error, wait func() er
 }
 
 type host struct {
+	delivery *deliveryJournal
+
 	launchCapabilityVerifier string     // Immutable launch evidence, sent only after authentication.
 	admissionMu              sync.Mutex // Serializes stopping with attached-client registration, never data writes.
 	stopping                 atomic.Bool
@@ -946,6 +961,31 @@ func (h *host) handle(conn net.Conn) {
 	}
 	if subtle.ConstantTimeCompare([]byte(request.Token), []byte(h.token)) != 1 {
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrUnauthorized.Error()})
+		_ = conn.Close()
+		return
+	}
+	if request.Action == "delivery-query" || request.Action == "delivery-flush" || request.Action == "delivery-ack" {
+		var response helloResponse
+		if h.delivery != nil {
+			if request.Action == "delivery-ack" {
+				response.OK = h.delivery.acknowledge(request.Deliveries) == nil
+				_ = json.NewEncoder(conn).Encode(response)
+				_ = conn.Close()
+				return
+			}
+			var flushErr error
+			if request.Action == "delivery-flush" {
+				flushCtx, cancel := context.WithTimeout(h.ctx, handshakeTimeout)
+				flushErr = h.flushReplay(flushCtx)
+				cancel()
+			}
+			if flushErr == nil {
+				receipts, err := h.delivery.query(request.Deliveries, request.Action == "delivery-flush")
+				response.OK = err == nil
+				response.Deliveries = receipts
+			}
+		}
+		_ = json.NewEncoder(conn).Encode(response)
 		_ = conn.Close()
 		return
 	}
@@ -1056,6 +1096,17 @@ func (h *host) handle(conn net.Conn) {
 				}
 			}
 			h.mu.Unlock()
+			if len(providerFrame) > 0 && h.delivery != nil {
+				var deliveryErr error
+				providerFrame, deliveryErr = h.delivery.prepare(providerFrame)
+				if errors.Is(deliveryErr, errDuplicateDeliveryAttempt) {
+					h.detach(conn)
+					return
+				}
+				if deliveryErr != nil {
+					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
+				}
+			}
 			if len(providerFrame) > 0 {
 				if _, err := h.stdin.Write(providerFrame); err != nil {
 					readErr = err
@@ -1220,6 +1271,11 @@ func (h *host) forwardProvider(stdout io.Reader) error {
 	for {
 		frame, err := reader.ReadBytes('\n')
 		if len(frame) > 0 {
+			if h.delivery != nil {
+				if err := h.delivery.observe(frame); err != nil {
+					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
+				}
+			}
 			h.mu.Lock()
 			retainedByACP := false
 			if h.acp != nil {

@@ -3,6 +3,7 @@
 package httpd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -27,6 +28,8 @@ import (
 // ControlDeps carries the daemon-control hooks the router exposes, such as the
 // callback that requests a graceful shutdown.
 type ControlDeps struct {
+	ShutdownPreflight func(context.Context) error
+
 	RequestShutdown func()
 }
 
@@ -120,6 +123,15 @@ func mountControl(r chi.Router, deps ControlDeps) {
 				"service": daemonmeta.ServiceName,
 			})
 			return
+		}
+		if deps.ShutdownPreflight != nil {
+			ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
+			err := deps.ShutdownPreflight(ctx)
+			cancel()
+			if err != nil {
+				envelope.WriteJSON(w, http.StatusConflict, map[string]any{"status": "shutdown_not_settled", "service": daemonmeta.ServiceName})
+				return
+			}
 		}
 		envelope.WriteJSON(w, http.StatusAccepted, map[string]any{
 			"status":  "shutting_down",

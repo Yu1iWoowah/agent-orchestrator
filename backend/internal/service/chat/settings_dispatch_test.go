@@ -67,15 +67,15 @@ func TestDispatchSnapshotFailureDoesNotReachProviderOrLosePrompt(t *testing.T) {
 	h := newHarnessWithConversationAndStore(t, nil, func(st *sqlite.Store) chatsvc.Store {
 		return &snapshotFailureStore{Store: st}
 	})
-	_, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: "keep my prompt"})
-	if err == nil {
-		t.Fatal("dispatch bypassed snapshot persistence failure")
+	receipt, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: "keep my prompt"})
+	if err != nil || receipt.State != domain.TurnStateQueued {
+		t.Fatalf("snapshot failure did not preserve accepted input: %+v %v", receipt, err)
 	}
 	if texts := h.conv.sentTexts(); len(texts) != 0 {
 		t.Fatalf("provider received unrecorded wire: %v", texts)
 	}
 	rows := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 1 })
-	if rows.Messages[0].Text != "keep my prompt" || len(rows.Turns) != 1 || rows.Turns[0].State != domain.TurnStateFailed {
+	if rows.Messages[0].Text != "keep my prompt" || len(rows.Turns) != 1 || rows.Turns[0].State != domain.TurnStateQueued {
 		t.Fatalf("snapshot failure lost prompt/settlement: %+v", rows)
 	}
 }

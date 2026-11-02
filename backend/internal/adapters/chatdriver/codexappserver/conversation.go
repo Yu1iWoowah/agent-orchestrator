@@ -93,7 +93,9 @@ type conversation struct {
 	// compactedTurn is the last turn a compaction was reported for, so a provider
 	// build that emits both the notification and the item reports one compaction
 	// once.
-	compactedTurn string
+	compactedTurn    string
+	compactionID     string // guarded by mu; live command only
+	compactionTurnID string // guarded by mu; native compaction item correlation
 
 	pumpDone     chan struct{}
 	eventsMu     sync.RWMutex
@@ -196,6 +198,18 @@ func (c *conversation) pump() {
 		// as an absolute instant and has to become a remaining duration, and a
 		// normalizer that reads the clock itself cannot be tested deterministically.
 		for _, ev := range normalizeNotification(n, now) {
+			c.mu.Lock()
+			if c.compactionID != "" && (scope.ThreadID == "" || scope.ThreadID == c.threadID) {
+				if ev.Kind == ports.ChatEventCompacted && ev.ProviderTurnID != "" {
+					c.compactionTurnID = ev.ProviderTurnID
+				}
+				if ev.Kind == ports.ChatEventTurnCompleted && c.compactionTurnID != "" && ev.ProviderTurnID == c.compactionTurnID {
+					ev.CompactionID = c.compactionID
+					c.compactionID, c.compactionTurnID = "", ""
+				}
+			}
+			c.mu.Unlock()
+
 			ev = usageLimits.decorate(ev, now)
 			threadID := ev.ProviderConversationID
 			if threadID == "" {
@@ -354,6 +368,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 
 	params := map[string]any{
+		"_meta":    map[string]any{"aoDeliveryAttempt": msg.DeliveryAttemptID},
 		"threadId": c.threadID,
 		"input":    []any{map[string]any{"type": "text", "text": msg.Text}},
 	}
@@ -609,6 +624,8 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 
 	c.mu.Lock()
 	before := c.contextTokens
+	c.compactionID = ports.ChatCompactionID(ctx)
+	c.compactionTurnID = ""
 	c.mu.Unlock()
 
 	// thread/compact/start takes the thread id and nothing else. Notably NOT a turn
@@ -617,6 +634,9 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	if err := c.conn.request(ctx, "thread/compact/start", map[string]any{
 		"threadId": c.threadID,
 	}, nil); err != nil {
+		c.mu.Lock()
+		c.compactionID, c.compactionTurnID = "", ""
+		c.mu.Unlock()
 		return ports.ChatCompactionResult{}, fmt.Errorf("thread/compact/start: %w", err)
 	}
 

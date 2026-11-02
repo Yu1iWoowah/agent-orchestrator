@@ -49,19 +49,18 @@ func (s *Service) configureAgentSettingsController(c *Controller) {
 	c.mu.Lock()
 	c.settingsValidator = validator
 	c.settingsMutator = mutator
+	c.after = s.after
 	c.mu.Unlock()
 }
 
-// QueueAgentSettings admits/wakes through the normal lifecycle boundary, then
-// releases its own work lease before testing quiescence. Durable owner CAS and
-// the controller's handoff state fence replacement; this request must not count
-// itself as a running provider operation.
+// QueueAgentSettings pins the admitted generation throughout acceptance and
+// execution without counting its own request as provider activity.
 func (s *Service) QueueAgentSettings(ctx context.Context, op domain.AgentSettingsOperation) (domain.AgentSettingsOperation, error) {
-	c, release, err := s.workingController(ctx, op.SessionID)
+	c, release, err := s.admitControllerWork(ctx, op.SessionID, true, controllerIntake)
 	if err != nil {
 		return domain.AgentSettingsOperation{}, err
 	}
-	release()
+	defer release()
 	return c.QueueAgentSettings(ctx, op)
 }
 
@@ -113,14 +112,29 @@ func (c *Controller) settingsContext(ctx context.Context, journal agentSettingsJ
 	return current, nil
 }
 
+// qualifySettings tracks executor work only while its caller owns sendMu.
 func (c *Controller) qualifySettings(ctx context.Context, op domain.AgentSettingsOperation, owner domain.AgentSettingsOwner, restoring bool) (domain.AgentSettingsQualification, error) {
+	var proof domain.AgentSettingsQualification
+	err := c.settingsRPC(ctx, "observing", false, func(ctx context.Context) error {
+		var err error
+		proof, err = c.qualifySettingsRead(ctx, op, owner, restoring)
+		return err
+	})
+	return proof, err
+}
+
+// Intake validation can run concurrently with the executor. It has a bounded
+// read context and never inspects or changes the executor's attempt state.
+func (c *Controller) qualifySettingsRead(ctx context.Context, op domain.AgentSettingsOperation, owner domain.AgentSettingsOwner, restoring bool) (domain.AgentSettingsQualification, error) {
 	c.mu.Lock()
 	validator := c.settingsValidator
 	c.mu.Unlock()
 	if validator == nil {
 		return domain.AgentSettingsQualification{}, fmt.Errorf("%w: settings_validation_unavailable", ports.ErrAgentSettingsCapabilitiesUnavailable)
 	}
-	proof, err := validator.ValidateAgentSettings(ctx, op, owner, restoring)
+	readCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
+	defer cancel()
+	proof, err := validator.ValidateAgentSettings(readCtx, op, owner, restoring)
 	if err != nil {
 		return proof, err
 	}
@@ -162,7 +176,7 @@ func (c *Controller) queueAgentSettings(ctx context.Context, op domain.AgentSett
 	if op.Source != current.Settings || op.BaseRevision != current.Revision || op.ControllerGeneration != current.OwnerGeneration || op.AccountID != current.AccountID || op.ProviderConversationID != current.ProviderConversationID || op.BranchID != current.BranchID || settingsSelection(c.turnSettings()) != current.Settings {
 		return op, ports.ErrAgentSettingsConflict
 	}
-	if _, err := c.qualifySettings(ctx, op, ownerForSettings(current), false); err != nil {
+	if _, err := c.qualifySettingsRead(ctx, op, ownerForSettings(current), false); err != nil {
 		return op, err
 	}
 	if old == nil {
@@ -182,6 +196,9 @@ func (c *Controller) queueAgentSettings(ctx context.Context, op domain.AgentSett
 	}
 	defer c.sendMu.Unlock()
 	_, runErr := c.reconcileAgentSettingsLocked(ctx)
+	if runErr != nil && c.settingsRetryDelayLocked() > 0 {
+		c.queueSettingsRecheck()
+	}
 	saved, readErr := journal.AgentSettingsOperation(ctx, c.sessionID, op.ID)
 	return saved, errors.Join(runErr, readErr)
 }
@@ -191,12 +208,8 @@ func (c *Controller) queueAgentSettings(ctx context.Context, op domain.AgentSett
 func (c *Controller) RunAgentSettings(ctx context.Context) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	if c.settingsInitializationError != nil {
-		c.settingsInitializationError = nil
-		c.settingsInitializationError = c.initializeAgentSettingsLocked(ctx)
-		if c.settingsInitializationError != nil {
-			return c.settingsInitializationError
-		}
+	if err := c.retrySettingsAttemptLocked(ctx); err != nil {
+		return err
 	}
 	blocked, err := c.reconcileAgentSettingsLocked(ctx)
 	if err != nil || blocked {
@@ -229,31 +242,26 @@ func (c *Controller) CancelAgentSettings(ctx context.Context, id string, version
 func (c *Controller) queueSettingsRecheck() {
 	c.mu.Lock()
 	if c.settingsRecheckQueued {
+		c.settingsRecheckRequested = true
 		c.mu.Unlock()
 		return
 	}
 	c.settingsRecheckQueued = true
+	c.work[controllerReconciliation]++
 	c.mu.Unlock()
 	go func() {
-		c.sendMu.Lock()
-		defer c.sendMu.Unlock()
-		c.mu.Lock()
-		c.settingsRecheckQueued = false
-		stopped := c.state == ports.ChatControllerStopped
-		c.mu.Unlock()
-		if stopped {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), nativeEditHandoffLimit)
-		defer cancel()
-		blocked, err := c.reconcileAgentSettingsLocked(ctx)
-		if err == nil && !blocked {
-			err = c.drainLocked(ctx, true)
-		}
-		if err != nil {
-			// Stable outcome only: provider diagnostics can echo private launch env.
-			c.log.Warn("settings recheck retained dispatch fence", "session", c.sessionID, "code", settingsFailureCode(domain.AgentSettingsErrorProvider, []error{err}))
-		}
+		defer func() {
+			c.mu.Lock()
+			c.settingsRecheckQueued = false
+			c.work[controllerReconciliation]--
+			recheck := c.settingsRecheckRequested || c.settingsWaitingForWork && c.work[controllerProviderWork] == 0
+			c.settingsRecheckRequested = false
+			c.mu.Unlock()
+			if recheck {
+				c.queueSettingsRecheck()
+			}
+		}()
+		c.runSettingsRechecks()
 	}()
 }
 
@@ -270,7 +278,8 @@ func settingsSelection(wire ports.ChatTurnSettings) domain.AgentSettings {
 
 func (c *Controller) settingsQuiescent(ctx context.Context) (bool, error) {
 	c.mu.Lock()
-	busy := c.state != ports.ChatControllerReady || c.handoff != controllerHandoffNone || c.pendingTurnID != "" || c.dispatchingTurnID != "" || c.compactionPending || c.operations != 0
+	busy := c.state != ports.ChatControllerReady || c.handoff != controllerHandoffNone || c.pendingTurnID != "" || c.pendingDeliveryID != "" || c.dispatchingTurnID != "" || c.compactionPending || c.work[controllerProviderWork] != 0
+	c.settingsWaitingForWork = c.work[controllerProviderWork] != 0
 	c.mu.Unlock()
 	if busy {
 		return false, nil
@@ -290,7 +299,11 @@ func (c *Controller) settingsQuiescent(ctx context.Context) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("%w: provider_quiescence_unavailable", ports.ErrAgentSettingsUnsupported)
 	}
-	quiet, err := provider.CanHibernate(ctx)
+	var quiet bool
+	err = c.settingsRPC(ctx, "waiting_idle", false, func(ctx context.Context) error {
+		quiet, err = provider.CanHibernate(ctx)
+		return err
+	})
 	return quiet, providerSettingsError(err)
 }
 
@@ -324,6 +337,10 @@ func (c *Controller) executionStillQualified(ctx context.Context, journal agentS
 // reconcileAgentSettingsLocked runs only with sendMu. blocked means durable
 // unfinished work still fences dispatch, including errors or unknown liveness.
 func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, error) {
+	return c.runSettingsAttemptLocked(ctx, false, c.reconcileAgentSettingsWorkLocked)
+}
+
+func (c *Controller) reconcileAgentSettingsWorkLocked(ctx context.Context) (bool, error) {
 	journal, ok := c.store.(agentSettingsJournal)
 	if !ok || c.reviewID != "" {
 		return false, nil
@@ -349,6 +366,9 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 	if err != nil || !quiet {
 		return true, err
 	}
+	if err := c.qualifySettingsEvidenceLocked(ctx, nil); err != nil {
+		return true, err
+	}
 	if op.StartedAt != nil {
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorRecovery)
 	}
@@ -364,7 +384,11 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 	if !ok {
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, err)
 	}
-	plan, err := provider.PrepareAgentSettings(ctx, op.Source, op.Target)
+	var plan domain.AgentSettingsProviderPlan
+	err = c.settingsRPC(ctx, "preparing", false, func(ctx context.Context) error {
+		plan, err = provider.PrepareAgentSettings(ctx, op.Source, op.Target)
+		return err
+	})
 	if err != nil {
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, providerSettingsError(err))
 	}
@@ -382,7 +406,9 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 			return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorStorage, err)
 		}
 		op = next
-		if err := provider.ApplyAgentSettingsStep(ctx, plan, step, false); err != nil {
+		if err := c.settingsRPC(ctx, string(step), step != domain.AgentSettingsVerifying, func(ctx context.Context) error {
+			return provider.ApplyAgentSettingsStep(ctx, plan, step, false)
+		}); err != nil {
 			return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorProvider, providerSettingsError(err))
 		}
 	}
@@ -391,6 +417,9 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorStorage, err)
 	}
 	op = verified
+	if err := c.qualifySettingsEvidenceLocked(ctx, &op.Target); err != nil {
+		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, err)
+	}
 	if err := c.executionStillQualified(ctx, journal, op); err != nil {
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, err)
 	}
@@ -421,6 +450,11 @@ func (c *Controller) failAgentSettingsLocked(ctx context.Context, journal agentS
 		code = settingsFailureCode(category, causes)
 	}
 	if latest.StartedAt == nil {
+		for _, cause := range causes {
+			if errors.Is(cause, ports.ErrAgentSettingsCapabilitiesUnavailable) || errors.Is(cause, context.DeadlineExceeded) {
+				return true, cause
+			}
+		}
 		_, err := journal.FinishAgentSettingsOperationWithCode(ctx, c.sessionID, latest.ID, latest.Version, domain.AgentSettingsFailed, category, code, c.now())
 		return err != nil, err
 	}

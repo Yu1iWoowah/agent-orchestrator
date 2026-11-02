@@ -21,13 +21,13 @@ func (*sideCompactionReceiptConversation) Capabilities() ports.ChatCapabilities 
 	return ports.ChatCapabilities{ports.ChatCapabilityCompaction: true}
 }
 
-func (c *sideCompactionReceiptConversation) Compact(context.Context) (ports.ChatCompactionResult, error) {
+func (c *sideCompactionReceiptConversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
 	c.mu.Lock()
 	c.sent++
 	c.acked = false
 	c.mu.Unlock()
 	c.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "compaction",
-		ProviderEventID: "receipt", TurnState: domain.TurnStateCompleted}
+		CompactionID: ports.ChatCompactionID(ctx), ProviderEventID: "receipt", TurnState: domain.TurnStateCompleted}
 	return ports.ChatCompactionResult{}, nil
 }
 

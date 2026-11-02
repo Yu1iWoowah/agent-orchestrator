@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -24,6 +25,7 @@ import (
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
+	ShutdownPreflight     func(context.Context) error
 	GuardianObservability controllers.GuardianQueryService
 
 	OrchestratorReplacements controllers.OrchestratorReplacementService

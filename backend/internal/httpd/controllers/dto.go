@@ -4530,6 +4530,14 @@ type ReplacementRetainedRetryView struct {
 	RequestedAt time.Time                 `json:"requestedAt"`
 }
 
+// RetryAgentSettingsAttemptPayload targets an existing versioned attempt.
+type RetryAgentSettingsAttemptPayload = agentsettings.RetryAttempt
+
+// AgentSettingsAttemptResponse exposes durable safe diagnostics, not native proof.
+type AgentSettingsAttemptResponse struct {
+	Attempt domain.AgentSettingsReconciliation `json:"attempt"`
+}
+
 // OperatorConsentReadinessResponse exposes qualification state, never authority
 // materials. C0-PR1 always reports authorityGo=false and an empty purpose set.
 type OperatorConsentReadinessResponse domain.OperatorAuthorityReadiness

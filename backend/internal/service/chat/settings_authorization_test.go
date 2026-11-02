@@ -100,6 +100,17 @@ func TestManagedPendingRechecksAuthorityPolicyAndInputsBeforeSetters(t *testing.
 				want = "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE"
 			}
 			conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+			if reason == "binary" {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					attempts, e := h.st.ListAgentSettingsReconciliations(ctx, testSession)
+					return e == nil && len(attempts) > 0 && attempts[0].Phase == "blocked" && attempts[0].ErrorCode == want
+				})
+				saved, e := h.st.AgentSettingsOperation(ctx, testSession, op.ID)
+				if e != nil || saved.Phase != domain.AgentSettingsPending || conv.stepCount() != 0 {
+					t.Fatalf("temporary binary discovery ended intent: %+v %v", saved, e)
+				}
+				return
+			}
 			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 				saved, e := h.st.AgentSettingsOperation(ctx, testSession, op.ID)
 				return e == nil && saved.Phase == domain.AgentSettingsFailed

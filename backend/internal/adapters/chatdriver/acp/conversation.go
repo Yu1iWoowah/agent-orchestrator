@@ -46,6 +46,8 @@ var (
 )
 
 type preparedTurn struct {
+	deliveryAttemptID string
+
 	id              string
 	clientMessageID string
 	prompt          []acpsdk.ContentBlock
@@ -463,7 +465,7 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 		if backgroundBusy {
 			c.backgroundTurn = providerTurnID
 		}
-		if c.liveState.ActiveCompaction {
+		if c.liveState.ActiveCompaction || ports.ChatCompactionID(ctx) != "" && ports.ChatCompactionID(ctx) == providerTurnID {
 			c.compactingTurnID = providerTurnID
 			c.compactionBefore = c.contextTokens
 		}
@@ -511,7 +513,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, ports.ErrChatTurnNotSentBusy
 	}
 	id := uuid.NewString()
-	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt}
+	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt, deliveryAttemptID: msg.DeliveryAttemptID}
 	return ports.ChatTurnRef{ProviderTurnID: id}, nil
 }
 
@@ -788,6 +790,7 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 		messageID = uuid.NewString()
 	}
 	resp, err := c.conn.Prompt(ctx, acpsdk.PromptRequest{
+		Meta:      map[string]any{persistenthost.DeliveryMetaKey: turn.deliveryAttemptID},
 		SessionId: acpsdk.SessionId(sessionID),
 		MessageId: &messageID,
 		Prompt:    turn.prompt,
@@ -906,8 +909,13 @@ func (c *conversation) finishPrompt(
 		c.terminalEventID = eventID
 		c.mu.Unlock()
 	}
+	compactionID := ""
+	if isCompaction && eventID != "" {
+		compactionID = turnID
+	}
 	c.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
+		CompactionID: compactionID,
+		Kind:         ports.ChatEventTurnCompleted, ProviderEventID: eventID,
 		ProviderTurnID: turnID, ProviderConversationID: c.ProviderConversationID(), TurnState: state, Err: turnErr,
 	})
 	// Release the turn before announcing readiness, not after. A consumer that
@@ -956,7 +964,10 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 		return ports.ChatCompactionResult{}, errors.New("ACP session is not open")
 	}
 	before := c.contextTokens
-	id := uuid.NewString()
+	id := ports.ChatCompactionID(ctx)
+	if id == "" {
+		id = uuid.NewString()
+	}
 	c.activeTurn = id
 	c.compactingTurnID = id
 	c.compactionBefore = before

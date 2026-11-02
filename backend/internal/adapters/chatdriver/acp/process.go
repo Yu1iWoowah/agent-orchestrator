@@ -16,6 +16,8 @@ import (
 )
 
 type process struct {
+	delivery *persistenthost.DeliveryClient
+
 	launchCapabilityVerifier string
 	stdin                    io.WriteCloser
 	stdout                   io.Reader

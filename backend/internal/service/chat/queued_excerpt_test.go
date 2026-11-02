@@ -160,7 +160,7 @@ func TestQueuedExcerptValidationFailureContinuesDrain(t *testing.T) {
 	}
 }
 
-func TestQueuedProviderDispatchFailureFailsClaimedBatchOnce(t *testing.T) {
+func TestQueuedProviderDispatchFailurePreservesClaimedBatchOnce(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	for _, text := range []string{"active", "provider failure", "still queued"} {
@@ -175,12 +175,18 @@ func TestQueuedProviderDispatchFailureFailsClaimedBatchOnce(t *testing.T) {
 	h.conv.mu.Unlock()
 	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted,
 		ProviderTurnID: "provider-turn-1", TurnState: domain.TurnStateCompleted})
-	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["provider failure"] == domain.TurnStateFailed
-	})
-	if turnStateByText(t, snapshot)["still queued"] != domain.TurnStateFailed {
-		t.Fatal("provider failure did not preserve the second batch member as failed")
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return h.conv.sendCallCount() == 2 })
+	for _, text := range []string{"provider failure", "still queued"} {
+		if turnStateByText(t, snapshot)[text] == domain.TurnStateFailed {
+			t.Fatalf("unknown batch input %q failed", text)
+		}
 	}
+	original, _, _ := h.st.ConversationMessageByClientID(ctx, h.ctrl.ConversationID(), "provider failure")
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, original.TurnID)
+	if err != nil || len(attempt.TurnIDs) != 2 || attempt.Disposition == domain.ChatDeliveryAccepted {
+		t.Fatalf("unverified batch lost membership: %+v %v", attempt, err)
+	}
+
 	if got := h.conv.sendCallCount(); got != 2 {
 		t.Fatalf("provider calls = %d, want initial send and one failed dispatch", got)
 	}

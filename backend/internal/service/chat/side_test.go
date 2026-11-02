@@ -181,6 +181,15 @@ func TestSideTurnStartsAndAcknowledgesDeferredACPProviderTurn(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("side did not settle the completed provider turn")
 	}
+	if runtime.outboundUnverified {
+		t.Fatal("completed side retained unverified coverage")
+	}
+	manager.mu.Lock()
+	manager.runtimes[side.ID] = runtime
+	manager.mu.Unlock()
+	if err := svc.PreflightShutdown(ctx); err != nil {
+		t.Fatalf("settled side cannot shut down: %v", err)
+	}
 	settled, err := manager.store.SideTurn(ctx, side.ID, turn.ID)
 	if err != nil || settled.State != "completed" {
 		t.Fatalf("side turn = %#v, %v", settled, err)

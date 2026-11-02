@@ -53,6 +53,8 @@ type codexPlugin interface {
 // process is a running app-server, abstracted so tests can substitute pipes for
 // a child process.
 type process struct {
+	delivery *persistenthost.DeliveryClient
+
 	stdin  io.WriteCloser
 	stdout io.Reader
 	// reconnected means the provider process and initialized protocol connection
@@ -385,6 +387,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, err
 	}
 	if reconnected {
+		conv.compactionID = ports.ChatCompactionID(ctx)
 		// The host preserved the already-initialized app-server connection and its
 		// loaded thread. Host replay bridges output and unresolved server requests
 		// across the daemon detach without waiting for the active turn to settle.
@@ -637,6 +640,7 @@ func (d *Driver) connectSession(
 		return nil, false, fmt.Errorf("%w: persistent host: %w", ports.ErrChatDriverUnavailable, err)
 	}
 	proc := &process{
+		delivery:      transport.Delivery,
 		stdin:         transport.Stdin,
 		stdout:        transport.Stdout,
 		reconnected:   transport.Reconnected,

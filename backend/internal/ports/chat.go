@@ -464,6 +464,8 @@ func IsInternalReplayContent(content ChatContent) bool {
 
 // ChatUserMessage is one inbound request to the agent.
 type ChatUserMessage struct {
+	// DeliveryAttemptID is daemon-owned correlation metadata, never user input.
+	DeliveryAttemptID string `json:"-"`
 	// InteractionAt preserves initial acceptance across transition outbox replay.
 	InteractionAt time.Time
 	Text          string
@@ -838,9 +840,11 @@ type (
 	}
 )
 
-// ChatTurnRef identifies a turn the provider accepted.
+// ChatTurnRef is a prepared or native turn reference. Only Delivery supplies
+// explicit delivery evidence; the ID alone never proves provider acceptance.
 type ChatTurnRef struct {
 	ProviderTurnID string
+	Delivery       *domain.ChatDeliveryReceipt
 }
 
 // ChatDeferredTurnStarter is implemented by protocols whose prompt call is the
@@ -1085,6 +1089,10 @@ func (f *chatProviderFailure) Unwrap() error { return f.cause }
 // Assistant message text is portable Markdown. Adapters convert native citation
 // annotations to links before emitting events or returning history.
 type ChatEvent struct {
+	// CompactionID is attached only by the live adapter for the requested compaction.
+	CompactionID string
+	// Delivery is an exact native receipt, independent of local lifecycle events.
+	Delivery *domain.ChatDeliveryReceipt
 	// GuardianReview is a metadata whitelist, independent of activity detail.
 	GuardianReview *domain.GuardianReview
 

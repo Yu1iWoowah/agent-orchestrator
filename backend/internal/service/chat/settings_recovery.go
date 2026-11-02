@@ -45,7 +45,10 @@ func (c *Controller) recoverAgentSettingsLocked(ctx context.Context, journal age
 		if !ok {
 			return true, fmt.Errorf("%w: recovery_baseline_unverified", ports.ErrAgentSettingsCapabilitiesUnavailable)
 		}
-		plan, err = fresh.PrepareAgentSettingsRecovery(ctx, current.Settings)
+		err = c.settingsRPC(ctx, "preparing", false, func(ctx context.Context) error {
+			plan, err = fresh.PrepareAgentSettingsRecovery(ctx, current.Settings)
+			return err
+		})
 		if err != nil {
 			return true, providerSettingsError(err)
 		}
@@ -53,7 +56,9 @@ func (c *Controller) recoverAgentSettingsLocked(ctx context.Context, journal age
 			return true, ports.ErrAgentSettingsConflict
 		}
 	}
-	if err := provider.ApplyAgentSettingsStep(ctx, plan, domain.AgentSettingsRollingBack, true); err != nil {
+	if err := c.settingsRPC(ctx, "rolling_back", true, func(ctx context.Context) error {
+		return provider.ApplyAgentSettingsStep(ctx, plan, domain.AgentSettingsRollingBack, true)
+	}); err != nil {
 		return true, providerSettingsError(err)
 	}
 	fresh, err := c.settingsContext(ctx, journal)

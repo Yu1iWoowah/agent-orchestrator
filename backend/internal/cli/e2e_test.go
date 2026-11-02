@@ -34,6 +34,9 @@ import (
 var aoBin string
 
 func TestMain(m *testing.M) {
+	if runReviewerStartupProvider() {
+		return
+	}
 	dir, err := os.MkdirTemp("", "ao-e2e-bin")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: mktemp:", err)
@@ -141,6 +144,11 @@ func asExit(err error, target **exec.ExitError) bool {
 // drives the hidden `ao daemon` command directly and polls for readiness.
 func (e env) startDaemon(t *testing.T) {
 	t.Helper()
+	e.startDaemonWithShutdownCheck(t, false)
+}
+
+func (e env) startDaemonWithShutdownCheck(t *testing.T, allowUnsettled bool) {
+	t.Helper()
 	cmd := exec.Command(aoBin, "daemon")
 	cmd.Env = e.environ("")
 	if err := cmd.Start(); err != nil {
@@ -149,7 +157,21 @@ func (e env) startDaemon(t *testing.T) {
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 	t.Cleanup(func() {
-		e.run(t, "stop")
+		out, code := e.run(t, "stop")
+		if allowUnsettled && code == 1 && strings.Contains(out, "HTTP 409") {
+			// Recovery without custody evidence must keep the original daemon
+			// available. This is an asserted refusal, followed by test-only cleanup.
+			status, statusCode := e.run(t, "status", "--json")
+			if statusCode != 0 || !strings.Contains(status, `"state": "ready"`) {
+				t.Errorf("unsettled shutdown lost the live daemon: %s (exit %d)", status, statusCode)
+			}
+			_ = cmd.Process.Kill()
+			<-waitDone
+			return
+		}
+		if code != 0 {
+			t.Errorf("normal daemon shutdown failed: %s (exit %d)", out, code)
+		}
 		select {
 		case <-waitDone:
 			return
