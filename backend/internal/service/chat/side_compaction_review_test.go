@@ -389,3 +389,146 @@ func TestSideCompactionScopeProvenance(t *testing.T) {
 		})
 	}
 }
+
+func TestSideCompactionNonClaudeProviderHome(t *testing.T) {
+	for _, provider := range []domain.AgentHarness{domain.HarnessOpenCode, domain.HarnessOMP} {
+		for _, mode := range []string{"valid", "missing", "file"} {
+			t.Run(string(provider)+"/"+mode, func(t *testing.T) {
+				svc, db, conv, _ := newRecordHarness(t, provider)
+				home := t.TempDir()
+				own := filepath.Join(home, "native")
+				if mode == "valid" {
+					if err := os.Mkdir(own, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if mode == "file" {
+					if err := os.WriteFile(own, []byte("file"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// A usable Claude directory must never rescue an invalid provider root.
+				claude := filepath.Join(home, ".claude")
+				if mode != "valid" {
+					if err := os.Mkdir(claude, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				key := "OPENCODE_DATA_DIR"
+				if provider == domain.HarnessOMP {
+					key = "PI_CODING_AGENT_DIR"
+				}
+				frozen, _ := json.Marshal(frozenSideConfig{Env: map[string]string{"HOME": home, key: own, "CLAUDE_CONFIG_DIR": claude}})
+				svc.sides.runtimes["side"].side.LaunchConfig = frozen
+				store := svc.sides.store.(*memorySideStore)
+				side := store.sides["side"]
+				side.LaunchConfig = frozen
+				store.sides["side"] = side
+				_, err := svc.CompactSideChat(t.Context(), "session", "side")
+				rows, readErr := db.SideCompactions(t.Context(), true)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if mode == "valid" {
+					if conv.count != 1 || len(rows) != 1 || rows[0].NativeHome != own || rows[0].Provider != provider || rows[0].NativeHomeSource != "launch_config" {
+						t.Fatalf("native registration: io=%d rows=%+v err=%v", conv.count, rows, err)
+					}
+				} else if err == nil || conv.count != 0 || len(rows) != 0 {
+					t.Fatalf("invalid root: io=%d rows=%+v err=%v", conv.count, rows, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSideCompactionRequiresOriginalRewrittenHome(t *testing.T) {
+	for _, provider := range []domain.AgentHarness{domain.HarnessKimi, domain.HarnessCommandCode, domain.HarnessOpenCodeV2} {
+		t.Run(string(provider), func(t *testing.T) {
+			svc, db, conv, _ := newRecordHarness(t, provider)
+			_, err := svc.CompactSideChat(t.Context(), "session", "side")
+			rows, _ := db.SideCompactions(t.Context(), true)
+			if err == nil || conv.count != 0 || len(rows) != 0 {
+				t.Fatalf("guessed rewritten launch home: %v, %d, %v", err, conv.count, rows)
+			}
+			hostHome := t.TempDir()
+			svc.sides.runtimes["side"].conv = &reviewScopeConversation{recordCompactionConversation: conv, scope: ports.ChatCompactionScope{NativeHome: hostHome}}
+			_, _ = svc.CompactSideChat(t.Context(), "session", "side")
+			rows, _ = db.SideCompactions(t.Context(), true)
+			if conv.count != 1 || len(rows) != 1 || rows[0].NativeHome != hostHome || rows[0].NativeHomeSource != "host" {
+				t.Fatalf("host launch facts not used: io=%d rows=%+v", conv.count, rows)
+			}
+		})
+	}
+}
+
+func TestSideCompactionHostHomeFailureDoesNotFallback(t *testing.T) {
+	svc, db, conv, home := newRecordHarness(t, domain.HarnessCodex)
+	svc.sides.runtimes["side"].conv = &reviewScopeConversation{recordCompactionConversation: conv, scope: ports.ChatCompactionScope{NativeHomeError: "original root unavailable"}}
+	_, err := svc.CompactSideChat(t.Context(), "session", "side")
+	rows, _ := db.SideCompactions(t.Context(), true)
+	if err == nil || conv.count != 0 || len(rows) != 0 {
+		t.Fatalf("host failure replaced with valid frozen root %s: io=%d rows=%v err=%v", home, conv.count, rows, err)
+	}
+}
+
+func TestSideCompactionNewServiceRetiresOnlySettledAttachments(t *testing.T) {
+	for _, state := range []domain.SideCompactionState{domain.SideCompactionSettled, domain.SideCompactionNotSent} {
+		t.Run(string(state), func(t *testing.T) {
+			svc, db, conv, _ := newRecordHarness(t, domain.HarnessCodex)
+			store := svc.sides.store.(*memorySideStore)
+			if err := store.SetSideDraft(t.Context(), "side", "run", receiptDraft, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if state == domain.SideCompactionNotSent {
+				conv.compactErr = ports.ErrChatCompactionNotSent
+			}
+			_, _ = svc.CompactSideChat(t.Context(), "session", "side")
+			if state == domain.SideCompactionSettled {
+				if err := svc.sides.transitionCompaction(t.Context(), svc.sides.runtimes["side"], state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := addReviewSide(t, svc)
+			if err := store.SetSideDraft(t.Context(), other.ID, "run", receiptDraft, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			pending := &reviewScopeConversation{recordCompactionConversation: &recordCompactionConversation{}, nativeID: other.ProviderForkID}
+			pending.compactErr = errors.New("unknown")
+			svc.sides.runtimes[other.ID] = &sideRuntime{side: other, conv: pending, ctx: t.Context(), cancel: func() {}}
+			_, _ = svc.CompactSideChat(t.Context(), other.SessionID, other.ID)
+			images, err := filepath.Glob(filepath.Join(svc.dataDir, "attachments", "btw-run-side", "image-*"))
+			if err != nil || len(images) != 1 {
+				t.Fatalf("canonical image fixture=%v, %v", images, err)
+			}
+			name := filepath.Base(images[0])
+			after := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "new-run", Sessions: sideSessionReader{}})
+			defer after.sides.stopAll()
+			if err := after.ClaimSideChatLaunch(t.Context(), "new-run"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := after.sides.store.SideConversation(t.Context(), "side"); err == nil {
+				t.Fatal("settled side restored in new launch")
+			}
+			if _, err := store.readImage("btw-run-side", name); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("settled image retained: %v", err)
+			}
+			if _, err := store.readImage(other.ProviderHostID, name); err != nil {
+				t.Fatalf("protected image removed: %v", err)
+			}
+			projection := after.sides.store.(*memorySideStore)
+			draft, err := projection.SideDraft(t.Context(), other.ID)
+			if err != nil || draft != receiptDraft {
+				t.Fatalf("protected draft changed: %s, %v", draft, err)
+			}
+			rows, err := db.SideCompactions(t.Context(), false)
+			if err != nil || len(rows) != 2 {
+				t.Fatalf("metadata lost: %v, %v", rows, err)
+			}
+			for _, row := range rows {
+				if row.SideID == "side" && (row.State != state || row.Closed || row.ProviderHostID != "btw-run-side") {
+					t.Fatalf("retirement changed original result: %+v", row)
+				}
+			}
+		})
+	}
+}

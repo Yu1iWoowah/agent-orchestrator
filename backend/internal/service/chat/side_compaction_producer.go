@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/nativehome"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -39,32 +39,23 @@ func (m *sideManager) prepareCompaction(ctx context.Context, runtime *sideRuntim
 			r.ScopeSource = "host_missing_identity"
 		}
 	}
+	if scope.NativeHomeError != "" {
+		return r, fmt.Errorf("original provider native home: %s", scope.NativeHomeError)
+	}
 	if scope.NativeHome == "" {
+		// These adapters rewrite the frozen environment at provider launch.
+		// Without the original host's facts, another home is not a safe key.
+		switch runtime.side.Harness {
+		case domain.HarnessKimi, domain.HarnessCommandCode, domain.HarnessOpenCodeV2:
+			return r, fmt.Errorf("original provider native home unavailable for %s", runtime.side.Harness)
+		}
 		r.NativeHomeSource = "launch_config"
-		key, fallback := "CODEX_HOME", ".codex"
-		if runtime.side.Harness != domain.HarnessCodex {
-			key, fallback = "CLAUDE_CONFIG_DIR", ".claude"
-		}
-		home := frozen.Env[key]
-		if home == "" {
-			base := frozen.Env["HOME"]
-			if base == "" {
-				base = frozen.Env["USERPROFILE"]
-			}
-			if base == "" {
-				base, _ = os.UserHomeDir()
-			}
-			home = filepath.Join(base, fallback)
-		}
-		if !filepath.IsAbs(home) {
-			home = filepath.Join(frozen.WorkspacePath, home)
-		}
-		var err error
-		scope.NativeHome, err = filepath.EvalSymlinks(home)
+		scope.NativeHome, err = nativehome.Resolve(ctx, runtime.side.Harness, frozen.Env, frozen.WorkspacePath, frozen.DataDir)
 		if err != nil {
 			return r, err
 		}
 	}
+	r.ProviderHostID = runtime.side.ProviderHostID
 	r.SideID, r.SessionID, r.NativeID = runtime.side.ID, runtime.side.SessionID, runtime.conv.ProviderConversationID()
 	r.NativeHome, r.Provider, r.PermissionMode, r.ReadOnly, r.Scope, r.State = scope.NativeHome, runtime.side.Harness, frozen.Permissions, frozen.ReadOnly, scope.Processes, domain.SideCompactionPending
 	return r, nil

@@ -232,6 +232,13 @@ func (m *memorySideStore) loadCompactions(ctx context.Context) error {
 			m.log.Warn("side compaction content unavailable", "side", row.SideID, "code", "CHAT_SIDE_COMPACTION_RESTORE_FAILED", "error", err)
 		}
 	}
+	for _, row := range rows {
+		if !m.protected[row.SideID] && row.ProviderHostID != "" {
+			if err := m.attachments.RemoveSession(ctx, domain.SessionID(row.ProviderHostID)); err != nil {
+				m.log.Warn("settled side attachment cleanup failed", "side", row.SideID, "code", "CHAT_SIDE_ATTACHMENTS_CLEANUP_FAILED", "error", err)
+			}
+		}
+	}
 	return nil
 }
 

@@ -214,7 +214,7 @@ func (d *Driver) connect(
 				return persistenthost.PreparedProvider{}, err
 			}
 			return persistenthost.PreparedProvider{
-				Env:  processenv.Merge(launchEnv),
+				Env:  append(processenv.Merge(launchEnv), "AO_CHAT_HARNESS="+string(domain.HarnessUnreal)),
 				Argv: []string{executable, "unreal-provider", configPath},
 			}, nil
 		},

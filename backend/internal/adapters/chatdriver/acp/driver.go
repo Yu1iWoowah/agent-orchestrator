@@ -871,7 +871,7 @@ func (d *Driver) connectProcess(
 				return persistenthost.PreparedProvider{}, fmt.Errorf("%w: ACP launch command is empty", ports.ErrChatDriverUnavailable)
 			}
 			return persistenthost.PreparedProvider{
-				Env:  processenv.Merge(launch.Env),
+				Env:  append(processenv.Merge(launch.Env), "AO_CHAT_HARNESS="+string(d.cfg.Harness)),
 				Argv: append([]string{launch.Command}, launch.Args...),
 			}, nil
 		},

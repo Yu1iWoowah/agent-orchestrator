@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/nativehome"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processscope"
 )
@@ -30,7 +30,7 @@ func (c *DeliveryClient) CompactionScope(ctx context.Context) (ports.ChatCompact
 	return response.CompactionScope, finish(nil)
 }
 
-func (h *host) compactionScope() ports.ChatCompactionScope {
+func (h *host) compactionScope(dataDir string) ports.ChatCompactionScope {
 	if h.child == nil || h.child.Process == nil {
 		return ports.ChatCompactionScope{}
 	}
@@ -41,27 +41,14 @@ func (h *host) compactionScope() ports.ChatCompactionScope {
 			env[key] = value
 		}
 	}
-	key, fallback := "CODEX_HOME", ".codex"
-	if h.acp != nil {
-		key, fallback = "CLAUDE_CONFIG_DIR", ".claude"
+	provider := domain.AgentHarness(env["AO_CHAT_HARNESS"])
+	if provider == "" && h.acp == nil {
+		provider = domain.HarnessCodex
 	}
-	home := env[key]
-	if home == "" {
-		base := env["HOME"]
-		if base == "" {
-			base = env["USERPROFILE"]
-		}
-		if base == "" {
-			base, _ = os.UserHomeDir()
-		}
-		home = filepath.Join(base, fallback)
-	}
-	if !filepath.IsAbs(home) {
-		home = filepath.Join(h.child.Dir, home)
-	}
-	resolved, err := filepath.EvalSymlinks(home)
+	resolved, err := nativehome.Resolve(h.ctx, provider, env, h.child.Dir, dataDir)
+	scope := ports.ChatCompactionScope{NativeHome: resolved, Processes: processscope.Capture(h.child.Process.Pid)}
 	if err != nil {
-		resolved = ""
+		scope.NativeHomeError = err.Error()
 	}
-	return ports.ChatCompactionScope{NativeHome: resolved, Processes: processscope.Capture(h.child.Process.Pid)}
+	return scope
 }

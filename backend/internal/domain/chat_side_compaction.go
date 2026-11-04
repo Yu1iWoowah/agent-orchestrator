@@ -30,16 +30,16 @@ type CompactionProcessScope struct {
 // SideCompaction is the durable obligation; Content is stored separately so
 // explicit close can discard bodies while retaining the original metadata.
 type SideCompaction struct {
-	ScopeSource, NativeHomeSource           string
-	ReadOnly                                bool
-	ID, SideID, NativeHome, NativeID, Epoch string
-	SessionID                               SessionID
-	Provider                                AgentHarness
-	PermissionMode                          PermissionMode
-	Scope                                   *CompactionProcessScope
-	State                                   SideCompactionState
-	Historical, Closed                      bool
-	Content                                 json.RawMessage `json:"-"`
+	ScopeSource, NativeHomeSource, ProviderHostID string
+	ReadOnly                                      bool
+	ID, SideID, NativeHome, NativeID, Epoch       string
+	SessionID                                     SessionID
+	Provider                                      AgentHarness
+	PermissionMode                                PermissionMode
+	Scope                                         *CompactionProcessScope
+	State                                         SideCompactionState
+	Historical, Closed                            bool
+	Content                                       json.RawMessage `json:"-"`
 }
 
 // Unresolved identifies an obligation that still protects its side.

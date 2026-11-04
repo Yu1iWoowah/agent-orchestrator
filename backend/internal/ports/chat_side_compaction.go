@@ -17,8 +17,8 @@ type SideCompactionStore interface {
 
 // ChatCompactionScope contains facts from the original provider launch.
 type ChatCompactionScope struct {
-	NativeHome string
-	Processes  *domain.CompactionProcessScope
+	NativeHome, NativeHomeError string
+	Processes                   *domain.CompactionProcessScope
 }
 
 // ChatCompactionScopeReader queries the original host without provider I/O.

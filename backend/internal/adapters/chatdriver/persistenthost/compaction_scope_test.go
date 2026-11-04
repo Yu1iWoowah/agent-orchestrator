@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 func TestCompactionScopeReportsOriginalHostAndProvider(t *testing.T) {
@@ -70,5 +72,52 @@ func TestCompactionScopeOlderHostReturnsEmpty(t *testing.T) {
 	<-done
 	if err != nil || scope.NativeHome != "" || scope.Processes != nil {
 		t.Fatalf("old host response = %+v, %v", scope, err)
+	}
+}
+
+func TestCompactionScopeUsesACPProviderHome(t *testing.T) {
+	for _, provider := range []domain.AgentHarness{domain.HarnessOpenCode, domain.HarnessOMP} {
+		for _, valid := range []bool{true, false} {
+			name := "valid"
+			if !valid {
+				name = "invalid"
+			}
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				home := t.TempDir()
+				native := filepath.Join(home, "provider-root")
+				if valid {
+					if err := os.Mkdir(native, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				claude := filepath.Join(home, ".claude")
+				if err := os.Mkdir(claude, 0700); err != nil {
+					t.Fatal(err)
+				}
+				key := "OPENCODE_DATA_DIR"
+				if provider == domain.HarnessOMP {
+					key = "PI_CODING_AGENT_DIR"
+				}
+				cfg := Config{SessionID: "acp-home", DataDir: t.TempDir(), Workdir: home, Protocol: ProtocolACP,
+					Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1", "AO_CHAT_HOST_ACP_HELPER=1", "AO_CHAT_HARNESS="+string(provider), "HOME="+home, key+"="+native, "CLAUDE_CONFIG_DIR="+claude),
+					Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+				done := make(chan error, 1)
+				go func() { done <- Run(context.Background(), cfg) }()
+				t.Cleanup(func() { _ = Shutdown(context.Background(), cfg.DataDir, cfg.SessionID); <-done })
+				descriptor := awaitDescriptor(t, cfg.DataDir, cfg.SessionID)
+				client := &DeliveryClient{descriptor: descriptor}
+				scope, err := client.CompactionScope(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if valid {
+					if scope.NativeHome != native || scope.NativeHomeError != "" {
+						t.Fatalf("ACP provider home: %+v", scope)
+					}
+				} else if scope.NativeHome != "" || scope.NativeHomeError == "" {
+					t.Fatalf("invalid ACP root fell back to Claude: %+v", scope)
+				}
+			})
+		}
 	}
 }

@@ -753,7 +753,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		defer func() { _ = h.acp.close(context.WithoutCancel(ctx)) }()
 	}
-	h.compaction = h.compactionScope()
+	h.compaction = h.compactionScope(cfg.DataDir)
 	h.cond = sync.NewCond(&h.mu)
 	providerDone := make(chan error, 1)
 	go func() { providerDone <- h.forwardProvider(stdout) }()
