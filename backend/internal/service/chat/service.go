@@ -259,6 +259,7 @@ func New(opts Options) *Service {
 		promptSuggestionSlots:  make(chan struct{}, 2),
 	}
 	sideStore := newMemorySideStore()
+	sideStore.log = svc.log
 	sideStore.durable, _ = opts.Store.(ports.SideCompactionStore)
 	sideStore.attachments = attachmentstore.New(opts.DataDir)
 	svc.sides = newSideManager(svc, sideStore, opts.AppRunID)

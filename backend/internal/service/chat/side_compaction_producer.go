@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,22 +12,35 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func (m *sideManager) registerCompaction(ctx context.Context, runtime *sideRuntime) error {
+func (m *sideManager) prepareCompaction(ctx context.Context, runtime *sideRuntime) (r domain.SideCompaction, err error) {
 	store, ok := m.store.(*memorySideStore)
 	if !ok || store.durable == nil {
-		return nil
+		return r, nil
 	}
 	var frozen frozenSideConfig
 	if err := json.Unmarshal(runtime.side.LaunchConfig, &frozen); err != nil {
-		return err
+		return r, err
 	}
+	r.ScopeSource, r.NativeHomeSource = "not_reported", "host"
 	var scope ports.ChatCompactionScope
 	if reader, ok := runtime.conv.(ports.ChatCompactionScopeReader); ok {
 		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		scope, _ = reader.CompactionScope(queryCtx)
+		scope, err = reader.CompactionScope(queryCtx)
 		cancel()
+		r.ScopeSource = "host"
+		if err != nil {
+			r.ScopeSource = "host_error"
+			if errors.Is(err, context.DeadlineExceeded) {
+				r.ScopeSource = "host_timeout"
+			}
+			m.service.log.Warn("side compaction scope unavailable", "side", runtime.side.ID, "code", "CHAT_SIDE_COMPACTION_SCOPE_FAILED", "error", err)
+			scope = ports.ChatCompactionScope{}
+		} else if scope.Processes == nil {
+			r.ScopeSource = "host_missing_identity"
+		}
 	}
 	if scope.NativeHome == "" {
+		r.NativeHomeSource = "launch_config"
 		key, fallback := "CODEX_HOME", ".codex"
 		if runtime.side.Harness != domain.HarnessCodex {
 			key, fallback = "CLAUDE_CONFIG_DIR", ".claude"
@@ -48,16 +62,26 @@ func (m *sideManager) registerCompaction(ctx context.Context, runtime *sideRunti
 		var err error
 		scope.NativeHome, err = filepath.EvalSymlinks(home)
 		if err != nil {
-			return err
+			return r, err
 		}
+	}
+	r.SideID, r.SessionID, r.NativeID = runtime.side.ID, runtime.side.SessionID, runtime.conv.ProviderConversationID()
+	r.NativeHome, r.Provider, r.PermissionMode, r.ReadOnly, r.Scope, r.State = scope.NativeHome, runtime.side.Harness, frozen.Permissions, frozen.ReadOnly, scope.Processes, domain.SideCompactionPending
+	return r, nil
+}
+
+func (m *sideManager) registerCompaction(ctx context.Context, r domain.SideCompaction) error {
+	store, ok := m.store.(*memorySideStore)
+	if !ok || store.durable == nil {
+		return nil
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	raw, err := store.contentLocked(runtime.side.ID)
+	raw, err := store.contentLocked(r.SideID)
 	if err != nil {
 		return err
 	}
-	r := domain.SideCompaction{ID: runtime.compactionID, Epoch: runtime.compactionEpoch, SideID: runtime.side.ID, SessionID: runtime.side.SessionID, NativeHome: scope.NativeHome, NativeID: runtime.conv.ProviderConversationID(), Provider: runtime.side.Harness, PermissionMode: frozen.Permissions, ReadOnly: frozen.ReadOnly, Scope: scope.Processes, State: domain.SideCompactionPending, Content: raw}
+	r.Content = raw
 	if err := store.durable.RegisterSideCompaction(ctx, r); err != nil {
 		return err
 	}

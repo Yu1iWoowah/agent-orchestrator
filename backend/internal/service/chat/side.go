@@ -297,6 +297,7 @@ func (m *sideManager) claim(ctx context.Context, runID string) error {
 			_ = m.service.stopProviderHost(ctx, domain.SessionID(side.ProviderHostID))
 		}
 		m.deleteRegisteredFork(ctx, side, side.ProviderForkID)
+		m.removeSideAttachments(ctx, side)
 	}
 	sides, err := m.store.ListOpenSidesForRun(ctx, runID)
 	if err != nil {
@@ -304,14 +305,6 @@ func (m *sideManager) claim(ctx context.Context, runID string) error {
 	}
 	for _, side := range sides {
 		if side.State == "ready" || side.State == "recovering" {
-			if store, ok := m.store.(*memorySideStore); ok {
-				store.mu.Lock()
-				protected := store.protected[side.ID]
-				store.mu.Unlock()
-				if protected {
-					continue
-				}
-			}
 			if err := m.ensureRestore(side); err != nil {
 				m.failOpen(side, err)
 			}
@@ -830,11 +823,19 @@ func (m *sideManager) failOpen(side domain.SideConversation, err error) {
 }
 
 func (m *sideManager) ensureRestore(side domain.SideConversation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if store, ok := m.store.(*memorySideStore); ok {
+		store.mu.Lock()
+		protected := store.protected[side.ID]
+		store.mu.Unlock()
+		if protected {
+			return nil
+		}
+	}
 	if side.PolicyVersion != sidePolicyVersion || side.BoundaryState == "uncertain" {
 		return ErrSidePolicyRecreate
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.runtimes[side.ID] != nil || m.restoring[side.ID] != nil {
 		return nil
 	}
@@ -1187,6 +1188,8 @@ func (m *sideManager) consumeEvents(ctx context.Context, runtime *sideRuntime) {
 						state = domain.SideCompactionNotSent
 					}
 					if err := m.transitionCompaction(ctx, runtime, state); err != nil {
+						m.service.log.Warn("side compaction result persistence failed", "side", runtime.side.ID, "code", "CHAT_SIDE_COMPACTION_RESULT_FAILED", "error", err)
+						// Retain the native receipt for retry after durable settlement.
 						runtime.mu.Lock()
 						runtime.compacting = false
 						runtime.mu.Unlock()
@@ -1943,7 +1946,15 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 	if !ok || !runtime.conv.Capabilities().Has(ports.ChatCapabilityCompaction) {
 		return ports.ChatCompactionResult{}, ErrCompactionUnsupported
 	}
+	record, err := s.sides.prepareCompaction(ctx, runtime)
+	if err != nil {
+		return ports.ChatCompactionResult{}, err
+	}
 	s.sides.mu.Lock()
+	if s.sides.runtimes[sideID] != runtime {
+		s.sides.mu.Unlock()
+		return ports.ChatCompactionResult{}, ErrSideUnavailable
+	}
 	quiescing := s.sides.quiescing
 	if quiescing {
 		s.sides.mu.Unlock()
@@ -1962,14 +1973,15 @@ func (s *Service) CompactSideChat(ctx context.Context, session domain.SessionID,
 	}
 	compactionID := runtime.compactionID
 	s.sides.setOutboundUnverifiedLocked(runtime, true)
-	registerErr := s.sides.registerCompaction(ctx, runtime)
-	if registerErr != nil {
-		runtime.compacting, runtime.compactionID, runtime.compactionEpoch = false, "", ""
-		s.sides.setOutboundUnverifiedLocked(runtime, false)
-	}
+	record.ID, record.Epoch = runtime.compactionID, runtime.compactionEpoch
 	runtime.mu.Unlock()
 	s.sides.mu.Unlock()
+	registerErr := s.sides.registerCompaction(ctx, record)
 	if registerErr != nil {
+		runtime.mu.Lock()
+		runtime.compacting, runtime.compactionID, runtime.compactionEpoch = false, "", ""
+		s.sides.setOutboundUnverifiedLocked(runtime, false)
+		runtime.mu.Unlock()
 		return ports.ChatCompactionResult{}, registerErr
 	}
 	result, err := compactor.Compact(ports.WithChatCompactionID(ctx, compactionID))
@@ -2078,11 +2090,7 @@ func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) 
 		}
 	}
 	s.sides.store.CompleteSideHostCleanup(ctx, sideID)
-	if store, ok := s.sides.store.(*memorySideStore); ok && store.attachments != nil {
-		if err := store.attachments.RemoveSession(ctx, domain.SessionID(owned.ProviderHostID)); err != nil {
-			return err
-		}
-	}
+	s.sides.removeSideAttachments(ctx, owned)
 	if s.stopProviderHost != nil {
 		if err := outboundAttention(ctx, s.store, owned.SessionID, "side:"+sideID, true, s.now()); err != nil {
 			s.log.Warn("side outbound attention cleanup failed", "side", sideID, "code", "CHAT_ATTENTION_CLEANUP_FAILED")
@@ -2162,6 +2170,7 @@ func (m *sideManager) retryCleanup() {
 			}
 		}
 		m.store.CompleteSideHostCleanup(ctx, side.ID)
+		m.removeSideAttachments(ctx, side)
 	}
 	items, err := m.store.SideProviderCleanupPending(ctx)
 	if err != nil {

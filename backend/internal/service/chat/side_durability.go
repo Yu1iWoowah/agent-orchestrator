@@ -25,7 +25,7 @@ type durableSideContent struct {
 }
 
 func (m *memorySideStore) snapshotLocked(id string) (durableSideContent, error) {
-	for _, record := range m.exportLocked("") {
+	for _, record := range m.exportLocked("", id) {
 		if record.Side.ID == id {
 			return durableSideContent{RunID: record.Side.AppRunID, Record: record, Attachments: map[string]string{}}, nil
 		}
@@ -137,18 +137,21 @@ func (m *memorySideStore) finishWrite(id string) func(*error) {
 	before, marshalErr := json.Marshal(snapshot)
 	snapshotErr = errors.Join(snapshotErr, marshalErr)
 	return func(result *error) {
+		if *result != nil {
+			return
+		}
 		if snapshotErr != nil {
 			*result = errors.Join(*result, snapshotErr)
 			return
 		}
 		raw, err := m.contentLocked(id)
-		if err == nil && *result == nil {
+		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err = m.durable.SaveSideCompactionContent(ctx, id, raw)
 			cancel()
 		}
-		if err != nil || *result != nil {
-			*result = errors.Join(*result, err, m.restoreContentLocked(before))
+		if err != nil {
+			*result = errors.Join(err, m.restoreContentLocked(before))
 		}
 	}
 }
@@ -190,7 +193,7 @@ func (m *memorySideStore) restoreContentLocked(raw json.RawMessage) error {
 	}
 	id := r.Side.ID
 	side := projection.sides[id]
-	side.State, side.ErrorMessage, side.UpdatedAt = r.Side.State, r.Side.ErrorMessage, r.Side.UpdatedAt
+	side.State, side.ErrorMessage, side.UpdatedAt, side.RecreateRequired = r.Side.State, r.Side.ErrorMessage, r.Side.UpdatedAt, r.Side.RecreateRequired
 	m.sides[id] = side
 	m.turns[id], m.messages[id], m.activities[id], m.drafts[id] = projection.turns[id], projection.messages[id], projection.activities[id], projection.drafts[id]
 	for i, item := range r.Turns {
@@ -219,14 +222,15 @@ func (m *memorySideStore) loadCompactions(ctx context.Context) error {
 	for _, row := range rows {
 		if row.Closed {
 			m.closed[row.SideID] = true
+			delete(m.protected, row.SideID)
 		}
 		if !row.Unresolved() || m.protected[row.SideID] {
 			continue
 		}
-		if err := m.restoreContentLocked(row.Content); err != nil {
-			return err
-		}
 		m.protected[row.SideID] = true
+		if err := m.restoreContentLocked(row.Content); err != nil {
+			m.log.Warn("side compaction content unavailable", "side", row.SideID, "code", "CHAT_SIDE_COMPACTION_RESTORE_FAILED", "error", err)
+		}
 	}
 	return nil
 }
@@ -261,4 +265,12 @@ func (s *Service) ExplicitlyCloseSideCompaction(ctx context.Context, session dom
 	}
 	delete(store.protected, id)
 	return nil
+}
+
+func (m *sideManager) removeSideAttachments(ctx context.Context, side domain.SideConversation) {
+	if store, ok := m.store.(*memorySideStore); ok && store.attachments != nil {
+		if err := store.attachments.RemoveSession(ctx, domain.SessionID(side.ProviderHostID)); err != nil {
+			m.service.log.Warn("side attachment cleanup failed", "side", side.ID, "code", "CHAT_SIDE_ATTACHMENTS_CLEANUP_FAILED", "error", err)
+		}
+	}
 }

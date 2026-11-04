@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strconv"
@@ -31,6 +32,7 @@ var (
 // memorySideStore projects side content; unresolved compactions also retain a
 // durable snapshot independent of Electron recovery.
 type memorySideStore struct {
+	log              *slog.Logger
 	attachments      *attachmentstore.Store
 	durable          ports.SideCompactionStore
 	protected        map[string]bool   // guarded by mu
@@ -98,10 +100,10 @@ func (m *memorySideStore) export(runID string) []SideRecoveryRecord {
 	return m.exportLocked(runID)
 }
 
-func (m *memorySideStore) exportLocked(runID string) []SideRecoveryRecord {
+func (m *memorySideStore) exportLocked(runID string, onlyID ...string) []SideRecoveryRecord {
 	out := []SideRecoveryRecord{}
 	for id, side := range m.sides {
-		if (runID != "" && side.AppRunID != runID) || side.ClosedAt != nil {
+		if (len(onlyID) > 0 && id != onlyID[0]) || (runID != "" && side.AppRunID != runID) || side.ClosedAt != nil {
 			continue
 		}
 		turns := make([]SideRecoveryTurn, 0, len(m.turns[id]))
@@ -275,7 +277,7 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 }
 
 func newMemorySideStore() *memorySideStore {
-	return &memorySideStore{hostCleanup: map[string]domain.SideConversation{}, hostStopped: map[string]bool{}, closed: map[string]bool{}, sides: map[string]domain.SideConversation{}, turns: map[string][]domain.SideTurn{}, messages: map[string][]domain.SideMessage{}, activities: map[string][]domain.SideActivity{}, drafts: map[string]string{}, cleanup: map[string]domain.SideProviderCleanup{}}
+	return &memorySideStore{log: slog.Default(), hostCleanup: map[string]domain.SideConversation{}, hostStopped: map[string]bool{}, closed: map[string]bool{}, sides: map[string]domain.SideConversation{}, turns: map[string][]domain.SideTurn{}, messages: map[string][]domain.SideMessage{}, activities: map[string][]domain.SideActivity{}, drafts: map[string]string{}, cleanup: map[string]domain.SideProviderCleanup{}}
 }
 
 func (m *memorySideStore) ClaimSideLaunch(_ context.Context, runID string, _ time.Time) ([]domain.SideConversation, error) {
@@ -1003,6 +1005,11 @@ func (m *memorySideStore) unverifiedSides() []string {
 	for id, unknown := range m.unverified {
 		side, exists := m.sides[id]
 		if unknown && exists && side.ClosedAt == nil && !m.hostStopped[id] {
+			pending = append(pending, id)
+		}
+	}
+	for id := range m.protected {
+		if _, exists := m.sides[id]; !exists {
 			pending = append(pending, id)
 		}
 	}
