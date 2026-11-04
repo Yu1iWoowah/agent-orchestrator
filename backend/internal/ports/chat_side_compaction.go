@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -25,3 +26,9 @@ type ChatCompactionScope struct {
 type ChatCompactionScopeReader interface {
 	CompactionScope(context.Context) (ChatCompactionScope, error)
 }
+
+// ErrChatCompactionScopeUnsupported means the original host lacks the scope query.
+var ErrChatCompactionScopeUnsupported = errors.New("chat host does not support compaction scope")
+
+// ErrChatCompactionScopeNoHost means this conversation has no persistent host.
+var ErrChatCompactionScopeNoHost = errors.New("compaction scope has no persistent host")

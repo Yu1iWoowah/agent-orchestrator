@@ -753,6 +753,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		defer func() { _ = h.acp.close(context.WithoutCancel(ctx)) }()
 	}
+	h.compactionDataDir = cfg.DataDir
 	h.compaction = h.compactionScope(cfg.DataDir)
 	h.cond = sync.NewCond(&h.mu)
 	providerDone := make(chan error, 1)
@@ -873,8 +874,10 @@ func confirmedProviderShutdown(platform string, cleanupErr error, wait func() er
 }
 
 type host struct {
-	compaction ports.ChatCompactionScope
-	delivery   *deliveryJournal
+	compactionMu      sync.Mutex
+	compactionDataDir string
+	compaction        ports.ChatCompactionScope
+	delivery          *deliveryJournal
 
 	launchCapabilityVerifier string     // Immutable launch evidence, sent only after authentication.
 	admissionMu              sync.Mutex // Serializes stopping with attached-client registration, never data writes.
@@ -969,7 +972,7 @@ func (h *host) handle(conn net.Conn) {
 		return
 	}
 	if request.Action == "compaction-scope" {
-		_ = json.NewEncoder(conn).Encode(helloResponse{OK: true, CompactionScope: h.compaction})
+		_ = json.NewEncoder(conn).Encode(helloResponse{OK: true, CompactionScope: h.currentCompactionScope()})
 		_ = conn.Close()
 		return
 	}

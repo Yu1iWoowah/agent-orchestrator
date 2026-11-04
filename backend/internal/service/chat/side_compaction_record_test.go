@@ -107,6 +107,9 @@ func TestSideCompactionCommitFailureHasNoIO(t *testing.T) {
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("partially registered obligation: %+v, %v", rows, err)
 	}
+	if err := svc.PreflightShutdown(ctx); err != nil {
+		t.Fatalf("failed registration left a dispatch fence: %v", err)
+	}
 	var contents int
 	if err := writer.QueryRow(`SELECT count(*) FROM chat_side_contents`).Scan(&contents); err != nil || contents != 0 {
 		t.Fatalf("partially registered content = %d, %v", contents, err)

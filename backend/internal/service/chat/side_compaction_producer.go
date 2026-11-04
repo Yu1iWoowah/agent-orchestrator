@@ -30,7 +30,11 @@ func (m *sideManager) prepareCompaction(ctx context.Context, runtime *sideRuntim
 		r.ScopeSource = "host"
 		if err != nil {
 			r.ScopeSource = "host_error"
-			if errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, ports.ErrChatCompactionScopeUnsupported) {
+				r.ScopeSource = "host_unsupported"
+			} else if errors.Is(err, ports.ErrChatCompactionScopeNoHost) {
+				r.ScopeSource = "no_host"
+			} else if errors.Is(err, context.DeadlineExceeded) {
 				r.ScopeSource = "host_timeout"
 			}
 			m.service.log.Warn("side compaction scope unavailable", "side", runtime.side.ID, "code", "CHAT_SIDE_COMPACTION_SCOPE_FAILED", "error", err)
@@ -40,19 +44,19 @@ func (m *sideManager) prepareCompaction(ctx context.Context, runtime *sideRuntim
 		}
 	}
 	if scope.NativeHomeError != "" {
-		return r, fmt.Errorf("original provider native home: %s", scope.NativeHomeError)
+		return r, fmt.Errorf("%w: %s", ErrSideCompactionNativeHomeUnavailable, scope.NativeHomeError)
 	}
 	if scope.NativeHome == "" {
 		// These adapters rewrite the frozen environment at provider launch.
 		// Without the original host's facts, another home is not a safe key.
 		switch runtime.side.Harness {
 		case domain.HarnessKimi, domain.HarnessCommandCode, domain.HarnessOpenCodeV2:
-			return r, fmt.Errorf("original provider native home unavailable for %s", runtime.side.Harness)
+			return r, fmt.Errorf("%w: original launch facts unavailable for %s", ErrSideCompactionNativeHomeUnavailable, runtime.side.Harness)
 		}
 		r.NativeHomeSource = "launch_config"
 		scope.NativeHome, err = nativehome.Resolve(ctx, runtime.side.Harness, frozen.Env, frozen.WorkspacePath, frozen.DataDir)
 		if err != nil {
-			return r, err
+			return r, fmt.Errorf("%w: %w", ErrSideCompactionNativeHomeUnavailable, err)
 		}
 	}
 	r.ProviderHostID = runtime.side.ProviderHostID

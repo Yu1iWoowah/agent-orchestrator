@@ -3,6 +3,7 @@ package persistenthost
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/processscope"
 )
 
-// CompactionScope reads frozen launch facts; older hosts return an empty scope.
+// CompactionScope reads original launch facts; unsupported hosts return a distinct error.
 func (c *DeliveryClient) CompactionScope(ctx context.Context) (ports.ChatCompactionScope, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", c.descriptor.Address)
 	if err != nil {
@@ -26,6 +27,12 @@ func (c *DeliveryClient) CompactionScope(ctx context.Context) (ports.ChatCompact
 	var response helloResponse
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
 		return ports.ChatCompactionScope{}, finish(err)
+	}
+	if response.Error != "" {
+		if response.Error == "unknown chat host action" {
+			return ports.ChatCompactionScope{}, finish(ports.ErrChatCompactionScopeUnsupported)
+		}
+		return ports.ChatCompactionScope{}, finish(fmt.Errorf("chat host compaction scope: %s", response.Error))
 	}
 	return response.CompactionScope, finish(nil)
 }
@@ -51,4 +58,16 @@ func (h *host) compactionScope(dataDir string) ports.ChatCompactionScope {
 		scope.NativeHomeError = err.Error()
 	}
 	return scope
+}
+
+func (h *host) currentCompactionScope() ports.ChatCompactionScope {
+	h.compactionMu.Lock()
+	defer h.compactionMu.Unlock()
+	if h.compaction.NativeHome == "" {
+		retry := h.compactionScope(h.compactionDataDir)
+		// Only the previously unavailable root is retried; process identity stays frozen.
+		retry.Processes = h.compaction.Processes
+		h.compaction = retry
+	}
+	return h.compaction
 }

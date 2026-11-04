@@ -359,6 +359,8 @@ func TestSideCompactionScopeProvenance(t *testing.T) {
 		err                      error
 	}{
 		{name: "unsupported", source: "not_reported", homeSource: "launch_config"},
+		{name: "old_host", source: "host_unsupported", homeSource: "launch_config", err: ports.ErrChatCompactionScopeUnsupported},
+		{name: "no_host", source: "no_host", homeSource: "launch_config", err: ports.ErrChatCompactionScopeNoHost},
 		{name: "host", source: "host", homeSource: "host", scope: ports.ChatCompactionScope{Processes: &domain.CompactionProcessScope{HostPID: 123}}},
 		{name: "missing identity", source: "host_missing_identity", homeSource: "host"},
 		{name: "timeout", source: "host_timeout", homeSource: "launch_config", scope: ports.ChatCompactionScope{NativeHome: "discard", Processes: &domain.CompactionProcessScope{HostPID: 999}}, err: context.DeadlineExceeded},

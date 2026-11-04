@@ -3,6 +3,7 @@ package persistenthost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestCompactionScopeReportsOriginalHostAndProvider(t *testing.T) {
@@ -70,7 +72,7 @@ func TestCompactionScopeOlderHostReturnsEmpty(t *testing.T) {
 	client := &DeliveryClient{descriptor: Descriptor{Address: listener.Addr().String()}}
 	scope, err := client.CompactionScope(context.Background())
 	<-done
-	if err != nil || scope.NativeHome != "" || scope.Processes != nil {
+	if !errors.Is(err, ports.ErrChatCompactionScopeUnsupported) || scope.NativeHome != "" || scope.Processes != nil {
 		t.Fatalf("old host response = %+v, %v", scope, err)
 	}
 }
@@ -119,5 +121,31 @@ func TestCompactionScopeUsesACPProviderHome(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCompactionScopePropagatesHostErrors(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var request hello
+		_ = json.NewDecoder(conn).Decode(&request)
+		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrUnauthorized.Error()})
+	}()
+	client := &DeliveryClient{descriptor: Descriptor{Address: listener.Addr().String()}}
+	_, err = client.CompactionScope(t.Context())
+	<-done
+	if err == nil || errors.Is(err, ports.ErrChatCompactionScopeUnsupported) {
+		t.Fatalf("host error lost or marked legacy unsupported: %v", err)
 	}
 }
