@@ -352,7 +352,13 @@ func TestSideCompactionNormalTransitions(t *testing.T) {
 					if len(rows[0].Content) != 0 {
 						t.Fatal("terminal result retained side snapshot")
 					}
-					break
+					runtime := svc.sides.runtimes["side"]
+					runtime.mu.Lock()
+					released := !runtime.outboundUnverified && runtime.compactionID == ""
+					runtime.mu.Unlock()
+					if released {
+						break
+					}
 				}
 				if time.Now().After(deadline) {
 					t.Fatalf("normal result not recorded: %+v", rows)

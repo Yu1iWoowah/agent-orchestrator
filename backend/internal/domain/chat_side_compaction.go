@@ -27,6 +27,7 @@ type CompactionProcessScope struct {
 // SideCompaction is the durable obligation; Content is stored separately so
 // explicit close can discard bodies while retaining the original metadata.
 type SideCompaction struct {
+	ReadOnly                                bool
 	ID, SideID, NativeHome, NativeID, Epoch string
 	SessionID                               SessionID
 	Provider                                AgentHarness
