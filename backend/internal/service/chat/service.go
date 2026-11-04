@@ -258,9 +258,10 @@ func New(opts Options) *Service {
 		backgroundWakes:        make(map[domain.SessionID]bool),
 		promptSuggestionSlots:  make(chan struct{}, 2),
 	}
-	svc.sides = newSideManager(svc, newMemorySideStore(), opts.AppRunID)
-	svc.sides.store.(*memorySideStore).durable, _ = opts.Store.(ports.SideCompactionStore)
-	svc.sides.store.(*memorySideStore).attachments = attachmentstore.New(opts.DataDir)
+	sideStore := newMemorySideStore()
+	sideStore.durable, _ = opts.Store.(ports.SideCompactionStore)
+	sideStore.attachments = attachmentstore.New(opts.DataDir)
+	svc.sides = newSideManager(svc, sideStore, opts.AppRunID)
 	return svc
 }
 

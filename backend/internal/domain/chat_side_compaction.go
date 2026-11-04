@@ -5,8 +5,10 @@ import (
 	"errors"
 )
 
+// SideCompactionState records the original compaction result.
 type SideCompactionState string
 
+// Side compaction result states; closure is recorded independently.
 const (
 	SideCompactionPending SideCompactionState = "pending"
 	SideCompactionSettled SideCompactionState = "settled"
@@ -14,6 +16,7 @@ const (
 	SideCompactionUnknown SideCompactionState = "unknown"
 )
 
+// ErrSideCompactionTransition rejects result changes after settlement or history.
 var ErrSideCompactionTransition = errors.New("invalid side compaction transition")
 
 // CompactionProcessScope is reported by the original host, not inferred from
@@ -38,10 +41,12 @@ type SideCompaction struct {
 	Content                                 json.RawMessage `json:"-"`
 }
 
+// Unresolved identifies an obligation that still protects its side.
 func (r SideCompaction) Unresolved() bool {
 	return !r.Closed && (r.State == SideCompactionPending || r.State == SideCompactionUnknown)
 }
 
+// Transition preserves terminal results and historical unknown across closure.
 func (r SideCompaction) Transition(state SideCompactionState, historical, closed bool) (SideCompaction, error) {
 	valid := state == SideCompactionPending || state == SideCompactionUnknown || state == SideCompactionSettled || state == SideCompactionNotSent
 	if !valid || (historical && state != SideCompactionUnknown) || (r.Historical && (!historical || state != r.State)) || (r.Closed && !closed) ||

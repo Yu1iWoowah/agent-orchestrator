@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/processscope"
 )
 
+// CompactionScope reads frozen launch facts; older hosts return an empty scope.
 func (c *DeliveryClient) CompactionScope(ctx context.Context) (ports.ChatCompactionScope, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", c.descriptor.Address)
 	if err != nil {

@@ -372,6 +372,13 @@ func TestSideCompactionNormalTransitions(t *testing.T) {
 			if blocked {
 				t.Fatal("normal result did not release side")
 			}
+			if err := svc.ExplicitlyCloseSideCompaction(ctx, "session", "side"); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := db.SideCompactions(ctx, false)
+			if err != nil || len(rows) != 1 || !rows[0].Closed || rows[0].State != state {
+				t.Fatalf("closing a completed side lost metadata: %+v, %v", rows, err)
+			}
 		})
 	}
 }

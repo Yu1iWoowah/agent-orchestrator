@@ -11,6 +11,7 @@ import (
 
 var _ ports.SideCompactionStore = (*Store)(nil)
 
+// RegisterSideCompaction commits the obligation and content in one transaction.
 func (s *Store) RegisterSideCompaction(ctx context.Context, r domain.SideCompaction) error {
 	if r.ID == "" || r.SideID == "" || r.NativeHome == "" || r.NativeID == "" || r.State != domain.SideCompactionPending || r.Historical || r.Closed || !json.Valid(r.Content) {
 		return domain.ErrSideCompactionTransition
@@ -31,6 +32,7 @@ func (s *Store) RegisterSideCompaction(ctx context.Context, r domain.SideCompact
 	})
 }
 
+// SideCompactions reads durable metadata and the current side content.
 func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.SideCompaction, error) {
 	rows, err := s.qr.ListSideCompactions(ctx, unresolved)
 	if err != nil {
@@ -49,6 +51,7 @@ func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.
 	return out, nil
 }
 
+// SaveSideCompactionContent updates content only while an obligation is open.
 func (s *Store) SaveSideCompactionContent(ctx context.Context, sideID string, content json.RawMessage) error {
 	if !json.Valid(content) {
 		return domain.ErrSideCompactionTransition
@@ -60,6 +63,7 @@ func (s *Store) SaveSideCompactionContent(ctx context.Context, sideID string, co
 	return s.qw.UpdateSideCompactionContent(ctx, gen.UpdateSideCompactionContentParams{SideID: sideID, ContentJson: string(content)})
 }
 
+// TransitionSideCompaction validates the original epoch and removes settled bodies.
 func (s *Store) TransitionSideCompaction(ctx context.Context, id, epoch string, state domain.SideCompactionState, historical, closed bool) error {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err

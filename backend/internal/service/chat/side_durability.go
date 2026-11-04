@@ -163,18 +163,21 @@ func (s *Service) ExplicitlyCloseSideCompaction(ctx context.Context, session dom
 	if _, err := s.sides.ownedSide(ctx, session, id); err != nil {
 		return err
 	}
-	store := s.sides.store.(*memorySideStore)
+	store, ok := s.sides.store.(*memorySideStore)
+	if !ok {
+		return ErrSideUnavailable
+	}
 	if store.durable == nil {
 		return nil
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	rows, err := store.durable.SideCompactions(ctx, true)
+	rows, err := store.durable.SideCompactions(ctx, false)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		if row.SideID == id {
+		if row.SideID == id && !row.Closed {
 			if err := store.durable.TransitionSideCompaction(ctx, row.ID, row.Epoch, row.State, row.Historical, true); err != nil {
 				return err
 			}
