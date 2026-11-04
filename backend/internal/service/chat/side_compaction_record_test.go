@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,9 @@ type recordCompactionConversation struct {
 	io    func()
 	count int
 }
+
+const imageReceipt = `{"clientMessageId":"draft-client","request":{"text":"pending","attachments":[{"mimeType":"image/png","data":"aW1hZ2UgYnl0ZXM="}]},"submitted":{"text":"pending","attachments":[],"references":[]}}`
+const receiptDraft = `{"version":1,"text":"draft before","attachments":[{"id":"file","path":"image.png","name":"image.png","mimeType":"image/png","bytes":11}],"references":[],"pendingDelivery":` + imageReceipt + `,"pendingCommand":{"creationKey":"create","receipt":` + imageReceipt + `},"lastHandoffDelivery":` + imageReceipt + `}`
 
 func (c *recordCompactionConversation) Compact(context.Context) (ports.ChatCompactionResult, error) {
 	c.count++
@@ -168,6 +172,9 @@ func TestSideCompactionCrashHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	point := os.Getenv("PB_TEST_CRASH_POINT")
+	if err := store.SetSideDraft(ctx, "side", "run", receiptDraft, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if point == "before_commit" {
 		writer, err := sql.Open("sqlite", filepath.Join(dir, "ao.db"))
 		if err != nil {
@@ -257,7 +264,7 @@ func TestSideCompactionCrashWindows(t *testing.T) {
 			if point != "before_commit" {
 				draft, _ := store.SideDraft(ctx, "side")
 				turn, err := store.SideTurn(ctx, "side", "question")
-				if err != nil || draft != "draft before" || turn.Text != "pending inbox" || turn.Content[0].Data != "aW1hZ2UgYnl0ZXM=" || turn.Content[1].URI != "file:///document" {
+				if err != nil || draft != receiptDraft || turn.Text != "pending inbox" || turn.Content[0].Data != "aW1hZ2UgYnl0ZXM=" || turn.Content[1].URI != "file:///document" {
 					t.Fatalf("lost content: draft=%q turn=%+v err=%v", draft, turn, err)
 				}
 			}
@@ -266,6 +273,32 @@ func TestSideCompactionCrashWindows(t *testing.T) {
 				t.Fatalf("provider I/O at %s: %v", point, ioErr)
 			}
 		})
+	}
+}
+
+func TestSideCompactionDraftReceiptImagesUseReferences(t *testing.T) {
+	ctx := context.Background()
+	svc, db, _, _ := newRecordHarness(t, domain.HarnessClaudeCode)
+	if err := svc.SaveSideDraft(ctx, "session", "side", receiptDraft); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = svc.CompactSideChat(ctx, "session", "side")
+	updated := strings.Replace(receiptDraft, `"text":"draft before"`, `"text":"draft after"`, 1)
+	if err := svc.SaveSideDraft(ctx, "session", "side", updated); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.SideCompactions(ctx, true)
+	if err != nil || len(rows) != 1 || bytes.Contains(rows[0].Content, []byte("aW1hZ2UgYnl0ZXM=")) {
+		t.Fatalf("draft request image body stored in DB: %+v, %v", rows, err)
+	}
+	after := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "new-run", Sessions: sideSessionReader{}})
+	projection := after.sides.store.(*memorySideStore)
+	if err := projection.loadCompactions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	draft, _ := projection.SideDraft(ctx, "side")
+	if draft != updated {
+		t.Fatalf("draft receipt did not round trip: %s", draft)
 	}
 }
 

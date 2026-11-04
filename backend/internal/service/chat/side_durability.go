@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -18,6 +21,7 @@ type durableSideContent struct {
 	RunID       string
 	Record      SideRecoveryRecord
 	Attachments map[string]string
+	DraftImages map[string]string
 }
 
 func (m *memorySideStore) snapshotLocked(id string) (durableSideContent, error) {
@@ -42,19 +46,85 @@ func (m *memorySideStore) contentLocked(id string) (json.RawMessage, error) {
 			if item.Data == "" {
 				continue
 			}
-			data, err := base64.StdEncoding.DecodeString(item.Data)
+			name, err := m.storeImage(saved.Record.ProviderHostID, item.Data)
 			if err != nil {
-				return nil, err
-			}
-			name := fmt.Sprintf("image-%x.img", sha256.Sum256(data))
-			if err := m.attachments.PutCanonical(context.Background(), domain.SessionID(saved.Record.ProviderHostID), name, data); err != nil && !errors.Is(err, attachmentstore.ErrExists) {
 				return nil, err
 			}
 			saved.Attachments[fmt.Sprintf("%s:%d", turn.Turn.ID, j)] = name
 			item.Data = ""
 		}
 	}
+	var draft struct {
+		Version                 int
+		Attachments, References []json.RawMessage
+	}
+	if json.Unmarshal([]byte(saved.Record.Draft), &draft) == nil && draft.Version == 1 && draft.Attachments != nil && draft.References != nil {
+		saved.DraftImages = map[string]string{}
+		for _, raw := range draftImageData([]byte(saved.Record.Draft)) {
+			var data string
+			if err := json.Unmarshal(raw, &data); err != nil {
+				return nil, err
+			}
+			name, err := m.storeImage(saved.Record.ProviderHostID, data)
+			if err != nil {
+				return nil, err
+			}
+			marker := ""
+			for marker == "" || strings.Contains(saved.Record.Draft, marker) {
+				marker = `"ao-side-image:` + uuid.NewString() + `"`
+			}
+			saved.Record.Draft = strings.ReplaceAll(saved.Record.Draft, string(raw), marker)
+			saved.DraftImages[marker] = name
+		}
+	}
 	return json.Marshal(saved)
+}
+
+// draftImageData finds image request bodies retained by pending delivery,
+// command and handoff receipts inside the serialized side composer draft.
+func draftImageData(raw json.RawMessage) []json.RawMessage {
+	var fields map[string]json.RawMessage
+	var children []json.RawMessage
+	var out []json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil {
+		var mime, data string
+		if json.Unmarshal(fields["mimeType"], &mime) == nil && strings.HasPrefix(mime, "image/") && json.Unmarshal(fields["data"], &data) == nil && data != "" {
+			out = append(out, fields["data"])
+		}
+		for _, child := range fields {
+			children = append(children, child)
+		}
+	} else {
+		_ = json.Unmarshal(raw, &children)
+	}
+	for _, child := range children {
+		out = append(out, draftImageData(child)...)
+	}
+	return out
+}
+
+func (m *memorySideStore) storeImage(hostID, encoded string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("image-%x.img", sha256.Sum256(data))
+	if err := m.attachments.PutCanonical(context.Background(), domain.SessionID(hostID), name, data); err != nil && !errors.Is(err, attachmentstore.ErrExists) {
+		return "", err
+	}
+	return name, nil
+}
+
+func (m *memorySideStore) readImage(hostID, name string) (string, error) {
+	file, _, err := m.attachments.Open(context.Background(), domain.SessionID(hostID), name)
+	if err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(file)
+	if err := errors.Join(err, file.Close()); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
 }
 
 // finishWrite runs under mu. A failed durable write cannot become an accepted
@@ -95,17 +165,23 @@ func (m *memorySideStore) restoreContentLocked(raw json.RawMessage) error {
 			if name == "" {
 				continue
 			}
-			file, _, err := m.attachments.Open(context.Background(), domain.SessionID(r.ProviderHostID), name)
+			data, err := m.readImage(r.ProviderHostID, name)
 			if err != nil {
 				return err
 			}
-			data, err := io.ReadAll(file)
-			closeErr := file.Close()
-			if err := errors.Join(err, closeErr); err != nil {
-				return err
-			}
-			r.Turns[i].Content[j].Data = base64.StdEncoding.EncodeToString(data)
+			r.Turns[i].Content[j].Data = data
 		}
+	}
+	for marker, name := range saved.DraftImages {
+		data, err := m.readImage(r.ProviderHostID, name)
+		if err != nil {
+			return err
+		}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		r.Draft = strings.ReplaceAll(r.Draft, marker, string(raw))
 	}
 	projection := newMemorySideStore()
 	projection.runID = saved.RunID
