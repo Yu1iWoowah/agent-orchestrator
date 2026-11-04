@@ -20,12 +20,13 @@ func cloneSideSettings(turn domain.SideTurn) domain.SideTurn {
 
 // RecordSideTurnSettings retains each attempt in the existing process-local
 // recovery store. It never creates durable root session/conversation rows.
-func (m *memorySideStore) RecordSideTurnSettings(ctx context.Context, sideID, turnID, generation string, frame domain.AgentSettingsTurnSnapshot) error {
+func (m *memorySideStore) RecordSideTurnSettings(ctx context.Context, sideID, turnID, generation string, frame domain.AgentSettingsTurnSnapshot) (writeErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	side, ok := m.sides[sideID]
 	if !ok || side.ClosedAt != nil || side.Generation != generation {
 		return ErrSideClosed

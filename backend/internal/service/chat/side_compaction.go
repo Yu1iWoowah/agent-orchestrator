@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -72,6 +73,9 @@ func (m *sideManager) reconcileCompaction(ctx context.Context, runtime *sideRunt
 	}
 	runtime.mu.Lock()
 	settled := runtime.compactionID == id && runtime.activeTurnID == "" && !runtime.dispatchBlocked
+	if settled && m.transitionCompaction(checkCtx, runtime, domain.SideCompactionSettled) != nil {
+		settled = false
+	}
 	if settled {
 		runtime.compacting = false
 		runtime.compactionID = ""

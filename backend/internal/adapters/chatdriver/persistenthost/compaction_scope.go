@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -45,7 +46,14 @@ func (h *host) compactionScope() ports.ChatCompactionScope {
 	}
 	home := env[key]
 	if home == "" {
-		home = filepath.Join(env["HOME"], fallback)
+		base := env["HOME"]
+		if base == "" {
+			base = env["USERPROFILE"]
+		}
+		if base == "" {
+			base, _ = os.UserHomeDir()
+		}
+		home = filepath.Join(base, fallback)
 	}
 	if !filepath.IsAbs(home) {
 		home = filepath.Join(h.child.Dir, home)

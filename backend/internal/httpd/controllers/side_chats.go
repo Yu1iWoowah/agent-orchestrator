@@ -330,6 +330,10 @@ func (c *ConversationsController) closeSideChat(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
+	if err := svc.ExplicitlyCloseSideCompaction(r.Context(), sideSession(r), sideID(r)); err != nil {
+		writeSideChatError(w, r, err)
+		return
+	}
 	if err := svc.CloseIndependentSideChat(r.Context(), sideSession(r), sideID(r)); err != nil {
 		writeSideChatError(w, r, err)
 		return

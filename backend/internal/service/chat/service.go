@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -258,6 +259,8 @@ func New(opts Options) *Service {
 		promptSuggestionSlots:  make(chan struct{}, 2),
 	}
 	svc.sides = newSideManager(svc, newMemorySideStore(), opts.AppRunID)
+	svc.sides.store.(*memorySideStore).durable, _ = opts.Store.(ports.SideCompactionStore)
+	svc.sides.store.(*memorySideStore).attachments = attachmentstore.New(opts.DataDir)
 	return svc
 }
 
