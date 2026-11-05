@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -51,7 +52,7 @@ func (m *sideManager) reconnectProtected(ctx context.Context, side domain.SideCo
 			return ErrNativeConversationProtected
 		}
 		queryCtx := ports.WithChatCompactionEpoch(ports.WithChatCompactionID(ctx, row.ID), row.Epoch)
-		key := ports.ChatResumeConfig{ReconnectOnly: true, SessionID: domain.SessionID(row.ProviderHostID), ProviderConversationID: row.NativeID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env}
+		key := ports.ChatResumeConfig{ReconnectOnly: true, SessionID: domain.SessionID(row.ProviderHostID), ProviderConversationID: row.NativeID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Permissions: cfg.Permissions, ReadOnly: cfg.ReadOnly, Model: side.Model, Effort: side.Effort, ProviderScopeID: side.ID, ProviderIDsScoped: true}
 		conv, err := reconnector.Reconnect(queryCtx, key)
 		if err != nil {
 			return err
@@ -76,7 +77,8 @@ func (m *sideManager) reconnectProtected(ctx context.Context, side domain.SideCo
 					if !ok {
 						return
 					}
-					if event.Compaction != nil && event.Compaction.CommandID == row.ID && event.CompactionID == row.ID && event.ProviderTurnID != "" && (event.Compaction.Outcome == ports.ChatCompactionSettled || event.Compaction.Outcome == ports.ChatCompactionNotSent) {
+					owner, sameEpoch := conv.(ports.ChatOutboundReconciler)
+					if sameEpoch && owner.OutboundProviderEpoch() == row.Epoch && row.Epoch != "" && event.Compaction != nil && event.Compaction.CommandID == row.ID && event.CompactionID == row.ID && event.ProviderTurnID != "" && (event.Compaction.Outcome == ports.ChatCompactionSettled || event.Compaction.Outcome == ports.ChatCompactionNotSent) {
 						runtime.compactionCheckMu.Lock()
 						m.settleCompactionResult(watchCtx, runtime, event)
 						runtime.compactionCheckMu.Unlock()
@@ -84,6 +86,9 @@ func (m *sideManager) reconnectProtected(ctx context.Context, side domain.SideCo
 				}
 			}
 		}()
+		if activator, ok := conv.(ports.ChatLiveReconnectActivator); ok {
+			return activator.ActivateLiveReconnect(queryCtx, row.ID)
+		}
 		return nil
 	}
 	return ErrNativeConversationProtected
@@ -115,4 +120,11 @@ func (*protectedSideConversation) SetTitle(context.Context, string) error {
 }
 func (*protectedSideConversation) Steer(context.Context, string, ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	return ports.ChatTurnRef{}, ErrNativeConversationProtected
+}
+
+func (c *protectedSideConversation) AcknowledgeProviderEvent(ctx context.Context, id string) error {
+	if ack, ok := c.ChatConversation.(ports.ChatProviderEventAcknowledger); ok {
+		return ack.AcknowledgeProviderEvent(ctx, id)
+	}
+	return nil
 }
