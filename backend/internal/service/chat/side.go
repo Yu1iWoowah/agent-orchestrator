@@ -203,7 +203,7 @@ func (s *Service) RetireSideChatLaunch(ctx context.Context, runID string) error 
 	}
 	var failures []error
 	for _, side := range sides {
-		if protected, err := s.sides.protectedSide(ctx, side.ID, ""); err != nil {
+		if protected, err := s.sides.protectedSide(ctx, side.ID); err != nil {
 			return err
 		} else if protected {
 			continue
@@ -222,7 +222,7 @@ func (s *Service) RecoverSideChatLaunch(ctx context.Context, runID string, recor
 	}
 	filtered := records[:0:0]
 	for _, record := range records {
-		if protected, err := s.sides.protectedSide(ctx, record.Side.ID, record.ProviderForkID); err != nil {
+		if protected, err := s.sides.protectedSide(ctx, record.Side.ID); err != nil {
 			return err
 		} else if protected {
 			continue
@@ -685,7 +685,7 @@ func (s *Service) validateSideReferences(ctx context.Context, session domain.Ses
 }
 
 func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver ports.ChatDriver) {
-	if protected, err := m.protectedSide(m.ctx, side.ID, ""); protected || err != nil {
+	if protected, err := m.protectedSide(m.ctx, side.ID); protected || err != nil {
 		return
 	}
 	m.mu.Lock()
@@ -844,7 +844,7 @@ func (m *sideManager) failOpen(side domain.SideConversation, err error) {
 }
 
 func (m *sideManager) ensureRestore(side domain.SideConversation) error {
-	if protected, err := m.protectedSide(m.ctx, side.ID, ""); err != nil {
+	if protected, err := m.protectedSide(m.ctx, side.ID); err != nil {
 		return err
 	} else if protected {
 		return nil
@@ -881,7 +881,7 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 	if err != nil {
 		return err
 	}
-	if protected, err := s.sides.protectedSide(ctx, side.ID, ""); err != nil {
+	if protected, err := s.sides.protectedSide(ctx, side.ID); err != nil {
 		return err
 	} else if protected {
 		return s.sides.reconnectProtected(ctx, side)
@@ -905,7 +905,7 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 }
 
 func (m *sideManager) restore(ctx context.Context, side domain.SideConversation) {
-	if protected, err := m.protectedSide(ctx, side.ID, ""); protected || err != nil {
+	if protected, err := m.protectedSide(ctx, side.ID); protected || err != nil {
 		return
 	}
 	m.mu.Lock()
@@ -2066,7 +2066,7 @@ func (s *Service) CloseIndependentSideChat(ctx context.Context, session domain.S
 }
 
 func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) error {
-	if protected, err := s.sides.protectedSide(ctx, owned.ID, ""); err != nil {
+	if protected, err := s.sides.protectedSide(ctx, owned.ID); err != nil {
 		return err
 	} else if protected {
 		return nil
@@ -2112,7 +2112,7 @@ func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) 
 }
 
 func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.SideConversation, id string) {
-	if protected, err := m.protectedSide(ctx, side.ID, id); protected || err != nil {
+	if protected, err := m.protectedSide(ctx, side.ID); protected || err != nil {
 		return
 	}
 	if id == "" {
@@ -2187,7 +2187,7 @@ func (m *sideManager) retryCleanup() {
 		}
 	}
 	for _, side := range m.store.SideHostCleanupPending(ctx) {
-		if protected, err := m.protectedSide(ctx, side.ID, ""); protected || err != nil {
+		if protected, err := m.protectedSide(ctx, side.ID); protected || err != nil {
 			continue
 		}
 		if m.service.stopProviderHost != nil {

@@ -6,7 +6,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func (m *sideManager) protectedSide(ctx context.Context, id, fork string) (bool, error) {
+func (m *sideManager) protectedSide(ctx context.Context, id string) (bool, error) {
 	store, ok := m.store.(*memorySideStore)
 	if !ok || store.durable == nil {
 		return false, nil
@@ -16,7 +16,7 @@ func (m *sideManager) protectedSide(ctx context.Context, id, fork string) (bool,
 		return true, err
 	}
 	for _, row := range rows {
-		if id != "" && row.SideID == id || fork != "" && row.NativeID == fork {
+		if id != "" && row.SideID == id {
 			return true, nil
 		}
 	}
@@ -25,6 +25,12 @@ func (m *sideManager) protectedSide(ctx context.Context, id, fork string) (bool,
 
 // Retry can observe the original compaction host, never start a replacement.
 func (m *sideManager) reconnectProtected(ctx context.Context, side domain.SideConversation) error {
+	m.mu.Lock()
+	existing := m.runtimes[side.ID] != nil
+	m.mu.Unlock()
+	if existing {
+		return nil
+	}
 	if m.service.drivers == nil {
 		return nil
 	}
