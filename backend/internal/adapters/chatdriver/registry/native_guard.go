@@ -17,12 +17,12 @@ func (d *guardedDriver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) 
 	err = d.guard.Run(ctx, d.Harness(), key, func() error { conv, err = d.ChatDriver.Resume(ctx, cfg); return err })
 	return
 }
-func (d *guardedDriver) reconnect(ctx context.Context, cfg ports.ChatResumeConfig) (conv ports.ChatConversation, err error) {
+func (d *guardedDriver) reconnect(ctx context.Context, cfg ports.ChatResumeConfig, original ports.ChatDriverReconnector) (conv ports.ChatConversation, err error) {
 	cfg.ReconnectOnly = true
-	err = d.guard.Run(ctx, d.Harness(), cfg, func() error { conv, err = d.ChatDriver.(ports.ChatDriverReconnector).Reconnect(ctx, cfg); return err })
+	err = d.guard.Run(ctx, d.Harness(), cfg, func() error { conv, err = original.Reconnect(ctx, cfg); return err })
 	return
 }
-func (d *guardedDriver) fork(ctx context.Context, source, anchor string, cfg ports.ChatStartConfig) (conv ports.ChatConversation, err error) {
+func (d *guardedDriver) fork(ctx context.Context, source, anchor string, cfg ports.ChatStartConfig, original ports.ChatIsolatedForker) (conv ports.ChatConversation, err error) {
 	if cfg.AcquireForkSource != nil {
 		var release func()
 		ctx, release, err = cfg.AcquireForkSource(ctx)
@@ -34,22 +34,28 @@ func (d *guardedDriver) fork(ctx context.Context, source, anchor string, cfg por
 	}
 	key := ports.ChatResumeConfig{ProviderConversationID: source, Env: cfg.Env, WorkspacePath: cfg.WorkspacePath, DataDir: cfg.DataDir}
 	err = d.guard.Run(ctx, d.Harness(), key, func() error {
-		conv, err = d.ChatDriver.(ports.ChatIsolatedForker).ForkIntoHost(ctx, source, anchor, cfg)
+		conv, err = original.ForkIntoHost(ctx, source, anchor, cfg)
 		return err
 	})
 	return
 }
 
-type guardedReconnect struct{ d *guardedDriver }
-
-func (r guardedReconnect) Reconnect(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
-	return r.d.reconnect(ctx, cfg)
+type guardedReconnect struct {
+	d        *guardedDriver
+	original ports.ChatDriverReconnector
 }
 
-type guardedFork struct{ d *guardedDriver }
+func (r guardedReconnect) Reconnect(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
+	return r.d.reconnect(ctx, cfg, r.original)
+}
+
+type guardedFork struct {
+	d        *guardedDriver
+	original ports.ChatIsolatedForker
+}
 
 func (f guardedFork) ForkIntoHost(ctx context.Context, source, anchor string, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
-	return f.d.fork(ctx, source, anchor, cfg)
+	return f.d.fork(ctx, source, anchor, cfg, f.original)
 }
 
 // Embed precisely the optional interfaces the original driver advertises.
@@ -61,10 +67,10 @@ func guardDriver(original ports.ChatDriver, guard ports.ChatNativeGuard) ports.C
 	p, hasP := original.(ports.ChatPermissionModeChecker)
 	v, hasV := original.(ports.NativeCheckpointVerifier)
 	if hasR {
-		r = guardedReconnect{d}
+		r = guardedReconnect{d, r}
 	}
 	if hasF {
-		f = guardedFork{d}
+		f = guardedFork{d, f}
 	}
 	bits := 0
 	if hasR {
