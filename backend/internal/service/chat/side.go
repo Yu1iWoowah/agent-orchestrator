@@ -2132,18 +2132,22 @@ func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.Side
 		}
 		return
 	}
-	m.service.mu.Lock()
-	cfg := m.service.startConfigs[domain.SessionConversationOwner(side.SessionID)]
-	m.service.mu.Unlock()
-	if len(side.LaunchConfig) != 0 {
-		var frozen frozenSideConfig
-		if json.Unmarshal(side.LaunchConfig, &frozen) != nil {
+	home := ""
+	if guard := m.service.nativeGuard; guard != nil && guard.store != nil {
+		reader, ok := source.conv.(ports.ChatCompactionScopeReader)
+		if !ok {
 			return
 		}
-		cfg.Env, cfg.DataDir, cfg.WorkspacePath = frozen.Env, frozen.DataDir, frozen.WorkspacePath
+		scopeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		scope, err := reader.CompactionScope(scopeCtx)
+		cancel()
+		if err != nil || scope.NativeHome == "" || scope.NativeHomeError != "" {
+			return
+		}
+		home = scope.NativeHome
 	}
-	key := ports.ChatResumeConfig{ProviderConversationID: id, Env: cfg.Env, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath}
-	if err := m.service.nativeGuard.Run(ctx, side.Harness, key, func() error { return deleter.DeleteFork(ctx, id) }); err != nil {
+	key := ports.ChatResumeConfig{ProviderConversationID: id}
+	if err := m.service.nativeGuard.runAtHome(ctx, home, key, func() error { return deleter.DeleteFork(ctx, id) }); err != nil {
 		if errors.Is(err, ports.ErrChatCapabilityUnavailable) {
 			if err := m.removeForkRecord(ctx, side, id); err == nil {
 				_ = m.store.CompleteSideProviderCleanup(ctx, id)
