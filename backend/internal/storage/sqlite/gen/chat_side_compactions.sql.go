@@ -119,6 +119,20 @@ func (q *Queries) ListSideCompactions(ctx context.Context, unresolvedOnly interf
 	return items, nil
 }
 
+const markSideCompactionHistorical = `-- name: MarkSideCompactionHistorical :exec
+UPDATE chat_side_compactions SET state='unknown',historical=1,record_json=? WHERE id=?
+`
+
+type MarkSideCompactionHistoricalParams struct {
+	RecordJson string
+	ID         string
+}
+
+func (q *Queries) MarkSideCompactionHistorical(ctx context.Context, arg MarkSideCompactionHistoricalParams) error {
+	_, err := q.db.ExecContext(ctx, markSideCompactionHistorical, arg.RecordJson, arg.ID)
+	return err
+}
+
 const putSideCompactionContent = `-- name: PutSideCompactionContent :exec
 INSERT INTO chat_side_contents(side_id,content_json) VALUES(?,?)
 ON CONFLICT(side_id) DO UPDATE SET content_json=excluded.content_json

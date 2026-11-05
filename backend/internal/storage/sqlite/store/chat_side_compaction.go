@@ -11,6 +11,45 @@ import (
 
 var _ ports.SideCompactionStore = (*Store)(nil)
 
+// MarkSideCompactionHistorical freezes the result and its process-boundary
+// summary atomically. A normal result committed first wins the race.
+func (s *Store) MarkSideCompactionHistorical(ctx context.Context, id, epoch, reason string) error {
+	if reason == "" {
+		return domain.ErrSideCompactionTransition
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "mark historical side compaction", func(q *gen.Queries) error {
+		row, err := q.GetSideCompaction(ctx, id)
+		if err != nil {
+			return err
+		}
+		var current domain.SideCompaction
+		if err := json.Unmarshal([]byte(row.RecordJson), &current); err != nil {
+			return err
+		}
+		current.State, current.Historical, current.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
+		if row.Epoch != epoch || !current.Unresolved() {
+			return domain.ErrSideCompactionTransition
+		}
+		if current.Historical {
+			return nil
+		}
+		current, err = current.Transition(domain.SideCompactionUnknown, true, false)
+		if err != nil {
+			return err
+		}
+		current.ScopeEndReason = reason
+		raw, err := json.Marshal(current)
+		if err != nil {
+			return err
+		}
+		return q.MarkSideCompactionHistorical(ctx, gen.MarkSideCompactionHistoricalParams{ID: id, RecordJson: string(raw)})
+	})
+}
+
 // RegisterSideCompaction commits the obligation and content in one transaction.
 func (s *Store) RegisterSideCompaction(ctx context.Context, r domain.SideCompaction) error {
 	if r.ID == "" || r.SideID == "" || r.NativeHome == "" || r.NativeID == "" || r.State != domain.SideCompactionPending || r.Historical || r.Closed || !json.Valid(r.Content) {

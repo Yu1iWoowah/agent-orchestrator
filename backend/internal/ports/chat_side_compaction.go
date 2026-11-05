@@ -14,6 +14,7 @@ type SideCompactionStore interface {
 	SideCompactions(context.Context, bool) ([]domain.SideCompaction, error)
 	SaveSideCompactionContent(context.Context, string, json.RawMessage) error
 	TransitionSideCompaction(context.Context, string, string, domain.SideCompactionState, bool, bool) error
+	MarkSideCompactionHistorical(context.Context, string, string, string) error
 }
 
 // ChatCompactionScope contains facts from the original provider launch.
