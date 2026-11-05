@@ -203,6 +203,11 @@ func (s *Service) RetireSideChatLaunch(ctx context.Context, runID string) error 
 	}
 	var failures []error
 	for _, side := range sides {
+		if protected, err := s.sides.protectedSide(ctx, side.ID, ""); err != nil {
+			return err
+		} else if protected {
+			continue
+		}
 		if err := s.CloseIndependentSideChat(ctx, side.SessionID, side.ID); err != nil {
 			failures = append(failures, err)
 		}
@@ -215,6 +220,16 @@ func (s *Service) RecoverSideChatLaunch(ctx context.Context, runID string, recor
 	if s.sides == nil || runID == "" || runID != s.sides.launchID() {
 		return ErrSideLaunchUnclaimed
 	}
+	filtered := records[:0:0]
+	for _, record := range records {
+		if protected, err := s.sides.protectedSide(ctx, record.Side.ID, record.ProviderForkID); err != nil {
+			return err
+		} else if protected {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	records = filtered
 	for _, record := range records {
 		if record.CleanupOnly {
 			continue
@@ -670,6 +685,9 @@ func (s *Service) validateSideReferences(ctx context.Context, session domain.Ses
 }
 
 func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver ports.ChatDriver) {
+	if protected, err := m.protectedSide(m.ctx, side.ID, ""); protected || err != nil {
+		return
+	}
 	m.mu.Lock()
 	if m.quiescing {
 		m.mu.Unlock()
@@ -826,16 +844,13 @@ func (m *sideManager) failOpen(side domain.SideConversation, err error) {
 }
 
 func (m *sideManager) ensureRestore(side domain.SideConversation) error {
+	if protected, err := m.protectedSide(m.ctx, side.ID, ""); err != nil {
+		return err
+	} else if protected {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if store, ok := m.store.(*memorySideStore); ok {
-		store.mu.Lock()
-		protected := store.protected[side.ID]
-		store.mu.Unlock()
-		if protected {
-			return nil
-		}
-	}
 	if side.PolicyVersion != sidePolicyVersion || side.BoundaryState == "uncertain" {
 		return ErrSidePolicyRecreate
 	}
@@ -866,6 +881,11 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 	if err != nil {
 		return err
 	}
+	if protected, err := s.sides.protectedSide(ctx, side.ID, ""); err != nil {
+		return err
+	} else if protected {
+		return s.sides.reconnectProtected(ctx, side)
+	}
 	if side.RecreateRequired || side.PolicyVersion != sidePolicyVersion || (side.BoundaryState == "uncertain" || side.BoundaryState == "pending") {
 		return ErrSidePolicyRecreate
 	}
@@ -885,6 +905,9 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 }
 
 func (m *sideManager) restore(ctx context.Context, side domain.SideConversation) {
+	if protected, err := m.protectedSide(ctx, side.ID, ""); protected || err != nil {
+		return
+	}
 	m.mu.Lock()
 	if m.quiescing {
 		m.mu.Unlock()
@@ -2080,6 +2103,9 @@ func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) 
 }
 
 func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.SideConversation, id string) {
+	if protected, err := m.protectedSide(ctx, side.ID, id); protected || err != nil {
+		return
+	}
 	if id == "" {
 		return
 	}
@@ -2097,9 +2123,15 @@ func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.Side
 		}
 		return
 	}
-	cfg, _, configErr := m.service.sideLaunchConfig(side)
-	if configErr != nil {
-		return
+	m.service.mu.Lock()
+	cfg := m.service.startConfigs[domain.SessionConversationOwner(side.SessionID)]
+	m.service.mu.Unlock()
+	if len(side.LaunchConfig) != 0 {
+		var frozen frozenSideConfig
+		if json.Unmarshal(side.LaunchConfig, &frozen) != nil {
+			return
+		}
+		cfg.Env, cfg.DataDir, cfg.WorkspacePath = frozen.Env, frozen.DataDir, frozen.WorkspacePath
 	}
 	key := ports.ChatResumeConfig{ProviderConversationID: id, Env: cfg.Env, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath}
 	if err := m.service.nativeGuard.Run(ctx, side.Harness, key, func() error { return deleter.DeleteFork(ctx, id) }); err != nil {
@@ -2146,6 +2178,9 @@ func (m *sideManager) retryCleanup() {
 		}
 	}
 	for _, side := range m.store.SideHostCleanupPending(ctx) {
+		if protected, err := m.protectedSide(ctx, side.ID, ""); protected || err != nil {
+			continue
+		}
 		if m.service.stopProviderHost != nil {
 			if err := m.service.stopProviderHost(ctx, domain.SessionID(side.ProviderHostID)); err != nil {
 				continue
