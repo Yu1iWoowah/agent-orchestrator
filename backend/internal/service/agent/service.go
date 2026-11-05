@@ -96,6 +96,7 @@ type Deps struct {
 	Sessions               SessionUsageLookup
 	Context                context.Context
 	Logger                 *slog.Logger
+	CodexHomeDeletionGuard func(context.Context, string, func() error) error
 	CodexAccountRoot       string
 	CodexPendingRoot       string
 	CodexSwitchStagingRoot string
@@ -130,6 +131,7 @@ func NewWithDeps(deps Deps) *Service {
 	}
 	if deps.CodexAccountRoot != "" && deps.CodexGlobalHome != "" {
 		svc.codexAccounts = newCodexAccountManager(deps.Context, deps.CodexAccountRoot, deps.CodexPendingRoot, deps.CodexSwitchStagingRoot, deps.CodexGlobalHome, deps.CodexAccounts, deps.Logger, deps.CodexOperationGate)
+		svc.codexAccounts.catalog.deleteHome = deps.CodexHomeDeletionGuard
 		if deps.Clock != nil {
 			svc.codexAccounts.now = deps.Clock
 		}

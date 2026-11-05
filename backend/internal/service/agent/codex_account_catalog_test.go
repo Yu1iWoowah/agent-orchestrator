@@ -351,7 +351,7 @@ func TestCodexAccountCatalogDeletesSignedOutSlot(t *testing.T) {
 
 	removed := make(chan []string, 1)
 	catalog.setOnRemoved(func(ids []string) { removed <- ids })
-	if err := catalog.deleteSignedOut(record.Snapshot.ID); err != nil {
+	if err := catalog.deleteSignedOut(t.Context(), record.Snapshot.ID); err != nil {
 		t.Fatal(err)
 	}
 

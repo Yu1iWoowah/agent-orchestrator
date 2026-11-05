@@ -2,8 +2,8 @@ package chat
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -12,7 +12,7 @@ import (
 )
 
 // ErrNativeConversationProtected requires closing the side before native reuse.
-var ErrNativeConversationProtected = errors.New("native conversation is protected; close the side chat first")
+var ErrNativeConversationProtected = ports.ErrNativeConversationProtected
 
 type nativeKey struct{ home, id string }
 
@@ -77,6 +77,11 @@ func (g *NativeGuard) DeleteHome(ctx context.Context, home string, call func() e
 	if g == nil || g.store == nil {
 		return call()
 	}
+	canonical, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return err
+	}
+	home = canonical
 	h, _ := g.homes.LoadOrStore(home, &sync.RWMutex{})
 	lock := h.(*sync.RWMutex)
 	lock.Lock()

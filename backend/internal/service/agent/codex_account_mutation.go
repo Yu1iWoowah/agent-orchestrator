@@ -137,7 +137,10 @@ func (m *codexAccountManager) deleteAccount(ctx context.Context, accountID strin
 	if m.activeAccountID() == accountID {
 		return apierr.Conflict("CODEX_ACCOUNT_DELETE_ACTIVE", "The active Codex account cannot be deleted", nil)
 	}
-	if err := m.catalog.deleteSignedOut(accountID); err != nil {
+	if err := m.catalog.deleteSignedOut(ctx, accountID); err != nil {
+		if errors.Is(err, ports.ErrNativeConversationProtected) {
+			return apierr.Conflict("CODEX_ACCOUNT_HOME_PROTECTED", "Close the protected side chats before deleting this Codex account", nil)
+		}
 		return apierr.Conflict("CODEX_ACCOUNT_DELETE_UNCONFIRMED", "Codex could not safely delete this account", nil)
 	}
 	m.mu.Lock()

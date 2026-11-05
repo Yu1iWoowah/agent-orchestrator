@@ -37,3 +37,6 @@ var ErrChatCompactionScopeNoHost = errors.New("compaction scope has no persisten
 type ChatNativeGuard interface {
 	Run(context.Context, domain.AgentHarness, ChatResumeConfig, func() error) error
 }
+
+// ErrNativeConversationProtected requires explicit side closure before native reuse.
+var ErrNativeConversationProtected = errors.New("native conversation is protected; close the side chat first")
