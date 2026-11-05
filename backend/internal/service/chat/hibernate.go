@@ -246,6 +246,11 @@ func (s *Service) HibernateChatForVersionRefresh(ctx context.Context, id domain.
 // replace a running executable can run. Work in flight, queued messages,
 // pending approvals and background work still keep it running.
 func (s *Service) HibernateChatForUpdate(ctx context.Context, id domain.SessionID) (bool, error) {
+	if s.sides != nil {
+		if _, err := s.sides.preservedCompactionSides(ctx, id); err != nil {
+			return false, err
+		}
+	}
 	return s.hibernateChat(ctx, id, hibernateOptions{forUpdate: true, ignoreViews: true})
 }
 
