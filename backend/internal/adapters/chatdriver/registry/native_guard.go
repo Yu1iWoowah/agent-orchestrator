@@ -32,7 +32,7 @@ func (d *guardedDriver) fork(ctx context.Context, source, anchor string, cfg por
 		defer release()
 		cfg.AcquireForkSource = nil
 	}
-	key := ports.ChatResumeConfig{ProviderConversationID: source, Env: cfg.Env, WorkspacePath: cfg.WorkspacePath, DataDir: cfg.DataDir}
+	key := ports.ChatResumeConfig{SessionID: cfg.SessionID, ProviderConversationID: source, Env: cfg.Env, WorkspacePath: cfg.WorkspacePath, DataDir: cfg.DataDir}
 	err = d.guard.Run(ctx, d.Harness(), key, func() error {
 		conv, err = original.ForkIntoHost(ctx, source, anchor, cfg)
 		return err
