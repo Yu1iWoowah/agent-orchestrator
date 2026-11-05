@@ -64,6 +64,13 @@ var _ ports.ChatProviderTerminator = (*conversation)(nil)
 var _ ports.ChatLiveReconnector = (*conversation)(nil)
 var _ ports.ChatProviderEventAcknowledger = (*conversation)(nil)
 
+func (c *conversation) CompactionScope(ctx context.Context) (ports.ChatCompactionScope, error) {
+	if c.transport == nil || c.transport.Delivery == nil {
+		return ports.ChatCompactionScope{}, ports.ErrChatCompactionScopeNoHost
+	}
+	return c.transport.Delivery.CompactionScope(ctx)
+}
+
 func (c *conversation) ProviderConversationID() string     { return c.cfg.ProviderConversationID }
 func (*conversation) Capabilities() ports.ChatCapabilities { return capabilities() }
 func (c *conversation) Events() <-chan ports.ChatEvent     { return c.events }
