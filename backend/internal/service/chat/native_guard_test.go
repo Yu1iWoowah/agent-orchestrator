@@ -141,8 +141,12 @@ func TestNativeRegistrationAndResumeSerialized(t *testing.T) {
 	// The native guard never owns the side/controller mutexes.
 	svc.sides.mu.Lock()
 	runtime.mu.Lock()
+	sideID := runtime.side.ID
 	runtime.mu.Unlock()
 	svc.sides.mu.Unlock()
+	if sideID != "side" {
+		t.Fatal(sideID)
+	}
 	close(release)
 	if err := <-first; err != nil {
 		t.Fatal(err)
