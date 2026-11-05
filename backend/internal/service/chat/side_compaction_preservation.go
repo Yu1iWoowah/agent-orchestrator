@@ -54,7 +54,7 @@ func (m *sideManager) preservedCompactionSides(ctx context.Context, sessionID do
 		if !applicable {
 			return nil, &ports.ChatShutdownSideError{SideID: row.SideID, Reason: reason}
 		}
-		ended, reason, err := m.markEndedCompaction(ctx, row)
+		ended, reason, err := markEndedCompaction(ctx, store.durable, row)
 		if !ended || err != nil {
 			return nil, &ports.ChatShutdownSideError{SideID: row.SideID, Reason: reason}
 		}
