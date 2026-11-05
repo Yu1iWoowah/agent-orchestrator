@@ -59,7 +59,10 @@ func (s *Service) CloseProtectedSide(ctx context.Context, id string) error {
 			continue
 		}
 		side := domain.SideConversation{ID: id, SessionID: row.SessionID, ProviderHostID: row.ProviderHostID, ProviderForkID: row.NativeID, Harness: row.Provider}
-		store := s.sides.store.(*memorySideStore)
+		store, ok := s.sides.store.(*memorySideStore)
+		if !ok {
+			return ErrSideUnavailable
+		}
 		store.mu.Lock()
 		if existing, ok := store.sides[id]; ok {
 			side = existing
