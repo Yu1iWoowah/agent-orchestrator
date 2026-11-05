@@ -44,20 +44,27 @@ func (g *NativeGuard) Run(ctx context.Context, provider domain.AgentHarness, cfg
 	if g == nil || g.store == nil || id == "" {
 		return call()
 	}
-	home, err := nativehome.Resolve(ctx, provider, cfg.Env, cfg.WorkspacePath, cfg.DataDir)
+	rows, err := g.store.SideCompactions(ctx, true)
 	if err != nil {
-		rows, readErr := g.store.SideCompactions(ctx, true)
-		if readErr != nil {
-			return readErr
+		return err
+	}
+	home, resolveErr := nativehome.Resolve(ctx, provider, cfg.Env, cfg.WorkspacePath, cfg.DataDir)
+	// A live host keeps its original canonical root even if an alias moved.
+	for _, row := range rows {
+		if row.ProviderHostID != "" && row.ProviderHostID == string(cfg.SessionID) && row.NativeID == id {
+			home, resolveErr = row.NativeHome, nil
+			break
 		}
+	}
+	if resolveErr != nil {
 		if len(rows) == 0 {
 			return call()
 		}
-		return fmt.Errorf("%w: %w", ErrNativeConversationProtected, err)
+		return fmt.Errorf("%w: %w", ErrNativeConversationProtected, resolveErr)
 	}
 	release := g.lock(home, id)
 	defer release()
-	rows, err := g.store.SideCompactions(ctx, true)
+	rows, err = g.store.SideCompactions(ctx, true)
 	if err != nil {
 		return err
 	}
