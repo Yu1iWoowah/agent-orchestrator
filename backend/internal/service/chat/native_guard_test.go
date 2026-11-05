@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -190,5 +191,92 @@ func TestNativeOriginalReconnectException(t *testing.T) {
 	}
 	if err := svc.nativeGuard.Run(ctx, row.Provider, cfg, call); !errors.Is(err, ErrNativeConversationProtected) || calls != 1 {
 		t.Fatal(err, calls)
+	}
+}
+
+func TestNativeGuardInheritedProviderHome(t *testing.T) {
+	for _, tc := range []struct {
+		provider domain.AgentHarness
+		variable string
+	}{
+		{domain.HarnessCodex, "CODEX_HOME"},
+		{domain.HarnessClaudeCode, "CLAUDE_CONFIG_DIR"},
+		{domain.HarnessOpenCodeV2, "XDG_DATA_HOME"},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			svc, db, _, _ := newRecordHarness(t, tc.provider)
+			home := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv(tc.variable, home)
+			if tc.provider == domain.HarnessOpenCodeV2 {
+				home = filepath.Join(home, "opencode-v2-home", "opencode")
+				if err := os.MkdirAll(home, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.RegisterSideCompaction(t.Context(), domain.SideCompaction{ID: "inherited", SideID: "protected", NativeHome: home, NativeID: "thread", Provider: tc.provider, State: domain.SideCompactionPending, Epoch: "epoch", Content: json.RawMessage(`{}`)}); err != nil {
+				t.Fatal(err)
+			}
+			counter := &nativeCountingDriver{}
+			reg := registry.New(&nativeProviderDriver{nativeCountingDriver: counter, provider: tc.provider})
+			reg.SetNativeGuard(svc.nativeGuard)
+			driver, _ := reg.Driver(tc.provider)
+			env := map[string]string{}
+			if tc.provider == domain.HarnessOpenCodeV2 {
+				// The launch binding replaces this session override with its daemon-derived root.
+				env["XDG_DATA_HOME"] = t.TempDir()
+			}
+			cfg := ports.ChatResumeConfig{SessionID: "another-host", ProviderConversationID: "thread", Env: env}
+			for _, op := range []struct {
+				name string
+				call func() error
+			}{
+				{"resume", func() error { _, err := driver.Resume(t.Context(), cfg); return err }},
+				{"reconnect", func() error { _, err := driver.(ports.ChatDriverReconnector).Reconnect(t.Context(), cfg); return err }},
+				{"fork", func() error {
+					_, err := driver.(ports.ChatIsolatedForker).ForkIntoHost(t.Context(), "thread", "", ports.ChatStartConfig{Env: env})
+					return err
+				}},
+			} {
+				t.Run(op.name, func(t *testing.T) {
+					err := op.call()
+					if !errors.Is(err, ErrNativeConversationProtected) || counter.calls.Load() != 0 {
+						t.Fatalf("inherited native home was not protected: error=%v, provider I/O=%d", err, counter.calls.Load())
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNativeGuardUnavailableHomeHasDistinctError(t *testing.T) {
+	for _, tc := range []struct {
+		name, rowID string
+	}{
+		{"no-protected-row", ""},
+		{"unrelated-protected-thread", "other-thread"},
+		{"possibly-protected-thread", "thread"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, db, _, _ := newRecordHarness(t, domain.HarnessCodex)
+			file := filepath.Join(t.TempDir(), "file")
+			if err := os.WriteFile(file, []byte("not a directory"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CODEX_HOME", filepath.Join(file, "native"))
+			if tc.rowID != "" {
+				if err := db.RegisterSideCompaction(t.Context(), domain.SideCompaction{ID: "unknown-home", SideID: "side", NativeHome: t.TempDir(), NativeID: tc.rowID, State: domain.SideCompactionPending, Content: json.RawMessage(`{}`)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			counter := &nativeCountingDriver{}
+			reg := registry.New(counter)
+			reg.SetNativeGuard(svc.nativeGuard)
+			driver, _ := reg.Driver(domain.HarnessCodex)
+			_, err := driver.Resume(t.Context(), ports.ChatResumeConfig{ProviderConversationID: "thread"})
+			if !errors.Is(err, ErrNativeHomeUnavailable) || errors.Is(err, ErrNativeConversationProtected) || counter.calls.Load() != 0 {
+				t.Fatal("wrong unavailable-home classification", err, counter.calls.Load())
+			}
+		})
 	}
 }

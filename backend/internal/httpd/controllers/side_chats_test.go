@@ -196,3 +196,12 @@ func TestProtectedSideHTTPGlobalAndExplicitClose(t *testing.T) {
 		}
 	}
 }
+
+func TestSideChatHTTPDistinguishesUnavailableNativeHome(t *testing.T) {
+	svc := &sideHTTPService{Service: chatsvc.New(chatsvc.Options{}), compactErr: chatsvc.ErrNativeHomeUnavailable}
+	response := httptest.NewRecorder()
+	sideHTTPRouter(svc).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/session/conversation/side-chats/side/compact", nil))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CHAT_NATIVE_HOME_UNAVAILABLE") || strings.Contains(response.Body.String(), "CHAT_NATIVE_CONVERSATION_PROTECTED") {
+		t.Fatal(response.Code, response.Body.String())
+	}
+}

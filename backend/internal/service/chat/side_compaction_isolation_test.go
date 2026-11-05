@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,10 +231,10 @@ func TestProtectedSideOrphanFlags(t *testing.T) {
 	}
 }
 func TestProtectedNativeDeleteForkBoundary(t *testing.T) {
-	svc, _, conv, _ := newRecordHarness(t, domain.HarnessCodex)
+	svc, _, conv, home := newRecordHarness(t, domain.HarnessCodex)
 	_, _ = svc.CompactSideChat(t.Context(), "session", "side")
 	spy := &isolationConversation{recordCompactionConversation: conv}
-	svc.controllers["session"] = &Controller{conv: spy, harness: domain.HarnessCodex}
+	svc.controllers["session"] = &Controller{conv: &nativeCleanupConversation{ChatConversation: spy, ChatForkDeleter: spy, home: home}, harness: domain.HarnessCodex}
 	store := svc.sides.store.(*memorySideStore)
 	side, _ := store.SideConversation(t.Context(), "side")
 	// Clear side ownership metadata to exercise the conversation-layer key guard.
@@ -263,14 +265,16 @@ func (d *protectedReconnectDriver) Reconnect(_ context.Context, cfg ports.ChatRe
 
 type protectedReplayConversation struct {
 	*recordCompactionConversation
-	events    chan ports.ChatEvent
-	activated chan string
+	events        chan ports.ChatEvent
+	activated     chan string
+	activationErr error
+	closes        atomic.Int32
 }
 
 func (c *protectedReplayConversation) Events() <-chan ports.ChatEvent { return c.events }
 func (c *protectedReplayConversation) ActivateLiveReconnect(_ context.Context, id string) error {
 	c.activated <- id
-	return nil
+	return c.activationErr
 }
 func TestProtectedSideReconnectObservesOriginalResult(t *testing.T) {
 	svc, db, _, _ := newRecordHarness(t, domain.HarnessCodex)
@@ -314,10 +318,181 @@ func TestProtectedSideReconnectObservesOriginalResult(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	runtime.mu.Lock()
-	blocked := runtime.dispatchBlocked
+	blocked := runtime.queryOnly
 	runtime.mu.Unlock()
 	if !blocked {
 		t.Fatal("query-only connection entered dispatch")
 	}
 	svc.sides.cancel()
+}
+
+func (c *protectedReplayConversation) Close() error { c.closes.Add(1); return nil }
+func replayConversation() *protectedReplayConversation {
+	return &protectedReplayConversation{recordCompactionConversation: &recordCompactionConversation{}, events: make(chan ports.ChatEvent, 2), activated: make(chan string, 1)}
+}
+func TestProtectedReconnectCanRetryAfterLoss(t *testing.T) {
+	for _, activationFailure := range []bool{false, true} {
+		t.Run(map[bool]string{false: "event-stream-ended", true: "activation-failed"}[activationFailure], func(t *testing.T) {
+			svc, db, _, _ := newRecordHarness(t, domain.HarnessCodex)
+			_, _ = svc.CompactSideChat(t.Context(), "session", "side")
+			rows, _ := db.SideCompactions(t.Context(), true)
+			before := rows[0]
+			delete(svc.sides.runtimes, "side")
+			first := replayConversation()
+			if activationFailure {
+				first.activationErr = errors.New("activation failed")
+			}
+			driver := &protectedReconnectDriver{nativeCountingDriver: &nativeCountingDriver{}, conv: first}
+			reg := registry.New(driver)
+			reg.SetNativeGuard(svc.nativeGuard)
+			svc.drivers = reg
+			err := svc.RetrySideConnection(t.Context(), "session", "side")
+			if activationFailure && !errors.Is(err, first.activationErr) {
+				t.Fatal(err)
+			}
+			if !activationFailure {
+				if err != nil {
+					t.Fatal(err)
+				}
+				close(first.events)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				svc.sides.mu.Lock()
+				runtime := svc.sides.runtimes["side"]
+				svc.sides.mu.Unlock()
+				if runtime == nil && first.closes.Load() == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("attachment retained after loss: runtime=%v Close=%d", runtime != nil, first.closes.Load())
+				}
+				time.Sleep(time.Millisecond)
+			}
+			rows, _ = db.SideCompactions(t.Context(), true)
+			if len(rows) != 1 || rows[0].ID != before.ID || rows[0].State != before.State || string(rows[0].Content) != string(before.Content) {
+				t.Fatal("lost durable obligation", rows)
+			}
+			driver.conv = replayConversation()
+			if err := svc.RetrySideConnection(t.Context(), "session", "side"); err != nil || driver.reconnected != 2 {
+				t.Fatal("retry did not reconnect", err, driver.reconnected)
+			}
+			svc.sides.cancel()
+		})
+	}
+}
+func TestProtectedReplayResultAllowsShutdown(t *testing.T) {
+	for _, outcome := range []ports.ChatCompactionOutcome{ports.ChatCompactionSettled, ports.ChatCompactionNotSent} {
+		t.Run(string(outcome), func(t *testing.T) {
+			svc, db, _, _ := newRecordHarness(t, domain.HarnessCodex)
+			attention := &replayAttentionStore{Store: svc.store}
+			svc.store = attention
+			_, _ = svc.CompactSideChat(t.Context(), "session", "side")
+			rows, _ := db.SideCompactions(t.Context(), true)
+			row := rows[0]
+			delete(svc.sides.runtimes, "side")
+			conv := replayConversation()
+			driver := &protectedReconnectDriver{nativeCountingDriver: &nativeCountingDriver{}, conv: conv}
+			reg := registry.New(driver)
+			reg.SetNativeGuard(svc.nativeGuard)
+			svc.drivers = reg
+			if err := svc.RetrySideConnection(t.Context(), "session", "side"); err != nil {
+				t.Fatal(err)
+			}
+			svc.sides.mu.Lock()
+			runtime := svc.sides.runtimes["side"]
+			svc.sides.mu.Unlock()
+			if err := svc.PreflightShutdown(t.Context()); !errors.Is(err, ports.ErrChatShutdownNotSettled) {
+				t.Fatal("pending result did not veto", err)
+			}
+			conv.events <- ports.ChatEvent{ProviderTurnID: "result", CompactionID: row.ID, Compaction: &ports.ChatCompactionReceipt{CommandID: row.ID, Outcome: outcome}}
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				runtime.mu.Lock()
+				pending := runtime.outboundUnverified
+				runtime.mu.Unlock()
+				if !pending && attention.canceled.Load() == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("valid replay left pending state: unverified=%v attention canceled=%d", pending, attention.canceled.Load())
+				}
+				time.Sleep(time.Millisecond)
+			}
+			store := svc.sides.store.(*memorySideStore)
+			if store.outboundUnverified("side") {
+				t.Fatal("valid replay left store unverified")
+			}
+			if err := svc.PreflightShutdown(t.Context()); err != nil {
+				t.Fatal("valid replay still vetoes shutdown", err)
+			}
+			if _, err := runtime.conv.SendTurn(t.Context(), ports.ChatUserMessage{}); !errors.Is(err, ErrNativeConversationProtected) {
+				t.Fatal("query attachment accepted send", err)
+			}
+			svc.sides.cancel()
+		})
+	}
+}
+
+type retireProtectionFailure struct {
+	ports.SideCompactionStore
+	calls int
+	err   error
+}
+
+func (s *retireProtectionFailure) SideCompactions(ctx context.Context, unresolved bool) ([]domain.SideCompaction, error) {
+	s.calls++
+	if s.calls == 1 {
+		return nil, s.err
+	}
+	return s.SideCompactionStore.SideCompactions(ctx, unresolved)
+}
+func TestRetireContinuesAfterProtectionReadFailure(t *testing.T) {
+	svc, _, _, _ := newRecordHarness(t, domain.HarnessCodex)
+	addReviewSide(t, svc)
+	store := svc.sides.store.(*memorySideStore)
+	lookupErr, closeErr := errors.New("protection query unavailable"), errors.New("host close unavailable")
+	store.durable = &retireProtectionFailure{SideCompactionStore: store.durable, err: lookupErr}
+	stops := 0
+	svc.stopProviderHost = func(context.Context, domain.SessionID) error { stops++; return closeErr }
+	err := svc.RetireSideChatLaunch(t.Context(), "run")
+	if !errors.Is(err, lookupErr) || !errors.Is(err, closeErr) || stops != 1 {
+		t.Fatal("retire did not collect failures and continue", err, stops)
+	}
+	sides, err := store.ListOpenSidesForRun(t.Context(), "run")
+	if err != nil || len(sides) != 1 {
+		t.Fatal("failed protection query did not retain its side", sides, err)
+	}
+}
+
+type replayAttentionStore struct {
+	Store
+	mu        sync.Mutex
+	questions []domain.AttentionQuestionRecord
+	canceled  atomic.Int32
+}
+
+func (s *replayAttentionStore) CreateAttentionQuestion(_ context.Context, in domain.AttentionQuestionCreate, _ time.Time) (domain.AttentionQuestionRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q := domain.AttentionQuestionRecord{ID: in.ID, ClientKey: in.ClientKey, Version: 1}
+	s.questions = append(s.questions, q)
+	return q, true, nil
+}
+func (s *replayAttentionStore) ListAttentionQuestions(context.Context, domain.SessionID, domain.AttentionQuestionQuery, time.Time) (domain.AttentionQuestionPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return domain.AttentionQuestionPage{Items: append([]domain.AttentionQuestionRecord(nil), s.questions...)}, nil
+}
+func (s *replayAttentionStore) CancelAttentionQuestion(_ context.Context, _ domain.SessionID, id string, _ int64, _ string, _ string, _ time.Time) (domain.AttentionQuestionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, q := range s.questions {
+		if q.ID == id {
+			s.questions = append(s.questions[:i], s.questions[i+1:]...)
+			s.canceled.Add(1)
+			return q, nil
+		}
+	}
+	return domain.AttentionQuestionRecord{}, errors.New("attention question missing")
 }
