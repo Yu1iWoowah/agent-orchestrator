@@ -66,6 +66,8 @@ func (m *sideManager) prepareCompaction(ctx context.Context, runtime *sideRuntim
 }
 
 func (m *sideManager) registerCompaction(ctx context.Context, r domain.SideCompaction) error {
+	release := m.service.nativeGuard.lock(r.NativeHome, r.NativeID)
+	defer release()
 	store, ok := m.store.(*memorySideStore)
 	if !ok || store.durable == nil {
 		return nil
