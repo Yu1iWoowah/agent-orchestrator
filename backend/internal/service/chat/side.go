@@ -734,7 +734,6 @@ func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver
 		if err := m.store.RegisterSideFork(recordCtx, side.ID, side.Generation, id, m.service.now()); err != nil {
 			return err
 		}
-		m.announce(side.ID)
 		return nil
 	}
 	if side.ContextMode == "native" {
@@ -2098,7 +2097,12 @@ func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.Side
 		}
 		return
 	}
-	if err := deleter.DeleteFork(ctx, id); err != nil {
+	cfg, _, configErr := m.service.sideLaunchConfig(side)
+	if configErr != nil {
+		return
+	}
+	key := ports.ChatResumeConfig{ProviderConversationID: id, Env: cfg.Env, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath}
+	if err := m.service.nativeGuard.Run(ctx, side.Harness, key, func() error { return deleter.DeleteFork(ctx, id) }); err != nil {
 		if errors.Is(err, ports.ErrChatCapabilityUnavailable) {
 			if err := m.removeForkRecord(ctx, side, id); err == nil {
 				_ = m.store.CompleteSideProviderCleanup(ctx, id)

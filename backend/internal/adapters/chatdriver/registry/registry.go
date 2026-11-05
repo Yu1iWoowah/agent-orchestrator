@@ -49,6 +49,7 @@ import (
 // Registry maps a harness to its Chat driver.
 type Registry struct {
 	drivers map[domain.AgentHarness]ports.ChatDriver
+	guard   ports.ChatNativeGuard
 	// plugins are the drivers' own agent plugins, each caching the executable
 	// it resolved.
 	plugins map[domain.AgentHarness]ports.AgentBinaryResolutionInvalidator
@@ -140,6 +141,9 @@ func (r *Registry) Driver(harness domain.AgentHarness) (ports.ChatDriver, error)
 	if !ok {
 		return nil, ports.ErrChatUnsupported
 	}
+	if r.guard != nil {
+		return guardDriver(driver, r.guard), nil
+	}
 	return driver, nil
 }
 
@@ -160,3 +164,6 @@ func (r *Registry) Harnesses() []domain.AgentHarness {
 	}
 	return out
 }
+
+// SetNativeGuard installs the daemon's shared native operation boundary before use.
+func (r *Registry) SetNativeGuard(guard ports.ChatNativeGuard) { r.guard = guard }

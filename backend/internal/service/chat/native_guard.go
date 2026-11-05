@@ -39,7 +39,8 @@ func (g *NativeGuard) lock(home, id string) func() {
 }
 
 // Run guards an existing native ID at the driver/conversation boundary.
-func (g *NativeGuard) Run(ctx context.Context, provider domain.AgentHarness, cfg ports.ChatStartConfig, id string, call func() error) error {
+func (g *NativeGuard) Run(ctx context.Context, provider domain.AgentHarness, cfg ports.ChatResumeConfig, call func() error) error {
+	id := cfg.ProviderConversationID
 	if g == nil || g.store == nil || id == "" {
 		return call()
 	}
@@ -62,6 +63,9 @@ func (g *NativeGuard) Run(ctx context.Context, provider domain.AgentHarness, cfg
 	}
 	for _, row := range rows {
 		if row.NativeHome == home && row.NativeID == id {
+			if cfg.ReconnectOnly && !row.Historical && row.ProviderHostID == string(cfg.SessionID) && row.ID == ports.ChatCompactionID(ctx) && row.Epoch == ports.ChatCompactionEpoch(ctx) {
+				continue
+			}
 			return fmt.Errorf("%w: side %s", ErrNativeConversationProtected, row.SideID)
 		}
 	}
