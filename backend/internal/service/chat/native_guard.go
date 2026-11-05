@@ -20,20 +20,37 @@ type nativeKey struct{ home, id string }
 // Its callbacks must not acquire side or controller locks.
 type NativeGuard struct {
 	store ports.SideCompactionStore
-	keys  sync.Map
-	homes sync.Map
+	mu    sync.Mutex
+	keys  map[nativeKey]*sync.Mutex
+	homes map[string]*sync.RWMutex
 }
 
+// NewNativeGuard creates the daemon-wide native operation guard.
 func NewNativeGuard(store ports.SideCompactionStore) *NativeGuard {
-	return &NativeGuard{store: store}
+	return &NativeGuard{store: store, keys: map[nativeKey]*sync.Mutex{}, homes: map[string]*sync.RWMutex{}}
 }
 
+func (g *NativeGuard) homeLock(home string) *sync.RWMutex {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	lock := g.homes[home]
+	if lock == nil {
+		lock = &sync.RWMutex{}
+		g.homes[home] = lock
+	}
+	return lock
+}
 func (g *NativeGuard) lock(home, id string) func() {
-	h, _ := g.homes.LoadOrStore(home, &sync.RWMutex{})
-	homeLock := h.(*sync.RWMutex)
+	homeLock := g.homeLock(home)
+	g.mu.Lock()
+	key := nativeKey{home, id}
+	keyLock := g.keys[key]
+	if keyLock == nil {
+		keyLock = &sync.Mutex{}
+		g.keys[key] = keyLock
+	}
+	g.mu.Unlock()
 	homeLock.RLock()
-	k, _ := g.keys.LoadOrStore(nativeKey{home, id}, &sync.Mutex{})
-	keyLock := k.(*sync.Mutex)
 	keyLock.Lock()
 	return func() { keyLock.Unlock(); homeLock.RUnlock() }
 }
@@ -86,8 +103,7 @@ func (g *NativeGuard) DeleteHome(ctx context.Context, home string, call func() e
 		return err
 	}
 	home = canonical
-	h, _ := g.homes.LoadOrStore(home, &sync.RWMutex{})
-	lock := h.(*sync.RWMutex)
+	lock := g.homeLock(home)
 	lock.Lock()
 	defer lock.Unlock()
 	rows, err := g.store.SideCompactions(ctx, true)
