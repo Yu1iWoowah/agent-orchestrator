@@ -112,6 +112,7 @@ type sideRuntime struct {
 	activeTurnID    string
 	compacting      bool
 	dispatchBlocked bool
+	queryOnly       bool // immutable; reconnect attachment may observe but never dispatch
 	// stopRequested records that the user pressed Stop on the active turn. A
 	// stopped turn must not hold the queue the way a provider failure does.
 	stopRequested  bool
@@ -204,7 +205,8 @@ func (s *Service) RetireSideChatLaunch(ctx context.Context, runID string) error 
 	var failures []error
 	for _, side := range sides {
 		if protected, err := s.sides.protectedSide(ctx, side.ID); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("read side %s protection: %w", side.ID, err))
+			continue
 		} else if protected {
 			continue
 		}
@@ -1360,7 +1362,7 @@ func (m *sideManager) schedule() {
 					continue
 				}
 				runtime.mu.Lock()
-				excluded[side.ID] = runtime.dispatchBlocked || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != ""
+				excluded[side.ID] = runtime.queryOnly || runtime.dispatchBlocked || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != ""
 				runtime.mu.Unlock()
 			}
 			turn, side, found, err := m.store.ClaimNextSideTurn(m.ctx, m.runID, excluded, m.service.now())
@@ -1370,7 +1372,7 @@ func (m *sideManager) schedule() {
 			}
 			runtime := m.runtimes[side.ID]
 			runtime.mu.Lock()
-			if runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != "" {
+			if runtime.queryOnly || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != "" {
 				runtime.mu.Unlock()
 				_ = m.store.RequeueSideTurn(m.ctx, side.ID, turn.ID)
 				m.mu.Unlock()
