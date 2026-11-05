@@ -10,8 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/nativehome"
 
 	moderncsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -22,24 +23,7 @@ const v2DataHomeDirName = "opencode-v2-home"
 // V2DataHome returns the XDG_DATA_HOME OpenCode 2 runs with: a sibling of the
 // user's own data home, so OpenCode 1 and 2 never share a database.
 func V2DataHome() (string, error) {
-	parent := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	if parent != "" && !filepath.IsAbs(parent) {
-		return "", fmt.Errorf("opencode: XDG_DATA_HOME must be absolute, got %q", parent)
-	}
-	if filepath.Base(parent) == v2DataHomeDirName {
-		return filepath.Clean(parent), nil
-	}
-	if parent == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("opencode: resolve absolute user data home: %w", err)
-		}
-		if !filepath.IsAbs(home) {
-			return "", fmt.Errorf("opencode: user data home must be absolute, got %q", home)
-		}
-		parent = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(parent, v2DataHomeDirName), nil
+	return nativehome.OpenCodeV2DataHome()
 }
 
 // V2NPMPrefix is the private npm prefix OpenCode 2 installs into so its

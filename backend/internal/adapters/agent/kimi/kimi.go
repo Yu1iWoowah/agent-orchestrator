@@ -18,7 +18,6 @@ package kimi
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -26,13 +25,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/nativehome"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 const (
 	adapterID       = "kimi"
 	kimiCodeHomeEnv = "KIMI_CODE_HOME"
-	kimiDataDirName = "kimi"
 )
 
 // Plugin is the Kimi CLI agent adapter. It is safe for concurrent use; the
@@ -52,7 +51,7 @@ var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 
 func kimiCodeHomeDir(dataDir string) string {
-	return filepath.Join(dataDir, kimiDataDirName)
+	return nativehome.KimiHome(dataDir)
 }
 
 // AugmentRuntimeEnv points Kimi at AO's isolated Kimi home so session hooks and

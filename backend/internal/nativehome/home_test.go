@@ -131,3 +131,28 @@ func TestResolveExplicitRootDoesNotRequireHome(t *testing.T) {
 		t.Fatalf("explicit data root=%q, %v", got, err)
 	}
 }
+
+func TestOperationKeyForMissingNativeRoot(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, "future")
+	link := filepath.Join(home, "alias")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"CODEX_HOME": filepath.Join(link, "nested")}
+	got, err := ResolveForOperation(t.Context(), domain.HarnessCodex, env, home, home)
+	want := filepath.Join(target, "nested")
+	if err != nil || got != want {
+		t.Fatal(got, err, want)
+	}
+	if _, err := Resolve(t.Context(), domain.HarnessCodex, env, home, home); !os.IsNotExist(err) {
+		t.Fatal("compaction accepted absent native root", err)
+	}
+	if err := os.MkdirAll(want, 0700); err != nil {
+		t.Fatal(err)
+	}
+	after, err := Resolve(t.Context(), domain.HarnessCodex, env, home, home)
+	if err != nil || after != got {
+		t.Fatal("key changed when provider created root", after, err)
+	}
+}

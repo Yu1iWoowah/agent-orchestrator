@@ -258,3 +258,15 @@ func TestSideCleanupRetriesRealErrorsUntilSuccess(t *testing.T) {
 		t.Fatalf("cleanup did not settle: %v %v", conv.deleted, store.cleanup)
 	}
 }
+
+// nativeCleanupConversation reports the original host root without provider I/O.
+type nativeCleanupConversation struct {
+	ports.ChatConversation
+	ports.ChatForkDeleter
+	home     string
+	scopeErr error
+}
+
+func (c *nativeCleanupConversation) CompactionScope(context.Context) (ports.ChatCompactionScope, error) {
+	return ports.ChatCompactionScope{NativeHome: c.home}, c.scopeErr
+}

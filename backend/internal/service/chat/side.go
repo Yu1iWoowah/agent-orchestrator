@@ -112,6 +112,7 @@ type sideRuntime struct {
 	activeTurnID    string
 	compacting      bool
 	dispatchBlocked bool
+	queryOnly       bool // immutable; reconnect attachment may observe but never dispatch
 	// stopRequested records that the user pressed Stop on the active turn. A
 	// stopped turn must not hold the queue the way a provider failure does.
 	stopRequested  bool
@@ -203,6 +204,12 @@ func (s *Service) RetireSideChatLaunch(ctx context.Context, runID string) error 
 	}
 	var failures []error
 	for _, side := range sides {
+		if protected, err := s.sides.protectedSide(ctx, side.ID); err != nil {
+			failures = append(failures, fmt.Errorf("read side %s protection: %w", side.ID, err))
+			continue
+		} else if protected {
+			continue
+		}
 		if err := s.CloseIndependentSideChat(ctx, side.SessionID, side.ID); err != nil {
 			failures = append(failures, err)
 		}
@@ -215,6 +222,16 @@ func (s *Service) RecoverSideChatLaunch(ctx context.Context, runID string, recor
 	if s.sides == nil || runID == "" || runID != s.sides.launchID() {
 		return ErrSideLaunchUnclaimed
 	}
+	filtered := records[:0:0]
+	for _, record := range records {
+		if protected, err := s.sides.protectedSide(ctx, record.Side.ID); err != nil {
+			return err
+		} else if protected {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	records = filtered
 	for _, record := range records {
 		if record.CleanupOnly {
 			continue
@@ -670,6 +687,9 @@ func (s *Service) validateSideReferences(ctx context.Context, session domain.Ses
 }
 
 func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver ports.ChatDriver) {
+	if protected, err := m.protectedSide(m.ctx, side.ID); protected || err != nil {
+		return
+	}
 	m.mu.Lock()
 	if m.quiescing {
 		m.mu.Unlock()
@@ -734,7 +754,6 @@ func (m *sideManager) open(side domain.SideConversation, cfg StartConfig, driver
 		if err := m.store.RegisterSideFork(recordCtx, side.ID, side.Generation, id, m.service.now()); err != nil {
 			return err
 		}
-		m.announce(side.ID)
 		return nil
 	}
 	if side.ContextMode == "native" {
@@ -827,16 +846,13 @@ func (m *sideManager) failOpen(side domain.SideConversation, err error) {
 }
 
 func (m *sideManager) ensureRestore(side domain.SideConversation) error {
+	if protected, err := m.protectedSide(m.ctx, side.ID); err != nil {
+		return err
+	} else if protected {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if store, ok := m.store.(*memorySideStore); ok {
-		store.mu.Lock()
-		protected := store.protected[side.ID]
-		store.mu.Unlock()
-		if protected {
-			return nil
-		}
-	}
 	if side.PolicyVersion != sidePolicyVersion || side.BoundaryState == "uncertain" {
 		return ErrSidePolicyRecreate
 	}
@@ -867,6 +883,11 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 	if err != nil {
 		return err
 	}
+	if protected, err := s.sides.protectedSide(ctx, side.ID); err != nil {
+		return err
+	} else if protected {
+		return s.sides.reconnectProtected(ctx, side)
+	}
 	if side.RecreateRequired || side.PolicyVersion != sidePolicyVersion || (side.BoundaryState == "uncertain" || side.BoundaryState == "pending") {
 		return ErrSidePolicyRecreate
 	}
@@ -886,6 +907,9 @@ func (s *Service) RetrySideConnection(ctx context.Context, session domain.Sessio
 }
 
 func (m *sideManager) restore(ctx context.Context, side domain.SideConversation) {
+	if protected, err := m.protectedSide(ctx, side.ID); protected || err != nil {
+		return
+	}
 	m.mu.Lock()
 	if m.quiescing {
 		m.mu.Unlock()
@@ -1338,7 +1362,7 @@ func (m *sideManager) schedule() {
 					continue
 				}
 				runtime.mu.Lock()
-				excluded[side.ID] = runtime.dispatchBlocked || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != ""
+				excluded[side.ID] = runtime.queryOnly || runtime.dispatchBlocked || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != ""
 				runtime.mu.Unlock()
 			}
 			turn, side, found, err := m.store.ClaimNextSideTurn(m.ctx, m.runID, excluded, m.service.now())
@@ -1348,7 +1372,7 @@ func (m *sideManager) schedule() {
 			}
 			runtime := m.runtimes[side.ID]
 			runtime.mu.Lock()
-			if runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != "" {
+			if runtime.queryOnly || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified && runtime.compactionID != "" || runtime.activeTurnID != "" {
 				runtime.mu.Unlock()
 				_ = m.store.RequeueSideTurn(m.ctx, side.ID, turn.ID)
 				m.mu.Unlock()
@@ -2044,9 +2068,18 @@ func (s *Service) CloseIndependentSideChat(ctx context.Context, session domain.S
 }
 
 func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) error {
+	if protected, err := s.sides.protectedSide(ctx, owned.ID); err != nil {
+		return err
+	} else if protected {
+		return nil
+	}
 	sideID := owned.ID
 	s.sides.mu.Lock()
 	side, closeErr := s.sides.store.CloseSideConversation(ctx, sideID, s.now())
+	if errors.Is(closeErr, ErrCompactionWhileBusy) {
+		s.sides.mu.Unlock()
+		return nil
+	}
 	if closeErr != nil {
 		s.sides.mu.Unlock()
 		return closeErr
@@ -2081,6 +2114,9 @@ func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) 
 }
 
 func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.SideConversation, id string) {
+	if protected, err := m.protectedSide(ctx, side.ID); protected || err != nil {
+		return
+	}
 	if id == "" {
 		return
 	}
@@ -2098,7 +2134,22 @@ func (m *sideManager) deleteRegisteredFork(ctx context.Context, side domain.Side
 		}
 		return
 	}
-	if err := deleter.DeleteFork(ctx, id); err != nil {
+	home := ""
+	if guard := m.service.nativeGuard; guard != nil && guard.store != nil {
+		reader, ok := source.conv.(ports.ChatCompactionScopeReader)
+		if !ok {
+			return
+		}
+		scopeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		scope, err := reader.CompactionScope(scopeCtx)
+		cancel()
+		if err != nil || scope.NativeHome == "" || scope.NativeHomeError != "" {
+			return
+		}
+		home = scope.NativeHome
+	}
+	key := ports.ChatResumeConfig{ProviderConversationID: id}
+	if err := m.service.nativeGuard.runAtHome(ctx, home, key, func() error { return deleter.DeleteFork(ctx, id) }); err != nil {
 		if errors.Is(err, ports.ErrChatCapabilityUnavailable) {
 			if err := m.removeForkRecord(ctx, side, id); err == nil {
 				_ = m.store.CompleteSideProviderCleanup(ctx, id)
@@ -2142,6 +2193,9 @@ func (m *sideManager) retryCleanup() {
 		}
 	}
 	for _, side := range m.store.SideHostCleanupPending(ctx) {
+		if protected, err := m.protectedSide(ctx, side.ID); protected || err != nil {
+			continue
+		}
 		if m.service.stopProviderHost != nil {
 			if err := m.service.stopProviderHost(ctx, domain.SessionID(side.ProviderHostID)); err != nil {
 				continue

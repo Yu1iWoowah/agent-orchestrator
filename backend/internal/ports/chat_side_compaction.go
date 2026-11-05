@@ -32,3 +32,11 @@ var ErrChatCompactionScopeUnsupported = errors.New("chat host does not support c
 
 // ErrChatCompactionScopeNoHost means this conversation has no persistent host.
 var ErrChatCompactionScopeNoHost = errors.New("compaction scope has no persistent host")
+
+// ChatNativeGuard checks a native operation while serializing it with registration.
+type ChatNativeGuard interface {
+	Run(context.Context, domain.AgentHarness, ChatResumeConfig, func() error) error
+}
+
+// ErrNativeConversationProtected requires explicit side closure before native reuse.
+var ErrNativeConversationProtected = errors.New("native conversation is protected; close the side chat first")

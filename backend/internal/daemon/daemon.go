@@ -353,6 +353,7 @@ func Run(buildVersion string) error {
 	// messenger, then mount it on the API.
 	var agentSvc *agentsvc.Service
 	var agentAccountSvc *agentaccounts.Service
+	nativeGuard := chatsvc.NewNativeGuard(store)
 	chatDrivers := chatdriverregistry.Build(log, func() {
 		if agentSvc == nil {
 			return
@@ -360,6 +361,8 @@ func Run(buildVersion string) error {
 		agentSvc.InvalidateAgentAuthentication(string(domain.HarnessClaudeCode))
 		agentSvc.RecheckAgent(string(domain.HarnessClaudeCode))
 	})
+
+	chatDrivers.SetNativeGuard(nativeGuard)
 
 	// Daemon-owned preferences. The store's type is field-compatible with the
 	// service's, adapted here so neither package imports the other. Offering
@@ -376,6 +379,7 @@ func Run(buildVersion string) error {
 	// loudly instead of silently becoming a TUI session.
 	var sessMgr sessionLifecycle
 	chatSvc := chatsvc.New(chatsvc.Options{
+		NativeGuard:         nativeGuard,
 		Store:               store,
 		Sessions:            store,
 		Renders:             attachmentstore.New(cfg.DataDir),
@@ -539,7 +543,8 @@ func Run(buildVersion string) error {
 	}
 	codexOperationGate := codexops.NewGate()
 	agentDeps := agentsvc.Deps{
-		Cache: store, Discoverer: modelDiscoverer, Sessions: store, Context: ctx, Logger: log,
+		CodexHomeDeletionGuard: nativeGuard.DeleteHome,
+		Cache:                  store, Discoverer: modelDiscoverer, Sessions: store, Context: ctx, Logger: log,
 		ModelDiscoveryDir:      filepath.Join(cfg.DataDir, "model-discovery"),
 		CodexAccountRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "accounts"),
 		CodexPendingRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "pending-accounts"),

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -351,7 +352,7 @@ func TestCodexAccountCatalogDeletesSignedOutSlot(t *testing.T) {
 
 	removed := make(chan []string, 1)
 	catalog.setOnRemoved(func(ids []string) { removed <- ids })
-	if err := catalog.deleteSignedOut(record.Snapshot.ID); err != nil {
+	if err := catalog.deleteSignedOut(t.Context(), record.Snapshot.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -368,5 +369,37 @@ func TestCodexAccountCatalogDeletesSignedOutSlot(t *testing.T) {
 		}
 	default:
 		t.Fatal("account removal callback was not delivered")
+	}
+}
+
+func TestCodexAccountCatalogProtectedHomeIsNotRemoved(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	catalog := newCodexAccountCatalog(root, nil)
+	catalog.newID = func() string { return testAccountID }
+	record := commitTestAccount(t, catalog, filepath.Join(filepath.Dir(root), "pending"), "b60a377d-da68-4a61-86f2-f31f04c571f2", ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT})
+	if _, err := catalog.markSignedOut(record.Snapshot.ID); err != nil {
+		t.Fatal(err)
+	}
+	catalog.deleteHome = func(ctx context.Context, home string, remove func() error) error {
+		if home != record.Home {
+			t.Fatal("wrong native home", home)
+		}
+		return ports.ErrNativeConversationProtected
+	}
+	if err := catalog.deleteSignedOut(t.Context(), record.Snapshot.ID); !errors.Is(err, ports.ErrNativeConversationProtected) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(record.Home); err != nil {
+		t.Fatal("protected home removed", err)
+	}
+	if _, ok := catalog.record(record.Snapshot.ID); !ok {
+		t.Fatal("protected account removed")
+	}
+	catalog.deleteHome = func(_ context.Context, _ string, remove func() error) error { return remove() }
+	if err := catalog.deleteSignedOut(t.Context(), record.Snapshot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(record.Home); !os.IsNotExist(err) {
+		t.Fatal("unprotected home retained", err)
 	}
 }

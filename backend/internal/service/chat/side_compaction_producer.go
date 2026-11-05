@@ -54,7 +54,11 @@ func (m *sideManager) prepareCompaction(ctx context.Context, runtime *sideRuntim
 			return r, fmt.Errorf("%w: original launch facts unavailable for %s", ErrSideCompactionNativeHomeUnavailable, runtime.side.Harness)
 		}
 		r.NativeHomeSource = "launch_config"
-		scope.NativeHome, err = nativehome.Resolve(ctx, runtime.side.Harness, frozen.Env, frozen.WorkspacePath, frozen.DataDir)
+		env, envErr := nativehome.InvocationEnvironment(runtime.side.Harness, frozen.Env, frozen.DataDir, domain.SessionID(runtime.side.ProviderHostID))
+		if envErr != nil {
+			return r, fmt.Errorf("%w: %w", ErrSideCompactionNativeHomeUnavailable, envErr)
+		}
+		scope.NativeHome, err = nativehome.Resolve(ctx, runtime.side.Harness, env, frozen.WorkspacePath, frozen.DataDir)
 		if err != nil {
 			return r, fmt.Errorf("%w: %w", ErrSideCompactionNativeHomeUnavailable, err)
 		}
@@ -70,6 +74,18 @@ func (m *sideManager) registerCompaction(ctx context.Context, r domain.SideCompa
 	if !ok || store.durable == nil {
 		return nil
 	}
+	release := m.service.nativeGuard.lock(r.NativeHome, r.NativeID)
+	defer release()
+	rows, err := store.durable.SideCompactions(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.NativeHome == r.NativeHome && row.NativeID == r.NativeID {
+			return fmt.Errorf("%w: side %s", ErrNativeConversationProtected, row.SideID)
+		}
+	}
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	raw, err := store.contentLocked(r.SideID)

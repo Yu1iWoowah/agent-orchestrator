@@ -389,6 +389,8 @@ var schemaNames = map[string]string{
 	"ControllersActivateConversationBranchResponse":        "ActivateConversationBranchResponse",
 	"ControllersCreateConversationSideChatRequest":         "CreateConversationSideChatRequest",
 	"ControllersCreateConversationSideChatResponse":        "CreateConversationSideChatResponse",
+	"ChatProtectedSide":                                    "ProtectedSide",
+	"ControllersProtectedSideListResponse":                 "ProtectedSideListResponse",
 	"ControllersSideChatListResponse":                      "SideChatListResponse",
 	"ControllersSideChatSnapshotResponse":                  "SideChatSnapshotResponse",
 	"ControllersSendSideQuestionRequest":                   "SendSideQuestionRequest",
@@ -1474,6 +1476,8 @@ func shellTerminalOperations() []operation {
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
+		{method: http.MethodGet, path: "/api/v1/side-chats/protected", id: "listProtectedSideChats", tag: "conversations", resps: []respUnit{{http.StatusOK, controllers.ProtectedSideListResponse{}}, {http.StatusInternalServerError, envelope.APIError{}}}},
+		{method: http.MethodDelete, path: "/api/v1/side-chats/protected/{sideId}", id: "deleteProtectedSideChat", tag: "conversations", pathParams: []any{controllers.SideChatIDParam{}}, resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}}},
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/conversation/side-chats", id: "listSessionSideChats", tag: "conversations",
 			pathParams: []any{controllers.SessionIDParam{}},

@@ -70,6 +70,7 @@ type Service struct {
 	historicalReader        HistoricalSnapshotReader
 	sessions                SessionReader
 	drivers                 ports.ChatDriverRegistry
+	nativeGuard             *NativeGuard
 	activity                ActivityRecorder
 	log                     *slog.Logger
 	newID                   IDFactory
@@ -178,6 +179,7 @@ type Options struct {
 	HistoricalReader HistoricalSnapshotReader
 	Sessions         SessionReader
 	Drivers          ports.ChatDriverRegistry
+	NativeGuard      *NativeGuard
 	// Activity feeds derived session status from turn events. Nil leaves a chat
 	// session reading as idle while it works, so production always wires it.
 	Activity ActivityRecorder
@@ -257,6 +259,11 @@ func New(opts Options) *Service {
 		wakeRuns:               make(map[domain.SessionID]*wakeRun),
 		backgroundWakes:        make(map[domain.SessionID]bool),
 		promptSuggestionSlots:  make(chan struct{}, 2),
+	}
+	svc.nativeGuard = opts.NativeGuard
+	if svc.nativeGuard == nil {
+		durable, _ := opts.Store.(ports.SideCompactionStore)
+		svc.nativeGuard = NewNativeGuard(durable)
 	}
 	sideStore := newMemorySideStore()
 	sideStore.log = svc.log

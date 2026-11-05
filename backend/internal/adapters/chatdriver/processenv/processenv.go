@@ -15,6 +15,19 @@ func Merge(overlay map[string]string) []string {
 	return merge(os.Environ(), overlay, runtime.GOOS == "windows")
 }
 
+// Map returns the same effective environment as Merge, keyed for lookups.
+func Map(overlay map[string]string) map[string]string {
+	values := map[string]string{}
+	for _, entry := range Merge(overlay) {
+		key, value, _ := strings.Cut(entry, "=")
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
+		values[key] = value
+	}
+	return values
+}
+
 func merge(environ []string, overlay map[string]string, caseInsensitive bool) []string {
 	merged := make(map[string]string, len(environ)+len(overlay))
 	for _, entry := range environ {

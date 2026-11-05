@@ -204,7 +204,7 @@ func containsReviewID(ids []string, id string) bool {
 }
 
 func TestSideCompactionAttachmentCleanupIsBestEffort(t *testing.T) {
-	svc, _, _, _ := newRecordHarness(t, domain.HarnessCodex)
+	svc, _, _, home := newRecordHarness(t, domain.HarnessCodex)
 	_, _ = svc.CompactSideChat(t.Context(), "session", "side")
 	if err := svc.ExplicitlyCloseSideCompaction(t.Context(), "session", "side"); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestSideCompactionAttachmentCleanupIsBestEffort(t *testing.T) {
 	svc.log = log
 	svc.stopProviderHost = func(context.Context, domain.SessionID) error { return nil }
 	deleter := &sideCleanupTestConversation{}
-	svc.controllers["session"] = &Controller{conv: deleter, harness: domain.HarnessCodex}
+	svc.controllers["session"] = &Controller{conv: &nativeCleanupConversation{ChatConversation: deleter, ChatForkDeleter: deleter, home: home}, harness: domain.HarnessCodex}
 	_, notices, unwatch, err := svc.WatchSideChat(t.Context(), "session", "side")
 	if err != nil {
 		t.Fatal(err)

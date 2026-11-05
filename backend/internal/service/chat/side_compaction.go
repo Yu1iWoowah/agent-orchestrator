@@ -126,10 +126,10 @@ func (m *sideManager) settleCompactionResult(ctx context.Context, runtime *sideR
 	}
 	runtime.mu.Lock()
 	runtime.compacting, runtime.compactionID, runtime.compactionEpoch, runtime.compactionResult = false, "", "", nil
-	if !runtime.dispatchBlocked {
+	if !runtime.dispatchBlocked || runtime.queryOnly {
 		m.setOutboundUnverifiedLocked(runtime, false)
 	}
-	settled := !runtime.dispatchBlocked
+	settled := !runtime.dispatchBlocked || runtime.queryOnly
 	runtime.mu.Unlock()
 	if settled {
 		m.clearCompactionAttention(ctx, runtime)

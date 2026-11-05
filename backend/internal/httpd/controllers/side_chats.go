@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,8 @@ func sideID(r *http.Request) string { return chi.URLParam(r, "sideId") }
 
 func writeSideChatError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, chatsvc.ErrNativeConversationProtected):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_NATIVE_CONVERSATION_PROTECTED", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrSideCompactionNativeHomeUnavailable):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_SIDE_COMPACTION_NATIVE_HOME_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrSideCompactionReconciled):
@@ -441,6 +444,44 @@ func (c *ConversationsController) cancelSideQuestion(w http.ResponseWriter, r *h
 		return
 	}
 	if err := svc.CancelQueuedSideQuestion(r.Context(), sideSession(r), sideID(r), chi.URLParam(r, "turnId")); err != nil {
+		writeSideChatError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *ConversationsController) listProtectedSides(w http.ResponseWriter, r *http.Request) {
+	if requestscope.IsLAN(r.Context()) {
+		http.NotFound(w, r)
+		return
+	}
+	svc, ok := c.Svc.(interface {
+		ListProtectedSides(context.Context) ([]chatsvc.ProtectedSide, error)
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, r.Method, r.URL.Path)
+		return
+	}
+	sides, err := svc.ListProtectedSides(r.Context())
+	if err != nil {
+		writeSideChatError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ProtectedSideListResponse{Sides: sides})
+}
+func (c *ConversationsController) closeProtectedSide(w http.ResponseWriter, r *http.Request) {
+	if requestscope.IsLAN(r.Context()) {
+		http.NotFound(w, r)
+		return
+	}
+	svc, ok := c.Svc.(interface {
+		CloseProtectedSide(context.Context, string) error
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, r.Method, r.URL.Path)
+		return
+	}
+	if err := svc.CloseProtectedSide(r.Context(), sideID(r)); err != nil {
 		writeSideChatError(w, r, err)
 		return
 	}

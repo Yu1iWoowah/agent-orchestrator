@@ -57,9 +57,10 @@ type codexAccountCatalog struct {
 	now    func() time.Time
 	newID  func() string
 
-	mu        sync.RWMutex
-	records   map[string]codexAccountRecord
-	onRemoved func([]string)
+	mu         sync.RWMutex
+	records    map[string]codexAccountRecord
+	onRemoved  func([]string)
+	deleteHome func(context.Context, string, func() error) error
 }
 
 func newCodexAccountCatalog(root string, logger *slog.Logger) *codexAccountCatalog {
@@ -418,7 +419,7 @@ func (c *codexAccountCatalog) markSignedOut(id string) (codexAccountRecord, erro
 	return refreshed, nil
 }
 
-func (c *codexAccountCatalog) deleteSignedOut(id string) error {
+func (c *codexAccountCatalog) deleteSignedOut(ctx context.Context, id string) error {
 	record, ok := c.record(id)
 	if !ok || record.Snapshot.Status != domain.CodexAccountStatusSignedOut {
 		return errors.New("codex account is not signed out")
@@ -435,7 +436,11 @@ func (c *codexAccountCatalog) deleteSignedOut(id string) error {
 	// temporary directories beside auth.json. The account root and credential
 	// home were both revalidated above; RemoveAll deletes this exact AO-owned
 	// slot and unlinks any nested symlink without following its target.
-	if err := os.RemoveAll(accountDir); err != nil {
+	remove := func() error { return os.RemoveAll(accountDir) }
+	if c.deleteHome != nil {
+		remove = func() error { return c.deleteHome(ctx, record.Home, func() error { return os.RemoveAll(accountDir) }) }
+	}
+	if err := remove(); err != nil {
 		return err
 	}
 	if err := syncDirectory(c.root); err != nil {

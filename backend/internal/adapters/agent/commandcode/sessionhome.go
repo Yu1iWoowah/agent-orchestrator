@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/nativehome"
 )
 
 // Command Code reads user-tier memory in both Terminal and Chat, including after
@@ -25,12 +26,7 @@ var linkedHomeEntries = []string{".ssh", ".npmrc", ".netrc", ".docker", ".aws"}
 
 // SessionHomeDir returns durable harness state outside disposable prompts/<id>.
 func SessionHomeDir(dataDir string, sessionID domain.SessionID) string {
-	dataDir = strings.TrimSpace(dataDir)
-	sessionID = domain.SessionID(strings.TrimSpace(string(sessionID)))
-	if dataDir == "" || sessionID == "" {
-		return ""
-	}
-	return filepath.Join(dataDir, "harnesses", "command-code", string(sessionID))
+	return nativehome.CommandCodeHome(dataDir, sessionID)
 }
 
 // realCommandCodeDir returns the user's own ~/.commandcode, the source for the

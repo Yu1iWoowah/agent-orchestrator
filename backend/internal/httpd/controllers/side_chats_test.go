@@ -138,3 +138,70 @@ func TestSideCompactionHTTPReportsMissingNativeHome(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 }
+
+type protectedHTTPService struct {
+	*sideHTTPService
+	closed            string
+	explicit, cleanup int
+}
+
+func (s *protectedHTTPService) ListProtectedSides(context.Context) ([]chatsvc.ProtectedSide, error) {
+	return []chatsvc.ProtectedSide{{SideID: "old-side", SessionID: "missing-parent", Orphan: true, State: domain.SideCompactionUnknown}}, nil
+}
+func (s *protectedHTTPService) CloseProtectedSide(_ context.Context, id string) error {
+	s.closed = id
+	return nil
+}
+func (s *protectedHTTPService) ExplicitlyCloseSideCompaction(context.Context, domain.SessionID, string) error {
+	s.explicit++
+	return nil
+}
+func (s *protectedHTTPService) CloseIndependentSideChat(context.Context, domain.SessionID, string) error {
+	s.cleanup++
+	return nil
+}
+func TestProtectedSideHTTPGlobalAndExplicitClose(t *testing.T) {
+	svc := &protectedHTTPService{sideHTTPService: &sideHTTPService{Service: chatsvc.New(chatsvc.Options{})}}
+	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Sessions: newFakeSessionService(), Conversations: svc}, httpd.ControlDeps{})
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/side-chats/protected", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"orphan":true`) || !strings.Contains(list.Body.String(), "old-side") {
+		t.Fatal(list.Code, list.Body.String())
+	}
+	for _, secret := range []string{"nativeHome", "nativeId", "content", "launchConfig"} {
+		if strings.Contains(list.Body.String(), secret) {
+			t.Fatal("private data in list", secret)
+		}
+	}
+	closed := httptest.NewRecorder()
+	handler.ServeHTTP(closed, httptest.NewRequest(http.MethodDelete, "/api/v1/side-chats/protected/old-side", nil))
+	if closed.Code != http.StatusNoContent || svc.closed != "old-side" || svc.explicit != 0 || svc.cleanup != 0 {
+		t.Fatal(closed.Code, svc)
+	}
+	explicit := httptest.NewRecorder()
+	handler.ServeHTTP(explicit, httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/session/conversation/side-chats/side", nil))
+	if explicit.Code != http.StatusNoContent || svc.explicit != 1 || svc.cleanup != 1 {
+		t.Fatal(explicit.Code, svc)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/api/v1/side-chats/protected", nil)
+		if method == http.MethodDelete {
+			req = httptest.NewRequest(method, "/api/v1/side-chats/protected/old-side", nil)
+		}
+		req = req.WithContext(requestscope.WithLAN(req.Context()))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusNotFound {
+			t.Fatal("LAN protected control", method, response.Code)
+		}
+	}
+}
+
+func TestSideChatHTTPDistinguishesUnavailableNativeHome(t *testing.T) {
+	svc := &sideHTTPService{Service: chatsvc.New(chatsvc.Options{}), compactErr: chatsvc.ErrNativeHomeUnavailable}
+	response := httptest.NewRecorder()
+	sideHTTPRouter(svc).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/session/conversation/side-chats/side/compact", nil))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CHAT_NATIVE_HOME_UNAVAILABLE") || strings.Contains(response.Body.String(), "CHAT_NATIVE_CONVERSATION_PROTECTED") {
+		t.Fatal(response.Code, response.Body.String())
+	}
+}

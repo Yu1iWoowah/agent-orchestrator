@@ -4564,3 +4564,8 @@ type GuardianPurgeResponse struct {
 type GuardianPurgeQuery struct {
 	SessionID string `path:"sessionId"`
 }
+
+// ProtectedSideListResponse lists unresolved protected sides across launches.
+type ProtectedSideListResponse struct {
+	Sides []chatsvc.ProtectedSide `json:"sides"`
+}

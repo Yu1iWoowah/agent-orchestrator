@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,11 +17,13 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/fx/herdr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/tmux"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 func TestWiringLifecycleOwnsHerdrSocket(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "ao-herdr-wiring-")
+	dir, err := os.MkdirTemp("", "ao-herdr-wiring-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +37,14 @@ func TestWiringLifecycleOwnsHerdrSocket(t *testing.T) {
 	defer cancel()
 	stack := startLifecycle(ctx, dir, store, tmux.New(tmux.Options{}), nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer func() { cancel(); stack.Stop() }()
+	// Warm the reducer's reader before measuring the RPC: opening SQLite
+	// connections and loading their schema are fixture setup.
+	if err := stack.LCM.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		LaunchID: "launch-1", ExpectedHarness: domain.HarnessFX,
+		Valid: true, State: domain.ActivityActive, Timestamp: time.Now(),
+	}); !errors.Is(err, ports.ErrSessionNotFound) {
+		t.Fatalf("lifecycle reader not ready: %v", err)
+	}
 	conn, err := net.DialTimeout("unix", herdr.SocketPath(dir), time.Second)
 	if err != nil {
 		t.Fatalf("lifecycle did not start Herdr listener: %v", err)
@@ -64,7 +75,7 @@ func TestWiringLifecycleOwnsHerdrSocket(t *testing.T) {
 }
 
 func TestWiringHerdrFailureDoesNotPreventLifecycleStartup(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "ao-herdr-wiring-")
+	dir, err := os.MkdirTemp("", "ao-herdr-wiring-")
 	if err != nil {
 		t.Fatal(err)
 	}

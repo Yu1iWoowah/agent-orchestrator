@@ -5065,6 +5065,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/side-chats/protected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listProtectedSideChats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/side-chats/protected/{sideId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteProtectedSideChat"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/github-auth": {
         parameters: {
             query?: never;
@@ -8479,6 +8511,17 @@ export interface components {
             activityId: string;
             providerTurnId: string;
             sourceTurnId: string;
+        };
+        ProtectedSide: {
+            historical: boolean;
+            orphan: boolean;
+            provider: string;
+            sessionId: string;
+            sideId: string;
+            state: string;
+        };
+        ProtectedSideListResponse: {
+            sides: components["schemas"]["ProtectedSide"][];
         };
         ProviderSwitchRequest: {
             /** @enum {string} */
@@ -30605,6 +30648,74 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listProtectedSideChats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProtectedSideListResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    deleteProtectedSideChat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Independent side chat identifier. */
+                sideId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
