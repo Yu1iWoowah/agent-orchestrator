@@ -25,6 +25,9 @@ func (m *sideManager) protectedSide(ctx context.Context, id, fork string) (bool,
 
 // Retry can observe the original compaction host, never start a replacement.
 func (m *sideManager) reconnectProtected(ctx context.Context, side domain.SideConversation) error {
+	if m.service.drivers == nil {
+		return nil
+	}
 	rows, err := m.service.nativeGuard.store.SideCompactions(ctx, true)
 	if err != nil {
 		return err

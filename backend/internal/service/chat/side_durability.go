@@ -250,6 +250,10 @@ func (s *Service) ExplicitlyCloseSideCompaction(ctx context.Context, session dom
 	if _, err := s.sides.ownedSide(ctx, session, id); err != nil {
 		return err
 	}
+	return s.closeSideCompactions(ctx, id)
+}
+
+func (s *Service) closeSideCompactions(ctx context.Context, id string) error {
 	store, ok := s.sides.store.(*memorySideStore)
 	if !ok {
 		return ErrSideUnavailable

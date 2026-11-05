@@ -114,6 +114,8 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Get("/sessions/{sessionId}/conversation/side-chats/{sideId}", c.sideSnapshot)
 	r.Get("/sessions/{sessionId}/conversation/side-chats/{sideId}/events", c.streamSideChat)
 	r.Delete("/sessions/{sessionId}/conversation/side-chats/{sideId}", c.closeSideChat)
+	r.Get("/side-chats/protected", c.listProtectedSides)
+	r.Delete("/side-chats/protected/{sideId}", c.closeProtectedSide)
 	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/messages", c.sendSideQuestion)
 	r.Patch("/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}", c.editSideQuestion)
 	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}/retry", c.retrySideQuestion)
@@ -1186,6 +1188,8 @@ func decodeConversationBodyLimit(w http.ResponseWriter, r *http.Request, into an
 // codes, so a client can tell a permanent answer from a retryable one.
 func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, ports.ErrNativeConversationProtected):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_NATIVE_CONVERSATION_PROTECTED", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatDeliveryUnverified):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_DELIVERY_UNVERIFIED", "The original input is preserved; delivery must be verified before retry", nil)
 	case errors.Is(err, ports.ErrChatShutdownNotSettled):

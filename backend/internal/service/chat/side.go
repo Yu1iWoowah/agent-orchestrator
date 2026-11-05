@@ -2066,9 +2066,18 @@ func (s *Service) CloseIndependentSideChat(ctx context.Context, session domain.S
 }
 
 func (s *Service) closeSide(ctx context.Context, owned domain.SideConversation) error {
+	if protected, err := s.sides.protectedSide(ctx, owned.ID, ""); err != nil {
+		return err
+	} else if protected {
+		return nil
+	}
 	sideID := owned.ID
 	s.sides.mu.Lock()
 	side, closeErr := s.sides.store.CloseSideConversation(ctx, sideID, s.now())
+	if errors.Is(closeErr, ErrCompactionWhileBusy) {
+		s.sides.mu.Unlock()
+		return nil
+	}
 	if closeErr != nil {
 		s.sides.mu.Unlock()
 		return closeErr

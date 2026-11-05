@@ -16393,6 +16393,54 @@ paths:
       summary: ""
       tags:
       - conversations
+  /api/v1/side-chats/protected:
+    get:
+      operationId: listProtectedSideChats
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectedSideListResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/side-chats/protected/{sideId}:
+    delete:
+      operationId: deleteProtectedSideChat
+      parameters:
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: ""
+      tags:
+      - conversations
   /api/v1/system/github-auth:
     get:
       operationId: getGitHubAuthRequirement
@@ -25469,6 +25517,37 @@ components:
       - sourceTurnId
       - providerTurnId
       - activityId
+      type: object
+    ProtectedSide:
+      properties:
+        historical:
+          type: boolean
+        orphan:
+          type: boolean
+        provider:
+          type: string
+        sessionId:
+          type: string
+        sideId:
+          type: string
+        state:
+          type: string
+      required:
+      - sideId
+      - sessionId
+      - provider
+      - state
+      - historical
+      - orphan
+      type: object
+    ProtectedSideListResponse:
+      properties:
+        sides:
+          items:
+            $ref: '#/components/schemas/ProtectedSide'
+          type: array
+      required:
+      - sides
       type: object
     ProviderSwitchRequest:
       properties:
