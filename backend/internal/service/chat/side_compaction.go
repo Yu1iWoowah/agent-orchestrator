@@ -26,6 +26,10 @@ func (m *sideManager) clearSettledAttention(ctx context.Context) {
 		return
 	}
 	for _, side := range sides {
+		protected, err := m.protectedSide(checkCtx, side.ID)
+		if err != nil || protected {
+			continue
+		}
 		if checkCtx.Err() != nil {
 			return
 		}

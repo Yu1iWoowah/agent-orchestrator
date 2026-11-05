@@ -13,6 +13,18 @@ var ErrChatDeliveryUnverified = errors.New("chat delivery evidence is unavailabl
 // ErrChatShutdownNotSettled refuses a normal detach without settlement evidence.
 var ErrChatShutdownNotSettled = errors.New("shutdown_not_settled")
 
+// ChatShutdownSideError carries safe diagnostics without provider text or paths.
+type ChatShutdownSideError struct {
+	SideID string `json:"sideId"`
+	Reason string `json:"reason"`
+}
+
+func (e *ChatShutdownSideError) Error() string {
+	return "shutdown_not_settled: protected side " + e.SideID + ": " + e.Reason + "; use protected_side_chats"
+}
+
+func (*ChatShutdownSideError) Unwrap() error { return ErrChatShutdownNotSettled }
+
 // ChatDeliveryLookup contains correlation keys only, never a prompt or path.
 type ChatDeliveryLookup struct {
 	AttemptID         string

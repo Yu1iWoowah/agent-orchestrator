@@ -55,7 +55,8 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
-	shutdownPrepared bool // guarded by mu; admission stays fenced until detach
+	shutdownPrepared       bool     // guarded by mu; admission stays fenced until detach
+	shutdownPreservedSides []string // guarded by mu; successful preflight report
 
 	shutdownQuiescing   bool // guarded by mu
 	startingControllers int  // guarded by mu

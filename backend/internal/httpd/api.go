@@ -26,6 +26,7 @@ import (
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
 	ShutdownPreflight        func(context.Context) error
+	ShutdownPreservedSides   func() []string
 	OperatorConsentAuthority controllers.OperatorConsentAuthority
 
 	GuardianObservability controllers.GuardianQueryService
