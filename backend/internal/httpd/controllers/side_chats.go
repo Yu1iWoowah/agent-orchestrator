@@ -37,6 +37,8 @@ func sideID(r *http.Request) string { return chi.URLParam(r, "sideId") }
 
 func writeSideChatError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, chatsvc.ErrSideCompactionNativeHomeUnavailable):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_SIDE_COMPACTION_NATIVE_HOME_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrSideCompactionReconciled):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_SIDE_COMPACTION_RECONCILED", err.Error(), nil)
 	case errors.Is(err, chatsvc.ErrSideNameLimit):
@@ -328,6 +330,10 @@ func (c *ConversationsController) putSideDraft(w http.ResponseWriter, r *http.Re
 func (c *ConversationsController) closeSideChat(w http.ResponseWriter, r *http.Request) {
 	svc, ok := c.sideService(w, r)
 	if !ok {
+		return
+	}
+	if err := svc.ExplicitlyCloseSideCompaction(r.Context(), sideSession(r), sideID(r)); err != nil {
+		writeSideChatError(w, r, err)
 		return
 	}
 	if err := svc.CloseIndependentSideChat(r.Context(), sideSession(r), sideID(r)); err != nil {

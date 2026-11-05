@@ -46,7 +46,8 @@ func TestSideResumesQueueAfterRealCodexCompactionTimeout(t *testing.T) {
 	}
 
 	driver, server := newTestDriver(t)
-	opened, err := driver.Start(ctx, ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	env := map[string]string{"CODEX_HOME": t.TempDir()}
+	opened, err := driver.Start(ctx, ports.ChatStartConfig{WorkspacePath: t.TempDir(), Env: env})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestSideResumesQueueAfterRealCodexCompactionTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), rec.ID) })
-	config, err := json.Marshal(map[string]any{"WorkspacePath": t.TempDir()})
+	config, err := json.Marshal(map[string]any{"WorkspacePath": t.TempDir(), "Env": env})
 	if err != nil {
 		t.Fatal(err)
 	}

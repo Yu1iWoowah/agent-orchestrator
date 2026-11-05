@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -27,9 +29,13 @@ var (
 	ErrSideNameLimit = errors.New("side chat numbering has reached 99; close or rename the highest-numbered tab before creating another")
 )
 
-// memorySideStore is deliberately process-local. Electron owns recovery across
-// supervised daemon restarts; AO never writes side transcripts or drafts to DB.
+// memorySideStore projects side content; unresolved compactions also retain a
+// durable snapshot independent of Electron recovery.
 type memorySideStore struct {
+	log              *slog.Logger
+	attachments      *attachmentstore.Store
+	durable          ports.SideCompactionStore
+	protected        map[string]bool   // guarded by mu
 	compactionEpochs map[string]string // guarded by mu
 	compactions      map[string]string // guarded by mu
 	unverified       map[string]bool   // guarded by mu; native outbound not yet settled
@@ -91,9 +97,13 @@ type SideRecoveryTurn struct {
 func (m *memorySideStore) export(runID string) []SideRecoveryRecord {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.exportLocked(runID)
+}
+
+func (m *memorySideStore) exportLocked(runID string, onlyID ...string) []SideRecoveryRecord {
 	out := []SideRecoveryRecord{}
 	for id, side := range m.sides {
-		if side.AppRunID != runID || side.ClosedAt != nil {
+		if (len(onlyID) > 0 && id != onlyID[0]) || (runID != "" && side.AppRunID != runID) || side.ClosedAt != nil {
 			continue
 		}
 		turns := make([]SideRecoveryTurn, 0, len(m.turns[id]))
@@ -267,7 +277,7 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 }
 
 func newMemorySideStore() *memorySideStore {
-	return &memorySideStore{hostCleanup: map[string]domain.SideConversation{}, hostStopped: map[string]bool{}, closed: map[string]bool{}, sides: map[string]domain.SideConversation{}, turns: map[string][]domain.SideTurn{}, messages: map[string][]domain.SideMessage{}, activities: map[string][]domain.SideActivity{}, drafts: map[string]string{}, cleanup: map[string]domain.SideProviderCleanup{}}
+	return &memorySideStore{log: slog.Default(), hostCleanup: map[string]domain.SideConversation{}, hostStopped: map[string]bool{}, closed: map[string]bool{}, sides: map[string]domain.SideConversation{}, turns: map[string][]domain.SideTurn{}, messages: map[string][]domain.SideMessage{}, activities: map[string][]domain.SideActivity{}, drafts: map[string]string{}, cleanup: map[string]domain.SideProviderCleanup{}}
 }
 
 func (m *memorySideStore) ClaimSideLaunch(_ context.Context, runID string, _ time.Time) ([]domain.SideConversation, error) {
@@ -280,16 +290,18 @@ func (m *memorySideStore) ClaimSideLaunch(_ context.Context, runID string, _ tim
 		return nil, nil
 	}
 	retired := make([]domain.SideConversation, 0, len(m.sides))
-	for _, side := range m.sides {
+	for id, side := range m.sides {
+		if m.protected[id] {
+			continue
+		}
 		retired = append(retired, side)
+		delete(m.sides, id)
+		delete(m.turns, id)
+		delete(m.messages, id)
+		delete(m.activities, id)
+		delete(m.drafts, id)
 	}
 	m.runID = runID
-	m.closed = map[string]bool{}
-	m.sides = map[string]domain.SideConversation{}
-	m.turns = map[string][]domain.SideTurn{}
-	m.messages = map[string][]domain.SideMessage{}
-	m.activities = map[string][]domain.SideActivity{}
-	m.drafts = map[string]string{}
 	return retired, nil
 }
 func (m *memorySideStore) RecoverInterruptedSideTurns(_ context.Context, runID string, now time.Time) error {
@@ -299,6 +311,9 @@ func (m *memorySideStore) RecoverInterruptedSideTurns(_ context.Context, runID s
 		return nil
 	}
 	for id, turns := range m.turns {
+		if m.protected[id] {
+			continue
+		}
 		for i := range turns {
 			if turns[i].State == "running" {
 				turns[i].State = "failed"
@@ -398,9 +413,10 @@ func (m *memorySideStore) updateSide(id, generation string, fn func(*domain.Side
 	m.sides[id] = side
 	return nil
 }
-func (m *memorySideStore) SetSideRecovering(_ context.Context, id, generation string, now time.Time) error {
+func (m *memorySideStore) SetSideRecovering(_ context.Context, id, generation string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(side *domain.SideConversation) {
 		side.State = "recovering"
 		side.ErrorMessage = ""
@@ -408,9 +424,10 @@ func (m *memorySideStore) SetSideRecovering(_ context.Context, id, generation st
 		side.UpdatedAt = now
 	})
 }
-func (m *memorySideStore) SetSideReady(_ context.Context, id, generation, providerID string, now time.Time) error {
+func (m *memorySideStore) SetSideReady(_ context.Context, id, generation, providerID string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(s *domain.SideConversation) {
 		s.State = "ready"
 		s.ErrorMessage = ""
@@ -419,26 +436,29 @@ func (m *memorySideStore) SetSideReady(_ context.Context, id, generation, provid
 		s.UpdatedAt = now
 	})
 }
-func (m *memorySideStore) SetSideReconstructed(_ context.Context, id, generation string, now time.Time) error {
+func (m *memorySideStore) SetSideReconstructed(_ context.Context, id, generation string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(side *domain.SideConversation) {
 		side.ContextMode = "reconstructed"
 		side.UpdatedAt = now
 	})
 }
-func (m *memorySideStore) RegisterSideFork(_ context.Context, id, generation, providerID string, now time.Time) error {
+func (m *memorySideStore) RegisterSideFork(_ context.Context, id, generation, providerID string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(s *domain.SideConversation) {
 		s.ProviderForkID = providerID
 		s.UpdatedAt = now
 		m.cleanup[providerID] = domain.SideProviderCleanup{ForkID: providerID, SessionID: s.SessionID, Harness: s.Harness}
 	})
 }
-func (m *memorySideStore) SetSideFailed(_ context.Context, id, generation, message string, now time.Time) error {
+func (m *memorySideStore) SetSideFailed(_ context.Context, id, generation, message string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(s *domain.SideConversation) {
 		if s.BoundaryState == "pending" {
 			s.BoundaryState = "uncertain"
@@ -456,6 +476,9 @@ func (m *memorySideStore) CloseSideConversation(_ context.Context, id string, no
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	side, ok := m.sides[id]
+	if m.protected[id] {
+		return side, ErrCompactionWhileBusy
+	}
 	if !ok || side.ClosedAt != nil {
 		return side, ErrSideClosed
 	}
@@ -531,9 +554,10 @@ func (m *memorySideStore) SideProviderCleanupPending(_ context.Context) ([]domai
 	}
 	return out, nil
 }
-func (m *memorySideStore) ReserveSideTurn(_ context.Context, turn domain.SideTurn, runID string) (domain.SideTurn, bool, error) {
+func (m *memorySideStore) ReserveSideTurn(_ context.Context, turn domain.SideTurn, runID string) (result domain.SideTurn, created bool, writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(turn.SideID)(&writeErr)
 	side, ok := m.sides[turn.SideID]
 	if !ok || side.ClosedAt != nil || side.AppRunID != runID {
 		return domain.SideTurn{}, false, ErrSideClosed
@@ -599,9 +623,10 @@ func (m *memorySideStore) ClaimNextSideTurn(_ context.Context, runID string, exc
 	}
 	return chosen, side, true, nil
 }
-func (m *memorySideStore) SettleSideTurn(_ context.Context, sideID, turnID, generation, state, providerID, message string, now time.Time) error {
+func (m *memorySideStore) SettleSideTurn(_ context.Context, sideID, turnID, generation, state, providerID, message string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	side, ok := m.sides[sideID]
 	if !ok || side.Generation != generation {
 		return ErrSideClosed
@@ -619,9 +644,10 @@ func (m *memorySideStore) SettleSideTurn(_ context.Context, sideID, turnID, gene
 	}
 	return ErrSideClosed
 }
-func (m *memorySideStore) RequeueSideTurn(_ context.Context, sideID, turnID string) error {
+func (m *memorySideStore) RequeueSideTurn(_ context.Context, sideID, turnID string) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	for i := range m.turns[sideID] {
 		if m.turns[sideID][i].ID == turnID {
 			m.turns[sideID][i].State = "queued"
@@ -630,9 +656,10 @@ func (m *memorySideStore) RequeueSideTurn(_ context.Context, sideID, turnID stri
 	}
 	return ErrSideClosed
 }
-func (m *memorySideStore) RetrySideTurn(_ context.Context, sideID, turnID string) error {
+func (m *memorySideStore) RetrySideTurn(_ context.Context, sideID, turnID string) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	for i := range m.turns[sideID] {
 		turn := &m.turns[sideID][i]
 		if turn.ID != turnID || turn.State != "failed" {
@@ -650,14 +677,16 @@ func (m *memorySideStore) RetrySideTurn(_ context.Context, sideID, turnID string
 	}
 	return ErrSideClosed
 }
-func (m *memorySideStore) UpdateSideSettings(_ context.Context, id, model, effort string, now time.Time) error {
+func (m *memorySideStore) UpdateSideSettings(_ context.Context, id, model, effort string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, "", func(s *domain.SideConversation) { s.Model = model; s.Effort = effort; s.UpdatedAt = now })
 }
-func (m *memorySideStore) EditQueuedSideTurn(_ context.Context, sideID, turnID, text string) error {
+func (m *memorySideStore) EditQueuedSideTurn(_ context.Context, sideID, turnID, text string) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	for i := range m.turns[sideID] {
 		if m.turns[sideID][i].ID == turnID && m.turns[sideID][i].State == "queued" {
 			m.turns[sideID][i].Text = text
@@ -704,9 +733,10 @@ func (m *memorySideStore) SideTurns(_ context.Context, sideID string, before tim
 	more := len(turns) > limit
 	return append([]domain.SideTurn{}, turns[len(turns)-limit:]...), more, nil
 }
-func (m *memorySideStore) UpsertSideMessage(_ context.Context, msg domain.SideMessage, generation string) error {
+func (m *memorySideStore) UpsertSideMessage(_ context.Context, msg domain.SideMessage, generation string) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(msg.SideID)(&writeErr)
 	side, ok := m.sides[msg.SideID]
 	if !ok || side.Generation != generation {
 		return ErrSideClosed
@@ -745,9 +775,10 @@ func (m *memorySideStore) SideMessages(_ context.Context, sideID string, turnIDs
 	}
 	return out, nil
 }
-func (m *memorySideStore) UpsertSideActivity(sideID, generation string, activity domain.SideActivity) error {
+func (m *memorySideStore) UpsertSideActivity(sideID, generation string, activity domain.SideActivity) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	side, ok := m.sides[sideID]
 	if !ok || side.Generation != generation {
 		return ErrSideClosed
@@ -820,9 +851,10 @@ func (m *memorySideStore) SideInput(sideID, requestID string) (domain.SideActivi
 	}
 	return domain.SideActivity{}, ErrSideClosed
 }
-func (m *memorySideStore) SetSideDraft(_ context.Context, sideID, runID, content string, _ time.Time) error {
+func (m *memorySideStore) SetSideDraft(_ context.Context, sideID, runID, content string, _ time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	side, ok := m.sides[sideID]
 	if !ok || side.AppRunID != runID {
 		return ErrSideClosed
@@ -835,9 +867,10 @@ func (m *memorySideStore) SideDraft(_ context.Context, sideID string) (string, e
 	defer m.mu.Unlock()
 	return m.drafts[sideID], nil
 }
-func (m *memorySideStore) SetSideReference(_ context.Context, sideID string, ref ports.ChatExcerptReference, selection, contextText string, now time.Time) error {
+func (m *memorySideStore) SetSideReference(_ context.Context, sideID string, ref ports.ChatExcerptReference, selection, contextText string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	return m.updateSide(sideID, "", func(s *domain.SideConversation) {
 		s.SelectedText = selection
 		s.ReferenceContext = contextText
@@ -848,9 +881,10 @@ func (m *memorySideStore) SetSideReference(_ context.Context, sideID string, ref
 	})
 }
 
-func (m *memorySideStore) RenameSide(_ context.Context, id, label string, now time.Time) error {
+func (m *memorySideStore) RenameSide(_ context.Context, id, label string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(id)(&writeErr)
 	side, ok := m.sides[id]
 	if !ok || side.ClosedAt != nil {
 		return ErrSideClosed
@@ -859,9 +893,10 @@ func (m *memorySideStore) RenameSide(_ context.Context, id, label string, now ti
 	m.sides[id] = side
 	return nil
 }
-func (m *memorySideStore) CancelSideTurn(_ context.Context, sideID, turnID string, now time.Time) error {
+func (m *memorySideStore) CancelSideTurn(_ context.Context, sideID, turnID string, now time.Time) (writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	for i := range m.turns[sideID] {
 		turn := &m.turns[sideID][i]
 		if turn.ID == turnID {
@@ -885,12 +920,13 @@ func sideReferenceContexts(refs []domain.SideReference) []string {
 }
 
 // SetSideTurnProviderID records acceptance before streaming or deferred execution starts.
-func (m *memorySideStore) SetSideTurnProviderID(_ context.Context, sideID, turnID, generation, providerID string) error {
+func (m *memorySideStore) SetSideTurnProviderID(_ context.Context, sideID, turnID, generation, providerID string) (writeErr error) {
 	if providerID == "" {
 		return ErrSidePolicyRecreate
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	side, ok := m.sides[sideID]
 	if !ok || side.Generation != generation {
 		return ErrSideClosed
@@ -916,9 +952,10 @@ func (m *memorySideStore) SetSideTurnProviderID(_ context.Context, sideID, turnI
 
 // PrepareSideBoundary records the first delivery before provider I/O. An
 // unacknowledged boundary is never replayed into a possibly accepted history.
-func (m *memorySideStore) PrepareSideBoundary(_ context.Context, sideID, turnID, generation string) (bool, error) {
+func (m *memorySideStore) PrepareSideBoundary(_ context.Context, sideID, turnID, generation string) (first bool, writeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer m.finishWrite(sideID)(&writeErr)
 	side, ok := m.sides[sideID]
 	if !ok || side.ClosedAt != nil || side.Generation != generation {
 		return false, ErrSideClosed
@@ -968,6 +1005,11 @@ func (m *memorySideStore) unverifiedSides() []string {
 	for id, unknown := range m.unverified {
 		side, exists := m.sides[id]
 		if unknown && exists && side.ClosedAt == nil && !m.hostStopped[id] {
+			pending = append(pending, id)
+		}
+	}
+	for id := range m.protected {
+		if _, exists := m.sides[id]; !exists {
 			pending = append(pending, id)
 		}
 	}

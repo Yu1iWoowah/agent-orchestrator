@@ -226,13 +226,13 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 		for _, runtime := range runtimes {
 			runtime.mu.Lock()
 			id := runtime.compactionID
-			canCheck := id != "" && runtime.outboundUnverified && runtime.activeTurnID == "" && !runtime.dispatchBlocked
+			canCheck := !runtime.compactionDispatching && id != "" && runtime.outboundUnverified && runtime.activeTurnID == "" && !runtime.dispatchBlocked
 			runtime.mu.Unlock()
 			if canCheck {
 				s.sides.reconcileCompaction(checkCtx, runtime, true)
 			}
 			runtime.mu.Lock()
-			pending := runtime.activeTurnID != "" || runtime.compacting || runtime.outboundUnverified
+			pending := runtime.activeTurnID != "" || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified
 			uncovered = uncovered || pending
 			runtime.mu.Unlock()
 			if _, ok := s.store.(outboundAttentionStore); ok {

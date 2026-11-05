@@ -1797,6 +1797,7 @@ type sideChatConversationService interface {
 	ResolveSideApproval(context.Context, domain.SessionID, string, string, string) error
 	ResolveSideInput(context.Context, domain.SessionID, string, string, ports.ChatInputResponse) error
 	CloseIndependentSideChat(context.Context, domain.SessionID, string) error
+	ExplicitlyCloseSideCompaction(context.Context, domain.SessionID, string) error
 	ClaimSideChatLaunch(context.Context, string) error
 	ExportSideChatLaunch(context.Context, string) ([]chatsvc.SideRecoveryRecord, error)
 	RecoverSideChatLaunch(context.Context, string, []chatsvc.SideRecoveryRecord) error

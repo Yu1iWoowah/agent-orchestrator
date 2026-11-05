@@ -129,3 +129,12 @@ func TestSideCompactionHTTPDistinguishesReconciliationFromAdmission(t *testing.T
 		}
 	}
 }
+
+func TestSideCompactionHTTPReportsMissingNativeHome(t *testing.T) {
+	svc := &sideHTTPService{Service: chatsvc.New(chatsvc.Options{}), compactErr: chatsvc.ErrSideCompactionNativeHomeUnavailable}
+	response := httptest.NewRecorder()
+	sideHTTPRouter(svc).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/session/conversation/side-chats/side/compact", nil))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CHAT_SIDE_COMPACTION_NATIVE_HOME_UNAVAILABLE") {
+		t.Fatal(response.Code, response.Body.String())
+	}
+}

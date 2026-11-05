@@ -361,6 +361,23 @@ type ChatDeliveryReceipt struct {
 	RecordedAt  time.Time
 }
 
+type ChatSideCompaction struct {
+	ID         string
+	SideID     string
+	NativeHome string
+	NativeID   string
+	Epoch      string
+	State      string
+	Historical int64
+	Closed     int64
+	RecordJson string
+}
+
+type ChatSideContent struct {
+	SideID      string
+	ContentJson string
+}
+
 type ChatWakeAttempt struct {
 	Sequence   int64
 	ID         string

@@ -2,8 +2,10 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -46,14 +48,21 @@ func (m *sideManager) reconcileCompaction(ctx context.Context, runtime *sideRunt
 	defer runtime.compactionCheckMu.Unlock()
 	runtime.mu.Lock()
 	id, epoch := runtime.compactionID, runtime.compactionEpoch
-	pending := id != "" && runtime.outboundUnverified && (!runtime.compacting || force) && runtime.activeTurnID == "" && !runtime.dispatchBlocked
+	pending := id != "" && !runtime.compactionDispatching && runtime.outboundUnverified && (!runtime.compacting || force) && runtime.activeTurnID == "" && !runtime.dispatchBlocked
 	due := force || !m.service.now().Before(runtime.nextCompactionCheck)
 	if !pending || !due {
 		runtime.mu.Unlock()
 		return false
 	}
 	runtime.nextCompactionCheck = m.service.now().Add(30 * time.Second)
+	result := runtime.compactionResult
 	runtime.mu.Unlock()
+	if result != nil {
+		if result.Compaction == nil || result.Compaction.CommandID != id {
+			return false
+		}
+		return m.settleCompactionResult(ctx, runtime, *result)
+	}
 	ownerCtx := runtime.ctx
 	if ownerCtx == nil {
 		ownerCtx = m.ctx
@@ -71,7 +80,10 @@ func (m *sideManager) reconcileCompaction(ctx context.Context, runtime *sideRunt
 		return false
 	}
 	runtime.mu.Lock()
-	settled := runtime.compactionID == id && runtime.activeTurnID == "" && !runtime.dispatchBlocked
+	settled := !runtime.compactionDispatching && runtime.compactionID == id && runtime.activeTurnID == "" && !runtime.dispatchBlocked
+	if settled && m.transitionCompaction(checkCtx, runtime, domain.SideCompactionSettled) != nil {
+		settled = false
+	}
 	if settled {
 		runtime.compacting = false
 		runtime.compactionID = ""
@@ -84,5 +96,44 @@ func (m *sideManager) reconcileCompaction(ctx context.Context, runtime *sideRunt
 		m.announce(runtime.side.ID)
 		m.signal()
 	}
+	return settled
+}
+
+// settleCompactionResult consumes a validated original receipt while compactionCheckMu is held.
+func (m *sideManager) settleCompactionResult(ctx context.Context, runtime *sideRuntime, event ports.ChatEvent) bool {
+	state := domain.SideCompactionSettled
+	if event.Compaction.Outcome == ports.ChatCompactionNotSent {
+		state = domain.SideCompactionNotSent
+	}
+	if err := m.transitionCompaction(ctx, runtime, state); err != nil {
+		runtime.mu.Lock()
+		runtime.compacting = false
+		runtime.compactionResult = &event
+		runtime.mu.Unlock()
+		m.service.log.Warn("side compaction result persistence failed", "side", runtime.side.ID, "code", "CHAT_SIDE_COMPACTION_RESULT_FAILED", "error", err)
+		return false
+	}
+	if acknowledger, ok := runtime.conv.(ports.ChatProviderEventAcknowledger); ok && event.ProviderEventID != "" {
+		ackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := acknowledger.AcknowledgeProviderEvent(ackCtx, event.ProviderEventID)
+		cancel()
+		if err != nil {
+			runtime.mu.Lock()
+			runtime.dispatchBlocked = true
+			runtime.mu.Unlock()
+			m.failOpen(runtime.side, fmt.Errorf("side provider did not acknowledge compaction; close and reopen the side chat: %w", err))
+		}
+	}
+	runtime.mu.Lock()
+	runtime.compacting, runtime.compactionID, runtime.compactionEpoch, runtime.compactionResult = false, "", "", nil
+	if !runtime.dispatchBlocked {
+		m.setOutboundUnverifiedLocked(runtime, false)
+	}
+	settled := !runtime.dispatchBlocked
+	runtime.mu.Unlock()
+	if settled {
+		m.clearCompactionAttention(ctx, runtime)
+	}
+	m.signal()
 	return settled
 }

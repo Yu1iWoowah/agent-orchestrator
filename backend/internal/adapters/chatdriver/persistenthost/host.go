@@ -165,7 +165,8 @@ type hello struct {
 }
 
 type helloResponse struct {
-	Deliveries []domain.ChatDeliveryReceipt `json:"deliveries,omitempty"`
+	CompactionScope ports.ChatCompactionScope    `json:"compactionScope,omitempty"`
+	Deliveries      []domain.ChatDeliveryReceipt `json:"deliveries,omitempty"`
 
 	LaunchCapabilityVerifier string    `json:"launchCapabilityVerifier,omitempty"`
 	ProviderStopped          bool      `json:"providerStopped,omitempty"`
@@ -752,6 +753,8 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		defer func() { _ = h.acp.close(context.WithoutCancel(ctx)) }()
 	}
+	h.compactionDataDir = cfg.DataDir
+	h.compaction = h.compactionScope(cfg.DataDir)
 	h.cond = sync.NewCond(&h.mu)
 	providerDone := make(chan error, 1)
 	go func() { providerDone <- h.forwardProvider(stdout) }()
@@ -871,7 +874,10 @@ func confirmedProviderShutdown(platform string, cleanupErr error, wait func() er
 }
 
 type host struct {
-	delivery *deliveryJournal
+	compactionMu      sync.Mutex
+	compactionDataDir string
+	compaction        ports.ChatCompactionScope
+	delivery          *deliveryJournal
 
 	launchCapabilityVerifier string     // Immutable launch evidence, sent only after authentication.
 	admissionMu              sync.Mutex // Serializes stopping with attached-client registration, never data writes.
@@ -962,6 +968,11 @@ func (h *host) handle(conn net.Conn) {
 	}
 	if subtle.ConstantTimeCompare([]byte(request.Token), []byte(h.token)) != 1 {
 		_ = json.NewEncoder(conn).Encode(helloResponse{Error: ErrUnauthorized.Error()})
+		_ = conn.Close()
+		return
+	}
+	if request.Action == "compaction-scope" {
+		_ = json.NewEncoder(conn).Encode(helloResponse{OK: true, CompactionScope: h.currentCompactionScope()})
 		_ = conn.Close()
 		return
 	}

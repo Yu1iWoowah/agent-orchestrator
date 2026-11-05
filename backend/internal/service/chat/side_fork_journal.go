@@ -97,6 +97,12 @@ func (m *sideManager) recoverForkRecords(ctx context.Context, runID string) erro
 		}
 		// Electron restores adopted sides from this launch. An interrupted load
 		// cannot be adopted: retire its host before deleting its recorded child.
+		store.mu.Lock()
+		protected := store.protected[record.SideID]
+		store.mu.Unlock()
+		if protected {
+			continue
+		}
 		if record.Adopted && record.RunID == runID {
 			continue
 		}
