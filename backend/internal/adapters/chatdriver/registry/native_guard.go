@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -11,8 +12,9 @@ type guardedDriver struct {
 }
 
 func (d *guardedDriver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (conv ports.ChatConversation, err error) {
-	cfg.ReconnectOnly = false
-	err = d.guard.Run(ctx, d.Harness(), cfg, func() error { conv, err = d.ChatDriver.Resume(ctx, cfg); return err })
+	key := cfg
+	key.ReconnectOnly = false
+	err = d.guard.Run(ctx, d.Harness(), key, func() error { conv, err = d.ChatDriver.Resume(ctx, cfg); return err })
 	return
 }
 func (d *guardedDriver) reconnect(ctx context.Context, cfg ports.ChatResumeConfig) (conv ports.ChatConversation, err error) {
