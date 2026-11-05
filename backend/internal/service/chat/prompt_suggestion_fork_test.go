@@ -30,9 +30,14 @@ func (d *suggestionForkDriver) ForkIntoHost(ctx context.Context, source, anchor 
 
 type suggestionParent struct {
 	*fakeConversation
-	mu        sync.Mutex
-	deleted   []string
-	deleteErr error
+	mu         sync.Mutex
+	deleted    []string
+	deleteErr  error
+	nativeHome string
+}
+
+func (c *suggestionParent) CompactionScope(context.Context) (ports.ChatCompactionScope, error) {
+	return ports.ChatCompactionScope{NativeHome: c.nativeHome}, nil
 }
 
 func (c *suggestionParent) NativeTurnID(id string) string { return "native-" + id }
@@ -57,7 +62,7 @@ func newSuggestionChild() *suggestionChild {
 func newSuggestionForkHarness(t *testing.T, provider domain.AgentHarness, capability ports.ChatCapability) (*harness, *suggestionParent, *suggestionForkDriver, string) {
 	t.Helper()
 	st := openStore(t)
-	parent := &suggestionParent{fakeConversation: newFakeConversation()}
+	parent := &suggestionParent{fakeConversation: newFakeConversation(), nativeHome: t.TempDir()}
 	caps := productionCaps()
 	caps[capability] = true
 	parent.setCapabilities(caps)
