@@ -1188,6 +1188,8 @@ func decodeConversationBodyLimit(w http.ResponseWriter, r *http.Request, into an
 // codes, so a client can tell a permanent answer from a retryable one.
 func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, chatsvc.ErrNativeHomeUnavailable):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_NATIVE_HOME_UNAVAILABLE", "The provider native home could not be verified", nil)
 	case errors.Is(err, ports.ErrNativeConversationProtected):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_NATIVE_CONVERSATION_PROTECTED", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatDeliveryUnverified):

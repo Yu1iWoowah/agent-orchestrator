@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,9 @@ import (
 
 // ErrNativeConversationProtected requires closing the side before native reuse.
 var ErrNativeConversationProtected = ports.ErrNativeConversationProtected
+
+// ErrNativeHomeUnavailable means a possibly protected native ID cannot be mapped safely.
+var ErrNativeHomeUnavailable = errors.New("cannot determine the native conversation home")
 
 type nativeKey struct{ home, id string }
 
@@ -65,7 +69,11 @@ func (g *NativeGuard) Run(ctx context.Context, provider domain.AgentHarness, cfg
 	if err != nil {
 		return err
 	}
-	home, resolveErr := nativehome.ResolveForOperation(ctx, provider, cfg.Env, cfg.WorkspacePath, cfg.DataDir)
+	env, resolveErr := nativehome.InvocationEnvironment(provider, cfg.Env, cfg.DataDir, cfg.SessionID)
+	var home string
+	if resolveErr == nil {
+		home, resolveErr = nativehome.ResolveForOperation(ctx, provider, env, cfg.WorkspacePath, cfg.DataDir)
+	}
 	// A live host keeps its original canonical root even if an alias moved.
 	for _, row := range rows {
 		if row.ProviderHostID != "" && row.ProviderHostID == string(cfg.SessionID) && row.NativeID == id {
@@ -74,11 +82,19 @@ func (g *NativeGuard) Run(ctx context.Context, provider domain.AgentHarness, cfg
 		}
 	}
 	if resolveErr != nil {
-		return fmt.Errorf("%w: %w", ErrNativeConversationProtected, resolveErr)
+		return fmt.Errorf("%w: %w", ErrNativeHomeUnavailable, resolveErr)
+	}
+	return g.runAtHome(ctx, home, cfg, call)
+}
+
+func (g *NativeGuard) runAtHome(ctx context.Context, home string, cfg ports.ChatResumeConfig, call func() error) error {
+	id := cfg.ProviderConversationID
+	if g == nil || g.store == nil || id == "" {
+		return call()
 	}
 	release := g.lock(home, id)
 	defer release()
-	rows, err = g.store.SideCompactions(ctx, true)
+	rows, err := g.store.SideCompactions(ctx, true)
 	if err != nil {
 		return err
 	}
