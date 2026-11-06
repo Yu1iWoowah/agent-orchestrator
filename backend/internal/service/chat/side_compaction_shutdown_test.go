@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"syscall"
 	"testing"
@@ -370,6 +371,70 @@ func TestHistoricalBoundaryAtomicAndNormalResultWins(t *testing.T) {
 			}
 			if err := svc.PreflightShutdown(t.Context()); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestProtectedSideRecoverabilityMatchesPreflight(t *testing.T) {
+	for _, kind := range []string{"valid", "empty_record", "missing_turn_image", "missing_draft_image"} {
+		t.Run(kind, func(t *testing.T) {
+			scope, stop := historicalScopeHost(t)
+			svc, db, _ := historicalSide(t, scope, domain.HarnessCodex, domain.PermissionModeAcceptEdits)
+			store := svc.sides.store.(*memorySideStore)
+			if err := store.SetSideDraft(t.Context(), "side", "run", receiptDraft, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			turn := domain.SideTurn{ID: "question", SideID: "side", ClientMessageID: "image-question", Text: "saved question", Content: []domain.SideContent{{Type: "image", MIMEType: "image/png", Data: "dHVybiBpbWFnZQ=="}}, CreatedAt: time.Now()}
+			if _, _, err := store.ReserveSideTurn(t.Context(), turn, "run"); err != nil {
+				t.Fatal(err)
+			}
+			row := onlyCompaction(t, db)
+			var saved durableSideContent
+			if err := json.Unmarshal(row.Content, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "empty_record" {
+				if _, err := recordWriter(t, svc).ExecContext(t.Context(), "UPDATE chat_side_contents SET content_json='{}'"); err != nil {
+					t.Fatal(err)
+				}
+			} else if kind != "valid" {
+				name := saved.Attachments["question:0"]
+				if kind == "missing_draft_image" {
+					for _, image := range saved.DraftImages {
+						name = image
+						break
+					}
+				}
+				if name == "" {
+					t.Fatal("image fixture missing")
+				}
+				if err := os.Remove(filepath.Join(svc.dataDir, "attachments", saved.Record.ProviderHostID, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stop()
+			restarted := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "new-launch", Sessions: sideSessionReader{}})
+			t.Cleanup(restarted.sides.cancel)
+			if err := restarted.InitializeSideChats(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			before := onlyCompaction(t, db)
+			list, err := restarted.ListProtectedSides(t.Context())
+			if err != nil || len(list) != 1 {
+				t.Fatalf("list=%+v err=%v", list, err)
+			}
+			if after := onlyCompaction(t, db); !reflect.DeepEqual(before, after) {
+				t.Fatal("list changed durable metadata or contents")
+			}
+			preflight := restarted.PreflightShutdown(t.Context())
+			blocked := kind != "valid"
+			var sideErr *ports.ChatShutdownSideError
+			if blocked && (!errors.As(preflight, &sideErr) || sideErr.Reason != "side_content_not_durable") || !blocked && preflight != nil {
+				t.Fatalf("unexpected preflight: %v", preflight)
+			}
+			if list[0].Protection.ShutdownBlocked != blocked || blocked && list[0].Protection.Reason != sideErr.Reason {
+				t.Fatalf("list shutdownBlocked=%v reason=%q; preflight=%v; want blocked=%v", list[0].Protection.ShutdownBlocked, list[0].Protection.Reason, preflight, blocked)
 			}
 		})
 	}

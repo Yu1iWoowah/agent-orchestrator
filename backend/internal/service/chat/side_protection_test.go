@@ -8,6 +8,8 @@ import (
 )
 
 func TestSideProtectionProjection(t *testing.T) {
+	svc := New(Options{})
+	t.Cleanup(svc.sides.cancel)
 	for _, tc := range []struct {
 		name             string
 		state            domain.SideCompactionState
@@ -21,7 +23,7 @@ func TestSideProtectionProjection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			row := domain.SideCompaction{State: tc.state, Closed: tc.closed, Provider: domain.HarnessCodex, Content: json.RawMessage(`{}`)}
 			before := row
-			p := sideProtection(t.Context(), row)
+			p := svc.sideProtectionStatus(t.Context(), row)
 			if p.Result != tc.state || p.Isolated != tc.isolated || p.ShutdownBlocked != tc.isolated || p.Closed != tc.closed {
 				t.Fatalf("status: %+v", p)
 			}
