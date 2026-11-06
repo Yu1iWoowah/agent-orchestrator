@@ -178,6 +178,7 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 		return nil
 	}
 	s.shutdownQuiescing = true
+	s.shutdownPreservedSides = nil
 	starting := s.startingControllers
 	controllers := make([]*Controller, 0, len(s.ownerControllers))
 	for _, c := range s.ownerControllers {
@@ -213,13 +214,6 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 		for _, runtime := range s.sides.runtimes {
 			runtimes = append(runtimes, runtime)
 		}
-		if store, ok := s.sides.store.(*memorySideStore); ok {
-			for _, id := range store.unverifiedSides() {
-				if s.sides.runtimes[id] == nil {
-					uncovered = true
-				}
-			}
-		}
 		s.sides.mu.Unlock()
 		checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -231,10 +225,27 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			if canCheck {
 				s.sides.reconcileCompaction(checkCtx, runtime, true)
 			}
+		}
+		preserved, err := s.sides.preservedCompactionSides(checkCtx, "")
+		if err != nil {
+			return err
+		}
+		if store, ok := s.sides.store.(*memorySideStore); ok {
+			for _, id := range store.unverifiedSides() {
+				if !preserved[id] {
+					uncovered = true
+				}
+			}
+		}
+		for _, runtime := range runtimes {
 			runtime.mu.Lock()
-			pending := runtime.activeTurnID != "" || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified
+			preserved := preserved[runtime.side.ID] && runtime.activeTurnID == "" && !runtime.compactionDispatching
+			pending := !preserved && (runtime.activeTurnID != "" || runtime.compacting || runtime.compactionDispatching || runtime.outboundUnverified)
 			uncovered = uncovered || pending
 			runtime.mu.Unlock()
+			if preserved {
+				continue
+			}
 			if _, ok := s.store.(outboundAttentionStore); ok {
 				if err := outboundAttention(checkCtx, s.store, runtime.side.SessionID, "side:"+runtime.side.ID, !pending, s.now()); err != nil {
 					if pending {
@@ -247,6 +258,9 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 		if uncovered {
 			return ports.ErrChatShutdownNotSettled
 		}
+		s.mu.Lock()
+		s.shutdownPreservedSides = sortedPreservedSides(preserved)
+		s.mu.Unlock()
 	}
 	if starting > 0 {
 		return ports.ErrChatShutdownNotSettled
@@ -260,5 +274,6 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 	s.shutdownPrepared = true
 	s.mu.Unlock()
 	success = true
+	s.log.Info("shutdown preflight settled", "historical_unknown_sides", s.ShutdownPreservedSides(), "new_unknown_count", 0)
 	return nil
 }

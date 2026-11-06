@@ -16,6 +16,17 @@ type ProtectedSide struct {
 	Orphan     bool                       `json:"orphan"`
 }
 
+func (s *Service) protectedSideOrphan(ctx context.Context, sessionID domain.SessionID) (bool, error) {
+	if s.sessions == nil {
+		return true, nil
+	}
+	parent, found, err := s.sessions.GetSession(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return !found || parent.IsTerminated || domain.NormalizeSessionMode(parent.Mode) != domain.SessionModeChat, nil
+}
+
 // ListProtectedSides spans every desktop launch and does not require a parent.
 func (s *Service) ListProtectedSides(ctx context.Context) ([]ProtectedSide, error) {
 	out := []ProtectedSide{}
@@ -32,13 +43,9 @@ func (s *Service) ListProtectedSides(ctx context.Context) ([]ProtectedSide, erro
 			continue
 		}
 		seen[row.SideID] = true
-		orphan := true
-		if s.sessions != nil {
-			parent, found, err := s.sessions.GetSession(ctx, row.SessionID)
-			if err != nil {
-				return nil, err
-			}
-			orphan = !found || parent.IsTerminated || domain.NormalizeSessionMode(parent.Mode) != domain.SessionModeChat
+		orphan, err := s.protectedSideOrphan(ctx, row.SessionID)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, ProtectedSide{row.SideID, row.SessionID, row.Provider, row.State, row.Historical, orphan})
 	}

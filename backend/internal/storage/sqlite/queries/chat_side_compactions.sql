@@ -21,6 +21,9 @@ UPDATE chat_side_contents SET content_json=sqlc.arg(content_json) WHERE chat_sid
 -- name: UpdateSideCompaction :exec
 UPDATE chat_side_compactions SET state=?,historical=?,closed=? WHERE id=?;
 
+-- name: MarkSideCompactionHistorical :exec
+UPDATE chat_side_compactions SET state='unknown',historical=1,record_json=? WHERE id=?;
+
 -- name: DeleteSettledSideContent :exec
 DELETE FROM chat_side_contents WHERE chat_side_contents.side_id=sqlc.arg(side_id) AND NOT EXISTS
 (SELECT 1 FROM chat_side_compactions c WHERE c.side_id=chat_side_contents.side_id AND c.closed=0 AND c.state IN ('pending','unknown'));

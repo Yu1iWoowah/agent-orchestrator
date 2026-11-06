@@ -28,7 +28,8 @@ import (
 // ControlDeps carries the daemon-control hooks the router exposes, such as the
 // callback that requests a graceful shutdown.
 type ControlDeps struct {
-	ShutdownPreflight func(context.Context) error
+	ShutdownPreflight      func(context.Context) error
+	ShutdownPreservedSides func() []string
 
 	RequestShutdown func()
 }
@@ -129,15 +130,25 @@ func mountControl(r chi.Router, deps ControlDeps) {
 			err := deps.ShutdownPreflight(ctx)
 			cancel()
 			if err != nil {
-				envelope.WriteJSON(w, http.StatusConflict, map[string]any{"status": "shutdown_not_settled", "service": daemonmeta.ServiceName})
+				body := map[string]any{"status": "shutdown_not_settled", "service": daemonmeta.ServiceName}
+				var side *ports.ChatShutdownSideError
+				if errors.As(err, &side) {
+					body["protectedSide"], body["entry"] = side, "protected_side_chats"
+				}
+				envelope.WriteJSON(w, http.StatusConflict, body)
 				return
 			}
 		}
-		envelope.WriteJSON(w, http.StatusAccepted, map[string]any{
-			"status":  "shutting_down",
-			"service": daemonmeta.ServiceName,
-			"pid":     os.Getpid(),
-		})
+		body := map[string]any{
+			"status":            "shutting_down",
+			"service":           daemonmeta.ServiceName,
+			"pid":               os.Getpid(),
+			"new_unknown_count": 0,
+		}
+		if deps.ShutdownPreservedSides != nil {
+			body["historical_unknown_sides"] = deps.ShutdownPreservedSides()
+		}
+		envelope.WriteJSON(w, http.StatusAccepted, body)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}

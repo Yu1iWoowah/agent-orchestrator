@@ -1122,6 +1122,7 @@ func Run(buildVersion string) error {
 	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithOrchestratorProjectGate})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		ShutdownPreflight:        chatSvc.PreflightShutdown,
+		ShutdownPreservedSides:   chatSvc.ShutdownPreservedSides,
 		GuardianObservability:    guardianQuery(store),
 		OrchestratorReplacements: replacementSvc,
 
