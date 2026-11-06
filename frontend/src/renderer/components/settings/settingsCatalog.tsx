@@ -84,6 +84,7 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 	},
 	{
 		id: "protectedSides",
+		pageOnly: true,
 		icon: Shield,
 		label: (t) => t("protectedSides.title"),
 		render: () => <ProtectedSides />,
