@@ -1,5 +1,11 @@
 import type { MessageBoxOptions, MessageBoxReturnValue } from "electron";
 
+/** POST /shutdown keeps admission fenced after a successful preflight. */
+export async function requestUpdateShutdown(baseUrl: string): Promise<void> {
+	const response = await fetch(`${baseUrl}/shutdown`, { method: "POST", signal: AbortSignal.timeout(15_000) });
+	if (response.status !== 202) throw new Error(`AO could not prepare shutdown for the update (HTTP ${response.status}). Inspect Protected sides in Settings, then retry.`);
+}
+
 /** Only the protected-side veto is handled here; other shutdown reasons keep their existing flow. */
 export async function protectedSideBlockers(baseUrl: string): Promise<string[]> {
 	const response = await fetch(`${baseUrl}/api/v1/side-chats/protected`, { signal: AbortSignal.timeout(5_000) });

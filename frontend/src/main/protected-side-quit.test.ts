@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { confirmProtectedSideQuit, protectedSideBlockers, protectedSideQuitCopy } from "./protected-side-quit";
+import { confirmProtectedSideQuit, protectedSideBlockers, protectedSideQuitCopy, requestUpdateShutdown } from "./protected-side-quit";
 afterEach(() => vi.unstubAllGlobals());
 it("names every blocking side across launches and leaves released sides alone", async () => {
 	vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ sides: [
@@ -32,4 +32,20 @@ it("permits quit/update after protected sides have been explicitly closed", asyn
 	const showMessageBox = vi.fn();
 	expect(await confirmProtectedSideQuit("http://127.0.0.1:1234", { zh: false, showMessageBox, openEntry: vi.fn() })).toBe(true);
 	expect(showMessageBox).not.toHaveBeenCalled();
+});
+
+
+it("obtains actual daemon shutdown admission with a POST before permitting install", async () => {
+	const request = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+	vi.stubGlobal("fetch", request);
+	await expect(requestUpdateShutdown("http://127.0.0.1:1234")).resolves.toBeUndefined();
+	expect(request).toHaveBeenCalledExactlyOnceWith("http://127.0.0.1:1234/shutdown", expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }));
+});
+it.each([200, 409, 500])("does not treat HTTP %s as accepted shutdown admission", async (status) => {
+	vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
+	await expect(requestUpdateShutdown("http://127.0.0.1:1234")).rejects.toThrow(`HTTP ${status}`);
+});
+it("does not install after an unavailable daemon or failed shutdown request", async () => {
+	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connection refused")));
+	await expect(requestUpdateShutdown("http://127.0.0.1:1234")).rejects.toThrow("connection refused");
 });

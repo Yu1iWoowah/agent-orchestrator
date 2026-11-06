@@ -1,6 +1,7 @@
 import type { BrowserWindow, IpcMainEvent, WebContents } from "electron";
 import type { TrayController } from "./tray";
 import { TRAY_OPEN_SESSION_CHANNEL, type TrayAttentionState, type TrayOpenSessionTarget } from "../shared/tray";
+import { OPEN_SETTINGS_SHORTCUT_CHANNEL } from "../shared/shortcuts";
 
 export function isTrayEnabled(platform: NodeJS.Platform): boolean {
 	return platform === "darwin";
@@ -15,6 +16,8 @@ export type TrayLifecycleDeps = {
 
 export type TrayLifecycle = {
 	openSession(target: TrayOpenSessionTarget): void;
+	openProtectedSides(): void;
+	clearRendererReady(): void;
 	handleSetAttentionState(event: IpcMainEvent, state: TrayAttentionState): void;
 	handleRendererReady(event: IpcMainEvent): void;
 	clearPendingTarget(): void;
@@ -24,6 +27,8 @@ export type TrayLifecycle = {
 
 export function createTrayLifecycle(deps: TrayLifecycleDeps): TrayLifecycle {
 	let pendingTarget: TrayOpenSessionTarget | null = null;
+	let pendingProtectedSides = false;
+	let readyContents: WebContents | null = null;
 
 	function getContents(): WebContents | null {
 		return deps.getContents?.() ?? deps.getWindow()?.webContents ?? null;
@@ -38,7 +43,20 @@ export function createTrayLifecycle(deps: TrayLifecycleDeps): TrayLifecycle {
 		pendingTarget = null;
 	}
 
+	function flushProtectedSides(): void {
+		const contents = getContents();
+		if (!pendingProtectedSides || !contents || contents !== readyContents) return;
+		pendingProtectedSides = false;
+		contents.send(OPEN_SETTINGS_SHORTCUT_CHANNEL, "protectedSides");
+	}
+
 	return {
+		openProtectedSides() {
+			pendingProtectedSides = true;
+			deps.focusWindow();
+			flushProtectedSides();
+		},
+		clearRendererReady() { readyContents = null; },
 		openSession(target) {
 			const contents = getContents();
 			deps.focusWindow();
@@ -55,6 +73,8 @@ export function createTrayLifecycle(deps: TrayLifecycleDeps): TrayLifecycle {
 		},
 		handleRendererReady(event) {
 			if (!isFromMainWindow(event)) return;
+			readyContents = event.sender;
+			flushProtectedSides();
 			const target = pendingTarget;
 			pendingTarget = null;
 			if (target) getContents()?.send(TRAY_OPEN_SESSION_CHANNEL, target);

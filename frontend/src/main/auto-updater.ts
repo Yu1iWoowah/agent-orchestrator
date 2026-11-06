@@ -2779,7 +2779,6 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
     throw new Error("A valid confirmed update version is required.");
   }
   if (!app.isPackaged) return;
-  if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
   if (awaitingStagedReplacement) {
     throw new Error("Check for updates and download an update before restarting to install.");
   }
@@ -2813,6 +2812,9 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
     }
+    // Preparation may download again while the daemon still accepts /compact.
+    // Obtain its fenced shutdown admission only after all preparation awaits.
+    if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
     autoUpdater.quitAndInstall(false, true);
     return;
   }
@@ -2859,6 +2861,7 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         }),
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
+      if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
       autoUpdater.quitAndInstall(false, true);
       if (!macRestartRequested) throw nativePreparationError ?? new Error("The installer could not restart AO.");
     } catch (err) {
