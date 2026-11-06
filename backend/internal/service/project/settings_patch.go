@@ -41,6 +41,11 @@ func (m *Service) PatchSettings(ctx context.Context, id domain.ProjectID, in Pat
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", "Setting cannot be patched: "+key, nil)
 		}
 	}
+	for _, config := range []any{in.Config, in.Expected["config"]} {
+		if err := validateSettingsKeys(config, reflect.TypeFor[domain.ProjectConfig](), "config"); err != nil {
+			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+		}
+	}
 	var row domain.ProjectRecord
 	write := func(locked context.Context) error {
 		var ok bool
