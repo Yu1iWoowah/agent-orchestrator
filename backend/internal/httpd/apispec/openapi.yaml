@@ -25524,6 +25524,8 @@ components:
           type: boolean
         orphan:
           type: boolean
+        protection:
+          $ref: '#/components/schemas/SideProtection'
         provider:
           type: string
         sessionId:
@@ -25533,6 +25535,7 @@ components:
         state:
           type: string
       required:
+      - protection
       - sideId
       - sessionId
       - provider
@@ -28643,6 +28646,8 @@ components:
           type: boolean
         model:
           type: string
+        protection:
+          $ref: '#/components/schemas/SideProtection'
         recreateRequired:
           type: boolean
         selectedText:
@@ -28756,6 +28761,28 @@ components:
       - streaming
       - createdAt
       - updatedAt
+      type: object
+    SideProtection:
+      properties:
+        closed:
+          type: boolean
+        historical:
+          type: boolean
+        isolated:
+          type: boolean
+        reason:
+          type: string
+        result:
+          type: string
+        shutdownBlocked:
+          type: boolean
+      required:
+      - result
+      - historical
+      - closed
+      - isolated
+      - shutdownBlocked
+      - reason
       type: object
     SideQuestionResponse:
       properties:
