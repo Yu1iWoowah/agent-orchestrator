@@ -245,6 +245,9 @@ func (s *Store) MutateProjectSettings(ctx context.Context, id string, mutate fun
 		if err != nil {
 			return err
 		}
+		// Return the persisted projection, including omitempty normalization,
+		// so the response is a valid expected baseline for the next PATCH.
+		updated.Config = unmarshalProjectConfig(config)
 		_, err = q.UpdateProjectSettings(ctx, gen.UpdateProjectSettingsParams{ID: domain.ProjectID(id), DisplayName: updated.DisplayName, Config: config})
 		found = err == nil
 		return err

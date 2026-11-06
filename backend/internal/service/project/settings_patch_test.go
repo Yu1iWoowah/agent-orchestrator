@@ -198,10 +198,14 @@ func TestPatchSettingsValidationAndRemoteAccounts(t *testing.T) {
 func TestPatchSettingsDeleteAbsentRole(t *testing.T) {
 	st := sqlitetest.MustOpen(t)
 	ctx := t.Context()
-	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: t.TempDir()}); err != nil {
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: t.TempDir(), Config: domain.ProjectConfig{Env: map[string]string{"REMOVE": "value"}}}); err != nil {
 		t.Fatal(err)
 	}
 	svc := project.New(st)
+	removed, err := svc.PatchSettings(ctx, "p", patchInput(t, `{"config":{"env":{"REMOVE":null}},"expected":{"config":{"env":{"REMOVE":"value"}}}}`))
+	if err != nil || removed.Config != nil {
+		t.Fatalf("last setting removal response = %+v, %v", removed, err)
+	}
 	baseline, err := svc.Get(ctx, "p")
 	if err != nil || baseline.Project.Config != nil {
 		t.Fatalf("empty config read model = %+v, %v", baseline, err)
