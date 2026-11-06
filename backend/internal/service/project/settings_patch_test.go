@@ -195,6 +195,23 @@ func TestPatchSettingsValidationAndRemoteAccounts(t *testing.T) {
 	wantCode(t, err, "INVALID_PROJECT_CONFIG")
 }
 
+func TestPatchSettingsDeleteAbsentRole(t *testing.T) {
+	st := sqlitetest.MustOpen(t)
+	ctx := t.Context()
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	svc := project.New(st)
+	baseline, err := svc.Get(ctx, "p")
+	if err != nil || baseline.Project.Config != nil {
+		t.Fatalf("empty config read model = %+v, %v", baseline, err)
+	}
+	updated, err := svc.PatchSettings(ctx, "p", patchInput(t, `{"config":{"worker":null},"expected":{"config":{"worker":null}}}`))
+	if err != nil || updated.Config != nil {
+		t.Fatalf("deleting absent role = %+v, %v", updated, err)
+	}
+}
+
 func TestPatchSettingsConcurrentExpected(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitetest.Open(t.TempDir())

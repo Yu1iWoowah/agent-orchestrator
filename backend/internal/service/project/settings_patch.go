@@ -85,6 +85,10 @@ func mergeProjectSettings(ctx context.Context, row domain.ProjectRecord, in Patc
 	if err := json.Unmarshal(encoded, &config); err != nil {
 		return row, err
 	}
+	// GET omits a wholly unset config, including its empty role objects.
+	if row.Config.IsZero() {
+		clear(config)
+	}
 	current := map[string]any{"displayName": projectDisplayName(row), "config": config}
 	patch := map[string]any{}
 	if in.DisplayName != nil {
