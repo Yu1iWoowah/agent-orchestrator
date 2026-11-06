@@ -219,17 +219,6 @@ func migrateLegacyAgentConfig(config, patch map[string]any) {
 			touched[field] = true
 		}
 	}
-	reviewers, _ := config["reviewers"].([]any)
-	for _, reviewer := range reviewers {
-		if role, ok := reviewer.(map[string]any); ok {
-			roles = append(roles, role)
-			var agentPatch map[string]any
-			if _, replaced := patch["reviewers"]; replaced {
-				agentPatch, _ = role["agentConfig"].(map[string]any)
-			}
-			rolePatches = append(rolePatches, agentPatch)
-		}
-	}
 	if reviewersPatch, ok := patch["reviewers"].([]any); ok {
 		for _, reviewer := range reviewersPatch {
 			role, _ := reviewer.(map[string]any)

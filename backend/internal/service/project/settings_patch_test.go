@@ -143,6 +143,9 @@ func TestPatchSettingsLegacyMigration(t *testing.T) {
 			}
 			for name, got := range map[string]string{"worker": row.Config.Worker.AgentConfig.Model, "orchestrator": row.Config.Orchestrator.AgentConfig.Model, "reviewers": row.Config.Reviewers[0].AgentConfig.Model} {
 				want := "claude-legacy"
+				if name == "reviewers" {
+					want = ""
+				}
 				if name == role {
 					want = ""
 					if role == "reviewers" {
@@ -251,5 +254,80 @@ func TestPatchSettingsConcurrentExpected(t *testing.T) {
 	}
 	if success != 1 || conflict != 1 {
 		t.Fatalf("success=%d conflict=%d", success, conflict)
+	}
+}
+
+// Explicit reviewer fields still trigger legacy removal; the replacement array
+// keeps its own config, while only inheriting worker/orchestrator fields migrate.
+func TestPatchSettingsExplicitReviewerMigration(t *testing.T) {
+	for _, field := range []string{"model", "mode", "effort", "permissions"} {
+		for _, clear := range []bool{false, true} {
+			name := "set"
+			if clear {
+				name = "clear"
+			}
+			value := "low"
+			if field == "model" {
+				value = "new-model"
+			}
+			if field == "permissions" {
+				value = "accept-edits"
+			}
+			t.Run(field+"/"+name, func(t *testing.T) {
+				ctx := t.Context()
+				st := sqlitetest.MustOpen(t)
+				cfg := domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "legacy", Mode: "high", Effort: "high", Permissions: domain.PermissionModeAuto}, Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "worker", Mode: "low", Effort: "low", Permissions: domain.PermissionModeAcceptEdits}}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}}}
+				if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: t.TempDir(), Config: cfg}); err != nil {
+					t.Fatal(err)
+				}
+				var inputValue any = value
+				if clear {
+					inputValue = nil
+				}
+				in := project.PatchSettingsInput{Config: map[string]any{"reviewers": []any{map[string]any{"harness": "codex", "agentConfig": map[string]any{field: inputValue}}}}, Expected: map[string]any{"config": map[string]any{"reviewers": []any{map[string]any{"harness": "codex", "agentConfig": map[string]any{}}}}}}
+				_, err := project.New(st).PatchSettings(ctx, "p", in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, _, err := st.GetProject(ctx, "p")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if row.Config.Worker != cfg.Worker {
+					t.Errorf("explicit worker override changed: %+v", row.Config.Worker)
+				}
+				beforeJSON, _ := json.Marshal(cfg.AgentConfig)
+				var legacy map[string]any
+				if err := json.Unmarshal(beforeJSON, &legacy); err != nil {
+					t.Fatal(err)
+				}
+				migrated := legacy[field]
+				delete(legacy, field)
+				wantLegacyJSON, _ := json.Marshal(legacy)
+				var wantLegacy domain.AgentConfig
+				if err := json.Unmarshal(wantLegacyJSON, &wantLegacy); err != nil {
+					t.Fatal(err)
+				}
+				if row.Config.AgentConfig != wantLegacy {
+					t.Errorf("legacy = %+v, want %+v", row.Config.AgentConfig, wantLegacy)
+				}
+				wantOrchestratorJSON, _ := json.Marshal(map[string]any{field: migrated})
+				var wantOrchestrator domain.AgentConfig
+				if err := json.Unmarshal(wantOrchestratorJSON, &wantOrchestrator); err != nil {
+					t.Fatal(err)
+				}
+				if row.Config.Orchestrator.AgentConfig != wantOrchestrator {
+					t.Errorf("inheriting orchestrator = %+v, want %+v", row.Config.Orchestrator.AgentConfig, wantOrchestrator)
+				}
+				wantReviewerJSON, _ := json.Marshal(map[string]any{field: inputValue})
+				var wantReviewer domain.AgentConfig
+				if err := json.Unmarshal(wantReviewerJSON, &wantReviewer); err != nil {
+					t.Fatal(err)
+				}
+				if len(row.Config.Reviewers) != 1 || row.Config.Reviewers[0].Harness != domain.ReviewerCodex || row.Config.Reviewers[0].AgentConfig != wantReviewer {
+					t.Errorf("reviewer replacement = %+v, want %+v", row.Config.Reviewers, wantReviewer)
+				}
+			})
+		}
 	}
 }
