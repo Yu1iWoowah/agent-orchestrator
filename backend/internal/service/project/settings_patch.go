@@ -202,8 +202,8 @@ func mergeSettingsObject(current, patch map[string]any) {
 
 func migrateLegacyAgentConfig(config, patch map[string]any) {
 	legacy, _ := config["agentConfig"].(map[string]any)
-	roles := []map[string]any{}
-	rolePatches := []map[string]any{}
+	roles := make([]map[string]any, 0, 2)
+	rolePatches := make([]map[string]any, 0, 2)
 	touched := map[string]bool{}
 	for _, key := range []string{"worker", "orchestrator"} {
 		role, _ := config[key].(map[string]any)
