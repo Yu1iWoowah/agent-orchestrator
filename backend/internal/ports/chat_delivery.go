@@ -17,6 +17,7 @@ var ErrChatShutdownNotSettled = errors.New("shutdown_not_settled")
 type ChatShutdownSideError struct {
 	SideID string `json:"sideId"`
 	Reason string `json:"reason"`
+	Orphan bool   `json:"orphan"`
 }
 
 func (e *ChatShutdownSideError) Error() string {

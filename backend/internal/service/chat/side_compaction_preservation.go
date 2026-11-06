@@ -48,19 +48,27 @@ func (m *sideManager) preservedCompactionSides(ctx context.Context, sessionID do
 		}
 		store.mu.Unlock()
 		if flushErr != nil {
-			return nil, &ports.ChatShutdownSideError{SideID: row.SideID, Reason: "side_content_not_durable"}
+			return nil, m.service.protectedSideShutdownError(ctx, row, "side_content_not_durable")
 		}
 		applicable, reason := sideCompactionApplicable(row, runtime.GOOS)
 		if !applicable {
-			return nil, &ports.ChatShutdownSideError{SideID: row.SideID, Reason: reason}
+			return nil, m.service.protectedSideShutdownError(ctx, row, reason)
 		}
 		ended, reason, err := markEndedCompaction(ctx, store.durable, row)
 		if !ended || err != nil {
-			return nil, &ports.ChatShutdownSideError{SideID: row.SideID, Reason: reason}
+			return nil, m.service.protectedSideShutdownError(ctx, row, reason)
 		}
 		preserved[row.SideID] = true
 	}
 	return preserved, nil
+}
+
+func (s *Service) protectedSideShutdownError(ctx context.Context, row domain.SideCompaction, reason string) error {
+	orphan, err := s.protectedSideOrphan(ctx, row.SessionID)
+	if err != nil {
+		return errors.Join(ports.ErrChatShutdownNotSettled, err)
+	}
+	return &ports.ChatShutdownSideError{SideID: row.SideID, Reason: reason, Orphan: orphan}
 }
 
 // ShutdownPreservedSides reports the last successful fenced preflight.
