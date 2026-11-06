@@ -6,6 +6,7 @@ import { SideCloseRecovery } from "./main/side-close";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
+import { confirmProtectedSideQuit } from "./main/protected-side-quit";
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
@@ -39,6 +40,7 @@ import {
 	checkForUpdatesNow,
 	downloadUpdateNow,
 	quitAndInstallUpdate,
+	setProtectedSideUpdateGuard,
 	isUpdateRestartRequested,
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
@@ -3905,9 +3907,32 @@ setUpdateRestartFailureHandler(() => {
 	if (!browserQuitRequested) focusMainWindow();
 });
 
+async function allowProtectedSideQuit(): Promise<boolean> {
+	if (daemonStatus.state !== "ready" || !daemonStatus.port) return true;
+	return confirmProtectedSideQuit(`http://127.0.0.1:${daemonStatus.port}`, {
+		zh: operatorConsentZh,
+		showMessageBox: (options) => { focusMainWindow(); return dialog.showMessageBox(options); },
+		openEntry: () => getShellWebContents()?.send(OPEN_SETTINGS_SHORTCUT_CHANNEL, "protectedSides"),
+	});
+}
+setProtectedSideUpdateGuard(allowProtectedSideQuit);
+let protectedSideQuitApproved = false;
+let protectedSideQuitChecking = false;
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
 	if (desktopQuit.handleBeforeQuit(event)) return;
+	if (!protectedSideQuitApproved) {
+		event.preventDefault();
+		if (!protectedSideQuitChecking) {
+			protectedSideQuitChecking = true;
+			void allowProtectedSideQuit().then((allowed) => {
+				protectedSideQuitChecking = false;
+				if (allowed) { protectedSideQuitApproved = true; app.quit(); }
+				else desktopQuit.cancelQuit();
+			});
+		}
+		return;
+	}
 	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
 		event.preventDefault();
 		if (confirmUnsafeChatDraftLeave(
@@ -3919,6 +3944,7 @@ app.on("before-quit", (event) => {
 			app.quit();
 		} else {
 			desktopQuit.cancelQuit();
+			protectedSideQuitApproved = false;
 		}
 		return;
 	}

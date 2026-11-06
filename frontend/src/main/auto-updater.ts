@@ -2771,11 +2771,15 @@ export function setUpdateRestartFailureHandler(handler: () => void): void { rest
 
 export function isUpdateRestartRequested(): boolean { return macRestartRequested; }
 
+let protectedSideUpdateGuard: (() => Promise<boolean>) | undefined;
+export function setProtectedSideUpdateGuard(guard: () => Promise<boolean>): void { protectedSideUpdateGuard = guard; }
+
 export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<UpdateInstallResult> {
   if (confirmedVersion !== undefined && (typeof confirmedVersion !== "string" || !confirmedVersion.trim())) {
     throw new Error("A valid confirmed update version is required.");
   }
   if (!app.isPackaged) return;
+  if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
   if (awaitingStagedReplacement) {
     throw new Error("Check for updates and download an update before restarting to install.");
   }

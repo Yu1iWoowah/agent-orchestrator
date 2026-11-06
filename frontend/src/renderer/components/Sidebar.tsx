@@ -38,6 +38,7 @@ import {
 	RefreshCw,
 	Search,
 	Settings,
+	Shield,
 	Smartphone,
 	Trash2,
 	User,
@@ -1042,7 +1043,12 @@ export function Sidebar({
 				</Tooltip>
 			</SidebarHeader>
 
-			{settingsPage ? (
+			<button type="button" className={FOOTER_NAV_BUTTON_CLASS} aria-label={t("protectedSides.title")}
+					onClick={() => useUiStore.getState().openGlobalSettings("protectedSides")}>
+					<NavRowHighlight />
+					<span className="relative z-[1] flex min-w-0 flex-1 items-center gap-2.5"><Shield aria-hidden="true" className="size-icon-md" /><span className="group-data-[collapsible=icon]:hidden">{t("protectedSides.title")}</span></span>
+				</button>
+				{settingsPage ? (
 				<SettingsSidebarNav layer={settingsPage} />
 			) : (
 			<>

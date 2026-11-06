@@ -1,3 +1,4 @@
+import { SideCompactionNotice } from "./SideCompactionNotice";
 import { useTranslation } from "react-i18next";
 import type { PendingSideClose } from "../../../shared/side-close";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -1524,6 +1525,7 @@ export function useIndependentSideChats(
 								</div>
 							</div>
 						) : null}
+						<div className="px-4 py-2"><SideCompactionNotice protection={snapshot.side.protection} onClose={() => { setCloseError(undefined); setConfirmClose(activeId); }} /></div>
 						{snapshot.side.state === "failed" && snapshot.side.recreateRequired ? (
 							<Button
 								type="button"
@@ -1596,7 +1598,7 @@ export function useIndependentSideChats(
 								}
 							}}
 							files={[]}
-							ready={snapshot.side.state === "ready"}
+							ready={snapshot.side.state === "ready" && !snapshot.side.protection?.isolated}
 							deliveryPending={Boolean(drafts[activeId]?.pendingDelivery || drafts[activeId]?.pendingCommand)}
 							skills={skills}
 							focusKey={focusKey}

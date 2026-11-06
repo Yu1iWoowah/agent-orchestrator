@@ -1,3 +1,4 @@
+import { ProtectedSides } from "../ProtectedSides";
 import { AppDiagnosticsSettings } from "./AppDiagnosticsSettings";
 import { BrowserIcon, type AppIcon } from "../icons";
 import {
@@ -10,6 +11,7 @@ import {
 	RefreshCw,
 	Server,
 	Settings2,
+	Shield,
 	Smartphone,
 } from "lucide-react";
 import { lazy, type ReactNode } from "react";
@@ -79,6 +81,12 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: Settings2,
 		label: (t) => t("settings.general"),
 		render: (_t, titleHidden) => <GeneralSettingsSection titleHidden={titleHidden} />,
+	},
+	{
+		id: "protectedSides",
+		icon: Shield,
+		label: (t) => t("protectedSides.title"),
+		render: () => <ProtectedSides />,
 	},
 	{
 		id: "harness",
