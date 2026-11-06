@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -35,6 +36,10 @@ func (r shutdownParentReader) GetSession(context.Context, domain.SessionID) (dom
 }
 
 func TestShutdownProtectedSideOrphanMatchesGlobalList(t *testing.T) {
+	reason := "codex_full_access"
+	if runtime.GOOS != "linux" {
+		reason = "scope_platform_unsupported"
+	}
 	for _, found := range []bool{false, true} {
 		name := "orphan"
 		if found {
@@ -75,7 +80,7 @@ func TestShutdownProtectedSideOrphanMatchesGlobalList(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 				t.Fatal(err)
 			}
-			if response.Code != http.StatusConflict || body.ProtectedSide.SideID != side.ID || body.ProtectedSide.Reason != "codex_full_access" || body.ProtectedSide.Orphan == nil || *body.ProtectedSide.Orphan != listed[0].Orphan {
+			if response.Code != http.StatusConflict || body.ProtectedSide.SideID != side.ID || body.ProtectedSide.Reason != reason || body.ProtectedSide.Orphan == nil || *body.ProtectedSide.Orphan != listed[0].Orphan {
 				t.Fatalf("shutdown diagnostic differs from global list: %d %s", response.Code, response.Body.String())
 			}
 		})
