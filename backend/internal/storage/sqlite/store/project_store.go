@@ -220,6 +220,38 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, id, displayName strin
 	return rows > 0, nil
 }
 
+// MutateProjectSettings keeps the read, caller validation and settings update
+// in one writer transaction. A rejected mutation rolls back without emitting CDC.
+func (s *Store) MutateProjectSettings(ctx context.Context, id string, mutate func(domain.ProjectRecord) (domain.ProjectRecord, error)) (domain.ProjectRecord, bool, error) {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return domain.ProjectRecord{}, false, err
+	}
+	defer s.writeMu.Unlock()
+	var updated domain.ProjectRecord
+	var found bool
+	err := s.inTx(ctx, "mutate project settings", func(q *gen.Queries) error {
+		stored, err := q.GetProject(ctx, domain.ProjectID(id))
+		if errors.Is(err, sql.ErrNoRows) || err == nil && stored.ArchivedAt.Valid {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		updated, err = mutate(projectRowFromGen(stored))
+		if err != nil {
+			return err
+		}
+		config, err := marshalProjectConfig(updated.Config)
+		if err != nil {
+			return err
+		}
+		_, err = q.UpdateProjectSettings(ctx, gen.UpdateProjectSettingsParams{ID: domain.ProjectID(id), DisplayName: updated.DisplayName, Config: config})
+		found = err == nil
+		return err
+	})
+	return updated, found, err
+}
+
 // CountProjectsIncludingArchived returns all registry rows, including projects
 // the user archived. It is intentionally separate from ListProjects so first-run
 // seeding does not recreate Scratch after any project has existed.
