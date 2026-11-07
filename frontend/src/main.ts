@@ -6,7 +6,7 @@ import { SideCloseRecovery } from "./main/side-close";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
-import { confirmProtectedSideQuit, requestUpdateShutdown } from "./main/protected-side-quit";
+import { confirmProtectedSideQuit, createUpdateShutdownLifecycle, requestUpdateShutdown, waitForUpdateDaemonExit } from "./main/protected-side-quit";
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
@@ -40,6 +40,7 @@ import {
 	checkForUpdatesNow,
 	downloadUpdateNow,
 	quitAndInstallUpdate,
+	cancelUpdateRestart,
 	setProtectedSideUpdateGuard,
 	isUpdateRestartRequested,
 	setUpdateRestartFailureHandler,
@@ -3904,10 +3905,6 @@ app.whenReady().then(async () => {
 // Ordinary macOS Quit closes the window and leaves the Dock; the tray stays.
 // Full exit drops the supervisor socket, stopping the app-owned daemon after
 // its grace period. Sessions survive.
-setUpdateRestartFailureHandler(() => {
-	if (!browserQuitRequested) focusMainWindow();
-});
-
 async function allowProtectedSideQuit(): Promise<boolean> {
 	if (daemonStatus.state !== "ready" || !daemonStatus.port) return true;
 	return confirmProtectedSideQuit(`http://127.0.0.1:${daemonStatus.port}`, {
@@ -3916,16 +3913,62 @@ async function allowProtectedSideQuit(): Promise<boolean> {
 		openEntry: () => trayLifecycle.openProtectedSides(),
 	});
 }
+let protectedSideQuitApproved = false;
+let updateShutdownTarget: { status: DaemonStatus; child: ChildProcess | null } | undefined;
+
+function confirmChatDraftQuit(): boolean {
+	if (chatDraftQuitConfirmed) return true;
+	chatDraftQuitConfirmed = confirmUnsafeChatDraftLeave(
+		chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog,
+	);
+	return chatDraftQuitConfirmed;
+}
+
+const updateShutdown = createUpdateShutdownLifecycle({
+	confirmLeave: confirmChatDraftQuit,
+	requestShutdown: async () => {
+		if (daemonStatus.state !== "ready" || !daemonStatus.port) throw new Error("AO daemon is unavailable; the update cannot obtain shutdown admission.");
+		const target = { status: daemonStatus, child: daemonProcess };
+		await requestUpdateShutdown(`http://127.0.0.1:${daemonStatus.port}`);
+		updateShutdownTarget = target;
+	},
+	setApproved: (approved) => {
+		protectedSideQuitApproved = approved;
+		if (!approved) {
+			chatDraftQuitConfirmed = false;
+			chatDraftWindowCloseConfirmed = false;
+			browserQuitRequested = false;
+			updateQuitDeadlineArmed = false;
+			desktopQuit.cancelQuit();
+		}
+	},
+	restoreDaemon: async () => {
+		const target = updateShutdownTarget;
+		if (!target) return;
+		updateShutdownTarget = undefined;
+		// Recovery must not wait on browser cleanup: a stalled cleanup is also
+		// a reason the updater may leave this process alive.
+		browserCleanupComplete = false;
+		// POST /shutdown returns before teardown finishes. Never attach back to
+		// that still-live, admission-fenced daemon, including an adopted process.
+		await waitForUpdateDaemonExit({ child: target.child, pid: target.status.pid, isProcessAlive: processAlive });
+		supervisorLink?.dispose();
+		supervisorLink = null;
+		await startDaemonForRestart();
+	},
+});
+
+async function recoverUpdateShutdown(): Promise<void> {
+	try { await updateShutdown.recover(); }
+	catch (error) { reportDaemonRestartFailure(error); }
+	finally { focusMainWindow(); }
+}
+setUpdateRestartFailureHandler(recoverUpdateShutdown);
 setProtectedSideUpdateGuard(async () => {
 	if (!await allowProtectedSideQuit()) return false;
-	if (daemonStatus.state !== "ready" || !daemonStatus.port) throw new Error("AO daemon is unavailable; the update cannot obtain shutdown admission.");
-	await requestUpdateShutdown(`http://127.0.0.1:${daemonStatus.port}`);
-	// The daemon accepted shutdown with admission fenced. Its exit must not turn
-	// the subsequent before-quit status read into a spurious update veto.
-	protectedSideQuitApproved = true;
+	if (!await updateShutdown.prepare()) throw new Error("Update restart canceled.");
 	return true;
 });
-let protectedSideQuitApproved = false;
 let protectedSideQuitChecking = false;
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
@@ -3944,16 +3987,10 @@ app.on("before-quit", (event) => {
 	}
 	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
 		event.preventDefault();
-		if (confirmUnsafeChatDraftLeave(
-			chatDraftRisks,
-			(options) => dialog.showMessageBoxSync(options),
-			chatDraftDialog,
-		)) {
-			chatDraftQuitConfirmed = true;
+		if (confirmChatDraftQuit()) {
 			app.quit();
 		} else {
-			desktopQuit.cancelQuit();
-			protectedSideQuitApproved = false;
+			void cancelUpdateRestart();
 		}
 		return;
 	}
@@ -3985,9 +4022,9 @@ app.on("before-quit", (event) => {
 				retireSides(),
 			]);
 			const finishQuit = () => {
-				browserCleanupComplete = true;
+				browserCleanupComplete = browserQuitRequested;
 				browserQuitCleanupPromise = null;
-				app.quit();
+				if (browserQuitRequested) app.quit();
 			};
 			browserQuitCleanupPromise = cleanup.then(() => undefined).finally(finishQuit);
 		}

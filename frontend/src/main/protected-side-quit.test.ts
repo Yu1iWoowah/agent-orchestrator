@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { confirmProtectedSideQuit, protectedSideBlockers, protectedSideQuitCopy, requestUpdateShutdown } from "./protected-side-quit";
+import { confirmProtectedSideQuit, createUpdateShutdownLifecycle, protectedSideBlockers, protectedSideQuitCopy, requestUpdateShutdown } from "./protected-side-quit";
 afterEach(() => vi.unstubAllGlobals());
 it("names every blocking side across launches and leaves released sides alone", async () => {
 	vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ sides: [
@@ -48,4 +48,26 @@ it.each([200, 409, 500])("does not treat HTTP %s as accepted shutdown admission"
 it("does not install after an unavailable daemon or failed shutdown request", async () => {
 	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connection refused")));
 	await expect(requestUpdateShutdown("http://127.0.0.1:1234")).rejects.toThrow("connection refused");
+});
+
+
+it("waits for recovery before requesting fresh admission", async () => {
+	let finishRecovery = () => {};
+	const restored = new Promise<void>((resolve) => { finishRecovery = resolve; });
+	const shutdown = vi.fn(async () => undefined);
+	const approve = vi.fn();
+	const lifecycle = createUpdateShutdownLifecycle({
+		confirmLeave: () => true, requestShutdown: shutdown,
+		restoreDaemon: () => restored, setApproved: approve,
+	});
+	await lifecycle.prepare();
+	const recovery = lifecycle.recover();
+	const retry = lifecycle.prepare();
+	await Promise.resolve();
+	expect(shutdown).toHaveBeenCalledTimes(1);
+	expect(approve).toHaveBeenLastCalledWith(false);
+	finishRecovery();
+	await recovery;
+	expect(await retry).toBe(true);
+	expect(shutdown).toHaveBeenCalledTimes(2);
 });

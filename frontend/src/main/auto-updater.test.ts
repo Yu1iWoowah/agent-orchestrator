@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import semver from "semver";
-import { requestUpdateShutdown } from "./protected-side-quit";
+import { createUpdateShutdownLifecycle, requestUpdateShutdown } from "./protected-side-quit";
 import { CancellationToken } from "builder-util-runtime";
 import nodePath from "node:path";
 
@@ -3433,6 +3433,142 @@ describe("quitAndInstallUpdate", () => {
       admit(true);
       await install;
       expect(autoUpdater.quitAndInstall).toHaveBeenCalledExactlyOnceWith(false, true);
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux", "darwin"] as const)("keeps the daemon usable after draft cancellation on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      let daemonRunning = true;
+      let approved = false;
+      let leave = false;
+      const shutdown = vi.fn(async () => { daemonRunning = false; });
+      const recovery = vi.fn(async () => { daemonRunning = true; });
+      const lifecycle = createUpdateShutdownLifecycle({
+        confirmLeave: () => leave, requestShutdown: shutdown, restoreDaemon: recovery,
+        setApproved: (value) => { approved = value; },
+      });
+      module.setProtectedSideUpdateGuard(lifecycle.prepare);
+      module.setUpdateRestartFailureHandler(lifecycle.recover);
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow();
+      expect(daemonRunning).toBe(true);
+      expect(approved).toBe(false);
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(recovery).not.toHaveBeenCalled();
+      // A new quit must ask again; cancellation did not grant permission.
+      leave = true;
+      await expect(lifecycle.prepare()).resolves.toBe(true);
+      expect(shutdown).toHaveBeenCalledOnce();
+      expect(approved).toBe(true);
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux", "darwin"] as const)("restores daemon work and requires fresh admission after installer errors on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      let daemonRunning = true;
+      let approved = false;
+      const work = () => { if (!daemonRunning) throw new Error("daemon stopped"); return "session accepted"; };
+      const shutdown = vi.fn(async () => { daemonRunning = false; });
+      const recovery = vi.fn(async () => { daemonRunning = true; });
+      const lifecycle = createUpdateShutdownLifecycle({
+        confirmLeave: () => true, requestShutdown: shutdown, restoreDaemon: recovery,
+        setApproved: (value) => { approved = value; },
+      });
+      module.setProtectedSideUpdateGuard(lifecycle.prepare);
+      module.setUpdateRestartFailureHandler(lifecycle.recover);
+      // BaseUpdater catches installer exceptions and emits error instead of throwing.
+      autoUpdater.quitAndInstall.mockImplementation(() => { updaterEvents.get("error")?.(new Error("installer failed")); });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow("installer failed");
+      expect(work()).toBe("session accepted");
+      expect(approved).toBe(false);
+      expect(recovery).toHaveBeenCalledOnce();
+      await expect(lifecycle.prepare()).resolves.toBe(true);
+      expect(shutdown).toHaveBeenCalledTimes(2);
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux", "darwin"] as const)("recovers daemon access when the installer throws on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      let running = true;
+      let approved = false;
+      const lifecycle = createUpdateShutdownLifecycle({
+        confirmLeave: () => true,
+        requestShutdown: async () => { running = false; },
+        restoreDaemon: async () => { running = true; },
+        setApproved: (value) => { approved = value; },
+      });
+      module.setProtectedSideUpdateGuard(lifecycle.prepare);
+      module.setUpdateRestartFailureHandler(lifecycle.recover);
+      autoUpdater.quitAndInstall.mockImplementation(() => { throw new Error("installer threw"); });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow("installer threw");
+      expect(running).toBe(true);
+      expect(approved).toBe(false);
+      expect(module.isUpdateRestartRequested()).toBe(false);
+    } finally { restore(); }
+  });
+
+  it.each(["native error", "late draft veto"])("restores daemon access and expires permission after macOS %s", async (failure) => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    try {
+      const { module, updaterEvents, nativeAutoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      nativeAutoUpdater.emit("update-downloaded");
+      let running = true;
+      let approved = false;
+      const shutdown = vi.fn(async () => { running = false; });
+      const lifecycle = createUpdateShutdownLifecycle({
+        confirmLeave: () => true, requestShutdown: shutdown,
+        restoreDaemon: async () => { running = true; },
+        setApproved: (value) => { approved = value; },
+      });
+      module.setProtectedSideUpdateGuard(lifecycle.prepare);
+      module.setUpdateRestartFailureHandler(lifecycle.recover);
+      await module.quitAndInstallUpdate();
+      expect(running).toBe(false);
+      expect(approved).toBe(true);
+      if (failure === "native error") nativeAutoUpdater.emit("error", new Error("handoff failed"));
+      else await module.cancelUpdateRestart();
+      await vi.waitFor(() => expect(running).toBe(true));
+      expect(approved).toBe(false);
+      expect(module.isUpdateRestartRequested()).toBe(false);
+      await lifecycle.prepare();
+      expect(shutdown).toHaveBeenCalledTimes(2);
+    } finally { restore(); }
+  });
+
+  it.each(["win32", "linux", "darwin"] as const)("recovers after a delayed installer error on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      let running = true;
+      let approved = false;
+      const lifecycle = createUpdateShutdownLifecycle({
+        confirmLeave: () => true, requestShutdown: async () => { running = false; },
+        restoreDaemon: async () => { running = true; }, setApproved: (value) => { approved = value; },
+      });
+      module.setProtectedSideUpdateGuard(lifecycle.prepare);
+      module.setUpdateRestartFailureHandler(lifecycle.recover);
+      await module.quitAndInstallUpdate();
+      expect(running).toBe(false);
+      updaterEvents.get("error")?.(new Error("installer process failed"));
+      await vi.waitFor(() => expect(running).toBe(true));
+      expect(approved).toBe(false);
+      expect(module.isUpdateRestartRequested()).toBe(false);
     } finally { restore(); }
   });
 
