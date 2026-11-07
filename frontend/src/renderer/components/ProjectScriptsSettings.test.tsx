@@ -1,12 +1,22 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { terminateSessionMutationKey } from "../hooks/useTerminateSession";
 import { ProjectScriptsSettings } from "./ProjectScriptsSettings";
 
-const { getMock, putMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), putMock: vi.fn(), postMock: vi.fn() }));
-vi.mock("../lib/api-client", () => ({ apiClient: { GET: getMock, PUT: putMock, POST: postMock }, apiErrorMessage: () => "request failed" }));
+const { getMock, putMock, patchMock, postMock } = vi.hoisted(() => ({
+	getMock: vi.fn(),
+	putMock: vi.fn(),
+	patchMock: vi.fn(),
+	postMock: vi.fn(),
+}));
+vi.mock("../lib/api-client", () => ({
+	apiClient: { GET: getMock, PUT: putMock, PATCH: patchMock, POST: postMock },
+	apiErrorMessage: () => "request failed",
+	apiErrorCode: (error: { code?: string }) => error?.code,
+	apiErrorDetails: (error: { details?: unknown }) => error?.details,
+}));
 
 const config = {
 	postCreate: ["echo first", "echo second"],
@@ -17,14 +27,27 @@ const config = {
 beforeEach(() => {
 	getMock.mockReset().mockResolvedValue({ data: { status: "ok", project: { id: "p", name: "Example", kind: "single_repo", config } } });
 	putMock.mockReset().mockResolvedValue({ data: { status: "ok" } });
-	postMock.mockReset().mockResolvedValue({ data: { ok: true, cleaned: ["session-1"], alreadyGone: [], skipped: [{ sessionId: "session-2", reason: "workspace has uncommitted changes" }] } });
+	patchMock.mockReset().mockImplementation(async (_path: string, request: { body: { config: Record<string, unknown> } }) => {
+		const first = await getMock.mock.results[0].value;
+		return { data: { project: { ...first.data.project, config: { ...first.data.project.config, ...request.body.config } } } };
+	});
+	postMock
+		.mockReset()
+		.mockResolvedValue({
+			data: {
+				ok: true,
+				cleaned: ["session-1"],
+				alreadyGone: [],
+				skipped: [{ sessionId: "session-2", reason: "workspace has uncommitted changes" }],
+			},
+		});
 });
 
 function renderScripts(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
 	return render(<QueryClientProvider client={client}><ProjectScriptsSettings projectId="p" /></QueryClientProvider>);
 }
 
-it("retains drafts across tabs and saves both ordered lists with the latest unrelated settings", async () => {
+it("retains drafts across tabs and PATCHes changed ordered lists with opening expected values", async () => {
 	renderScripts();
 	expect(await screen.findByLabelText("Step 1")).toHaveValue("echo first");
 	fireEvent.change(screen.getByLabelText("Step 2"), { target: { value: "echo updated" } });
@@ -36,10 +59,14 @@ it("retains drafts across tabs and saves both ordered lists with the latest unre
 	expect(screen.getByLabelText("Step 2")).toHaveValue("echo updated");
 	getMock.mockResolvedValue({ data: { status: "ok", project: { id: "p", name: "Renamed", kind: "single_repo", config: { ...config, env: { TOKEN: "latest-value" } } } } });
 	fireEvent.submit(document.getElementById("project-settings-form")!);
-	await waitFor(() => expect(putMock).toHaveBeenCalledOnce());
-	expect(putMock.mock.calls[0][1].body).toEqual({ displayName: "Renamed", config: {
-		...config, env: { TOKEN: "latest-value" }, postCreate: ["echo first", "echo updated"], preRemove: ["docker compose down", "rm -rf .tmp"],
-	} });
+	await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+	expect(patchMock.mock.calls[0][1].body).toEqual({
+		config: {
+			postCreate: ["echo first", "echo updated"],
+			preRemove: ["docker compose down", "rm -rf .tmp"],
+		},
+		expected: { config: { postCreate: config.postCreate, preRemove: config.preRemove } },
+	});
 	await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled());
 	await userEvent.click(screen.getByRole("tab", { name: "Cleanup" }));
 	expect(screen.getByLabelText("Step 2")).toHaveValue("rm -rf .tmp");
@@ -73,7 +100,7 @@ it("clears resolved archive errors after cleanup retry", async () => {
 });
 
 it("keeps unsaved edits and disables retry when saving fails", async () => {
-	putMock.mockResolvedValue({ error: { message: "failed" } });
+	patchMock.mockResolvedValue({ error: { message: "failed" } });
 	renderScripts();
 	await userEvent.click(await screen.findByRole("tab", { name: "Cleanup" }));
 	fireEvent.change(screen.getByLabelText("Step 1"), { target: { value: "echo fixed" } });
@@ -93,14 +120,26 @@ it("allows scratch setup without enabling cleanup or changing its stored cleanup
 	expect(screen.queryByRole("button", { name: "Retry cleanup" })).not.toBeInTheDocument();
 	expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 	fireEvent.submit(document.getElementById("project-settings-form")!);
-	await waitFor(() => expect(putMock).toHaveBeenCalledOnce());
-	expect(putMock.mock.calls[0][1].body.config).toEqual({ ...config, postCreate: ["echo scratch", "echo second"] });
+	await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+	expect(patchMock.mock.calls[0][1].body.config).toEqual({ postCreate: ["echo scratch", "echo second"] });
 });
 
 it("gives local steps the same time limit field, with no limit by default for Cleanup", async () => {
-	getMock.mockResolvedValue({ data: { status: "ok", project: { id: "p", name: "Example", kind: "single_repo", config: {
-		...config, postCreate: ["# ao-timeout: 30m\nnpm ci"], preRemove: ["docker compose down"],
-	} } } });
+	getMock.mockResolvedValue({
+		data: {
+			status: "ok",
+			project: {
+				id: "p",
+				name: "Example",
+				kind: "single_repo",
+				config: {
+					...config,
+					postCreate: ["# ao-timeout: 30m\nnpm ci"],
+					preRemove: ["docker compose down"],
+				},
+			},
+		},
+	});
 	renderScripts();
 	expect(await screen.findByLabelText("Step 1")).toHaveValue("npm ci");
 	expect(screen.getByLabelText("Time limit for step 1, in minutes")).toHaveValue("30");
@@ -112,9 +151,10 @@ it("gives local steps the same time limit field, with no limit by default for Cl
 	expect(cleanup).toHaveAccessibleDescription("Time limit in minutes (1 to 120). Leave empty for no limit.");
 	fireEvent.change(cleanup, { target: { value: "5" } });
 	fireEvent.submit(document.getElementById("project-settings-form")!);
-	await waitFor(() => expect(putMock).toHaveBeenCalledOnce());
-	expect(putMock.mock.calls[0][1].body.config).toMatchObject({
-		postCreate: ["# ao-timeout: 30m\nnpm ci"], preRemove: ["# ao-timeout: 5m\ndocker compose down"],
+	await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+	expect(patchMock.mock.calls[0][1].body.config).not.toHaveProperty("postCreate");
+	expect(patchMock.mock.calls[0][1].body.config).toMatchObject({
+		preRemove: ["# ao-timeout: 5m\ndocker compose down"],
 	});
 });
 
@@ -129,4 +169,40 @@ it("shows the next step's time limit tooltip at once when moving from one field 
 	await user.hover(second);
 	// The fields share one tooltip provider, which skips the open delay.
 	expect(second).toHaveAttribute("data-state", "instant-open");
+});
+
+it("reloads a conflicting Setup list while keeping the Cleanup draft", async () => {
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	const states = vi.fn();
+	render(
+		<QueryClientProvider client={client}>
+			<ProjectScriptsSettings projectId="p" onSaveState={states} />
+		</QueryClientProvider>,
+	);
+	fireEvent.change(await screen.findByLabelText("Step 1"), { target: { value: "my setup" } });
+	await userEvent.click(screen.getByRole("tab", { name: "Cleanup" }));
+	fireEvent.change(screen.getByLabelText("Step 1"), { target: { value: "my cleanup" } });
+	patchMock.mockResolvedValueOnce({
+		error: { code: "PROJECT_SETTINGS_CONFLICT", details: { conflicts: [{ path: "config.postCreate" }] } },
+	});
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(states.mock.lastCall?.[0].conflictPaths).toEqual(["config.postCreate"]));
+	getMock.mockResolvedValue({
+		data: {
+			status: "ok",
+			project: { id: "p", name: "Example", kind: "single_repo", config: { ...config, postCreate: ["external setup"] } },
+		},
+	});
+	await act(async () => {
+		await states.mock.lastCall?.[0].reload();
+	});
+	expect(screen.getByLabelText("Step 1")).toHaveValue("my cleanup");
+	await userEvent.click(screen.getByRole("tab", { name: "Setup" }));
+	expect(screen.getByLabelText("Step 1")).toHaveValue("external setup");
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(2));
+	expect(patchMock.mock.calls[1][1].body).toEqual({
+		config: { preRemove: ["my cleanup", "rm -rf .cache/tmp"] },
+		expected: { config: { preRemove: config.preRemove } },
+	});
 });

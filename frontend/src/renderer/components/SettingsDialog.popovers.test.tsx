@@ -67,7 +67,7 @@ it("keeps project settings open while a repository is picked, and saves the pick
 	expect(within(settingsDialog()).getByRole("combobox", { name: "Additional repository 2" })).toHaveTextContent("acme/voice-calling-ai");
 	expect(screen.queryByRole("listbox")).toBeNull();
 
-	await userEvent.click(within(settingsDialog()).getByRole("button", { name: "Save changes" }));
+	await userEvent.click(within(settingsDialog()).getByRole("button", { name: "Save" }));
 	await waitFor(() => expect(mocks.patch).toHaveBeenCalledOnce());
 	expect(mocks.patch.mock.calls[0][2]).toEqual({
 		config: { repos: [{ url: "https://github.com/acme/11x" }, { url: "https://github.com/acme/voice-calling-ai" }] },

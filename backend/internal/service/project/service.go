@@ -53,6 +53,7 @@ type Manager interface {
 	// UpdateSettings atomically replaces a project's user-facing display name
 	// and per-project config, returning the updated read-model.
 	UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error)
+	PatchSettings(ctx context.Context, id domain.ProjectID, in PatchSettingsInput) (Project, error)
 	SetPermissions(ctx context.Context, id domain.ProjectID, in SetPermissionsInput) (Project, error)
 	// ForgetPermissions clears the remembered policy, so new sessions use the agent's own default.
 	ForgetPermissions(ctx context.Context, id domain.ProjectID) (Project, error)
@@ -74,12 +75,13 @@ type SessionTeardowner interface {
 
 // Service implements project registration and lookup use-cases for controllers.
 type Service struct {
-	store          Store
-	sessions       SessionTeardowner
-	clock          func() time.Time
-	telemetry      ports.EventSink
-	defaultHarness domain.AgentHarness
-	logger         *slog.Logger
+	store           Store
+	sessions        SessionTeardowner
+	clock           func() time.Time
+	telemetry       ports.EventSink
+	defaultHarness  domain.AgentHarness
+	logger          *slog.Logger
+	withProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
@@ -102,7 +104,8 @@ type Deps struct {
 	Telemetry      ports.EventSink
 	// Logger receives structured logs. Left nil, the service falls back to
 	// slog.Default, keeping service-focused tests logger-free.
-	Logger *slog.Logger
+	Logger          *slog.Logger
+	WithProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 }
 
 // New returns a project service backed by the given durable store.
@@ -117,12 +120,13 @@ func NewWithDeps(d Deps) *Service {
 		defaultHarness = domain.AgentHarness(config.DefaultAgent)
 	}
 	s := &Service{
-		store:          d.Store,
-		sessions:       d.Sessions,
-		clock:          d.Clock,
-		telemetry:      d.Telemetry,
-		defaultHarness: defaultHarness,
-		logger:         d.Logger,
+		store:           d.Store,
+		sessions:        d.Sessions,
+		clock:           d.Clock,
+		telemetry:       d.Telemetry,
+		defaultHarness:  defaultHarness,
+		logger:          d.Logger,
+		withProjectGate: d.WithProjectGate,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
