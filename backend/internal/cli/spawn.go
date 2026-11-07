@@ -36,6 +36,7 @@ type spawnOptions struct {
 	output          string
 	effort          string
 	fastMode        string
+	approvalMode    string
 	claimPR         string
 	noTakeover      bool
 	skipAgentCheck  bool
@@ -60,6 +61,7 @@ type spawnRequest struct {
 	Effort          string                     `json:"effort,omitempty"`
 	RequestedOutput string                     `json:"requestedOutput,omitempty"`
 	DisplayName     string                     `json:"displayName"`
+	ApprovalMode    domain.PermissionMode      `json:"approvalMode,omitempty"`
 }
 
 type spawnResult struct {
@@ -86,6 +88,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			"fresh isolated workspace. Git projects use worktrees; standalone agents use an AO-managed plain directory.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("approval-mode") && (opts.approvalMode == "" || !domain.PermissionMode(opts.approvalMode).Valid()) {
+				return usageError{fmt.Errorf("--approval-mode must be default, accept-edits, auto, or bypass-permissions")}
+			}
 			if cmd.Flags().Changed("account") && strings.TrimSpace(opts.account) == "" {
 				return usageError{fmt.Errorf("--account requires a non-empty account ID")}
 			}
@@ -207,6 +212,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				Effort:          strings.TrimSpace(opts.effort),
 				RequestedOutput: opts.output,
 				DisplayName:     name,
+				ApprovalMode:    domain.PermissionMode(opts.approvalMode),
 			}
 			req.AgentSettings = settingsPatch
 			if settingsPatch != nil {
@@ -290,6 +296,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.fastMode, "fast", "", "Fast preference: on, off, or default (provider baseline)")
+	f.StringVar(&opts.approvalMode, "approval-mode", "", "Session approval policy: default, accept-edits, auto, or bypass-permissions (omitted inherits daemon selection)")
 	f.StringVar(&opts.output, "output", "", "Deliverable for the session: artifact asks the agent to write a file in its artifact directory instead of opening a PR (default: ordinary task)")
 	f.StringVar(&opts.effort, "effort", "", "Reasoning effort override for this session only (e.g. low, medium, high); empty defers to the agent/model default")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")

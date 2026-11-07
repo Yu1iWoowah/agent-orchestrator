@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,47 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 	}
 	if !strings.Contains(out, "prime-agent") {
 		t.Fatalf("spawn help does not list prime-agent:\n%s", out)
+	}
+}
+
+func TestSpawnApprovalMode(t *testing.T) {
+	for _, mode := range []string{"default", "accept-edits", "auto", "bypass-permissions"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var received map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v1/projects/demo":
+					_, _ = io.WriteString(w, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+				case "/api/v1/sessions":
+					if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+						t.Error(err)
+					}
+					_, _ = io.WriteString(w, `{"session":{"id":"new","status":"spawning"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--account", "explicit", "--name", "new", "--approval-mode", mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if received["approvalMode"] != mode {
+				t.Fatalf("approvalMode = %v, want %s", received["approvalMode"], mode)
+			}
+		})
+	}
+	for _, mode := range []string{"", "full-access", " bypass-permissions"} {
+		t.Run("invalid:"+mode, func(t *testing.T) {
+			_, _, err := executeCLI(t, Deps{}, "spawn", "--name", "new", "--approval-mode", mode)
+			var usage usageError
+			if !errors.As(err, &usage) {
+				t.Fatalf("expected usage error, got %v", err)
+			}
+		})
 	}
 }
 
