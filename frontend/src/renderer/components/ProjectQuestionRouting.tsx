@@ -10,7 +10,7 @@ import { DecisionDialog } from "./chat/DecisionDialog";
 
 type Routing = {
 	hostFor: (projectId: string, hostId?: string) => QuestionHost;
-	openQuestion: (ref: QuestionRef, restoreFocus?: () => void) => void;
+	openQuestion: (ref: QuestionRef, restoreFocus?: (resumeSheet?: boolean) => void) => void;
 	openOriginal: (projectId: string, sessionId: string, hostId?: string) => void;
 };
 const Context = createContext<Routing | undefined>(undefined);
@@ -24,7 +24,8 @@ export function ProjectQuestionRouting({ children, workspaces, remoteWorkspaces,
 	const navigate = useNavigate();
 	const params = useParams({ strict: false });
 	const { question } = useSearch({ strict: false });
-	const returnTo = useRef<{ scope: string; restore?: () => void } | undefined>(undefined);
+	const returnTo = useRef<{ scope: string; restore?: (resumeSheet?: boolean) => void } | undefined>(undefined);
+	const currentScope = useRef(""); currentScope.current = JSON.stringify([params.hostId ?? LOCAL_HOST, params.projectId]);
 	const [bounds, setBounds] = useState<{ surface: HTMLElement; rect: FrameRect }>();
 	const hostFor = useCallback((projectId: string, hostId = LOCAL_HOST) => {
 		const local = hostId === LOCAL_HOST;
@@ -32,7 +33,7 @@ export function ProjectQuestionRouting({ children, workspaces, remoteWorkspaces,
 		const ready = local ? localReady : loadedProjectHostIds.includes(hostId) && loadedSessionHostIds.includes(hostId) && !failedHostIds.includes(hostId);
 		return questionHost({ workspace, ready, projectId, hostId });
 	}, [workspaces, remoteWorkspaces, localReady, loadedProjectHostIds, loadedSessionHostIds, failedHostIds]);
-	const openQuestion = useCallback((ref: QuestionRef, restore?: () => void) => {
+	const openQuestion = useCallback((ref: QuestionRef, restore?: (resumeSheet?: boolean) => void) => {
 		returnTo.current = { scope: JSON.stringify([ref.hostId, ref.projectId]), restore };
 		const host = hostFor(ref.projectId, ref.hostId);
 		void navigate(questionNavigateTarget(ref, host.kind === "orchestrator" ? host.sessionId : undefined));
@@ -61,15 +62,16 @@ export function ProjectQuestionRouting({ children, workspaces, remoteWorkspaces,
 		window.addEventListener("resize", measure);
 		return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
 	}, [visible?.hostId, visible?.projectId, visible?.originSessionId, visible?.questionId, params.sessionId]);
-	const restoreFocus = () => {
-		const saved = returnTo.current; returnTo.current = undefined;
-		if (saved?.scope === JSON.stringify([params.hostId ?? LOCAL_HOST, params.projectId])) saved.restore?.();
+	const focusReturn = returnTo.current;
+	const restoreFocus = (resumeSheet = true) => {
+		if (!focusReturn || returnTo.current !== focusReturn) return;
+		returnTo.current = undefined;
+		if (focusReturn.scope === currentScope.current) focusReturn.restore?.(resumeSheet);
 	};
 	const close = () => {
 		if (question) void navigate(params.sessionId
 			? { ...orchestratorNavigateTarget(question.projectId, params.sessionId, question.hostId), replace: true }
 			: { ...projectNavigateTarget(question.projectId, question.hostId), search: {}, replace: true });
-		restoreFocus();
 	};
 	// Reload the source before a host transition can enable submission.
 	const target = useMemo<DecisionTarget | undefined>(() => visible ? { kind: "agent_question", questionId: visible.questionId, title: t("decision.agentQuestion") } : undefined,

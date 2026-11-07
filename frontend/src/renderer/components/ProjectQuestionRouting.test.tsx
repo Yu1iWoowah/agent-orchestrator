@@ -26,7 +26,8 @@ vi.mock("../hooks/useCloudCp", () => ({ useCloudCp: () => ({ ready: false, clien
 vi.mock("../hooks/useCloudOrg", () => ({ useCloudOrg: () => ({ ready: false }) }));
 vi.mock("../lib/host-clients", () => ({ clientForSessionHost: (host?: string) => ({ GET: (path: string, request: unknown) => get(host, path, request), POST: (path: string, request: unknown) => post(host, path, request) }), labelForHost: (host: string) => host }));
 let surface: HTMLElement;
-vi.mock("../hooks/useConversationFrameSafeRect", () => ({ useConversationFrameSafeRect: () => ({ surface, rect: { left: 16, top: 48, width: 900, height: 700 } }) }));
+let frameRect = { left: 16, top: 48, width: 900, height: 700 };
+vi.mock("../hooks/useConversationFrameSafeRect", () => ({ useConversationFrameSafeRect: () => ({ surface, rect: frameRect }) }));
 type Snapshot = Omit<ComponentProps<typeof ProjectQuestionRouting>, "children">;
 const SnapshotContext = createContext<Snapshot | undefined>(undefined);
 let client: QueryClient;
@@ -73,6 +74,7 @@ function show(initialEntry: string, overrides: Partial<Snapshot> = {}, fromQuery
 }
 beforeEach(() => {
 	localStorage.clear(); useQuestionDraftStore.setState({ entries: {}, storageAvailable: true }); useConversationFrameStore.setState({ sessions: {} });
+	frameRect = { left: 16, top: 48, width: 900, height: 700 };
 	client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	surface = document.createElement("main"); surface.className = "center-panel-surface";
 	surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800, toJSON: () => ({}) }); document.body.append(surface);
@@ -129,6 +131,39 @@ function delayOriginRead() {
 	});
 	return { release: finish, get signal() { return signal; } };
 }
+
+it("restores the routed question row's focus after closing without losing its draft", async () => {
+	show("/projects/project/sessions/main");
+	const row = await screen.findByRole("button", { name: /Open decision: worker decision/ });
+	await userEvent.click(row); await chooseAnswers();
+	const draft = structuredClone(Object.values(useQuestionDraftStore.getState().entries)[0]);
+	await userEvent.keyboard("{Escape}");
+	await waitFor(() => expect(screen.queryByRole("dialog", { name: "Decision" })).not.toBeInTheDocument());
+	await waitFor(() => expect(row).toHaveFocus());
+	expect(Object.values(useQuestionDraftStore.getState().entries)).toEqual([draft]);
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
+});
+
+it("keeps the Sheet closed after a routed dialog falls below its size floor", async () => {
+	frameRect = { left: 16, top: 48, width: 278, height: 188 };
+	surface.getBoundingClientRect = () => new DOMRect(0, 0, 310, 380);
+	show("/projects/project/sessions/main");
+	await userEvent.click(await screen.findByRole("button", { name: "Awaiting you 3", expanded: false }));
+	const sheet = await screen.findByRole("dialog", { name: "Awaiting you" });
+	await userEvent.click(within(sheet).getByRole("button", { name: /Open decision: worker decision/ }));
+	await chooseAnswers();
+	expect(screen.queryByRole("dialog", { name: "Awaiting you" })).not.toBeInTheDocument();
+	const draft = structuredClone(Object.values(useQuestionDraftStore.getState().entries)[0]);
+	frameRect = { left: 16, top: 48, width: 218, height: 144 };
+	surface.getBoundingClientRect = () => new DOMRect(0, 0, 250, 320);
+	act(() => { window.dispatchEvent(new Event("resize")); });
+	await waitFor(() => expect(screen.queryAllByRole("dialog")).toHaveLength(0));
+	const entry = screen.getByRole("button", { name: "Awaiting you 3", expanded: false });
+	expect(entry).toBeVisible();
+	await waitFor(() => expect([entry, screen.getByRole("button", { name: "Open Awaiting you" })]).toContain(document.activeElement));
+	expect(Object.values(useQuestionDraftStore.getState().entries)).toEqual([draft]);
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
+});
 
 it("uses complete project counts and pages at the main, saves the worker answer once and synchronizes both views", async () => {
 	const { router } = show("/projects/project/sessions/main");

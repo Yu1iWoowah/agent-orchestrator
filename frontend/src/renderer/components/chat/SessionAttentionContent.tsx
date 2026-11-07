@@ -8,6 +8,7 @@ import { useProjectAttention, type ProjectAttentionItem } from "../../hooks/useP
 import { useProjectQuestionRouting } from "../ProjectQuestionRouting";
 import { LOCAL_HOST } from "../../lib/hosts";
 import { useUiStore } from "../../stores/ui-store";
+import { conversationFrameSessionKey } from "../../stores/conversation-frame-store";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useConversationFrameDialog, type ConversationFrameDescriptor } from "./ConversationFrames";
@@ -125,9 +126,17 @@ function AttentionRow({ source, sessionId, hostId, projectId, scopeBranch, onOpe
 			if (!target) return;
 			if (target.kind === "agent_question" && originProjectId && pending) {
 				if (!routing) { useUiStore.getState().showGlobalToast(t("decision.routingUnknown")); return; }
-				const trigger = event.currentTarget, resume = beginDialog?.();
-				routing.openQuestion({ hostId: hostId ?? LOCAL_HOST, projectId: originProjectId, originSessionId, questionId: target.questionId }, () => {
-					if (trigger.isConnected) { resume?.(); trigger.focus({ preventScroll: true }); }
+				const trigger = event.currentTarget, resume = beginDialog?.(), targetKey = decisionTargetKey(target);
+				const scope = JSON.stringify([hostId ?? null, sessionId, scopeBranch ?? null]);
+				routing.openQuestion({ hostId: hostId ?? LOCAL_HOST, projectId: originProjectId, originSessionId, questionId: target.questionId }, (resumeSheet = true) => {
+					if (resumeSheet) resume?.();
+					requestAnimationFrame(() => {
+						const visible = (node: HTMLElement) => node.isConnected && !node.closest("[hidden]") && !node.closest('[data-slot="sheet-content"][data-state="closed"]');
+						const row = visible(trigger) && trigger.dataset.decisionScope === scope ? trigger : Array.from(document.querySelectorAll<HTMLButtonElement>("[data-decision-target]")).find((node) => node.dataset.decisionTarget === targetKey && node.dataset.decisionScope === scope && visible(node));
+						const frameKey = conversationFrameSessionKey(sessionId, hostId);
+						const entry = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-conversation-frame-entry="attention"]')).find((node) => node.dataset.conversationFrameScope === frameKey && visible(node));
+						(row ?? entry)?.focus({ preventScroll: true });
+					});
 				});
 			} else onOpen({ target, sessionId: originSessionId, projectId: originProjectId }, event.currentTarget, beginDialog?.());
 		}}>
