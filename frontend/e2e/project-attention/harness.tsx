@@ -226,7 +226,7 @@ function Harness() {
 	);
 }
 function fixtureSession(id: string, kind: "worker" | "orchestrator"): WorkspaceSession {
-	return { id, workspaceId: "project", workspaceName: "Project", title: id, kind, provider: "codex", mode: "chat", status: "idle", updatedAt: "2026-10-29T00:00:00Z", prs: [] };
+	return { id, workspaceId: "project", workspaceName: "Project", title: id, kind, provider: "codex", mode: "chat", status: "idle", createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z", isTerminated: false, prs: [] };
 }
 function RoutingFixture() {
 	const [hosting, setHosting] = useState(params.get("hosting") ?? "none");
