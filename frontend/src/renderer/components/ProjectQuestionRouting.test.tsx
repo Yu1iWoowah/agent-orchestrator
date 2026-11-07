@@ -10,6 +10,7 @@ import { SessionConversationFrames } from "./chat/SessionConversationFrames";
 import { TooltipProvider } from "./ui/tooltip";
 import { QuestionAnswerRuntime } from "../hooks/useQuestionAnswerRecovery";
 import { questionSourceQueryOptions } from "../hooks/useSessionQuestions";
+import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { parseQuestionRef, type QuestionRef } from "../lib/decision-target";
 import { sessionQuestionFixture } from "../test/fixtures/session-question";
 import { useQuestionDraftStore } from "../stores/question-draft-store";
@@ -17,6 +18,12 @@ import { useConversationFrameStore } from "../stores/conversation-frame-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 
 const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/api-client")>(),
+	apiClient: { GET: (path: string, request: unknown) => get(undefined, path, request) }, hasTrustedApiBaseUrl: () => true,
+}));
+vi.mock("../hooks/useCloudCp", () => ({ useCloudCp: () => ({ ready: false, client: {}, baseUrl: "" }) }));
+vi.mock("../hooks/useCloudOrg", () => ({ useCloudOrg: () => ({ ready: false }) }));
 vi.mock("../lib/host-clients", () => ({ clientForSessionHost: (host?: string) => ({ GET: (path: string, request: unknown) => get(host, path, request), POST: (path: string, request: unknown) => post(host, path, request) }), labelForHost: (host: string) => host }));
 let surface: HTMLElement;
 vi.mock("../hooks/useConversationFrameSafeRect", () => ({ useConversationFrameSafeRect: () => ({ surface, rect: { left: 16, top: 48, width: 900, height: 700 } }) }));
@@ -38,14 +45,21 @@ function Page() {
 	return <><h1>{sessionId ? `Session ${sessionId}` : `Project ${projectId}`}</h1>
 		{sessionId ? <SessionConversationFrames sessionId={sessionId} projectId={projectId} hostId={hostId} isOrchestrator={sessionId !== "worker"} activeBranchId="root" surfaceRef={{ current: surface }} composerRef={{ current: null }} /> : <ProjectAttention projectId={projectId ?? ""} hostId={hostId} />}</>;
 }
-function show(initialEntry: string, overrides: Partial<Snapshot> = {}) {
+function WorkspaceRoot() {
+	const query = useWorkspaceQuery({ includeCloud: false });
+	return <ProjectQuestionRouting workspaces={query.data ?? []} localReady={query.isSuccess && !query.isError} remoteWorkspaces={[]}
+		loadedProjectHostIds={[]} loadedSessionHostIds={[]} failedHostIds={[]} onRetry={() => { void query.refetch(); }}>
+		<output data-testid="workspace-query">{query.status}:{query.fetchStatus}</output><Outlet />
+	</ProjectQuestionRouting>;
+}
+function show(initialEntry: string, overrides: Partial<Snapshot> = {}, fromQuery = false) {
 	let snapshot: Snapshot = { workspaces: [workspace([session("main"), session("worker", "worker")])], remoteWorkspaces: [], localReady: true, loadedProjectHostIds: [], loadedSessionHostIds: [], failedHostIds: [], onRetry: vi.fn(), ...overrides };
 	function Root() {
 		const facts = useContext(SnapshotContext);
 		if (!facts) throw new Error("missing fixture facts");
 		return <ProjectQuestionRouting {...facts}><Outlet /></ProjectQuestionRouting>;
 	}
-	const root = createRootRoute({ validateSearch: (search: Record<string, unknown>) => ({ question: parseQuestionRef(search.question), followOrchestrator: search.followOrchestrator === true ? true : undefined }), component: Root });
+	const root = createRootRoute({ validateSearch: (search: Record<string, unknown>) => ({ question: parseQuestionRef(search.question), followOrchestrator: search.followOrchestrator === true ? true : undefined }), component: fromQuery ? WorkspaceRoot : Root });
 	const routeTree = root.addChildren([
 		createRoute({ getParentRoute: () => root, path: "/projects/$projectId", component: Page }),
 		createRoute({ getParentRoute: () => root, path: "/projects/$projectId/sessions/$sessionId", component: Page }),
@@ -134,6 +148,31 @@ it("uses complete project counts and pages at the main, saves the worker answer 
 	expect(sends[0][2].body.answers).toHaveLength(2);
 	expect(client.getQueryData(questionSourceQueryOptions({ sessionId: "worker", questionId: "ask-worker" }).queryKey)?.answer?.deliveryState).toBe("queued");
 	expect(router.state.location.pathname).toBe("/projects/project/sessions/main");
+});
+
+it.each([
+	{ complete: false, data: {} },
+	{ complete: true, data: { sessions: [] } },
+])("uses the real workspace producer to gate Q2's no-main answer exception, complete=$complete", async ({ complete, data }) => {
+	const original = get.getMockImplementation();
+	get.mockImplementation((host, path, request) => {
+		if (path === "/api/v1/projects") return Promise.resolve({ data: { projects: [{ id: "project", name: "Project", path: "/fixture" }] }, response: { status: 200 } });
+		if (path === "/api/v1/sessions") return Promise.resolve({ data, response: { status: 200 } });
+		return original?.(host, path, request);
+	});
+	show(questionURL("/projects/project"), {}, true);
+	await waitFor(() => expect(screen.getByTestId("workspace-query")).toHaveTextContent(/idle$/));
+	const choice = await screen.findByRole("radio", { name: /Staging/ });
+	if (complete) {
+		expect(choice).toBeEnabled();
+		await chooseAnswers();
+		expect(screen.getByRole("button", { name: "Submit all answers" })).toBeEnabled();
+	} else {
+		expect(choice).toBeDisabled();
+		expect(screen.getByText(/Loading the current orchestrator/)).toBeVisible();
+		expect(screen.getByRole("button", { name: "Submit all answers" })).toBeDisabled();
+	}
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
 });
 
 it("keeps unknown paused, permits the confirmed no-main fallback and preserves one draft across both host transitions", async () => {

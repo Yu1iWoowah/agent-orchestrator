@@ -18,6 +18,10 @@ export function questionHost({ workspace, ready, projectId, hostId = LOCAL_HOST 
 	workspace?: WorkspaceSummary; ready: boolean; projectId: string; hostId?: string;
 }): QuestionHost {
 	if (!ready || !workspace || workspace.id !== projectId || (workspace.hostId ?? LOCAL_HOST) !== hostId) return { kind: "unknown" };
+	if (workspace.sessions.some((session) => typeof session.id !== "string" || !session.id || (session.kind !== "worker" && session.kind !== "orchestrator") ||
+		typeof session.isTerminated !== "boolean" || typeof session.createdAt !== "string" || !Number.isFinite(Date.parse(session.createdAt)) ||
+		typeof session.updatedAt !== "string" || !Number.isFinite(Date.parse(session.updatedAt))))
+		return { kind: "unknown" };
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
 	return orchestrator ? { kind: "orchestrator", sessionId: orchestrator.id } : { kind: "none" };
 }
