@@ -12,6 +12,7 @@ import { InvalidQuestionResponse } from "../../lib/session-questions";
 import { clientForSessionHost } from "../../lib/host-clients";
 import { QuestionDecisionView } from "./QuestionDecisionView";
 import { questionDraftKey, useQuestionDraftStore } from "../../stores/question-draft-store";
+import { projectAttentionQueryKey } from "../../hooks/useProjectAttention";
 
 type Lookup = { target: DecisionTarget; scope: string } & (
 	| { state: "loading" }
@@ -19,8 +20,9 @@ type Lookup = { target: DecisionTarget; scope: string } & (
 	| { state: "error"; error: unknown }
 );
 
-export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds, onClose, onLocate, onRestoreFocus }: {
+export function DecisionDialog({ target, sessionId, hostId, sourceAgent, projectId, editable = true, routingPending = false, onRoutingRetry, bounds, onClose, onLocate, onRestoreFocus }: {
 	target?: DecisionTarget; sessionId: string; hostId?: string; sourceAgent?: string; bounds: { surface: HTMLElement; rect: FrameRect }; onClose: () => void; onLocate: (id: string) => void; onRestoreFocus: (resumeSheet?: boolean) => void;
+	projectId?: string; editable?: boolean; routingPending?: boolean; onRoutingRetry?: () => void;
 }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
@@ -71,8 +73,9 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds,
 				<DialogTitle ref={title} tabIndex={-1} className="rounded-sm text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">{t("decision.title")}</DialogTitle>
 				<DialogDescription className="sr-only">{t("decision.description")}</DialogDescription>
 			</DialogHeader>
+			{routingPending ? <div role="status" className="border-b border-border px-4 py-2 text-sm"><p>{t("decision.routingUnknown")}</p><Button variant="ghost" size="sm" onClick={onRoutingRetry}>{t("decision.retry")}</Button></div> : null}
 			{target && ready ? target.kind === "agent_question"
-				? <QuestionSourceBody sessionId={sessionId} hostId={hostId} questionId={target.questionId} compact={compact} onClose={close} onReload={() => load(target)} />
+				? <QuestionSourceBody sessionId={sessionId} hostId={hostId} projectId={projectId} editable={editable} questionId={target.questionId} compact={compact} onClose={close} onReload={() => load(target)} />
 				: target.kind === "worker_report"
 					? <div
 						className="flex min-h-0 flex-1 flex-col">
@@ -91,7 +94,7 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, bounds,
 						onClose={close} />
 						</div>
 					: <ProviderSourceBody target={target}
-						sessionId={sessionId} hostId={hostId}
+							sessionId={sessionId} hostId={hostId} projectId={projectId}
 						sourceAgent={sourceAgent}
 						onClose={close}
 						onReload={() => load(target)}
@@ -126,41 +129,43 @@ function DecisionClose({ onClose }: { onClose: () => void }) {
 	return <div className="flex shrink-0 justify-end border-t border-border px-4 py-3"><Button variant="ghost" onClick={onClose}>{t("decision.later")}</Button></div>;
 }
 
-function QuestionSourceBody({ sessionId, hostId, questionId, compact, onClose, onReload }: { sessionId: string; hostId?: string; questionId: string; compact: boolean; onClose: () => void; onReload: () => void }) {
+function QuestionSourceBody({ sessionId, hostId, projectId, editable, questionId, compact, onClose, onReload }: { sessionId: string; hostId?: string; projectId?: string; editable: boolean; questionId: string; compact: boolean; onClose: () => void; onReload: () => void }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
 	const query = useQuery(questionSourceQueryOptions({ sessionId, hostId, questionId }));
 	const seen = useRef(new Set<number>());
 	const [readError, setReadError] = useState(false);
 	const question = query.data;
+	const matching = !projectId || question?.projectId === projectId;
 	const previousQuestion = useRef(question);
 	useEffect(() => {
 		const previous = previousQuestion.current;
 		previousQuestion.current = question;
-		if (!question || previous?.id !== question.id || previous.state !== "open" || question.state === "open") return;
+		if (!matching || !question || previous?.id !== question.id || previous.state !== "open" || question.state === "open") return;
 		const key = questionDraftKey({ hostId, sessionId: question.originSessionId, questionId: question.id, version: previous.version });
 		const phase = useQuestionDraftStore.getState().entries[key]?.phase;
 		if (phase?.state === "conflict") return;
 		if ((phase?.state === "submitting" || phase?.state === "unknown") && question.answer?.clientAnswerId !== phase.answer.clientAnswerId) return;
 		onClose();
-	}, [question, hostId, onClose]);
+	}, [question, matching, hostId, onClose]);
 	useEffect(() => {
-		if (!question || query.isError || question.state !== "open" || question.read || seen.current.has(question.version)) return;
+		if (!matching || !question || query.isError || question.state !== "open" || question.read || seen.current.has(question.version)) return;
 		seen.current.add(question.version);
 		void Promise.resolve().then(() => clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/questions/{questionId}/read", { params: { path: { sessionId, questionId } }, body: { expectedVersion: question.version } }))
-			.then(({ error }) => { if (error) setReadError(true); else { setReadError(false); void client.invalidateQueries({ queryKey: sessionQuestionQueryKey(sessionId, hostId) }, { cancelRefetch: false }); } }).catch(() => setReadError(true));
-	}, [question, query.isError, client, sessionId, hostId, questionId]);
+			.then(({ error }) => { if (error) setReadError(true); else { setReadError(false); void client.invalidateQueries({ queryKey: sessionQuestionQueryKey(sessionId, hostId) }, { cancelRefetch: false }); if (question.projectId) void client.invalidateQueries({ queryKey: projectAttentionQueryKey(question.projectId, hostId) }, { cancelRefetch: false }); } }).catch(() => setReadError(true));
+	}, [question, matching, query.isError, client, sessionId, hostId, questionId]);
+	if (!matching) return <div className="p-4"><p role="alert">{t("decision.invalid")}</p><DecisionClose onClose={onClose} /></div>;
 	if (!question) return <div className="p-4"><p role="alert">{t("decision.loadError")}</p><Button onClick={onReload}>{t("decision.retry")}</Button></div>;
 	return <>{readError ? <p role="status"
 		className="px-4 pt-2 text-xs text-muted-foreground">{t("decision.readError")}</p> : null}<QuestionDecisionView question={question} hostId={hostId} compact={compact}
-		submitAllowed={!query.isError}
+		submitAllowed={editable && !query.isError} readOnly={!editable}
 		onClose={onClose}
 		onReload={onReload} />
 		</>;
 }
 
-function ProviderSourceBody({ target, sessionId, hostId, sourceAgent, onClose, onReload, onOriginal }: {
-	target: Extract<DecisionTarget, { kind: "provider_approval" | "provider_input" }>; sessionId: string; hostId?: string; sourceAgent?: string; onClose: () => void; onReload: () => void; onOriginal: () => void;
+function ProviderSourceBody({ target, sessionId, hostId, sourceAgent, projectId, onClose, onReload, onOriginal }: {
+	target: Extract<DecisionTarget, { kind: "provider_approval" | "provider_input" }>; sessionId: string; hostId?: string; sourceAgent?: string; projectId?: string; onClose: () => void; onReload: () => void; onOriginal: () => void;
 }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
@@ -175,8 +180,8 @@ function ProviderSourceBody({ target, sessionId, hostId, sourceAgent, onClose, o
 		if (!actionable || !item || item.read || seen.current.has(item.activity.revision)) return;
 		seen.current.add(item.activity.revision);
 		void Promise.resolve().then(() => clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/attention/{activityId}/read", { params: { path: { sessionId, activityId: target.activityId } }, body: { expectedBranchId: target.branchId, expectedRevision: item.activity.revision } }))
-			.then(({ error }) => { if (error) setReadError(true); else { setReadError(false); void client.invalidateQueries({ queryKey: sessionAttentionQueryKey(sessionId, hostId) }, { cancelRefetch: false }); } }).catch(() => setReadError(true));
-	}, [actionable, item, hostId, sessionId, target.activityId, target.branchId, client]);
+			.then(({ error }) => { if (error) setReadError(true); else { setReadError(false); void client.invalidateQueries({ queryKey: sessionAttentionQueryKey(sessionId, hostId) }, { cancelRefetch: false }); if (projectId) void client.invalidateQueries({ queryKey: projectAttentionQueryKey(projectId, hostId) }, { cancelRefetch: false }); } }).catch(() => setReadError(true));
+	}, [actionable, item, hostId, projectId, sessionId, target.activityId, target.branchId, client]);
 	const message = item?.activity.detail?.message;
 	const command = item?.activity.detail?.command;
 	return <div className="flex min-h-0 flex-1 flex-col">

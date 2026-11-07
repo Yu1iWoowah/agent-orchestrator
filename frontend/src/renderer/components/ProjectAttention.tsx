@@ -11,7 +11,10 @@ import {
 } from "../hooks/useProjectAttention";
 import { clientForSessionHost } from "../lib/host-clients";
 import { sessionNavigateTarget } from "../lib/navigate-to-session";
-import type { DecisionTarget } from "../lib/decision-target";
+import { projectDecisionTarget as decisionTarget, type DecisionTarget } from "../lib/decision-target";
+import { LOCAL_HOST } from "../lib/hosts";
+import { useProjectQuestionRouting } from "./ProjectQuestionRouting";
+import { useUiStore } from "../stores/ui-store";
 import type { FrameRect } from "../lib/conversation-frames";
 import { DecisionDialog } from "./chat/DecisionDialog";
 import {
@@ -25,45 +28,6 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Button } from "./ui/button";
 import { TopbarButton } from "./TopbarButton";
-
-function decisionTarget(
-	item: ProjectAttentionItem,
-): DecisionTarget | undefined {
-	switch (item.kind) {
-		case "agent_question":
-			return item.questionId
-				? { kind: item.kind, questionId: item.questionId, title: item.title }
-				: undefined;
-		case "worker_report":
-			return item.reportId
-				? {
-						kind: item.kind,
-						reportId: item.reportId,
-						originSessionId: item.sessionId,
-						originHarness: item.originHarness ?? "unknown",
-						title: item.title,
-						explanation: item.title,
-					}
-				: undefined;
-		case "provider_approval":
-		case "provider_input":
-			return item.activityId &&
-				item.requestId &&
-				item.conversationId &&
-				item.branchId &&
-				item.sourceBranchId
-				? {
-						kind: item.kind,
-						activityId: item.activityId,
-						requestId: item.requestId,
-						conversationId: item.conversationId,
-						branchId: item.branchId,
-						sourceBranchId: item.sourceBranchId,
-						title: item.title,
-					}
-				: undefined;
-	}
-}
 
 /** The sidebar count is read-only and never interrupts the current editor or Browser. */
 export function ProjectAttentionCount({
@@ -98,6 +62,9 @@ export function ProjectAttention({
 	const { t } = useTranslation();
 	const client = useQueryClient();
 	const navigate = useNavigate();
+	const routing = useProjectQuestionRouting();
+	const mounted = useRef(true);
+	useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 	const [open, setOpen] = useState(false);
 	const [audience, setAudience] = useState<AttentionAudience>("user");
 	const [selected, setSelected] = useState<{
@@ -333,7 +300,13 @@ export function ProjectAttention({
 															const ids = [...items.keys()];
 															const index = ids.indexOf(item.id);
 															returnRows.current = [...ids.slice(index), ...ids.slice(0, index).reverse()];
-															setSelected({ item, target });
+															if (target.kind === "agent_question") {
+																if (!routing) { useUiStore.getState().showGlobalToast(t("decision.routingUnknown")); return; }
+																setOpen(false);
+																routing.openQuestion({ hostId: hostId ?? LOCAL_HOST, projectId, originSessionId: item.sessionId, questionId: target.questionId }, () => {
+																	if (mounted.current) { setOpen(true); restoreListFocus(); }
+																});
+															} else setSelected({ item, target });
 														}
 													}}
 												>
@@ -390,6 +363,7 @@ export function ProjectAttention({
 				<DecisionDialog
 					target={selected.target}
 					sessionId={selected.item.sessionId}
+					projectId={projectId}
 					hostId={hostId}
 					bounds={bounds}
 					onClose={() => setSelected(undefined)}

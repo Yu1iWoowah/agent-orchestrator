@@ -226,7 +226,7 @@ export function ShellTopbar({
 				data-testid="workspace-topbar-actions"
 			>
 				{isProjectBoardRoute || isOrchestrator ? <ProjectTerminationFeedback projectId={projectId} hostId={hostId} /> : null}
-				{!boardActionsInPanel && isProjectBoardRoute && supportsProjectActions && projectId && project?.kind !== CLOUD_PROJECT_KIND ? (
+				{((!boardActionsInPanel && isProjectBoardRoute) || (session?.mode === "tui" && currentSessionId === orchestrator?.id)) && supportsProjectActions && projectId && project?.kind !== CLOUD_PROJECT_KIND ? (
 					<ProjectAttention key={`${hostId ?? "local"}:${projectId}`} projectId={projectId} hostId={hostId} />
 				) : null}
 				{!boardActionsInPanel && isProjectBoardRoute ? (

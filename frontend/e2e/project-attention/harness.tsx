@@ -6,13 +6,17 @@ import {
 	createRouter,
 	Outlet,
 	RouterProvider,
+	useParams,
 } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { createFullAppI18n } from "../../src/renderer/i18n/all-messages";
 import { TooltipProvider } from "../../src/renderer/components/ui/tooltip";
 import { sessionQuestionFixture } from "../../src/renderer/test/fixtures/session-question";
 import type { components } from "../../src/api/schema";
+import type { WorkspaceSession } from "../../src/renderer/types/workspace";
+import { parseQuestionRef } from "../../src/renderer/lib/decision-target";
 import "../../src/renderer/styles.css";
 
 // Explicit renderer fixtures; these are not provider approval or native Browser evidence.
@@ -20,7 +24,7 @@ const params = new URLSearchParams(location.search);
 const queryClient = new QueryClient({
 	defaultOptions: { queries: { retry: false } },
 });
-let question = sessionQuestionFixture({ originSessionId: "worker" });
+let question = sessionQuestionFixture({ originSessionId: "worker", sourceReportId: "report-worker" });
 let providerRead = false,
 	reportRead = false,
 	offline = false;
@@ -127,6 +131,7 @@ window.fetch = async (input, init) => {
 		return new Response(null, { status: 204 });
 	}
 	if (url.pathname.endsWith("/questions/ask-1/answer")) {
+		if (url.pathname !== "/api/v1/sessions/worker/questions/ask-1/answer") return Response.json({ message: "Wrong answer source" }, { status: 404 });
 		const body: components["schemas"]["AttentionAnswerSubmission"] =
 			await request.json();
 		const receipt: components["schemas"]["AttentionAnswerReceipt"] = {
@@ -147,10 +152,15 @@ window.fetch = async (input, init) => {
 		document.documentElement.dataset.answerPosts = String(
 			Number(document.documentElement.dataset.answerPosts ?? 0) + 1,
 		);
-		void queryClient.invalidateQueries();
+		document.documentElement.dataset.answerSource = url.pathname;
+		document.documentElement.dataset.answerClientId = body.clientAnswerId;
+		document.documentElement.dataset.answerDeliveryState = receipt.deliveryState;
 		return Response.json(receipt);
 	}
 	if (url.pathname.endsWith("/questions/ask-1")) return Response.json(question);
+	if (url.pathname.endsWith("/plan")) return Response.json({ state: "absent", conversationId: "conversation", activeBranchId: "root" });
+	if (url.pathname.endsWith("/questions")) return Response.json({ items: [], open: 0, unread: 0, history: 0, hasMoreBefore: false, nextBeforeSequence: 0 });
+	if (url.pathname.endsWith("/sessions/main/attention")) return Response.json({ conversationId: "main-conversation", activeBranchId: "root", items: [], counts: { open: 0, unread: 0, history: 0 }, hasMoreBefore: false });
 	if ((url.pathname.endsWith("/sessions/worker/attention") || url.pathname.endsWith("/sessions/worker/attention/approval")))
 		return Response.json({
 			conversationId: "conversation",
@@ -172,6 +182,8 @@ const { ProjectAttention, ProjectAttentionCount } =
 	await import("../../src/renderer/components/ProjectAttention");
 const { QuestionAnswerRuntime } =
 	await import("../../src/renderer/hooks/useQuestionAnswerRecovery");
+const { ProjectQuestionRouting } = await import("../../src/renderer/components/ProjectQuestionRouting");
+const { SessionConversationFrames } = await import("../../src/renderer/components/chat/SessionConversationFrames");
 const { setApiBaseUrl } = await import("../../src/renderer/lib/api-client");
 setApiBaseUrl(location.origin);
 window.addEventListener("project-attention-fixture", (event) => {
@@ -213,20 +225,45 @@ function Harness() {
 		</main>
 	);
 }
-const root = createRootRoute({ component: () => <Outlet /> });
+function fixtureSession(id: string, kind: "worker" | "orchestrator"): WorkspaceSession {
+	return { id, workspaceId: "project", workspaceName: "Project", title: id, kind, provider: "codex", mode: "chat", status: "idle", updatedAt: "2026-10-29T00:00:00Z", prs: [] };
+}
+function RoutingFixture() {
+	const [hosting, setHosting] = useState(params.get("hosting") ?? "none");
+	useEffect(() => {
+		const update = (event: Event) => {
+			if (event instanceof CustomEvent && ["main", "none", "unknown"].includes(event.detail)) setHosting(event.detail);
+		};
+		window.addEventListener("question-host-fixture", update);
+		return () => window.removeEventListener("question-host-fixture", update);
+	}, []);
+	return <ProjectQuestionRouting workspaces={[{ id: "project", name: "Project", path: "/fixture", sessions: [fixtureSession("worker", "worker"), ...(hosting === "main" ? [fixtureSession("main", "orchestrator")] : [])] }]}
+		remoteWorkspaces={[]} localReady={hosting !== "unknown"} loadedProjectHostIds={[]} loadedSessionHostIds={[]} failedHostIds={[]} onRetry={() => setHosting("none")}><Outlet /></ProjectQuestionRouting>;
+}
+function SessionFixture() {
+	const { sessionId } = useParams({ strict: false });
+	const surface = useRef<HTMLElement>(null), composer = useRef<HTMLTextAreaElement>(null);
+	if (sessionId !== "main") return <p>Original worker session</p>;
+	return <main ref={surface} className="center-panel-surface relative flex h-screen flex-col bg-background text-foreground">
+		<header className="flex h-12 shrink-0 items-center gap-4 border-b px-4"><span>Current orchestrator · main</span><SessionConversationFrames sessionId="main" projectId="project" isOrchestrator activeBranchId="root" surfaceRef={surface} composerRef={composer} /></header>
+		<section className="chat-scroll-viewport min-h-0 flex-1 p-6"><p>Project decisions keep their original worker and report.</p></section>
+		<footer className="shrink-0 p-4"><textarea ref={composer} className="h-20 w-full border bg-card p-3" aria-label="Conversation draft" /></footer>
+	</main>;
+}
+const root = createRootRoute({ validateSearch: (search: Record<string, unknown>) => ({ question: parseQuestionRef(search.question), followOrchestrator: search.followOrchestrator === true ? true : undefined }), component: RoutingFixture });
 const index = createRoute({
 	getParentRoute: () => root,
-	path: "/",
+	path: "/projects/$projectId",
 	component: Harness,
 });
 const session = createRoute({
 	getParentRoute: () => root,
 	path: "/projects/$projectId/sessions/$sessionId",
-	component: () => <p>Original worker session</p>,
+	component: SessionFixture,
 });
 const router = createRouter({
 	routeTree: root.addChildren([index, session]),
-	history: createMemoryHistory({ initialEntries: ["/"] }),
+	history: createMemoryHistory({ initialEntries: [params.get("hosting") === "main" ? "/projects/project/sessions/main" : "/projects/project"] }),
 });
 const element = document.getElementById("root");
 if (!element) throw new Error("Missing fixture root");
@@ -234,6 +271,7 @@ document.documentElement.classList.toggle(
 	"dark",
 	params.get("theme") !== "light",
 );
+document.documentElement.dataset.theme = params.get("theme") === "light" ? "light" : "dark";
 createRoot(element).render(
 	<QueryClientProvider client={queryClient}>
 		<I18nextProvider

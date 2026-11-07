@@ -4,12 +4,13 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import type { QueryClient } from "@tanstack/react-query";
 import { captureRendererEvent, routeSurface } from "../lib/telemetry";
 import { useKeybindingsStore } from "../stores/keybindings-store";
+import { parseQuestionRef, type QuestionRef } from "../lib/decision-target";
 
 export const Route = createRootRouteWithContext<{
 	queryClient: QueryClient;
 }>()({
-	validateSearch: (search: Record<string, unknown>): { followOrchestrator?: true } =>
-		({ followOrchestrator: search.followOrchestrator === true ? true : undefined }),
+	validateSearch: (search: Record<string, unknown>): { followOrchestrator?: true; question?: QuestionRef } =>
+		({ followOrchestrator: search.followOrchestrator === true ? true : undefined, question: parseQuestionRef(search.question) }),
 	component: RootComponent,
 });
 

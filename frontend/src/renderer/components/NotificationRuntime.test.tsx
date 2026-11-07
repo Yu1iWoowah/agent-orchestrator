@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { NotificationDTO, NotificationsCache } from "../lib/notifications";
+import { unreadNotificationsQueryKey, type NotificationDTO, type NotificationsCache } from "../lib/notifications";
+import { refKey } from "../lib/hosts";
+import { remoteNotificationsQueryKey } from "../hooks/useRemoteNotifications";
 import { NotificationRuntime } from "./NotificationCenter";
 
 const notifications: NotificationDTO[] = [
@@ -36,9 +38,10 @@ const unreadCache: NotificationsCache = {
 	pageParams: [""],
 };
 
-const { setBadge } = vi.hoisted(() => ({ setBadge: vi.fn() }));
+const { setBadge, onClick, openQuestion, navigate } = vi.hoisted(() => ({ setBadge: vi.fn(), onClick: vi.fn<(callback: (id: string) => void) => () => void>(() => () => undefined), openQuestion: vi.fn(), navigate: vi.fn() }));
 
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useParams: () => ({}) }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate, useParams: () => ({}) }));
+vi.mock("./ProjectQuestionRouting", () => ({ useProjectQuestionRouting: () => ({ openQuestion }) }));
 
 vi.mock("../hooks/useNotificationsQuery", () => ({
 	useNotificationsQuery: () => ({ data: unreadCache, isError: false }),
@@ -55,13 +58,12 @@ vi.mock("../lib/bridge", () => ({
 			setBadge,
 			show: vi.fn(),
 			devBounce: vi.fn(),
-			onClick: () => () => undefined,
+			onClick,
 		},
 	},
 }));
 
-function renderRuntimeOnly() {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderRuntimeOnly(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
 	return render(
 		<QueryClientProvider client={queryClient}>
 			{/* NotificationCenter (the bell) is intentionally NOT mounted here. */}
@@ -80,5 +82,18 @@ describe("NotificationRuntime badge sync", () => {
 		// of NotificationCenter, which Linux hides from the topbar and only mounts
 		// on the sessions board.
 		await waitFor(() => expect(setBadge).toHaveBeenCalledWith(notifications.length));
+	});
+
+	it.each(["local", "box-a"])("opens an OS question notification on %s through the same immutable source reference", async (hostId) => {
+		openQuestion.mockClear(); navigate.mockClear(); onClick.mockClear();
+		const notification: NotificationDTO = { ...notifications[0], id: "ntf_question", target: { kind: "agent_question", sessionId: "sess-1", questionId: "ask-worker" } };
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		if (hostId === "local") client.setQueryData(unreadNotificationsQueryKey, { ...unreadCache, pages: [{ notifications: [notification], unreadCount: 1, unresolvedCount: 1 }] } satisfies NotificationsCache);
+		else client.setQueryData(remoteNotificationsQueryKey(hostId, "unread"), { notifications: [notification], unreadCount: 1, unresolvedCount: 1 });
+		renderRuntimeOnly(client);
+		const callback = onClick.mock.calls.at(-1)?.[0];
+		act(() => callback?.(hostId === "local" ? notification.id : `remote-notification:${refKey({ host: hostId, id: notification.id })}`));
+		expect(openQuestion).toHaveBeenCalledWith({ hostId, projectId: "proj-1", originSessionId: "sess-1", questionId: "ask-worker" });
+		expect(navigate).not.toHaveBeenCalled();
 	});
 });
