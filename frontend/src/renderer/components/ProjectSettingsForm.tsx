@@ -165,14 +165,21 @@ function SettingsBody({
 			});
 			if (error) throw settingsSaveError(apiErrorCode(error), apiErrorMessage(error), apiErrorDetails(error));
 			if (!data?.project) throw new Error(t("settings.project.degraded"));
-			accept(data.project);
+			// Settings PATCH omits the workspace repositories enriched by GET.
+			const savedProject = {
+				...data.project,
+				workspaceRepos: data.project.workspaceRepos
+					?? queryClient.getQueryData<Project>(projectQueryKey(projectId, hostId))?.workspaceRepos
+					?? project.workspaceRepos,
+			};
+			accept(savedProject);
 			void queryClient.invalidateQueries({
 				queryKey: hostId ? ["project-config", hostId, projectId] : ["project-config", projectId],
 			});
 			void queryClient.invalidateQueries({ queryKey: ["agent-models"] });
 			void onSaved();
 			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
-			return { values: localSettingsDraft(data.project, hostId) };
+			return { values: localSettingsDraft(savedProject, hostId) };
 		} catch (error) {
 			void captureRendererEvent("ao.renderer.settings_save_failed", { project_id: projectId });
 			throw error;

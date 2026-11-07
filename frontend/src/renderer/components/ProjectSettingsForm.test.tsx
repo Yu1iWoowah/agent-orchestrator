@@ -427,6 +427,30 @@ describe("ProjectSettingsForm", () => {
 		expect(navigateMock).not.toHaveBeenCalled();
 	});
 
+	it("preserves workspace repository detail when the settings response omits it", async () => {
+		const project = {
+			id: "workspace", name: "Workspace", kind: "workspace", path: "/repo/workspace", repo: "", defaultBranch: "main",
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
+		};
+		const workspaceRepos = [{ name: "API backend", relativePath: "services/api", repo: "https://github.com/acme/api" }];
+		mockProject({ ...project, workspaceRepos });
+		// PATCH returns projectFromRow; only GET enriches workspaceRepos.
+		patchMock.mockResolvedValueOnce({ data: { project: { ...project, name: "Renamed workspace" } } });
+		const client = renderSettings("workspace");
+		expect(await screen.findByText("API backend")).toBeInTheDocument();
+		const name = await beginEdit("Project name");
+		await userEvent.clear(name);
+		await userEvent.type(name, "Renamed workspace");
+		submitSettings();
+		await screen.findByText("Saved");
+		expect(screen.queryByText("API backend")).not.toBeNull();
+		expect(client.getQueryData(["project", "workspace"])).toMatchObject({ name: "Renamed workspace", workspaceRepos });
+		expect(patchMock).toHaveBeenCalledExactlyOnceWith("/api/v1/projects/{id}/settings", {
+			params: { path: { id: "workspace" } },
+			body: { displayName: "Renamed workspace", expected: { displayName: "Workspace" } },
+		});
+	});
+
 	it("atomically saves the project display name and config without changing its stable ID", async () => {
 		mockProject({
 			id: "tg_content_factory_5863f66be3",
