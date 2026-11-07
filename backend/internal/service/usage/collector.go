@@ -932,8 +932,8 @@ func (c *Collector) reconcileBinding(ctx context.Context, binding domain.UsageBi
 	if binding.Harness == domain.HarnessCodex &&
 		binding.LastErrorCode == domain.UsageErrorSourceDiscoveryPending &&
 		targetState == domain.UsageBindingActive &&
-		!(pathWithinRoot(ctx, path, c.roots.CodexSessions) ||
-			pathWithinRoot(ctx, path, c.roots.AccountCodexSessions)) {
+		!pathWithinRoot(ctx, path, c.roots.CodexSessions) &&
+		!pathWithinRoot(ctx, path, c.roots.AccountCodexSessions) {
 		lastErrorCode = domain.UsageErrorSourceDiscoveryPending
 	}
 	targetState, lastErrorCode, err = c.preserveCodexBudgetState(
@@ -2085,8 +2085,8 @@ func (c *Collector) codexDiscoveryStillPending(ctx context.Context, event, hookP
 	if strings.TrimSpace(discoveredPath) == "" {
 		return true
 	}
-	return event == "session-start" && !(pathWithinRoot(ctx, discoveredPath, c.roots.CodexSessions) ||
-		pathWithinRoot(ctx, discoveredPath, c.roots.AccountCodexSessions))
+	return event == "session-start" && !pathWithinRoot(ctx, discoveredPath, c.roots.CodexSessions) &&
+		!pathWithinRoot(ctx, discoveredPath, c.roots.AccountCodexSessions)
 }
 
 func pathWithinRoot(ctx context.Context, path, root string) bool {
