@@ -6584,6 +6584,63 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{id}/settings:
+    patch:
+      operationId: patchProjectSettings
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchProjectSettingsInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Compare and merge edited project settings leaves
+      tags:
+      - projects
   /api/v1/projects/{id}/tasks/prepare:
     post:
       operationId: prepareTask
@@ -25012,6 +25069,23 @@ components:
       - title
       - targetSha
       - status
+      type: object
+    PatchProjectSettingsInput:
+      properties:
+        config:
+          additionalProperties: {}
+          type: object
+        displayName:
+          type:
+          - "null"
+          - string
+        expected:
+          additionalProperties: {}
+          type:
+          - object
+          - "null"
+      required:
+      - expected
       type: object
     PrepareTaskResponse:
       properties:

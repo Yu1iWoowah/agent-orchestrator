@@ -128,6 +128,10 @@ type fakeProjectManager struct {
 
 var _ projectsvc.Manager = (*fakeProjectManager)(nil)
 
+func (f *fakeProjectManager) PatchSettings(_ context.Context, id domain.ProjectID, _ projectsvc.PatchSettingsInput) (projectsvc.Project, error) {
+	return projectsvc.Project{ID: id}, nil
+}
+
 func (f *fakeProjectManager) List(context.Context) ([]projectsvc.Summary, error) {
 	return nil, nil
 }

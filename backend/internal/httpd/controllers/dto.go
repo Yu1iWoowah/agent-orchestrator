@@ -180,6 +180,9 @@ type ProjectResponse struct {
 	Project projectsvc.Project `json:"project"`
 }
 
+// PatchProjectSettingsRequest is the leaf-merge settings request.
+type PatchProjectSettingsRequest = projectsvc.PatchSettingsInput
+
 // GetProjectResponse is the { status, project } body of GET /projects/{id},
 // where project is oneOf Project|Degraded discriminated by status.
 type GetProjectResponse struct {
