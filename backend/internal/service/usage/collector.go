@@ -60,15 +60,19 @@ type HookSignal struct {
 // SourceRoots are the provider-owned directories from which AO may read usage
 // transcripts.
 type SourceRoots struct {
-	ClaudeProjects string
-	CodexSessions  string
-	CodexArchived  string
-	KimiHome       string
+	ClaudeProjects        string
+	CodexSessions         string
+	CodexArchived         string
+	KimiHome              string
+	AccountClaudeProjects string
+	AccountCodexSessions  string
+	AccountCodexArchived  string
 }
 
 // DefaultSourceRoots resolves provider-owned transcript directories. dataDir
-// is AO's already-resolved durable data directory.
-func DefaultSourceRoots(ctx context.Context, dataDir string) (SourceRoots, error) {
+// is AO's already-resolved durable data directory; stateDir is the state root
+// shared with the agent accounts service.
+func DefaultSourceRoots(ctx context.Context, dataDir, stateDir string) (SourceRoots, error) {
 	if err := ctx.Err(); err != nil {
 		return SourceRoots{}, err
 	}
@@ -89,12 +93,19 @@ func DefaultSourceRoots(ctx context.Context, dataDir string) (SourceRoots, error
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = filepath.Join(home, ".ao", "data")
 	}
-	return SourceRoots{
+	roots := SourceRoots{
 		ClaudeProjects: filepath.Join(claudeHome, "projects"),
 		CodexSessions:  filepath.Join(codexHome, "sessions"),
 		CodexArchived:  filepath.Join(codexHome, "archived_sessions"),
 		KimiHome:       filepath.Join(dataDir, "kimi"),
-	}, nil
+	}
+	if strings.TrimSpace(stateDir) != "" {
+		history := filepath.Join(stateDir, "agent-accounts", "history")
+		roots.AccountClaudeProjects = filepath.Join(history, "claude", "projects")
+		roots.AccountCodexSessions = filepath.Join(history, "codex", "sessions")
+		roots.AccountCodexArchived = filepath.Join(history, "codex", "archived_sessions")
+	}
+	return roots, nil
 }
 
 type collectorStore interface {
@@ -921,7 +932,8 @@ func (c *Collector) reconcileBinding(ctx context.Context, binding domain.UsageBi
 	if binding.Harness == domain.HarnessCodex &&
 		binding.LastErrorCode == domain.UsageErrorSourceDiscoveryPending &&
 		targetState == domain.UsageBindingActive &&
-		!pathWithinRoot(ctx, path, c.roots.CodexSessions) {
+		!(pathWithinRoot(ctx, path, c.roots.CodexSessions) ||
+			pathWithinRoot(ctx, path, c.roots.AccountCodexSessions)) {
 		lastErrorCode = domain.UsageErrorSourceDiscoveryPending
 	}
 	targetState, lastErrorCode, err = c.preserveCodexBudgetState(
@@ -2043,9 +2055,9 @@ func (c *Collector) validateSourceAttribution(
 func (c *Collector) allowedRoots(harness domain.AgentHarness) []string {
 	switch harness {
 	case domain.HarnessClaudeCode:
-		return []string{c.roots.ClaudeProjects}
+		return []string{c.roots.ClaudeProjects, c.roots.AccountClaudeProjects}
 	case domain.HarnessCodex:
-		return []string{c.roots.CodexSessions, c.roots.CodexArchived}
+		return []string{c.roots.CodexSessions, c.roots.CodexArchived, c.roots.AccountCodexSessions, c.roots.AccountCodexArchived}
 	case domain.HarnessKimi:
 		return []string{c.roots.KimiHome}
 	default:
@@ -2073,7 +2085,8 @@ func (c *Collector) codexDiscoveryStillPending(ctx context.Context, event, hookP
 	if strings.TrimSpace(discoveredPath) == "" {
 		return true
 	}
-	return event == "session-start" && !pathWithinRoot(ctx, discoveredPath, c.roots.CodexSessions)
+	return event == "session-start" && !(pathWithinRoot(ctx, discoveredPath, c.roots.CodexSessions) ||
+		pathWithinRoot(ctx, discoveredPath, c.roots.AccountCodexSessions))
 }
 
 func pathWithinRoot(ctx context.Context, path, root string) bool {
@@ -2105,7 +2118,10 @@ func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarnes
 	var patterns []string
 	switch harness {
 	case domain.HarnessClaudeCode:
-		patterns = []string{filepath.Join(c.roots.ClaudeProjects, "*", nativeID+".jsonl")}
+		patterns = []string{
+			filepath.Join(c.roots.ClaudeProjects, "*", nativeID+".jsonl"),
+			filepath.Join(c.roots.AccountClaudeProjects, "*", nativeID+".jsonl"),
+		}
 	case domain.HarnessCodex:
 		return c.discoverCodexPath(ctx, nativeID, "")
 	case domain.HarnessKimi:
@@ -2198,6 +2214,8 @@ func (c *Collector) discoverCodexPath(ctx context.Context, nativeID, parentID st
 	patterns := []string{
 		filepath.Join(c.roots.CodexSessions, "*", "*", "*", "*"+nativeID+"*.jsonl"),
 		filepath.Join(c.roots.CodexArchived, "*"+nativeID+"*.jsonl"),
+		filepath.Join(c.roots.AccountCodexSessions, "*", "*", "*", "*"+nativeID+"*.jsonl"),
+		filepath.Join(c.roots.AccountCodexArchived, "*"+nativeID+"*.jsonl"),
 	}
 	type candidate struct {
 		path string
