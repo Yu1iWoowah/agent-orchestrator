@@ -280,32 +280,14 @@ func notificationResponse(n notificationsvc.Notification) NotificationResponse {
 		CreatedAt:  n.CreatedAt,
 		ResolvedAt: optionalTime(n.ResolvedAt),
 		Target: NotificationTarget{
-			Kind:      string(n.Target.Kind),
-			SessionID: string(n.Target.SessionID),
-			PRURL:     n.Target.PRURL,
+			Kind:       string(n.Target.Kind),
+			SessionID:  string(n.Target.SessionID),
+			PRURL:      n.Target.PRURL,
+			QuestionID: n.Target.QuestionID,
 		},
 	}
 }
 
 func notificationResponseFromRecord(rec domain.NotificationRecord) NotificationResponse {
-	return NotificationResponse{
-		ID:         rec.ID,
-		SessionID:  string(rec.SessionID),
-		ProjectID:  string(rec.ProjectID),
-		PRURL:      rec.PRURL,
-		Type:       string(rec.Type),
-		Title:      rec.Title,
-		Body:       rec.Body,
-		Status:     string(rec.Status),
-		CreatedAt:  rec.CreatedAt,
-		ResolvedAt: optionalTime(rec.ResolvedAt),
-		Target:     notificationTargetFromRecord(rec),
-	}
-}
-
-func notificationTargetFromRecord(rec domain.NotificationRecord) NotificationTarget {
-	if rec.PRURL != "" {
-		return NotificationTarget{Kind: "pr", SessionID: string(rec.SessionID), PRURL: rec.PRURL}
-	}
-	return NotificationTarget{Kind: "session", SessionID: string(rec.SessionID)}
+	return notificationResponse(notificationsvc.FromRecord(rec))
 }

@@ -8163,8 +8163,9 @@ export interface components {
         };
         NotificationTarget: {
             /** @enum {string} */
-            kind: "session" | "pr";
+            kind: "session" | "pr" | "agent_question";
             prUrl?: string;
+            questionId?: string;
             sessionId: string;
         };
         OpenCodexAccountLoginTerminalResponse: {
