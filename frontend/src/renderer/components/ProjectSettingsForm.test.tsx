@@ -449,6 +449,7 @@ describe("ProjectSettingsForm", () => {
 			params: { path: { id: "workspace" } },
 			body: { displayName: "Renamed workspace", expected: { displayName: "Workspace" } },
 		});
+		await expectSaveWithoutReplacement();
 	});
 
 	it("atomically saves the project display name and config without changing its stable ID", async () => {
