@@ -33,15 +33,22 @@ async function edit(label: string, value: string) {
 }
 
 describe.each([false, true])("shared settings page, Cloud=%s", (cloud) => {
-	it("uses the same inline fields and autosave, with supported workflow fields", async () => {
+	it("saves inline fields only after an explicit submit", async () => {
 		const { save } = setup(cloud);
 		expect(screen.getByRole("button", { name: "Edit Project name" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Edit Default branch" })).toBeInTheDocument();
 		expect(Boolean(screen.queryByRole("button", { name: "Edit Session prefix" }))).toBe(!cloud);
 		await edit("Project name", "Renamed project");
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 850));
+		});
+		expect(save).not.toHaveBeenCalled();
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
 		expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ displayName: "Renamed project", defaultBranch: "main" }));
 		await edit("Default branch", "develop");
+		expect(save).toHaveBeenCalledTimes(1);
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
 		expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ displayName: "Renamed project", defaultBranch: "develop" }));
 	});
@@ -53,6 +60,7 @@ describe.each([false, true])("shared settings page, Cloud=%s", (cloud) => {
 		await waitFor(() => expect(onSaveState).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "failed", error: "Project name is required." })));
 		expect(save).not.toHaveBeenCalled();
 		await edit("Project name", "Valid name");
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(onSaveState).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "saved", dirty: false, error: undefined })));
 	});

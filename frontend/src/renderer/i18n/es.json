@@ -4074,5 +4074,19 @@
 	"reviewerSettings.description": "Solo la próxima revisión usa esta selección. La actual, la cuenta y los permisos fijos no cambian. Vaciar model o effort restablece el valor predeterminado del provider.",
 	"reviewerSettings.fastOn": "Activado",
 	"reviewerSettings.fastOff": "Desactivado",
-	"reviewerSettings.fastCost": "Fast puede generar cargos adicionales. Fijarlo en Activado es una elección explícita para la próxima revisión."
+	"reviewerSettings.fastCost": "Fast puede generar cargos adicionales. Fijarlo en Activado es una elección explícita para la próxima revisión.",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}"
 }

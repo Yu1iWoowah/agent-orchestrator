@@ -3986,5 +3986,19 @@
 	"reviewerSettings.description": "仅下一轮 review 使用此选择；当前轮次不变，reviewer 保留账号与固定权限。清空 model 或 effort 会重置为 provider 默认值。",
 	"reviewerSettings.fastOn": "开启",
 	"reviewerSettings.fastOff": "关闭",
-	"reviewerSettings.fastCost": "Fast 可能产生额外费用。固定为开启代表你明确选择在下一轮使用。"
+	"reviewerSettings.fastCost": "Fast 可能产生额外费用。固定为开启代表你明确选择在下一轮使用。",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}"
 }

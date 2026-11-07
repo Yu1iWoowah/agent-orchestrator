@@ -4004,5 +4004,19 @@
 	"reviewerSettings.description": "Die Auswahl gilt nur für den nächsten Durchlauf. Aktueller Durchlauf, Konto und feste Berechtigungen bleiben bestehen. Leeres model oder effort setzt den Provider-Standard.",
 	"reviewerSettings.fastOn": "Ein",
 	"reviewerSettings.fastOff": "Aus",
-	"reviewerSettings.fastCost": "Fast kann zusätzliche Kosten verursachen. Mit Ein wählst du die Nutzung im nächsten Durchlauf ausdrücklich."
+	"reviewerSettings.fastCost": "Fast kann zusätzliche Kosten verursachen. Mit Ein wählst du die Nutzung im nächsten Durchlauf ausdrücklich.",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}"
 }

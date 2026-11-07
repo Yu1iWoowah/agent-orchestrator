@@ -4004,5 +4004,19 @@
 	"reviewerSettings.description": "이 선택은 다음 review에만 사용됩니다. 현재 review, 계정, 고정 권한은 유지됩니다. model 또는 effort를 비우면 provider 기본값으로 돌아갑니다.",
 	"reviewerSettings.fastOn": "켜기",
 	"reviewerSettings.fastOff": "끄기",
-	"reviewerSettings.fastCost": "Fast는 추가 요금이 발생할 수 있습니다. 켜기로 고정하면 다음 review에서 사용하도록 명시적으로 선택합니다."
+	"reviewerSettings.fastCost": "Fast는 추가 요금이 발생할 수 있습니다. 켜기로 고정하면 다음 review에서 사용하도록 명시적으로 선택합니다.",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}"
 }

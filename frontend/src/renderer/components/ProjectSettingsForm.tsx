@@ -1,44 +1,42 @@
+import {
+	projectDraftConflictPaths,
+	rebaseSettings,
+	settingsExpected,
+	settingsPatch,
+	settingsSaveError,
+} from "../lib/project-settings-patch";
 import { localAccountModelScope } from "../lib/local-account-model-scope";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import type { components } from "../../api/schema";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
-import { useRemoteProjectQuery, workspaceQueryKeyForHost, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
+import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { useSettings } from "../hooks/useSettings";
 import { useConnectedHosts } from "../hooks/useHostConnection";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage } from "../lib/api-client";
 import { clientForHost } from "../lib/host-clients";
 import { LOCAL_HOST, refKey } from "../lib/hosts";
 import { isLaunchableAgent } from "../lib/agent-select-options";
 import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
-import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
-import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
-import { openRemoteOrchestrator } from "../lib/remote-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
-import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
-import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake } from "./IntakeFields";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
-import { additionalProjectReviewerHarnesses, ProjectSettingsEditor, type ProjectAgentPickerProps, type ProjectSettingsDraft } from "./ProjectSettingsEditor";
+import {
+	additionalProjectReviewerHarnesses,
+	ProjectSettingsEditor,
+	type ProjectAgentPickerProps,
+	type ProjectSettingsDraft,
+} from "./ProjectSettingsEditor";
 import { CloudProjectSettingsAdapter } from "./CloudProjectSettingsForm";
 
 type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
-type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 
 const DEFAULT_BRANCH_AUTO = "auto";
 
-const projectQueryKey = (id: string, hostId?: string) => hostId ? ["project", hostId, id] as const : ["project", id] as const;
-
-type SettingsSaveResult = {
-	savedKey: string;
-	replacementError: string | null;
-	replacementSessionId: string | null;
-	replacementFailure: OrchestratorReplacementFailure | null;
-	spawnError: unknown;
-};
+const projectQueryKey = (id: string, hostId?: string) => (hostId ? (["project", hostId, id] as const) : (["project", id] as const));
 
 export type ProjectSettingsSection = "general" | "agents";
 export type ProjectSettingsSaveState = {
@@ -46,7 +44,9 @@ export type ProjectSettingsSaveState = {
 	dirty?: boolean;
 	requestPending?: boolean;
 	error?: string;
-	replacementError?: string;
+	conflictPaths?: string[];
+	reload?: () => void;
+	reloading?: boolean;
 	/** The draft is dirty but cannot be saved as it stands (e.g. an invalid name). */
 	unsaveable?: boolean;
 	retry?: () => void;
@@ -62,24 +62,18 @@ type ProjectSettingsFormProps = {
 };
 
 export function ProjectSettingsForm(props: ProjectSettingsFormProps) {
-	return props.cloudOrgId !== undefined
-		? <CloudProjectSettingsAdapter {...props} cloudOrgId={props.cloudOrgId} />
-		: <LocalProjectSettingsAdapter {...props} />;
+	return props.cloudOrgId !== undefined ? (
+		<CloudProjectSettingsAdapter {...props} cloudOrgId={props.cloudOrgId} />
+	) : (
+		<LocalProjectSettingsAdapter {...props} />
+	);
 }
 
-function LocalProjectSettingsAdapter({
-	projectId,
-	hostId,
-	section = "general",
-	onSaveState,
-}: ProjectSettingsFormProps) {
+function LocalProjectSettingsAdapter({ projectId, hostId, section = "general", onSaveState }: ProjectSettingsFormProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const connected = useConnectedHosts();
 	const hostConnected = !hostId || connected.includes(hostId);
-	useEffect(() => {
-		if (!hostConnected) onSaveState?.({ phase: "idle" });
-	}, [hostConnected, onSaveState]);
 
 	const query = useQuery({
 		queryKey: projectQueryKey(projectId, hostId),
@@ -89,41 +83,55 @@ function LocalProjectSettingsAdapter({
 				params: { path: { id: projectId } },
 			});
 			if (error) throw new Error(apiErrorMessage(error));
-			if (data?.status !== "ok") throw new Error(t("settings.project.degraded"));
-			return data.project as Project;
+			if (data?.status !== "ok" || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
+			return data.project;
 		},
 	});
 
 	return (
 		<>
-			{!hostConnected ? <p role="alert" className="text-pretty text-sm text-error">{t("remote.hostOffline")}</p> : null}
+			{!hostConnected ? (
+				<p role="alert" className="text-pretty text-sm text-error">
+					{t("remote.hostOffline")}
+				</p>
+			) : null}
 			{!query.data && hostConnected && query.isLoading ? (
 				<p className="text-sm text-settings-muted">{t("settings.project.loading")}</p>
 			) : !query.data && hostConnected ? (
-				<p className="text-sm text-error">{query.error instanceof Error ? query.error.message : t("settings.project.loadFailed")}</p>
+				<p className="text-sm text-error">
+					{query.error instanceof Error ? query.error.message : t("settings.project.loadFailed")}
+				</p>
 			) : query.data ? (
 				<div hidden={!hostConnected}>
-				<SettingsBody
-					key={refKey({ host: hostId ?? LOCAL_HOST, id: projectId })}
-					project={query.data}
-					onSaved={() =>
-						queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }).catch(() => {
-							// Saving succeeds even if the cache refresh fails.
-						})
-					}
-					projectId={projectId}
-					hostId={hostId}
-					hostConnected={hostConnected}
-					section={section}
-					onSaveState={onSaveState}
-				/>
+					<SettingsBody
+						key={refKey({ host: hostId ?? LOCAL_HOST, id: projectId })}
+						project={query.data}
+						onSaved={() =>
+							queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }).catch(() => {
+								// Saving succeeds even if the cache refresh fails.
+							})
+						}
+						projectId={projectId}
+						hostId={hostId}
+						hostConnected={hostConnected}
+						section={section}
+						onSaveState={onSaveState}
+					/>
 				</div>
 			) : null}
 		</>
 	);
 }
 
-function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, section = "general", onSaveState }: {
+function SettingsBody({
+	project,
+	projectId,
+	hostId,
+	hostConnected,
+	onSaved,
+	section = "general",
+	onSaveState,
+}: {
 	project: Project;
 	projectId: string;
 	hostId?: string;
@@ -134,19 +142,121 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
-	const workspaceQuery = useQuery({ ...workspaceQueryOptions, enabled: !hostId });
-	const remoteProjectQuery = useRemoteProjectQuery(hostId ?? "", projectId);
-	const config = project.config ?? {};
+	const baseline = useRef(project);
 	const isScratchProject = project.kind === "scratch";
 	const { settings } = useSettings(hostId);
 	const intakeVisible = !isScratchProject && !!settings?.trackerIntakeEnabled;
-	const workspace = hostId ? remoteProjectQuery.data : workspaceQuery.data?.find((item) => item.id === projectId);
-	const activeOrchestrator = newestActiveOrchestrator(workspace?.sessions ?? []);
-	const intake: TrackerIntakeConfig = config.trackerIntake ?? {};
-	const initialValues: ProjectSettingsDraft = {
+	const initialValues = localSettingsDraft(baseline.current, hostId);
+	const agentsQuery = useAgentReadinessQuery(true, hostId);
+	useEnsureAgentReadiness({ hostId });
+	const accept = (latest: Project) => {
+		baseline.current = latest;
+		queryClient.setQueryData(projectQueryKey(projectId, hostId), latest);
+	};
+	const save = async (values: ProjectSettingsDraft) => {
+		const client = hostId ? clientForHost(hostId) : apiClient;
+		const before = baseline.current;
+		const patch = settingsPatch(localSettingsValues(before, localSettingsDraft(before, hostId)), localSettingsValues(before, values));
+		if (!Object.keys(patch).length) return { values: localSettingsDraft(before, hostId) };
+		try {
+			const { data, error } = await client.PATCH("/api/v1/projects/{id}/settings", {
+				params: { path: { id: projectId } },
+				body: { ...patch, expected: settingsExpected(patch, { displayName: before.name, config: before.config }) },
+			});
+			if (error) throw settingsSaveError(apiErrorCode(error), apiErrorMessage(error), apiErrorDetails(error));
+			if (!data?.project) throw new Error(t("settings.project.degraded"));
+			// Settings PATCH omits the workspace repositories enriched by GET.
+			const savedProject = {
+				...data.project,
+				workspaceRepos: data.project.workspaceRepos
+					?? queryClient.getQueryData<Project>(projectQueryKey(projectId, hostId))?.workspaceRepos
+					?? project.workspaceRepos,
+			};
+			accept(savedProject);
+			void queryClient.invalidateQueries({
+				queryKey: hostId ? ["project-config", hostId, projectId] : ["project-config", projectId],
+			});
+			void queryClient.invalidateQueries({ queryKey: ["agent-models"] });
+			void onSaved();
+			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
+			return { values: localSettingsDraft(savedProject, hostId) };
+		} catch (error) {
+			void captureRendererEvent("ao.renderer.settings_save_failed", { project_id: projectId });
+			throw error;
+		}
+	};
+	const reload = async (draft: ProjectSettingsDraft, paths: string[]) => {
+		const client = hostId ? clientForHost(hostId) : apiClient;
+		const before = localSettingsDraft(baseline.current, hostId);
+		const { data, error } = await client.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
+		if (error) throw new Error(apiErrorMessage(error));
+		if (data?.status !== "ok" || !data.project || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
+		const latest = localSettingsDraft(data.project, hostId);
+		accept(data.project);
+		return { values: rebaseSettings(before, draft, latest, projectDraftConflictPaths(paths)), baseline: latest };
+	};
+	return (
+		<ProjectSettingsEditor
+			initialValues={initialValues}
+			section={section}
+			disabled={!hostConnected}
+			capabilities={{
+				workflow: !isScratchProject,
+				sessionPrefix: !isScratchProject,
+				intake: intakeVisible,
+				reviewer: !isScratchProject,
+				requiredAgents: true,
+				workersRequestReview: !isScratchProject,
+			}}
+			details={[
+				{ label: t("settings.project.path"), value: project.path, href: hostId ? undefined : `file://${encodeURI(project.path)}` },
+				{
+					label: t("settings.project.repo"),
+					value: project.repo || "—",
+					href: project.repo ? repositoryHref(project.repo) : undefined,
+				},
+			]}
+			workspaceRepos={project.kind === "workspace" ? (project.workspaceRepos ?? []) : undefined}
+			repository={project.repo}
+			modelScope={(agent, role, draft) => {
+				const provider = agent === "codex" ? "codex" : agent === "claude-code" ? "claude" : undefined;
+				const roleAccount = role === "reviewer" ? draft.accountSettings?.reviewers[agent] : draft.accountSettings?.[role];
+				return localAccountModelScope(
+					projectId,
+					role,
+					roleAccount || (provider ? draft.accountSettings?.providers[provider] : undefined),
+				);
+			}}
+			defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
+			reviewerWarning={reviewerTrustWarning}
+			save={save}
+			reload={reload}
+			onSaveState={onSaveState}
+			modelHostId={hostId}
+			renderAgent={(props) => <LocalAgentPicker {...props} projectId={projectId} hostId={hostId} agentsQuery={agentsQuery} />}
+		/>
+	);
+}
+
+function localSettingsDraft(project: Project, hostId?: string): ProjectSettingsDraft {
+	const config = project.config ?? {};
+	const projectId = project.id;
+	const intake = config.trackerIntake ?? {};
+	return {
 		additionalReviewerHarnesses: (config.reviewers ?? []).slice(1).map((reviewer) => reviewer.harness),
-		...(!hostId ? { accountSettings: { projectId, providers: { ...config.agentAccounts }, worker: config.worker?.agentAccountId ?? "", orchestrator: config.orchestrator?.agentAccountId ?? "", reviewers: Object.fromEntries((config.reviewers ?? []).map((reviewer) => [reviewer.harness, reviewer.agentAccountId ?? ""])) } } : {}),
+		...(!hostId
+			? {
+					accountSettings: {
+						projectId,
+						providers: { ...config.agentAccounts },
+						worker: config.worker?.agentAccountId ?? "",
+						orchestrator: config.orchestrator?.agentAccountId ?? "",
+						reviewers: Object.fromEntries(
+							(config.reviewers ?? []).map((reviewer) => [reviewer.harness, reviewer.agentAccountId ?? ""]),
+						),
+					},
+				}
+			: {}),
 		displayName: project.name,
 		defaultBranch: config.defaultBranch ?? DEFAULT_BRANCH_AUTO,
 		sessionPrefix: config.sessionPrefix ?? "",
@@ -161,199 +271,172 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		reviewerHarness: config.reviewers?.[0]?.harness ?? "",
-		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? config.agentConfig?.model ?? "",
-		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
-		reviewerEffort: config.reviewers?.[0]?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
-		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
+		reviewerModel: config.reviewers?.length
+			? (config.reviewers[0].agentConfig?.model ?? "")
+			: (config.worker?.agentConfig?.model ?? config.agentConfig?.model ?? ""),
+		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? "",
+		reviewerEffort: config.reviewers?.length
+			? (config.reviewers[0].agentConfig?.effort ?? "")
+			: (config.worker?.agentConfig?.effort ?? config.agentConfig?.effort ?? ""),
+		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? "",
 		autoReview: config.autoReview ?? false,
 		workersRequestReview: config.workersRequestReview ?? false,
 		intakeEnabled: intake.enabled ?? false,
 		intakeRepo: intake.repo ?? "",
 		intakeAssignee: intake.assignee ?? "",
 	};
-	const lastOrchestratorRef = useRef(config.orchestrator?.agent ?? "");
-	const replacementAttemptedRef = useRef(false);
-	const replacementFailedRef = useRef(false);
-	const agentsQuery = useAgentReadinessQuery(true, hostId);
-	useEnsureAgentReadiness({ hostId });
-	const persist = async (values: ProjectSettingsDraft): Promise<SettingsSaveResult> => {
-		const savedKey = JSON.stringify(values);
-		const displayName = values.displayName.trim();
-		const { model: _legacyModel, mode: _legacyMode, effort: _legacyEffort, permissions: _legacyPermissions, ...sharedAgentConfig } = config.agentConfig ?? {};
-		const existingReviewer = config.reviewers?.[0];
-		const existingReviewerAgentConfig = existingReviewer?.harness === values.reviewerHarness ? existingReviewer.agentConfig : undefined;
-		const next: ProjectConfig = isScratchProject
-			? {
-					...scratchSupportedConfig(config),
-					agentAccounts: blankToUndefined(Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== ""))),
-					worker: {
-						...config.worker,
-						agentAccountId: values.accountSettings?.worker || undefined,
-						agent: values.workerAgent,
-						agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, values.workerModel, values.workerMode, values.workerEffort, values.workerPermissions),
-					},
-					orchestrator: {
-						...config.orchestrator,
-						agentAccountId: values.accountSettings?.orchestrator || undefined,
-						agent: values.orchestratorAgent,
-						agentConfig: buildRoleAgentConfig(
-							config.orchestrator?.agentConfig,
-							values.orchestratorModel,
-							values.orchestratorMode,
-							values.orchestratorEffort,
-							values.orchestratorPermissions,
-						),
-					},
-					agentConfig: blankToUndefined({
-						...sharedAgentConfig,
-						permissions: undefined,
-					}),
-				}
-			: {
-					...config,
-					agentAccounts: blankToUndefined(Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== ""))),
-					defaultBranch: values.defaultBranch.trim() === DEFAULT_BRANCH_AUTO ? undefined : values.defaultBranch || undefined,
-					sessionPrefix: values.sessionPrefix || undefined,
-					worker: {
-						...config.worker,
-						agentAccountId: values.accountSettings?.worker || undefined,
-						agent: values.workerAgent,
-						agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, values.workerModel, values.workerMode, values.workerEffort, values.workerPermissions),
-					},
-					orchestrator: {
-						...config.orchestrator,
-						agentAccountId: values.accountSettings?.orchestrator || undefined,
-						agent: values.orchestratorAgent,
-						agentConfig: buildRoleAgentConfig(
-							config.orchestrator?.agentConfig,
-							values.orchestratorModel,
-							values.orchestratorMode,
-							values.orchestratorEffort,
-							values.orchestratorPermissions,
-						),
-					},
-					agentConfig: blankToUndefined({
-						...sharedAgentConfig,
-						permissions: undefined,
-					}),
-					reviewers: values.reviewerHarness
-						? [
-								{
-									harness: values.reviewerHarness,
-									agentAccountId: values.accountSettings?.reviewers[values.reviewerHarness] || undefined,
-									agentConfig: buildRoleAgentConfig(
-										existingReviewerAgentConfig,
-										values.reviewerModel,
-										values.reviewerMode,
-										values.reviewerEffort,
-										values.reviewerPermissions,
-									),
-								},
-								...(config.reviewers ?? []).filter((reviewer) => additionalProjectReviewerHarnesses(values).includes(reviewer.harness)).map((reviewer) => ({ ...reviewer, agentAccountId: values.accountSettings?.reviewers[reviewer.harness] || undefined })),
-							]
-						: undefined,
-					trackerIntake: buildIntake(
-						{
-							enabled: values.intakeEnabled,
-							repo: values.intakeRepo,
-							assignee: values.intakeAssignee,
-						},
-						config.trackerIntake,
-					),
-					autoReview: values.autoReview,
-					workersRequestReview: values.workersRequestReview || undefined,
-				};
-		const { error } = await (hostId ? clientForHost(hostId) : apiClient).PUT("/api/v1/projects/{id}", {
-			params: { path: { id: projectId } },
-			body: { displayName, config: next },
-		});
-		if (error) throw new Error(apiErrorMessage(error));
-		const replaceOrchestrator = replacementFailedRef.current || values.orchestratorAgent !== lastOrchestratorRef.current ||
-			(Boolean(activeOrchestrator && activeOrchestrator.provider !== values.orchestratorAgent) && !replacementAttemptedRef.current);
-		lastOrchestratorRef.current = values.orchestratorAgent;
-		if (replaceOrchestrator) {
-			replacementAttemptedRef.current = true;
-			try {
-				const sessionId = hostId
-					? await openRemoteOrchestrator(hostId, projectId, undefined, undefined, true, "settings")
-					: await spawnOrchestrator(projectId, "settings", true);
-				replacementFailedRef.current = false;
-				return {
-					replacementError: null,
-					replacementSessionId: sessionId,
-					replacementFailure: null,
-					spawnError: null,
-					savedKey,
-				} satisfies SettingsSaveResult;
-			} catch (error) {
-				replacementFailedRef.current = true;
-				const replacementFailure: OrchestratorReplacementFailure = {
-					message: error instanceof Error ? error.message : t("settings.project.replaceOrchestratorFailed"),
-					...(error instanceof OrchestratorSpawnError
-						? {
-								code: error.code,
-								requestId: error.requestId,
-								details: error.details,
-							}
-						: {}),
-				};
-				return {
-					replacementError: replacementFailure.message,
-					replacementSessionId: null,
-					replacementFailure,
-					spawnError: error,
-					savedKey,
-				} satisfies SettingsSaveResult;
-			}
-		}
-		return {
-			replacementError: null,
-			replacementSessionId: null,
-			replacementFailure: null,
-			spawnError: null,
-			savedKey,
-		} satisfies SettingsSaveResult;
-	};
-	const save = async (values: ProjectSettingsDraft) => {
-		try {
-			const result = await persist(values);
-			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
-			void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, hostId) });
-			void queryClient.invalidateQueries({ queryKey: hostId ? ["project-config", hostId, projectId] : ["project-config", projectId] });
-			void queryClient.invalidateQueries({ queryKey: ["agent-models"] });
-			void onSaved();
-			if (result.replacementFailure) {
-				if (!hostId) setOrchestratorReplacementError(projectId, result.replacementFailure);
-				if (result.spawnError) captureOrchestratorReplacementFailure(result.spawnError, hostId ? refKey({ host: hostId, id: projectId }) : projectId);
-			}
-			return { replacementError: result.replacementError };
-		} catch (error) {
-			void captureRendererEvent("ao.renderer.settings_save_failed", { project_id: projectId });
-			throw error;
-		}
-	};
-	return <ProjectSettingsEditor initialValues={initialValues} section={section} disabled={!hostConnected}
-		capabilities={{ workflow: !isScratchProject, sessionPrefix: !isScratchProject, intake: intakeVisible, reviewer: !isScratchProject, requiredAgents: true, workersRequestReview: !isScratchProject }}
-		details={[{ label: t("settings.project.path"), value: project.path, href: hostId ? undefined : `file://${encodeURI(project.path)}` }, { label: t("settings.project.repo"), value: project.repo || "—", href: project.repo ? repositoryHref(project.repo) : undefined }]}
-		workspaceRepos={project.kind === "workspace" ? project.workspaceRepos ?? [] : undefined} repository={project.repo}
-		modelScope={(agent, role, draft) => {
-			const provider = agent === "codex" ? "codex" : agent === "claude-code" ? "claude" : undefined;
-			const roleAccount = role === "reviewer" ? draft.accountSettings?.reviewers[agent] : draft.accountSettings?.[role];
-			return localAccountModelScope(projectId, role, roleAccount || (provider ? draft.accountSettings?.providers[provider] : undefined));
-		}} defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
-		reviewerWarning={reviewerTrustWarning} save={save} saveUnchanged onSaveState={onSaveState}
-		modelHostId={hostId}
-		renderAgent={(props) => <LocalAgentPicker {...props} projectId={projectId} hostId={hostId} agentsQuery={agentsQuery} />} />;
 }
 
-function LocalAgentPicker({ role, draft, value, invalid, onChange, projectId, hostId, agentsQuery }: ProjectAgentPickerProps & { projectId: string; hostId?: string; agentsQuery: ReturnType<typeof useAgentReadinessQuery> }) {
+function localSettingsValues(project: Project, values: ProjectSettingsDraft) {
+	const config = project.config ?? {};
+	const isScratchProject = project.kind === "scratch";
+	const existingReviewer = config.reviewers?.[0];
+	const existingReviewerAgentConfig = existingReviewer?.harness === values.reviewerHarness ? existingReviewer.agentConfig : undefined;
+	const configValues: ProjectConfig = isScratchProject
+		? {
+				...scratchSupportedConfig(config),
+				agentAccounts: Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== "")),
+				worker: {
+					...config.worker,
+					agentAccountId: values.accountSettings?.worker || undefined,
+					agent: values.workerAgent,
+					agentConfig:
+						buildRoleAgentConfig(
+							config.worker?.agentConfig,
+							values.workerModel,
+							values.workerMode,
+							values.workerEffort,
+							values.workerPermissions,
+						) ?? {},
+				},
+				orchestrator: {
+					...config.orchestrator,
+					agentAccountId: values.accountSettings?.orchestrator || undefined,
+					agent: values.orchestratorAgent,
+					agentConfig:
+						buildRoleAgentConfig(
+							config.orchestrator?.agentConfig,
+							values.orchestratorModel,
+							values.orchestratorMode,
+							values.orchestratorEffort,
+							values.orchestratorPermissions,
+						) ?? {},
+				},
+			}
+		: {
+				...config,
+				agentAccounts: Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== "")),
+				defaultBranch: values.defaultBranch.trim() === DEFAULT_BRANCH_AUTO ? undefined : values.defaultBranch || undefined,
+				sessionPrefix: values.sessionPrefix || undefined,
+				worker: {
+					...config.worker,
+					agentAccountId: values.accountSettings?.worker || undefined,
+					agent: values.workerAgent,
+					agentConfig:
+						buildRoleAgentConfig(
+							config.worker?.agentConfig,
+							values.workerModel,
+							values.workerMode,
+							values.workerEffort,
+							values.workerPermissions,
+						) ?? {},
+				},
+				orchestrator: {
+					...config.orchestrator,
+					agentAccountId: values.accountSettings?.orchestrator || undefined,
+					agent: values.orchestratorAgent,
+					agentConfig:
+						buildRoleAgentConfig(
+							config.orchestrator?.agentConfig,
+							values.orchestratorModel,
+							values.orchestratorMode,
+							values.orchestratorEffort,
+							values.orchestratorPermissions,
+						) ?? {},
+				},
+				reviewers: values.reviewerHarness
+					? [
+							{
+								harness: values.reviewerHarness,
+								agentAccountId: values.accountSettings?.reviewers[values.reviewerHarness] || undefined,
+								agentConfig: buildRoleAgentConfig(
+									existingReviewerAgentConfig,
+									values.reviewerModel,
+									values.reviewerMode,
+									values.reviewerEffort,
+									values.reviewerPermissions,
+								),
+							},
+							...(config.reviewers ?? [])
+								.filter((reviewer) => additionalProjectReviewerHarnesses(values).includes(reviewer.harness))
+								.map((reviewer) => ({
+									...reviewer,
+									agentAccountId: values.accountSettings?.reviewers[reviewer.harness] || undefined,
+								})),
+						]
+					: undefined,
+				trackerIntake: buildIntake(
+					{
+						enabled: values.intakeEnabled,
+						repo: values.intakeRepo,
+						assignee: values.intakeAssignee,
+					},
+					config.trackerIntake,
+				),
+				autoReview: values.autoReview,
+				workersRequestReview: values.workersRequestReview || undefined,
+			};
+	return { displayName: values.displayName.trim(), config: configValues };
+}
+
+function LocalAgentPicker({
+	role,
+	draft,
+	value,
+	invalid,
+	onChange,
+	projectId,
+	hostId,
+	agentsQuery,
+}: ProjectAgentPickerProps & { projectId: string; hostId?: string; agentsQuery: ReturnType<typeof useAgentReadinessQuery> }) {
 	const { t } = useTranslation();
-	useEnsureAgentReadiness({ agentIds: [draft.workerAgent, draft.orchestratorAgent, draft.reviewerHarness], enabled: role === "worker" && Boolean(draft.workerAgent || draft.orchestratorAgent || draft.reviewerHarness), hostId, purpose: hostId ? "launch" : "display" });
+	useEnsureAgentReadiness({
+		agentIds: [draft.workerAgent, draft.orchestratorAgent, draft.reviewerHarness],
+		enabled: role === "worker" && Boolean(draft.workerAgent || draft.orchestratorAgent || draft.reviewerHarness),
+		hostId,
+		purpose: hostId ? "launch" : "display",
+	});
 	const disabled = agentsQuery.isFetching && agentsQuery.data === undefined;
 	const agents = hostId ? agentsQuery.data?.agents.filter(isLaunchableAgent) : agentsQuery.data?.agents;
-	return role === "reviewer"
-		? <ReviewerSelect value={value} model={draft.reviewerModel} mode={draft.reviewerMode} projectId={projectId} hostId={hostId} harnessOnly defaultHarness={WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"} triggerClassName="w-full" onChange={onChange} ariaLabel={t("settings.project.defaultReviewer")} agents={agents} disabled={disabled} />
-		: <RequiredAgentField id={`${role}Agent`} variant="settings-control" value={value} placeholder={t(role === "worker" ? "settings.project.selectWorker" : "settings.project.selectOrchestrator")} label={t(role === "worker" ? "settings.project.defaultWorker" : "settings.project.defaultOrchestrator")} agents={agents} hostId={hostId} disabled={disabled} invalid={invalid} onChange={onChange} />;
+	return role === "reviewer" ? (
+		<ReviewerSelect
+			value={value}
+			model={draft.reviewerModel}
+			mode={draft.reviewerMode}
+			projectId={projectId}
+			hostId={hostId}
+			harnessOnly
+			defaultHarness={WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
+			triggerClassName="w-full"
+			onChange={onChange}
+			ariaLabel={t("settings.project.defaultReviewer")}
+			agents={agents}
+			disabled={disabled}
+		/>
+	) : (
+		<RequiredAgentField
+			id={`${role}Agent`}
+			variant="settings-control"
+			value={value}
+			placeholder={t(role === "worker" ? "settings.project.selectWorker" : "settings.project.selectOrchestrator")}
+			label={t(role === "worker" ? "settings.project.defaultWorker" : "settings.project.defaultOrchestrator")}
+			agents={agents}
+			hostId={hostId}
+			disabled={disabled}
+			invalid={invalid}
+			onChange={onChange}
+		/>
+	);
 }
 
 function repositoryHref(repository: string): string | undefined {
@@ -381,12 +464,8 @@ function scratchSupportedConfig(config: ProjectConfig): ProjectConfig {
 		workersRequestReview: _workersRequestReview,
 		trackerIntake: _trackerIntake,
 		...supported
-	} = config as ProjectConfig;
+	} = config;
 	return supported;
-}
-
-function blankToUndefined<T extends object>(obj: T): T | undefined {
-	return Object.values(obj).some((v) => v !== undefined) ? obj : undefined;
 }
 
 function buildRoleAgentConfig(
@@ -403,7 +482,8 @@ function buildRoleAgentConfig(
 	else delete next.mode;
 	if (effort) next.effort = effort;
 	else delete next.effort;
-	if (permissions) next.permissions = permissions as components["schemas"]["AgentConfig"]["permissions"];
+	if (permissions === "default" || permissions === "auto" || permissions === "accept-edits" || permissions === "bypass-permissions")
+		next.permissions = permissions;
 	else delete next.permissions;
 	return Object.keys(next).length > 0 ? next : undefined;
 }

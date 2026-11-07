@@ -32,6 +32,7 @@ const accountsResponse = {
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, PUT: putMock, POST: postMock },
 	apiErrorCode: (error: { code?: string }) => error?.code,
+	apiErrorDetails: () => undefined,
 	apiErrorMessage: () => "request failed",
 	hasTrustedApiBaseUrl: () => true,
 }));
@@ -212,6 +213,7 @@ describe("SettingsDialog", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Environment" }));
 		fireEvent.change(await screen.findByLabelText("Name 1"), { target: { value: "BAD-NAME" } });
 		await swipeSettings("back", dialog);
+		await userEvent.click(await screen.findByRole("button", { name: "Discard changes" }));
 		expect(screen.getByRole("button", { name: "General" })).toHaveAttribute("aria-current", "page");
 		await swipeSettings("forward", dialog);
 		expect(await screen.findByLabelText("Name 1")).toHaveValue("EXISTING");
@@ -220,6 +222,7 @@ describe("SettingsDialog", () => {
 		await swipeSettings("back", dialog);
 		fireEvent.change(await screen.findByLabelText("Name 1"), { target: { value: "BAD-NAME" } });
 		await swipeSettings("forward", dialog);
+		await userEvent.click(await screen.findByRole("button", { name: "Discard changes" }));
 		expect(screen.getByRole("button", { name: "Agents" })).toHaveAttribute("aria-current", "page");
 		await swipeSettings("back", dialog);
 		expect(await screen.findByLabelText("Name 1")).toHaveValue("EXISTING");
@@ -232,6 +235,7 @@ describe("SettingsDialog", () => {
 		const dialog = await screen.findByRole("dialog");
 		fireEvent.change(await screen.findByLabelText("Name 1"), { target: { value: "BAD-NAME" } });
 		await swipeSettings("back", dialog);
+		await userEvent.click(await screen.findByRole("button", { name: "Discard changes" }));
 		expect(useUiStore.getState().settingsModal).toBeNull();
 		expect(putMock).not.toHaveBeenCalled();
 	});
@@ -270,6 +274,8 @@ describe("SettingsDialog", () => {
 		await userEvent.keyboard("{Escape}");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 		await userEvent.click(screen.getByRole("button", { name: "Complete save" }));
+		expect(useUiStore.getState().settingsModal).not.toBeNull();
+		await userEvent.click(closeButton);
 		expect(useUiStore.getState().settingsModal).toBeNull();
 	});
 

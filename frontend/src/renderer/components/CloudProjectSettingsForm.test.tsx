@@ -1,9 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudCpError, type CloudCpProject, type CloudCpProjectSettingsRequest } from "../lib/cloud-cp";
-import { CloudProjectCoderSettings } from "./CloudProjectSettingsForm";
 import { ProjectSettingsForm } from "./ProjectSettingsForm";
 import { SettingsDialog } from "./SettingsPageTestHarness";
 import { useUiStore } from "../stores/ui-store";
@@ -107,13 +106,38 @@ describe("Cloud project settings", () => {
 		expect(screen.getByRole("button", { name: `${label} approval` })).toBeEnabled();
 		const expectedPatch = (config: { model: string; effort: string; permissions: string }) => {
 			const agentConfig = { ...config, mode: "" };
-			return { config: role === "reviewer" ? { reviewers: [{ harness: agent, agentConfig }] } : { [role]: { agent, agentConfig } } };
+			return {
+				config:
+					role === "reviewer"
+						? { reviewers: [{ harness: agent, agentConfig }] }
+						: {
+								[role]: {
+									agentConfig: config.model
+										? { model: config.model, effort: config.effort }
+										: { permissions: config.permissions },
+								},
+							},
+			};
 		};
 		await choose(`${label} approval`, "Bypass permissions");
-		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", expectedPatch({ model: "", effort: "high", permissions: "bypass-permissions" })));
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() =>
+			expect(mocks.patch).toHaveBeenLastCalledWith(
+				"org",
+				"project",
+				expectedPatch({ model: "", effort: "high", permissions: "bypass-permissions" }),
+			),
+		);
 		await choose(`${label} model`, "Other model");
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
-		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", expectedPatch({ model: "other-model", effort: "low", permissions: "bypass-permissions" })));
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() =>
+			expect(mocks.patch).toHaveBeenLastCalledWith(
+				"org",
+				"project",
+				expectedPatch({ model: "other-model", effort: "low", permissions: "bypass-permissions" }),
+			),
+		);
 		view.unmount();
 		mount();
 		await waitFor(() => expect(screen.getByRole("button", { name: `${label} model` })).toHaveTextContent("Other model · Low"));
@@ -144,6 +168,7 @@ describe("Cloud project settings", () => {
 		expect(reviewer).toBeDisabled();
 		await waitFor(() => expect(screen.getByRole("button", { name: "Reviewer model" })).toHaveTextContent("worker-model · Max"));
 		await choose("Reviewer approval", "Bypass permissions");
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", {
 			config: { reviewers: [{ harness: "codex", agentConfig: { model: "worker-model", mode: "", effort: "max", permissions: "bypass-permissions" } }] },
 		}));
@@ -157,6 +182,7 @@ describe("Cloud project settings", () => {
 		const prefix = screen.getByRole("textbox", { name: "Session prefix" });
 		await userEvent.clear(prefix);
 		await userEvent.type(prefix, "review");
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { sessionPrefix: "review" } }));
 		expect(project.config.coder).toEqual({ templateId: "preserve" });
 		view.unmount();
@@ -175,6 +201,7 @@ describe("Cloud project settings", () => {
 		const name = screen.getByRole("textbox", { name: "Project name" });
 		await userEvent.clear(name);
 		await userEvent.type(name, "New name");
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(mocks.patch).toHaveBeenCalledWith("org", "project", { displayName: "New name" }));
 		expect(screen.queryByText("Issue Intake")).not.toBeInTheDocument();
 		expect(screen.getByText("legacy")).toBeInTheDocument();
@@ -189,6 +216,7 @@ describe("Cloud project settings", () => {
 		const name = screen.getByRole("textbox", { name: "Project name" });
 		await userEvent.clear(name);
 		await userEvent.type(name, "Renamed");
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(mocks.patch).toHaveBeenCalledWith("org", "project", { displayName: "Renamed" }));
 		await waitFor(() => expect(client.getQueryState(listKey)?.isInvalidated).toBe(true));
 	});
@@ -198,6 +226,7 @@ describe("Cloud project settings", () => {
 		const autoReview = await screen.findByRole("switch", { name: "Auto review PRs" });
 		expect(autoReview).not.toBeChecked();
 		await userEvent.click(autoReview);
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { autoReview: true } }));
 		view.unmount();
 		mount("general");
@@ -238,7 +267,7 @@ describe("Cloud project settings", () => {
 		expect(mocks.get).not.toHaveBeenCalled();
 	});
 
-	it("waits for a pending Cloud save before closing the dialog and keeps save errors visible", async () => {
+	it("saves explicitly, retains failed drafts and retries without replacing the orchestrator", async () => {
 		let reject!: (error: Error) => void;
 		mocks.patch.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
 		useUiStore.getState().openProjectSettings("project", { cloudOrgId: "org" });
@@ -248,7 +277,7 @@ describe("Cloud project settings", () => {
 		const name = screen.getByRole("textbox", { name: "Project name" });
 		await userEvent.clear(name);
 		await userEvent.type(name, "Pending name");
-		await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() => expect(mocks.patch).toHaveBeenCalledTimes(1));
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "project", cloudOrgId: "org" });
 		expect(screen.getByRole("button", { name: "Edit Project name" })).toBeDisabled();
@@ -279,11 +308,14 @@ describe("Cloud project settings", () => {
 });
 
 describe("Cloud project Coder template", () => {
-	const renderCoder = (config: CloudCpProject["config"] = {}) => render(<QueryClientProvider client={new QueryClient()}><CloudProjectCoderSettings project={{ ...project, config }} /></QueryClientProvider>);
+	const renderCoder = (config: CloudCpProject["config"] = {}) => {
+		project = { ...project, config };
+		return mount("general");
+	};
 
-	it("shows the project's Coder template and size", () => {
+	it("shows the project's Coder template and size", async () => {
 		renderCoder({ coder: { templateId: "tpl-1", size: "medium" } });
-		expect(screen.getByText("Azure Linux")).toBeInTheDocument();
+		expect(await screen.findByText("Azure Linux")).toBeInTheDocument();
 		// The id stays available, secondary to the name.
 		expect(screen.getByTestId("coder-template-id")).toHaveTextContent("tpl-1");
 		expect(screen.getByText("Azure Linux").parentElement).toHaveAttribute("title", "tpl-1");
@@ -291,29 +323,29 @@ describe("Cloud project Coder template", () => {
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
-	it("falls back to the template id when the template list doesn't have it", () => {
+	it("falls back to the template id when the template list doesn't have it", async () => {
 		mocks.templates = [];
 		renderCoder({ coder: { templateId: "4b1f0c3e-0000-4000-8000-000000000001" } });
-		expect(screen.getByText("4b1f0c3e-0000-4000-8000-000000000001")).toBeInTheDocument();
+		expect(await screen.findByText("4b1f0c3e-0000-4000-8000-000000000001")).toBeInTheDocument();
 		expect(screen.queryByTestId("coder-template-id")).not.toBeInTheDocument();
 	});
 
-	it("flags a template-less project when the org's own Coder has no default template", () => {
+	it("flags a template-less project when the org's own Coder has no default template", async () => {
 		mocks.orgCoderConfig = { baseUrl: "https://coder.acme.test" };
 		renderCoder();
-		expect(screen.getByRole("alert")).toHaveTextContent("No template. Sessions can't start");
+		expect(await screen.findByRole("alert")).toHaveTextContent("No template. Sessions can't start");
 	});
 
-	it("shows the inherited default when the org has no bring-your-own Coder", () => {
+	it("shows the inherited default when the org has no bring-your-own Coder", async () => {
 		renderCoder();
-		expect(screen.getByText("Default template")).toBeInTheDocument();
+		expect(await screen.findByText("Default template")).toBeInTheDocument();
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
-	it("shows the inherited default when the org's own Coder sets a default template", () => {
+	it("shows the inherited default when the org's own Coder sets a default template", async () => {
 		mocks.orgCoderConfig = { baseUrl: "https://coder.acme.test", templateId: "tpl-1" };
 		renderCoder();
-		expect(screen.getByText("Default template")).toBeInTheDocument();
+		expect(await screen.findByText("Default template")).toBeInTheDocument();
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
@@ -331,7 +363,10 @@ describe("Cloud project Coder template", () => {
 		expect(screen.getByText("Applies to new sessions. Workspaces are named <prefix>-o-<id> / <prefix>-w-<word>-<id>; empty uses the project name.")).toBeInTheDocument();
 		const prefix = screen.getByRole("textbox", { name: "Workspace name prefix" });
 		await userEvent.type(prefix, "acme");
-		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { workspaceNamePrefix: "acme" } } }));
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() =>
+			expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { workspaceNamePrefix: "acme" } } }),
+		);
 		expect(mocks.patch).toHaveBeenCalledTimes(1);
 		expect(project.config.coder).toEqual({ templateId: "tpl-1", workspaceNamePrefix: "acme" });
 	});
@@ -341,7 +376,10 @@ describe("Cloud project Coder template", () => {
 		mount("general");
 		await userEvent.click(await screen.findByRole("button", { name: "Edit Workspace name prefix" }));
 		await userEvent.clear(screen.getByRole("textbox", { name: "Workspace name prefix" }));
-		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { workspaceNamePrefix: "" } } }));
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() =>
+			expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { workspaceNamePrefix: "" } } }),
+		);
 	});
 
 	it("never sends an invalid workspace name prefix", async () => {
@@ -435,8 +473,56 @@ describe("Cloud project Coder template options", () => {
 
 		await userEvent.click(screen.getByRole("switch", { name: "Docker" }));
 		// The endpoint replaces coder.parameters, so the saved region goes too.
-		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { parameters: { region: "us", docker: "true" } } } }));
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() =>
+			expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", {
+				config: { coder: { parameters: { region: "us", docker: "true" } } },
+			}),
+		);
 		expect(mocks.patch).toHaveBeenCalledTimes(1);
+	});
+
+	it("saves name, Coder options and prefix together only after explicit Save", async () => {
+		mocks.templateParameters.mockResolvedValue({ parameters: templateParameters });
+		mocks.orgCoderConfig = { baseUrl: "https://coder.acme.test" };
+		project.config.coder = withSavedParameters;
+		mount("general");
+		await userEvent.click(await screen.findByRole("switch", { name: "Docker" }));
+		await userEvent.click(screen.getByRole("button", { name: "Edit Workspace name prefix" }));
+		await userEvent.type(screen.getByRole("textbox", { name: "Workspace name prefix" }), "team");
+		await userEvent.click(screen.getByRole("button", { name: "Edit Project name" }));
+		fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "Together" } });
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+		});
+		expect(mocks.patch).not.toHaveBeenCalled();
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() => expect(mocks.patch).toHaveBeenCalledOnce());
+		expect(mocks.patch.mock.calls[0][2]).toEqual({
+			displayName: "Together",
+			config: { coder: { parameters: { region: "us", docker: "true" }, workspaceNamePrefix: "team" } },
+		});
+	});
+	it("preflights the entire Coder parameters map and reloads it while retaining a name edit", async () => {
+		mocks.templateParameters.mockResolvedValue({ parameters: templateParameters });
+		project.config.coder = withSavedParameters;
+		const states = vi.fn();
+		mount("general", states);
+		await userEvent.click(await screen.findByRole("switch", { name: "Docker" }));
+		await userEvent.click(screen.getByRole("button", { name: "Edit Project name" }));
+		fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "My name" } });
+		project = { ...project, config: { ...project.config, coder: { templateId: "tpl-1", parameters: { region: "external" } } } };
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() => expect(states.mock.lastCall?.[0].conflictPaths).toEqual(["config.coder.parameters"]));
+		expect(mocks.patch).not.toHaveBeenCalled();
+		await act(async () => {
+			await states.mock.lastCall?.[0].reload();
+		});
+		expect(screen.getByRole("textbox", { name: "Region" })).toHaveValue("external");
+		expect(screen.getByRole("textbox", { name: "Project name" })).toHaveValue("My name");
+		fireEvent.submit(document.getElementById("project-settings-form")!);
+		await waitFor(() => expect(mocks.patch).toHaveBeenCalledOnce());
+		expect(mocks.patch.mock.calls[0][2]).toEqual({ displayName: "My name" });
 	});
 
 	it("resets a saved option to the template default", async () => {
@@ -447,6 +533,7 @@ describe("Cloud project Coder template options", () => {
 		await userEvent.clear(region);
 		await userEvent.type(region, "eu");
 		// Back at the default, region is simply left out of the map.
+		fireEvent.submit(document.getElementById("project-settings-form")!);
 		await waitFor(() => expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { parameters: {} } } }));
 	});
 
@@ -470,4 +557,54 @@ describe("Cloud project Coder template options", () => {
 		expect(mocks.templateParameters).not.toHaveBeenCalled();
 		expect(screen.queryByText("Template options")).not.toBeInTheDocument();
 	});
+});
+
+it("sends only orchestrator effort and refuses a stale same-leaf Cloud save", async () => {
+	project.config.orchestrator = { agent: "claude-code", agentConfig: { model: "orchestrator-model", effort: "high" } };
+	const states = vi.fn();
+	mount("agents", states);
+	await screen.findByRole("button", { name: "Orchestrator model" });
+	await choose("Orchestrator model", "orchestrator-model");
+	await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(mocks.patch).toHaveBeenCalledOnce());
+	expect(mocks.patch.mock.calls[0][2]).toEqual({ config: { orchestrator: { agentConfig: { effort: "low" } } } });
+	await choose("Orchestrator model", "orchestrator-model");
+	await userEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+	project = {
+		...project,
+		config: { ...project.config, orchestrator: { agent: "claude-code", agentConfig: { model: "orchestrator-model", effort: "max" } } },
+	};
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(states.mock.lastCall?.[0].conflictPaths).toEqual(["config.orchestrator.agentConfig.effort"]));
+	expect(mocks.patch).toHaveBeenCalledOnce();
+});
+
+it("preflights a conflicting edited leaf and never PATCHes over its new value", async () => {
+	const onSaveState = vi.fn();
+	mount("general", onSaveState);
+	await userEvent.click(await screen.findByRole("button", { name: "Edit Session prefix" }));
+	const prefix = screen.getByRole("textbox", { name: "Session prefix" });
+	await userEvent.type(prefix, "mine");
+	await userEvent.keyboard("{Enter}");
+	project = { ...project, config: { ...project.config, sessionPrefix: "external" } };
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() =>
+		expect(onSaveState).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "failed", conflictPaths: ["config.sessionPrefix"] })),
+	);
+	expect(mocks.patch).not.toHaveBeenCalled();
+});
+it("keeps Coder prefix edits in the main draft until explicit save", async () => {
+	mocks.orgCoderConfig = { baseUrl: "https://coder.example.test", templateId: "default" };
+	mount("general");
+	await userEvent.click(await screen.findByRole("button", { name: "Edit Workspace name prefix" }));
+	const prefix = screen.getByRole("textbox", { name: "Workspace name prefix" });
+	await userEvent.type(prefix, "test-prefix");
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 850));
+	});
+	expect(mocks.patch).not.toHaveBeenCalled();
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(mocks.patch).toHaveBeenCalledTimes(1));
+	expect(mocks.patch).toHaveBeenLastCalledWith("org", "project", { config: { coder: { workspaceNamePrefix: "test-prefix" } } });
 });

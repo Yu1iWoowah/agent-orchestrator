@@ -9,10 +9,10 @@ const mocks = vi.hoisted(() => ({
 	listeners: new Set<() => void>(),
 	get: vi.fn(),
 	post: vi.fn(),
-	put: vi.fn(),
+	patch: vi.fn(),
 	localGet: vi.fn(),
 	localPost: vi.fn(),
-	localPut: vi.fn(),
+	localPatch: vi.fn(),
 }));
 
 vi.mock("../lib/host-clients", () => {
@@ -21,7 +21,7 @@ vi.mock("../lib/host-clients", () => {
 		return {
 			GET: (path: string, options?: unknown) => mocks.get(hostId, path, options),
 			POST: (path: string, options?: unknown) => mocks.post(hostId, path, options),
-			PUT: (path: string, options?: unknown) => mocks.put(hostId, path, options),
+			PATCH: (path: string, options?: unknown) => mocks.patch(hostId, path, options),
 		};
 	};
 	return {
@@ -31,11 +31,12 @@ vi.mock("../lib/host-clients", () => {
 			return () => mocks.listeners.delete(listener);
 		},
 		clientForHost,
-		clientForSessionHost: (hostId?: string) => hostId ? clientForHost(hostId) : { GET: mocks.localGet, POST: mocks.localPost, PUT: mocks.localPut },
+		clientForSessionHost: (hostId?: string) =>
+			hostId ? clientForHost(hostId) : { GET: mocks.localGet, POST: mocks.localPost, PATCH: mocks.localPatch },
 	};
 });
 vi.mock("../lib/api-client", () => ({
-	apiClient: { GET: mocks.localGet, POST: mocks.localPost, PUT: mocks.localPut },
+	apiClient: { GET: mocks.localGet, POST: mocks.localPost, PATCH: mocks.localPatch },
 	apiErrorCode: () => undefined,
 	apiErrorDetails: () => undefined,
 	apiErrorMessage: (error: { message?: string }) => error.message ?? "Request failed",
@@ -83,7 +84,7 @@ function renderForm(hostId: string, section: "general" | "agents" = "general", o
 beforeEach(() => {
 	mocks.connected = [];
 	mocks.listeners.clear();
-	for (const mock of [mocks.get, mocks.post, mocks.put, mocks.localGet, mocks.localPost, mocks.localPut]) mock.mockReset();
+	for (const mock of [mocks.get, mocks.post, mocks.patch, mocks.localGet, mocks.localPost, mocks.localPatch]) mock.mockReset();
 	mocks.get.mockImplementation(async (hostId: string, path: string) => {
 		const project = projects.get(hostId);
 		if (!project) throw new Error(`Unknown host ${hostId}`);
@@ -97,7 +98,7 @@ beforeEach(() => {
 	mocks.post.mockImplementation(async (_hostId: string, path: string) => path === "/api/v1/agents/readiness/ensure"
 		? { data: agents }
 		: { data: { orchestrator: { id: "new-orchestrator" } } });
-	mocks.put.mockResolvedValue({ data: { project: {} } });
+	mocks.patch.mockImplementation(async (hostId: string, _path: string, request: {body: {displayName?: string; config?: object}}) => ({ data: {project: {...projects.get(hostId), ...(request.body.displayName ? {name: request.body.displayName} : {}), config: {...projects.get(hostId)?.config, ...request.body.config}}} }));
 });
 
 it("keeps same-ID projects and their paths on separate hosts", async () => {
@@ -117,7 +118,7 @@ it("keeps same-ID projects and their paths on separate hosts", async () => {
 	expect(mocks.localGet).not.toHaveBeenCalled();
 });
 
-it("saves the full Project form on its owning host", async () => {
+it("PATCHes only changed fields on the owning host", async () => {
 	connect("box-b");
 	const { queryClient } = renderForm("box-b");
 	const invalidate = vi.spyOn(queryClient, "invalidateQueries");
@@ -126,31 +127,29 @@ it("saves the full Project form on its owning host", async () => {
 	await userEvent.clear(name);
 	await userEvent.type(name, "Renamed Beta");
 	fireEvent.submit(document.getElementById("project-settings-form")!);
-	await waitFor(() => expect(mocks.put).toHaveBeenCalledWith("box-b", "/api/v1/projects/{id}", {
-		params: { path: { id: "shared" } },
-		body: { displayName: "Renamed Beta", config: expect.objectContaining({ worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } }) },
-	}));
-	expect(mocks.localPut).not.toHaveBeenCalled();
+	await waitFor(() =>
+		expect(mocks.patch).toHaveBeenCalledWith("box-b", "/api/v1/projects/{id}/settings", {
+			params: { path: { id: "shared" } },
+			body: { displayName: "Renamed Beta", expected: { displayName: "Beta" } },
+		}),
+	);
+	expect(mocks.localPatch).not.toHaveBeenCalled();
 	await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["project-config", "box-b", "shared"] }));
 });
 
-it("replaces and retries the orchestrator on the selected host", async () => {
+it("retries a failed remote PATCH without starting or replacing an orchestrator", async () => {
 	connect("box-b");
-	let attempts = 0;
-	mocks.post.mockImplementation(async (_hostId: string, path: string) => {
-		if (path === "/api/v1/agents/readiness/ensure") return { data: agents };
-		attempts += 1;
-		return attempts === 1 ? { error: { message: "startup failed" }, response: { status: 500 } } : { data: { orchestrator: { id: "new-orchestrator" } } };
-	});
+	mocks.patch.mockResolvedValueOnce({ error: { message: "settings unavailable" }, response: { status: 503 } });
 	const onSaveState = vi.fn<(state: ProjectSettingsSaveState) => void>();
 	renderForm("box-b", "agents", onSaveState);
 	await userEvent.click(await screen.findByRole("button", { name: "Orchestrator agent" }));
 	await userEvent.click(await screen.findByRole("menuitem", { name: /^Codex/ }));
 	fireEvent.submit(document.getElementById("project-settings-form")!);
-	await waitFor(() => expect(onSaveState.mock.lastCall?.[0].replacementError).toBe("startup failed"));
-	expect(mocks.post).toHaveBeenCalledWith("box-b", "/api/v1/orchestrators", { body: { projectId: "shared", clean: true } });
+	await waitFor(() => expect(onSaveState.mock.lastCall?.[0].error).toBe("settings unavailable"));
 	fireEvent.submit(document.getElementById("project-settings-form")!);
-	await waitFor(() => expect(attempts).toBe(2));
+	await waitFor(() => expect(onSaveState.mock.lastCall?.[0].phase).toBe("saved"));
+	expect(mocks.patch).toHaveBeenCalledTimes(2);
+	expect(mocks.post.mock.calls.filter((call) => call[1] === "/api/v1/orchestrators")).toEqual([]);
 	expect(mocks.localPost).not.toHaveBeenCalled();
 });
 
@@ -158,7 +157,7 @@ it("shows offline state without contacting the local daemon", () => {
 	renderForm("box-b");
 	expect(screen.getByRole("alert")).toHaveTextContent("Host is offline");
 	expect(mocks.get).not.toHaveBeenCalled();
-	expect(mocks.put).not.toHaveBeenCalled();
+	expect(mocks.patch).not.toHaveBeenCalled();
 	expect(mocks.localGet).not.toHaveBeenCalled();
 });
 
@@ -171,8 +170,15 @@ it("keeps an unsaved remote draft through disconnect and saves after reconnect",
 	await userEvent.type(name, "Draft Beta");
 	connect();
 	expect(screen.getByRole("alert")).toHaveTextContent("Host is offline");
-	expect(mocks.put).not.toHaveBeenCalled();
+	expect(mocks.patch).not.toHaveBeenCalled();
 	connect("box-b");
 	expect(screen.getByRole("textbox", { name: "Project name" })).toHaveValue("Draft Beta");
-	await waitFor(() => expect(mocks.put).toHaveBeenCalledWith("box-b", "/api/v1/projects/{id}", expect.objectContaining({ body: expect.objectContaining({ displayName: "Draft Beta" }) })));
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() =>
+		expect(mocks.patch).toHaveBeenCalledWith(
+			"box-b",
+			"/api/v1/projects/{id}/settings",
+			expect.objectContaining({ body: expect.objectContaining({ displayName: "Draft Beta" }) }),
+		),
+	);
 });

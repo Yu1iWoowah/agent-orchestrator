@@ -1,3 +1,4 @@
+import { ProjectSettingsConflict } from "../lib/project-settings-patch";
 import { AgentAccountPicker } from "./AgentAccountPicker";
 import { agentAccountProviderFor } from "../hooks/useAgentAccounts";
 import { useMutation } from "@tanstack/react-query";
@@ -10,7 +11,7 @@ import {
 	ProjectSettingsValueRow,
 } from "@aoagents/product-ui";
 import { Pencil } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type {
 	ProjectSettingsSaveState,
@@ -27,6 +28,7 @@ import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Button } from "./ui/button";
 
 export type ProjectSettingsDraft = {
+	coder?: { workspaceNamePrefix: string; parameters: Record<string, string> };
 	accountSettings?: {
 		projectId: string;
 		providers: Partial<Record<"claude" | "codex", string>>;
@@ -127,7 +129,7 @@ const roleFields: Record<ProjectSettingsRole, RoleFields> = {
 	},
 };
 
-// Both persistence adapters render this page. Drafts, validation, autosave and
+// Both persistence adapters render this page. Drafts, validation, explicit saves and
 // common controls live here so a UI change applies to local and Cloud projects.
 export function ProjectSettingsEditor({
 	initialValues,
@@ -144,9 +146,10 @@ export function ProjectSettingsEditor({
 	autoReviewDescription,
 	save,
 	onSaveState,
-	saveUnchanged = false,
+	reload,
 	disabled = false,
 	generalExtra,
+	validateExtra,
 }: {
 	initialValues: ProjectSettingsDraft;
 	section: SettingsSection;
@@ -163,20 +166,24 @@ export function ProjectSettingsEditor({
 	autoReviewDescription?: string;
 	save: (
 		values: ProjectSettingsDraft,
-	) => Promise<{ values?: ProjectSettingsDraft; replacementError?: string | null }>;
+	) => Promise<{ values?: ProjectSettingsDraft }>;
 	onSaveState?: (state: ProjectSettingsSaveState) => void;
-	saveUnchanged?: boolean;
+	reload?: (draft: ProjectSettingsDraft, paths: string[]) => Promise<{ values: ProjectSettingsDraft; baseline: ProjectSettingsDraft }>;
 	/** Read-only sections appended to the General page (e.g. a Cloud project's Coder template). */
-	generalExtra?: ReactNode;
-	/** Pauses autosave and submit, e.g. while the owning host is offline. */
+	generalExtra?: (draft: ProjectSettingsDraft, patch: (values: Partial<ProjectSettingsDraft>) => void) => ReactNode;
+	validateExtra?: (draft: ProjectSettingsDraft) => string | undefined;
+	/** Pauses edits and submit, e.g. while the owning host is offline. */
 	disabled?: boolean;
 }) {
 	const { t } = useTranslation();
 	const [draft, setDraft] = useState(initialValues);
 	const saved = useRef(JSON.stringify(initialValues));
-	const failedKey = useRef<string | undefined>(undefined);
 	const [error, setError] = useState<string>();
-	const [replacementError, setReplacementError] = useState<string>();
+	const [conflictPaths, setConflictPaths] = useState<string[]>([]);
+	const [reloading, setReloading] = useState(false);
+	const canReload = reload !== undefined;
+	const reloadRef = useRef(reload);
+	reloadRef.current = reload;
 	const [didSave, setDidSave] = useState(false);
 	const [showSaving, setShowSaving] = useState(false);
 	const [validity, setValidity] = useState({ worker: true, orchestrator: true, reviewer: true });
@@ -185,16 +192,21 @@ export function ProjectSettingsEditor({
 		onSuccess: (result, values) => {
 			const normalized = result.values ?? values;
 			saved.current = JSON.stringify(normalized);
-			failedKey.current = undefined;
 			setDraft((current) =>
 				JSON.stringify(current) === JSON.stringify(values) ? normalized : current,
 			);
-			setReplacementError(result.replacementError ?? undefined);
+			setConflictPaths([]);
 			setDidSave(true);
 		},
-		onError: (cause, values) => {
-			failedKey.current = JSON.stringify(values);
-			setError(cause instanceof Error ? cause.message : t("settings.project.saveFailed"));
+		onError: (cause) => {
+			setConflictPaths(cause instanceof ProjectSettingsConflict ? cause.paths : []);
+			setError(
+				cause instanceof ProjectSettingsConflict
+					? undefined
+					: cause instanceof Error
+						? cause.message
+						: t("settings.project.saveFailed"),
+			);
 		},
 	});
 	const dirty = JSON.stringify(draft) !== saved.current;
@@ -221,23 +233,36 @@ export function ProjectSettingsEditor({
 		)
 			return t("settings.cloudProject.identityValidation");
 		if (visibleRoles.some((role) => !validity[role])) return t("settings.project.tuningInvalid");
-		return undefined;
+		return validateExtra?.(draft);
 	};
 	const submit = () => {
-		if (disabled || mutation.isPending || intakeIncomplete || (!dirty && !saveUnchanged)) return;
+		if (disabled || mutation.isPending || reloading || conflictPaths.length > 0 || intakeIncomplete || !dirty) return;
 		const problem = validate();
 		setError(problem);
 		if (problem) return;
-		setReplacementError(undefined);
+		setConflictPaths([]);
 		setDidSave(false);
 		mutation.mutate(draft);
 	};
-	useEffect(() => {
-		if (disabled || !dirty || mutation.isPending || JSON.stringify(draft) === failedKey.current)
-			return;
-		const timeout = window.setTimeout(submit, 650);
-		return () => window.clearTimeout(timeout);
-	}, [disabled, draft, dirty, mutation.isPending, validity]);
+
+	const loadLatest = useCallback(async () => {
+		if (!reloadRef.current || reloading) return;
+		setReloading(true);
+		try {
+			const result = await reloadRef.current(draft, conflictPaths);
+			saved.current = JSON.stringify(result.baseline);
+			setDraft(result.values);
+			setConflictPaths([]);
+			setError(undefined);
+			setDidSave(false);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : t("settings.project.loadFailed"));
+		} finally {
+			setReloading(false);
+		}
+	}, [draft, conflictPaths, reloading, t]);
+	const unsaveable = disabled || (dirty && (intakeIncomplete || validate() !== undefined));
+
 	useEffect(() => {
 		if (!mutation.isPending) {
 			setShowSaving(false);
@@ -248,21 +273,24 @@ export function ProjectSettingsEditor({
 	}, [mutation.isPending]);
 	useEffect(() => {
 		onSaveState?.({
-			phase: error
+			phase: error || conflictPaths.length > 0
 				? "failed"
 				: mutation.isPending
 					? showSaving
 						? "saving"
 						: "pending"
-					: dirty && !intakeIncomplete
-						? "pending"
+					: dirty
+						? "idle"
 						: didSave
 							? "saved"
 							: "idle",
-			dirty: dirty && !intakeIncomplete,
+			dirty,
+			unsaveable,
 			requestPending: mutation.isPending,
 			error,
-			replacementError,
+			conflictPaths,
+			reloading,
+			reload: conflictPaths.length > 0 && canReload ? loadLatest : undefined,
 		});
 	}, [
 		dirty,
@@ -271,7 +299,11 @@ export function ProjectSettingsEditor({
 		intakeIncomplete,
 		mutation.isPending,
 		onSaveState,
-		replacementError,
+		conflictPaths,
+		reloading,
+		loadLatest,
+		unsaveable,
+		canReload,
 		showSaving,
 	]);
 	useEffect(() => {
@@ -290,7 +322,7 @@ export function ProjectSettingsEditor({
 			onSubmit={submit}
 		>
 			<fieldset
-				disabled={disabled || mutation.isPending}
+				disabled={disabled || mutation.isPending || reloading}
 				className="flex min-w-0 flex-col gap-(--size-settings-section-gap)"
 			>
 				{section === "general" ? (
@@ -392,7 +424,7 @@ export function ProjectSettingsEditor({
 								</ProjectSettingsSection>
 							</>
 						)}
-						{generalExtra}
+						{generalExtra?.(draft, patch)}
 					</>
 				) : (
 					<>
@@ -538,6 +570,10 @@ export function ProjectSettingsEditor({
 													onModelChange={(value) => updateConfig(fields.model, value)}
 													onModeChange={(value) => updateConfig(fields.mode, value)}
 													onEffortChange={(value) => updateConfig(fields.effort, value)}
+													// An inherited display must not pin a reviewer when the catalog resets effort.
+													onEffortReset={(value) => {
+														if (!inheritsWorker) updateConfig(fields.effort, value);
+													}}
 													onValidityChange={(valid) =>
 														setValidity((current) =>
 															current[role] === valid ? current : { ...current, [role]: valid },
