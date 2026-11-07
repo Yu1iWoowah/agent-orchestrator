@@ -200,6 +200,7 @@ let stagedReleaseNotes: string | undefined;
 let stagedInCurrentProcess = false;
 let macRestartPreparation: Promise<UpdateInstallResult> | undefined;
 let macRestartRequested = false;
+let updateRestartAttempt: AbortController | undefined;
 let restartFailureHandler: (() => void | Promise<void>) | undefined;
 let installerActive = false;
 let installerError: Error | undefined;
@@ -2773,11 +2774,13 @@ function applyInstallOnQuitPolicy(): void {
 export function setUpdateRestartFailureHandler(handler: () => void | Promise<void>): void { restartFailureHandler = handler; }
 
 export function isUpdateRestartRequested(): boolean { return macRestartRequested; }
+export function getUpdateRestartSignal(): AbortSignal | undefined { return updateRestartAttempt?.signal; }
 
 let protectedSideUpdateGuard: (() => Promise<boolean>) | undefined;
 export function setProtectedSideUpdateGuard(guard: () => Promise<boolean>): void { protectedSideUpdateGuard = guard; }
 
 async function recoverUpdateRestart(error: unknown): Promise<void> {
+  updateRestartAttempt?.abort();
   installerActive = false;
   macRestartPreparation = undefined;
   installerError = error instanceof Error ? error : new Error(String(error));
@@ -2819,6 +2822,10 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
   if (blocker !== undefined) {
     throw new Error(blocker);
   }
+  if (process.platform === "darwin" && macRestartPreparation) return macRestartPreparation;
+  updateRestartAttempt?.abort();
+  const attempt = new AbortController();
+  updateRestartAttempt = attempt;
   if (process.platform !== "darwin") {
     if (!hasStagedBuild() || lastStatus.state === "downloading" || lastStatus.state === "preparing") {
       throw new Error("The update is not ready to install. Check for updates again.");
@@ -2850,7 +2857,6 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
     await installPreparedUpdate();
     return;
   }
-  if (macRestartPreparation) return macRestartPreparation;
   let confirmation: UpdateInstallResult;
   macRestartPreparation = runSerializedUpdaterOperation("manual-install", async () => {
     let progress: Awaited<ReturnType<typeof startMacUpdateProgress>> | undefined;
@@ -2896,6 +2902,7 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
       await installPreparedUpdate();
       if (!macRestartRequested) throw nativePreparationError ?? new Error("The installer could not restart AO.");
     } catch (err) {
+      attempt.abort();
       macRestartRequested = false;
       stagedInCurrentProcess = false;
       nativeReadyVersion = undefined;

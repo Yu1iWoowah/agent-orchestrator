@@ -4,9 +4,17 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import semver from "semver";
-import { createUpdateShutdownLifecycle, requestUpdateShutdown } from "./protected-side-quit";
+import { confirmProtectedSideQuit, createUpdateShutdownLifecycle, requestUpdateShutdown, waitForUpdateDaemonExit } from "./protected-side-quit";
 import { CancellationToken } from "builder-util-runtime";
 import nodePath from "node:path";
+import * as vm from "node:vm";
+import ts from "typescript";
+import { finishUpdateQuit } from "./update-quit";
+import { confirmUnsafeChatDraftLeave } from "./chat-draft-unload";
+import {
+  parseChatDraftBoundaryKinds,
+  parseChatDraftDialogCopy,
+} from "../shared/chat-draft-risk";
 
 type UpdateSettings = {
   enabled: boolean;
@@ -4963,4 +4971,315 @@ describe("release notes while a newer build replaces a staged one (#6607)", () =
     await module.checkForUpdatesNow(stateDir);
     expect(notesWhileDownloading).toBeUndefined();
   });
+});
+
+
+function loadMainUpdateCallbacks(scope: Record<string, unknown>) {
+  const path = nodePath.resolve(import.meta.dirname, "../main.ts");
+  const source = readFileSync(path, "utf8");
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let setApproved = "";
+  let actions = "";
+  let guard = "";
+  function visit(node: import("typescript").Node): void {
+    if (ts.isCallExpression(node)) {
+      const called = node.expression.getText(file);
+      if (called === "createUpdateShutdownLifecycle" && ts.isObjectLiteralExpression(node.arguments[0])) {
+        for (const property of node.arguments[0].properties) {
+          if (ts.isPropertyAssignment(property) && property.name.getText(file) === "setApproved") setApproved = property.initializer.getText(file);
+        }
+      }
+      if (called === "finishUpdateQuit") actions = node.arguments[1].getText(file);
+      if (called === "setProtectedSideUpdateGuard") guard = node.arguments[0].getText(file);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  expect(setApproved && actions && guard).toBeTruthy();
+  const context = vm.createContext(scope);
+  const result: { setApproved(approved: boolean): void; actions: Parameters<typeof finishUpdateQuit>[1]; guard(): Promise<boolean> } = {
+    setApproved: vm.runInContext("(" + setApproved + ")", context),
+    get actions() { return vm.runInContext("(" + actions + ")", context); },
+    guard: vm.runInContext("(" + guard + ")", context),
+  };
+  return result;
+}
+
+it.each(["normal", "canceled", "retry"] as const)("update deadline ownership %s", async (mode) => {
+  const restore = stubProcess("darwin", "/usr/bin/node");
+  let release = (_allowed:boolean) => {};
+  let retry: Promise<unknown> | undefined;
+  try {
+    const { module, updaterEvents, nativeAutoUpdater, autoUpdater } = await importAutoUpdater(undefined, { nativeReadyManually:true });
+    await module.startAutoUpdates(stateDir);
+    updaterEvents.get("update-downloaded")?.({version:"2.1.0"});
+    nativeAutoUpdater.emit("update-downloaded");
+    let blockedRetry=false;
+    let allowCalls=0;
+    let admissions=0;
+    let restored=0;
+    let running=true;
+    const allowSecond=new Promise<boolean>(resolve => { release=resolve; });
+    const exit=vi.fn();
+    const scope:Record<string,unknown> = {
+      protectedSideQuitApproved:false, chatDraftQuitConfirmed:true, chatDraftWindowCloseConfirmed:true,
+      browserQuitRequested:true, updateQuitDeadlineAttempt:undefined, updateAttempt:undefined,
+      desktopQuit:{cancelQuit:vi.fn()},
+      app:{exit}, console:{error:vi.fn()},
+      isUpdateRestartRequested:module.isUpdateRestartRequested,
+      getUpdateRestartSignal:module.getUpdateRestartSignal,
+      allowProtectedSideQuit:async () => {allowCalls++;return blockedRetry?allowSecond:true;},
+      updateShutdown:undefined,
+    };
+    const callbacks=loadMainUpdateCallbacks(scope);
+    const lifecycle=createUpdateShutdownLifecycle({
+      confirmLeave:()=>true,
+      requestShutdown:async()=>{admissions++;running=false;},
+      restoreDaemon:async()=>{restored++;running=true;},
+      setApproved:callbacks.setApproved,
+    });
+    scope.updateShutdown=lifecycle;
+    module.setProtectedSideUpdateGuard(callbacks.guard);
+    module.setUpdateRestartFailureHandler(lifecycle.recover);
+    await module.quitAndInstallUpdate();
+    expect(scope.protectedSideQuitApproved).toBe(true);
+    expect(module.isUpdateRestartRequested()).toBe(true);
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout","Date"]});
+    const oldCleanup=new Promise<void>(()=>{});
+    scope.updateAttempt=module.getUpdateRestartSignal();
+    const oldDeadline=finishUpdateQuit(oldCleanup,callbacks.actions);
+    if (mode!=="normal") {
+      await module.cancelUpdateRestart();
+      expect(scope.protectedSideQuitApproved).toBe(false);
+      expect(module.isUpdateRestartRequested()).toBe(false);
+      expect(running).toBe(true);
+    }
+    if (mode==="retry") {
+      blockedRetry=true;
+      retry=module.quitAndInstallUpdate().catch(error=>error);
+      await vi.waitFor(()=>expect(allowCalls).toBe(2));
+      expect(module.isUpdateRestartRequested()).toBe(true);
+      expect(scope.protectedSideQuitApproved).toBe(false);
+      expect(admissions).toBe(1);
+    }
+    await vi.advanceTimersByTimeAsync(15_000);
+    await oldDeadline;
+    const evidence={
+      baseline:"1a9a2e2dd1a514ea1cb0d63387eeebb4ef82ca25",mode,timeoutMs:15000,
+      exitCalls:exit.mock.calls.length,approved:scope.protectedSideQuitApproved,
+      restartRequested:module.isUpdateRestartRequested(),admissions,restored,running,
+      installerCalls:autoUpdater.quitAndInstall.mock.calls.length,
+      retryAwaitingProtectedSidePrompt:mode==="retry",mainCallbacksLoadedFromSource:true,
+    };
+    console.log(JSON.stringify(evidence));
+    expect(exit).toHaveBeenCalledTimes(mode==="normal"?1:0);
+  } finally {
+    release(false);
+    await retry;
+    vi.useRealTimers();
+    restore();vi.restoreAllMocks();vi.resetModules();
+  }
+});
+
+it.each([false,true])("update deadline PID wait is bounded (adopted=%s)",async(adopted)=>{
+  vi.useFakeTimers();
+  try{
+    const child={exitCode:null,signalCode:null};
+    const alive=vi.fn(()=>true);
+    const started=Date.now();
+    const result=waitForUpdateDaemonExit({child:adopted?null:child,pid:424242,isProcessAlive:alive}).then(()=>undefined,error=>error);
+    await vi.advanceTimersByTimeAsync(15_000);
+    const error=await result;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain("still stopping");
+    expect(Date.now()-started).toBe(15_000);
+  }finally{vi.useRealTimers();}
+});
+
+it("update deadline exited child identity wins over a reused PID",async()=>{
+  const alive=vi.fn(()=>true);
+  await expect(waitForUpdateDaemonExit({child:{exitCode:0,signalCode:null},pid:424242,isProcessAlive:alive})).resolves.toBeUndefined();
+  expect(alive).not.toHaveBeenCalled();
+});
+
+it("update deadline missing daemon identity fails promptly",async()=>{
+  await expect(waitForUpdateDaemonExit({child:null,pid:undefined,isProcessAlive:()=>true})).rejects.toThrow("no process identity");
+});
+
+
+function loadMainQuitHandlers(scope: Record<string,unknown>) {
+  const path=nodePath.resolve(import.meta.dirname, "../main.ts");
+  const source=readFileSync(path,"utf8");
+  const file=ts.createSourceFile(path,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+  const snippets:Record<string,string>={};
+  function visit(node:import("typescript").Node):void{
+    if(ts.isFunctionDeclaration(node)&&node.name&&["allowProtectedSideQuit","confirmChatDraftQuit","recoverUpdateShutdown"].includes(node.name.text))snippets[node.name.text]=node.getText(file);
+    if(ts.isVariableDeclaration(node)&&node.name.getText(file)==="updateShutdown"&&node.initializer)snippets.updateShutdown=node.initializer.getText(file);
+    if(ts.isCallExpression(node)){
+      const call=node.expression.getText(file);
+      if(call==="app.on"&&node.arguments[0]?.getText(file)==='"before-quit"')snippets.beforeQuit=node.arguments[1].getText(file);
+      if(call==="ipcMain.on"&&node.arguments[0]?.getText(file)==="SET_CHAT_DRAFT_RISK_CHANNEL")snippets.riskUpdate=node.arguments[1].getText(file);
+      if(call==="setProtectedSideUpdateGuard")snippets.guard=node.arguments[0].getText(file);
+    }
+    ts.forEachChild(node,visit);
+  }
+  visit(file);
+  expect(Object.keys(snippets).sort()).toEqual(["allowProtectedSideQuit","beforeQuit","confirmChatDraftQuit","guard","recoverUpdateShutdown","riskUpdate","updateShutdown"].sort());
+  const context=vm.createContext(scope);
+  function compile(name:string){
+    const code=ts.transpileModule("("+snippets[name]+");",{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+    return vm.runInContext(code,context);
+  }
+  for(const name of ["allowProtectedSideQuit","confirmChatDraftQuit","updateShutdown","recoverUpdateShutdown"])scope[name]=compile(name);
+  return {beforeQuit:compile("beforeQuit"),riskUpdate:compile("riskUpdate"),guard:compile("guard")};
+}
+
+it("update deadline full main flow cannot reuse a canceled cleanup deadline before retry admission",async()=>{
+  const restore=stubProcess("darwin","/usr/bin/node");
+  let releasePrompt=(_result:{response:number})=>{};
+  let releaseCleanup=()=>{};
+  let retry:Promise<unknown>|undefined;
+  try{
+    const {module,updaterEvents,nativeAutoUpdater,autoUpdater}=await importAutoUpdater(undefined,{nativeReadyManually:true});
+    await module.startAutoUpdates(stateDir);
+    updaterEvents.get("update-downloaded")?.({version:"2.1.0"});
+    nativeAutoUpdater.emit("update-downloaded");
+    let blockRetry=false,admissions=0,restarts=0;
+    const contents={id:7};
+    const cleanup=new Promise<void>(resolve=>{releaseCleanup=resolve;});
+    const prompt=new Promise<{response:number}>(resolve=>{releasePrompt=resolve;});
+    const deadlines:Promise<void>[]=[];
+    const exit=vi.fn();
+    let beforeQuit:(event:{preventDefault():void})=>void=()=>{throw new Error("handler not mounted");};
+    const appQuit=vi.fn(()=>{beforeQuit({preventDefault:vi.fn()});});
+    let currentChild: {exitCode:number|null;signalCode:NodeJS.Signals|null;pid:number} = {exitCode:null,signalCode:null,pid:90001};
+    const dialogMock={showMessageBoxSync:vi.fn(()=>0),showMessageBox:vi.fn(()=>prompt)};
+    const scope:Record<string,unknown>={
+      daemonStatus:{state:"ready",port:1234,pid:90001},
+      daemonProcess:currentChild,
+      updateShutdownTarget:undefined,
+      protectedSideQuitApproved:false,protectedSideQuitChecking:false,
+      chatDraftRisks:[],chatDraftDialog:undefined,chatDraftQuitConfirmed:false,chatDraftWindowCloseConfirmed:false,
+      browserQuitRequested:false,browserCleanupComplete:false,browserQuitCleanupPromise:null,updateQuitDeadlineAttempt:undefined,
+      desktopQuit:{handleBeforeQuit:()=>false,cancelQuit:vi.fn()},
+      app:{quit:appQuit,exit},
+      dialog:dialogMock,
+      focusMainWindow:vi.fn(),operatorConsentZh:false,
+      trayLifecycle:{dispose:vi.fn(),openProtectedSides:vi.fn()},trayController:{},
+      console:{warn:vi.fn(),error:vi.fn()},
+      createUpdateShutdownLifecycle,requestUpdateShutdown,
+      confirmProtectedSideQuit:confirmProtectedSideQuit,
+      confirmUnsafeChatDraftLeave:confirmUnsafeChatDraftLeave,
+      waitForUpdateDaemonExit:waitForUpdateDaemonExit,
+      processAlive:()=>false,
+      supervisorLink:{dispose:vi.fn()},
+      reportDaemonRestartFailure:vi.fn(),
+      isUpdateRestartRequested:module.isUpdateRestartRequested,
+      getUpdateRestartSignal:module.getUpdateRestartSignal,
+      cancelUpdateRestart:module.cancelUpdateRestart,
+      disposeAppDiagnosticsLink:vi.fn(),disposeBrowserRuntimeLink:vi.fn(),disposeBrowserStreamLink:vi.fn(),
+      disposeAllBrowserViewHosts:()=>cleanup,
+      remoteRegistry:{closeAll:async()=>{}},cloudAgentProxy:{close:async()=>{}},telemetryPolicyController:{close:async()=>{}},
+      sideLaunchState:undefined,appRunId:"deadline-test",
+      getShellWebContents:()=>contents,
+      parseChatDraftBoundaryKinds:parseChatDraftBoundaryKinds,parseChatDraftDialogCopy:parseChatDraftDialogCopy,
+      finishUpdateQuit:(pending:Promise<unknown>,actions:Parameters<typeof finishUpdateQuit>[1])=>{
+        const deadline=finishUpdateQuit(pending,actions);deadlines.push(deadline);return deadline;
+      },
+    };
+    scope.startDaemonForRestart=async()=>{
+      restarts++;scope.daemonStatus={state:"ready",port:1235,pid:90002};
+      currentChild={exitCode:null,signalCode:null,pid:90002};scope.daemonProcess=currentChild;
+      return scope.daemonStatus;
+    };
+    vi.stubGlobal("fetch",vi.fn(async(input:unknown)=>{
+      const url=String(input);
+      if(url.endsWith("/shutdown")){
+        admissions++;currentChild.exitCode=0;scope.daemonProcess=null;scope.daemonStatus={state:"stopped"};
+        return new Response(null,{status:202});
+      }
+      if(url.endsWith("/api/v1/side-chats/protected")){
+        return new Response(JSON.stringify({sides:blockRetry?[{sideId:"new-blocker",protection:{shutdownBlocked:true}}]:[]}),{status:200});
+      }
+      throw new Error("unexpected update fetch "+url);
+    }));
+    const main=loadMainQuitHandlers(scope);
+    beforeQuit=main.beforeQuit;
+    module.setProtectedSideUpdateGuard(main.guard);
+    const recover=scope.recoverUpdateShutdown;
+    if(typeof recover!=="function")throw new Error("recovery handler unavailable");
+    module.setUpdateRestartFailureHandler(async()=>{await recover();});
+    autoUpdater.quitAndInstall.mockImplementation(()=>appQuit());
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout","Date"]});
+    await module.quitAndInstallUpdate();
+    expect(deadlines).toHaveLength(1);
+    expect(scope.browserQuitRequested).toBe(true);
+    expect(scope.protectedSideQuitApproved).toBe(true);
+    // Real trusted-sender IPC callback accepts a newly risky draft while cleanup remains pending.
+    main.riskUpdate({sender:contents},["pending-attachments"],{title:"Draft",message:"Unsaved",detail:"Attachment pending",stay:"Stay",leave:"Leave"});
+    expect(scope.chatDraftQuitConfirmed).toBe(false);
+    appQuit(); // Real before-quit handler presents the synchronous draft prompt; response=Stay.
+    await vi.waitFor(()=>expect(restarts).toBe(1));
+    expect(dialogMock.showMessageBoxSync).toHaveBeenCalledOnce();
+    expect(scope.protectedSideQuitApproved).toBe(false);
+    expect(scope.updateQuitDeadlineAttempt).toBeUndefined();
+    expect(module.isUpdateRestartRequested()).toBe(false);
+    blockRetry=true;
+    retry=module.quitAndInstallUpdate().catch(error=>error);
+    await vi.waitFor(()=>expect(dialogMock.showMessageBox).toHaveBeenCalledOnce());
+    expect(admissions).toBe(1);
+    expect(scope.protectedSideQuitApproved).toBe(false);
+    expect(module.isUpdateRestartRequested()).toBe(true);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.all(deadlines);
+    const evidence={
+      baseline:"1a9a2e2dd1a514ea1cb0d63387eeebb4ef82ca25",
+      actualBeforeQuitHandler:true,actualRiskIPCCallback:true,actualDraftConfirmation:true,
+      draftResponse:"Stay",restarts,admissions,newAdmissionRequests:admissions-1,
+      approved:scope.protectedSideQuitApproved,daemonStatus:scope.daemonStatus,
+      newProtectedSidePromptOpen:true,deadlineCount:deadlines.length,
+      forcedExitCalls:exit.mock.calls,appQuitCalls:appQuit.mock.calls.length,
+      installerCalls:autoUpdater.quitAndInstall.mock.calls.length,
+    };
+    console.log(JSON.stringify(evidence));
+    expect(exit).not.toHaveBeenCalled();
+  }finally{
+    releasePrompt({response:1});await retry;
+    releaseCleanup();await Promise.resolve();await Promise.resolve();
+    vi.useRealTimers();vi.unstubAllGlobals();restore();vi.restoreAllMocks();vi.resetModules();
+  }
+});
+
+
+it.each(["win32", "linux"] as const)("invalidates the previous deadline when a new %s attempt starts before admission", async (platform) => {
+  const restore = stubProcess(platform, "/usr/bin/node");
+  let release = (_allowed: boolean) => {};
+  let retry: Promise<unknown> | undefined;
+  try {
+    const { module, updaterEvents } = await importAutoUpdater();
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+    const admission = new Promise<boolean>(resolve => { release = resolve; });
+    const guard = vi.fn().mockResolvedValueOnce(true).mockImplementation(() => admission);
+    module.setProtectedSideUpdateGuard(guard);
+    await module.quitAndInstallUpdate();
+    const previous = module.getUpdateRestartSignal();
+    expect(previous).toBeDefined();
+    expect(previous?.aborted).toBe(false);
+    const exit = vi.fn();
+    vi.useFakeTimers();
+    const deadline = finishUpdateQuit(new Promise<void>(() => {}), { quit: vi.fn(), exit, log: vi.fn(), signal: previous });
+    retry = module.quitAndInstallUpdate().catch(error => error);
+    await vi.waitFor(() => expect(guard).toHaveBeenCalledTimes(2));
+    expect(previous?.aborted).toBe(true);
+    expect(module.getUpdateRestartSignal()).not.toBe(previous);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await deadline;
+    expect(exit).not.toHaveBeenCalled();
+  } finally {
+    release(false);
+    await retry;
+    vi.useRealTimers();
+    restore(); vi.restoreAllMocks(); vi.resetModules();
+  }
 });

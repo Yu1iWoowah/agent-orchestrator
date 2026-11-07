@@ -43,6 +43,7 @@ import {
 	cancelUpdateRestart,
 	setProtectedSideUpdateGuard,
 	isUpdateRestartRequested,
+	getUpdateRestartSignal,
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
@@ -3938,7 +3939,7 @@ const updateShutdown = createUpdateShutdownLifecycle({
 			chatDraftQuitConfirmed = false;
 			chatDraftWindowCloseConfirmed = false;
 			browserQuitRequested = false;
-			updateQuitDeadlineArmed = false;
+			updateQuitDeadlineAttempt = undefined;
 			desktopQuit.cancelQuit();
 		}
 	},
@@ -3970,7 +3971,7 @@ setProtectedSideUpdateGuard(async () => {
 	return true;
 });
 let protectedSideQuitChecking = false;
-let updateQuitDeadlineArmed = false;
+let updateQuitDeadlineAttempt: AbortSignal | undefined;
 app.on("before-quit", (event) => {
 	if (desktopQuit.handleBeforeQuit(event)) return;
 	if (!protectedSideQuitApproved) {
@@ -4028,12 +4029,14 @@ app.on("before-quit", (event) => {
 			};
 			browserQuitCleanupPromise = cleanup.then(() => undefined).finally(finishQuit);
 		}
-		if (isUpdateRestartRequested() && !updateQuitDeadlineArmed) {
-			updateQuitDeadlineArmed = true;
+		const updateAttempt = getUpdateRestartSignal();
+		if (isUpdateRestartRequested() && updateAttempt && !updateAttempt.aborted && updateQuitDeadlineAttempt !== updateAttempt) {
+			updateQuitDeadlineAttempt = updateAttempt;
 			// Also cover a normal quit already waiting on the same cleanup.
 			void finishUpdateQuit(browserQuitCleanupPromise, {
+				signal: updateAttempt,
 				quit: () => undefined, // The existing cleanup continuation owns normal quit.
-				exit: () => { if (isUpdateRestartRequested()) app.exit(0); },
+				exit: () => app.exit(0),
 				log: (error) => console.error("update shutdown:", error),
 			});
 		}
