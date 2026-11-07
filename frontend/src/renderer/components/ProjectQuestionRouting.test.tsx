@@ -194,6 +194,18 @@ it("keeps an expired origin read-only even with the confirmed no-main exception"
 	expect(screen.queryByRole("button", { name: "Submit all answers" })).not.toBeInTheDocument(); expect(post).not.toHaveBeenCalled();
 });
 
+it("rechecks an origin that expired while its presenter was unknown before enabling answers", async () => {
+	const app = show(questionURL("/projects/project"), { localReady: false, workspaces: [workspace([session("worker", "worker")])] });
+	expect(await screen.findByRole("radio", { name: /Staging/ })).toBeDisabled();
+	const question = questions.get("ask-worker"); if (!question) throw new Error("missing fixture");
+	questions.set(question.id, { ...question, state: "expired", closedAt: "2026-11-07T12:00:00Z", closeReason: "origin_terminated" });
+	app.update({ localReady: true });
+	await within(screen.getByRole("dialog", { name: "Decision" })).findByText("Expired", { exact: true });
+	expect(screen.getByRole("radio", { name: /Staging/ })).toBeDisabled();
+	expect(screen.queryByRole("button", { name: "Submit all answers" })).not.toBeInTheDocument();
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
+});
+
 it("keeps rejected old choices as reference and opens the new source version without applying them", async () => {
 	show(questionURL("/projects/project/sessions/main")); await chooseAnswers();
 	const original = post.getMockImplementation();

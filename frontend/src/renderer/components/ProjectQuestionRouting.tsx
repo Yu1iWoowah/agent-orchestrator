@@ -71,8 +71,9 @@ export function ProjectQuestionRouting({ children, workspaces, remoteWorkspaces,
 			: { ...projectNavigateTarget(question.projectId, question.hostId), search: {}, replace: true });
 		restoreFocus();
 	};
+	// Reload the source before a host transition can enable submission.
 	const target = useMemo<DecisionTarget | undefined>(() => visible ? { kind: "agent_question", questionId: visible.questionId, title: t("decision.agentQuestion") } : undefined,
-		[visible?.hostId, visible?.projectId, visible?.originSessionId, visible?.questionId, t]);
+		[visible?.hostId, visible?.projectId, visible?.originSessionId, visible?.questionId, host.kind, orchestratorId, params.sessionId, t]);
 	const editable = host.kind === "none" ? !params.sessionId : host.kind === "orchestrator" && params.sessionId === host.sessionId;
 	return <Context.Provider value={{ hostFor, openQuestion, openOriginal }}>
 		{children}
