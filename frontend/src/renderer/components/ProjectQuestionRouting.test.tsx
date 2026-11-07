@@ -97,6 +97,24 @@ async function chooseAnswers() {
 	await userEvent.click(await screen.findByRole("radio", { name: /Staging/ }));
 	await userEvent.click(screen.getByRole("checkbox", { name: "Tests" }));
 }
+function delayOriginRead() {
+	const original = get.getMockImplementation();
+	const question = questions.get(ref.questionId); if (!question) throw new Error("missing fixture");
+	const snapshot = structuredClone(question);
+	let finish = () => {};
+	let holding = true;
+	let signal: AbortSignal | undefined;
+	const response = new Promise((resolve) => { finish = () => resolve({ data: snapshot, response: { status: 200 } }); });
+	get.mockImplementation((host, path, request) => {
+		if (holding && path.endsWith("/questions/{questionId}") && request.params.path.questionId === ref.questionId) {
+			holding = false;
+			signal = request.signal;
+			return response;
+		}
+		return original?.(host, path, request);
+	});
+	return { release: finish, get signal() { return signal; } };
+}
 
 it("uses complete project counts and pages at the main, saves the worker answer once and synchronizes both views", async () => {
 	const { router } = show("/projects/project/sessions/main");
@@ -164,6 +182,64 @@ it("keeps a submitted answer alive through handover and a project switch without
 	expect(app.router.state.location.pathname).toBe("/projects/other");
 	expect(screen.queryByRole("dialog", { name: "Decision" })).not.toBeInTheDocument();
 	expect(request.signal.aborted).toBe(false); expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(1);
+});
+
+it("shows the saved receipt when it cancels a delayed origin read during handover", async () => {
+	const app = show(questionURL("/projects/project/sessions/main")); await chooseAnswers();
+	const original = post.getMockImplementation();
+	let finishAnswer = () => {};
+	post.mockImplementation((host, path, request) => {
+		if (!path.endsWith("/answer")) return original?.(host, path, request);
+		return new Promise((resolve) => { finishAnswer = () => resolve(original?.(host, path, request)); });
+	});
+	await userEvent.click(screen.getByRole("button", { name: "Submit all answers" }));
+	const request = post.mock.calls.find(([, path]) => path.endsWith("/answer"))?.[2];
+	const draft = Object.values(useQuestionDraftStore.getState().entries)[0];
+	expect(draft.phase).toMatchObject({ state: "submitting", answer: { clientAnswerId: request.body.clientAnswerId } });
+	const delayed = delayOriginRead();
+	app.update({ workspaces: [workspace([session("main", "orchestrator", true), session("new"), session("worker", "worker")])] });
+	await waitFor(() => expect(app.router.state.location.pathname).toBe("/projects/project/sessions/new"));
+	await waitFor(() => expect(delayed.signal?.aborted).toBe(false));
+	expect(Object.values(useQuestionDraftStore.getState().entries)).toEqual([draft]);
+	await act(async () => finishAnswer());
+	await waitFor(() => expect(Object.keys(useQuestionDraftStore.getState().entries)).toHaveLength(0));
+	expect(delayed.signal?.aborted).toBe(true);
+	const options = questionSourceQueryOptions({ sessionId: ref.originSessionId, questionId: ref.questionId });
+	expect(client.getQueryData(options.queryKey)?.answer?.clientAnswerId).toBe(request.body.clientAnswerId);
+	await screen.findByText("Saved · Pending delivery");
+	expect(screen.queryByText("Could not load the latest request. Your draft is kept.")).not.toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Submit all answers" })).not.toBeInTheDocument();
+	expect(screen.getByRole("radio", { name: /Staging/ })).toBeChecked();
+	expect(screen.getByRole("radio", { name: /Staging/ })).toBeDisabled();
+	expect(screen.getByRole("checkbox", { name: "Tests" })).toBeChecked();
+	await act(async () => delayed.release());
+	expect(client.getQueryData(options.queryKey)).toMatchObject({ state: "answered", answer: { clientAnswerId: request.body.clientAnswerId } });
+	expect(Object.keys(useQuestionDraftStore.getState().entries)).toHaveLength(0);
+	expect(request.signal.aborted).toBe(false);
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(1);
+	expect(request.params.path).toEqual({ sessionId: "worker", questionId: "ask-worker" });
+});
+
+it.each(["editing", "unknown"] as const)("keeps a canceled handover read unavailable without a saved receipt and retains the %s draft", async (phase) => {
+	const app = show(questionURL("/projects/project/sessions/main")); await chooseAnswers();
+	if (phase === "unknown") {
+		const original = post.getMockImplementation();
+		post.mockImplementation((host, path, request) => path.endsWith("/answer") ? Promise.reject(new Error("response lost")) : original?.(host, path, request));
+		await userEvent.click(screen.getByRole("button", { name: "Submit all answers" }));
+		await waitFor(() => expect(Object.values(useQuestionDraftStore.getState().entries)[0]?.phase.state).toBe("unknown"));
+	}
+	const draft = structuredClone(Object.values(useQuestionDraftStore.getState().entries)[0]);
+	const delayed = delayOriginRead();
+	app.update({ workspaces: [workspace([session("main", "orchestrator", true), session("new"), session("worker", "worker")])] });
+	await waitFor(() => expect(app.router.state.location.pathname).toBe("/projects/project/sessions/new"));
+	await waitFor(() => expect(delayed.signal?.aborted).toBe(false));
+	await act(async () => client.cancelQueries({ queryKey: questionSourceQueryOptions({ sessionId: ref.originSessionId, questionId: ref.questionId }).queryKey, exact: true }));
+	await screen.findByText("Could not load the latest request. Your draft is kept.");
+	expect(screen.queryByText("Saved · Pending delivery")).not.toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Submit all answers" })).not.toBeInTheDocument();
+	expect(Object.values(useQuestionDraftStore.getState().entries)).toEqual([draft]);
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(phase === "unknown" ? 1 : 0);
+	await act(async () => delayed.release());
 });
 
 it("does not treat partially loaded or failed remote facts as no orchestrator or use another host's main", async () => {

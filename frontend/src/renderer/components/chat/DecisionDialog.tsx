@@ -2,7 +2,7 @@ import type { DecisionTarget } from "../../lib/decision-target";
 import type { FrameRect } from "../../lib/conversation-frames";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { isCancelledError, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../../stores/ui-store";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogOverlay, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -34,6 +34,9 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, project
 	const fittedOut = useRef(false);
 	const scope = JSON.stringify([hostId ?? null, sessionId]);
 	const fits = Number.isFinite(bounds.rect.width) && Number.isFinite(bounds.rect.height) && bounds.rect.width >= 260 && bounds.rect.height >= 160;
+	const questionQueries = target?.kind === "agent_question"
+		? [{ ...questionSourceQueryOptions({ sessionId, hostId, questionId: target.questionId }), enabled: false }] : [];
+	const [questionSource] = useQueries({ queries: questionQueries });
 	const load = useCallback((requested: DecisionTarget) => {
 		const request = ++nonce.current;
 		const currentScope = JSON.stringify([hostId ?? null, sessionId]);
@@ -55,8 +58,12 @@ export function DecisionDialog({ target, sessionId, hostId, sourceAgent, project
 		return () => { ++nonce.current; };
 	}, [target, fits, load, t]);
 	const close = () => { ++nonce.current; setLookup(undefined); onClose(); };
-	const ready = lookup && lookup.target === target && lookup.scope === scope && lookup.state === "ready";
-	const error = lookup && lookup.target === target && lookup.scope === scope && lookup.state === "error" ? lookup.error : undefined;
+	const currentLookup = lookup?.target === target && lookup?.scope === scope ? lookup : undefined;
+	// A confirmed receipt reaches the cache after cancelQueries rejects the reload.
+	const savedAfterCancel = currentLookup?.state === "error" && isCancelledError(currentLookup.error) &&
+		questionSource?.data?.state === "answered" && questionSource.data.answer !== undefined;
+	const ready = currentLookup?.state === "ready" || savedAfterCancel;
+	const error = currentLookup?.state === "error" && !savedAfterCancel ? currentLookup.error : undefined;
 	const box = bounds.surface.getBoundingClientRect();
 	const compact = bounds.rect.height < 240;
 	return <Dialog open={Boolean(target) && fits} onOpenChange={(open) => { if (!open) close(); }}>
