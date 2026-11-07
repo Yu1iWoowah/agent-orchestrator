@@ -2,12 +2,15 @@ package chat
 
 import (
 	"context"
+	"runtime"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/processscope"
 )
 
 // ProtectedSide exposes metadata only, even when durable content cannot be read.
 type ProtectedSide struct {
+	Protection domain.SideProtection      `json:"protection"`
 	SideID     string                     `json:"sideId"`
 	SessionID  domain.SessionID           `json:"sessionId"`
 	Provider   domain.AgentHarness        `json:"provider"`
@@ -47,9 +50,54 @@ func (s *Service) ListProtectedSides(ctx context.Context) ([]ProtectedSide, erro
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, ProtectedSide{row.SideID, row.SessionID, row.Provider, row.State, row.Historical, orphan})
+		out = append(out, ProtectedSide{SideID: row.SideID, SessionID: row.SessionID, Provider: row.Provider, State: row.State, Historical: row.Historical, Orphan: orphan, Protection: s.sideProtectionStatus(ctx, row)})
 	}
 	return out, nil
+}
+
+func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompaction) domain.SideProtection {
+	p := domain.SideProtection{Result: row.State, Historical: row.Historical, Closed: row.Closed, Isolated: row.Unresolved()}
+	if !p.Isolated {
+		return p
+	}
+	p.ShutdownBlocked = true
+	store, ok := s.sides.store.(*memorySideStore)
+	if !ok {
+		p.Reason = "side_content_not_durable"
+		return p
+	}
+	// Restore into a separate store so listing never changes live side state or
+	// rewrites attachments, but still verifies the persisted content and images.
+	projection := newMemorySideStore()
+	projection.attachments = store.attachments
+	if err := projection.restoreContentLocked(row.Content); err != nil || projection.sides[row.SideID].ID != row.SideID {
+		p.Reason = "side_content_not_durable"
+		return p
+	}
+	if applicable, reason := sideCompactionApplicable(row, runtime.GOOS); !applicable {
+		p.Reason = reason
+		return p
+	}
+	ended, reason := processscope.Ended(ctx, row.Scope)
+	p.ShutdownBlocked, p.Reason = !ended, reason
+	return p
+}
+
+func (s *Service) sideProtection(ctx context.Context, sideID string) (*domain.SideProtection, error) {
+	if s.nativeGuard.store == nil {
+		return nil, nil
+	}
+	rows, err := s.nativeGuard.store.SideCompactions(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.SideID == sideID {
+			p := s.sideProtectionStatus(ctx, row)
+			return &p, nil
+		}
+	}
+	return nil, nil
 }
 
 // CloseProtectedSide is the global user close endpoint; it bypasses launch ownership.

@@ -28,6 +28,7 @@ export { readStoredThemePreference, readStoredThemeStyle, resolveTheme } from ".
 
 export type GlobalSettingsSection =
 	| "general"
+	| "protectedSides"
 	| "harness"
 	| "agents"
 	| "accounts"

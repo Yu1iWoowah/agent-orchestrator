@@ -968,3 +968,21 @@ func TestConversationFileAnnotationsRoundTripAndValidateOwnership(t *testing.T) 
 		t.Fatalf("cross-session status %d", rejected.StatusCode)
 	}
 }
+
+func TestProtectedSideShutdownErrorPointsToGlobalEntry(t *testing.T) {
+	service := &fakeConversationService{sendErr: &ports.ChatShutdownSideError{SideID: "old-side", Reason: "codex_full_access", Orphan: true}}
+	server := conversationTestServer(t, service)
+	body, status, _ := doRequest(t, server, http.MethodPost, "/api/v1/sessions/p1-1/conversation/messages", `{"text":"question","clientMessageId":"message"}`)
+	var response struct {
+		Code    string `json:"code"`
+		Details struct {
+			Reason string                      `json:"reason"`
+			Entry  string                      `json:"entry"`
+			Side   ports.ChatShutdownSideError `json:"protectedSide"`
+		} `json:"details"`
+	}
+	mustJSON(t, body, &response)
+	if status != http.StatusConflict || response.Code != "CHAT_SHUTDOWN_NOT_SETTLED" || response.Details.Reason != "protected_side" || response.Details.Entry != "protected_side_chats" || response.Details.Side.SideID != "old-side" || !response.Details.Side.Orphan {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+}

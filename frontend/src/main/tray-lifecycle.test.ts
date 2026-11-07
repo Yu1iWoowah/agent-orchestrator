@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createTrayLifecycle, isTrayEnabled, type TrayLifecycleDeps } from "./tray-lifecycle";
 import type { TrayController } from "./tray";
 import { TRAY_OPEN_SESSION_CHANNEL } from "../shared/tray";
+import { OPEN_SETTINGS_SHORTCUT_CHANNEL } from "../shared/shortcuts";
 
 type FakeWebContents = {
 	isLoading: () => boolean;
@@ -69,6 +70,35 @@ describe("createTrayLifecycle openSession", () => {
 		currentWindow = window;
 		lifecycle.handleRendererReady(eventFrom(window.webContents));
 		expect(window.webContents.send).toHaveBeenCalledWith(TRAY_OPEN_SESSION_CHANNEL, { projectId: "p1", sessionId: "s1" });
+	});
+});
+
+describe("protected-side navigation", () => {
+	it("retains navigation through delayed window creation until the current renderer is ready", () => {
+		const window = fakeWindow(true);
+		let currentWindow: ReturnType<typeof fakeWindow> | null = null;
+		const { lifecycle, focusWindow } = setup({ getWindow: () => currentWindow as never });
+		lifecycle.openProtectedSides();
+		expect(focusWindow).toHaveBeenCalledTimes(1);
+		currentWindow = window;
+		lifecycle.handleRendererReady(eventFrom({ other: true }));
+		expect(window.webContents.send).not.toHaveBeenCalled();
+		lifecycle.handleRendererReady(eventFrom(window.webContents));
+		expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(OPEN_SETTINGS_SHORTCUT_CHANNEL, "protectedSides");
+		lifecycle.handleRendererReady(eventFrom(window.webContents));
+		expect(window.webContents.send).toHaveBeenCalledTimes(1);
+	});
+
+	it("sends immediately to a mounted shell, but waits for readiness again after a reload", () => {
+		const { lifecycle, window } = setup();
+		lifecycle.handleRendererReady(eventFrom(window.webContents));
+		lifecycle.openProtectedSides();
+		expect(window.webContents.send).toHaveBeenCalledTimes(1);
+		lifecycle.clearRendererReady();
+		lifecycle.openProtectedSides();
+		expect(window.webContents.send).toHaveBeenCalledTimes(1);
+		lifecycle.handleRendererReady(eventFrom(window.webContents));
+		expect(window.webContents.send).toHaveBeenCalledTimes(2);
 	});
 });
 

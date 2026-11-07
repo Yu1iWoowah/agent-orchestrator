@@ -163,6 +163,14 @@ ipcRenderer.on("app:openFolderPath", (_event, path: string) => {
 	}
 });
 
+let settingsShortcutReady = false;
+let traySessionReady = false;
+function signalShellReady(): void {
+	// Child effects can subscribe to tray events before the shell's settings
+	// listener. Main may flush protected-side navigation as soon as we signal.
+	if (settingsShortcutReady && traySessionReady) ipcRenderer.send(TRAY_RENDERER_READY_CHANNEL);
+}
+
 let currentTelemetryPolicy: TelemetryPolicyView | null = null;
 const telemetryPolicyListeners = new Set<(view: TelemetryPolicyView) => void>();
 const rendererQueuePurgeListeners = new Set<() => void | Promise<void>>();
@@ -273,7 +281,10 @@ const api = {
 		onOpenSettingsShortcut: (listener: (section?: string) => void) => {
 			const wrapped = (_event: unknown, section?: unknown) => listener(typeof section === "string" ? section : undefined);
 			ipcRenderer.on(OPEN_SETTINGS_SHORTCUT_CHANNEL, wrapped);
+			settingsShortcutReady = true;
+			signalShellReady();
 			return () => {
+				settingsShortcutReady = false;
 				ipcRenderer.off(OPEN_SETTINGS_SHORTCUT_CHANNEL, wrapped);
 			};
 		},
@@ -780,8 +791,10 @@ const api = {
 			onOpenSession: (listener: (target: TrayOpenSessionTarget) => void) => {
 				const wrapped = (_event: Electron.IpcRendererEvent, target: TrayOpenSessionTarget) => listener(target);
 				ipcRenderer.on(TRAY_OPEN_SESSION_CHANNEL, wrapped);
-				ipcRenderer.send(TRAY_RENDERER_READY_CHANNEL);
+				traySessionReady = true;
+				signalShellReady();
 			return () => {
+				traySessionReady = false;
 				ipcRenderer.off(TRAY_OPEN_SESSION_CHANNEL, wrapped);
 			};
 		},

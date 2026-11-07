@@ -8,6 +8,7 @@ import (
 // SideConversation is one launch-scoped /btw provider conversation. Its
 // provider host and transcript are independent of the main conversation.
 type SideConversation struct {
+	Protection         *SideProtection `json:"protection,omitempty"`
 	PolicyVersion      int             `json:"-"`
 	BoundaryTurnID     string          `json:"-"`
 	BoundaryState      string          `json:"-"`
@@ -44,6 +45,16 @@ type SideConversation struct {
 	CreatedAt          time.Time       `json:"createdAt"`
 	UpdatedAt          time.Time       `json:"updatedAt"`
 	ClosedAt           *time.Time      `json:"-"`
+}
+
+// SideProtection is a read-time projection of a side compaction obligation.
+type SideProtection struct {
+	Result          SideCompactionState `json:"result"`
+	Historical      bool                `json:"historical"`
+	Closed          bool                `json:"closed"`
+	Isolated        bool                `json:"isolated"`
+	ShutdownBlocked bool                `json:"shutdownBlocked"`
+	Reason          string              `json:"reason"`
 }
 
 // SideTurn records one question and its execution state in a side conversation.

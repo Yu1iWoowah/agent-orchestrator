@@ -6,6 +6,7 @@ import { SideCloseRecovery } from "./main/side-close";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
+import { confirmProtectedSideQuit, requestUpdateShutdown } from "./main/protected-side-quit";
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
@@ -39,6 +40,7 @@ import {
 	checkForUpdatesNow,
 	downloadUpdateNow,
 	quitAndInstallUpdate,
+	setProtectedSideUpdateGuard,
 	isUpdateRestartRequested,
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
@@ -903,11 +905,12 @@ async function createWindowInternal(): Promise<void> {
 		if (daemonStatus.state === "ready") establishAppDiagnosticsLink();
 	});
 	shellWebContents.once("destroyed", () => {
+		trayLifecycle.clearRendererReady();
 		trustedShellWebContents.delete(shellWebContents.id);
 		quitConfirm.reset();
 	});
 	// A reload drops any open quit dialog, so the next ⌘Q should ask again.
-	shellWebContents.on("did-start-loading", () => quitConfirm.reset());
+	shellWebContents.on("did-start-loading", () => { quitConfirm.reset(); trayLifecycle.clearRendererReady(); });
 
 	// On Windows the app paints its own title bar (WindowTitlebar), so the native
 	// menu bar is hidden (autoHideMenuBar above). The role-based menu is still
@@ -3905,9 +3908,40 @@ setUpdateRestartFailureHandler(() => {
 	if (!browserQuitRequested) focusMainWindow();
 });
 
+async function allowProtectedSideQuit(): Promise<boolean> {
+	if (daemonStatus.state !== "ready" || !daemonStatus.port) return true;
+	return confirmProtectedSideQuit(`http://127.0.0.1:${daemonStatus.port}`, {
+		zh: operatorConsentZh,
+		showMessageBox: (options) => { focusMainWindow(); return dialog.showMessageBox(options); },
+		openEntry: () => trayLifecycle.openProtectedSides(),
+	});
+}
+setProtectedSideUpdateGuard(async () => {
+	if (!await allowProtectedSideQuit()) return false;
+	if (daemonStatus.state !== "ready" || !daemonStatus.port) throw new Error("AO daemon is unavailable; the update cannot obtain shutdown admission.");
+	await requestUpdateShutdown(`http://127.0.0.1:${daemonStatus.port}`);
+	// The daemon accepted shutdown with admission fenced. Its exit must not turn
+	// the subsequent before-quit status read into a spurious update veto.
+	protectedSideQuitApproved = true;
+	return true;
+});
+let protectedSideQuitApproved = false;
+let protectedSideQuitChecking = false;
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
 	if (desktopQuit.handleBeforeQuit(event)) return;
+	if (!protectedSideQuitApproved) {
+		event.preventDefault();
+		if (!protectedSideQuitChecking) {
+			protectedSideQuitChecking = true;
+			void allowProtectedSideQuit().then((allowed) => {
+				protectedSideQuitChecking = false;
+				if (allowed) { protectedSideQuitApproved = true; app.quit(); }
+				else desktopQuit.cancelQuit();
+			});
+		}
+		return;
+	}
 	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
 		event.preventDefault();
 		if (confirmUnsafeChatDraftLeave(
@@ -3919,6 +3953,7 @@ app.on("before-quit", (event) => {
 			app.quit();
 		} else {
 			desktopQuit.cancelQuit();
+			protectedSideQuitApproved = false;
 		}
 		return;
 	}

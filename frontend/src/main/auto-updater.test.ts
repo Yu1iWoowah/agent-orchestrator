@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import semver from "semver";
+import { requestUpdateShutdown } from "./protected-side-quit";
 import { CancellationToken } from "builder-util-runtime";
 import nodePath from "node:path";
 
@@ -3392,6 +3393,49 @@ const TRANSLOCATED_EXEC_PATH =
   "/private/var/folders/hg/vkmz93d1T/T/AppTranslocation/0AC4-11EE/d/Agent Orchestrator.app/Contents/MacOS/agent-orchestrator";
 
 describe("quitAndInstallUpdate", () => {
+  it.each(["win32", "linux", "darwin"] as const)("refuses installer side effects when preparation creates a blocker on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({ version: "2.1.0", stagedAt: Date.now(), channel: "latest" }));
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      let blocked = false;
+      const request = vi.fn(async () => new Response(null, { status: blocked ? 409 : 202 }));
+      vi.stubGlobal("fetch", request);
+      const admission = vi.fn(async () => { await requestUpdateShutdown("http://127.0.0.1:1234"); return true; });
+      module.setProtectedSideUpdateGuard(admission);
+      autoUpdater.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: "2.1.0" } });
+      autoUpdater.downloadUpdate.mockImplementation(async () => {
+        blocked = true;
+        updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+        return [];
+      });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Protected sides/);
+      expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith("http://127.0.0.1:1234/shutdown", expect.objectContaining({ method: "POST" }));
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); restore(); }
+  });
+
+  it.each(["win32", "linux", "darwin"] as const)("awaits shutdown admission immediately before invoking the installer on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      let admit: (allowed: boolean) => void = () => { throw new Error("admission not requested"); };
+      const admission = vi.fn(() => new Promise<boolean>(resolve => { admit = resolve; }));
+      module.setProtectedSideUpdateGuard(admission);
+      const install = module.quitAndInstallUpdate();
+      await vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(1));
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      admit(true);
+      await install;
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledExactlyOnceWith(false, true);
+    } finally { restore(); }
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();

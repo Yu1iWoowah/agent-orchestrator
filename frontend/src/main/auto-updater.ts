@@ -2771,6 +2771,9 @@ export function setUpdateRestartFailureHandler(handler: () => void): void { rest
 
 export function isUpdateRestartRequested(): boolean { return macRestartRequested; }
 
+let protectedSideUpdateGuard: (() => Promise<boolean>) | undefined;
+export function setProtectedSideUpdateGuard(guard: () => Promise<boolean>): void { protectedSideUpdateGuard = guard; }
+
 export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<UpdateInstallResult> {
   if (confirmedVersion !== undefined && (typeof confirmedVersion !== "string" || !confirmedVersion.trim())) {
     throw new Error("A valid confirmed update version is required.");
@@ -2809,6 +2812,9 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
     }
+    // Preparation may download again while the daemon still accepts /compact.
+    // Obtain its fenced shutdown admission only after all preparation awaits.
+    if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
     autoUpdater.quitAndInstall(false, true);
     return;
   }
@@ -2855,6 +2861,7 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         }),
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
+      if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
       autoUpdater.quitAndInstall(false, true);
       if (!macRestartRequested) throw nativePreparationError ?? new Error("The installer could not restart AO.");
     } catch (err) {

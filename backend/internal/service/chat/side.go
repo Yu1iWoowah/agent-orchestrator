@@ -352,6 +352,10 @@ func (s *Service) ListIndependentSideChats(ctx context.Context, session domain.S
 		return nil, err
 	}
 	for i := range sides {
+		sides[i].Protection, err = s.sideProtection(ctx, sides[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		turns, _, err := s.sides.store.SideTurns(ctx, sides[i].ID, time.Time{}, 0)
 		if err != nil {
 			return nil, err
@@ -1640,6 +1644,10 @@ func (s *Service) SideSnapshot(ctx context.Context, session domain.SessionID, si
 		if err := s.sides.ensureRestore(side); err != nil {
 			s.sides.failOpen(side, err)
 		}
+	}
+	side.Protection, err = s.sideProtection(ctx, sideID)
+	if err != nil {
+		return domain.SideSnapshot{}, err
 	}
 	turns, more, err := s.sides.store.SideTurns(ctx, sideID, before, limit)
 	if err != nil {
