@@ -4074,5 +4074,19 @@
 	"reviewerSettings.description": "Somente a próxima revisão usa esta escolha. A revisão atual, a conta e as permissões fixas permanecem. Esvaziar model ou effort restaura o padrão do provider.",
 	"reviewerSettings.fastOn": "Ativado",
 	"reviewerSettings.fastOff": "Desativado",
-	"reviewerSettings.fastCost": "Fast pode gerar cobranças adicionais. Fixar em Ativado é uma escolha explícita para a próxima revisão."
+	"reviewerSettings.fastCost": "Fast pode gerar cobranças adicionais. Fixar em Ativado é uma escolha explícita para a próxima revisão.",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}"
 }

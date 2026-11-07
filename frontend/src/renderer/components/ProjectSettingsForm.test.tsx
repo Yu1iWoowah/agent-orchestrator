@@ -10,9 +10,20 @@ function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
-const { getMock, putMock, postMock, navigateMock, closeSettingsMock, openGlobalSettingsMock, setOrchestratorReplacementErrorMock, captureOrchestratorReplacementFailureMock, ensureAgentReadinessMock, trackerIntakeGate } = vi.hoisted(() => ({
+const {
+	getMock,
+	patchMock,
+	postMock,
+	navigateMock,
+	closeSettingsMock,
+	openGlobalSettingsMock,
+	setOrchestratorReplacementErrorMock,
+	captureOrchestratorReplacementFailureMock,
+	ensureAgentReadinessMock,
+	trackerIntakeGate,
+} = vi.hoisted(() => ({
 	getMock: vi.fn(),
-	putMock: vi.fn(),
+	patchMock: vi.fn(),
 	postMock: vi.fn(),
 	navigateMock: vi.fn(),
 	closeSettingsMock: vi.fn(),
@@ -56,7 +67,7 @@ vi.mock("../hooks/useSettings", () => ({
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		GET: getMock,
-		PUT: putMock,
+		PATCH: patchMock,
 		POST: postMock,
 	},
 	apiErrorCode: (error: unknown) =>
@@ -104,7 +115,6 @@ function TestProjectSettings({
 			<ProjectSettingsForm projectId={projectId} section={section} onSaveState={setSaveState} />
 			{saveState.error && <span>{saveState.error}</span>}
 			{saveState.phase === "saved" && <span>{"Saved"}</span>}
-			{saveState.replacementError && <span>{`Orchestrator restart failed: ${saveState.replacementError}`}</span>}
 		</>
 	);
 }
@@ -143,8 +153,9 @@ function submitSettings() {
 	fireEvent.submit(document.getElementById("project-settings-form")!);
 }
 
-async function expectReplacementWithoutNavigation() {
-	await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+async function expectSaveWithoutReplacement() {
+	await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+	expect(postMock.mock.calls.filter((call) => call[0] === "/api/v1/orchestrators")).toEqual([]);
 	expect(navigateMock).not.toHaveBeenCalled();
 	expect(closeSettingsMock).not.toHaveBeenCalled();
 }
@@ -193,9 +204,24 @@ function mockProject(project: Record<string, unknown>, agentResponse = agentCata
 	});
 }
 
+// Model the daemon's object merge at the mocked HTTP boundary; arrays replace.
+function mergeConfig(before: Record<string, unknown>, patch: object): Record<string, unknown> {
+	const result = { ...before };
+	for (const [key, value] of Object.entries(patch)) {
+		if (value === null) delete result[key];
+		else if (typeof value === "object" && !Array.isArray(value))
+			result[key] = mergeConfig(
+				typeof result[key] === "object" && result[key] !== null ? Object.fromEntries(Object.entries(result[key])) : {},
+				value,
+			);
+		else result[key] = value;
+	}
+	return result;
+}
+
 beforeEach(() => {
 	getMock.mockReset();
-	putMock.mockReset();
+	patchMock.mockReset();
 	postMock.mockReset();
 	navigateMock.mockReset();
 	closeSettingsMock.mockReset();
@@ -204,7 +230,22 @@ beforeEach(() => {
 	captureOrchestratorReplacementFailureMock.mockReset();
 	ensureAgentReadinessMock.mockReset();
 	trackerIntakeGate.enabled = true;
-	putMock.mockResolvedValue({ data: { project: {} }, error: undefined });
+	patchMock.mockImplementation(
+		async (_path: string, request: { body: { displayName?: string; defaultBranch?: string; config?: object } }) => {
+			const response = await getMock("/api/v1/projects/{id}");
+			const current = response.data.project;
+			return {
+				data: {
+					project: {
+						...current,
+						...(request.body.displayName ? { name: request.body.displayName } : {}),
+						...(request.body.defaultBranch ? { defaultBranch: request.body.defaultBranch } : {}),
+						config: mergeConfig(current.config ?? {}, request.body.config ?? {}),
+					},
+				},
+			};
+		},
+	);
 	postMock.mockResolvedValue({
 		data: { orchestrator: { id: "proj-1-orch-2" } },
 		error: undefined,
@@ -213,7 +254,7 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
-	it("saves a changed project setting without a submit action", async () => {
+	it("waits for explicit Save before PATCHing a changed project setting", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
@@ -230,7 +271,10 @@ describe("ProjectSettingsForm", () => {
 
 		renderSettings();
 		await userEvent.click(await screen.findByRole("switch", { name: "Auto review PRs" }));
-		await waitFor(() => expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}", expect.objectContaining({
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+		expect(patchMock).not.toHaveBeenCalled();
+		submitSettings();
+		await waitFor(() => expect(patchMock).toHaveBeenCalledWith("/api/v1/projects/{id}/settings", expect.objectContaining({
 			body: expect.objectContaining({ config: expect.objectContaining({ autoReview: true }) }),
 		})));
 	});
@@ -404,8 +448,8 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.type(projectName, "TG Content Factory");
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}", {
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock).toHaveBeenCalledWith("/api/v1/projects/{id}/settings", {
 			params: { path: { id: "tg_content_factory_5863f66be3" } },
 			body: expect.objectContaining({ displayName: "TG Content Factory" }),
 		});
@@ -497,11 +541,24 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig).toEqual(
-			expect.objectContaining({ model: "gpt-test", effort: "low" }),
-		);
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock.mock.calls[0][1].body).toEqual({
+			config: { worker: { agentConfig: { effort: "low" } } },
+			expected: { config: { worker: { agentConfig: { effort: "high" } } } },
+		});
 	});
+
+ it("does not pin an implicit reviewer when changing a worker with saved model and effort", async () => {
+  mockProject({id:"proj-1",name:"Project One",kind:"single_repo",path:"/repo/project-one",repo:"",config:{worker:{agent:"codex",agentConfig:{model:"gpt-test",effort:"high"}},orchestrator:{agent:"claude-code"}}});
+  const get=getMock.getMockImplementation()!;
+  getMock.mockImplementation(async(path:string)=>path==="/api/v1/agents/{agent}/models"?{data:{selectionMode:"catalog",allowCustom:true,models:[{id:"gpt-test",label:"GPT Test",efforts:["low","high"],defaultEffort:"high"}]}}:get(path));
+  renderSettings("proj-1",undefined,"agents");
+  await screen.findByRole("button",{name:"Worker model"});
+  await chooseCustomModel("Worker model","my-model");
+  await waitFor(()=>expect(screen.getByRole("button",{name:"Reviewer model"})).toHaveTextContent("my-model"));
+  submitSettings();await waitFor(()=>expect(patchMock).toHaveBeenCalledOnce());
+  expect(patchMock.mock.calls[0][1].body.config).not.toHaveProperty("reviewers");
+ });
 
 	it("saves Claude effort from the combined model picker", async () => {
 		getMock.mockImplementation(async (path: string) => {
@@ -527,10 +584,8 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig).toEqual(
-			expect.objectContaining({ model: "claude-opus", effort: "high" }),
-		);
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock.mock.calls[0][1].body.config.worker.agentConfig).toEqual({ effort: "high" });
 	});
 
 	it("shows Claude's permission setting and preserves saved permission modes", async () => {
@@ -557,10 +612,7 @@ describe("ProjectSettingsForm", () => {
 		]);
 		await userEvent.keyboard("{Escape}");
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		const config = putMock.mock.calls[0][1].body.config;
-		expect(config.worker.agentConfig.permissions).toBe("default");
-		expect(config.orchestrator.agentConfig.permissions).toBe("default");
+		expect(patchMock).not.toHaveBeenCalled();
 	});
 
 	it("can switch back to Claude's own permission setting", async () => {
@@ -578,8 +630,8 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "Use Claude permissions" }));
 		expect(worker).toHaveTextContent("Use Claude permissions");
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig.permissions).toBe("default");
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock.mock.calls[0][1].body.config.worker.agentConfig.permissions).toBe("default");
 	});
 
 	it("shows Auto for unset permissions without saving an override", async () => {
@@ -593,8 +645,7 @@ describe("ProjectSettingsForm", () => {
 		renderSettings("proj-1", undefined, "agents");
 		expect(await screen.findByRole("button", { name: "Worker approval" })).toHaveTextContent("Auto");
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig?.permissions).toBeUndefined();
+		expect(patchMock).not.toHaveBeenCalled();
 	});
 
 	it("resolves a legacy mode value to the catalog's marked mode", async () => {
@@ -670,32 +721,20 @@ describe("ProjectSettingsForm", () => {
 
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalled());
-		expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}", {
-			params: { path: { id: "proj-1" } },
-			body: {
-				displayName: "Project One",
-				config: expect.objectContaining({
-					// Hidden workflow config is preserved
-					canonicalRepoURL: "https://github.com/upstream/project-one",
-					defaultBranch: "develop",
-					sessionPrefix: "po",
-					env: { FOO: "bar" },
-					reviewers: [{ harness: "claude-code", agentConfig: { model: "claude-opus-4-5", permissions: "auto" } }],
-					// Agents changes applied
-					worker: {
-						agent: "opencode",
-						agentConfig: { model: "openai/gpt-5.4", permissions: "auto" },
-					},
-					orchestrator: {
-						agent: "goose",
-						agentConfig: { model: "anthropic/claude-sonnet", permissions: "auto" },
-					},
-					agentConfig: undefined,
-				}),
+		await waitFor(() => expect(patchMock).toHaveBeenCalled());
+		expect(patchMock.mock.calls[0][1].body).toEqual({
+			config: {
+				worker: { agent: "opencode", agentConfig: { model: "openai/gpt-5.4" } },
+				orchestrator: { agent: "goose", agentConfig: { model: "anthropic/claude-sonnet" } },
+			},
+			expected: {
+				config: {
+					worker: { agent: "codex", agentConfig: { model: "worker-model" } },
+					orchestrator: { agent: "claude-code", agentConfig: { model: null } },
+				},
 			},
 		});
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+		expect(postMock).not.toHaveBeenCalled();
 		expect(await screen.findByText("Saved")).toBeInTheDocument();
 	}, 20_000);
 
@@ -748,8 +787,8 @@ describe("ProjectSettingsForm", () => {
 
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		const request = putMock.mock.calls[0]?.[1];
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		const request = patchMock.mock.calls[0]?.[1];
 		expect(request?.body.config.autoReview).toBe(false);
 	});
 
@@ -777,8 +816,8 @@ describe("ProjectSettingsForm", () => {
 
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		const request = putMock.mock.calls[0]?.[1];
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		const request = patchMock.mock.calls[0]?.[1];
 		expect(request?.body.config.workersRequestReview).toBe(true);
 		expect(request?.body.config.reviewers).toBeUndefined();
 	});
@@ -823,10 +862,11 @@ describe("ProjectSettingsForm", () => {
 
 		expect(await beginEdit("Default branch")).toHaveValue("auto");
 		await userEvent.keyboard("{Escape}");
+		await userEvent.type(await beginEdit("Session prefix"), "new-prefix");
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		const request = putMock.mock.calls[0]?.[1];
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		const request = patchMock.mock.calls[0]?.[1];
 		expect(request?.body.config.defaultBranch).toBeUndefined();
 	});
 
@@ -957,26 +997,15 @@ describe("ProjectSettingsForm", () => {
 			};
 		});
 
-		renderSettings("proj-1");
-		await screen.findByRole("button", { name: "Edit Project name" });
+		const client = renderSettings("proj-1");
+		const name = await beginEdit("Project name");
+		await userEvent.clear(name);
+		await userEvent.type(name, "Renamed");
 		submitSettings();
-
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}", {
-			params: { path: { id: "proj-1" } },
-			body: expect.objectContaining({
-				config: expect.objectContaining({
-					reviewers: [
-						expect.objectContaining({
-							harness: "codex",
-							agentConfig: expect.objectContaining({
-								model: "gpt-5",
-								permissions: "bypass-permissions",
-							}),
-						}),
-					],
-				}),
-			}),
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		expect(patchMock.mock.calls[0][1].body).toEqual({ displayName: "Renamed", expected: { displayName: "Project One" } });
+		expect(client.getQueryData(["project", "proj-1"])).toMatchObject({
+			config: { reviewers: [{ harness: "codex", agentConfig: { model: "gpt-5", permissions: "bypass-permissions" } }] },
 		});
 	});
 
@@ -1055,8 +1084,8 @@ describe("ProjectSettingsForm", () => {
 
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}", {
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock).toHaveBeenCalledWith("/api/v1/projects/{id}/settings", {
 			params: { path: { id: "proj-1" } },
 			body: expect.objectContaining({
 				config: expect.objectContaining({
@@ -1180,7 +1209,7 @@ describe("ProjectSettingsForm", () => {
 				orchestrator: { agent: "claude-code" },
 			},
 		});
-		putMock.mockResolvedValue({
+		patchMock.mockResolvedValue({
 			data: undefined,
 			error: { message: "invalid permissions" },
 		});
@@ -1219,7 +1248,7 @@ describe("ProjectSettingsForm", () => {
 		submitSettings();
 
 		expect(await screen.findByText("Project name is required.")).toBeInTheDocument();
-		expect(putMock).not.toHaveBeenCalled();
+		expect(patchMock).not.toHaveBeenCalled();
 	});
 
 	it("requires worker and orchestrator agents for existing projects missing role config", async () => {
@@ -1243,8 +1272,8 @@ describe("ProjectSettingsForm", () => {
 
 		submitSettings();
 
-		expect(await screen.findAllByText("Worker and orchestrator agents are required.")).toHaveLength(2);
-		expect(putMock).not.toHaveBeenCalled();
+		expect(await screen.findByText("Worker and orchestrator agents are required.")).toBeInTheDocument();
+		expect(patchMock).not.toHaveBeenCalled();
 	});
 
 	it("shows the resolved reviewer agent without an inherited placeholder", async () => {
@@ -1552,9 +1581,9 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(copilot);
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock).toHaveBeenCalledWith(
-			"/api/v1/projects/{id}",
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock).toHaveBeenCalledWith(
+			"/api/v1/projects/{id}/settings",
 			expect.objectContaining({
 				body: expect.objectContaining({
 					config: expect.objectContaining({ reviewers: [{ harness: "copilot" }] }),
@@ -1604,9 +1633,9 @@ describe("ProjectSettingsForm", () => {
 		expect(reviewerModel).toHaveTextContent("GPT-5 Mini");
 
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock).toHaveBeenCalledWith(
-			"/api/v1/projects/{id}",
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock).toHaveBeenCalledWith(
+			"/api/v1/projects/{id}/settings",
 			expect.objectContaining({
 				body: expect.objectContaining({
 					config: expect.objectContaining({
@@ -1630,9 +1659,21 @@ describe("ProjectSettingsForm", () => {
 				repo: "", config: savedConfig,
 			} } };
 		});
-		putMock.mockImplementation(async (_path: string, request: { body: { config: Record<string, unknown> } }) => {
-			savedConfig = request.body.config;
-			return { data: { project: {} }, error: undefined };
+		patchMock.mockImplementation(async (_path: string, request: { body: { config: Record<string, unknown> } }) => {
+			savedConfig = mergeConfig(savedConfig, request.body.config);
+			return {
+				data: {
+					project: {
+						id: "proj-1",
+						name: "Project One",
+						kind: "single_repo",
+						path: "/repo/project-one",
+						repo: "",
+						config: savedConfig,
+					},
+				},
+				error: undefined,
+			};
 		});
 
 		const first = render(
@@ -1644,7 +1685,7 @@ describe("ProjectSettingsForm", () => {
 		expect(approval).toHaveTextContent("Auto");
 		await chooseOption(approval, "Accept edits");
 		submitSettings();
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
 		expect(savedConfig.reviewers).toEqual([{ harness: "codex", agentConfig: { permissions: "accept-edits" } }]);
 
 		first.unmount();
@@ -1820,25 +1861,12 @@ describe("ProjectSettingsForm", () => {
 		expect(screen.queryByText("Reviewers")).not.toBeInTheDocument();
 		expect(screen.queryByText("Tracker intake")).not.toBeInTheDocument();
 
+		const name = await beginEdit("Project name");
+		await userEvent.clear(name);
+		await userEvent.type(name, "Renamed Scratch");
 		submitSettings();
-
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}", {
-			params: { path: { id: "scratch" } },
-			body: {
-				displayName: "Scratch",
-				config: {
-					env: { FOO: "bar" },
-					sessionPrefix: "ao",
-					symlinks: [".env"],
-					postCreate: ["npm install"],
-					agentRules: "keep work small",
-					worker: { agent: "codex", agentConfig: { model: "gpt-5-codex", permissions: "auto" } },
-					orchestrator: { agent: "claude-code", agentConfig: { model: "gpt-5-codex", permissions: "auto" } },
-					agentConfig: undefined,
-				},
-			},
-		});
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		expect(patchMock.mock.calls[0][1].body).toEqual({ displayName: "Renamed Scratch", expected: { displayName: "Scratch" } });
 		expect(postMock).not.toHaveBeenCalled();
 	});
 
@@ -1877,8 +1905,8 @@ describe("ProjectSettingsForm", () => {
 
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		const body = putMock.mock.calls[0]?.[1]?.body;
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		const body = patchMock.mock.calls[0]?.[1]?.body;
 		expect(body.config.trackerIntake).toEqual({
 			enabled: true,
 			assignee: "octocat",
@@ -1940,8 +1968,8 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.type(prefix, "gated");
 		submitSettings();
 
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		expect(putMock.mock.calls[0]?.[1]?.body.config.trackerIntake).toEqual({ enabled: true });
+		await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+		expect(patchMock.mock.calls[0]?.[1]?.body.config).toEqual({ sessionPrefix: "gated" });
 	});
 
 	it("preserves explicit provider and unmodeled tracker intake fields on save", async () => {
@@ -1971,18 +1999,23 @@ describe("ProjectSettingsForm", () => {
 			error: undefined,
 		});
 
-		renderSettings("proj-1", undefined, "general");
-		await screen.findByRole("button", { name: "Edit Project name" });
+		const client = renderSettings("proj-1", undefined, "general");
+		const name = await beginEdit("Project name");
+		await userEvent.clear(name);
+		await userEvent.type(name, "Renamed");
 		submitSettings();
-
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		const body = putMock.mock.calls[0]?.[1]?.body;
-		expect(body.config.trackerIntake).toEqual({
-			enabled: true,
-			provider: "gitlab",
-			repo: "acme/project-one",
-			assignee: "octocat",
-			labels: ["agent-ready"],
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		expect(patchMock.mock.calls[0][1].body).toEqual({ displayName: "Renamed", expected: { displayName: "Project One" } });
+		expect(client.getQueryData(["project", "proj-1"])).toMatchObject({
+			config: {
+				trackerIntake: {
+					enabled: true,
+					provider: "gitlab",
+					repo: "acme/project-one",
+					assignee: "octocat",
+					labels: ["agent-ready"],
+				},
+			},
 		});
 	});
 
@@ -2012,141 +2045,41 @@ describe("ProjectSettingsForm", () => {
 		submitSettings();
 
 		expect(screen.queryByText("Enabling intake requires an assignee.")).not.toBeInTheDocument();
-		expect(putMock).not.toHaveBeenCalled();
+		expect(patchMock).not.toHaveBeenCalled();
 	});
 
-	it("restarts when the saved orchestrator agent already differs from the running orchestrator", async () => {
-		getMock.mockResolvedValue({
-			data: {
-				status: "ok",
-				project: {
-					id: "proj-1",
-					name: "Project One",
-					kind: "single_repo",
-					path: "/repo/project-one",
-					repo: "",
-					defaultBranch: "main",
-					config: {
-						worker: { agent: "codex" },
-						orchestrator: { agent: "goose" },
-					},
-				},
-			},
-			error: undefined,
-		});
-
-		renderSettings("proj-1", [
-			{
-				id: "proj-1",
-				name: "Project One",
-				path: "/repo/project-one",
-				orchestratorAgent: "goose",
-				sessions: [
-					{
-						id: "proj-1-orchestrator",
-						workspaceId: "proj-1",
-						workspaceName: "Project One",
-						title: "Orchestrator",
-						provider: "claude-code",
-						kind: "orchestrator",
-						branch: "ao/proj-1-orchestrator",
-						status: "working",
-						createdAt: "2026-07-03T00:00:00Z",
-						updatedAt: "2026-07-03T00:00:00Z",
-						prs: [],
-					},
-				],
-			},
-		], "agents");
-
-		const orchestratorAgent = await screen.findByRole("button", { name: "Orchestrator agent" });
-		expect(orchestratorAgent).toHaveTextContent("Goose");
-
-		submitSettings();
-
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(postMock).toHaveBeenCalledWith("/api/v1/orchestrators", {
-			body: { projectId: "proj-1", clean: true },
-		});
-		await expectReplacementWithoutNavigation();
-	});
-
-	it("navigates to the replacement orchestrator after changing the default agent", async () => {
+	it("does not write an unchanged form even when the running orchestrator differs", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
 			kind: "single_repo",
 			path: "/repo/project-one",
 			repo: "",
-			defaultBranch: "main",
-			config: {
-				worker: { agent: "codex" },
-				orchestrator: { agent: "claude-code" },
-			},
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "goose" } },
 		});
-
 		renderSettings("proj-1", undefined, "agents");
-
-		const orchestratorAgent = await screen.findByRole("button", { name: "Orchestrator agent" });
-		await chooseOption(orchestratorAgent, "Goose");
+		expect(await screen.findByRole("button", { name: "Orchestrator agent" })).toHaveTextContent("Goose");
 		submitSettings();
-
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		await expectReplacementWithoutNavigation();
-		expect(setOrchestratorReplacementErrorMock).not.toHaveBeenCalled();
+		expect(patchMock).not.toHaveBeenCalled();
+		expect(postMock).not.toHaveBeenCalled();
 	});
-
-	it("keeps the config save successful when orchestrator replacement fails", async () => {
+	it("saves an orchestrator harness change once without replacement or navigation", async () => {
 		mockProject({
 			id: "proj-1",
 			name: "Project One",
 			kind: "single_repo",
 			path: "/repo/project-one",
 			repo: "",
-			defaultBranch: "main",
-			config: {
-				worker: { agent: "codex" },
-				orchestrator: { agent: "claude-code" },
-			},
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
 		});
-		postMock.mockResolvedValue({
-			data: undefined,
-			error: {
-				code: "ORCHESTRATOR_SPAWN_FAILED",
-				message: "missing goose binary",
-				requestId: "request-42",
-			},
-			response: { status: 500 },
-		});
-
-		const queryClient = renderSettings("proj-1", undefined, "agents");
-		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-		const orchestratorAgent = await screen.findByRole("button", { name: "Orchestrator agent" });
-		await chooseOption(orchestratorAgent, "goose");
+		renderSettings("proj-1", undefined, "agents");
+		await chooseOption(await screen.findByRole("button", { name: "Orchestrator agent" }), "Goose");
 		submitSettings();
-
-		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(await screen.findByText("Saved")).toBeInTheDocument();
-		expect(await screen.findByText("Orchestrator restart failed: missing goose binary")).toBeInTheDocument();
-		expect(screen.queryByText("Save failed")).not.toBeInTheDocument();
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project", "proj-1"] });
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
-		expect(closeSettingsMock).not.toHaveBeenCalled();
-		expect(setOrchestratorReplacementErrorMock).toHaveBeenCalledWith("proj-1", {
-			message: "missing goose binary",
-			code: "ORCHESTRATOR_SPAWN_FAILED",
-			requestId: "request-42",
+		await expectSaveWithoutReplacement();
+		expect(patchMock.mock.calls[0][1].body).toEqual({
+			config: { orchestrator: { agent: "goose" } },
+			expected: { config: { orchestrator: { agent: "claude-code" } } },
 		});
-		expect(captureOrchestratorReplacementFailureMock).toHaveBeenCalledWith(
-			expect.objectContaining({
-				code: "ORCHESTRATOR_SPAWN_FAILED",
-				requestId: "request-42",
-			}),
-			"proj-1",
-		);
 	});
 	it("preserves opaque account references when saving an unrelated model setting", async () => {
 		mockProject({
@@ -2163,26 +2096,28 @@ describe("ProjectSettingsForm", () => {
 				reviewers: [{ harness: "codex", agentAccountId: "reviewer-C" }, { harness: "claude-code", agentAccountId: "reviewer-D", agentConfig: {model:"claude-native"} }],
 			},
 		});
-		renderSettings("proj-1", undefined, "agents");
+		const client = renderSettings("proj-1", undefined, "agents");
 		await screen.findByRole("button", { name: "Worker model" });
 		await chooseCustomModel("Worker model", "custom-native");
 		submitSettings();
-		await waitFor(() =>
-			expect(putMock).toHaveBeenCalledWith(
-				"/api/v1/projects/{id}",
-				expect.objectContaining({
-					body: expect.objectContaining({
-						config: expect.objectContaining({
-							agentAccounts: { codex: "project-A" },
-							worker: expect.objectContaining({ agentAccountId: "worker-A" }),
-							orchestrator: expect.objectContaining({ agentAccountId: "orchestrator-B" }),
-							reviewers: [expect.objectContaining({ harness: "codex", agentAccountId: "reviewer-C" }), expect.objectContaining({harness:"claude-code",agentAccountId:"reviewer-D",agentConfig:{model:"claude-native"}})],
-						}),
-					}),
-				}),
-			),
-		);
+		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
+		expect(patchMock.mock.calls[0][1].body).toEqual({
+			config: { worker: { agentConfig: { model: "custom-native" } } },
+			expected: { config: { worker: { agentConfig: { model: null } } } },
+		});
+		expect(client.getQueryData(["project", "proj-1"])).toMatchObject({
+			config: {
+				agentAccounts: { codex: "project-A" },
+				worker: { agentAccountId: "worker-A" },
+				orchestrator: { agentAccountId: "orchestrator-B" },
+				reviewers: [
+					{ harness: "codex", agentAccountId: "reviewer-C" },
+					{ harness: "claude-code", agentAccountId: "reviewer-D", agentConfig: { model: "claude-native" } },
+				],
+			},
+		});
 	});
+
  it("replaces the primary reviewer without displaying or dropping editable phantom accounts", async () => {
   mockProject({
    id: "proj-1", name: "Project One", kind: "single_repo", path: "/fake/repo", repo: "", defaultBranch: "main",
@@ -2199,7 +2134,7 @@ describe("ProjectSettingsForm", () => {
   await chooseOption(await screen.findByRole("button",{name:"Reviewer agent"}),"Claude Code");
   expect(screen.queryByRole("heading",{name:"Reviewer · codex"})).not.toBeInTheDocument();
   submitSettings();
-  await waitFor(()=>expect(putMock).toHaveBeenCalledWith("/api/v1/projects/{id}",expect.objectContaining({
+  await waitFor(()=>expect(patchMock).toHaveBeenCalledWith("/api/v1/projects/{id}/settings",expect.objectContaining({
    body:expect.objectContaining({config:expect.objectContaining({
     reviewers:[expect.objectContaining({harness:"claude-code",agentAccountId:"reviewer-D"}),{harness:"copilot",agentConfig:{model:"copilot-native"}}],
    })}),

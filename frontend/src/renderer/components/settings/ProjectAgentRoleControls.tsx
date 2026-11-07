@@ -25,6 +25,7 @@ export function AgentModelField({
 	onModelChange,
 	onModeChange,
 	onEffortChange,
+	onEffortReset,
 	onValidityChange,
 	allowCustomFallback = false,
 	supportedEfforts,
@@ -43,6 +44,7 @@ export function AgentModelField({
 	onModelChange: (value: string) => void;
 	onModeChange: (value: string) => void;
 	onEffortChange: (value: string) => void;
+	onEffortReset?: (value: string) => void;
 	onValidityChange: (valid: boolean) => void;
 	allowCustomFallback?: boolean;
 	/** Cloud accepts custom model IDs and validates effort at the harness boundary. */
@@ -177,6 +179,7 @@ export function AgentModelField({
 							effort,
 							effortsWithoutModel: supportedEfforts,
 							onEffortChange,
+							onEffortReset,
 							onValidityChange,
 							roleLabel: t(`settings.models.${role}Role`),
 						}}

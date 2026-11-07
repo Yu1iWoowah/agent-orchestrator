@@ -1,3 +1,5 @@
+import { ConfirmDialog } from "./ConfirmDialog";
+import { Button } from "./ui/button";
 import type { AppIcon } from "./icons";
 import { Bot, FolderGit2, KeyRound, Loader2, MonitorCog, Play, ScrollText, TriangleAlert, Wrench, X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -130,61 +132,24 @@ function useSettingsLayer(settingsModal: SettingsModal | null) {
 	const [pendingProjectSection, setPendingProjectSection] = useState<{ navigate: () => void } | null>(null);
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 	const [cueBusy, setCueBusy] = useState(false);
-	useEffect(() => {
-		if (pendingProjectSection && projectSaveState.phase === "saved" && !projectSaveState.dirty) {
-			pendingProjectSection.navigate();
-			setPendingProjectSection(null);
-		}
-	}, [pendingProjectSection, projectSaveState]);
-	const closeWhenSavedRef = useRef(false);
+
 	const globalSettingsWasOpen = useRef(false);
 
 	const activeLabel = !settingsModal ? "" : isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.general"))
 		: globalSettingsItem(activeSection, { cloudEnabled, developerMode, diagnostics, customCoder, selfServeBilling }).label(t);
 
+	const projectBusy =
+		projectSaveState.requestPending ||
+		projectSaveState.phase === "pending" ||
+		projectSaveState.phase === "saving" ||
+		projectSaveState.reloading;
 	const closeSettingsDialog = () => {
-		if (!settingsModal) return;
-		if (cueBusy) return;
-		if (isProjectSettings) {
-			if (closeWhenSavedRef.current) return;
-			if (projectSaveState.requestPending) {
-				closeWhenSavedRef.current = true;
-				return;
-			}
-			// A draft that cannot be saved is dropped; waiting for a save would hang the close.
-			if (projectSaveState.unsaveable) {
-				closeSettings();
-				return;
-			}
-			if (projectSaveState.dirty) {
-				const form = document.getElementById("project-settings-form") as HTMLFormElement | null;
-				if (form) {
-					closeWhenSavedRef.current = true;
-					form.requestSubmit();
-					return;
-				}
-			}
-			if (projectSaveState.phase === "pending" || projectSaveState.phase === "saving") {
-				closeWhenSavedRef.current = true;
-				return;
-			}
-		}
-		closeSettings();
+		if (!settingsModal || cueBusy || projectBusy) return;
+		if (isProjectSettings && projectSaveState.dirty) setPendingProjectSection({ navigate: closeSettings });
+		else closeSettings();
 	};
-	useEffect(() => {
-		if (!closeWhenSavedRef.current) return;
-		if (projectSaveState.phase === "failed" || projectSaveState.replacementError) {
-			closeWhenSavedRef.current = false;
-		} else if (projectSaveState.unsaveable && !projectSaveState.requestPending) {
-			closeWhenSavedRef.current = false;
-			closeSettings();
-		} else if (!projectSaveState.dirty && !projectSaveState.requestPending &&
-			(projectSaveState.phase === "saved" || projectSaveState.phase === "idle")) {
-			closeWhenSavedRef.current = false;
-			closeSettings();
-		}
-	}, [closeSettings, projectSaveState]);
+
 	// Re-resolves the requested page as the gates settle: the org's offering
 	// loads after the dialog opens, so a deep link to Upgrade or Coder lands on
 	// it once the offering allows it.
@@ -229,21 +194,34 @@ function useSettingsLayer(settingsModal: SettingsModal | null) {
 	}, [queryClient, settingsModal?.scope]);
 
 	const selectProjectSection = (id: ProjectSettingsSection, navigate = () => projectHistory.visit(id)) => {
-		if (projectSaveState.dirty && !projectSaveState.unsaveable && id !== activeProjectSection) {
-			setPendingProjectSection({ navigate });
-			(document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit();
-		} else {
-			navigate();
-		}
+		if (id === activeProjectSection || cueBusy || projectBusy) return;
+		const sharedDraft =
+			(id === "general" || id === "agents") && (activeProjectSection === "general" || activeProjectSection === "agents");
+		if (projectSaveState.dirty && !sharedDraft) setPendingProjectSection({ navigate });
+		else navigate();
 	};
+
 	const selectGlobalSection = (id: GlobalSettingsSection) => {
 		globalHistory.visit(id);
 		setFocusAgentId(undefined);
 	};
 	const navItems: SettingsNavEntry[] = isProjectSettings
-		? projectSections.map(({ id, label, icon }) => ({ id, label, icon, active: activeProjectSection === id, disabled: cueBusy, onSelect: () => selectProjectSection(id) }))
-		: globalSections.map(({ id, label, icon }) => ({ id, label: label(t), icon, active: activeSection === id, onSelect: () => selectGlobalSection(id) }));
-	const navigationBlocked = isProjectSettings && (cueBusy || projectSaveState.requestPending === true || (projectSaveState.phase === "pending" && !projectSaveState.unsaveable) || projectSaveState.phase === "saving");
+		? projectSections.map(({ id, label, icon }) => ({
+				id,
+				label,
+				icon,
+				active: activeProjectSection === id,
+				disabled: cueBusy || projectBusy,
+				onSelect: () => selectProjectSection(id),
+			}))
+		: globalSections.map(({ id, label, icon }) => ({
+				id,
+				label: label(t),
+				icon,
+				active: activeSection === id,
+				onSelect: () => selectGlobalSection(id),
+			}));
+	const navigationBlocked = isProjectSettings && (cueBusy || projectBusy);
 	const history = isProjectSettings ? projectHistory : globalHistory;
 	const navigation: SwipeNavigationActions = {
 		canGoBack: !navigationBlocked,
@@ -260,11 +238,7 @@ function useSettingsLayer(settingsModal: SettingsModal | null) {
 			else if (!isProjectSettings) { globalHistory.forward(); setFocusAgentId(undefined); }
 		},
 	};
-	const showSaveStatus = isProjectSettings && activeProjectSection !== "cues" &&
-		(projectSaveState.phase === "failed" ||
-			(projectSaveState.phase === "pending" && !projectSaveState.unsaveable) ||
-			projectSaveState.phase === "saving" ||
-			Boolean(remoteHostId && projectSaveState.replacementError));
+	const showSaveStatus = isProjectSettings && activeProjectSection !== "cues";
 
 	return {
 		modal: settingsModal,
@@ -276,6 +250,14 @@ function useSettingsLayer(settingsModal: SettingsModal | null) {
 		remoteHostId,
 		cueBusy,
 		close: closeSettingsDialog,
+		discardOpen: pendingProjectSection !== null,
+		keepEditing: () => setPendingProjectSection(null),
+		discardChanges: () => {
+			const pending = pendingProjectSection;
+			setPendingProjectSection(null);
+			setProjectSaveState(initialProjectSaveState());
+			pending?.navigate();
+		},
 		title: activeLabel,
 		isBodyReady,
 		bodyKey: displaySettings?.scope === "project" ? refKey({ host: displaySettings.hostId ?? LOCAL_HOST, id: displaySettings.projectId }) : "global",
@@ -465,22 +447,68 @@ export function SettingsSaveStatus({ layer: layerProp }: { layer?: SettingsLayer
 	const pageLayer = useSettingsPage();
 	const layer = layerProp ?? pageLayer;
 	if (!layer?.showSaveStatus) return null;
-	const { projectSaveState, remoteHostId } = layer;
+	const state = layer.projectSaveState;
+	const paths = state.conflictPaths ?? [];
+	const labels = paths.map((path) => {
+		const field = path.split(".").at(-1) ?? path;
+		const role = path.startsWith("config.worker.")
+			? t("settings.models.workerRole")
+			: path.startsWith("config.orchestrator.")
+				? t("settings.models.orchestratorRole")
+				: "";
+		const known: Record<string, string> = {
+			displayName: t("settings.project.name"),
+			"config.defaultBranch": t("settings.project.defaultBranch"),
+			defaultBranch: t("settings.project.defaultBranch"),
+			"config.postCreate": t("settings.project.scriptSetup"),
+			"config.preRemove": t("settings.project.scriptCleanup"),
+			"config.sessionPrefix": t("settings.project.sessionPrefix"),
+			"config.reviewers": t("settings.models.reviewerRole"),
+			"config.coder.parameters": t("coder.templateOptions.title"),
+			"config.coder.workspaceNamePrefix": t("coder.workspacePrefix.label"),
+		};
+		return known[path] ?? [role, t(`settings.project.conflictField.${field}`, { defaultValue: field })].filter(Boolean).join(" · ");
+	});
+	const busy = state.requestPending || state.phase === "pending" || state.phase === "saving";
+	const message =
+		state.error ?? (paths.length ? t("settings.project.conflicts", { count: paths.length, fields: labels.join(", ") }) : undefined);
 	return (
-		<div className="mt-2 border-t border-(--color-border-settings-dialog-header) px-2 py-3 text-xs" role="status" aria-live="polite">
-			{projectSaveState.phase === "failed" || (remoteHostId && projectSaveState.replacementError) ? (
-				<div className="space-y-2 text-error">
-					<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? projectSaveState.replacementError ?? t("settings.project.saveFailed")}</p>
-					<button className="text-settings-label underline underline-offset-2" onClick={() => {
-						if (projectSaveState.retry) projectSaveState.retry();
-						else (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit();
-					}} type="button">{t("createProject.retry")}</button>
-				</div>
-			) : (
-				<p className="flex items-center gap-2 text-settings-muted">
-					<><Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />{t("settings.project.saving")}</>
+		<div
+			className="mt-2 space-y-2 border-t border-(--color-border-settings-dialog-header) px-2 py-3 text-xs"
+			role="status"
+			aria-live="polite"
+		>
+			{message ? (
+				<p className="flex items-start gap-2 text-error" role="alert">
+					<TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
+					{message}
 				</p>
-			)}
+			) : null}
+			{paths.length > 0 && state.reload ? (
+				<Button className="w-full" disabled={state.reloading} onClick={state.reload} size="sm" type="button" variant="ghost">
+					{t("settings.project.loadLatest")}
+				</Button>
+			) : null}
+			<Button
+				className="w-full"
+				disabled={Boolean(busy || state.reloading || state.unsaveable || paths.length || (!state.dirty && !state.retry))}
+				form="project-settings-form"
+				onClick={state.retry}
+				size="sm"
+				type={state.retry ? "button" : "submit"}
+			>
+				{busy ? (
+					<>
+						<Loader2 className="size-4 animate-spin" aria-hidden="true" />
+						{t("settings.project.saving")}
+					</>
+				) : state.phase === "failed" && !paths.length ? (
+					t("settings.project.retry")
+				) : (
+					t("settings.project.save")
+				)}
+			</Button>
+			{state.phase === "saved" ? <p className="text-settings-muted">{t("settings.project.saved")}</p> : null}
 		</div>
 	);
 }
@@ -592,7 +620,7 @@ function ProjectSettingsModal({ layer, covered }: { layer: SettingsLayerState; c
 							<DialogHeader className={cn(settingsDialogHeaderClass, "flex h-auto shrink-0 flex-row items-center justify-between border-b-0 py-3 pl-(--size-modal-padding) pr-3")}>
 								<Dialog.Title className="settings-dialog-title">{layer.title}{layer.remoteHostId && <span className="ml-2 text-xs font-normal text-muted-foreground">· {labelForHost(layer.remoteHostId) ?? layer.remoteHostId}</span>}</Dialog.Title>
 								<Dialog.Description className="sr-only">{t("settings.project.dialogDescription")}</Dialog.Description>
-								<button aria-label={t("settings.close")} className="settings-close-button" disabled={layer.cueBusy} onClick={layer.close} type="button">
+								<button aria-label={t("settings.close")} className="settings-close-button" disabled={layer.cueBusy || layer.projectSaveState.requestPending} onClick={layer.close} type="button">
 									<X aria-hidden="true" className="size-4" />
 								</button>
 							</DialogHeader>
@@ -604,6 +632,9 @@ function ProjectSettingsModal({ layer, covered }: { layer: SettingsLayerState; c
 				</Dialog.Content>
 			</Dialog.Portal>
 		</Dialog.Root>
+        <ConfirmDialog open={layer.discardOpen && !covered} title={t("settings.project.unsavedChanges")} description={t("settings.project.unsavedDescription")}
+         confirmLabel={t("settings.project.discardChanges")} cancelLabel={t("settings.project.keepEditing")} destructive
+         onConfirm={layer.discardChanges} onOpenChange={(open) => { if (!open) layer.keepEditing(); }} />
 		</>
 	);
 }

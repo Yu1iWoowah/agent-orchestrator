@@ -1,6 +1,14 @@
+import {
+	conflictingSettings,
+	ProjectSettingsConflict,
+	rebaseSettings,
+	settingsExpected,
+	settingsPatch,
+	settingsSaveError,
+} from "../lib/project-settings-patch";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Plus, Trash2 } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ProjectSettingsSection } from "@aoagents/product-ui";
 import type { components } from "../../api/schema";
@@ -9,7 +17,7 @@ import { clearTerminateSessionState } from "../hooks/useTerminateSession";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOffering } from "../hooks/useCloudOffering";
 import { useCloudOrg } from "../hooks/useCloudOrg";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage } from "../lib/api-client";
 import { aoBridge } from "../lib/bridge";
 import type { CloudCpProject } from "../lib/cloud-cp";
 import { CODER_PROVIDER, FREESTYLE_PROVIDER, canManageBilling, projectSandboxProvider } from "../lib/cloud-offering";
@@ -38,33 +46,53 @@ export function ProjectScriptsSettings({ projectId, onSaveState }: { projectId: 
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
 			if (error) throw new Error(apiErrorMessage(error));
-			if (data?.status !== "ok") throw new Error(t("settings.project.degraded"));
-			return data.project as Project;
+			if (data?.status !== "ok" || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
+			return data.project;
 		},
 	});
+	const baseline = useRef<Project | undefined>(undefined);
+	if (query.data && baseline.current?.id !== projectId) baseline.current = query.data;
 	if (query.isLoading) return <p className="px-(--settings-row-inset) text-sm text-settings-muted">{t("settings.project.loading")}</p>;
 	if (query.isError || !query.data) return <p role="alert" className="px-(--settings-row-inset) text-sm text-error">{query.error instanceof Error ? query.error.message : t("settings.project.loadFailed")}</p>;
 	const project = query.data;
 	const scratch = project.kind === "scratch";
-	const save = async (steps: ScriptSteps) => {
-		// A local step always runs in the project's own workspace; its own time
-		// limit is stored with it, as a Cloud step's is.
-		const scripts = {
-			postCreate: steps.postCreate.map(serializeLocalScriptStep),
-			...(steps.preRemove && { preRemove: steps.preRemove.map(serializeLocalScriptStep) }),
-		};
-		const current = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: project.id } } });
-		if (current.error) throw new Error(apiErrorMessage(current.error));
-		if (current.data?.status !== "ok" || !current.data.project) throw new Error(t("settings.project.degraded"));
-		const latest = current.data.project as Project;
-		const { error } = await apiClient.PUT("/api/v1/projects/{id}", {
-			params: { path: { id: project.id } },
-			body: { displayName: latest.name, config: { ...latest.config, ...scripts } },
-		});
-		if (error) throw new Error(apiErrorMessage(error));
+	const accept = (latest: Project) => {
+		baseline.current = latest;
+		client.setQueryData(["project", projectId], latest);
 	};
+	const save = async (steps: ScriptSteps) => {
+		const before = baseline.current ?? project;
+		const patch = settingsPatch(localScriptValues(localProjectScripts(before)), localScriptValues(steps));
+		if (!Object.keys(patch).length) return localProjectScripts(before);
+		const { data, error } = await apiClient.PATCH("/api/v1/projects/{id}/settings", {
+			params: { path: { id: projectId } },
+			body: { ...patch, expected: settingsExpected(patch, { config: before.config }) },
+		});
+		if (error) throw settingsSaveError(apiErrorCode(error), apiErrorMessage(error), apiErrorDetails(error));
+		if (!data?.project) throw new Error(t("settings.project.degraded"));
+		accept(data.project);
+		return localProjectScripts(data.project);
+	};
+	const reload = async (draft: ScriptSteps, paths: string[]) => {
+		const before = localProjectScripts(baseline.current ?? project);
+		const { data, error } = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
+		if (error) throw new Error(apiErrorMessage(error));
+		if (data?.status !== "ok" || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
+		const latest = localProjectScripts(data.project);
+		accept(data.project);
+		return {
+			values: rebaseSettings(
+				before,
+				draft,
+				latest,
+				paths.map((path) => path.replace(/^config\./, "")),
+			),
+			baseline: latest,
+		};
+	};
+
 	return <ScriptsEditor key={projectId} projectId={project.id} scratch={scratch} postCreate={localSteps(project.config?.postCreate)} preRemove={localSteps(project.config?.preRemove)}
-		save={save} onSaveState={onSaveState} onSaved={() => {
+		save={save} reload={reload} onSaveState={onSaveState} onSaved={() => {
 			void client.invalidateQueries({ queryKey: ["project", projectId] });
 			void client.invalidateQueries({ queryKey: workspaceQueryKey });
 		}} />;
@@ -92,27 +120,61 @@ export function CloudProjectScriptsSettings({ projectId, cloudOrgId, onSaveState
 		queryKey, enabled: ready, retry: false,
 		queryFn: ({ signal }) => client.getProject(cloudOrgId, projectId, { signal }).then((response) => response.project),
 	});
-	if (!ready) return <p role="alert" className="px-(--settings-row-inset) text-sm text-error">{t("settings.cloudProject.signIn")}</p>;
+	const baseline = useRef<CloudCpProject | undefined>(undefined);
+	if (query.data && baseline.current?.id !== projectId) baseline.current = query.data;
+	if (!ready)
+		return (
+			<p role="alert" className="px-(--settings-row-inset) text-sm text-error">
+				{t("settings.cloudProject.signIn")}
+			</p>
+		);
 	if (query.isLoading) return <p className="px-(--settings-row-inset) text-sm text-settings-muted">{t("settings.project.loading")}</p>;
 	if (query.isError || !query.data) return <p role="alert" className="px-(--settings-row-inset) text-sm text-error">{query.error instanceof Error ? query.error.message : t("settings.project.loadFailed")}</p>;
 	const project: CloudCpProject = query.data;
 	// A step can run in any of the project's repositories: the main one (the
 	// default) or one of the additional ones checked out beside it, named by the
 	// folder it checks out into.
-	const repositories = projectAdditionalRepos(project.config).map((repo) => ({ folder: repoDirName(repo.url), label: gitHubFullName(repo.url) ?? repo.url }));
-	const save = async (steps: ScriptSteps) => {
-		// Settings merge objects but replace arrays, so only the two lists are sent;
-		// an empty list clears it. Every other config key stays as stored.
-		const response = await client.updateProjectSettings(project.orgId, project.id, {
-			config: { postCreate: serializeScriptSteps(steps.postCreate), preRemove: serializeScriptSteps(steps.preRemove ?? []) },
-		});
-		queryClient.setQueryData(queryKey, response.project);
+	const repositories = projectAdditionalRepos(project.config).map((repo) => ({
+		folder: repoDirName(repo.url),
+		label: gitHubFullName(repo.url) ?? repo.url,
+	}));
+	const accept = (latest: CloudCpProject) => {
+		baseline.current = latest;
+		queryClient.setQueryData(queryKey, latest);
 	};
+	const save = async (steps: ScriptSteps) => {
+		const before = baseline.current ?? project;
+		const patch = settingsPatch(cloudScriptValues(cloudProjectScripts(before)), cloudScriptValues(steps));
+		if (!Object.keys(patch).length) return cloudProjectScripts(before);
+		const expected = settingsExpected(patch, { config: before.config });
+		const latest = await client.getProject(project.orgId, project.id);
+		const conflicts = conflictingSettings(patch, expected, { config: latest.project.config });
+		if (conflicts.length) throw new ProjectSettingsConflict(conflicts);
+		const response = await client.updateProjectSettings(project.orgId, project.id, patch);
+		accept(response.project);
+		return cloudProjectScripts(response.project);
+	};
+	const reload = async (draft: ScriptSteps, paths: string[]) => {
+		const before = cloudProjectScripts(baseline.current ?? project);
+		const response = await client.getProject(project.orgId, project.id);
+		const latest = cloudProjectScripts(response.project);
+		accept(response.project);
+		return {
+			values: rebaseSettings(
+				before,
+				draft,
+				latest,
+				paths.map((path) => path.replace(/^config\./, "")),
+			),
+			baseline: latest,
+		};
+	};
+
 	return <ScriptsEditor key={`${cloudOrgId}/${projectId}`} scratch={false}
 		postCreate={parseScriptSteps(project.config?.postCreate, project.repositoryUrl)} preRemove={parseScriptSteps(project.config?.preRemove, project.repositoryUrl)}
 		repositories={repositories}
 		cloud={{ cleanupRuns: cleanupRunsOn(projectSandboxProvider(project.config, offering)), readOnly }}
-		save={save} onSaveState={onSaveState} onSaved={() => { void queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey }); }} />;
+		save={save} reload={reload} onSaveState={onSaveState} onSaved={() => { void queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey }); }} />;
 }
 
 /** The cloud providers that run a project's Cleanup before deleting a session's workspace. */
@@ -124,6 +186,32 @@ function cleanupRunsOn(provider: string): boolean {
 }
 
 type ScriptSteps = { postCreate: ScriptStepDraft[]; preRemove?: ScriptStepDraft[] };
+
+const keptScriptSteps = (steps: ScriptStepDraft[]) =>
+	steps
+		.filter((step) => step.command.trim())
+		.map((step) => ({ command: step.command, folder: step.folder, timeout: (step.timeout ?? "").trim() }));
+const localProjectScripts = (project: Project): ScriptSteps => ({
+	postCreate: keptScriptSteps(localSteps(project.config?.postCreate) ?? []),
+	...(project.kind !== "scratch" && { preRemove: keptScriptSteps(localSteps(project.config?.preRemove) ?? []) }),
+});
+const cloudProjectScripts = (project: CloudCpProject): ScriptSteps => ({
+	postCreate: keptScriptSteps(parseScriptSteps(project.config.postCreate, project.repositoryUrl) ?? []),
+	preRemove: keptScriptSteps(parseScriptSteps(project.config.preRemove, project.repositoryUrl) ?? []),
+});
+const localScriptValues = (steps: ScriptSteps) => ({
+	config: {
+		postCreate: steps.postCreate.map(serializeLocalScriptStep),
+		...(steps.preRemove && { preRemove: steps.preRemove.map(serializeLocalScriptStep) }),
+	},
+});
+const cloudScriptValues = (steps: ScriptSteps) => ({
+	config: { postCreate: serializeScriptSteps(steps.postCreate), preRemove: serializeScriptSteps(steps.preRemove ?? []) },
+});
+const draftsFromScripts = (scripts: ScriptSteps): Record<ScriptKind, ScriptStepDraft[]> => ({
+	setup: scripts.postCreate.length ? scripts.postCreate.map((step) => ({ ...step })) : [emptyStep()],
+	cleanup: scripts.preRemove?.length ? scripts.preRemove.map((step) => ({ ...step })) : [emptyStep()],
+});
 
 function localSteps(commands: string[] | undefined): ScriptStepDraft[] | undefined {
 	return commands?.map(parseLocalScriptStep);
@@ -223,7 +311,18 @@ function CopyVariableButton({ text, label }: { text: string; label: string }) {
 	</button>;
 }
 
-function ScriptsEditor({ projectId, scratch, postCreate, preRemove, repositories = [], cloud, save, onSaveState, onSaved }: {
+function ScriptsEditor({
+	projectId,
+	scratch,
+	postCreate,
+	preRemove,
+	repositories = [],
+	cloud,
+	save,
+	reload,
+	onSaveState,
+	onSaved,
+}: {
 	/** The local project, for retrying its cleanup; absent for a Cloud project. */
 	projectId?: string;
 	scratch: boolean;
@@ -233,24 +332,26 @@ function ScriptsEditor({ projectId, scratch, postCreate, preRemove, repositories
 	repositories?: { folder: string; label: string }[];
 	/** Set for a Cloud project: the hints describe its session workspace, and cleanupRuns says whether Cleanup runs on its provider. */
 	cloud?: { cleanupRuns: boolean; readOnly?: boolean };
-	save: (scripts: ScriptSteps) => Promise<void>;
+	save: (scripts: ScriptSteps) => Promise<ScriptSteps>;
+	reload: (draft: ScriptSteps, paths: string[]) => Promise<{ values: ScriptSteps; baseline: ScriptSteps }>;
 	onSaveState?: (state: ProjectSettingsSaveState) => void;
 	onSaved: () => void;
 }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
 	const [activeTab, setActiveTab] = useState<ScriptKind>("setup");
-	const [drafts, setDrafts] = useState<Record<ScriptKind, ScriptStepDraft[]>>(() => ({
-		setup: postCreate?.length ? postCreate.map((step) => ({ ...step })) : [emptyStep()],
-		cleanup: preRemove?.length ? preRemove.map((step) => ({ ...step })) : [emptyStep()],
-	}));
+	const [drafts, setDrafts] = useState(() => draftsFromScripts({ postCreate: postCreate ?? [], preRemove }));
+	const [reloading, setReloading] = useState(false);
+	const [reloadError, setReloadError] = useState<string>();
+	const reloadRef = useRef(reload);
+	reloadRef.current = reload;
 	// A step keeps its folder as stored, even one that is not among the project's
 	// repositories any more (it is listed by folder name), so saving never moves
 	// a step into another repository on its own.
-	const kept = (steps: ScriptStepDraft[]) => steps.filter((step) => step.command.trim()).map((step) => ({ command: step.command, folder: step.folder, timeout: (step.timeout ?? "").trim() }));
+
 	const commands: ScriptSteps = {
-		postCreate: kept(drafts.setup),
-		...(!scratch && { preRemove: kept(drafts.cleanup) }),
+		postCreate: keptScriptSteps(drafts.setup),
+		...(!scratch && { preRemove: keptScriptSteps(drafts.cleanup) }),
 	};
 	// The first step whose time limit is not a whole number of minutes in range.
 	const invalidTimeout = (["setup", "cleanup"] as const).flatMap((kind) => kind === "cleanup" && scratch ? [] : drafts[kind]
@@ -275,12 +376,15 @@ function ScriptsEditor({ projectId, scratch, postCreate, preRemove, repositories
 	const [savedAt, setSavedAt] = useState(false);
 	const dirty = JSON.stringify(commands) !== saved;
 	const mutation = useMutation({
-		mutationFn: async (scripts: ScriptSteps) => {
-			await save(scripts);
-			return scripts;
+		mutationFn: save,
+		onSuccess: (scripts) => {
+			setSaved(JSON.stringify(scripts));
+			setDrafts(draftsFromScripts(scripts));
+			setSavedAt(true);
+			onSaved();
 		},
-		onSuccess: (scripts) => { setSaved(JSON.stringify(scripts)); setSavedAt(true); onSaved(); },
 	});
+
 	const retry = useMutation({
 		mutationFn: async () => {
 			const { data, error } = await apiClient.POST("/api/v1/sessions/cleanup", { params: { query: { project: projectId ?? "" } } });
@@ -292,23 +396,55 @@ function ScriptsEditor({ projectId, scratch, postCreate, preRemove, repositories
 			onSaved();
 		},
 	});
+	const resetMutation = mutation.reset;
+	const loadLatest = useCallback(async () => {
+		if (reloading || !(mutation.error instanceof ProjectSettingsConflict)) return;
+		setReloading(true);
+		try {
+			const result = await reloadRef.current(commands, mutation.error.paths);
+			setSaved(JSON.stringify(result.baseline));
+			setDrafts(draftsFromScripts(result.values));
+			setSavedAt(false);
+			setReloadError(undefined);
+			resetMutation();
+		} catch (cause) {
+			setReloadError(cause instanceof Error ? cause.message : t("settings.project.loadFailed"));
+		} finally {
+			setReloading(false);
+		}
+	}, [drafts, mutation.error, reloading, resetMutation, t]);
 	useEffect(() => {
+		const conflict = mutation.error instanceof ProjectSettingsConflict ? mutation.error : undefined;
 		onSaveState?.({
-			// This form saves only on "Save changes", so unsaved edits are reported as
-			// dirty but never as the autosave "pending" phase, which the settings
-			// sidebar shows as an endless "Saving" spinner.
 			phase: mutation.isError ? "failed" : mutation.isPending ? "saving" : savedAt && !dirty ? "saved" : "idle",
 			dirty,
 			requestPending: mutation.isPending,
-			error: mutation.error instanceof Error ? mutation.error.message : undefined,
+			unsaveable: timeoutError !== undefined || cloud?.readOnly === true,
+			error: reloadError ?? timeoutError ?? (!conflict && mutation.error instanceof Error ? mutation.error.message : undefined),
+			conflictPaths: conflict?.paths,
+			reload: conflict ? loadLatest : undefined,
+			reloading,
 		});
-	}, [dirty, mutation.error, mutation.isError, mutation.isPending, onSaveState, savedAt]);
-	const locked = mutation.isPending || retry.isPending || cloud?.readOnly === true;
+	}, [
+		dirty,
+		mutation.error,
+		mutation.isError,
+		mutation.isPending,
+		onSaveState,
+		savedAt,
+		loadLatest,
+		reloading,
+		reloadError,
+		timeoutError,
+		cloud?.readOnly,
+	]);
+	const locked = mutation.isPending || retry.isPending || reloading || cloud?.readOnly === true;
+
 	const updateSteps = (kind: ScriptKind, steps: ScriptStepDraft[]) => {
 		setDrafts((current) => ({ ...current, [kind]: steps }));
 		setSavedAt(false);
 	};
-	return <form id="project-settings-form" className="flex min-h-full shrink-0 flex-col gap-3" onSubmit={(event) => { event.preventDefault(); if (!timeoutError) mutation.mutate(commands); }}>
+	return <form id="project-settings-form" className="flex min-h-full shrink-0 flex-col gap-3" onSubmit={(event) => { event.preventDefault(); if (!timeoutError && dirty && !locked) mutation.mutate(commands); }}>
 		<Tabs className="flex flex-1 flex-col gap-3" value={activeTab} onValueChange={(value) => setActiveTab(value as ScriptKind)}>
 			<TabsList aria-label={t("settings.project.scripts")} className="shrink-0 self-start">
 				<TabsTrigger value="setup">{t("settings.project.scriptSetup")}</TabsTrigger>
@@ -379,7 +515,7 @@ function ScriptsEditor({ projectId, scratch, postCreate, preRemove, repositories
 					</div>
 					{kind === "cleanup" && !cloud && <div className="settings-content-row space-y-2">
 						<p className="text-xs text-settings-muted">{t("settings.project.cleanupRetryHint")}</p>
-						<Button disabled={dirty || mutation.isPending || retry.isPending} onClick={() => retry.mutate()} type="button" variant="ghost" size="sm" className="text-settings-muted hover:text-settings-label">{t("settings.project.retryCleanup")}</Button>
+						<Button disabled={dirty || mutation.isPending || retry.isPending || reloading} onClick={() => retry.mutate()} type="button" variant="ghost" size="sm" className="text-settings-muted hover:text-settings-label">{t("settings.project.retryCleanup")}</Button>
 						{retry.isError && <p role="alert" className="text-sm text-error">{retry.error instanceof Error ? retry.error.message : t("settings.project.cleanupRetryFailed")}</p>}
 						{retry.data && <div role="status" className="space-y-1 text-sm text-settings-muted">
 							<p>{t("settings.project.cleanupRetryResult", { cleaned: retry.data.cleaned.length, skipped: retry.data.skipped.length })}</p>
@@ -389,7 +525,7 @@ function ScriptsEditor({ projectId, scratch, postCreate, preRemove, repositories
 				</ProjectSettingsSection>}
 			</TabsContent>)}
 		</Tabs>
-		<SettingsSaveFooter dirty={dirty} disabled={locked || timeoutError !== undefined}
-			error={timeoutError ?? (mutation.isError ? mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed") : undefined)} />
+		{!onSaveState && <SettingsSaveFooter dirty={dirty} disabled={locked || timeoutError !== undefined}
+			error={timeoutError ?? (mutation.isError ? mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed") : undefined)} />}
 	</form>;
 }

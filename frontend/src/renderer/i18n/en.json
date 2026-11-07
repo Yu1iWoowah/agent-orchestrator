@@ -3985,5 +3985,19 @@
 	"reviewerSettings.description": "Only the next review pass uses this choice. The current pass is unchanged; the reviewer keeps its account and fixed permissions. Empty model or effort resets to the provider default.",
 	"reviewerSettings.fastOn": "On",
 	"reviewerSettings.fastOff": "Off",
-	"reviewerSettings.fastCost": "Fast may incur additional provider charges. Pinning On is an explicit choice for the next pass."
+	"reviewerSettings.fastCost": "Fast may incur additional provider charges. Pinning On is an explicit choice for the next pass.",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests"
 }

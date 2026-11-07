@@ -4074,5 +4074,19 @@
 	"reviewerSettings.description": "Seule la prochaine passe utilise ce choix. La passe actuelle, le compte et les permissions fixes restent inchangés. Vider model ou effort rétablit la valeur par défaut du provider.",
 	"reviewerSettings.fastOn": "Activé",
 	"reviewerSettings.fastOff": "Désactivé",
-	"reviewerSettings.fastCost": "Fast peut entraîner des frais supplémentaires. Le fixer sur Activé est un choix explicite pour la prochaine passe."
+	"reviewerSettings.fastCost": "Fast peut entraîner des frais supplémentaires. Le fixer sur Activé est un choix explicite pour la prochaine passe.",
+	"settings.project.conflictField.model": "Model",
+	"settings.project.conflictField.mode": "Mode",
+	"settings.project.conflictField.effort": "Effort",
+	"settings.project.conflictField.permissions": "Permissions",
+	"settings.project.conflictField.agent": "Agent",
+	"settings.project.conflictField.agentAccountId": "Account",
+	"settings.project.conflictField.autoReview": "Auto review",
+	"settings.project.conflictField.workersRequestReview": "Worker review requests",
+	"settings.project.save": "Save",
+	"settings.project.unsavedDescription": "Leaving will discard these changes.",
+	"settings.project.discardChanges": "Discard changes",
+	"settings.project.keepEditing": "Keep editing",
+	"settings.project.loadLatest": "Load latest settings",
+	"settings.project.conflicts": "{{count}} fields changed elsewhere. Nothing was saved: {{fields}}"
 }
