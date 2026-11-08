@@ -299,11 +299,16 @@ class CLI:
         publish(path.with_suffix(".raw"), raw)
         publish(path.with_suffix(".json"), canonical(dict(metadata, sha256=digest(raw), raw_path=str(path.with_suffix(".raw")))))
 
-    def call(self, args, timeout=30, deadline=None):
+    def call(self, args, timeout=30, deadline=None, on_dispatch=None):
         require(digest(self.executable.read_bytes()) == self.sha256, "qualified CLI changed")
         dispatched = time.monotonic()
         if deadline is not None and dispatched > deadline:
             raise WindowElapsed()
+        if on_dispatch:
+            on_dispatch()
+        dispatched = time.monotonic()
+        if deadline is not None and dispatched > deadline:
+            raise WindowElapsed()  # No subprocess: caller can record not-dispatched.
         self.last_dispatched = dispatched
         try:
             result = subprocess.run([str(self.executable), *args], env=self.env, stdin=subprocess.DEVNULL,
@@ -626,6 +631,11 @@ class Run:
             self.state.setdefault("wait_history", []).append(dict(wait, phase=phase, manual_continue_at=now()))
             del self.state["waits"][phase]
             self.state.pop("waiting_phase", None)
+        exported = self.state.get("waits", {}).get("export")
+        if (exported and exported.get("completed_at") and "retire" not in self.state.get("completed_stages", []) and
+                (exported["boot_id"] != boot_id() or self.clock() - exported["monotonic"] >= exported["limit"])):
+            self.state.setdefault("wait_history", []).append(dict(exported, phase="export", manual_continue_at=now()))
+            del self.state["waits"]["export"]
         if self.state.get("error"):
             self.state.setdefault("previous_errors", []).append(self.state.pop("error"))
         self.state["outcome"] = "pending"
@@ -657,17 +667,26 @@ class Run:
                   "old_id": self.old, "new_id": self.state.get("new_id"), "authority_refs": self.request["authority"]["source_refs"]}
         if not intent_path.exists():
             publish(intent_path, canonical(intent))
-        self.state.setdefault("effects", {})[key] = "UNKNOWN"
+        self.state.setdefault("effects", {})[key] = "not-dispatched"
         self.save()
-        publish(directory / "sent.json", canonical({"at": now(), "monotonic": self.clock()}))
+        sent_path = directory / "sent.json"
+        def dispatched():
+            publish(sent_path, canonical({"at": now(), "monotonic": self.clock()}))
+            self.state["effects"][key] = "UNKNOWN"
+            self.save()
         while True:
             deadline = before_call() if before_call else None
             try:
-                raw = self.cli.call(args, timeout, deadline=deadline)
+                raw = self.cli.call(args, timeout, deadline=deadline, on_dispatch=dispatched)
                 break
             except WindowElapsed:
                 # The adapter proved no subprocess was started. Reobserve S1/S2,
                 # retaining the original bounded idle wait and mutation intent.
+                self.evidence("not-dispatched-" + key, {"at": now(), "reason": "idle window elapsed before subprocess"})
+                sent_path.unlink(missing_ok=True)
+                sync_directory(directory)
+                self.state["effects"][key] = "not-dispatched"
+                self.save()
                 continue
         result = {"stdout": raw.decode(), "stderr": getattr(self.cli, "last_stderr", ""), "sha256": digest(raw), "accepted_at": now()}
         publish(result_path, canonical(result))
@@ -695,9 +714,25 @@ class Run:
     def workspace(self, sid):
         session = self.cli.get("sessions/" + identifier(sid))["session"]
         require(session["id"] == sid and session["projectId"] == PROJECT, "workspace scope changed")
-        path = session.get("workspacePath")
-        require(path, "UNKNOWN registered workspace: " + sid)
-        return path
+        branch = session.get("branch")
+        require(isinstance(branch, str) and branch, "UNKNOWN registered branch: " + sid)
+        project = self.cli.get("projects/" + PROJECT)["project"]
+        require(project.get("id") == PROJECT and project.get("path"), "project repository unavailable")
+        repository = no_symlinks(project["path"])
+        raw = old_git(["worktree", "list", "--porcelain", "-z"], workspace=repository)
+        expected = "refs/heads/" + branch
+        matches = []
+        for block in raw.split(b"\0\0"):
+            fields = dict(part.split(b" ", 1) for part in block.split(b"\0") if b" " in part)
+            if fields.get(b"branch") == expected.encode():
+                require(b"worktree" in fields and not any(x in fields for x in (b"prunable",)), "invalid worktree registration")
+                matches.append(no_symlinks(os.fsdecode(fields[b"worktree"])))
+        require(len(matches) == 1 and matches[0].is_dir(), "no unique registered worktree for session branch: " + sid)
+        path = matches[0]
+        require(old_git(["symbolic-ref", "--quiet", "HEAD"], workspace=path).decode().strip() == expected,
+                "registered workspace branch changed")
+        self.evidence("workspace-" + sid, {"session_id": sid, "branch": branch, "project_path": str(repository), "path": str(path)})
+        return str(path)
 
     def worker_stop(self, worker):
         sid = identifier(worker["id"])
@@ -750,11 +785,15 @@ class Run:
 
     def workers(self):
         results = []
+        all_safe = True
         for worker in self.live_workers():
             result = self.worker_stop(worker)
             if not result:
-                return False
-            results.append(result)
+                all_safe = False
+            else:
+                results.append(result)
+        if not all_safe:
+            return False
         self.state["stop_index_sha256"] = digest(canonical(results))
         self.state["stops"] = results
         publish(self.root / "workers/index.json", canonical(results))
@@ -831,7 +870,7 @@ EXPORT_COLUMNS = {
 }
 
 
-def export_conversation(database, old, conversation, harness):
+def export_conversation(database, old, conversation, harness, latest_sequence):
     path = no_symlinks(database)
     uri = path.as_uri() + "?mode=ro"
     with sqlite3.connect(uri, uri=True, timeout=30) as db:
@@ -840,13 +879,17 @@ def export_conversation(database, old, conversation, harness):
         db.execute("BEGIN")
         session = db.execute("SELECT id,project_id,harness,provider_conversation_id FROM sessions WHERE id=?", (old,)).fetchone()
         require(session and session["project_id"] == PROJECT and session["harness"] == harness, "DB source identity mismatch")
-        scope = db.execute("SELECT id,project_id,current_session_id,latest_sequence FROM conversations WHERE id=?", (conversation,)).fetchone()
-        require(scope and scope["project_id"] == PROJECT and scope["current_session_id"] == old, "DB conversation scope changed")
-        result = {"session": dict(session), "conversation": dict(scope)}
+        require(type(latest_sequence) is int and latest_sequence > 0, "CLI cut sequence unavailable")
+        result = {"session": dict(session), "conversation_id": conversation, "cli_latest_sequence": latest_sequence}
         for table, columns in EXPORT_COLUMNS.items():
             # Qualified schema only; an unknown column never widens the read.
             rows = db.execute("SELECT " + ",".join(columns) + " FROM " + table + " WHERE conversation_id=? ORDER BY id", (conversation,))
             result[table] = [dict(row) for row in rows]
+            require(all(row["conversation_id"] == conversation for row in result[table]), "DB message scope changed")
+        messages = result["conversation_messages"]
+        sequences = [row["sequence"] for table in ("conversation_messages", "conversation_activities") for row in result[table]]
+        require(messages and all(type(seq) is int and 0 < seq <= latest_sequence for seq in sequences) and
+                max(sequences) == latest_sequence, "DB messages/activities do not match CLI cut")
         db.rollback()
         return result
 
@@ -1057,8 +1100,12 @@ def export_material(run, delta=False):
         require(type(next_cursor) is int and (cursor is None or next_cursor < cursor), "projection pagination unavailable")
         cursor = next_cursor
         snap = run.cli.read(["session", "get", run.old, "--transcript", "500", "--cap", "0", "--before", str(cursor)])
-    raw = export_conversation(run.cli.data_dir / "ao.db", run.old, conversation, snap["session"]["harness"])
-    require(raw["conversation"]["latest_sequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
+    raw = export_conversation(run.cli.data_dir / "ao.db", run.old, conversation, snap["session"]["harness"], transcript["latestSequence"])
+    after = run.snapshot(run.old)["transcript"]
+    require(after["conversationId"] == conversation and after["activeBranchId"] == branch and
+            after["latestSequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
+    if after.get("incomplete"):
+        return False
     publish(directory / "conversation.json", canonical(raw))
     handoff = run.state["handoff"]
     require(digest(read_regular(handoff["path"])) == handoff["sha256"], "handoff changed")

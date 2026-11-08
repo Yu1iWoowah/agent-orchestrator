@@ -31,11 +31,18 @@ def snapshot(state="idle", turns=None, entries=None):
         if not reason and entry.get("status") == "pending" and entry.get("activityKind") in ("approval", "user_input"):
             reason = "pending"
         if reason:
-            incomplete.append({"type": "entry", "sequence": entry.get("sequence", 1), "reason": reason})
+            item = {"type": "entry", "sequence": entry.get("sequence", 1), "reason": reason}
+            if reason == "pending" and entry.get("requestId"):
+                item["requestId"] = entry["requestId"]
+            incomplete.append(item)
     return {"session": {"id": "old", "projectId": h.PROJECT, "kind": "orchestrator",
                         "harness": "codex", "mode": "chat", "isTerminated": False,
-                        "activity": {"state": state}},
-            "transcript": {"conversationId": "conv", "activeBranchId": "branch",
+                        "branch": "fixture", "status": "working" if state == "active" else "idle",
+                        "createdAt": "2026-11-08T00:00:00Z", "updatedAt": "2026-11-08T00:00:00Z", "prs": [],
+                        "activity": {"state": state, "lastActivityAt": "2026-11-08T00:00:00Z"}},
+            "transcript": {"source": "ao_conversation", "order": "oldest_first", "requested": 500,
+                           "returned": len(entries), "cap": {"unit": "chars", "value": 0},
+                           "conversationId": "conv", "activeBranchId": "branch",
                            "latestSequence": 1, "hasMoreBefore": False, "entries": entries,
                            "turns": turns, "incomplete": incomplete}}
 
@@ -82,7 +89,9 @@ class ProtocolTests(unittest.TestCase):
             fail = False
             last_received = 0
 
-            def call(self, args, timeout=30, deadline=None):
+            def call(self, args, timeout=30, deadline=None, on_dispatch=None):
+                if on_dispatch:
+                    on_dispatch()
                 self.calls.append(args)
                 if self.fail:
                     raise subprocess.TimeoutExpired(args, timeout)
@@ -103,6 +112,115 @@ class ProtocolTests(unittest.TestCase):
         run = self.run_fixture()
         run.effect("notify", ["send", "original"], 60)
         run.effect("notify", ["send", "original"], 60)
+        self.assertEqual(len(run.cli.calls), 1)
+
+    def test_audit_guard_failure_is_not_dispatched_and_can_continue(self):
+        run = self.run_fixture()
+        for key in ("kill", "exit"):
+            args = ["session", key, "old"]
+            with self.assertRaisesRegex(h.Stop, "guard not ready"):
+                run.effect(key, args, 60, lambda: h.require(False, "guard not ready"))
+            self.assertFalse((run.root / "control" / key / "sent.json").exists())
+            self.assertEqual(run.state["effects"][key], "not-dispatched")
+            run.rearm_wait()
+            continued = h.Run(run.root, run.cli)
+            continued.effect(key, args, 60)
+            self.assertEqual(continued.state["effects"][key], "accepted")
+            run = continued
+        self.assertEqual(len(run.cli.calls), 2)
+
+    def test_audit_dispatch_deadline_checks_before_starting_subprocess(self):
+        run_file = self.root / "fake-running.json"
+        h.publish(run_file, b'{"port":1}')
+        cli = h.CLI(Path("/usr/bin/true"), "old", self.root, run_file, self.root)
+        marked = []
+        with patch.object(h.time, "monotonic", side_effect=[0, 2]), patch.object(h.subprocess, "run") as invoked:
+            with self.assertRaises(h.WindowElapsed):
+                cli.call([], deadline=1, on_dispatch=lambda: marked.append(True))
+        self.assertEqual(marked, [True])
+        invoked.assert_not_called()
+
+    def test_audit_continue_rechecks_export_after_idle_guard_timeout(self):
+        run = self.run_fixture()
+        run.clock = lambda: 1000
+        run.state.update(waiting_phase="old_idle", completed_stages=["workers", "2a", "export"], waits={
+            "old_idle": {"started_at": "original", "monotonic": 0, "boot_id": h.boot_id(), "limit": 900},
+            "export": {"started_at": "original", "monotonic": 0, "boot_id": h.boot_id(), "limit": 600, "completed_at": "original-finish"}})
+        original_t0 = copy.deepcopy(run.request["authority"])
+        run.rearm_wait()
+        self.assertEqual({x["phase"] for x in run.state["wait_history"]}, {"old_idle", "export"})
+        self.assertTrue(run.wait("export", lambda: True))
+        self.assertEqual(run.state["waits"]["export"]["monotonic"], 1000)
+        self.assertEqual(run.request["authority"], original_t0)
+
+    def test_audit_expired_dispatch_marker_is_not_an_unknown_effect(self):
+        run = self.run_fixture()
+        original = run.cli.call
+        def expired(args, timeout=30, deadline=None, on_dispatch=None):
+            on_dispatch()
+            raise h.WindowElapsed()
+        run.cli.call = expired
+        guards = []
+        def guard():
+            guards.append(True)
+            h.require(len(guards) == 1, "guard not ready")
+            return 1
+        with self.assertRaisesRegex(h.Stop, "guard not ready"):
+            run.effect("kill", ["session", "kill", "old"], 60, guard)
+        self.assertEqual(run.state["effects"]["kill"], "not-dispatched")
+        self.assertFalse((run.root / "control/kill/sent.json").exists())
+        run.cli.call = original
+        run.effect("kill", ["session", "kill", "old"], 60)
+        self.assertEqual(len(run.cli.calls), 1)
+
+    def test_audit_all_active_workers_receive_stop_in_same_round(self):
+        run = self.run_fixture()
+        workers = [dict(id=sid, projectId=h.PROJECT, kind="worker", isTerminated=False) for sid in ("w1", "w2")]
+        run.cli.sessions = lambda: workers
+        def active(sid):
+            snap = snapshot("active", turns=[{"id": "busy", "state": "running"}])
+            snap["session"].update(id=sid, kind="worker")
+            return snap
+        run.cli.session = active
+        run.request["workers"] = [dict(worker_id=sid, reserved_stop_d="D-7") for sid in ("w1", "w2")]
+        self.assertFalse(run.workers())
+        self.assertEqual({args[args.index("--session") + 1] for args in run.cli.calls}, {"w1", "w2"})
+        self.assertFalse(run.workers())
+        self.assertEqual(len(run.cli.calls), 2)
+
+    def test_audit_workspace_uses_branch_registration_without_fake_path(self):
+        fake = FlowFixture(self.root, "codex", "codex")
+        self.assertNotIn("workspacePath", fake.get("sessions/old")["session"])
+        self.assertEqual(fake.run.workspace("old"), str(fake.workspace))
+        subprocess.run(["git", "-C", str(fake.repo), "worktree", "add", "--force", str(self.root / "duplicate"), "original"], check=True, capture_output=True)
+        with self.assertRaisesRegex(h.Stop, "no unique registered worktree"):
+            fake.run.workspace("old")
+        fake.snapshots["old"]["session"]["branch"] = "missing-branch"
+        with self.assertRaises(h.Stop):
+            fake.run.workspace("old")
+
+    def test_audit_idle_window_waits_through_real_incomplete_then_completes(self):
+        run = self.run_fixture()
+        active = snapshot("active", turns=[{"id": "turn", "state": "running"}])
+        current = [active]
+        elapsed = [10]
+        run.clock = lambda: elapsed[0]
+        run.cli.session = lambda _: current[0]
+        def sleep(_):
+            elapsed[0] += 2
+            current[0] = snapshot()
+            run.cli.last_received = elapsed[0]
+        run.sleep = sleep
+        self.assertEqual(h.idle_window(run, "old", "old_idle")["turn_id"], "turn")
+        self.assertEqual(run.state["waits"]["old_idle"]["elapsed"], 2)
+
+    def test_audit_send_new_preserves_normal_incomplete_observation(self):
+        run = self.run_fixture()
+        run.state.update(new_id="new", bootstrap_sequence=1)
+        active = snapshot("active", turns=[{"id": "busy", "state": "running"}])
+        active["session"]["id"] = "new"
+        run.cli.session = lambda _: active
+        run.send("new", "nonce", {"challenge": "original"})
         self.assertEqual(len(run.cli.calls), 1)
 
     def test_T08_original_deadline_not_reset_on_poll(self):
@@ -200,28 +318,31 @@ class ProtocolTests(unittest.TestCase):
         with sqlite3.connect(path) as db:
             db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id,secret)")
             db.execute("INSERT INTO sessions VALUES('old',?,'codex','native-old','NEVER_READ')", (h.PROJECT,))
-            db.execute("CREATE TABLE conversations(id,project_id,current_session_id,latest_sequence)")
-            db.execute("INSERT INTO conversations VALUES('conv',?,'old',10)", (h.PROJECT,))
             for table, columns in h.EXPORT_COLUMNS.items():
                 extra = ",provider_input_text,agent_settings_snapshot_json" if table == "conversation_turns" else ""
                 db.execute("CREATE TABLE " + table + "(" + ",".join(columns) + extra + ")")
                 db.execute("INSERT INTO " + table + "(id,conversation_id) VALUES('one','conv')")
                 db.execute("INSERT INTO " + table + "(id,conversation_id) VALUES('other','other-conv')")
             db.execute("UPDATE conversation_turns SET state='cancelled', provider_input_text='NEVER_READ',agent_settings_snapshot_json='NEVER_READ'")
+            db.execute("UPDATE conversation_messages SET sequence=10")
+            db.execute("UPDATE conversation_activities SET sequence=9")
             db.execute("CREATE TABLE reports(secret)")
             db.execute("INSERT INTO reports VALUES('NEVER_READ')")
         return path
 
     def test_T03_export_all_branches_cancellation_and_only_whitelist(self):
         path = self.database()
-        result = h.export_conversation(path, "old", "conv", "codex")
+        result = h.export_conversation(path, "old", "conv", "codex", 10)
         self.assertNotIn(b"NEVER_READ", h.canonical(result))
         self.assertEqual(result["conversation_turns"][0]["state"], "cancelled")
         self.assertEqual(len(result["conversation_branches"]), 1)
         self.assertNotIn("reports", result)
         self.assertIn("outbox", h.OUTBOX)
+        self.assertEqual(result["conversation_id"], "conv")
         with self.assertRaises(h.Stop):
-            h.export_conversation(path, "old", "other-conv", "codex")
+            h.export_conversation(path, "old", "missing-conv", "codex", 10)
+        with self.assertRaises(h.Stop):
+            h.export_conversation(path, "old", "conv", "codex", 11)
 
     def test_T03_dependency_closure_hashes_and_relative_relationships(self):
         source = self.root / "source"
@@ -382,17 +503,18 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(run.state["waits"]["workers"]["monotonic"], 0)
 
     def test_T05_running_2a_and_bootstrap_receipts_wait_for_completed(self):
-        fake = FlowFixture(self.root, "codex", "claude-code")
-        elapsed = [0]
-        fake.run.clock = lambda: elapsed[0]
-        fake.run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 2)
-        fake.running_receipt_reads = {"old": 2, "new": 2}
-        h.run_protocol(fake.run)
-        self.assertEqual(fake.run.state["outcome"], "complete")
-        self.assertEqual(fake.run.state["waits"]["old_2a"]["elapsed"], 4)
-        self.assertEqual(fake.run.state["waits"]["bootstrap"]["elapsed"], 4)
-        self.assertEqual(fake.mutations.count("2a"), 1)
-        self.assertEqual(fake.mutations.count("spawn"), 1)
+        for sid, phase in (("old", "old_2a"), ("new", "bootstrap")):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
+                fake = FlowFixture(Path(temp), "codex", "claude-code")
+                elapsed = [0]
+                fake.run.clock = lambda: elapsed[0]
+                fake.run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 2)
+                fake.running_receipt_reads = {sid: 2}
+                h.run_protocol(fake.run)
+                self.assertEqual(fake.run.state["outcome"], "complete")
+                self.assertEqual(fake.run.state["waits"][phase]["elapsed"], 4)
+                self.assertEqual(fake.mutations.count("2a"), 1)
+                self.assertEqual(fake.mutations.count("spawn"), 1)
 
     def test_T01_worker_self_safe_file_waits_for_true_completed_turn(self):
         run = self.run_fixture()
@@ -415,7 +537,7 @@ class ProtocolTests(unittest.TestCase):
         snap = snapshot("active", turns=[{"id": "safe-turn", "state": "running"}])
         snap["session"].update(id="worker", kind="worker")
         run.cli.session = lambda _: copy.deepcopy(snap)
-        run.cli.get = lambda _: {"session": dict(id="worker", projectId=h.PROJECT, workspacePath=str(repo))}
+        run.cli.get = lambda path: {"project": dict(id=h.PROJECT, path=str(repo))} if path.startswith("projects/") else {"session": dict(id="worker", projectId=h.PROJECT, branch="fixture")}
         self.assertFalse(run.worker_stop({"id": "worker"}))
         snap["session"]["activity"]["state"] = "idle"
         snap["transcript"]["turns"][0].update(state="completed", completedAt=h.now())
@@ -478,7 +600,7 @@ class ProtocolTests(unittest.TestCase):
         idle = snapshot()
         idle["session"].update(id="worker", kind="worker")
         run.cli.session = lambda _: copy.deepcopy(idle)
-        run.cli.get = lambda _: {"session": dict(id="worker", projectId=h.PROJECT, workspacePath=str(workspace))}
+        run.cli.get = lambda path: {"project": dict(id=h.PROJECT, path=str(workspace))} if path.startswith("projects/") else {"session": dict(id="worker", projectId=h.PROJECT, branch="fixture")}
         run.sleep = lambda _: None
         stop = run.worker_stop({"id": "worker"})
         self.assertEqual(stop["source_type"], "script-quiescent")
@@ -644,6 +766,7 @@ class FlowFixture:
         self.last_received = h.time.monotonic()
         self.snapshots = {"old": snapshot()}
         self.snapshots["old"]["session"]["harness"] = old_harness
+        self.snapshots["old"]["session"]["branch"] = "original"
         self.snapshots["old"]["transcript"]["latestSequence"] = 10
         self.snapshots["old"]["transcript"]["turns"][0]["requestedAt"] = "2026-11-08T00:00:00Z"
         self.session_list = [self.snapshots["old"]["session"]]
@@ -661,8 +784,6 @@ class FlowFixture:
         with sqlite3.connect(root / "ao.db") as db:
             db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")
             db.execute("INSERT INTO sessions VALUES('old',?,?,'native-old')", (h.PROJECT, old_harness))
-            db.execute("CREATE TABLE conversations(id,project_id,current_session_id,latest_sequence)")
-            db.execute("INSERT INTO conversations VALUES('conv',?,'old',10)", (h.PROJECT,))
             for table, columns in h.EXPORT_COLUMNS.items():
                 db.execute("CREATE TABLE " + table + "(" + ",".join(columns) + ")")
 
@@ -677,10 +798,11 @@ class FlowFixture:
             turn.update(state="running")
             turn.pop("completedAt", None)
             snap["session"]["activity"]["state"] = "active"
-            snap["transcript"]["incomplete"] = [
-                {"type": "turn", "id": turn["id"], "state": "running"},
-                {"type": "entry", "sequence": 8, "reason": "streaming"},
-                {"type": "entry", "sequence": 9, "reason": "running"}]
+            snap["transcript"]["entries"] += [
+                {"kind": "message", "role": "assistant", "turnId": turn["id"], "sequence": 8, "streaming": True, "text": "partial"},
+                {"kind": "activity", "activityKind": "command", "turnId": turn["id"], "sequence": 9, "status": "running"}]
+            snap["transcript"]["returned"] = len(snap["transcript"]["entries"])
+            snap["transcript"]["incomplete"] = snapshot(turns=snap["transcript"]["turns"], entries=snap["transcript"]["entries"])["transcript"]["incomplete"]
         return snap
 
     def sessions(self):
@@ -695,7 +817,7 @@ class FlowFixture:
 
     def get(self, path):
         if path == "projects/" + h.PROJECT:
-            return {"status": "ok", "project": {"id": h.PROJECT, "config":
+            return {"status": "ok", "project": {"id": h.PROJECT, "path": str(self.repo), "config":
                     {"preRemove": ["unknown-hook"] if self.preservation_problem == "hook" else []}}}
         if path.startswith("agents/accounts/sessions/"):
             p = h.provider(self.target)
@@ -703,7 +825,7 @@ class FlowFixture:
         if path.endswith("/conversation"):
             return {"settings": {"model": "model", "reasoningEffort": "high", "approvalMode": "bypass-permissions", "fastMode": False}}
         sid = path.split("/")[1]
-        return {"session": dict(self.snapshots[sid]["session"], workspacePath=str(self.workspace))}
+        return {"session": copy.deepcopy(self.snapshots[sid]["session"])}
 
     def managed(self, actor, relative, directory):
         content = ("handoff_run_id: " + self.run_id + "\nA–F preserved\n").encode()
@@ -715,9 +837,11 @@ class FlowFixture:
         h.publish(reply, raw)
         return {"path": str(path), "sha256": h.digest(content)}, {"path": str(reply), "sha256": h.digest(raw)}
 
-    def call(self, args, timeout=30, deadline=None):
+    def call(self, args, timeout=30, deadline=None, on_dispatch=None):
         if deadline is not None and h.time.monotonic() > deadline:
             raise h.WindowElapsed()
+        if on_dispatch:
+            on_dispatch()
         if args[0] == "spawn":
             self.mutations.append("spawn")
             name = args[args.index("--name") + 1]
@@ -801,8 +925,12 @@ class FlowFixture:
                 h.publish(self.run.root / "old/phase-2a.json", h.canonical(receipt))
                 self.snapshots["old"]["transcript"]["entries"].append({"id": "2a-control", "kind": "message", "role": "user", "origin": "automation",
                     "senderSessionId": "old", "sequence": 2, "clientMessageId": self.run_id + ":2a:old", "text": "[from old] " + h.canonical(payload).decode()})
-                self.snapshots["old"]["transcript"]["entries"].append({"kind": "message", "role": "assistant", "turnId": "turn",
+                self.snapshots["old"]["transcript"]["entries"].append({"id": "old-ready", "sequence": 10, "kind": "message", "role": "assistant", "turnId": "turn",
                     "text": h.status_command(self.run.root, self.run_id) + "；10分鐘未見new首報就查原run。"})
+                with sqlite3.connect(self.data_dir / "ao.db") as db:
+                    for entry in self.snapshots["old"]["transcript"]["entries"]:
+                        db.execute("INSERT INTO conversation_messages(id,conversation_id,sequence,role,text,branch_id) VALUES(?,?,?,?,?,?)",
+                                   (entry["id"], "conv", entry["sequence"], entry["role"], entry["text"], "branch"))
                 if self.preservation_problem == "drift":
                     original = self.run.workers
                     calls = [0]

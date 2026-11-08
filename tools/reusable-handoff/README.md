@@ -100,6 +100,9 @@ state 分別保存起始 worker index hash 與全 safe 後 stop index hash，不
 
 回條詳細必填鍵及 producer 模板由具名控制 payload 提供；回報 note 不作機器資料來源。
 worker 自述與代記都要核註冊 workspace 的實際 staged／unstaged／untracked 內容，不能只比較 status 字串。
+註冊路徑由既有 session `branch` 與 project `path` 對 Git `worktree list --porcelain -z` 唯一匹配，並重核 symbolic HEAD；不依賴 session API 未提供的 workspacePath。
+同一輪會對所有 live worker 收檔或送出原保留 D；請求由 intent 冪等，不等第一位 safe 才通知下一位。
+正常 CLI `incomplete` 是 queued／running turn、streaming／未結工具的清單，交由各 predicate 有界等待；真正截斷仍停止。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
 
 ## old Git 保全與正常回收（v3.1 §6）
@@ -114,6 +117,7 @@ worker 自述與代記都要核註冊 workspace 的實際 staged／unstaged／un
 runner 列出整個 old worktree 的檔案／目錄範圍，閉合 untracked、ignored 與空目錄的分類，
 核副本 hash，獨立保存 HEAD、status、index、staged／dirty binary patch、必要 linked-worktree metadata。
 `original_ref` 必須是回收範圍外 common repository 的既存 `refs/heads/...` 並保護 HEAD；
+assume-unchanged、skip-worktree 或其他未核清 index flags 在 kill 前停止，不清旗標或重設內容。
 未推 commit 仍受此規則保護。腳本不建立 ref；無保護 ref 的 detached HEAD 停止。
 submodule、巢狀 repo 或未知 per-worktree metadata 視為依賴未核清，切前停止，不提供通用備份。
 
@@ -153,6 +157,7 @@ Codex 的 `outputMayBePartial` 只描述聚合 stdout；固定 helper 的完整�
 這只證正常 AO transcript 可見活動，不提供 OS 隔離或任意同 UID writer 的保證。
 
 所有 mutation 先保存完整 intent／argv／payload／hash，fsync 原件與目錄，再呼叫正常 CLI。
+guard 未通過時只有 intent／not-dispatched；sent 在 CLI deadline 檢查後、subprocess 前記錄。若再次檢查證明尚未啟動就過窗，保存未送出證據並撤銷該 sent marker，仍受原等待上限約束。合法人工 continue 可續此原 intent，不能把未送出誤報 UNKNOWN。
 UNKNOWN send 只 recover 原 handle；kill 只查原效果，遺失原回條時即使 terminated 也不得 spawn。
 spawn UNKNOWN 只認領同專案／kind、完整精確 token、createdAt 不早於 intent 的唯一原 new，再核 binding；零筆／多筆都交人工。
 resume 不明或非 native 不 fallback，不第二 spawn、不 restore old、不用 AO 原生交接。
@@ -164,6 +169,7 @@ FYI 不帶 D、不解除既有 hold；確有原授權才由 new 用原保留 D �
 通知記 accepted／未讀／未執行，不等全員 ACK；不重送已 accepted 的效果。
 
 manifest 固定揭露：尚未送達的 report outbox 不在 conversation cut/delta 範圍，接手後才由 AO 既有機制送達；不查 reports 表，不手動搬移／ack outbox。
+DB 不讀 conversations 表；以正常 CLI 的 conversationId／latestSequence 綁 cut，核白名單 messages／activities 的 conversation_id／序號，再用 CLI 重核 cut 未漂移。
 
 ## 時間與故障等待
 
