@@ -1,6 +1,7 @@
 package quota
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,5 +87,49 @@ func TestStoreCancelledBeforeWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "hcg")); !os.IsNotExist(err) {
 		t.Fatalf("cancelled write created state: %v", err)
+	}
+}
+
+func TestStoreRejectsDamagedExistingLog(t *testing.T) {
+	for _, kind := range []string{"partial_record", "missing_newline", "corrupt_terminated_record"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			store := Store{Root: root}
+			sample := Project([]byte(`{"accounts":[]}`), nil, root, time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC))
+			raw, err := json.Marshal(sample)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initial := append(append([]byte{}, raw...), '\n')
+			switch kind {
+			case "partial_record":
+				initial = append(initial, raw[:len(raw)/2]...)
+			case "missing_newline":
+				initial = append(initial, raw...)
+			case "corrupt_terminated_record":
+				initial = append(initial, []byte("{broken}\n")...)
+			}
+			path := filepath.Join(root, "hcg", "quota", "samples.jsonl")
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, initial, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Read(context.Background()); err == nil {
+				t.Error("Read accepted a damaged record boundary")
+			}
+			sample.SampledAt = sample.SampledAt.Add(time.Minute)
+			if err := store.Append(context.Background(), sample); err == nil {
+				t.Error("Append accepted a damaged existing log")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, initial) {
+				t.Error("Append changed the original evidence or added a new sample")
+			}
+		})
 	}
 }

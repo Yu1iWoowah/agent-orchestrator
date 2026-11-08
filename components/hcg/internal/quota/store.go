@@ -2,6 +2,7 @@ package quota
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -47,6 +48,11 @@ func (s Store) Append(ctx context.Context, sample Sample) error {
 	if err != nil {
 		return fmt.Errorf("invalid quota sample")
 	}
+	// Validate without retaining history; a failed write must remain evidence,
+	// never become the prefix of the next sample on restart.
+	if _, err := s.read(ctx, false); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("quota log unavailable")
@@ -59,6 +65,10 @@ func (s Store) Append(ctx context.Context, sample Sample) error {
 	return nil
 }
 func (s Store) Read(ctx context.Context) ([]Sample, error) {
+	return s.read(ctx, true)
+}
+
+func (s Store) read(ctx context.Context, collect bool) ([]Sample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -77,6 +87,15 @@ func (s Store) Read(ctx context.Context) ([]Sample, error) {
 	rows := []Sample{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			return i + 1, data[:i], nil
+		}
+		if atEOF && len(data) > 0 {
+			return 0, nil, fmt.Errorf("incomplete quota log")
+		}
+		return 0, nil, nil
+	})
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -85,7 +104,9 @@ func (s Store) Read(ctx context.Context) ([]Sample, error) {
 		if json.Unmarshal(scanner.Bytes(), &sample) != nil || sample.DataRoot != s.Root || sample.SampledAt.IsZero() {
 			return nil, fmt.Errorf("invalid quota log")
 		}
-		rows = append(rows, sample)
+		if collect {
+			rows = append(rows, sample)
+		}
 	}
 	if scanner.Err() != nil {
 		return nil, fmt.Errorf("incomplete quota log")

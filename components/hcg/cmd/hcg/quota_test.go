@@ -115,6 +115,37 @@ printf '%s' '{"accounts":[{"id":"a","provider":"claude","email":"private@example
 			t.Fatalf("args=%v code=%d err=%s", args, code, errOut.String())
 		}
 	}
+	// Restarting observe must fail before saving a new sample to a damaged log.
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tail := range [][]byte{encoded[:len(encoded)/2], encoded} {
+		initial := append(append(append([]byte{}, encoded...), '\n'), tail...)
+		logPath := filepath.Join(root, "hcg", "quota", "samples.jsonl")
+		if err := os.WriteFile(logPath, initial, 0600); err != nil {
+			t.Fatal(err)
+		}
+		attemptCtx, attemptCancel := context.WithCancel(context.Background())
+		attempted := cancelOutput{cancel: attemptCancel}
+		var attemptErrors bytes.Buffer
+		code := run(attemptCtx, []string{"usage", "observe", "--sessions", "s1", "--interval", "1h"}, &attempted, &attemptErrors)
+		attemptCancel()
+		if code != 1 || attempted.Len() != 0 {
+			t.Errorf("damaged-log observe code=%d stdoutBytes=%d stderr=%s", code, attempted.Len(), attemptErrors.String())
+		}
+		after, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(initial, after) {
+			t.Error("observe polluted the existing log with a new sample")
+		}
+	}
+	// Restore a valid log for the independent CLI failure test below.
+	if err := os.Remove(filepath.Join(root, "hcg", "quota", "samples.jsonl")); err != nil {
+		t.Fatal(err)
+	}
 	// A failed synthetic CLI may write private stderr; only a fixed code survives.
 	if err := os.WriteFile(filepath.Join(bin, "ao"), []byte("#!/bin/sh\nprintf 'private@example.com raw secret' >&2\nexit 9\n"), 0700); err != nil {
 		t.Fatal(err)
