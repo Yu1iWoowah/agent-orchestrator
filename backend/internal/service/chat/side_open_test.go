@@ -114,8 +114,15 @@ func TestCodexSideReopenUsesConnectedNativeFork(t *testing.T) {
 			return nil
 		},
 	})
+	var reportingNotices atomic.Int64
+	svc.SetHCGReportingObserver(reportingObserverFunc(func(ports.HCGReportingLaunch) { reportingNotices.Add(1) }))
+	t.Cleanup(func() {
+		if got := reportingNotices.Load(); got != 1 {
+			t.Errorf("main plus side notifications = %d, want main only", got)
+		}
+	})
 	t.Cleanup(func() { svc.StopAll(ctx) })
-	ctrl, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject,
+	ctrl, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
 		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), Model: "original", Effort: "low"})
 	if err != nil {
 		t.Fatal(err)

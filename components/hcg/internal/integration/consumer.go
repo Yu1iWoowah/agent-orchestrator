@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 type View struct {
@@ -40,11 +41,14 @@ type hostState struct {
 // Consumer serializes small configuration operations, never subprocess I/O.
 // Jobs have cancellation ownership here, not in a native agent/session manager.
 type Consumer struct {
-	root  string
-	mu    sync.Mutex
-	host  hostState
-	probe EngineStatus
-	jobs  map[*reportJob]struct{}
+	root      string
+	mu        sync.Mutex
+	host      hostState
+	probe     EngineStatus
+	jobs      map[*reportJob]struct{}
+	snapshots map[string]Manifest
+	captures  sync.Map
+	hostEpoch atomic.Uint64
 }
 
 type reportJob struct {
@@ -56,6 +60,13 @@ type reportJob struct {
 // ProjectPolicyChanged is a narrow notification from AO's existing typed
 // project-config writer. It never waits for the cancelled external jobs.
 func (c *Consumer) ProjectPolicyChanged(project string) {
+	c.captures.Range(func(_, value any) bool {
+		f := value.(*captureFence)
+		if f.project == project {
+			f.version.Add(1)
+		}
+		return true
+	})
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for job := range c.jobs {
@@ -77,7 +88,7 @@ func NewConsumer(root string) (*Consumer, error) {
 	if err := r.MkdirAll(filepath.Join("hcg", "reporting", "deployment"), 0700); err != nil {
 		return nil, ErrManifestUnavailable
 	}
-	c := &Consumer{root: root, host: hostState{SchemaVersion: 1}, jobs: map[*reportJob]struct{}{}, probe: EngineStatus{Engine: EngineName, Reason: "not_registered"}}
+	c := &Consumer{root: root, host: hostState{SchemaVersion: 1}, jobs: map[*reportJob]struct{}{}, snapshots: map[string]Manifest{}, probe: EngineStatus{Engine: EngineName, Reason: "not_registered"}}
 	b, err := r.ReadFile(filepath.Join("hcg", "reporting", "host.json"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, ErrManifestUnavailable
@@ -154,11 +165,13 @@ func (c *Consumer) Register(ctx context.Context, executable, node, version strin
 		return EngineStatus{}, err
 	}
 	c.cancel("")
+	c.hostEpoch.Add(1)
 	c.host, c.probe = next, EngineStatus{EngineName, EngineVersion, true, "ready"}
 	return c.probe, nil
 }
 
 func (c *Consumer) EmergencyStop(ctx context.Context, stop bool) error {
+	c.hostEpoch.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	next := c.host
@@ -182,17 +195,11 @@ func (c *Consumer) Reconnect(ctx context.Context, id Identity, inputs PolicyInpu
 	return c.observeLaunch(ctx, id, inputs, false)
 }
 
-func (c *Consumer) CancelSessionReports(session string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cancel(session)
-}
-
 func (c *Consumer) observeLaunch(ctx context.Context, id Identity, inputs PolicyInputs, fresh bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	store := ManifestStore{c.root}
-	previous, err := store.Load(ctx, id)
+	previous, err := c.load(ctx, id)
 	var old *Manifest
 	if err == nil {
 		old = &previous
@@ -218,14 +225,15 @@ func (c *Consumer) observeLaunch(ctx context.Context, id Identity, inputs Policy
 		return err
 	}
 	c.cancel(id.SessionID)
-	return store.Save(ctx, m)
+	return c.save(ctx, m)
 }
 
 func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs PolicyInputs, enabled *bool) error {
+	c.captureFence(id).version.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	store := ManifestStore{c.root}
-	old, err := store.Load(ctx, id)
+	old, err := c.load(ctx, id)
 	if err != nil {
 		r, dir, openErr := store.open(id)
 		if openErr != nil {
@@ -250,11 +258,11 @@ func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs PolicyIn
 		m.Reason = "disabled_or_unavailable"
 	}
 	c.cancel(id.SessionID)
-	return store.Save(ctx, m)
+	return c.save(ctx, m)
 }
 
 func (c *Consumer) effective(ctx context.Context, id Identity, inputs PolicyInputs) (Manifest, View) {
-	m, err := (ManifestStore{c.root}).Load(ctx, id)
+	m, err := c.load(ctx, id)
 	v := View{ProjectID: id.ProjectID, SessionID: id.SessionID, Inputs: inputs, SessionOverride: "inherit", EmergencyStop: c.host.Stop, EngineVersion: c.probe.Version, Available: c.probe.Available, Reason: "manifest_unavailable"}
 	if err != nil {
 		v.Available = false
@@ -274,7 +282,7 @@ func (c *Consumer) effective(ctx context.Context, id Identity, inputs PolicyInpu
 	}
 	m.Inputs, m.Policy, m.Engine = inputs, p, c.host.Engine
 	// The current AO ownership must still match the recorded mounting.
-	if m.Identity.LaunchID != id.LaunchID || m.Identity.Mode != id.Mode || m.Identity.Harness != id.Harness || (m.Identity.NativeID != "" && m.Identity.NativeID != id.NativeID) {
+	if (id.Mode == "chat" && m.Identity.ControllerGeneration != id.ControllerGeneration) || m.Identity.LaunchID != id.LaunchID || m.Identity.Mode != id.Mode || m.Identity.Harness != id.Harness || (m.Identity.NativeID != "" && m.Identity.NativeID != id.NativeID) {
 		v.Available, v.Reason = false, "native_identity_unknown"
 	} else {
 		m.Identity = id
@@ -294,7 +302,7 @@ func (c *Consumer) effective(ctx context.Context, id Identity, inputs PolicyInpu
 	// mounting facts; reconnect must not relabel current defaults as history.
 	if digest(m) != before {
 		m.Revision++
-		if err := (ManifestStore{c.root}).Save(ctx, m); err != nil {
+		if err := c.save(ctx, m); err != nil {
 			v.EffectiveEnabled, v.Active, v.Available, v.Reason = false, false, false, "manifest_unavailable"
 			return Manifest{}, v
 		}

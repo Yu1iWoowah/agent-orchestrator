@@ -4040,6 +4040,116 @@ paths:
         is signed in as
       tags:
       - github
+  /api/v1/hcg-reporting/emergency-stop:
+    put:
+      operationId: setHCGReportingStop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGStopResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
+  /api/v1/hcg-reporting/engine:
+    put:
+      operationId: registerHCGReportingEngine
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEngineRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGEngineResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -11883,6 +11993,182 @@ paths:
       summary: Read local metadata-only guardian observations
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/hcg-reporting:
+    get:
+      operationId: getHCGReporting
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-reporting/override:
+    delete:
+      operationId: clearHCGReportingOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
+    put:
+      operationId: setHCGReportingOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
   /api/v1/sessions/{sessionId}/history:
     get:
       operationId: getSessionHistory
@@ -16890,6 +17176,69 @@ paths:
           description: Not Implemented
       summary: Read numeric model request events; throughId bounds insertions, not
         repairs or metadata changes
+      tags:
+      - usage
+  /api/v1/usage/sessions/{sessionId}/report:
+    post:
+      operationId: runHCGReport
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGReportRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
       tags:
       - usage
   /api/v1/usage/sessions/memory:
@@ -23853,6 +24202,237 @@ components:
       - since
       - until
       type: object
+    HCGEnabledRequest:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      required:
+      - enabled
+      type: object
+    HCGEngineRequest:
+      properties:
+        engine:
+          enum:
+          - llm-usage-metrics
+          type: string
+        executable:
+          type: string
+        expectedVersion:
+          enum:
+          - 0.14.3
+          type: string
+      required:
+      - engine
+      - executable
+      - expectedVersion
+      type: object
+    HCGEngineResponse:
+      properties:
+        available:
+          type: boolean
+        engine:
+          type: string
+        reason:
+          type: string
+        version:
+          type: string
+      required:
+      - engine
+      - version
+      - available
+      - reason
+      type: object
+    HCGReportRequest:
+      properties:
+        engine:
+          enum:
+          - llm-usage-metrics
+          type: string
+      required:
+      - engine
+      type: object
+    HCGReportResponse:
+      properties:
+        bucketAvailability:
+          type: string
+        engine:
+          type: string
+        engineVersion:
+          type: string
+        events:
+          items:
+            $ref: '#/components/schemas/HCGReportingEvent'
+          type: array
+        nativeId:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        sessionId:
+          type: string
+        source:
+          type: string
+        status:
+          type: string
+        tools:
+          items:
+            $ref: '#/components/schemas/HCGReportingToolCounts'
+          type: array
+      required:
+      - source
+      - engine
+      - engineVersion
+      - projectId
+      - sessionId
+      - nativeId
+      - observedAt
+      - status
+      - reason
+      - bucketAvailability
+      - events
+      - tools
+      type: object
+    HCGReportingConfig:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      type: object
+    HCGReportingEvent:
+      properties:
+        at:
+          format: date-time
+          type: string
+        cacheReadTokens:
+          format: int64
+          type: integer
+        cacheWriteTokens:
+          format: int64
+          type: integer
+        engineTotalTokens:
+          format: int64
+          type: integer
+        inputIncludingCache:
+          format: int64
+          type: integer
+        inputTokens:
+          format: int64
+          type: integer
+        outputTokens:
+          format: int64
+          type: integer
+        reasoningTokens:
+          format: int64
+          type: integer
+      required:
+      - at
+      - inputTokens
+      - cacheReadTokens
+      - cacheWriteTokens
+      - inputIncludingCache
+      - outputTokens
+      - reasoningTokens
+      - engineTotalTokens
+      type: object
+    HCGReportingInputs:
+      properties:
+        emergencyStop:
+          type: boolean
+        project:
+          type:
+          - "null"
+          - boolean
+        role:
+          type:
+          - "null"
+          - boolean
+        session:
+          type:
+          - "null"
+          - boolean
+      required:
+      - project
+      - role
+      - session
+      - emergencyStop
+      type: object
+    HCGReportingResponse:
+      properties:
+        active:
+          type: boolean
+        available:
+          type: boolean
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        engineVersion:
+          type: string
+        inputs:
+          $ref: '#/components/schemas/HCGReportingInputs'
+        manifestRevision:
+          minimum: 0
+          type: integer
+        projectId:
+          type: string
+        reason:
+          type: string
+        requested:
+          type: boolean
+        sessionId:
+          type: string
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      - inputs
+      - source
+      - sessionOverride
+      - effectiveEnabled
+      - emergencyStop
+      - requested
+      - active
+      - available
+      - reason
+      - engineVersion
+      - manifestRevision
+      type: object
+    HCGReportingToolCounts:
+      properties:
+        calls:
+          format: int64
+          type: integer
+        category:
+          type: string
+        errors:
+          format: int64
+          type: integer
+        unknown:
+          format: int64
+          type: integer
+      required:
+      - category
+      - calls
+      - errors
+      - unknown
+      type: object
+    HCGStopResponse:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
+      type: object
     HarnessDefault:
       properties:
         disabledModels:
@@ -25379,6 +25959,8 @@ components:
           type: object
         guardianObservability:
           $ref: '#/components/schemas/GuardianObservabilityConfig'
+        hcgReporting:
+          $ref: '#/components/schemas/HCGReportingConfig'
         orchestrator:
           $ref: '#/components/schemas/RoleOverride'
         orchestratorHandoff:
@@ -27251,6 +27833,8 @@ components:
           type: string
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
+        hcgReporting:
+          $ref: '#/components/schemas/HCGReportingConfig'
       type: object
     RollbackConversationResponse:
       properties:

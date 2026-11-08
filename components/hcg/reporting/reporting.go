@@ -101,6 +101,25 @@ type Snapshot struct {
 
 type Consumer struct{ core *integration.Consumer }
 
+// PreparedLaunch is an opaque snapshot captured at a successful AO boundary.
+type PreparedLaunch struct{ core integration.PreparedLaunch }
+
+// Prime loads existing launch metadata before AO starts native launchers.
+func (c *Consumer) Prime(ctx context.Context, id Identity) error {
+	return c.core.Prime(ctx, integration.Identity(id))
+}
+
+// CaptureLaunch freezes typed policy without I/O or waiting for persistence.
+func (c *Consumer) CaptureLaunch(id Identity, inputs Inputs, fresh bool) (PreparedLaunch, bool) {
+	p, ok := c.core.CaptureLaunch(integration.Identity(id), integration.PolicyInputs(inputs), fresh)
+	return PreparedLaunch{p}, ok
+}
+
+// StoreLaunch persists a captured snapshot after AO revalidates its owner.
+func (c *Consumer) StoreLaunch(ctx context.Context, p PreparedLaunch, authority Identity) error {
+	return c.core.StoreLaunch(ctx, p.core, integration.Identity(authority))
+}
+
 func New(dataRoot string) (*Consumer, error) {
 	c, err := integration.NewConsumer(dataRoot)
 	if err != nil {
@@ -130,17 +149,6 @@ func (c *Consumer) EmergencyStop(ctx context.Context, stop bool) error {
 
 func (c *Consumer) ProjectPolicyChanged(projectID string) {
 	c.core.ProjectPolicyChanged(projectID)
-}
-
-func (c *Consumer) ObserveLaunch(ctx context.Context, id Identity, inputs Inputs, fresh bool) error {
-	if fresh {
-		return c.core.Launch(ctx, integration.Identity(id), integration.PolicyInputs(inputs))
-	}
-	return c.core.Reconnect(ctx, integration.Identity(id), integration.PolicyInputs(inputs))
-}
-
-func (c *Consumer) CancelSessionReports(sessionID string) {
-	c.core.CancelSessionReports(sessionID)
 }
 
 func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs Inputs, enabled *bool) error {

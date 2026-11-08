@@ -88,6 +88,15 @@ var legacyActorlessSystemCLICommands = map[string]struct{}{
 }
 
 var legacyActorlessUserCLICommands = map[string]struct{}{
+	"ao usage":                            {},
+	"ao usage report":                     {},
+	"ao usage integration":                {},
+	"ao usage integration get":            {},
+	"ao usage integration set":            {},
+	"ao usage integration clear":          {},
+	"ao usage integration emergency-stop": {},
+	"ao usage integration register":       {},
+
 	"ao account":                    {},
 	"ao account ls":                 {},
 	"ao account add":                {},

@@ -82,6 +82,8 @@ type Service struct {
 	defaultHarness  domain.AgentHarness
 	logger          *slog.Logger
 	withProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
+
+	reportingPolicyChanged func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
@@ -106,6 +108,9 @@ type Deps struct {
 	// slog.Default, keeping service-focused tests logger-free.
 	Logger          *slog.Logger
 	WithProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
+
+	// ReportingPolicyChanged cancels affected reports after durable policy changes.
+	ReportingPolicyChanged func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
 }
 
 // New returns a project service backed by the given durable store.
@@ -127,6 +132,8 @@ func NewWithDeps(d Deps) *Service {
 		defaultHarness:  defaultHarness,
 		logger:          d.Logger,
 		withProjectGate: d.WithProjectGate,
+
+		reportingPolicyChanged: d.ReportingPolicyChanged,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
@@ -363,6 +370,10 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register project")
 	}
+	if m.reportingPolicyChanged != nil {
+		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
+	}
+
 	if in.ClonePreparationID != "" {
 		removeClonePreparationMarker(path)
 	}
@@ -751,6 +762,7 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
 	row.DisplayName = inDisplayName
+	m.notifyReportingPolicyChanged(id, row.Config, in.Config)
 	row.Config = in.Config
 	return m.projectFromRow(ctx, row), nil
 }
@@ -791,11 +803,21 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
+	previousConfig := row.Config
 	row.Config = in.Config
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
 	}
+	m.notifyReportingPolicyChanged(id, previousConfig, row.Config)
 	return m.projectFromRow(ctx, row), nil
+}
+
+func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, after domain.ProjectConfig) {
+	if m.reportingPolicyChanged != nil && !reflect.DeepEqual(
+		[]domain.HCGReportingConfig{before.HCGReporting, before.Worker.HCGReporting, before.Orchestrator.HCGReporting},
+		[]domain.HCGReportingConfig{after.HCGReporting, after.Worker.HCGReporting, after.Orchestrator.HCGReporting}) {
+		m.reportingPolicyChanged(id, after.ReportingPolicySnapshot())
+	}
 }
 
 func validateScratchProjectConfig(cfg domain.ProjectConfig) error {

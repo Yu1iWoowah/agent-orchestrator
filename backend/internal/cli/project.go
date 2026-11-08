@@ -84,6 +84,8 @@ type agentConfig struct {
 
 // roleOverride mirrors domain.RoleOverride.
 type roleOverride struct {
+	HCGReporting hcgReportingConfig `json:"hcgReporting,omitempty,omitzero"`
+
 	AgentAccountID string      `json:"agentAccountId,omitempty"`
 	Agent          string      `json:"agent,omitempty"`
 	AgentConfig    agentConfig `json:"agentConfig,omitempty"`
@@ -117,6 +119,7 @@ type orchestratorHandoffConfig struct {
 }
 
 type projectConfig struct {
+	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
 	AgentAccounts         map[string]string           `json:"agentAccounts,omitempty"`
@@ -142,6 +145,10 @@ type projectConfig struct {
 	// of another field never silently turns it off.
 	WorkersRequestReview bool             `json:"workersRequestReview,omitempty"`
 	Reviewers            []reviewerConfig `json:"reviewers,omitempty"`
+}
+
+type hcgReportingConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type guardianObservabilityConfig struct {

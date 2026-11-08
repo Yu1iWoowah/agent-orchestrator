@@ -18,6 +18,7 @@ import (
 // yet exist (tracker/SCM per-project config) are intentionally absent and land in
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
+	HCGReporting          HCGReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability GuardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	OrchestratorHandoff   OrchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
 	// AgentSettingsPolicy gates managed orchestrators; local manual calls remain
@@ -177,9 +178,34 @@ func (c ProjectConfig) DefaultWorkerReviewer() (ReviewerHarness, AgentConfig) {
 
 // RoleOverride overrides the harness and/or agent config for a session role.
 type RoleOverride struct {
-	AgentAccountID string       `json:"agentAccountId,omitempty"`
-	Harness        AgentHarness `json:"agent,omitempty"`
-	AgentConfig    AgentConfig  `json:"agentConfig,omitempty"`
+	HCGReporting   HCGReportingConfig `json:"hcgReporting,omitempty,omitzero"`
+	AgentAccountID string             `json:"agentAccountId,omitempty"`
+	Harness        AgentHarness       `json:"agent,omitempty"`
+	AgentConfig    AgentConfig        `json:"agentConfig,omitempty"`
+}
+
+// HCGReportingConfig uses nil for inheritance; false is an explicit opt-out.
+type HCGReportingConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// HCGReportingPolicySnapshot excludes every unrelated setting and credential.
+type HCGReportingPolicySnapshot struct {
+	Project      *bool `json:"project"`
+	Worker       *bool `json:"worker"`
+	Orchestrator *bool `json:"orchestrator"`
+}
+
+// ReportingPolicySnapshot copies the fixed reporting inputs for a committed config.
+func (c ProjectConfig) ReportingPolicySnapshot() HCGReportingPolicySnapshot {
+	copyBool := func(p *bool) *bool {
+		if p == nil {
+			return nil
+		}
+		v := *p
+		return &v
+	}
+	return HCGReportingPolicySnapshot{copyBool(c.HCGReporting.Enabled), copyBool(c.Worker.HCGReporting.Enabled), copyBool(c.Orchestrator.HCGReporting.Enabled)}
 }
 
 const (

@@ -68,6 +68,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/documentread"
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
+	hcgsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/hcg"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/hookprocess"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
@@ -228,6 +229,8 @@ func Run(buildVersion string) error {
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
 	}
+	hcgReporting := hcgsvc.New(context.Background(), cfg.DataDir, store)
+	defer hcgReporting.Close()
 	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
@@ -477,6 +480,7 @@ func Run(buildVersion string) error {
 			}
 		},
 	})
+	chatSvc.SetHCGReportingObserver(hcgReporting)
 	chatSvc.SetRenderCheck(renderViaDesktop(browserBroker, "__render-check"))
 	chatSvc.SetRenderMeasure(renderViaDesktop(browserBroker, "__render-measure"))
 
@@ -577,7 +581,7 @@ func Run(buildVersion string) error {
 	// The review service starts before the SCM observer it asks for review
 	// refreshes, so it holds a late-bound handle.
 	reviewRefresher := &scmReviewRefresher{}
-	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, log)
+	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, hcgReporting, log)
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -731,7 +735,7 @@ func Run(buildVersion string) error {
 	// Chat session, because waking it waits for admitted input to drain.
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, WithProjectGate: sessionSvc.WithOrchestratorProjectGate})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, ReportingPolicyChanged: hcgReporting.ProjectPolicyChanged})
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
 		return errors.New("wire report delivery: session manager lacks semantic send support")
@@ -1167,6 +1171,7 @@ func Run(buildVersion string) error {
 		UsageHooks:         usageCollector,
 		UsageSummary:       usagesvc.NewSummaryReader(store),
 		UsageEvents:        usagesvc.NewEventsReader(store),
+		HCGReporting:       hcgReporting,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,
 		Telemetry:          telemetrySink,

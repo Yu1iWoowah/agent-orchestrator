@@ -25,7 +25,39 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
+	"github.com/aoagents/agent-orchestrator/components/hcg/reporting"
 )
+
+// HCGReportingResponse contains effective policy without local paths.
+type HCGReportingResponse reporting.View
+
+// HCGEngineResponse reports fixed deployment availability without its executable path.
+type HCGEngineResponse reporting.EngineStatus
+
+// HCGReportResponse contains only safe external-analysis identity and numbers.
+type HCGReportResponse reporting.Snapshot
+
+// HCGEnabledRequest requires an explicit boolean; null is rejected.
+type HCGEnabledRequest struct {
+	Enabled *bool `json:"enabled" required:"true"`
+}
+
+// HCGStopResponse echoes the persisted reporting emergency-stop value.
+type HCGStopResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+// HCGEngineRequest registers one fixed, separately installed consumer.
+type HCGEngineRequest struct {
+	Engine          string `json:"engine" enum:"llm-usage-metrics"`
+	Executable      string `json:"executable"`
+	ExpectedVersion string `json:"expectedVersion" enum:"0.14.3"`
+}
+
+// HCGReportRequest selects the fixed consumer without changing policy.
+type HCGReportRequest struct {
+	Engine string `json:"engine" enum:"llm-usage-metrics"`
+}
 
 // CreateReportRequest is the local caller-to-daemon report submission contract.
 // SessionID attributes the report; like the rest of AO's unauthenticated
