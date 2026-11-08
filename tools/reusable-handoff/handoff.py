@@ -149,6 +149,20 @@ def entries(snapshot):
     return snapshot["transcript"]["entries"]
 
 
+def source_identity(source, message):
+    if source["kind"] == "human-message":
+        require(message.get("role") == "user" and message.get("origin") == "human" and
+                not message.get("senderSessionId"), "not a structural human source")
+    elif source["kind"] == "old-control-record":
+        require(message.get("role") == "assistant", "not an old control record")
+    else:
+        require(source["kind"] == "structured-answer" and isinstance(source.get("ask_ref"), dict), "bad source kind/ask ref")
+        require(message.get("origin") == "human" and message.get("role") == "user" and
+                not message.get("senderSessionId"), "answer lacks human provenance")
+        ask = source["ask_ref"]
+        require(all(ask.get(k) is not None for k in ("id", "version", "answer_id")), "incomplete ask reference")
+
+
 def source_message(source, raw):
     doc = decode(raw)
     transcript = doc.get("transcript", {})
@@ -159,15 +173,7 @@ def source_message(source, raw):
     message = matches[0]
     require(source.get("revision") == message.get("revision"), "source revision changed")
     require(digest(message.get("text", "").encode()) == source["message_text_sha256"], "source text hash mismatch")
-    if source["kind"] == "human-message":
-        require(message.get("role") == "user" and message.get("origin") == "human", "not a structural human source")
-    elif source["kind"] == "old-control-record":
-        require(message.get("role") == "assistant", "not an old control record")
-    else:
-        require(source["kind"] == "structured-answer" and isinstance(source.get("ask_ref"), dict), "bad source kind/ask ref")
-        require(message.get("origin") == "human" and message.get("role") == "user", "answer lacks human provenance")
-        ask = source["ask_ref"]
-        require(all(ask.get(k) is not None for k in ("id", "version", "answer_id")), "incomplete ask reference")
+    source_identity(source, message)
     return message
 
 
@@ -426,6 +432,8 @@ def old_git_state(run, plan):
     registration = old_git(["worktree", "list", "--porcelain", "-z"], common=common)
     require(b"worktree " + os.fsencode(workspace) + b"\0" in registration, "old registration missing")
     index = git("ls-files", "--stage", "-v", "-z")
+    require(all(x.startswith(b"H ") for x in index.split(b"\0") if x),
+            "old index flags hide content or represent unresolved checkout state; no kill")
     require(not any(x[2:].startswith(b"160000 ") for x in index.split(b"\0")), "submodule dependencies unresolved")
     tracked = set(git("ls-files", "-z").split(b"\0")) - {b""}
     untracked = set(git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")) - {b""}
@@ -586,7 +594,7 @@ class Run:
         snap = self.cli.session(sid)
         session, transcript = snap["session"], snap["transcript"]
         require(session["id"] == sid and session["projectId"] == PROJECT and session["mode"] == "chat", "session scope/mode changed")
-        require(not transcript.get("truncatedFields") and not transcript.get("incomplete"), "incomplete transcript")
+        require(not transcript.get("truncatedFields"), "truncated transcript")
         self.evidence("session-" + sid, snap)
         return snap
 
@@ -710,7 +718,8 @@ class Run:
                 require(stop["stop_directive"]["last_ack_d"] == rules["reserved_stop_d"], "worker stop D does not match reserved directive")
                 if not completed(snap, stop["evidence_turn_id"]):
                     return False
-            require(quiescent(snap, stop["settled"]["in_flight"]), "worker safe receipt invalidated: " + sid)
+            if not quiescent(snap, stop["settled"]["in_flight"]):
+                return False
             require(stop["workspace"]["path"] == self.workspace(sid), "stop workspace differs from registered workspace")
             actual = git_snapshot(stop["workspace"]["path"], directory / ("verify-" + uuid.uuid4().hex))
             require(actual["sha256"] == stop["workspace"]["after_snapshot"]["sha256"], "worker content drift: " + sid)
@@ -959,6 +968,8 @@ def phase_2a(run):
         if not finished_turn:
             continue_phase(run, run.old, "2a", receipt["evidence_turn_id"], snap)
             return False
+        if not quiescent(snap):
+            return False
         replies = [e.get("text", "") for e in entries(snap) if e.get("role") == "assistant" and e.get("turnId") == finished_turn]
         require(any(status_command(run.root, run.run_id) in text and "10" in text for text in replies), "old ready reply lacks exact status/silence instruction")
         controls = [e for e in entries(snap) if e.get("clientMessageId") == run.run_id + ":2a:" + run.old]
@@ -1024,10 +1035,14 @@ def phase_completed(run, sid, phase, original, snapshot):
 def export_material(run, delta=False):
     snap = run.snapshot(run.old)
     transcript = snap["transcript"]
+    if transcript.get("incomplete"):
+        return False
     conversation, branch = transcript["conversationId"], transcript["activeBranchId"]
     pages, cursor = [], None
     directory = mkdir(run.root / ("delta" if delta else "cut") / uuid.uuid4().hex)
     while True:
+        if snap["transcript"].get("incomplete"):
+            return False
         require(snap["transcript"]["conversationId"] == conversation and snap["transcript"]["activeBranchId"] == branch,
                 "projection branch/scope changed")
         require(not snap["transcript"].get("truncatedFields") and not snap["transcript"].get("incomplete") and
@@ -1261,18 +1276,18 @@ def audit_bootstrap(snapshot, root, turn_ids=None):
             expected_command = expected + " bootstrap --run " + root.name
             if not command.strip().startswith(expected + " "):
                 wrapper = shlex.split(command)
-                require(len(wrapper) == 3 and Path(wrapper[0]).name in ("bash", "sh", "zsh") and
-                        wrapper[1] in ("-c", "-lc"),
+                require(len(wrapper) == 3 and re.fullmatch(r"(?:/(?:usr/)?bin/)?(?:bash|sh|zsh)", wrapper[0]) and
+                        wrapper[1] in ("-c", "-lc") and command == shlex.join(wrapper),
                         "UNVERIFIABLE_WRITE: non-fixed bootstrap command")
                 command = wrapper[2]
             if command.strip() == expected_command:
                 observed = True
             else:
                 require(command.startswith(expected + " "), "UNVERIFIABLE_WRITE: non-fixed helper")
-                args = shlex.split(command[len(expected) + 1:])
-                require(len(args) == 7 and args[:3] == ["inspect", "--run", root.name] and args[3] == "--path" and
-                        args[5] == "--offset" and args[6].isdigit(), "UNVERIFIABLE_WRITE: non-fixed inspect")
-                confined(root, args[4])
+                literal = re.fullmatch(r"inspect --run " + re.escape(root.name) +
+                                       r" --path ([\w./:@%+,=-]+) --offset ([0-9]+)", command[len(expected) + 1:])
+                require(literal, "UNVERIFIABLE_WRITE: inspect requires literal argv")
+                confined(root, literal[1])
             require(detail.get("exitCode") == 0 and not detail.get("outputTruncated"), "bootstrap command not positively complete")
         elif kind == "mcp_tool":
             tool = detail.get("toolName", "")
@@ -1336,6 +1351,8 @@ def new_receipt(run):
     if not finished_turn:
         continue_phase(run, sid, "bootstrap", receipt["evidence_turn_id"], snap)
         return False
+    if not quiescent(snap):
+        return False
     require(any(e.get("role") == "assistant" and e.get("turnId") == finished_turn and e.get("text", "").strip()
                 for e in entries(snap)), "formal first report missing")
     actual = verify_target(run.cli, sid, run.target, snap, run.cli.data_dir / "ao.db")
@@ -1398,7 +1415,7 @@ def run_protocol(run):
     def retire():
         if not (run.root / "control/kill/sent.json").exists():
             require(run.workers() and state["stop_index_sha256"] == state["phase_2a"]["worker_index_sha256"], "worker stop invalidated before kill")
-            export_material(run, delta=True)
+            run.wait("export", lambda: export_material(run, delta=True))
         def guard():
             verify_old(run)
             observation = idle_window(run, run.old, "old_idle")
@@ -1627,6 +1644,7 @@ def validate_sources_live(req, cli):
         matches = [e for e in all_entries if e.get("id") == source["message_id"]]
         require(len(matches) == 1 and matches[0].get("revision") == source["revision"] and
                 digest(matches[0].get("text", "").encode()) == source["message_text_sha256"], "authority changed/missing")
+        source_identity(source, matches[0])
     require(any(t["id"] == req["prepared_by"]["turn_id"] for t in snap["transcript"].get("turns", [])), "preparing turn not observed")
     return snap
 

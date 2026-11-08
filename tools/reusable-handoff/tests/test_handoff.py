@@ -23,13 +23,21 @@ def target(harness="codex"):
 
 
 def snapshot(state="idle", turns=None, entries=None):
+    turns = turns if turns is not None else [{"id": "turn", "state": "completed", "completedAt": "2026-11-08T00:00:00Z"}]
+    entries = entries or []
+    incomplete = [{"type": "turn", "id": t["id"], "state": t["state"]} for t in turns if t["state"] in ("queued", "running")]
+    for entry in entries:
+        reason = "streaming" if entry.get("streaming") else "running" if entry.get("status") == "running" else None
+        if not reason and entry.get("status") == "pending" and entry.get("activityKind") in ("approval", "user_input"):
+            reason = "pending"
+        if reason:
+            incomplete.append({"type": "entry", "sequence": entry.get("sequence", 1), "reason": reason})
     return {"session": {"id": "old", "projectId": h.PROJECT, "kind": "orchestrator",
                         "harness": "codex", "mode": "chat", "isTerminated": False,
                         "activity": {"state": state}},
             "transcript": {"conversationId": "conv", "activeBranchId": "branch",
-                           "latestSequence": 1, "hasMoreBefore": False, "entries": entries or [],
-                           "turns": turns if turns is not None else [
-                               {"id": "turn", "state": "completed", "completedAt": "2026-11-08T00:00:00Z"}]}}
+                           "latestSequence": 1, "hasMoreBefore": False, "entries": entries,
+                           "turns": turns, "incomplete": incomplete}}
 
 
 class ProtocolTests(unittest.TestCase):
@@ -359,6 +367,33 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(run.cli.calls), 1)
         self.assertIn("D-7", run.cli.calls[0][-1])
 
+    def test_T01_incomplete_worker_wait_is_bounded_without_resending_D(self):
+        run = self.run_fixture()
+        active = snapshot("active", turns=[{"id": "busy", "state": "running"}])
+        active["session"].update(id="worker", kind="worker")
+        run.cli.session = lambda _: active
+        run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
+        elapsed = [0]
+        run.clock = lambda: elapsed[0]
+        run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
+        with self.assertRaisesRegex(h.Stop, "wait deadline reached: workers"):
+            run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+        self.assertEqual(len(run.cli.calls), 1)
+        self.assertEqual(run.state["waits"]["workers"]["monotonic"], 0)
+
+    def test_T05_running_2a_and_bootstrap_receipts_wait_for_completed(self):
+        fake = FlowFixture(self.root, "codex", "claude-code")
+        elapsed = [0]
+        fake.run.clock = lambda: elapsed[0]
+        fake.run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 2)
+        fake.running_receipt_reads = {"old": 2, "new": 2}
+        h.run_protocol(fake.run)
+        self.assertEqual(fake.run.state["outcome"], "complete")
+        self.assertEqual(fake.run.state["waits"]["old_2a"]["elapsed"], 4)
+        self.assertEqual(fake.run.state["waits"]["bootstrap"]["elapsed"], 4)
+        self.assertEqual(fake.mutations.count("2a"), 1)
+        self.assertEqual(fake.mutations.count("spawn"), 1)
+
     def test_T01_worker_self_safe_file_waits_for_true_completed_turn(self):
         run = self.run_fixture()
         directory = h.mkdir(self.root / "workers/worker")
@@ -384,7 +419,52 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(run.worker_stop({"id": "worker"}))
         snap["session"]["activity"]["state"] = "idle"
         snap["transcript"]["turns"][0].update(state="completed", completedAt=h.now())
+        snap["transcript"]["incomplete"] = []
         self.assertEqual(run.worker_stop({"id": "worker"})["source_type"], "worker-self")
+
+    def test_review_hidden_index_flags_stop_before_clean_reclaim(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as temp:
+                fake = FlowFixture(Path(temp), "codex", "codex")
+                subprocess.run(["git", "-C", str(fake.workspace), "update-index", flag, "tracked"], check=True, capture_output=True)
+                (fake.workspace / "tracked").write_text("hidden unique modification")
+                status = subprocess.run(["git", "-C", str(fake.workspace), "status", "--porcelain"], check=True, capture_output=True).stdout
+                self.assertEqual(status, b"")
+                with self.assertRaisesRegex(h.Stop, "index flags"):
+                    h.run_protocol(fake.run)
+                self.assertNotIn("kill", fake.mutations)
+                self.assertEqual((fake.workspace / "tracked").read_text(), "hidden unique modification")
+
+    def test_review_inspect_shell_expansions_are_not_literal_argv(self):
+        command = h.producer_command(self.root, "bootstrap")
+        good = dict(kind="activity", activityKind="command", status="completed", detail={"command": command, "exitCode": 0})
+        prefix = command.replace(" bootstrap --run", " inspect --run")
+        for token in ('$(touch${IFS}/tmp/rh-out;printf${IFS}start.json)', '$HOME', '`touch${IFS}/tmp/rh-out`',
+                      'start\\.json', '"start.json"', "'start.json'", '*.json', 'start?.json', '[s]tart.json',
+                      '{start,other}.json', 'start.json;id', 'start.json|id', 'start.json>out', '~/start.json'):
+            malicious = copy.deepcopy(good)
+            malicious["detail"]["command"] = prefix + " --path " + token + " --offset 0"
+            with self.subTest(token=token), self.assertRaises(h.Stop):
+                h.audit_bootstrap(snapshot(entries=[malicious, good]), self.root)
+        malicious = copy.deepcopy(good)
+        malicious["detail"]["rawCommand"] = "$(touch${IFS}/tmp/rh-out)/bash -lc " + h.shlex.quote(command)
+        with self.assertRaises(h.Stop):
+            h.audit_bootstrap(snapshot(entries=[malicious, good]), self.root)
+
+    def test_review_live_authority_identity_cannot_be_forged_by_evidence(self):
+        req = self.request()
+        original = h.decode(h.private_read(self.root / "evidence/human.json"))
+        original["transcript"]["turns"].append({"id": "preparing", "state": "running"})
+        cli = type("SourceCLI", (), {})()
+        cli.session = lambda _: copy.deepcopy(original)
+        h.validate_sources_live(req, cli)
+        for changes in ({"role": "assistant"}, {"origin": "automation"}, {"senderSessionId": "other-worker"}):
+            with self.subTest(changes=changes):
+                changed = copy.deepcopy(original)
+                changed["transcript"]["entries"][0].update(changes)
+                cli.session = lambda _: copy.deepcopy(changed)
+                with self.assertRaises(h.Stop):
+                    h.validate_sources_live(req, cli)
 
     def test_T01_quiescent_worker_has_preserved_content_and_is_not_self_ACK(self):
         run = self.run_fixture()
@@ -588,7 +668,20 @@ class FlowFixture:
 
     def session(self, sid):
         self.last_received = h.time.monotonic()
-        return copy.deepcopy(self.snapshots[sid])
+        snap = copy.deepcopy(self.snapshots[sid])
+        remaining = getattr(self, "running_receipt_reads", {})
+        phase = "2a" if sid == "old" else "bootstrap"
+        if self.run.state.get("stage") == phase and remaining.get(sid, 0):
+            remaining[sid] -= 1
+            turn = snap["transcript"]["turns"][-1]
+            turn.update(state="running")
+            turn.pop("completedAt", None)
+            snap["session"]["activity"]["state"] = "active"
+            snap["transcript"]["incomplete"] = [
+                {"type": "turn", "id": turn["id"], "state": "running"},
+                {"type": "entry", "sequence": 8, "reason": "streaming"},
+                {"type": "entry", "sequence": 9, "reason": "running"}]
+        return snap
 
     def sessions(self):
         return copy.deepcopy(self.session_list)
