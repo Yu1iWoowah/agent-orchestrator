@@ -12,6 +12,8 @@ import unittest
 import uuid
 from unittest.mock import patch
 
+from test_wire_contract import wire, wire_bytes, list_row
+
 SPEC = importlib.util.spec_from_file_location("handoff", Path(__file__).parents[1] / "handoff.py")
 h = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(h)
@@ -35,16 +37,14 @@ def snapshot(state="idle", turns=None, entries=None):
             if reason == "pending" and entry.get("requestId"):
                 item["requestId"] = entry["requestId"]
             incomplete.append(item)
-    return {"session": {"id": "old", "projectId": h.PROJECT, "kind": "orchestrator",
-                        "harness": "codex", "mode": "chat", "isTerminated": False,
-                        "branch": "fixture", "status": "working" if state == "active" else "idle",
-                        "createdAt": "2026-11-08T00:00:00Z", "updatedAt": "2026-11-08T00:00:00Z", "prs": [],
-                        "activity": {"state": state, "lastActivityAt": "2026-11-08T00:00:00Z"}},
-            "transcript": {"source": "ao_conversation", "order": "oldest_first", "requested": 500,
-                           "returned": len(entries), "cap": {"unit": "chars", "value": 0},
-                           "conversationId": "conv", "activeBranchId": "branch",
-                           "latestSequence": 1, "hasMoreBefore": False, "entries": entries,
-                           "turns": turns, "incomplete": incomplete}}
+    result = wire("active" if state == "active" else "snapshot")
+    result["session"].update(id="old", projectId=h.PROJECT, kind="orchestrator", harness="codex",
+                             mode="chat", isTerminated=False, branch="fixture", status="working" if state == "active" else "idle")
+    result["session"]["activity"]["state"] = state
+    result["transcript"].update(conversationId="conv", activeBranchId="branch", latestSequence=1,
+                                 hasMoreBefore=False, entries=entries, returned=len(entries), turns=turns, incomplete=incomplete)
+    result["transcript"].pop("next", None)
+    return result
 
 
 class ProtocolTests(unittest.TestCase):
@@ -107,6 +107,41 @@ class ProtocolTests(unittest.TestCase):
                     raise subprocess.TimeoutExpired(args, timeout)
                 return b'{"accepted":true}'
         return h.Run(self.root, FakeCLI())
+
+    def test_retired_UUID_is_rejected_before_cached_state_or_qualification(self):
+        req = self.request()
+        root = h.mkdir(self.root / "runs")
+        slot = h.mkdir(root / ".start/old")
+        h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
+        h.publish(slot / "request.json", h.canonical(req))
+        retired = h.mkdir(root / ".voided" / req["request_id"])
+        with patch.object(h, "qualified") as qualified:
+            # Even an incomplete archive reserves the retired UUID.
+            with self.assertRaisesRegex(h.Stop, "retired"):
+                h.start(root, None, "old", target())
+            h.publish(retired / "start.json", h.canonical(req))
+            destination = h.mkdir(root / req["request_id"])
+            h.publish(destination / "start.json", h.canonical(req))
+            h.publish(destination / "state.json", h.canonical({"outcome": "pending"}))
+            with self.assertRaisesRegex(h.Stop, "retired"):
+                h.start(root, None, "old", target())
+            qualified.assert_not_called()
+
+    def test_new_UUID_ignores_hidden_archive_but_not_unresolved_active_run(self):
+        req = self.request()
+        root = h.mkdir(self.root / "runs")
+        slot = h.mkdir(root / ".start/old")
+        h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
+        h.publish(slot / "request.json", h.canonical(req))
+        h.mkdir(root / ".voided" / str(uuid.uuid4()))
+        with patch.object(h, "qualified", side_effect=h.Stop("qualification reached")):
+            with self.assertRaisesRegex(h.Stop, "qualification reached"):
+                h.start(root, None, "old", target())
+        prior = h.mkdir(root / str(uuid.uuid4()))
+        h.publish(prior / "state.json", h.canonical({"old_id": "old", "outcome": "pending"}))
+        with patch.object(h, "qualified") as qualified, self.assertRaisesRegex(h.Stop, "unresolved run"):
+            h.start(root, None, "old", target())
+        qualified.assert_not_called()
 
     def test_T06_unknown_effect_never_replayed(self):
         run = self.run_fixture()
@@ -185,7 +220,8 @@ class ProtocolTests(unittest.TestCase):
 
     def test_audit_all_active_workers_receive_stop_in_same_round(self):
         run = self.run_fixture()
-        workers = [dict(id=sid, projectId=h.PROJECT, kind="worker", isTerminated=False) for sid in ("w1", "w2")]
+        template = next(row for row in wire("list")["data"] if row["id"] == "worker")
+        workers = [dict(template, id=sid) for sid in ("w1", "w2")]
         run.cli.sessions = lambda: workers
         def active(sid):
             snap = snapshot("active", turns=[{"id": "busy", "state": "running"}])
@@ -423,7 +459,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_T06_spawn_recovery_requires_unique_precise_token_and_time(self):
         token = "RH3[" + str(uuid.uuid4()) + "]"
-        item = dict(id="new", projectId=h.PROJECT, kind="orchestrator", displayName=token,
+        item = dict(wire("list")["data"][0], id="new", projectId=h.PROJECT, role="orchestrator", displayName=token,
                     createdAt="2026-11-08T01:00:01Z")
         self.assertEqual(h.match_spawn([item], token, "2026-11-08T01:00:00Z"), "new")
         for candidates in ([], [item, item], [dict(item, displayName=token[:-1])],
@@ -604,7 +640,10 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(h.Stop, "transient post-resume read failure"):
                 h.run_protocol(fake.run)
         receipt = h.decode(h.private_read(fake.run.root / "control/resume/result.json"))
-        self.assertEqual(h.decode(receipt["stdout"]), {"sessionId": "new", "resumeMode": "native"})
+        response = h.decode(receipt["stdout"])
+        self.assertEqual(response["sessionId"], "new")
+        self.assertEqual(response["resumeMode"], "native")
+        self.assertEqual(response["session"]["id"], "new")
         self.assertNotIn("resume", fake.run.state["completed_stages"])
         self.assertEqual(fake.snapshots["new"]["session"]["activity"]["state"], "idle")
         # Recreate the runner from disk as an explicit same-run continue would.
@@ -1034,33 +1073,42 @@ class FlowFixture:
         return snap
 
     def sessions(self):
-        return copy.deepcopy(self.session_list)
+        return [list_row(s) for s in self.session_list]
 
     def documents(self):
-        return {"sharedDir": str(self.shared), "documentPath": "handoff.md", "lease":
-                {"sessionId": self.owner, "epoch": 1 if self.owner == "old" else 2, "frozen": False}}
+        result = wire("documents")["documents"]
+        result.update(sharedDir=str(self.shared), documentPath="handoff.md")
+        result["lease"].update(sessionId=self.owner, epoch=1 if self.owner == "old" else 2, frozen=False)
+        return result
 
     def read(self, args):
-        return {"session": copy.deepcopy(self.snapshots[args[2]]["session"])}
+        result = wire("detail")
+        result["session"].update(copy.deepcopy(self.snapshots[args[2]]["session"]))
+        return result
 
     def get(self, path):
         if path == "projects/" + h.PROJECT:
-            return {"status": "ok", "project": {"id": h.PROJECT, "path": str(self.repo), "config":
-                    {"preRemove": ["unknown-hook"] if self.preservation_problem == "hook" else []}}}
+            result = wire("project")
+            result["project"].update(id=h.PROJECT, path=str(self.repo))
+            result["project"]["config"]["preRemove"] = ["unknown-hook"] if self.preservation_problem == "hook" else []
+            return result
         if path.startswith("agents/accounts/sessions/"):
-            p = h.provider(self.target)
-            return {p: "acct", "bindings": {p: {"accountId": "acct", "available": True}}}
+            return wire(h.provider(self.target) + "-binding")
         if path.endswith("/conversation"):
-            return {"settings": {"model": "model", "reasoningEffort": "high", "approvalMode": "bypass-permissions", "fastMode": False}}
+            return wire("conversation")
         sid = path.split("/")[1]
-        return {"session": copy.deepcopy(self.snapshots[sid]["session"])}
+        result = wire("http-detail")
+        result["session"].update(copy.deepcopy(self.snapshots[sid]["session"]))
+        return result
 
     def managed(self, actor, relative, directory):
         content = ("handoff_run_id: " + self.run_id + "\nA–F preserved\n").encode()
         path = self.shared / relative
         path.parent.mkdir(mode=0o700, exist_ok=True)
         path.write_bytes(content)
-        raw = h.canonical({"file": {"path": relative, "content": content.decode(), "hash": h.digest(content)}})
+        result = wire("managed")
+        result["file"].update(path=relative, content=content.decode(), hash=h.digest(content))
+        raw = h.canonical(result)
         reply = directory / "managed.json"
         h.publish(reply, raw)
         return {"path": str(path), "sha256": h.digest(content)}, {"path": str(reply), "sha256": h.digest(raw)}
@@ -1113,13 +1161,15 @@ class FlowFixture:
                     (self.run.root / "old/saved/ignored.cache").write_bytes(b"changed")
                 if self.kill_outcome == "lost":
                     raise subprocess.TimeoutExpired(args, timeout)
-                suffix = " (workspace cleanup pending)" if self.kill_outcome == "pending" else " (workspace preserved)" if dirty else ""
-                return ("session old killed" + suffix + "\n").encode()
+                return wire_bytes("kill-pending" if self.kill_outcome == "pending" else "kill-preserved" if dirty else "kill")
             elif operation == "exit-agent":
                 self.snapshots[sid]["session"]["activity"]["state"] = "exited"
             elif operation == "resume-agent":
                 self.snapshots[sid]["session"]["activity"]["state"] = "idle"
-                return h.canonical({"sessionId": sid, "resumeMode": "native"})
+                result = wire("resume")
+                result.update(sessionId=sid)
+                result["session"].update(self.snapshots[sid]["session"])
+                return h.canonical(result)
             return b"{}"
         if args[0] == "send":
             sid = args[args.index("--session") + 1]

@@ -401,7 +401,17 @@ class CLI:
         return self.read(["session", "get", identifier(sid), "--transcript", "500", "--cap", "0"])
 
     def sessions(self):
-        return self.read(["session", "ls", "--all", "--include-terminated", "--project", PROJECT])["sessions"]
+        response = self.read(["session", "ls", "--all", "--include-terminated", "--project", PROJECT])
+        require(isinstance(response, dict) and isinstance(response.get("data"), list) and
+                isinstance(response.get("meta"), dict), "invalid session list data/meta envelope")
+        for field in ("hiddenTerminatedCount", "hiddenOrchestratorCount"):
+            count = response["meta"].get(field)
+            require(type(count) is int and count == 0, "session list hides sessions: " + field)
+        for row in response["data"]:
+            require(isinstance(row, dict) and all(isinstance(row.get(k), str) and row[k]
+                    for k in ("id", "projectId")) and row.get("role") in ("worker", "orchestrator") and
+                    type(row.get("isTerminated")) is bool, "invalid session list row identity/role")
+        return response["data"]
 
     def documents(self):
         return self.read(["project", "documents", "info", "--project", PROJECT])["documents"]
@@ -763,7 +773,7 @@ class Run:
                                  self.run_id + ":" + phase + ":" + sid, "--message", text], LIMITS["notify"])
 
     def live_workers(self):
-        workers = [s for s in self.cli.sessions() if s["projectId"] == PROJECT and s["kind"] == "worker" and not s["isTerminated"]]
+        workers = [s for s in self.cli.sessions() if s["projectId"] == PROJECT and s["role"] == "worker" and not s["isTerminated"]]
         self.evidence("worker-list", workers)
         return workers
 
@@ -1333,7 +1343,7 @@ def known_turn(turn, target):
 
 
 def match_spawn(sessions, token, intent_at):
-    matches = [s for s in sessions if s["projectId"] == PROJECT and s["kind"] == "orchestrator" and
+    matches = [s for s in sessions if s["projectId"] == PROJECT and s["role"] == "orchestrator" and
                token in s.get("displayName", "")]
     require(len(matches) == 1, "UNKNOWN spawn: no unique exact token candidate")
     require(dt.datetime.fromisoformat(matches[0]["createdAt"].replace("Z", "+00:00")) >=
@@ -1691,7 +1701,7 @@ def producer(run, action):
     require(run.state.get("nonce_completed"), "cannot notify workers before native nonce verification")
     notifications = []
     for worker in acting.sessions():
-        if worker["projectId"] != PROJECT or worker["kind"] != "worker" or worker["isTerminated"]:
+        if worker["projectId"] != PROJECT or worker["role"] != "worker" or worker["isTerminated"]:
             continue
         wid = identifier(worker["id"])
         reject_new_human(acting.session(sid), run.state["bootstrap_sequence"])
@@ -1819,6 +1829,7 @@ def start(root, initial, old, target):
         slot = root / ".start" / old
         raw = private_read(slot / "request.json")
         req = validate_request(decode(raw), slot, old, target)
+        require(not no_symlinks(root / ".voided" / req["request_id"]).exists(), "request UUID is retired")
         destination = root / req["request_id"]
         if (destination / "start.json").exists():
             require(private_read(destination / "start.json") == raw, "UUID bound to different request")

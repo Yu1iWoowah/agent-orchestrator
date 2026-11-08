@@ -8,6 +8,7 @@ on:
     paths:
       - "backend/**"
       - "components/hcg/**"
+      - "tools/reusable-handoff/**"
       - "cloud/**"
       - "pricing/**"
       - "frontend/src/api/schema.ts"
