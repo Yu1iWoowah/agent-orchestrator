@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -19,6 +20,11 @@ import (
 type UsageSummaryService interface {
 	ListCompact(context.Context, domain.ProjectID) ([]domain.CompactSessionUsage, error)
 	Get(context.Context, domain.SessionID) (domain.SessionUsageSummary, error)
+}
+
+// UsageEventsService is the read-only ledger paging boundary.
+type UsageEventsService interface {
+	Events(context.Context, domain.SessionID, int64, *int64, int64) (domain.UsageEventsPage, error)
 }
 
 // SessionMemoryService samples resident memory per live session.
@@ -46,6 +52,7 @@ type SessionStepsReader interface {
 // UsageController owns compact dashboard usage routes.
 type UsageController struct {
 	Svc    UsageSummaryService
+	Events UsageEventsService
 	Log    *slog.Logger
 	Memory SessionMemoryService
 	// Steps is optional: without it rows carry no activity.
@@ -60,6 +67,7 @@ func (c *UsageController) Register(r chi.Router) {
 	r.Get("/usage/sessions/memory", c.listMemory)
 	r.Get("/usage/memory/pressure", c.getPressure)
 	r.Get("/usage/sessions/{sessionId}", c.getSession)
+	r.Get("/usage/sessions/{sessionId}/events", c.getEvents)
 }
 
 func (c *UsageController) listSessions(w http.ResponseWriter, r *http.Request) {
@@ -250,4 +258,37 @@ func estimatedCostResponse(cost *domain.EstimatedCost) *EstimatedCostResponse {
 		Coverage:            string(cost.Coverage),
 		ProviderAttribution: string(cost.ProviderAttribution),
 	}
+}
+
+func (c *UsageController) getEvents(w http.ResponseWriter, r *http.Request) {
+	if c.Events == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/usage/sessions/{sessionId}/events")
+		return
+	}
+	values := map[string]int64{"afterId": 0, "limit": 200, "throughId": 0}
+	for key := range values {
+		if v, ok := r.URL.Query()[key]; ok {
+			if len(v) != 1 {
+				envelope.WriteError(w, r, apierr.Invalid("INVALID_USAGE_PAGE", "Repeated paging parameter", nil))
+				return
+			}
+			n, err := strconv.ParseInt(v[0], 10, 64)
+			if err != nil {
+				envelope.WriteError(w, r, apierr.Invalid("INVALID_USAGE_PAGE", "Paging parameters must be integers", nil))
+				return
+			}
+			values[key] = n
+		}
+	}
+	var through *int64
+	if _, ok := r.URL.Query()["throughId"]; ok {
+		n := values["throughId"]
+		through = &n
+	}
+	page, err := c.Events.Events(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), values["afterId"], through, values["limit"])
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, UsageEventsResponse(page))
 }

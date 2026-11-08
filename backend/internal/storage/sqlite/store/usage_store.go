@@ -1111,3 +1111,27 @@ func int64PtrWhen(v int64, ok bool) *int64 {
 	}
 	return &v
 }
+
+// GetUsageEventsThroughID fixes the insertion upper bound for a session scan.
+func (s *Store) GetUsageEventsThroughID(ctx context.Context, id domain.SessionID) (int64, error) {
+	return s.qr.GetUsageEventsThroughID(ctx, id)
+}
+
+// ListUsageEventsPage reads existing ledger rows without triggering collection.
+func (s *Store) ListUsageEventsPage(ctx context.Context, id domain.SessionID, after, through, limit int64) ([]domain.UsageLedgerEvent, error) {
+	rows, err := s.qr.ListUsageEventsPage(ctx, gen.ListUsageEventsPageParams{SessionID: id, AfterID: after, ThroughID: through, PageLimit: limit})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.UsageLedgerEvent, 0, len(rows))
+	for _, r := range rows {
+		e := domain.ModelUsageEvent{ProviderID: domain.UsageProviderID(r.ProviderID), ModelID: r.ModelID, MeasurementKind: domain.UsageMeasurementKind(r.UsageMeasurementKind),
+			Tokens:            storedUsageTokens(r.InputTokens, r.CachedInputTokens, r.UncachedInputTokens, r.OutputTokens),
+			ProviderUsageJSON: r.ProviderUsageJson.String, SourceEventKey: r.SourceEventKey}
+		if r.CreatedAt.Valid {
+			e.CreatedAt = r.CreatedAt.Time
+		}
+		out = append(out, domain.UsageLedgerEvent{ID: r.ID, BindingID: r.BindingID, UsageSourceID: r.UsageSourceID, ModelUsageEvent: e})
+	}
+	return out, nil
+}

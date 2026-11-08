@@ -160,6 +160,10 @@ func schemaName(_ reflect.Type, defaultName string) string {
 //
 //nolint:gosec // Public schema type names are not credential values.
 var schemaNames = map[string]string{
+	"ControllersUsageEventsResponse":                       "UsageEventsResponse",
+	"DomainUsageEventView":                                 "UsageEventView",
+	"DomainUsageBindingView":                               "UsageBindingView",
+	"DomainUsageSourceView":                                "UsageSourceView",
 	"ControllersOperatorConsentReadinessResponse":          "OperatorConsentReadinessResponse",
 	"DomainOperatorPurpose":                                "OperatorPurpose",
 	"ControllersGuardianPurgeQuery":                        "GuardianPurgeQuery",
@@ -1193,6 +1197,10 @@ type conversationPlanHistoryQuery struct {
 
 func usageOperations() []operation {
 	return []operation{
+		{method: http.MethodGet, path: "/api/v1/usage/sessions/{sessionId}/events", id: "listSessionUsageEvents", tag: "usage",
+			summary:    "Read numeric model request events; throughId bounds insertions, not repairs or metadata changes",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.UsageEventsQuery{}},
+			resps:      []respUnit{{http.StatusOK, controllers.UsageEventsResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{
 			method: http.MethodGet, path: "/api/v1/usage/sessions", id: "listCompactSessionUsage", tag: "usage",
 			summary:    "List compact token and estimated cost usage for session cards",
