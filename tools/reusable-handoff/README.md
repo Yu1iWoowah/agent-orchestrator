@@ -67,7 +67,7 @@ R/.start/<old-id>/evidence/<necessary-original-response>.json
 | --- | --- |
 | `request_id` | 完整 canonical UUID；也就是 run-id |
 | `project_id`、`old_id` | 本專案及 old 的精確 id |
-| `prepared_by` | old `session_id` 與真 preparing `turn_id`，可仍 running |
+| `prepared_by` | 同一 old 的語意準備 A 輪；A completed 且全部引用訊息 settled |
 | `target` | `harness/account/model/effort/approval_mode/mode`，與外部逐欄一致，mode 固定 chat |
 | `authority` | `source_refs`、`old_verified_scope=three-step-handoff-this-project`、`t0_source_ref/t0_created_at/t0_precision` |
 | `workers` | 各 worker 的保留 stop D、hold、原題 owner／引用、待決、放行權與保留 resume D |
@@ -91,6 +91,39 @@ start 拒絕缺檔、半份／重複鍵 JSON、schema／型別／引用錯、tar
 state 分別保存起始 worker index hash 與全 safe 後 stop index hash，不混用。
 workspace_index 隨 start 原 bytes／start_sha256 綁定；同 session 不重複、不同 session 不共用路徑，缺索引立即停止，continue 不讀另一份可變索引。
 old 自身與非標準 worker 路徑必須引用 Q1 的 old-control-record，原文具名記 session／path 並屬 old preparing turn；保存副本及 live 訊息都核此 turn，runner 不從 A–F 猜路徑。
+
+### 同一 old 的兩輪準備
+
+A 核原 authority／target／T0、worker／D／hold／原題及實際 workspace，留下本輪具名 old-control-record，正常 completed。
+A 不發布最終 request、不 start、不先改 A–F 或執行 worker 停點。
+既有 operator 用正常公開 transcript 核 A 真 completed、所有引用 assistant 訊息 streaming=false、工具已結束，才發一次非 human B 續行通知。
+idle 單獨、failed／recovered／interrupted 都不算 A 完成；不能讓 A 前景等待自己 completed。
+
+同一 old 在 B 自己讀 A 定稿原件，重核 conversation／branch／message／role／turn／正文、原授權版本與後續取消／改向，以及 A 準備的全部事實仍適用。
+有 worker、D／hold／原題或路徑漂移、來源不足即停，不以 B 的新決定補 A，不自動重做 A。
+B 保存正常 CLI 回應原 bytes，從中取實際 revision、正文 hash 及 raw hash；不合成原件、不硬填 revision、不正規化正文。
+B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同 B 輪呼叫既有 start，回真 run-id／status 後結束。
+原 human／T0／精度不變，不請人類重送授權；任何 STOP 不改包救過、不重試或擅自 continue。
+後續仍完整走 worker、2a、匯出／保全與 native 核驗，A completed 不等於 old 可 kill。
+
+### 作廢與資格界線
+
+start 拒絕固定 R/.voided/<uuid> 已存在的 UUID，包括未完成封存；hidden archive 不是另一個啟動入口。
+作廢是具名核准的 operator 操作，不提供通用清理器；不能證明無控制效果、有 runner 或 UNKNOWN 的 run 不可自行退役。
+已建但未 launch 的部分 run 不能當成「從未建 run」直接覆寫；同 request 再 start 可能只回 cached state。
+
+RH-FIX1 核准的 R1 個案採完整封存後新 UUID，不續用舊 run；實際執行仍須另有具名 D。
+operator 先依同序取得 old start 鎖與該 run runner 鎖，排除並行啟動，不 force 解鎖。
+核固定版本、state／來源與全部 wire，正面證明無 runner、control intent／sent／result、managed 或 lifecycle 效果；未知檔案或缺證即停。
+鎖內保存完整 manifest，整份 run 原子 rename 到同 filesystem 的 R/.voided/<uuid>，原槽整槽封存在其 retired-start-slot/，逐檔核 hash／mode／相對關係並 fsync 父目錄。
+另原子保存具名 void-receipt.json、決定來源、前後路徑及 manifest／原資格 hash；不改歷史 state 冒充 completed，不刪失敗原件。
+此只限具名零控制效果個案，不是所有 prepared/pending run 都可作廢；中途失敗保留已有效果並停，不自動重搬或新 start。
+
+merge 後另經明確授權，保全原 package／資格／CLI／script bytes 與 hash，確認無 active run／runner後，鎖內原子發布完整 qualification 三欄。
+記新 merge／script／CLI hash、wire 測試證據與新 package manifest；binary 未變仍核 hash/help/wire，不只手換 script hash 字串。
+不得原地換已綁 run 的副本再 continue；封存的舊 script 只作證據，禁止再由 archive 執行。
+A 只在來源與全部準備事實仍適用時沿用；B 必須重做，由 old 自行核、發新 UUID，原 human／T0 不變。
+本節不是任何 lab／production 的操作授權，shared 與歷史文件不由此改寫。
 
 ## 三個階段與回條
 
@@ -201,13 +234,20 @@ runner 死亡無法自行通知，依 old ready 提示由人查原 run status；
 
 ## 本機驗證
 
-在私有 TMPDIR、清除 AO／provider 環境後執行：
+Linux 需要 Go 與 python3。在私有 HOME／TMPDIR、清除 AO／provider 環境後，唯一 focused 入口：
 
 ```text
-python3 -I -B -m unittest discover -s tools/reusable-handoff/tests -v
 cd backend
-go test -p 8 ./internal/cli -run '^TestSpawnApprovalMode$' -count=1
+go test -count=1 -v -run '^TestReusableHandoffWire$' ./internal/cli
+go test -race -count=1 -p 8 ./...
 ```
+
+TestReusableHandoffWire 每次用真 Cobra stdout 與現行 Go Response／ports／domain DTO serializer，在私有 t.TempDir 產 fixture，再以 python3 -I -B 執行整套 RH Python 測試。
+CLI list 為 data/meta、row.role/activity 字串；detail 為 session.kind/activity 物件；不能互換或猜 workspace 欄位，路徑仍由 C3 workspace_index＋Git核。
+Python 只替換 subprocess／HTTP I/O；無 producer fixture 或缺 python3 明確失敗，不退回手組封套或人工刷新 golden。
+控制時序 fake 只改合成情境值，模板取同次 producer。-count=1 避免 Go test cache 忽略 Python 變更；-v 顯示 Python 確實執行。
+Go workflow 的 PR paths 包含 tools/reusable-handoff/**，僅 Python／README 變更也會選中既有 Go 測試，無新增 workflow。
+非 Linux 不執行此 Linux 交接腳本，但仍編譯原生受影響 Go 套件；不由 fixture 通過推論 provider 或實際交接資格。
 
 測試對照：TS-T01 停點／靜止／quota；T02 dirty 內容與集合；T03 白名單／分支／附件依賴／outbox；T04 四組 binding／UNKNOWN／approval／固定身分／start 重入；T05 三回條、工具寫入、S1/S2、首報與 nonce；T06 UNKNOWN／原 handle／report 續行／精確 token；T07 D／hold／原題／放行；T08 原時戳／獨立期限／無總時限。
 這些是可重現 fake 證據，不是 provider 性能數字或真實交接資格證明。
