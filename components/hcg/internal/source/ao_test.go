@@ -3,11 +3,13 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +104,43 @@ func TestDataRootNeverFallsBackToStable(t *testing.T) {
 	client, err := FromEnvironment()
 	if err != nil || client.BaseURL != "http://127.0.0.1:12345" || client.DataRoot != os.Getenv("AO_DATA_DIR") {
 		t.Fatalf("client=%+v err=%v", client, err)
+	}
+}
+
+func TestScanPreservesDaemonErrorEnvelope(t *testing.T) {
+	for _, later := range []bool{false, true} {
+		t.Run(fmt.Sprintf("afterPage=%v", later), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if later && r.URL.Query().Get("afterId") == "0" {
+					if err := json.NewEncoder(w).Encode(map[string]any{"sessionId": "s", "throughId": 2, "nextAfterId": 1, "hasMore": true, "events": []any{map[string]any{"id": 1, "bindingId": 1, "usageSourceId": 1, "sourceEventKey": "one"}}, "bindings": []any{map[string]any{"id": 1, "sessionId": "s"}}}); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+				if err := json.NewEncoder(w).Encode(map[string]string{"error": "unavailable", "code": "LEDGER_UNAVAILABLE", "message": "Ledger cannot be read", "requestId": "req-usage-123"}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			client := Client{BaseURL: server.URL, HTTP: server.Client()}
+			got, err := client.Scan(context.Background(), "s")
+			if err == nil {
+				t.Fatal("expected daemon failure")
+			}
+			for _, value := range []string{"503", "LEDGER_UNAVAILABLE", "Ledger cannot be read", "req-usage-123"} {
+				if !strings.Contains(err.Error(), value) || !strings.Contains(got.Reason, value) {
+					t.Fatalf("missing %q: err=%v reason=%s", value, err, got.Reason)
+				}
+			}
+			wantStatus, wantCount := "unavailable", 0
+			if later {
+				wantStatus, wantCount = "partial", 1
+			}
+			if got.ScanStatus != wantStatus || len(got.Events) != wantCount {
+				t.Fatalf("snapshot=%+v", got)
+			}
+		})
 	}
 }

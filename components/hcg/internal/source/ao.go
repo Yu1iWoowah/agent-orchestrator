@@ -23,6 +23,25 @@ type Client struct {
 	HTTP     *http.Client
 }
 
+// daemonError retains the public error fields needed to diagnose an API failure.
+type daemonError struct {
+	Status    int    `json:"-"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	RequestID string `json:"requestId"`
+}
+
+func (e *daemonError) Error() string {
+	message := fmt.Sprintf("usage events HTTP %d: %s", e.Status, e.Message)
+	if e.Code != "" {
+		message += fmt.Sprintf(" (%s)", e.Code)
+	}
+	if e.RequestID != "" {
+		message += fmt.Sprintf(" [request %s]", e.RequestID)
+	}
+	return message
+}
+
 // FromEnvironment resolves AO namespaces. A data override must name its run-file
 // explicitly because AO_DATA_DIR alone does not change AO's run-file default.
 func FromEnvironment() (*Client, error) {
@@ -87,10 +106,18 @@ func (c *Client) Scan(ctx context.Context, session string) (out usage.Snapshot, 
 			return out, e
 		}
 		var page usage.Page
-		e = json.NewDecoder(io.LimitReader(response.Body, 16<<20)).Decode(&page)
+		failure := daemonError{Status: response.StatusCode}
+		var target any = &page
+		if response.StatusCode != http.StatusOK {
+			target = &failure
+		}
+		e = json.NewDecoder(io.LimitReader(response.Body, 16<<20)).Decode(target)
 		closeErr := response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			return out, fmt.Errorf("usage events HTTP %d", response.StatusCode)
+			if e != nil {
+				return out, fmt.Errorf("usage events HTTP %d: decode error envelope: %w", response.StatusCode, e)
+			}
+			return out, &failure
 		}
 		if e != nil {
 			return out, fmt.Errorf("decode usage page: %w", e)
