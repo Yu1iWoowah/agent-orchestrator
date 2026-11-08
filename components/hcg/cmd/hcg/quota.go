@@ -77,7 +77,7 @@ func runQuota(ctx context.Context, command string, args []string, stdout, stderr
 			// provider adapter. Neither stderr nor a raw execution error is persisted.
 			raw, cliErr := exec.CommandContext(tickCtx, "ao", "account", "ls", "--json").Output()
 			sample := quota.Project(raw, cliErr, client.DataRoot, time.Now())
-			if err := store.Append(tickCtx, sample); err != nil {
+			if err := store.Append(ctx, sample); err != nil {
 				return err
 			}
 			syncStatus := "complete"
