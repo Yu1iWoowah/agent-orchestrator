@@ -96,7 +96,7 @@ func TestFixedEngineAuthorizedView(t *testing.T) {
 
 func TestSandboxBoundary(t *testing.T) {
 	r, node, path := engineTests(t)
-	_, modules, err := engineFiles(path, node)
+	_, modules, err := engineFiles(t.Context(), path, node)
 	if err != nil {
 		t.Fatal(err)
 	}

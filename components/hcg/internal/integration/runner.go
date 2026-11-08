@@ -34,7 +34,15 @@ func (e Engine) valid() bool {
 	return e.Version == EngineVersion && filepath.IsAbs(e.Executable) && filepath.IsAbs(e.NodeExecutable) && len(e.Digest) == 64
 }
 
-func engineFiles(executable, node string) (Engine, string, error) {
+func engineFiles(ctx context.Context, executable, node string) (engine Engine, root string, resultErr error) {
+	defer func() {
+		if err := ctx.Err(); err != nil {
+			engine, root, resultErr = Engine{}, "", err
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return Engine{}, "", err
+	}
 	bad := errors.New("engine registration unavailable")
 	if !filepath.IsAbs(executable) || !filepath.IsAbs(node) {
 		return Engine{}, "", bad
@@ -48,7 +56,18 @@ func engineFiles(executable, node string) (Engine, string, error) {
 	if filepath.Base(pkg) != EngineName || filepath.Base(modules) != "node_modules" {
 		return Engine{}, "", bad
 	}
-	b, err := os.ReadFile(filepath.Join(pkg, "package.json"))
+	metadataFile, err := os.OpenFile(filepath.Join(pkg, "package.json"), sourceOpenFlags, 0)
+	if err != nil {
+		return Engine{}, "", err
+	}
+	defer metadataFile.Close()
+	info, err := metadataFile.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return Engine{}, "", bad
+	}
+	var metadataBytes bytes.Buffer
+	_, err = copyWithContext(ctx, &metadataBytes, metadataFile)
+	b := metadataBytes.Bytes()
 	var metadata struct{ Name, Version string }
 	if err != nil || json.Unmarshal(b, &metadata) != nil || metadata.Name != EngineName || metadata.Version != EngineVersion {
 		return Engine{}, "", bad
@@ -56,6 +75,9 @@ func engineFiles(executable, node string) (Engine, string, error) {
 	h := sha256.New()
 	err = filepath.WalkDir(modules, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(modules, path)
@@ -74,27 +96,34 @@ func engineFiles(executable, node string) (Engine, string, error) {
 		if !d.Type().IsRegular() {
 			return bad
 		}
-		f, err := os.Open(path)
+		f, err := os.OpenFile(path, sourceOpenFlags, 0)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		_, err = io.Copy(h, f)
+		info, err := f.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return bad
+		}
+		_, err = copyWithContext(ctx, h, f)
 		return err
 	})
 	if err != nil {
 		return Engine{}, "", bad
 	}
-	f, err := os.Open(node)
+	if err := ctx.Err(); err != nil {
+		return Engine{}, "", err
+	}
+	f, err := os.OpenFile(node, sourceOpenFlags, 0)
 	if err != nil {
 		return Engine{}, "", bad
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	info, err = f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return Engine{}, "", bad
 	}
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := copyWithContext(ctx, h, f); err != nil {
 		return Engine{}, "", bad
 	}
 	return Engine{entry, node, EngineVersion, hex.EncodeToString(h.Sum(nil))}, modules, nil
@@ -123,7 +152,7 @@ func (r Runner) Register(ctx context.Context, executable, node, version string) 
 	if version != EngineVersion {
 		return Engine{}, errors.New("engine version unavailable")
 	}
-	e, modules, err := engineFiles(executable, node)
+	e, modules, err := engineFiles(ctx, executable, node)
 	if err != nil {
 		return Engine{}, err
 	}
@@ -194,8 +223,11 @@ func copySource(ctx context.Context, dir string, index int, source AuthorizedSou
 	if err != nil {
 		return errors.New("source_view_unavailable")
 	}
-	n, copyErr := io.Copy(out, io.LimitReader(f, maxSource+1))
+	n, copyErr := copyWithContext(ctx, out, io.LimitReader(f, maxSource+1))
 	closeErr := out.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if copyErr != nil || closeErr != nil || n > maxSource || n != info.Size() {
 		return errors.New("source_view_unavailable")
 	}

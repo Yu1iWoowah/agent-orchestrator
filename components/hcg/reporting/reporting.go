@@ -160,12 +160,20 @@ func (c *Consumer) Get(ctx context.Context, id Identity, inputs Inputs) View {
 	return View{v.ProjectID, v.SessionID, Inputs(v.Inputs), v.Source, v.SessionOverride, v.EffectiveEnabled, v.EmergencyStop, v.Requested, v.Active, v.Available, v.Reason, v.EngineVersion, v.ManifestRevision}
 }
 
-func (c *Consumer) Report(ctx context.Context, id Identity, inputs Inputs, files []NativeFile) Snapshot {
+// PolicyRevision is an opaque pre-read revision for fixed report admission.
+type PolicyRevision struct{ core integration.PolicyRevision }
+
+// PolicyRevision snapshots the project revision before AO reads policy inputs.
+func (c *Consumer) PolicyRevision(projectID string) PolicyRevision {
+	return PolicyRevision{c.core.PolicyRevision(projectID)}
+}
+
+func (c *Consumer) Report(ctx context.Context, id Identity, inputs Inputs, files []NativeFile, revision PolicyRevision) Snapshot {
 	sources := make([]integration.AuthorizedSource, len(files))
 	for i, f := range files {
 		sources[i] = integration.AuthorizedSource(f)
 	}
-	s := c.core.Report(ctx, integration.Identity(id), integration.PolicyInputs(inputs), sources)
+	s := c.core.Report(ctx, integration.Identity(id), integration.PolicyInputs(inputs), sources, revision.core)
 	out := Snapshot{Source: s.Source, Engine: s.Engine, EngineVersion: s.EngineVersion, ProjectID: s.ProjectID, SessionID: s.SessionID, NativeID: s.NativeID, ObservedAt: s.ObservedAt, Status: s.Status, Reason: s.Reason, BucketAvailability: s.BucketAvailability, Events: []Event{}, Tools: []ToolCounts{}}
 	for _, e := range s.Events {
 		out.Events = append(out.Events, Event(e))

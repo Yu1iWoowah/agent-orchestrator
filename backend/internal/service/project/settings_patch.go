@@ -31,6 +31,8 @@ type settingsConflict struct {
 
 // PatchSettings compares and writes under the same admission gate as spawn.
 func (m *Service) PatchSettings(ctx context.Context, id domain.ProjectID, in PatchSettingsInput) (Project, error) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}

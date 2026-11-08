@@ -17,7 +17,16 @@ func TestConsumerPolicyPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, parent := range []bool{false, true} {
+		// Each parent scenario starts a different launch; set/clear never rewrites
+		// the mounting of an existing launch.
+		id.LaunchID = "parent-off"
+		if parent {
+			id.LaunchID = "parent-on"
+		}
 		inputs := PolicyInputs{Project: boolean(parent)}
+		if err := c.Launch(ctx, id, inputs); err != nil {
+			t.Fatal(err)
+		}
 		if err := c.SetOverride(ctx, id, inputs, boolean(!parent)); err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +122,7 @@ func TestConsumerReportFailures(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
-			out := c.Report(ctx, id, PolicyInputs{}, []AuthorizedSource{{sourceRoot, "native.jsonl", "claude", id.NativeID}})
+			out := c.Report(ctx, id, PolicyInputs{}, []AuthorizedSource{{sourceRoot, "native.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id.ProjectID))
 			if out.Status != "unavailable" || out.Reason != tc.reason || len(out.Events) != 0 {
 				t.Fatalf("failure not isolated: %+v", out)
 			}
@@ -145,7 +154,7 @@ func TestStopCancelsOnlyOwnedReports(t *testing.T) {
 			}
 			done := make(chan Snapshot, 1)
 			go func() {
-				done <- c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}})
+				done <- c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id.ProjectID))
 			}()
 			deadline := time.Now().Add(3 * time.Second)
 			for {
@@ -201,7 +210,7 @@ func TestStopCancelsOnlyOwnedReports(t *testing.T) {
 			if err := os.WriteFile(path, []byte("process.exit(0)"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if out := c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}); !strings.Contains(out.Reason, "engine_changed") {
+			if out := c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id.ProjectID)); !strings.Contains(out.Reason, "engine_changed") {
 				t.Fatalf("changed binary trusted: %+v", out)
 			}
 

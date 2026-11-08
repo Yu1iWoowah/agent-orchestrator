@@ -139,12 +139,22 @@ func (s *Service) Register(ctx context.Context, executable, version string) (rep
 
 // Report returns a disposable external snapshot of current authorized native files.
 func (s *Service) Report(ctx context.Context, id domain.SessionID) (reporting.Snapshot, error) {
-	i, in, err := s.facts(ctx, id)
+	rec, exists, err := s.store.GetSession(ctx, id)
 	if err != nil {
 		return reporting.Snapshot{}, err
 	}
+	if !exists {
+		return reporting.Snapshot{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
 	if s.core == nil {
 		return reporting.Snapshot{}, unavailable()
+	}
+	// Capture before reading any policy. An off/on ABA invalidates this request
+	// even if it has not reached the consumer's jobs set yet.
+	revision := s.core.PolicyRevision(string(rec.ProjectID))
+	i, in, err := s.recordFacts(ctx, rec)
+	if err != nil {
+		return reporting.Snapshot{}, err
 	}
 	// Disabled requests do not inspect native files or launch a tool.
 	view := s.core.Get(ctx, i, in)
@@ -176,7 +186,7 @@ func (s *Service) Report(ctx context.Context, id domain.SessionID) (reporting.Sn
 			}
 		}
 	}
-	out := s.core.Report(ctx, i, in, files)
+	out := s.core.Report(ctx, i, in, files, revision)
 	if out.Status == "ok" {
 		current, currentInputs, err := s.facts(ctx, id)
 		if err != nil || current.ControllerGeneration != i.ControllerGeneration || current.NativeID != i.NativeID || current.LaunchID != i.LaunchID || current.Harness != i.Harness || current.Mode != i.Mode || !s.core.Get(ctx, current, currentInputs).Active {

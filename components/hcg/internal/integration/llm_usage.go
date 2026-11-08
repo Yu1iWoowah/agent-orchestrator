@@ -64,9 +64,9 @@ func (r Runner) Report(ctx context.Context, m Manifest, sources []AuthorizedSour
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	e, modules, err := engineFiles(m.Engine.Executable, m.Engine.NodeExecutable)
+	e, modules, err := engineFiles(ctx, m.Engine.Executable, m.Engine.NodeExecutable)
 	if err != nil || e != *m.Engine {
-		return fail("engine_changed_or_unavailable")
+		return fail(reportFailure(ctx, "engine_changed_or_unavailable"))
 	}
 	dir, err := r.jobDir()
 	if err != nil {

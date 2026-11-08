@@ -89,6 +89,9 @@ type Service struct {
 	// covered by the store's own writeMu, so path/id conflict checks plus the
 	// subsequent mutation must be atomic from the perspective of concurrent callers.
 	addMu sync.Mutex
+	// configMu preserves commit-to-notification order across all config writers.
+	// Native session launchers never take this lock.
+	configMu sync.Mutex
 }
 
 const maxDisplayNameLen = 100
@@ -319,7 +322,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 		}
-		if err := m.store.UpsertWorkspaceProject(ctx, row, repos); err != nil {
+		if err := m.commitProjectRegistration(row, func() error { return m.store.UpsertWorkspaceProject(ctx, row, repos) }); err != nil {
 			return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register workspace project")
 		}
 		if in.ClonePreparationID != "" {
@@ -367,11 +370,8 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
-	if err := m.store.UpsertProject(ctx, row); err != nil {
+	if err := m.commitProjectRegistration(row, func() error { return m.store.UpsertProject(ctx, row) }); err != nil {
 		return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register project")
-	}
-	if m.reportingPolicyChanged != nil {
-		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
 	}
 
 	if in.ClonePreparationID != "" {
@@ -718,6 +718,8 @@ func remoteHost(remote string) string {
 // UpdateSettings atomically replaces the project's stored display name and
 // config. Both values are validated before a single database update.
 func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
@@ -770,6 +772,8 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 // SetConfig replaces the project's stored config. The typed config is validated
 // here so a bad value is rejected when set rather than surfacing at spawn.
 func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
@@ -810,6 +814,20 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	}
 	m.notifyReportingPolicyChanged(id, previousConfig, row.Config)
 	return m.projectFromRow(ctx, row), nil
+}
+
+// Both registration shapes publish the complete snapshot before another config
+// request can commit. No fallible HCG work changes registration's result.
+func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func() error) error {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
+	if err := write(); err != nil {
+		return err
+	}
+	if m.reportingPolicyChanged != nil {
+		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
+	}
+	return nil
 }
 
 func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, after domain.ProjectConfig) {

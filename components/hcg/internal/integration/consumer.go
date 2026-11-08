@@ -49,6 +49,8 @@ type Consumer struct {
 	snapshots map[string]Manifest
 	captures  sync.Map
 	hostEpoch atomic.Uint64
+
+	policyRevisions map[string]uint64
 }
 
 type reportJob struct {
@@ -69,6 +71,7 @@ func (c *Consumer) ProjectPolicyChanged(project string) {
 	})
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.policyRevisions[project]++
 	for job := range c.jobs {
 		if job.project == project {
 			job.cancel()
@@ -88,7 +91,7 @@ func NewConsumer(root string) (*Consumer, error) {
 	if err := r.MkdirAll(filepath.Join("hcg", "reporting", "deployment"), 0700); err != nil {
 		return nil, ErrManifestUnavailable
 	}
-	c := &Consumer{root: root, host: hostState{SchemaVersion: 1}, jobs: map[*reportJob]struct{}{}, snapshots: map[string]Manifest{}, probe: EngineStatus{Engine: EngineName, Reason: "not_registered"}}
+	c := &Consumer{root: root, host: hostState{SchemaVersion: 1}, jobs: map[*reportJob]struct{}{}, snapshots: map[string]Manifest{}, policyRevisions: map[string]uint64{}, probe: EngineStatus{Engine: EngineName, Reason: "not_registered"}}
 	b, err := r.ReadFile(filepath.Join("hcg", "reporting", "host.json"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, ErrManifestUnavailable
@@ -229,7 +232,6 @@ func (c *Consumer) observeLaunch(ctx context.Context, id Identity, inputs Policy
 }
 
 func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs PolicyInputs, enabled *bool) error {
-	c.captureFence(id).version.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	store := ManifestStore{c.root}
@@ -248,17 +250,28 @@ func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs PolicyIn
 		// passive read/report never takes this initialization path.
 		old = Manifest{}
 	}
+	if old.SchemaVersion == ManifestVersion && !sameLaunch(old.Identity, id) {
+		return ErrManifestUnavailable
+	}
 	inputs.Session, inputs.EmergencyStop = enabled, c.host.Stop
 	m, err := LaunchManifest(nil, id, inputs, c.host.Engine)
 	if err != nil {
 		return err
+	}
+	if old.SchemaVersion == ManifestVersion {
+		// Policy edits do not recreate the mounting of a proven existing launch.
+		m.MountInputs, m.MountPolicy, m.MountEngine, m.MountDigest = old.MountInputs, old.MountPolicy, old.MountEngine, old.MountDigest
 	}
 	m.Revision, m.Reason = old.Revision+1, "policy_changed"
 	if !m.Active {
 		m.Reason = "disabled_or_unavailable"
 	}
 	c.cancel(id.SessionID)
-	return c.save(ctx, m)
+	if err := c.save(ctx, m); err != nil {
+		return err
+	}
+	c.captureFence(id).version.Add(1)
+	return nil
 }
 
 func (c *Consumer) effective(ctx context.Context, id Identity, inputs PolicyInputs) (Manifest, View) {
@@ -318,8 +331,25 @@ func (c *Consumer) Get(ctx context.Context, id Identity, inputs PolicyInputs) Vi
 	return v
 }
 
-func (c *Consumer) Report(ctx context.Context, id Identity, inputs PolicyInputs, sources []AuthorizedSource) Snapshot {
+// PolicyRevision fences a request before AO reads its project/role inputs.
+// Its comparison and admission use the same lock as policy invalidation.
+type PolicyRevision struct {
+	project string
+	value   uint64
+}
+
+func (c *Consumer) PolicyRevision(project string) PolicyRevision {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	return PolicyRevision{project, c.policyRevisions[project]}
+}
+
+func (c *Consumer) Report(ctx context.Context, id Identity, inputs PolicyInputs, sources []AuthorizedSource, revision PolicyRevision) Snapshot {
+	c.mu.Lock()
+	if revision.project != id.ProjectID || revision.value != c.policyRevisions[id.ProjectID] {
+		c.mu.Unlock()
+		return Snapshot{Source: "external_analysis", Engine: EngineName, ProjectID: id.ProjectID, SessionID: id.SessionID, Status: "unavailable", Reason: "policy_changed", Events: []Event{}, Tools: []ToolCounts{}}
+	}
 	m, view := c.effective(ctx, id, inputs)
 	if view.Reason == "manifest_unavailable" {
 		c.mu.Unlock()
