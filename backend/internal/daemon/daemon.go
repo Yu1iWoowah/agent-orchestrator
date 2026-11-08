@@ -1166,6 +1166,7 @@ func Run(buildVersion string) error {
 		NativeSessions:     nativeSessions,
 		UsageHooks:         usageCollector,
 		UsageSummary:       usagesvc.NewSummaryReader(store),
+		UsageEvents:        usagesvc.NewEventsReader(store),
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,
 		Telemetry:          telemetrySink,

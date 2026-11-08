@@ -5268,6 +5268,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/usage/sessions/{sessionId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read numeric model request events; throughId bounds insertions, not repairs or metadata changes */
+        get: operations["listSessionUsageEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/usage/sessions/memory": {
         parameters: {
             query?: never;
@@ -10254,6 +10271,59 @@ export interface components {
             expectedFileFingerprint: string;
             path: string;
         };
+        UsageBindingView: {
+            harness: string;
+            /** Format: int64 */
+            id: number;
+            lastErrorCode: string;
+            nativeRootId: string;
+            sessionId: string;
+            sources: components["schemas"]["UsageSourceView"][];
+            state: string;
+        };
+        UsageEventView: {
+            /** Format: int64 */
+            bindingId: number;
+            cachedInputTokens: null | number;
+            /** Format: date-time */
+            createdAt: null | string;
+            /** Format: int64 */
+            id: number;
+            inputTokens: null | number;
+            measurementKind: string;
+            modelId: string;
+            outputTokens: null | number;
+            providerId: string;
+            providerUsage: {
+                [key: string]: unknown;
+            } | null;
+            sourceEventKey: string;
+            uncachedInputTokens: null | number;
+            /** @enum {string} */
+            usageProjectionStatus: "complete" | "partial" | "missing" | "invalid";
+            /** Format: int64 */
+            usageSourceId: number;
+        };
+        UsageEventsResponse: {
+            accountId: null | string;
+            bindings: components["schemas"]["UsageBindingView"][];
+            consistency: string;
+            currentNativeId: string;
+            events: components["schemas"]["UsageEventView"][];
+            hasMore: boolean;
+            /** Format: date-time */
+            metadataAsOf: string;
+            mode: string;
+            /** Format: int64 */
+            nextAfterId: number;
+            projectId: string;
+            role: string;
+            sessionId: string;
+            /** Format: date-time */
+            sourceAsOf: string;
+            /** Format: int64 */
+            throughId: number;
+        };
         UsageHarnessResponse: {
             harness: string;
             models: components["schemas"]["UsageModelResponse"][];
@@ -10272,6 +10342,19 @@ export interface components {
         UsageModelResponse: {
             modelId: string;
             totals: components["schemas"]["UsageTotalsResponse"];
+        };
+        UsageSourceView: {
+            /** Format: int64 */
+            anomalyCount: number;
+            /** Format: int64 */
+            generation: number;
+            /** Format: int64 */
+            id: number;
+            kind: string;
+            lastErrorCode: string;
+            nativeSessionId: string;
+            state: string;
+            subagentId: string;
         };
         UsageTotalsResponse: {
             /** @description Deprecated compatibility alias for cachedInputTokens. */
@@ -31212,6 +31295,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionUsageResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionUsageEvents: {
+        parameters: {
+            query?: {
+                afterId?: null | number;
+                throughId?: null | number;
+                limit?: null | number;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageEventsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

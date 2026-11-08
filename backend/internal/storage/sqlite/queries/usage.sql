@@ -645,3 +645,18 @@ LEFT JOIN usage_session_integrity integrity ON integrity.session_id = ub.session
 WHERE (sqlc.arg(project_id) = '' OR s.project_id = sqlc.arg(project_id))
 GROUP BY ub.session_id, s.project_id, s.num, integrity.incomplete
 ORDER BY s.project_id, s.num;
+
+-- name: GetUsageEventsThroughID :one
+SELECT CAST(COALESCE(MAX(e.id), 0) AS INTEGER)
+FROM model_usage_events e JOIN usage_bindings b ON b.id = e.binding_id
+WHERE b.session_id = ?;
+
+-- name: ListUsageEventsPage :many
+SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
+ e.usage_measurement_kind, e.input_tokens, e.cached_input_tokens,
+ e.uncached_input_tokens, e.output_tokens, e.provider_usage_json,
+ e.source_event_key, e.created_at
+FROM model_usage_events e JOIN usage_bindings b ON b.id = e.binding_id
+WHERE b.session_id = sqlc.arg(session_id)
+ AND e.id > sqlc.arg(after_id) AND e.id <= sqlc.arg(through_id)
+ORDER BY e.id LIMIT sqlc.arg(page_limit);

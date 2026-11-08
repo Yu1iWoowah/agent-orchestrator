@@ -4572,3 +4572,13 @@ type GuardianPurgeQuery struct {
 type ProtectedSideListResponse struct {
 	Sides []chatsvc.ProtectedSide `json:"sides"`
 }
+
+// UsageEventsResponse is the safe numeric ledger page.
+type UsageEventsResponse domain.UsageEventsPage
+
+// UsageEventsQuery fixes the scan upper bound after the first page.
+type UsageEventsQuery struct {
+	AfterID   *int64 `query:"afterId,omitempty" minimum:"0"`
+	ThroughID *int64 `query:"throughId,omitempty" minimum:"0"`
+	Limit     *int64 `query:"limit,omitempty" minimum:"1" maximum:"1000"`
+}

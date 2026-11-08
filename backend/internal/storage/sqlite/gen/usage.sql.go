@@ -386,6 +386,19 @@ func (q *Queries) GetUsageBindingBySessionHarnessRoot(ctx context.Context, arg G
 	return i, err
 }
 
+const getUsageEventsThroughID = `-- name: GetUsageEventsThroughID :one
+SELECT CAST(COALESCE(MAX(e.id), 0) AS INTEGER)
+FROM model_usage_events e JOIN usage_bindings b ON b.id = e.binding_id
+WHERE b.session_id = ?
+`
+
+func (q *Queries) GetUsageEventsThroughID(ctx context.Context, sessionID domain.SessionID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getUsageEventsThroughID, sessionID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getUsageSessionIncomplete = `-- name: GetUsageSessionIncomplete :one
 SELECT CAST(COALESCE((
     SELECT incomplete FROM usage_session_integrity WHERE session_id = ?
@@ -1203,6 +1216,82 @@ func (q *Queries) ListUsageDiscoveryBindings(ctx context.Context, limit int64) (
 			&i.LastErrorCode,
 			&i.UpdatedAt,
 			&i.ProviderHint,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsageEventsPage = `-- name: ListUsageEventsPage :many
+SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
+ e.usage_measurement_kind, e.input_tokens, e.cached_input_tokens,
+ e.uncached_input_tokens, e.output_tokens, e.provider_usage_json,
+ e.source_event_key, e.created_at
+FROM model_usage_events e JOIN usage_bindings b ON b.id = e.binding_id
+WHERE b.session_id = ?1
+ AND e.id > ?2 AND e.id <= ?3
+ORDER BY e.id LIMIT ?4
+`
+
+type ListUsageEventsPageParams struct {
+	SessionID domain.SessionID
+	AfterID   int64
+	ThroughID int64
+	PageLimit int64
+}
+
+type ListUsageEventsPageRow struct {
+	ID                   int64
+	BindingID            int64
+	UsageSourceID        int64
+	ProviderID           string
+	ModelID              string
+	UsageMeasurementKind string
+	InputTokens          sql.NullInt64
+	CachedInputTokens    sql.NullInt64
+	UncachedInputTokens  sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ProviderUsageJson    sql.NullString
+	SourceEventKey       string
+	CreatedAt            sql.NullTime
+}
+
+func (q *Queries) ListUsageEventsPage(ctx context.Context, arg ListUsageEventsPageParams) ([]ListUsageEventsPageRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUsageEventsPage,
+		arg.SessionID,
+		arg.AfterID,
+		arg.ThroughID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsageEventsPageRow{}
+	for rows.Next() {
+		var i ListUsageEventsPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.BindingID,
+			&i.UsageSourceID,
+			&i.ProviderID,
+			&i.ModelID,
+			&i.UsageMeasurementKind,
+			&i.InputTokens,
+			&i.CachedInputTokens,
+			&i.UncachedInputTokens,
+			&i.OutputTokens,
+			&i.ProviderUsageJson,
+			&i.SourceEventKey,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
