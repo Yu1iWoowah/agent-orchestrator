@@ -55,8 +55,9 @@ class ProtocolTests(unittest.TestCase):
         self.root.chmod(0o700)
 
     def request(self):
-        raw = json.dumps(snapshot(entries=[dict(id="human", role="user", origin="human",
-                                                text="handoff", revision=1)] )).encode()
+        old_path = self.root / "worktrees" / h.PROJECT / "orchestrator/old"
+        raw = json.dumps(snapshot(entries=[dict(id="human", role="user", origin="human", text="handoff", revision=1),
+            dict(id="workspace", role="assistant", turnId="preparing", text="old " + str(old_path), revision=1)])).encode()
         evidence = self.root / "evidence"
         evidence.mkdir(mode=0o700)
         h.publish(evidence / "human.json", raw)
@@ -64,12 +65,21 @@ class ProtocolTests(unittest.TestCase):
                 "project_id": h.PROJECT, "old_id": "old",
                 "prepared_by": {"session_id": "old", "turn_id": "preparing"},
                 "target": target(), "workers": [],
+                "workspace_index": [{"session_id": "old", "kind": "orchestrator", "path": str(old_path), "source_refs": ["workspace"]}],
                 "authority": {"source_refs": ["human"], "old_verified_scope": "three-step-handoff-this-project",
                               "t0_source_ref": "human", "t0_created_at": None, "t0_precision": "UNKNOWN"},
                 "sources": [{"ref": "human", "kind": "human-message", "conversation_id": "conv",
                              "branch_id": "branch", "message_id": "human", "revision": 1,
                              "ask_ref": None, "raw_relpath": "evidence/human.json",
-                             "raw_sha256": h.digest(raw), "message_text_sha256": h.digest(b"handoff")}]}
+                             "raw_sha256": h.digest(raw), "message_text_sha256": h.digest(b"handoff")},
+                            {"ref": "workspace", "kind": "old-control-record", "conversation_id": "conv", "branch_id": "branch",
+                             "message_id": "workspace", "revision": 1, "raw_relpath": "evidence/human.json", "raw_sha256": h.digest(raw),
+                             "message_text_sha256": h.digest(("old " + str(old_path)).encode())}]}
+
+    def worker_index(self, run, sid="worker"):
+        path = self.root / "worktrees" / h.PROJECT / sid
+        run.request["workspace_index"].append({"session_id": sid, "kind": "worker", "path": str(path), "source_refs": ["human"]})
+        return path
 
     def test_T04_request_binding_and_unknown_source_settings(self):
         req = self.request()
@@ -183,21 +193,154 @@ class ProtocolTests(unittest.TestCase):
             return snap
         run.cli.session = active
         run.request["workers"] = [dict(worker_id=sid, reserved_stop_d="D-7") for sid in ("w1", "w2")]
+        for sid in ("w1", "w2"):
+            self.worker_index(run, sid)
         self.assertFalse(run.workers())
         self.assertEqual({args[args.index("--session") + 1] for args in run.cli.calls}, {"w1", "w2"})
         self.assertFalse(run.workers())
         self.assertEqual(len(run.cli.calls), 2)
 
-    def test_audit_workspace_uses_branch_registration_without_fake_path(self):
+    def test_C3_public_branch_is_evidence_not_workspace_identity(self):
         fake = FlowFixture(self.root, "codex", "codex")
         self.assertNotIn("workspacePath", fake.get("sessions/old")["session"])
         self.assertEqual(fake.run.workspace("old"), str(fake.workspace))
         subprocess.run(["git", "-C", str(fake.repo), "worktree", "add", "--force", str(self.root / "duplicate"), "original"], check=True, capture_output=True)
-        with self.assertRaisesRegex(h.Stop, "no unique registered worktree"):
-            fake.run.workspace("old")
+        self.assertEqual(fake.run.workspace("old"), str(fake.workspace))
         fake.snapshots["old"]["session"]["branch"] = "missing-branch"
+        self.assertEqual(fake.run.workspace("old"), str(fake.workspace))
+
+    def test_C3_root_sibling_detached_resolve_same_worker_path(self):
+        fake = FlowFixture(self.root, "codex", "codex", worker=True)
+        path = fake.worker_path
+        self.assertEqual(fake.run.workspace("worker"), str(path))
+        subprocess.run(["git", "-C", str(path), "switch", "-c", "fixture-sibling"], check=True, capture_output=True)
+        self.assertEqual(fake.run.workspace("worker"), str(path))
+        subprocess.run(["git", "-C", str(path), "switch", "--detach"], check=True, capture_output=True)
+        self.assertEqual(fake.run.workspace("worker"), str(path))
+        snap = h.git_snapshot(path, self.root / "detached-snapshot")
+        self.assertIsNone(snap["branch"])
+        self.assertIsNone(h.decode(h.private_read(snap["path"]))["branch"])
+
+    def test_C3_wrong_session_repo_missing_or_nonunique_registration_stops(self):
+        for failure in ("session", "repo", "missing", "duplicate", "prunable", "drift", "index"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                fake = FlowFixture(Path(temp), "codex", "codex", worker=True)
+                original_get, original_git = fake.get, h.old_git
+                fake.run.workspace("worker")
+                if failure == "session":
+                    fake.get = lambda p: {"session": dict(fake.snapshots["worker"]["session"], id="someone-else")} if p == "sessions/worker" else original_get(p)
+                elif failure == "repo":
+                    other = Path(temp) / "other-repository"
+                    subprocess.run(["git", "init", str(other)], check=True, capture_output=True)
+                    fake.get = lambda p: {"status": "ok", "project": dict(original_get(p)["project"], path=str(other))} if p == "projects/" + h.PROJECT else original_get(p)
+                elif failure == "missing":
+                    subprocess.run(["git", "-C", str(fake.repo), "worktree", "remove", str(fake.worker_path)], check=True, capture_output=True)
+                elif failure == "drift":
+                    subprocess.run(["git", "-C", str(fake.repo), "worktree", "move", str(fake.worker_path), str(fake.worker_path) + "-moved"], check=True, capture_output=True)
+                elif failure == "index":
+                    fake.run.request["workspace_index"] = [x for x in fake.run.request["workspace_index"] if x["session_id"] != "worker"]
+                def registration(args, **kwargs):
+                    raw = original_git(args, **kwargs)
+                    if args[:2] == ["worktree", "list"]:
+                        if failure == "duplicate":
+                            return raw + raw
+                        if failure == "prunable":
+                            return b"\0\0".join(block + (b"\0prunable reason" if b"worktree " + str(fake.worker_path).encode() + b"\0" in block else b"") for block in raw.split(b"\0\0"))
+                    return raw
+                with patch.object(h, "old_git", side_effect=registration), self.assertRaises(h.Stop):
+                    fake.run.workspace("worker")
+
+    def test_C3_old_detached_still_needs_protected_original_ref(self):
+        fake = FlowFixture(self.root, "codex", "codex")
+        subprocess.run(["git", "-C", str(fake.workspace), "switch", "--detach"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(fake.repo), "update-ref", "-d", "refs/heads/original"], check=True, capture_output=True)
+        self.assertEqual(fake.run.workspace("old"), str(fake.workspace))
         with self.assertRaises(h.Stop):
-            fake.run.workspace("old")
+            h.run_protocol(fake.run)
+        self.assertNotIn("kill", fake.mutations)
+
+    def test_C3_workspace_index_rejects_aliases_duplicates_and_wrong_sources(self):
+        req = self.request()
+        for problem in ("missing", "duplicate", "kind", "relative", "alias", "source", "wrong-turn"):
+            changed = copy.deepcopy(req)
+            if problem == "missing":
+                del changed["workspace_index"]
+            elif problem == "duplicate":
+                changed["workspace_index"].append(copy.deepcopy(changed["workspace_index"][0]))
+            elif problem == "kind":
+                changed["workspace_index"][0]["kind"] = "worker"
+            elif problem == "relative":
+                changed["workspace_index"][0]["path"] = "relative"
+            elif problem == "alias":
+                changed["workspace_index"][0]["path"] += "/../old"
+            elif problem == "source":
+                changed["workspace_index"][0]["source_refs"] = ["human"]
+            else:
+                changed["prepared_by"]["turn_id"] = "unrelated"
+            with self.subTest(problem=problem), self.assertRaises(h.Stop):
+                h.validate_request(changed, self.root, "old", target())
+
+    def test_C3_shared_configuration_crosschecks_fixed_data_root(self):
+        fake = FlowFixture(self.root, "codex", "codex")
+        original_get = fake.get
+        fake.shared = h.mkdir(self.root / "projects" / h.PROJECT / "orchestrator/nested/shared")
+        def project(path):
+            value = original_get(path)
+            if path == "projects/" + h.PROJECT:
+                value["project"]["config"]["orchestratorHandoff"] = {"sharedDir": "nested/shared"}
+            return value
+        fake.get = project
+        self.assertEqual(h.location_info(fake)["managed_root"], str(self.root / "worktrees"))
+        self.assertEqual(h.location_info(fake)["shared_dir"], str(fake.shared))
+        fake.shared = h.mkdir(self.root / "elsewhere")
+        with self.assertRaises(h.Stop):
+            h.location_info(fake)
+
+    def test_C3_live_workspace_record_must_belong_to_preparing_turn(self):
+        req = self.request()
+        live = h.decode(h.private_read(self.root / "evidence/human.json"))
+        live["transcript"]["turns"].append({"id": "preparing", "state": "running"})
+        cli = type("SourceCLI", (), {})()
+        cli.session = lambda _: copy.deepcopy(live)
+        h.validate_sources_live(req, cli)
+        next(e for e in live["transcript"]["entries"] if e["id"] == "workspace")["turnId"] = "unrelated"
+        with self.assertRaisesRegex(h.Stop, "live workspace record not from preparing turn"):
+            h.validate_sources_live(req, cli)
+
+    def test_C3_empty_and_relative_data_overrides_are_fixed_at_start(self):
+        home = h.mkdir(self.root / "h")
+        repository = self.root / "repository"
+        class LocationCLI:
+            def __init__(self, executable, old, data, run_file, temp):
+                self.data_dir, self.run_file = data, run_file
+            def documents(self):
+                return {"sharedDir": str(self.data_dir / "projects" / h.PROJECT / "orchestrator/custom")}
+            def get(self, path):
+                return {"status": "ok", "project": {"id": h.PROJECT, "path": str(repository),
+                    "config": {"orchestratorHandoff": {"sharedDir": "custom"}}}}
+        previous = Path.cwd()
+        try:
+            os.chdir(home)
+            for override, expected in (("", home / ".ao/data"), (".ao/alternate", home / ".ao/alternate")):
+                with self.subTest(override=override), patch.dict(os.environ, {"AO_DATA_DIR": override, "AO_RUN_FILE": ""}), \
+                     patch.object(h.Path, "home", return_value=home), patch.object(h.shutil, "which", return_value="/usr/bin/true"), \
+                     patch.object(h, "CLI", LocationCLI):
+                    _, cli = h.locate("old", create=True)
+                    self.assertEqual(cli.data_dir, expected)
+                    self.assertEqual(h.location_info(cli)["managed_root"], str(expected / "worktrees"))
+        finally:
+            os.chdir(previous)
+
+    def test_C3_worker_branch_and_HEAD_drift_invalidate_safe_stop(self):
+        for change in ("branch", "head"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
+                fake = FlowFixture(Path(temp), "codex", "codex", worker=True)
+                fake.run.sleep = lambda _: None
+                self.assertTrue(fake.run.worker_stop({"id": "worker"}))
+                args = ["switch", "-c", "different"] if change == "branch" else ["-c", "user.email=x@example.invalid", "-c", "user.name=x", "commit", "--allow-empty", "-m", "new-head"]
+                subprocess.run(["git", "-C", str(fake.worker_path), *args], check=True, capture_output=True)
+                with self.assertRaisesRegex(h.Stop, "worker content drift"):
+                    fake.run.worker_stop({"id": "worker"})
 
     def test_audit_idle_window_waits_through_real_incomplete_then_completes(self):
         run = self.run_fixture()
@@ -522,6 +665,7 @@ class ProtocolTests(unittest.TestCase):
         active = snapshot("active", turns=[{"id": "busy", "state": "running"}])
         active["session"].update(id="worker", kind="worker")
         run.cli.session = lambda _: active
+        self.worker_index(run)
         self.assertFalse(run.worker_stop(worker))
         self.assertEqual(run.cli.calls, [])
         run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
@@ -534,6 +678,7 @@ class ProtocolTests(unittest.TestCase):
         active = snapshot("active", turns=[{"id": "busy", "state": "running"}])
         active["session"].update(id="worker", kind="worker")
         run.cli.session = lambda _: active
+        self.worker_index(run)
         run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
         elapsed = [0]
         run.clock = lambda: elapsed[0]
@@ -560,8 +705,8 @@ class ProtocolTests(unittest.TestCase):
     def test_T01_worker_self_safe_file_waits_for_true_completed_turn(self):
         run = self.run_fixture()
         directory = h.mkdir(self.root / "workers/worker")
-        repo = self.root / "repo"
-        repo.mkdir()
+        repo = self.worker_index(run)
+        repo.mkdir(parents=True)
         subprocess.run(["git", "-C", str(repo), "init", "-b", "fixture"], check=True, capture_output=True)
         (repo / "file").write_text("preserved")
         subprocess.run(["git", "-C", str(repo), "add", "file"], check=True, capture_output=True)
@@ -578,7 +723,11 @@ class ProtocolTests(unittest.TestCase):
         snap = snapshot("active", turns=[{"id": "safe-turn", "state": "running"}])
         snap["session"].update(id="worker", kind="worker")
         run.cli.session = lambda _: copy.deepcopy(snap)
-        run.cli.get = lambda path: {"project": dict(id=h.PROJECT, path=str(repo))} if path.startswith("projects/") else {"session": dict(id="worker", projectId=h.PROJECT, branch="fixture")}
+        run.cli.get = lambda path: {"project": dict(id=h.PROJECT, path=str(repo))} if path.startswith("projects/") else {"session": dict(id="worker", projectId=h.PROJECT, kind="worker", branch="fixture")}
+        run.cli.data_dir = self.root
+        shared = h.mkdir(self.root / "projects" / h.PROJECT / "orchestrator/shared")
+        run.cli.documents = lambda: {"sharedDir": str(shared)}
+        run.state["location"] = h.location_info(run.cli)
         self.assertFalse(run.worker_stop({"id": "worker"}))
         snap["session"]["activity"]["state"] = "idle"
         snap["transcript"]["turns"][0].update(state="completed", completedAt=h.now())
@@ -631,8 +780,8 @@ class ProtocolTests(unittest.TestCase):
 
     def test_T01_quiescent_worker_has_preserved_content_and_is_not_self_ACK(self):
         run = self.run_fixture()
-        workspace = self.root / "workspace"
-        workspace.mkdir()
+        workspace = self.worker_index(run)
+        workspace.mkdir(parents=True)
         subprocess.run(["git", "-C", str(workspace), "init", "-b", "fixture"], check=True, capture_output=True)
         (workspace / "file").write_text("base")
         subprocess.run(["git", "-C", str(workspace), "add", "file"], check=True, capture_output=True)
@@ -641,7 +790,11 @@ class ProtocolTests(unittest.TestCase):
         idle = snapshot()
         idle["session"].update(id="worker", kind="worker")
         run.cli.session = lambda _: copy.deepcopy(idle)
-        run.cli.get = lambda path: {"project": dict(id=h.PROJECT, path=str(workspace))} if path.startswith("projects/") else {"session": dict(id="worker", projectId=h.PROJECT, branch="fixture")}
+        run.cli.get = lambda path: {"project": dict(id=h.PROJECT, path=str(workspace))} if path.startswith("projects/") else {"session": dict(id="worker", projectId=h.PROJECT, kind="worker", branch="fixture")}
+        run.cli.data_dir = self.root
+        shared = h.mkdir(self.root / "projects" / h.PROJECT / "orchestrator/shared")
+        run.cli.documents = lambda: {"sharedDir": str(shared)}
+        run.state["location"] = h.location_info(run.cli)
         run.sleep = lambda _: None
         stop = run.worker_stop({"id": "worker"})
         self.assertEqual(stop["source_type"], "script-quiescent")
@@ -661,11 +814,25 @@ class ProtocolTests(unittest.TestCase):
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         raw = h.canonical(req)
         h.publish(slot / "request.json", raw)
+        repository = self.root / "repository"
+        repository.mkdir()
+        subprocess.run(["git", "init", "-b", "main", str(repository)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repository), "-c", "user.email=x@example.invalid", "-c", "user.name=x", "commit", "--allow-empty", "-m", "fixture"], check=True, capture_output=True)
+        workspace = Path(req["workspace_index"][0]["path"])
+        workspace.parent.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(repository), "worktree", "add", "-b", "original", str(workspace)], check=True, capture_output=True)
+        shared = h.mkdir(self.root / "projects" / h.PROJECT / "orchestrator/shared")
         class PreparedCLI:
             executable = Path(h.__file__)
             sha256 = h.digest(executable.read_bytes())
             data_dir = self.root
             run_file = self.root / "run.json"
+            def get(self, path):
+                return {"status": "ok", "project": {"id": h.PROJECT, "path": str(repository)}} if path.startswith("projects/") else {"session": snapshot()["session"]}
+            def documents(self):
+                return {"sharedDir": str(shared)}
+            def sessions(self):
+                return []
         cli = PreparedCLI()
         with patch.object(h, "qualified", return_value=cli), patch.object(h, "validate_sources_live", return_value=snapshot()), \
              patch.object(h, "target_preflight", return_value={}), patch.object(h, "native_identity", return_value="old-native"), \
@@ -775,6 +942,7 @@ class ProtocolTests(unittest.TestCase):
                   "release": {"mode": "resume-original", "authority_refs": [],
                               "reserved_resume_d": "D-2", "resume_d_source_refs": []}}
         req["workers"] = [worker]
+        req["workspace_index"].append({"session_id": "worker", "kind": "worker", "path": str(self.root / "worktrees" / h.PROJECT / "worker"), "source_refs": ["human"]})
         with self.assertRaises(h.Stop):
             h.validate_request(req, self.root, "old", target())
         worker["release"]["mode"] = "keep-held"
@@ -784,12 +952,13 @@ class ProtocolTests(unittest.TestCase):
 
 class FlowFixture:
     """A persisted fake daemon: actual exporter/receipt checks, zero live I/O."""
-    def __init__(self, root, old_harness, new_harness):
+    def __init__(self, root, old_harness, new_harness, worker=False):
         self.data_dir = root
         self.old_harness, self.target = old_harness, target(new_harness)
         root.chmod(0o700)
-        self.shared = h.mkdir(root / "shared")
-        self.workspace = root / "workspace"
+        self.shared = h.mkdir(root / "projects" / h.PROJECT / "orchestrator/shared")
+        self.workspace = root / "worktrees" / h.PROJECT / "orchestrator/old"
+        h.mkdir(self.workspace.parent)
         self.repo = root / "repository"
         self.repo.mkdir()
         def git(*args):
@@ -811,16 +980,34 @@ class FlowFixture:
         self.snapshots["old"]["transcript"]["latestSequence"] = 10
         self.snapshots["old"]["transcript"]["turns"][0]["requestedAt"] = "2026-11-08T00:00:00Z"
         self.session_list = [self.snapshots["old"]["session"]]
+        workspace_index = [{"session_id": "old", "kind": "orchestrator", "path": str(self.workspace), "source_refs": ["workspace"]}]
+        workers = []
+        if worker:
+            self.worker_path = root / "worktrees" / h.PROJECT / "worker"
+            git("worktree", "add", "-b", "fixture", str(self.worker_path))
+            self.snapshots["worker"] = snapshot()
+            self.snapshots["worker"]["session"].update(id="worker", kind="worker")
+            self.session_list.append(self.snapshots["worker"]["session"])
+            workspace_index.append({"session_id": "worker", "kind": "worker", "path": str(self.worker_path), "source_refs": ["workspace"]})
+            workers = [{"worker_id": "worker", "reserved_stop_d": None, "pending_question_refs": []}]
         self.owner = "old"
         self.run_id = str(uuid.uuid4())
         directory = h.mkdir(root / self.run_id)
         h.publish(directory / "handoff.py", Path(h.__file__).read_bytes())
         req = {"request_id": self.run_id, "old_id": "old", "target": self.target,
-               "authority": {"source_refs": ["human"], "t0_precision": "UNKNOWN", "t0_created_at": None}, "workers": []}
+               "authority": {"source_refs": ["human"], "t0_precision": "UNKNOWN", "t0_created_at": None}, "workers": workers,
+               "prepared_by": {"session_id": "old", "turn_id": "preparing"}, "workspace_index": workspace_index}
+        mapping = dict(id="workspace", role="assistant", turnId="preparing", revision=1, text=json.dumps(workspace_index))
+        source_raw = h.canonical(snapshot(entries=[mapping]))
+        h.publish(directory / "evidence/workspace.json", source_raw)
+        req["sources"] = [{"ref": "workspace", "kind": "old-control-record", "conversation_id": "conv", "branch_id": "branch",
+                           "message_id": "workspace", "revision": 1, "raw_relpath": "evidence/workspace.json",
+                           "raw_sha256": h.digest(source_raw), "message_text_sha256": h.digest(mapping["text"].encode())}]
         h.publish(directory / "start.json", h.canonical(req))
         h.publish(directory / "state.json", h.canonical({"start_sha256": h.digest(h.canonical(req)), "effects": {},
                   "original_t0": req["authority"], "old_settings": h.old_settings(self.snapshots["old"]), "old_native": "native-old"}))
         self.run = h.Run(directory, self)
+        self.run.state["location"] = h.location_info(self)
         self.run.sleep = lambda _: (_ for _ in ()).throw(AssertionError("unexpected fixture wait: " + self.run.state.get("stage", "?")))
         with sqlite3.connect(root / "ao.db") as db:
             db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")

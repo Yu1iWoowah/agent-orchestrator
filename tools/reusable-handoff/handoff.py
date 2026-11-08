@@ -235,7 +235,62 @@ def validate_request(req, slot, old, target):
             require(worker["hold_state"] == "none" and worker["task_refs"] and
                     release["authority_refs"] and release["resume_d_source_refs"] and
                     re.fullmatch(r"D-[1-9][0-9]*", release.get("reserved_resume_d") or ""), "release not authorized")
+    index = req.get("workspace_index")
+    require(isinstance(index, list) and index, "workspace_index required")
+    expected = {old: "orchestrator", **{sid: "worker" for sid in ids}}
+    paths, sessions = set(), set()
+    for row in index:
+        sid = identifier(row["session_id"])
+        require(sid in expected and row.get("kind") == expected[sid] and sid not in sessions, "workspace session/kind mismatch")
+        path = row.get("path")
+        require(isinstance(path, str) and Path(path).is_absolute() and str(no_symlinks(path)) == path and path not in paths,
+                "workspace path missing/aliased/shared")
+        references(row.get("source_refs"))
+        require(row["source_refs"], "workspace source references required")
+        sessions.add(sid)
+        paths.add(path)
+    require(sessions == set(expected), "workspace index does not cover old/workers")
+    workspace_sources(req, workspace_entry(req, old), slot, required=True)
     return req
+
+
+def workspace_entry(request, sid):
+    matches = [x for x in request.get("workspace_index", []) if x.get("session_id") == sid]
+    require(len(matches) == 1, "missing/ambiguous bound workspace index: " + sid)
+    return matches[0]
+
+
+def workspace_sources(request, row, root, required=False):
+    refs = row.get("source_refs")
+    require(isinstance(refs, list) and refs, "workspace sources missing")
+    positive = False
+    for ref in refs:
+        sources = [x for x in request.get("sources", []) if x["ref"] == ref]
+        require(len(sources) == 1, "workspace source missing/ambiguous")
+        source = sources[0]
+        raw = private_read(confined(root, source["raw_relpath"]))
+        require(digest(raw) == source["raw_sha256"], "workspace source bytes changed")
+        message = source_message(source, raw)
+        text = message.get("text", "")
+        if (source["kind"] == "old-control-record" and message.get("turnId") == request["prepared_by"]["turn_id"] and
+                row["session_id"] in text and (row["path"] in text or json.dumps(row["path"])[1:-1] in text)):
+            positive = True
+    require(not required or positive, "nonstandard workspace lacks old preparing-turn session/path evidence")
+
+
+def location_info(cli):
+    data = no_symlinks(cli.data_dir)
+    response = cli.get("projects/" + PROJECT)
+    project = response.get("project", {})
+    require(response.get("status", "ok") == "ok" and project.get("id") == PROJECT and project.get("path"),
+            "project location unavailable")
+    config = project.get("config", {}).get("orchestratorHandoff", {})
+    shared_setting = config.get("sharedDir") or "shared"
+    expected = confined(data / "projects" / PROJECT / "orchestrator", shared_setting)
+    shared = no_symlinks(cli.documents()["sharedDir"])
+    require(shared == expected, "sharedDir contradicts fixed CLI data root/project configuration")
+    return {"data_dir": str(data), "managed_root": str(data / "worktrees"),
+            "project_path": str(no_symlinks(project["path"])), "shared_dir": str(shared), "shared_setting": shared_setting}
 
 
 def old_settings(snapshot):
@@ -363,8 +418,9 @@ def git_snapshot(workspace, destination):
         require(result.returncode == 0, "workspace snapshot unavailable: " + result.stderr.decode(errors="replace"))
         return result.stdout
     mkdir(destination)
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
     values = {"head": git("rev-parse", "HEAD").decode().strip(),
-              "branch": git("rev-parse", "--abbrev-ref", "HEAD").decode().strip(),
+              "branch": None if branch == "HEAD" else branch, "detached": branch == "HEAD",
               "status": git("status", "--porcelain=v1", "-z", "--untracked-files=all").hex(),
               "index": git("ls-files", "--stage", "-z").hex(), "files": {}}
     for name, args in (("index.patch", ("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv")),
@@ -714,28 +770,55 @@ class Run:
     def workspace(self, sid):
         session = self.cli.get("sessions/" + identifier(sid))["session"]
         require(session["id"] == sid and session["projectId"] == PROJECT, "workspace scope changed")
-        branch = session.get("branch")
-        require(isinstance(branch, str) and branch, "UNKNOWN registered branch: " + sid)
-        project = self.cli.get("projects/" + PROJECT)["project"]
-        require(project.get("id") == PROJECT and project.get("path"), "project repository unavailable")
-        repository = no_symlinks(project["path"])
+        row = workspace_entry(self.request, sid)
+        require(row.get("kind") == session.get("kind") and row["kind"] in ("worker", "orchestrator"), "workspace kind mismatch")
+        location = location_info(self.cli)
+        require(location == self.state.get("location"), "bound CLI data/project location changed")
+        repository = no_symlinks(location["project_path"])
+        path = no_symlinks(row["path"])
+        project_root = Path(location["managed_root"]) / PROJECT
+        require(Path(row["path"]).is_absolute() and str(path) == row["path"] and path.is_relative_to(project_root) and path.is_dir(),
+                "workspace outside bound project or missing/aliased")
+        standard = row["kind"] == "worker" and path == project_root / sid
+        workspace_sources(self.request, row, self.root, required=not standard)
         raw = old_git(["worktree", "list", "--porcelain", "-z"], workspace=repository)
-        expected = "refs/heads/" + branch
         matches = []
         for block in raw.split(b"\0\0"):
-            fields = dict(part.split(b" ", 1) for part in block.split(b"\0") if b" " in part)
-            if fields.get(b"branch") == expected.encode():
-                require(b"worktree" in fields and not any(x in fields for x in (b"prunable",)), "invalid worktree registration")
-                matches.append(no_symlinks(os.fsdecode(fields[b"worktree"])))
-        require(len(matches) == 1 and matches[0].is_dir(), "no unique registered worktree for session branch: " + sid)
-        path = matches[0]
-        require(old_git(["symbolic-ref", "--quiet", "HEAD"], workspace=path).decode().strip() == expected,
-                "registered workspace branch changed")
-        self.evidence("workspace-" + sid, {"session_id": sid, "branch": branch, "project_path": str(repository), "path": str(path)})
+            fields = {}
+            for part in filter(None, block.split(b"\0")):
+                key, _, value = part.partition(b" ")
+                require(key not in fields, "ambiguous Git registration field")
+                fields[key] = value
+            if fields.get(b"worktree") == os.fsencode(path):
+                require(b"prunable" not in fields and b"HEAD" in fields, "invalid/prunable worktree registration")
+                matches.append(fields)
+        require(len(matches) == 1, "no unique registered worktree for bound path: " + sid)
+        common = no_symlinks(old_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], workspace=repository).decode().strip())
+        actual_common = no_symlinks(old_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], workspace=path).decode().strip())
+        top = no_symlinks(old_git(["rev-parse", "--show-toplevel"], workspace=path).decode().strip())
+        require(top == path and actual_common == common, "workspace top-level/common repository mismatch")
+        git_dir = no_symlinks(old_git(["rev-parse", "--absolute-git-dir"], workspace=path).decode().strip())
+        head = old_git(["rev-parse", "HEAD"], workspace=path).decode().strip()
+        branch = old_git(["rev-parse", "--abbrev-ref", "HEAD"], workspace=path).decode().strip()
+        require(matches[0][b"HEAD"].decode() == head and
+                ((branch == "HEAD" and b"detached" in matches[0]) or matches[0].get(b"branch") == ("refs/heads/" + branch).encode()),
+                "Git registration/HEAD drift during observation")
+        identity = {"path": str(path), "common": str(common), "git_dir": str(git_dir),
+                    "path_identity": [path.stat().st_dev, path.stat().st_ino], "git_identity": [git_dir.stat().st_dev, git_dir.stat().st_ino]}
+        bindings = self.state.setdefault("workspace_bindings", {})
+        require(sid not in bindings or bindings[sid] == identity, "bound workspace registration/path drift")
+        bindings[sid] = identity
+        listing = self.root / "observations" / ("workspace-list-" + sid + "-" + uuid.uuid4().hex + ".raw")
+        publish(listing, raw)
+        self.evidence("workspace-" + sid, dict(identity, session_id=sid, source_refs=row["source_refs"],
+                      session_branch=session.get("branch"), branch=None if branch == "HEAD" else branch, head=head,
+                      detached=branch == "HEAD", standard_worker=standard, registration={"path": str(listing), "sha256": digest(raw)}))
+        self.save()
         return str(path)
 
     def worker_stop(self, worker):
         sid = identifier(worker["id"])
+        require(workspace_entry(self.request, sid).get("kind") == "worker", "worker missing bound workspace")
         rules = next((x for x in self.request["workers"] if x["worker_id"] == sid), None)
         directory = mkdir(self.root / "workers" / sid)
         path = directory / "stop.json"
@@ -1644,16 +1727,17 @@ def lock(path):
 
 def locate(old=None, create=False):
     require(sys.platform == "linux", "Linux only")
-    data = no_symlinks(os.environ.get("AO_DATA_DIR", str(Path.home() / ".ao/data")))
-    run_file = no_symlinks(os.environ.get("AO_RUN_FILE", str(Path.home() / ".ao/running.json")))
+    data = no_symlinks(os.environ.get("AO_DATA_DIR") or str(Path.home() / ".ao/data"))
+    run_file = no_symlinks(os.environ.get("AO_RUN_FILE") or str(Path.home() / ".ao/running.json"))
     require(data.is_relative_to(Path.home() / ".ao") and run_file.is_relative_to(Path.home() / ".ao"), "AO state must remain under ~/.ao")
     installed = shutil.which("ao")
     require(installed, "ao CLI missing")
     # Resolve the explicitly installed executable, not arbitrary data symlinks.
     initial = CLI(Path(installed).resolve(), old or os.environ.get("AO_SESSION_ID", ""), data, run_file, data)
     documents = initial.documents()
+    location = location_info(initial)
     shared = no_symlinks(documents["sharedDir"])
-    require(shared.is_relative_to(data), "shared outside AO data root")
+    require(str(shared) == location["shared_dir"], "shared outside fixed project data root")
     root = shared.parent / ".private-handoff-runs"
     if create:
         mkdir(root)
@@ -1697,6 +1781,9 @@ def validate_sources_live(req, cli):
         require(len(matches) == 1 and matches[0].get("revision") == source["revision"] and
                 digest(matches[0].get("text", "").encode()) == source["message_text_sha256"], "authority changed/missing")
         source_identity(source, matches[0])
+        workspace_refs = {ref for row in req.get("workspace_index", []) for ref in row["source_refs"]}
+        if source["kind"] == "old-control-record" and source["ref"] in workspace_refs:
+            require(matches[0].get("turnId") == req["prepared_by"]["turn_id"], "live workspace record not from preparing turn")
     require(any(t["id"] == req["prepared_by"]["turn_id"] for t in snap["transcript"].get("turns", [])), "preparing turn not observed")
     return snap
 
@@ -1708,6 +1795,7 @@ def write_initial_state(root, req, raw, cli):
              "cli_path": str(cli.executable), "cli_sha256": cli.sha256,
              "script_sha256": digest(private_read(root / "handoff.py")), "data_dir": str(cli.data_dir), "run_file": str(cli.run_file),
              "daemon_base": getattr(cli, "base", None),
+             "location": location_info(cli),
              "created_at": now(), "stage": "prepared", "outcome": "pending", "effects": {}}
     publish(root / "state.json", canonical(state))
 
@@ -1753,6 +1841,9 @@ def start(root, initial, old, target):
             publish(destination / source["raw_relpath"], private_read(confined(slot, source["raw_relpath"])))
         write_initial_state(destination, req, raw, cli)
         run = Run(destination, cli)
+        run.workspace(old)
+        for worker in run.live_workers():
+            run.workspace(worker["id"])
         run.state["old_settings"] = old_settings(old_snap)
         source_raw = getattr(cli, "old_snapshot_raw", canonical(old_snap))
         publish(destination / "old-initial-response.raw", source_raw)

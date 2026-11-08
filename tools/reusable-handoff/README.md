@@ -71,6 +71,7 @@ R/.start/<old-id>/evidence/<necessary-original-response>.json
 | `target` | `harness/account/model/effort/approval_mode/mode`，與外部逐欄一致，mode 固定 chat |
 | `authority` | `source_refs`、`old_verified_scope=three-step-handoff-this-project`、`t0_source_ref/t0_created_at/t0_precision` |
 | `workers` | 各 worker 的保留 stop D、hold、原題 owner／引用、待決、放行權與保留 resume D |
+| `workspace_index` | old 與待處理 worker 各一筆 `session_id/kind/path/source_refs`；絕對實際路徑，不用 branch 推算 |
 | `sources` | 唯一 ref、kind、conversation／branch／message id、revision、ask ref、原回應相對路徑及 bytes／正文 hash |
 
 來源 kind 僅 `human-message`、`structured-answer`、`old-control-record`；最後一種不是人類授權根。
@@ -88,6 +89,8 @@ D 是 `D-<正整數>` 或 null，不自行遞增。
 start 拒絕缺檔、半份／重複鍵 JSON、schema／型別／引用錯、target 不符或 hash 改變。
 接受後保留 request 原 bytes 為 `R/<run-id>/start.json`，必要來源沿原相對路徑保全。
 state 分別保存起始 worker index hash 與全 safe 後 stop index hash，不混用。
+workspace_index 隨 start 原 bytes／start_sha256 綁定；同 session 不重複、不同 session 不共用路徑，缺索引立即停止，continue 不讀另一份可變索引。
+old 自身與非標準 worker 路徑必須引用 Q1 的 old-control-record，原文具名記 session／path 並屬 old preparing turn；保存副本及 live 訊息都核此 turn，runner 不從 A–F 猜路徑。
 
 ## 三個階段與回條
 
@@ -100,7 +103,10 @@ state 分別保存起始 worker index hash 與全 safe 後 stop index hash，不
 
 回條詳細必填鍵及 producer 模板由具名控制 payload 提供；回報 note 不作機器資料來源。
 worker 自述與代記都要核註冊 workspace 的實際 staged／unstaged／untracked 內容，不能只比較 status 字串。
-註冊路徑由既有 session `branch` 與 project `path` 對 Git `worktree list --porcelain -z` 唯一匹配，並重核 symbolic HEAD；不依賴 session API 未提供的 workspacePath。
+註冊路徑只取本 run workspace_index，以 `git --no-optional-locks worktree list --porcelain -z` 依 path 精確唯一匹配，再核 top-level／common repository；不依賴 API 未提供的 workspacePath，也不退回 branch 匹配。
+CLI 的非空 AO_DATA_DIR 優先、否則 home/.ao/data；相對值在啟動時絕對化並固定。managedRoot 固定 D/worktrees，以 project 的 sharedDir 設定與 documents info 核 D/projects/<project>/orchestrator/<shared設定>，不向上倒推資料根。
+標準 worker 須對上 managedRoot/<project>/<session-id>；非標準路徑只有正面 preparing-turn 來源才接受，且仍須在本 project 管理範圍。不是同 repo 任一路徑即可。
+session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、detached 都能定位，detached branch 記 null。保存原註冊清單與 path／Git metadata 身分；安全停點後 branch／HEAD／內容／註冊漂移仍停止。零筆、多筆、prunable、缺失、矛盾或別名均停止。
 同一輪會對所有 live worker 收檔或送出原保留 D；請求由 intent 冪等，不等第一位 safe 才通知下一位。
 正常 CLI `incomplete` 是 queued／running turn、streaming／未結工具的清單，交由各 predicate 有界等待；真正截斷仍停止。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
@@ -161,6 +167,7 @@ guard 未通過時只有 intent／not-dispatched；sent 在 CLI deadline 檢查�
 UNKNOWN send 只 recover 原 handle；kill 只查原效果，遺失原回條時即使 terminated 也不得 spawn。
 spawn UNKNOWN 只認領同專案／kind、完整精確 token、createdAt 不早於 intent 的唯一原 new，再核 binding；零筆／多筆都交人工。
 resume 不明或非 native 不 fallback，不第二 spawn、不 restore old、不用 AO 原生交接。
+已保存成功 native resume 回條但 stage 尚未完成時，continue 讀原回條並重核同 new／native／binding，不再要求已恢復的 actor 仍 exited，也不重發 exit／resume。
 report 有正面 structural batch／中斷／時間證據時，每個 phase 最多送一次 continuation，只補未完回報，不重寫已成功 managed、不再發 nonce；第二次中斷交人工。
 新 human 訊息不套用初始 prompt 例外；原切換核驗之後有新 human 輸入時，保留來源並停止自動切換／通知，交 operator recovery，不把文字推定為新授權。
 
@@ -170,6 +177,7 @@ FYI 不帶 D、不解除既有 hold；確有原授權才由 new 用原保留 D �
 
 manifest 固定揭露：尚未送達的 report outbox 不在 conversation cut/delta 範圍，接手後才由 AO 既有機制送達；不查 reports 表，不手動搬移／ack outbox。
 DB 不讀 conversations 表；以正常 CLI 的 conversationId／latestSequence 綁 cut，核白名單 messages／activities 的 conversation_id／序號，再用 CLI 重核 cut 未漂移。
+plan settle 可使 latestSequence 高於原文列最大序號；只要求列序號不超 cut，且 CLI 最新可見 entry 在匯出列中，不把合法序號空隙當缺文。
 
 ## 時間與故障等待
 
