@@ -170,13 +170,20 @@ func Baseline(query Cohort, snapshots []Snapshot) (BaselineReport, error) {
 			if e.CreatedAt == nil {
 				totals = []*TokenTotals{&out.Undated, &row.Undated, &row.Sources[index].Undated}
 			}
-			for _, total := range totals {
-				if err := total.add(e); err != nil {
+			// add replaces counter pointers, so copies retain the accepted prefix.
+			// Commit all levels only after every counter has been checked.
+			next := make([]TokenTotals, len(totals))
+			for i, total := range totals {
+				next[i] = *total
+				if err := next[i].add(e); err != nil {
 					out.Status = "partial"
 					out.Reason = err.Error()
 					out.Sessions = append(out.Sessions, row)
 					return out, err
 				}
+			}
+			for i, total := range totals {
+				*total = next[i]
 			}
 		}
 		out.Sessions = append(out.Sessions, row)

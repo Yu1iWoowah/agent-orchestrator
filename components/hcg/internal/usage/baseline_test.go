@@ -1,7 +1,9 @@
 package usage
 
 import (
+	"fmt"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -73,7 +75,7 @@ func TestCohortValidation(t *testing.T) {
 	}
 }
 
-func TestBaselinePartialExternalAndOverflow(t *testing.T) {
+func TestBaselinePartialAndExternal(t *testing.T) {
 	query, err := NewCohort([]string{"s"}, "2026-11-08T00:00:00Z", "2026-11-09T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
@@ -89,11 +91,57 @@ func TestBaselinePartialExternalAndOverflow(t *testing.T) {
 	if err == nil || got.Recorded.EventCount != 0 || got.Recorded.InputTokens != nil {
 		t.Fatalf("external merged: %+v %v", got, err)
 	}
-	snapshot.Source = "daemon_ledger"
-	snapshot.ScanStatus = "complete"
-	snapshot.Events = []Event{eventAt(at, 1, 1, math.MaxInt64, 0, 0), eventAt(at, 2, 1, 1, 0, 0)}
-	got, err = Baseline(query, []Snapshot{snapshot})
-	if err == nil || got.Status != "partial" || got.Recorded.InputTokens != nil {
-		t.Fatalf("overflow=%+v err=%v", got, err)
+}
+
+func TestBaselineOverflowPreservesAcceptedPrefix(t *testing.T) {
+	for _, counter := range []string{"input", "output"} {
+		for _, undated := range []bool{false, true} {
+			for _, unknownCohort := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/undated=%t/unknownCohort=%t", counter, undated, unknownCohort), func(t *testing.T) {
+					ids := []string{"s"}
+					if unknownCohort {
+						ids = []string{"prior", "s"}
+					}
+					query, err := NewCohort(ids, "2026-11-08T00:00:00Z", "2026-11-09T00:00:00Z")
+					if err != nil {
+						t.Fatal(err)
+					}
+					at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+					first, second := eventAt(at, 1, 1, math.MaxInt64, 0, 5), eventAt(at, 2, 1, 1, 0, 7)
+					if counter == "output" {
+						first, second = eventAt(at, 1, 1, 10, 0, math.MaxInt64), eventAt(at, 2, 1, 20, 0, 1)
+					}
+					if undated {
+						first.CreatedAt, second.CreatedAt = nil, nil
+					}
+					snapshots := []Snapshot{{Source: "daemon_ledger", ScanStatus: "complete", Page: Page{SessionID: "s", Events: []Event{first, second}}}}
+					if unknownCohort {
+						prior := Event{ID: 0, BindingID: 1, UsageSourceID: 1, CreatedAt: first.CreatedAt}
+						snapshots = append([]Snapshot{{Source: "daemon_ledger", ScanStatus: "complete", Page: Page{SessionID: "prior", Events: []Event{prior}}}}, snapshots...)
+					}
+					got, err := Baseline(query, snapshots)
+					if err == nil || got.Status != "partial" || got.Reason != "token sum exceeds int64" {
+						t.Fatalf("overflow=%+v err=%v", got, err)
+					}
+					row := got.Sessions[len(got.Sessions)-1]
+					cohort, session, source := got.Recorded, row.Recorded, row.Sources[0].Recorded
+					if undated {
+						cohort, session, source = got.Undated, row.Undated, row.Sources[0].Undated
+					}
+					want := TokenTotals{EventCount: 1, InputTokens: first.InputTokens, CachedInputTokens: first.CachedInputTokens, UncachedInputTokens: first.UncachedInputTokens, OutputTokens: first.OutputTokens}
+					for name, total := range map[string]TokenTotals{"session": session, "source": source} {
+						if !reflect.DeepEqual(total, want) {
+							t.Errorf("%s totals=%+v want=%+v", name, total, want)
+						}
+					}
+					if unknownCohort {
+						want = TokenTotals{EventCount: 2, IncompleteEvents: 1}
+					}
+					if !reflect.DeepEqual(cohort, want) {
+						t.Errorf("cohort totals=%+v want=%+v", cohort, want)
+					}
+				})
+			}
+		}
 	}
 }
