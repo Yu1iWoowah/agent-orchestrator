@@ -6,13 +6,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 // Store is an append-only sampling log, not a token ledger. Root must be the
 // explicitly selected AO namespace; there is no HOME or stable-data fallback.
-type Store struct{ Root string }
+type Store struct {
+	Root            string
+	afterValidation func() // Test seam at the validation/write boundary.
+}
 
 func (s Store) path() (string, error) {
 	if s.Root == "" || !filepath.IsAbs(s.Root) {
@@ -20,7 +24,7 @@ func (s Store) path() (string, error) {
 	}
 	return filepath.Join(s.Root, "hcg", "quota", "samples.jsonl"), nil
 }
-func (s Store) Append(ctx context.Context, sample Sample) error {
+func (s Store) Append(ctx context.Context, sample Sample) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -48,27 +52,36 @@ func (s Store) Append(ctx context.Context, sample Sample) error {
 	if err != nil {
 		return fmt.Errorf("invalid quota sample")
 	}
-	// Validate without retaining history; a failed write must remain evidence,
-	// never become the prefix of the next sample on restart.
-	if _, err := s.read(ctx, false); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	// One descriptor and one exclusive lock cover validation, the append and
+	// Close. A waiter revalidates after a failed writer releases its lock.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("quota log unavailable")
 	}
-	_, writeErr := f.Write(append(raw, '\n'))
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("quota log close failed")
+		}
+	}()
+	if err := lockLog(ctx, f); err != nil {
+		return err
+	}
+	if _, err := scanLog(ctx, f, s.Root, false); err != nil {
+		return err
+	}
+	if s.afterValidation != nil {
+		s.afterValidation()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := f.Write(append(raw, '\n')); err != nil {
 		return fmt.Errorf("quota sample write failed")
 	}
 	return nil
 }
-func (s Store) Read(ctx context.Context) ([]Sample, error) {
-	return s.read(ctx, true)
-}
 
-func (s Store) read(ctx context.Context, collect bool) ([]Sample, error) {
+func (s Store) Read(ctx context.Context) ([]Sample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -84,8 +97,15 @@ func (s Store) read(ctx context.Context, collect bool) ([]Sample, error) {
 		return nil, fmt.Errorf("quota log unavailable")
 	}
 	defer f.Close()
+	if err := lockLog(ctx, f); err != nil {
+		return nil, err
+	}
+	return scanLog(ctx, f, s.Root, true)
+}
+
+func scanLog(ctx context.Context, reader io.Reader, root string, collect bool) ([]Sample, error) {
 	rows := []Sample{}
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
 	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
@@ -101,7 +121,7 @@ func (s Store) read(ctx context.Context, collect bool) ([]Sample, error) {
 			return nil, err
 		}
 		var sample Sample
-		if json.Unmarshal(scanner.Bytes(), &sample) != nil || sample.DataRoot != s.Root || sample.SampledAt.IsZero() {
+		if json.Unmarshal(scanner.Bytes(), &sample) != nil || sample.DataRoot != root || sample.SampledAt.IsZero() {
 			return nil, fmt.Errorf("invalid quota log")
 		}
 		if collect {
