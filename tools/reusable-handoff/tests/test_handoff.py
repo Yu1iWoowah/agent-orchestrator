@@ -342,7 +342,22 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(h.Stop):
             h.export_conversation(path, "old", "missing-conv", "codex", 10)
         with self.assertRaises(h.Stop):
-            h.export_conversation(path, "old", "conv", "codex", 11)
+            h.export_conversation(path, "old", "conv", "codex", 9)
+
+    def test_review_plan_settle_sequence_gap_preserves_cli_cut(self):
+        fake = FlowFixture(self.root, "codex", "claude-code")
+        fake.snapshots["old"]["transcript"]["latestSequence"] = 11
+        fake.snapshots["old"]["transcript"]["entries"].append({"id": "plan", "kind": "activity", "activityKind": "plan",
+            "status": "completed", "sequence": 9, "turnId": "turn", "detail": {}})
+        with sqlite3.connect(self.root / "ao.db") as db:
+            db.execute("INSERT INTO conversation_activities(id,conversation_id,sequence,kind,status) VALUES('plan','conv',9,'plan','completed')")
+        h.run_protocol(fake.run)
+        self.assertEqual(fake.run.state["outcome"], "complete")
+        for phase in ("manifest", "delta"):
+            manifest = h.decode(h.private_read(fake.run.state[phase]["path"]))
+            self.assertEqual(manifest["cut_sequence"], 11)
+            raw = h.decode(h.private_read(manifest["raw"]["path"]))
+            self.assertEqual(max(x["sequence"] for table in ("conversation_messages", "conversation_activities") for x in raw[table]), 10)
 
     def test_T03_dependency_closure_hashes_and_relative_relationships(self):
         source = self.root / "source"
@@ -434,6 +449,32 @@ class ProtocolTests(unittest.TestCase):
                         before = list(fake.mutations)
                         h.run_protocol(fake.run)
                         self.assertEqual(before, fake.mutations)
+
+    def test_review_resume_receipt_reentry_verifies_without_repeating_effects(self):
+        fake = FlowFixture(self.root, "codex", "claude-code")
+        verify = h.verify_target
+        def read_failure_after_resume(*args):
+            if (fake.run.root / "control/resume/result.json").exists():
+                raise h.Stop("transient post-resume read failure")
+            return verify(*args)
+        with patch.object(h, "verify_target", side_effect=read_failure_after_resume):
+            with self.assertRaisesRegex(h.Stop, "transient post-resume read failure"):
+                h.run_protocol(fake.run)
+        receipt = h.decode(h.private_read(fake.run.root / "control/resume/result.json"))
+        self.assertEqual(h.decode(receipt["stdout"]), {"sessionId": "new", "resumeMode": "native"})
+        self.assertNotIn("resume", fake.run.state["completed_stages"])
+        self.assertEqual(fake.snapshots["new"]["session"]["activity"]["state"], "idle")
+        # Recreate the runner from disk as an explicit same-run continue would.
+        fake.run = h.Run(fake.run.root, fake)
+        fake.run.rearm_wait()
+        with patch.object(h, "verify_target", return_value={"native_id": "different-native"}):
+            with self.assertRaisesRegex(h.Stop, "resume binding/native/fast drift"):
+                h.run_protocol(fake.run)
+        h.run_protocol(fake.run)
+        self.assertEqual(fake.run.state["outcome"], "complete")
+        self.assertEqual(fake.mutations.count("exit-agent"), 1)
+        self.assertEqual(fake.mutations.count("resume-agent"), 1)
+        self.assertEqual(fake.mutations.count("nonce"), 1)
 
     def test_Q3_clean_ignored_copy_survives_normal_reclaim(self):
         fake = FlowFixture(self.root, "codex", "claude-code")
@@ -929,6 +970,8 @@ class FlowFixture:
                     "text": h.status_command(self.run.root, self.run_id) + "；10分鐘未見new首報就查原run。"})
                 with sqlite3.connect(self.data_dir / "ao.db") as db:
                     for entry in self.snapshots["old"]["transcript"]["entries"]:
+                        if entry["kind"] != "message":
+                            continue
                         db.execute("INSERT INTO conversation_messages(id,conversation_id,sequence,role,text,branch_id) VALUES(?,?,?,?,?,?)",
                                    (entry["id"], "conv", entry["sequence"], entry["role"], entry["text"], "branch"))
                 if self.preservation_problem == "drift":

@@ -888,8 +888,8 @@ def export_conversation(database, old, conversation, harness, latest_sequence):
             require(all(row["conversation_id"] == conversation for row in result[table]), "DB message scope changed")
         messages = result["conversation_messages"]
         sequences = [row["sequence"] for table in ("conversation_messages", "conversation_activities") for row in result[table]]
-        require(messages and all(type(seq) is int and 0 < seq <= latest_sequence for seq in sequences) and
-                max(sequences) == latest_sequence, "DB messages/activities do not match CLI cut")
+        require(messages and all(type(seq) is int and 0 < seq <= latest_sequence for seq in sequences),
+                "DB messages/activities exceed or lack CLI cut sequence")
         db.rollback()
         return result
 
@@ -1101,6 +1101,9 @@ def export_material(run, delta=False):
         cursor = next_cursor
         snap = run.cli.read(["session", "get", run.old, "--transcript", "500", "--cap", "0", "--before", str(cursor)])
     raw = export_conversation(run.cli.data_dir / "ao.db", run.old, conversation, snap["session"]["harness"], transcript["latestSequence"])
+    latest_visible = max((entry["sequence"] for entry in transcript["entries"] if type(entry.get("sequence")) is int), default=None)
+    require(latest_visible is not None and any(row["sequence"] == latest_visible for table in
+            ("conversation_messages", "conversation_activities") for row in raw[table]), "latest CLI entry missing from DB cut")
     after = run.snapshot(run.old)["transcript"]
     require(after["conversationId"] == conversation and after["activeBranchId"] == branch and
             after["latestSequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
@@ -1495,10 +1498,12 @@ def run_protocol(run):
             reject_new_human(observation["snapshot"], state["bootstrap_sequence"])
             require(run.clock() - observation["observed"] <= 1, "new idle window elapsed")
             return observation["observed"] + 1
-        run.effect("exit", ["session", "exit-agent", sid, "--project", PROJECT, "--json"], LIMITS["exit"], guard)
-        exited = run.snapshot(sid)
-        require(exited["session"]["activity"]["state"] == "exited" and quiescent(exited) and
-                selected_turn(exited).get("state") == "completed", "exit effect not observed or interrupted turn")
+        resume_directory = run.root / "control/resume"
+        if not (resume_directory / "sent.json").exists() and not (resume_directory / "result.json").exists():
+            run.effect("exit", ["session", "exit-agent", sid, "--project", PROJECT, "--json"], LIMITS["exit"], guard)
+            exited = run.snapshot(sid)
+            require(exited["session"]["activity"]["state"] == "exited" and quiescent(exited) and
+                    selected_turn(exited).get("state") == "completed", "exit effect not observed or interrupted turn")
         response = run.effect("resume", ["session", "resume-agent", sid, "--project", PROJECT, "--json"], LIMITS["resume"])
         result = decode(response["stdout"])
         require(result.get("sessionId") == sid and result.get("resumeMode") == "native", "resume was not same-session native")
