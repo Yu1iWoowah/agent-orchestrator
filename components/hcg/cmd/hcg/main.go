@@ -21,8 +21,11 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) >= 2 && args[0] == "usage" && (args[1] == "observe" || args[1] == "reconcile") {
+		return runQuota(ctx, args[1], args[2:], stdout, stderr)
+	}
 	if len(args) < 2 || args[0] != "usage" || (args[1] != "sync" && args[1] != "events" && args[1] != "current" && args[1] != "baseline") {
-		fmt.Fprintln(stderr, "usage: hcg usage sync|events|current --session <id> [--json]; hcg usage baseline --sessions <ids> --from <UTC> --to <UTC> [--json]")
+		fmt.Fprintln(stderr, "usage: hcg usage sync|events|current --session <id> [--json]; hcg usage baseline --sessions <ids> --from <UTC> --to <UTC> [--json]; hcg usage observe --sessions <ids> --interval <duration>; hcg usage reconcile --sessions <ids> --from <UTC> --to <UTC> --max-age <duration> --max-gap <duration>")
 		return 2
 	}
 	if args[1] == "baseline" {
