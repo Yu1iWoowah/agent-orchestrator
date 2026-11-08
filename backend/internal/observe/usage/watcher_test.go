@@ -249,6 +249,51 @@ func TestTranscriptWatcherRejectsAccountRootSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestTranscriptWatcherUsesCurrentAccountRoot(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	roots, err := usagesvc.DefaultSourceRoots(ctx, t.TempDir(), state)
+	mustNoError(t, err)
+	root := roots.AccountClaudeProjects
+	insideA, insideB, outside := filepath.Join(state, "inside-a"), filepath.Join(state, "inside-b"), t.TempDir()
+	for _, dir := range []string{filepath.Dir(root), insideA, insideB} {
+		mustNoError(t, os.MkdirAll(dir, 0o700))
+	}
+	for _, dir := range []string{insideA, insideB, outside} {
+		mustNoError(t, os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}\n"), 0o600))
+	}
+	link := func(target, path string) {
+		t.Helper()
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+	}
+	link(insideA, root)
+	watcher, err := NewTranscriptWatcher(ctx, []string{root}, TranscriptWatcherConfig{ValidateRoot: roots.ValidateAccountRoot})
+	mustNoError(t, err)
+	t.Cleanup(watcher.close)
+	mustNoError(t, watcher.Rebuild(ctx, []string{filepath.Join(root, "session.jsonl")}))
+	if len(watcher.watched) != 1 {
+		t.Fatal("initial in-StateDir source was not watched")
+	}
+	mustNoError(t, os.Remove(root))
+	link(insideB, root)
+	mustNoError(t, os.Rename(insideA, insideA+"-original"))
+	link(outside, insideA)
+	mustNoError(t, roots.ValidateAccountRoot(ctx, root))
+	mustNoError(t, watcher.Rebuild(ctx, []string{filepath.Join(insideA, "session.jsonl")}))
+	if len(watcher.watched) != 0 {
+		t.Errorf("watched external source through stale resolved root: %+v", watcher.watched)
+	}
+	mustNoError(t, watcher.Rebuild(ctx, []string{filepath.Join(root, "session.jsonl")}))
+	if _, ok := watcher.watched[canonicalTranscriptPath(filepath.Join(insideB, "session.jsonl"))]; !ok {
+		t.Fatal("current in-StateDir root was not watched")
+	}
+}
+
 func startTranscriptWatcher(t *testing.T, root string, sourcePaths ...string) (*TranscriptWatcher, context.CancelFunc) {
 	t.Helper()
 	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})

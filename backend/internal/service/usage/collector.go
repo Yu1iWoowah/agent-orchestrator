@@ -1990,26 +1990,55 @@ func (c *Collector) finalizeSession(ctx context.Context, sessionID domain.Sessio
 	return nil
 }
 
+// ValidateSourcePath checks the current boundary without opening transcript contents.
+func (c *Collector) ValidateSourcePath(ctx context.Context, kind domain.UsageSourceKind, path string) error {
+	var harness domain.AgentHarness
+	switch kind {
+	case domain.UsageSourceClaudeMain, domain.UsageSourceClaudeSubagent:
+		harness = domain.HarnessClaudeCode
+	case domain.UsageSourceCodexRollout:
+		harness = domain.HarnessCodex
+	case domain.UsageSourceKimiWire:
+		harness = domain.HarnessKimi
+	default:
+		return errors.New(domain.UsageErrorArtifactPathRejected)
+	}
+	_, _, err := c.validateSourceLocation(ctx, harness, path)
+	return err
+}
+
 func (c *Collector) validateSourcePath(ctx context.Context, harness domain.AgentHarness, path string) (string, string, int64, error) {
-	if err := ctx.Err(); err != nil {
+	resolved, info, err := c.validateSourceLocation(ctx, harness, path)
+	if err != nil {
 		return "", "", 0, err
 	}
+	identity, err := SourceIdentity(ctx, resolved)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return resolved, identity, info.Size(), nil
+}
+
+func (c *Collector) validateSourceLocation(ctx context.Context, harness domain.AgentHarness, path string) (string, os.FileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	if len(path) > maxUsagePathBytes {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
+		return "", nil, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
 	if !filepath.IsAbs(path) || strings.ToLower(filepath.Ext(path)) != ".jsonl" {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
+		return "", nil, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
 	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
+		return "", nil, errors.New(domain.UsageErrorArtifactMissing)
 	}
 	if err := ctx.Err(); err != nil {
-		return "", "", 0, err
+		return "", nil, err
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
+		return "", nil, errors.New(domain.UsageErrorArtifactMissing)
 	}
 	roots := c.allowedRoots(ctx, harness)
 	allowed := false
@@ -2028,13 +2057,9 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 		}
 	}
 	if !allowed {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
+		return "", nil, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
-	identity, err := SourceIdentity(ctx, resolved)
-	if err != nil {
-		return "", "", 0, err
-	}
-	return resolved, identity, info.Size(), nil
+	return resolved, info, nil
 }
 
 func validateSourceAttribution(

@@ -32,18 +32,13 @@ type TranscriptWatcherConfig struct {
 	Logger       *slog.Logger
 }
 
-type transcriptRoot struct {
-	configured string
-	resolved   string
-}
-
 // TranscriptWatcher watches exact registered transcript files. Exact-file
 // watches keep descriptor use proportional to active durable sources even on
 // kqueue, where watching a large directory can open every file inside it.
 type TranscriptWatcher struct {
 	mu           sync.Mutex
 	watcher      *fsnotify.Watcher
-	roots        []transcriptRoot
+	roots        []string
 	validateRoot func(context.Context, string) error
 	logger       *slog.Logger
 	sourcePaths  []string
@@ -71,7 +66,7 @@ func NewTranscriptWatcher(ctx context.Context, roots []string, cfg TranscriptWat
 	if logger == nil {
 		logger = slog.Default()
 	}
-	var accepted []transcriptRoot
+	var accepted []string
 	for _, root := range normalized {
 		if cfg.ValidateRoot != nil {
 			if err := cfg.ValidateRoot(ctx, root); err != nil {
@@ -93,7 +88,7 @@ func NewTranscriptWatcher(ctx context.Context, roots []string, cfg TranscriptWat
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("inspect transcript root: %w", redactFilesystemError(err))
 		}
-		accepted = append(accepted, transcriptRoot{configured: root, resolved: resolved})
+		accepted = append(accepted, root)
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -304,17 +299,14 @@ func (w *TranscriptWatcher) withinDesiredRoot(ctx context.Context, path string) 
 			return false
 		}
 		if w.validateRoot != nil {
-			if err := w.validateRoot(ctx, root.configured); err != nil {
+			if err := w.validateRoot(ctx, root); err != nil {
 				if ctx.Err() == nil {
 					w.logger.Warn("usage transcript root rejected", "err", err)
 				}
 				continue
 			}
 		}
-		if pathWithin(path, root.resolved) {
-			return true
-		}
-		resolved, err := resolveTranscriptRoot(ctx, root.resolved)
+		resolved, err := resolveTranscriptRoot(ctx, root)
 		if err == nil && pathWithin(path, resolved) {
 			return true
 		}

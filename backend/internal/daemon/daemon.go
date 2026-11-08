@@ -913,7 +913,7 @@ func Run(buildVersion string) error {
 		if usagePricing != nil {
 			usageCollector.OnRouteResolved(usagePricing.RepairLegacyAttribution)
 		}
-		ingestorConfig := usagepipeline.IngestorConfig{}
+		ingestorConfig := usagepipeline.IngestorConfig{ValidateSourcePath: usageCollector.ValidateSourcePath}
 		if usagePricing != nil {
 			ingestorConfig.Pricing = usagePricing.Manager()
 			ingestorConfig.OnPricingError = func(err error) {
