@@ -2,6 +2,7 @@ package quota
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -91,5 +92,24 @@ func TestReconcileQuotaAndUnassignedLedger(t *testing.T) {
 		if segment.Status == "unaccounted_usage_candidate" {
 			t.Fatal("bridged failed sample")
 		}
+	}
+}
+
+func TestReconcileRetainsLedgerFailureStatus(t *testing.T) {
+	query, err := usage.NewCohort([]string{"s"}, "2026-11-09T00:00:00Z", "2026-11-09T01:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 9, 0, 5, 0, 0, time.UTC)
+	huge, one, zero := int64(math.MaxInt64), int64(1), int64(0)
+	scans := []usage.Snapshot{{Source: "daemon_ledger", DataRoot: "/fixture", ScanStatus: "complete", Page: usage.Page{SessionID: "s", Events: []usage.Event{{ID: 1, CreatedAt: &at, InputTokens: &huge, CachedInputTokens: &zero, UncachedInputTokens: &huge, OutputTokens: &zero}, {ID: 2, CreatedAt: &at, InputTokens: &one, CachedInputTokens: &zero, UncachedInputTokens: &one, OutputTokens: &zero}}}}}
+	got, err := Reconcile(query, []Sample{quotaSample("/fixture", 0, 10), quotaSample("/fixture", 10, 15)}, scans, "/fixture", 2*time.Minute, 20*time.Minute)
+	if err == nil || got.Status != "partial" || got.Unassigned.Status != "partial" || got.Unassigned.Recorded.EventCount != 1 {
+		t.Fatalf("status=%s ledger=%+v err=%v", got.Status, got.Unassigned, err)
+	}
+	scans[0].Source = "external_analysis"
+	got, err = Reconcile(query, nil, scans, "/fixture", 2*time.Minute, 20*time.Minute)
+	if err == nil || got.Status != "unavailable" {
+		t.Fatalf("noncanonical status=%s err=%v", got.Status, err)
 	}
 }

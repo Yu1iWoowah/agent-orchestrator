@@ -48,7 +48,7 @@ type windowKey struct{ provider, account, window string }
 // Reconcile compares adjacent sampling attempts, never skipping errors or
 // missing windows. C1 has no historical account mapping: tokens stay unassigned.
 func Reconcile(query usage.Cohort, samples []Sample, scans []usage.Snapshot, root string, maxAge, maxGap time.Duration) (Reconciliation, error) {
-	out := Reconciliation{Cohort: query, Source: "account_cli", DataRoot: root, Status: "complete", MaxAge: maxAge.String(), MaxGap: maxGap.String(), Segments: []Segment{}}
+	out := Reconciliation{Cohort: query, Source: "account_cli", DataRoot: root, Status: "unavailable", MaxAge: maxAge.String(), MaxGap: maxGap.String(), Segments: []Segment{}}
 	if maxAge <= 0 || maxGap <= 0 {
 		return out, fmt.Errorf("explicit positive max-age and max-gap required")
 	}
@@ -65,11 +65,9 @@ func Reconcile(query usage.Cohort, samples []Sample, scans []usage.Snapshot, roo
 	}
 	var err error
 	out.Unassigned, err = usage.Baseline(query, scans)
+	out.Status = out.Unassigned.Status
 	if err != nil {
 		return out, err
-	}
-	if out.Unassigned.Status != "complete" {
-		out.Status = "partial"
 	}
 	samples = append([]Sample(nil), samples...)
 	for _, s := range samples {
@@ -120,6 +118,7 @@ func Reconcile(query usage.Cohort, samples []Sample, scans []usage.Snapshot, roo
 						interval, _ := usage.NewCohort(query.SessionIDs, a.FetchedAt.UTC().Format(time.RFC3339Nano), b.FetchedAt.UTC().Format(time.RFC3339Nano))
 						ledger, scanErr := usage.Baseline(interval, scans)
 						if scanErr != nil {
+							out.Status = "partial"
 							return out, scanErr
 						}
 						seg.Ledger = &ledger
