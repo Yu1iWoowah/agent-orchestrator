@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -22,9 +21,12 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) < 2 || args[0] != "usage" || (args[1] != "sync" && args[1] != "events") {
-		fmt.Fprintln(stderr, "usage: hcg usage sync|events --session <id> [--json]")
+	if len(args) < 2 || args[0] != "usage" || (args[1] != "sync" && args[1] != "events" && args[1] != "current" && args[1] != "baseline") {
+		fmt.Fprintln(stderr, "usage: hcg usage sync|events|current --session <id> [--json]; hcg usage baseline --sessions <ids> --from <UTC> --to <UTC> [--json]")
 		return 2
+	}
+	if args[1] == "baseline" {
+		return runBaseline(ctx, args[2:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("usage "+args[1], flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -37,6 +39,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "a session id is required; use --session or AO_SESSION_ID")
 		return 2
 	}
+	if args[1] == "current" {
+		return runCurrent(ctx, *session, stdout, stderr)
+	}
 	client, err := source.FromEnvironment()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -45,15 +50,5 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	snapshot, err := client.Scan(ctx, *session)
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if e := encoder.Encode(snapshot); e != nil {
-		fmt.Fprintln(stderr, e)
-		return 1
-	}
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	return writeUsageResult(snapshot, err, stdout, stderr)
 }
