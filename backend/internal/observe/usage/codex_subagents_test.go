@@ -255,7 +255,7 @@ func TestCoordinatorReconcilesLateCodexChildBeforeBindingCompletes(t *testing.T)
 	childPath := activeCodexRolloutPath(roots.CodexSessions, testCodexChildID)
 	writeCodexRollout(t, parentPath, codexRolloutFixture(t, testCodexParentID, "", 100, 20, testCodexChildID))
 
-	watcher, err := NewTranscriptWatcher(ctx, []string{roots.CodexSessions, roots.CodexArchived})
+	watcher, err := NewTranscriptWatcher(ctx, []string{roots.CodexSessions, roots.CodexArchived}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	collector := usagesvc.NewCollector(store, roots, nil)
 	ingestor := NewIngestor(store, IngestorConfig{FinalizationWait: 50 * time.Millisecond})

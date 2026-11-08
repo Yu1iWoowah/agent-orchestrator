@@ -897,7 +897,7 @@ func Run(buildVersion string) error {
 			usagePricing.Wait()
 		}()
 	}
-	if roots, rootsErr := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir); rootsErr != nil {
+	if roots, rootsErr := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir, cfg.StateDir); rootsErr != nil {
 		log.Warn("usage collection disabled", "err", rootsErr)
 	} else {
 		usageCollector = usagesvc.NewCollector(store, roots, func(reconcile bool) {
@@ -913,7 +913,7 @@ func Run(buildVersion string) error {
 		if usagePricing != nil {
 			usageCollector.OnRouteResolved(usagePricing.RepairLegacyAttribution)
 		}
-		ingestorConfig := usagepipeline.IngestorConfig{}
+		ingestorConfig := usagepipeline.IngestorConfig{ValidateSourcePath: usageCollector.ValidateSourcePath}
 		if usagePricing != nil {
 			ingestorConfig.Pricing = usagePricing.Manager()
 			ingestorConfig.OnPricingError = func(err error) {
@@ -929,7 +929,7 @@ func Run(buildVersion string) error {
 				return usageCollector.ReconcileSources(reconcileCtx, 0)
 			},
 			ReconcilePath: usageCollector.ReconcilePath,
-		})
+		}, usagepipeline.TranscriptWatcherConfig{ValidateRoot: roots.ValidateAccountRoot})
 		// Safety-net reconcile tick. The pipeline is event-driven otherwise:
 		// a silently lost fsnotify watch or a resume transcript that arrived
 		// without a hook would otherwise never be re-checked. NotifySourcesChanged
@@ -1274,7 +1274,7 @@ func Run(buildVersion string) error {
 	if usagePipeline != nil {
 		usageDone = usagePipeline.Start(ctx)
 	}
-	if roots, err := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir); err == nil {
+	if roots, err := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir, cfg.StateDir); err == nil {
 		guardianDone = startGuardianObservation(ctx, store, roots, log)
 	}
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
@@ -1601,6 +1601,9 @@ func usagePipelineWatchRoots(roots usagesvc.SourceRoots) []string {
 		roots.CodexSessions,
 		roots.CodexArchived,
 		roots.KimiHome,
+		roots.AccountClaudeProjects,
+		roots.AccountCodexSessions,
+		roots.AccountCodexArchived,
 	}
 }
 

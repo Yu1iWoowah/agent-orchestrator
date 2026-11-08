@@ -60,15 +60,20 @@ type HookSignal struct {
 // SourceRoots are the provider-owned directories from which AO may read usage
 // transcripts.
 type SourceRoots struct {
-	ClaudeProjects string
-	CodexSessions  string
-	CodexArchived  string
-	KimiHome       string
+	StateDir              string
+	ClaudeProjects        string
+	CodexSessions         string
+	CodexArchived         string
+	KimiHome              string
+	AccountClaudeProjects string
+	AccountCodexSessions  string
+	AccountCodexArchived  string
 }
 
 // DefaultSourceRoots resolves provider-owned transcript directories. dataDir
-// is AO's already-resolved durable data directory.
-func DefaultSourceRoots(ctx context.Context, dataDir string) (SourceRoots, error) {
+// is AO's already-resolved durable data directory; stateDir is the state root
+// shared with the agent accounts service.
+func DefaultSourceRoots(ctx context.Context, dataDir, stateDir string) (SourceRoots, error) {
 	if err := ctx.Err(); err != nil {
 		return SourceRoots{}, err
 	}
@@ -89,12 +94,85 @@ func DefaultSourceRoots(ctx context.Context, dataDir string) (SourceRoots, error
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = filepath.Join(home, ".ao", "data")
 	}
-	return SourceRoots{
+	roots := SourceRoots{
 		ClaudeProjects: filepath.Join(claudeHome, "projects"),
 		CodexSessions:  filepath.Join(codexHome, "sessions"),
 		CodexArchived:  filepath.Join(codexHome, "archived_sessions"),
 		KimiHome:       filepath.Join(dataDir, "kimi"),
-	}, nil
+	}
+	if strings.TrimSpace(stateDir) != "" {
+		roots.StateDir = stateDir
+		history := filepath.Join(stateDir, "agent-accounts", "history")
+		roots.AccountClaudeProjects = filepath.Join(history, "claude", "projects")
+		roots.AccountCodexSessions = filepath.Join(history, "codex", "sessions")
+		roots.AccountCodexArchived = filepath.Join(history, "codex", "archived_sessions")
+	}
+	return roots, nil
+}
+
+// ValidateAccountRoot confines managed history roots to the resolved StateDir.
+// Device and Kimi roots retain their existing provider-owned boundaries.
+func (r SourceRoots) ValidateAccountRoot(ctx context.Context, root string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var kind string
+	switch root {
+	case "":
+		return nil
+	case r.AccountClaudeProjects:
+		kind = "claude_projects"
+	case r.AccountCodexSessions:
+		kind = "codex_sessions"
+	case r.AccountCodexArchived:
+		kind = "codex_archived"
+	default:
+		return nil
+	}
+	rejected := fmt.Errorf("account history root rejected: %s", kind)
+	if !filepath.IsAbs(r.StateDir) || !filepath.IsAbs(root) {
+		return rejected
+	}
+	state, err := resolveUsageDirectory(ctx, r.StateDir)
+	if err != nil {
+		return rejected
+	}
+	resolved, err := resolveUsageDirectory(ctx, root)
+	if err != nil {
+		return rejected
+	}
+	rel, err := filepath.Rel(state, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return rejected
+	}
+	if info, err := os.Stat(resolved); err == nil && !info.IsDir() || err != nil && !errors.Is(err, os.ErrNotExist) {
+		return rejected
+	}
+	return nil
+}
+
+// Missing history directories are resolved through their existing ancestors;
+// a dangling symlink is rejected rather than treated as a missing directory.
+func resolveUsageDirectory(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return resolved, err
+	}
+	if _, statErr := os.Lstat(path); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", err
+	}
+	resolved, err = resolveUsageDirectory(ctx, parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, filepath.Base(path)), nil
 }
 
 type collectorStore interface {
@@ -173,6 +251,16 @@ func newCollectorWithCodexSourceLimit(
 		now:                     time.Now,
 		logger:                  slog.Default(),
 	}
+}
+
+func (c *Collector) accountRoot(ctx context.Context, root string) string {
+	if err := c.roots.ValidateAccountRoot(ctx, root); err != nil {
+		if ctx.Err() == nil {
+			c.logger.Warn("usage account history root rejected", "err", err)
+		}
+		return ""
+	}
+	return root
 }
 
 // FinalizeSession moves every known native binding for one observed runtime
@@ -921,7 +1009,8 @@ func (c *Collector) reconcileBinding(ctx context.Context, binding domain.UsageBi
 	if binding.Harness == domain.HarnessCodex &&
 		binding.LastErrorCode == domain.UsageErrorSourceDiscoveryPending &&
 		targetState == domain.UsageBindingActive &&
-		!pathWithinRoot(ctx, path, c.roots.CodexSessions) {
+		!pathWithinRoot(ctx, path, c.roots.CodexSessions) &&
+		!pathWithinRoot(ctx, path, c.accountRoot(ctx, c.roots.AccountCodexSessions)) {
 		lastErrorCode = domain.UsageErrorSourceDiscoveryPending
 	}
 	targetState, lastErrorCode, err = c.preserveCodexBudgetState(
@@ -1901,28 +1990,57 @@ func (c *Collector) finalizeSession(ctx context.Context, sessionID domain.Sessio
 	return nil
 }
 
+// ValidateSourcePath checks the current boundary without opening transcript contents.
+func (c *Collector) ValidateSourcePath(ctx context.Context, kind domain.UsageSourceKind, path string) error {
+	var harness domain.AgentHarness
+	switch kind {
+	case domain.UsageSourceClaudeMain, domain.UsageSourceClaudeSubagent:
+		harness = domain.HarnessClaudeCode
+	case domain.UsageSourceCodexRollout:
+		harness = domain.HarnessCodex
+	case domain.UsageSourceKimiWire:
+		harness = domain.HarnessKimi
+	default:
+		return errors.New(domain.UsageErrorArtifactPathRejected)
+	}
+	_, _, err := c.validateSourceLocation(ctx, harness, path)
+	return err
+}
+
 func (c *Collector) validateSourcePath(ctx context.Context, harness domain.AgentHarness, path string) (string, string, int64, error) {
-	if err := ctx.Err(); err != nil {
+	resolved, info, err := c.validateSourceLocation(ctx, harness, path)
+	if err != nil {
 		return "", "", 0, err
 	}
+	identity, err := SourceIdentity(ctx, resolved)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return resolved, identity, info.Size(), nil
+}
+
+func (c *Collector) validateSourceLocation(ctx context.Context, harness domain.AgentHarness, path string) (string, os.FileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	if len(path) > maxUsagePathBytes {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
+		return "", nil, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
 	if !filepath.IsAbs(path) || strings.ToLower(filepath.Ext(path)) != ".jsonl" {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
+		return "", nil, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
 	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
+		return "", nil, errors.New(domain.UsageErrorArtifactMissing)
 	}
 	if err := ctx.Err(); err != nil {
-		return "", "", 0, err
+		return "", nil, err
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
+		return "", nil, errors.New(domain.UsageErrorArtifactMissing)
 	}
-	roots := c.allowedRoots(harness)
+	roots := c.allowedRoots(ctx, harness)
 	allowed := false
 	for _, root := range roots {
 		if root == "" {
@@ -1939,13 +2057,9 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 		}
 	}
 	if !allowed {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
+		return "", nil, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
-	identity, err := SourceIdentity(ctx, resolved)
-	if err != nil {
-		return "", "", 0, err
-	}
-	return resolved, identity, info.Size(), nil
+	return resolved, info, nil
 }
 
 func validateSourceAttribution(
@@ -2040,12 +2154,12 @@ func (c *Collector) validateSourceAttribution(
 	return nil
 }
 
-func (c *Collector) allowedRoots(harness domain.AgentHarness) []string {
+func (c *Collector) allowedRoots(ctx context.Context, harness domain.AgentHarness) []string {
 	switch harness {
 	case domain.HarnessClaudeCode:
-		return []string{c.roots.ClaudeProjects}
+		return []string{c.roots.ClaudeProjects, c.accountRoot(ctx, c.roots.AccountClaudeProjects)}
 	case domain.HarnessCodex:
-		return []string{c.roots.CodexSessions, c.roots.CodexArchived}
+		return []string{c.roots.CodexSessions, c.roots.CodexArchived, c.accountRoot(ctx, c.roots.AccountCodexSessions), c.accountRoot(ctx, c.roots.AccountCodexArchived)}
 	case domain.HarnessKimi:
 		return []string{c.roots.KimiHome}
 	default:
@@ -2073,7 +2187,8 @@ func (c *Collector) codexDiscoveryStillPending(ctx context.Context, event, hookP
 	if strings.TrimSpace(discoveredPath) == "" {
 		return true
 	}
-	return event == "session-start" && !pathWithinRoot(ctx, discoveredPath, c.roots.CodexSessions)
+	return event == "session-start" && !pathWithinRoot(ctx, discoveredPath, c.roots.CodexSessions) &&
+		!pathWithinRoot(ctx, discoveredPath, c.accountRoot(ctx, c.roots.AccountCodexSessions))
 }
 
 func pathWithinRoot(ctx context.Context, path, root string) bool {
@@ -2106,6 +2221,9 @@ func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarnes
 	switch harness {
 	case domain.HarnessClaudeCode:
 		patterns = []string{filepath.Join(c.roots.ClaudeProjects, "*", nativeID+".jsonl")}
+		if root := c.accountRoot(ctx, c.roots.AccountClaudeProjects); root != "" {
+			patterns = append(patterns, filepath.Join(root, "*", nativeID+".jsonl"))
+		}
 	case domain.HarnessCodex:
 		return c.discoverCodexPath(ctx, nativeID, "")
 	case domain.HarnessKimi:
@@ -2198,6 +2316,12 @@ func (c *Collector) discoverCodexPath(ctx context.Context, nativeID, parentID st
 	patterns := []string{
 		filepath.Join(c.roots.CodexSessions, "*", "*", "*", "*"+nativeID+"*.jsonl"),
 		filepath.Join(c.roots.CodexArchived, "*"+nativeID+"*.jsonl"),
+	}
+	if root := c.accountRoot(ctx, c.roots.AccountCodexSessions); root != "" {
+		patterns = append(patterns, filepath.Join(root, "*", "*", "*", "*"+nativeID+"*.jsonl"))
+	}
+	if root := c.accountRoot(ctx, c.roots.AccountCodexArchived); root != "" {
+		patterns = append(patterns, filepath.Join(root, "*"+nativeID+"*.jsonl"))
 	}
 	type candidate struct {
 		path string
