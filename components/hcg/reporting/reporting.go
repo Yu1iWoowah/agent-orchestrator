@@ -163,9 +163,9 @@ func (c *Consumer) Get(ctx context.Context, id Identity, inputs Inputs) View {
 // PolicyRevision is an opaque pre-read revision for fixed report admission.
 type PolicyRevision struct{ core integration.PolicyRevision }
 
-// PolicyRevision snapshots the project revision before AO reads policy inputs.
-func (c *Consumer) PolicyRevision(projectID string) PolicyRevision {
-	return PolicyRevision{c.core.PolicyRevision(projectID)}
+// PolicyRevision snapshots host, project and session revisions before AO reads policy inputs.
+func (c *Consumer) PolicyRevision(id Identity) PolicyRevision {
+	return PolicyRevision{c.core.PolicyRevision(integration.Identity(id))}
 }
 
 func (c *Consumer) Report(ctx context.Context, id Identity, inputs Inputs, files []NativeFile, revision PolicyRevision) Snapshot {

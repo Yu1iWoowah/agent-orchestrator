@@ -954,7 +954,7 @@ func Run(buildVersion string) error {
 		}()
 		lcStack.LCM.SetUsageFinalizer(usageCollector)
 	}
-	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, sessionSvc, cfg.GitLab, reviewRefresher, log)
+	lcStack.scmDone = startSCMObserver(ctx, projectSvc.SCMStore(store), lcStack.LCM, sessionSvc, cfg.GitLab, reviewRefresher, log)
 	var prActions prsvc.ActionManager
 	prReader := newMultiSCMProvider(cfg.GitLab, log)
 	prMerger := newMultiSCMMerger(cfg.GitLab, log)
@@ -1180,7 +1180,7 @@ func Run(buildVersion string) error {
 		BrowserLive:        browserLive,
 		Questions:          questionSvc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
-			Store:         store,
+			Store:         projectSvc.ImportTarget(store),
 			TargetDataDir: cfg.DataDir,
 			OpenSource: func(ctx context.Context, dataDir string) (devimportsvc.SourceStore, error) {
 				return sqlite.OpenReadOnly(ctx, dataDir)

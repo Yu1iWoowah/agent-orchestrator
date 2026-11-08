@@ -151,7 +151,7 @@ func (s *Service) Report(ctx context.Context, id domain.SessionID) (reporting.Sn
 	}
 	// Capture before reading any policy. An off/on ABA invalidates this request
 	// even if it has not reached the consumer's jobs set yet.
-	revision := s.core.PolicyRevision(string(rec.ProjectID))
+	revision := s.core.PolicyRevision(s.identity(rec))
 	i, in, err := s.recordFacts(ctx, rec)
 	if err != nil {
 		return reporting.Snapshot{}, err

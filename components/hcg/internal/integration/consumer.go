@@ -62,18 +62,28 @@ type reportJob struct {
 // ProjectPolicyChanged is a narrow notification from AO's existing typed
 // project-config writer. It never waits for the cancelled external jobs.
 func (c *Consumer) ProjectPolicyChanged(project string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidatePolicy(project, "")
+}
+
+// invalidatePolicy runs only under mu, the same lock as receipt validation and
+// job admission. Empty scope means host-wide; session scopes retain project ID.
+func (c *Consumer) invalidatePolicy(project, session string) {
+	if project == "" {
+		c.hostEpoch.Add(1)
+	} else if session == "" {
+		c.policyRevisions[project]++
+	}
 	c.captures.Range(func(_, value any) bool {
 		f := value.(*captureFence)
-		if f.project == project {
+		if (project == "" || f.project == project) && (session == "" || f.session == session) {
 			f.version.Add(1)
 		}
 		return true
 	})
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.policyRevisions[project]++
 	for job := range c.jobs {
-		if job.project == project {
+		if (project == "" || job.project == project) && (session == "" || job.session == session) {
 			job.cancel()
 		}
 	}
@@ -126,6 +136,9 @@ func (c *Consumer) Probe(ctx context.Context) EngineStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.host.Engine == e {
+		if c.probe != status {
+			c.invalidatePolicy("", "")
+		}
 		c.probe = status
 	}
 	return status
@@ -147,14 +160,6 @@ func (c *Consumer) saveHost(ctx context.Context, state hostState) error {
 	return atomicJSON(ctx, r, filepath.Join("hcg", "reporting", "host.json"), b)
 }
 
-func (c *Consumer) cancel(session string) {
-	for job := range c.jobs {
-		if session == "" || session == job.session {
-			job.cancel()
-		}
-	}
-}
-
 func (c *Consumer) Register(ctx context.Context, executable, node, version string) (EngineStatus, error) {
 	e, err := c.runner(nil).Register(ctx, executable, node, version)
 	if err != nil {
@@ -167,24 +172,25 @@ func (c *Consumer) Register(ctx context.Context, executable, node, version strin
 	if err := c.saveHost(ctx, next); err != nil {
 		return EngineStatus{}, err
 	}
-	c.cancel("")
-	c.hostEpoch.Add(1)
+	c.invalidatePolicy("", "")
 	c.host, c.probe = next, EngineStatus{EngineName, EngineVersion, true, "ready"}
 	return c.probe, nil
 }
 
 func (c *Consumer) EmergencyStop(ctx context.Context, stop bool) error {
-	c.hostEpoch.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	next := c.host
 	next.Stop = stop
 	if stop {
-		c.cancel("")
+		c.invalidatePolicy("", "")
 		c.host.Stop = true // A failed persistence write must not reopen reports.
 	}
 	if err := c.saveHost(ctx, next); err != nil {
 		return err
+	}
+	if !stop {
+		c.invalidatePolicy("", "")
 	}
 	c.host = next
 	return nil
@@ -227,8 +233,11 @@ func (c *Consumer) observeLaunch(ctx context.Context, id Identity, inputs Policy
 	if err != nil {
 		return err
 	}
-	c.cancel(id.SessionID)
-	return c.save(ctx, m)
+	if err := c.save(ctx, m); err != nil {
+		return err
+	}
+	c.invalidatePolicy(id.ProjectID, id.SessionID)
+	return nil
 }
 
 func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs PolicyInputs, enabled *bool) error {
@@ -266,11 +275,10 @@ func (c *Consumer) SetOverride(ctx context.Context, id Identity, inputs PolicyIn
 	if !m.Active {
 		m.Reason = "disabled_or_unavailable"
 	}
-	c.cancel(id.SessionID)
 	if err := c.save(ctx, m); err != nil {
 		return err
 	}
-	c.captureFence(id).version.Add(1)
+	c.invalidatePolicy(id.ProjectID, id.SessionID)
 	return nil
 }
 
@@ -331,22 +339,26 @@ func (c *Consumer) Get(ctx context.Context, id Identity, inputs PolicyInputs) Vi
 	return v
 }
 
-// PolicyRevision fences a request before AO reads its project/role inputs.
-// Its comparison and admission use the same lock as policy invalidation.
+// PolicyRevision fences every input scope before AO reads policy or sources.
+// Receipt comparison and job admission share mu with every invalidation.
 type PolicyRevision struct {
-	project string
-	value   uint64
+	namespace              string
+	project, session, host uint64
 }
 
-func (c *Consumer) PolicyRevision(project string) PolicyRevision {
+func (c *Consumer) policyRevision(id Identity) PolicyRevision {
+	return PolicyRevision{id.namespace(), c.policyRevisions[id.ProjectID], c.captureFence(id).version.Load(), c.hostEpoch.Load()}
+}
+
+func (c *Consumer) PolicyRevision(id Identity) PolicyRevision {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return PolicyRevision{project, c.policyRevisions[project]}
+	return c.policyRevision(id)
 }
 
 func (c *Consumer) Report(ctx context.Context, id Identity, inputs PolicyInputs, sources []AuthorizedSource, revision PolicyRevision) Snapshot {
 	c.mu.Lock()
-	if revision.project != id.ProjectID || revision.value != c.policyRevisions[id.ProjectID] {
+	if revision != c.policyRevision(id) {
 		c.mu.Unlock()
 		return Snapshot{Source: "external_analysis", Engine: EngineName, ProjectID: id.ProjectID, SessionID: id.SessionID, Status: "unavailable", Reason: "policy_changed", Events: []Event{}, Tools: []ToolCounts{}}
 	}
@@ -363,7 +375,8 @@ func (c *Consumer) Report(ctx context.Context, id Identity, inputs PolicyInputs,
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.jobs, job)
-	if out.Reason == "engine_changed_or_unavailable" && c.host.Engine == m.Engine {
+	if out.Reason == "engine_changed_or_unavailable" && c.host.Engine == m.Engine && c.probe.Available {
+		c.invalidatePolicy("", "")
 		c.probe.Available, c.probe.Reason = false, out.Reason
 	}
 	if ctx.Err() != nil {

@@ -122,7 +122,7 @@ func TestConsumerReportFailures(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
-			out := c.Report(ctx, id, PolicyInputs{}, []AuthorizedSource{{sourceRoot, "native.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id.ProjectID))
+			out := c.Report(ctx, id, PolicyInputs{}, []AuthorizedSource{{sourceRoot, "native.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id))
 			if out.Status != "unavailable" || out.Reason != tc.reason || len(out.Events) != 0 {
 				t.Fatalf("failure not isolated: %+v", out)
 			}
@@ -154,7 +154,7 @@ func TestStopCancelsOnlyOwnedReports(t *testing.T) {
 			}
 			done := make(chan Snapshot, 1)
 			go func() {
-				done <- c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id.ProjectID))
+				done <- c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id))
 			}()
 			deadline := time.Now().Add(3 * time.Second)
 			for {
@@ -210,7 +210,7 @@ func TestStopCancelsOnlyOwnedReports(t *testing.T) {
 			if err := os.WriteFile(path, []byte("process.exit(0)"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if out := c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id.ProjectID)); !strings.Contains(out.Reason, "engine_changed") {
+			if out := c.Report(t.Context(), id, PolicyInputs{}, []AuthorizedSource{{root, "a.jsonl", "claude", id.NativeID}}, c.PolicyRevision(id)); !strings.Contains(out.Reason, "engine_changed") {
 				t.Fatalf("changed binary trusted: %+v", out)
 			}
 

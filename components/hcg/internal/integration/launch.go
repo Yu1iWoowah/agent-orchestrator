@@ -9,6 +9,7 @@ import (
 
 type captureFence struct {
 	project string
+	session string
 	version atomic.Uint64
 }
 
@@ -22,7 +23,7 @@ type PreparedLaunch struct {
 }
 
 func (c *Consumer) captureFence(id Identity) *captureFence {
-	f, _ := c.captures.LoadOrStore(id.namespace(), &captureFence{project: id.ProjectID})
+	f, _ := c.captures.LoadOrStore(id.namespace(), &captureFence{project: id.ProjectID, session: id.SessionID})
 	return f.(*captureFence)
 }
 
@@ -171,6 +172,6 @@ func (c *Consumer) StoreLaunch(ctx context.Context, p PreparedLaunch, authority 
 	if err := c.save(ctx, m); err != nil {
 		return err
 	}
-	c.cancel(authority.SessionID)
+	c.invalidatePolicy(authority.ProjectID, authority.SessionID)
 	return nil
 }
