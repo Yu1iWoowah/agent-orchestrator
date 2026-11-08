@@ -15,6 +15,7 @@ func TestUsagePipelineWatchRootsIncludesManagedWrites(t *testing.T) {
 	stateDir := t.TempDir()
 	history := filepath.Join(stateDir, "agent-accounts", "history")
 	roots := usagesvc.SourceRoots{
+		StateDir:              stateDir,
 		ClaudeProjects:        filepath.Join(stateDir, "device", "claude", "projects"),
 		CodexSessions:         filepath.Join(stateDir, "device", "codex", "sessions"),
 		CodexArchived:         filepath.Join(stateDir, "device", "codex", "archived_sessions"),
@@ -43,6 +44,7 @@ func TestUsagePipelineWatchRootsIncludesManagedWrites(t *testing.T) {
 			}
 			watcher, err := usagepipeline.NewTranscriptWatcher(
 				context.Background(), usagePipelineWatchRoots(roots),
+				usagepipeline.TranscriptWatcherConfig{ValidateRoot: roots.ValidateAccountRoot},
 			)
 			if err != nil {
 				t.Fatalf("create usage watcher: %v", err)

@@ -929,7 +929,7 @@ func Run(buildVersion string) error {
 				return usageCollector.ReconcileSources(reconcileCtx, 0)
 			},
 			ReconcilePath: usageCollector.ReconcilePath,
-		})
+		}, usagepipeline.TranscriptWatcherConfig{ValidateRoot: roots.ValidateAccountRoot})
 		// Safety-net reconcile tick. The pipeline is event-driven otherwise:
 		// a silently lost fsnotify watch or a resume transcript that arrived
 		// without a hook would otherwise never be re-checked. NotifySourcesChanged

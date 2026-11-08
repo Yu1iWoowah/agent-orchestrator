@@ -744,7 +744,7 @@ func TestCoordinatorCollectsCodexUsageFromFilesystemEvents(t *testing.T) {
 		`{"type":"turn_context","payload":{"model":"gpt-5.6"}}` + "\n"
 	mustNoError(t, os.WriteFile(transcript, []byte(initial), 0o600))
 
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{sessionsRoot, archiveRoot})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{sessionsRoot, archiveRoot}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	collector := usagesvc.NewCollector(store, usagesvc.SourceRoots{
 		CodexSessions: sessionsRoot,
