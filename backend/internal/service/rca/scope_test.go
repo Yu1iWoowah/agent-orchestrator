@@ -92,6 +92,81 @@ func TestScopeFilenameSnapshotAndRevalidation(t *testing.T) {
 	}
 }
 
+func TestScopeRootReplacementAfterValidation(t *testing.T) {
+	_, resolver, path := scopeSetup(t)
+	roots, reason := resolver.resolvedRoots(t.Context())
+	if reason != "" || len(roots) != 1 {
+		t.Fatalf("resolve roots: %s", reason)
+	}
+	defer closeRoots(roots)
+	// registeredCandidate has already resolved this legal filename. Replace
+	// its approved root before metadataCandidate accesses the file metadata.
+	actual, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, filepath.Base(path)), []byte("outside must not be read"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Dir(path)
+	moved := root + "-moved"
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(root)
+		if err := os.Rename(moved, root); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Symlink(outside, root); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	candidate, reason := metadataCandidate(t.Context(), roots[0], filepath.Base(actual))
+	if reason != "" || !os.SameFile(original, candidate.info) {
+		t.Fatalf("metadata escaped the verified root: %s", reason)
+	}
+	if f, reason := candidate.open(t.Context()); f != nil || reason != "source_identity_changed" {
+		if f != nil {
+			_ = f.Close()
+		}
+		t.Fatal("replacement root admitted for content reading")
+	}
+	if sources, reason := filenameCandidates(t.Context(), roots[0], syntheticNativeID, roots); reason != "scope_root_mismatch" || len(sources) != 0 {
+		t.Fatal("filename fallback admitted a redirected root")
+	}
+}
+
+func TestPinRootRejectsRedirectedCanonicalPath(t *testing.T) {
+	for _, ancestor := range []bool{false, true} {
+		t.Run(map[bool]string{false: "root", true: "ancestor"}[ancestor], func(t *testing.T) {
+			parent, outside := t.TempDir(), t.TempDir()
+			path := filepath.Join(parent, "redirect")
+			if err := os.Symlink(outside, path); err != nil {
+				t.Skip("symlinks unavailable")
+			}
+			if ancestor {
+				if err := os.Mkdir(filepath.Join(outside, "child"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(path, "child")
+			}
+			root, reason := pinRoot(path)
+			if root.dir != nil {
+				_ = root.dir.Close()
+			}
+			if reason != "scope_root_mismatch" || root.dir != nil {
+				t.Fatal("redirected canonical path became trusted")
+			}
+		})
+	}
+}
+
 func TestScopeRegisteredSourceWinsAndDoesNotFallback(t *testing.T) {
 	s, resolver, path := scopeSetup(t)
 	s.bindings["selected"] = []domain.UsageBindingRecord{{ID: 1, SessionID: "selected", Harness: domain.HarnessCodex, NativeRootID: syntheticNativeID}}

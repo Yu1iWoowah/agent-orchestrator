@@ -89,8 +89,70 @@ func primaryNative(r domain.SessionRecord) (string, string) {
 	return id, ""
 }
 
-func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]string, string) {
-	var roots []string
+type authorizedRoot struct {
+	path string
+	dir  *os.Root
+	info fs.FileInfo
+}
+
+func closeRoots(roots []authorizedRoot) {
+	for _, root := range roots {
+		_ = root.dir.Close()
+	}
+}
+
+// Walk the canonical path through pinned parents. OpenRoot follows the final
+// symlink, so compare each opened directory with its preceding no-follow stat
+// before trusting it or accessing any of its children.
+func pinRoot(path string) (authorizedRoot, string) {
+	base := filepath.VolumeName(path) + string(filepath.Separator)
+	r, err := os.OpenRoot(base)
+	if err != nil {
+		return authorizedRoot{}, "source_metadata_failed"
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		_ = r.Close()
+		return authorizedRoot{}, "scope_root_mismatch"
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "." {
+			continue
+		}
+		before, err := r.Lstat(part)
+		if err != nil || !before.IsDir() {
+			_ = r.Close()
+			return authorizedRoot{}, "scope_root_mismatch"
+		}
+		next, err := r.OpenRoot(part)
+		_ = r.Close()
+		if err != nil {
+			return authorizedRoot{}, "source_metadata_failed"
+		}
+		after, err := next.Stat(".")
+		if err != nil || !os.SameFile(before, after) {
+			_ = next.Close()
+			return authorizedRoot{}, "scope_root_mismatch"
+		}
+		r = next
+	}
+	info, err := r.Stat(".")
+	if err != nil {
+		_ = r.Close()
+		return authorizedRoot{}, "source_metadata_failed"
+	}
+	return authorizedRoot{path: path, dir: r, info: info}, ""
+}
+
+func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, string) {
+	var roots []authorizedRoot
+	var paths []string
+	success := false
+	defer func() {
+		if !success {
+			closeRoots(roots)
+		}
+	}()
 	for _, root := range s.roots {
 		if ctx.Err() != nil {
 			return nil, "canceled"
@@ -111,10 +173,16 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]string, string) {
 		if !containsPath(s.allowlist, actual) {
 			return nil, "scope_root_mismatch"
 		}
-		if !containsPath(roots, actual) {
-			roots = append(roots, actual)
+		if !containsPath(paths, actual) {
+			pinned, reason := pinRoot(actual)
+			if reason != "" {
+				return nil, reason
+			}
+			roots = append(roots, pinned)
+			paths = append(paths, actual)
 		}
 	}
+	success = true
 	return roots, ""
 }
 
@@ -146,6 +214,7 @@ func (s *scopeResolver) resolve(ctx context.Context, id domain.SessionID) ([]aut
 	if reason != "" {
 		return nil, reason
 	}
+	defer closeRoots(roots)
 	bindings, err := s.store.ListUsageBindingsForSession(ctx, id)
 	if err != nil {
 		return nil, "source_metadata_failed"
@@ -261,7 +330,7 @@ func (s *scopeResolver) conflict(ctx context.Context, selected domain.SessionID,
 	return ""
 }
 
-func registeredCandidate(ctx context.Context, roots []string, path string) (authorizedSource, string) {
+func registeredCandidate(ctx context.Context, roots []authorizedRoot, path string) (authorizedSource, string) {
 	if !filepath.IsAbs(path) || filepath.Ext(path) != ".jsonl" || !strings.HasPrefix(filepath.Base(path), "rollout-") {
 		return authorizedSource{}, "scope_root_mismatch"
 	}
@@ -269,7 +338,7 @@ func registeredCandidate(ctx context.Context, roots []string, path string) (auth
 	if err != nil {
 		inside := false
 		for _, root := range roots {
-			if rel, e := filepath.Rel(root, path); e == nil && filepath.IsLocal(rel) {
+			if rel, e := filepath.Rel(root.path, path); e == nil && filepath.IsLocal(rel) {
 				inside = true
 				break
 			}
@@ -284,7 +353,7 @@ func registeredCandidate(ctx context.Context, roots []string, path string) (auth
 		return authorizedSource{}, "scope_root_mismatch"
 	}
 	for _, root := range roots {
-		rel, err := filepath.Rel(root, path)
+		rel, err := filepath.Rel(root.path, path)
 		if err != nil || !filepath.IsLocal(rel) {
 			continue
 		}
@@ -293,37 +362,24 @@ func registeredCandidate(ctx context.Context, roots []string, path string) (auth
 	return authorizedSource{}, "scope_root_mismatch"
 }
 
-func metadataCandidate(ctx context.Context, root, relative string) (authorizedSource, string) {
+func metadataCandidate(ctx context.Context, root authorizedRoot, relative string) (authorizedSource, string) {
 	if ctx.Err() != nil {
 		return authorizedSource{}, "canceled"
 	}
-	r, err := os.OpenRoot(root)
-	if err != nil {
-		return authorizedSource{}, "source_metadata_failed"
-	}
-	defer func() { _ = r.Close() }()
-	info, err := r.Stat(relative)
+	info, err := root.dir.Stat(relative)
 	if err != nil || !info.Mode().IsRegular() {
 		return authorizedSource{}, "source_metadata_failed"
 	}
-	rinfo, err := r.Stat(".")
-	if err != nil {
-		return authorizedSource{}, "source_metadata_failed"
-	}
-	return authorizedSource{root: root, relative: relative, info: info, rootInfo: rinfo, eof: info.Size()}, ""
+	return authorizedSource{root: root.path, relative: relative, info: info, rootInfo: root.info, eof: info.Size()}, ""
 }
 
 var filenameUUID = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
-func filenameCandidates(ctx context.Context, root, native string, roots []string) ([]authorizedSource, string) {
-	r, err := os.OpenRoot(root)
-	if err != nil {
-		return nil, "source_enumeration_incomplete"
-	}
-	defer func() { _ = r.Close() }()
+func filenameCandidates(ctx context.Context, root authorizedRoot, native string, roots []authorizedRoot) ([]authorizedSource, string) {
+	r := root.dir
 	var out []authorizedSource
 	reason := ""
-	err = fs.WalkDir(r.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(r.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -351,7 +407,7 @@ func filenameCandidates(ctx context.Context, root, native string, roots []string
 			reason = "ambiguous_source"
 			return fs.SkipAll
 		}
-		candidate, why := registeredCandidate(ctx, roots, filepath.Join(root, filepath.FromSlash(path)))
+		candidate, why := registeredCandidate(ctx, roots, filepath.Join(root.path, filepath.FromSlash(path)))
 		if why != "" {
 			reason = why
 			return fs.SkipAll
