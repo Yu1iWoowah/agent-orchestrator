@@ -28,12 +28,69 @@ func deploymentFixture(t *testing.T, provider, project, source string) Deploymen
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Deployment{Profile: budgetProfile(provider), CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: "9b61fefab3c1b1da96f556c550be4773d0a31ce3b3bbb1fea3324d8fe57812c6", PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
+	// The fixture approves this installation once, including path-dependent
+	// RECORD bytes. Production still verifies the entire snapshot on each use.
+	runtimeDigest, err := snapshotTree(t.Context(), filepath.Join(venv, "lib", "python3.12", "site-packages"), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Deployment{Profile: budgetProfile(provider), CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: runtimeDigest, PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
 }
 func delegationPolicy(p Profile) PolicySnapshot {
 	enabled := true
 	ref := ProfileRef{p.ID, p.Revision}
 	return PolicySnapshot{Project: ProjectPolicy{Enabled: &enabled, AllowedProfiles: []ProfileRef{ref}, SelectedProfile: &ref}}
+}
+
+func TestFixtureRuntimeApprovalStillRejectsChangedBytes(t *testing.T) {
+	d := deploymentFixture(t, "openai", "p", "synthetic source")
+	if err := verifyInstallation(t.Context(), d.Installation); err != nil {
+		t.Fatalf("fresh fixture installation rejected: %v", err)
+	}
+	// Snapshot into our own directory; never alter the supplied installation.
+	venv := t.TempDir()
+	site := filepath.Join(venv, "lib", "python3.12", "site-packages")
+	if err := os.MkdirAll(site, 0700); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := snapshotTree(t.Context(), filepath.Join(d.Installation.Venv, "lib", "python3.12", "site-packages"), site, false)
+	if err != nil || digest != d.Installation.RuntimeDigest {
+		t.Fatalf("copy changed approved runtime digest: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(venv, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"pyvenv.cfg", "bin/python"} {
+		body, err := os.ReadFile(filepath.Join(d.Installation.Venv, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(venv, name), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Installation.Venv = venv
+	if err := verifyInstallation(t.Context(), d.Installation); err != nil {
+		t.Fatalf("unchanged private snapshot rejected: %v", err)
+	}
+	// A RECORD row is part of the approval, even though its script hashes can
+	// legitimately differ when initially installed at another absolute path.
+	records, err := filepath.Glob(filepath.Join(site, "*.dist-info", "RECORD"))
+	if err != nil || len(records) == 0 {
+		t.Fatal("fixture has no RECORD files")
+	}
+	file, err := os.OpenFile(records[0], os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString("\nsynthetic-post-approval-change\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("mutate private fixture: %v %v", writeErr, closeErr)
+	}
+	if err := verifyInstallation(t.Context(), d.Installation); err == nil {
+		t.Fatal("post-approval runtime RECORD change bypassed gate")
+	}
 }
 func approveFixture(t *testing.T, c *Coordinator, d Deployment) {
 	t.Helper()

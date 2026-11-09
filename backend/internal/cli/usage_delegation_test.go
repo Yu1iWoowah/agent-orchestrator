@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http/httptest"
 	"net/url"
@@ -36,6 +38,50 @@ func (f delegationFixtureProvider) Call(ctx context.Context, r reporting.Delegat
 }
 func fixtureDigest(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
 
+// Approve the explicitly supplied test installation, including RECORD and its
+// path-dependent script hashes. No production verification bytes are excluded.
+func fixtureRuntimeDigest(t *testing.T, venv string) string {
+	t.Helper()
+	root := filepath.Join(venv, "lib", "python3.12", "site-packages")
+	aggregate := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("nonregular fixture runtime file: %s", path)
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		hash := sha256.New()
+		_, copyErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		aggregate.Write([]byte(filepath.ToSlash(rel)))
+		aggregate.Write([]byte{0})
+		aggregate.Write(hash.Sum(nil))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(aggregate.Sum(nil))
+}
+
 func fixedDelegationRegistration(t *testing.T, family, project, body string) reporting.DelegationRegistration {
 	t.Helper()
 	venv := filepath.Dir(filepath.Dir(os.Getenv("HCG_TEST_PAL_PYTHON")))
@@ -51,7 +97,7 @@ func fixedDelegationRegistration(t *testing.T, family, project, body string) rep
 		Deployment: reporting.DelegationDeployment{
 			Profile:       reporting.DelegationProfile{ID: family + "-fixture", Revision: "v1", BillingProvider: family, Model: "fixture-model", ContextTokens: 100000, MaxOutputTokens: 16384, OutputTokens: 128, Prices: reporting.DelegationPrices{Version: "synthetic-price-v1", Period: time.Now().UTC().Format("2006-01"), InputPerMillion: 200000000000, CachedInputPerMillion: 200000000000, LimitsCertified: true, BillableUsageCovered: true}},
 			CredentialRef: reporting.DelegationCredentialReference{Provider: family, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace",
-			Installation: reporting.DelegationInstallation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: "7afc7c1cc96e23992c8f105f960132c657883bb1", SourceDigest: "bac632c7fbe275c2f9389be3a56e69ada6a1d35d29cbc80ce575a46389608f4d", RuntimeDigest: "9b61fefab3c1b1da96f556c550be4773d0a31ce3b3bbb1fea3324d8fe57812c6", PythonDigest: fixtureDigest(read(filepath.Join(venv, "bin", "python"))), ConfigDigest: fixtureDigest(read(filepath.Join(venv, "pyvenv.cfg"))), LockDigest: "799a72fd49b931a9f50152a6342f574efa1eb8eb89ba500e3f3e7f5859357666", PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: "hcg.delegate-read/1"},
+			Installation: reporting.DelegationInstallation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: "7afc7c1cc96e23992c8f105f960132c657883bb1", SourceDigest: "bac632c7fbe275c2f9389be3a56e69ada6a1d35d29cbc80ce575a46389608f4d", RuntimeDigest: fixtureRuntimeDigest(t, venv), PythonDigest: fixtureDigest(read(filepath.Join(venv, "bin", "python"))), ConfigDigest: fixtureDigest(read(filepath.Join(venv, "pyvenv.cfg"))), LockDigest: "799a72fd49b931a9f50152a6342f574efa1eb8eb89ba500e3f3e7f5859357666", PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: "hcg.delegate-read/1"},
 			Inputs:       []reporting.DelegationInputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []reporting.DelegationApprovedFile{{Path: "prompt.txt", SHA256: fixtureDigest([]byte(body))}}}},
 		}, ExternalSpend: map[string]reporting.DelegationExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}},
 	}

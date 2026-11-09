@@ -14,7 +14,13 @@ PAL commit 為 `7afc7c1cc96e23992c8f105f960132c657883bb1`。依賴鎖為 `intern
 
 使用自己的短路徑 scratch、私有 HOME／TMPDIR／TMUX_TMPDIR，清除繼承的 AO／provider 憑證環境。沿用專案指定的 Go／npm cache。以下名稱只引用隔離環境位置，不含任何 key；沒有固定 PAL 安裝時相關測例會 skip，不能把 skip 算通過。
 
+測試 registration 的 runtime digest 由 `_test.go` 對明示 venv 的 `lib/python3.12/site-packages` 完整 snapshot 當場計算，不使用某位 worker 安裝的常數；shebang 對應的 RECORD hashes 會隨安裝絕對路徑改變。這只代表測試批准自己依固定 lock 建立的安裝，不是批准任意 production 安裝。PAL source／lock／Python 版本仍固定；產品 runtime gate 沒有排除或正規化任何 bytes，登錄後每次驗證與複製仍核原 digest。`TestFixtureRuntimeApprovalStillRejectsChangedBytes` 先確認副本可通過，再改寫其 RECORD，必須拒絕。重跑前應自行在新路徑安裝，而非搬移既有 venv：
+
 ```sh
+python3.12 -m venv --without-pip "$FIXED_PAL_VENV"
+uv pip install --python "$FIXED_PAL_VENV/bin/python" \
+  --requirement components/hcg/internal/delegate/pal-requirements.lock
+# FIXED_PAL_PYTHON 指向該 venv/bin/python；FIXED_PAL_SOURCE 為上述固定 commit。
 GOWORK=off HCG_PAL_TESTS=1 \
   HCG_TEST_PAL_SOURCE="$FIXED_PAL_SOURCE" \
   HCG_TEST_PAL_PYTHON="$FIXED_PAL_PYTHON" \
