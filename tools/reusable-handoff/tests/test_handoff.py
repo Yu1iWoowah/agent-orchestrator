@@ -1231,7 +1231,8 @@ class FlowFixture:
                 msg = dict(Text="[from old] " + h.canonical(payload).decode(), ClientMessageID=handle,
                            Origin="automation", SenderSessionID="old", SenderProjectID=h.PROJECT)
                 active = self.snapshots[sid]["session"]["activity"]["state"] == "active"
-                self.snapshots[sid] = persisted_directive(self.snapshots[sid], [msg], active)
+                rebatch = getattr(self, "rebatch_directive", False)
+                self.snapshots[sid] = persisted_directive(self.snapshots[sid], [msg], active and not rebatch, rebatch)
                 self.pending_actor = (sid, "worker-receipt" if phase == "worker-stop" else "old-receipt")
             elif phase in ("nonce", "final"):
                 snap = self.snapshots["new"]

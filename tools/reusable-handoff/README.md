@@ -326,3 +326,5 @@ R1 成功後交 07 與 O2 真人清單並停等使用者另一次 O2 確認，�
 本 RH-FIX2 實作 PR 不操作既有 lab、dev 3002、三 actor，不實際退役、更新資格或重跑 R1。
 
 審查補強：固定 producer 沿原 clientMessageId 同時核對 active steer 的 system activity/detail 與 idle fallback 的 user message，sender、payload、turn 必須一致。退役遇到較晚 durable steer 一律視為新 directive／authority UNKNOWN。退役前 CLI 原始回應先存入私有 preconditions，每次核對獨立保存，再由 manifest／intent／完成回條綁 hash；恢復不覆寫舊觀測。initialized gitlink 使用 Git 的 git-path 核對 merge／rebase／cherry-pick／revert／bisect／sequencer metadata；存在進行中狀態即 blocked，metadata facts 也參與漂移核對。
+
+message 有 consumedByTurnId 時以它核對實際 dispatch turn，原 turnId／message ID／clientMessageId 保留。退役在 manifest 已發布、intent 尚未發布時，可核對原 preparation 授權／效果綁定、run／槽位／副本／preconditions 後沿同一 manifest 續建 intent；不刪改原件，任何漂移仍 STOP。

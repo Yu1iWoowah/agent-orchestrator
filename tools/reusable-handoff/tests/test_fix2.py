@@ -164,8 +164,9 @@ class WorkerProducerTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
 
-    def prepared(self):
+    def prepared(self, rebatch=False):
         fake = FlowFixture(self.root, "claude-code", "codex", worker=True)
+        fake.rebatch_directive = rebatch
         rules = fake.run.request["workers"][0]
         rules.update(reserved_stop_d="D-7", hold_state="held", pending_question_refs=[],
                      stop_d_source_refs=["human"], hold_source_refs=["human"], task_owner_id=None, task_refs=[],
@@ -222,6 +223,23 @@ class WorkerProducerTests(unittest.TestCase):
         control.pop('turnId')
         with self.assertRaisesRegex(h.Stop, 'turn/sequence'):
             h.producer_control(fake.run, 'worker', 'worker-stop', snap)
+
+    def test_idle_fallback_requeued_directive_is_real_batch_follower(self):
+        fake, _ = self.prepared(rebatch=True)
+        snap = fake.snapshots['worker']
+        handle = fake.run_id+':worker-stop:worker'
+        message = next(e for e in snap['transcript']['entries'] if e.get('clientMessageId')==handle)
+        self.assertNotEqual(message['turnId'], message['consumedByTurnId'])
+        self.assertEqual(message['consumedByTurnId'], snap['transcript']['turns'][-1]['id'])
+        self.assertNotIn(message['turnId'], [t['id'] for t in snap['transcript']['turns']])
+        raw = h.private_read(fake.run.root/'control/worker-stop-worker/payload.json').decode()
+        control = h.directive_entry(snap, handle, 'old', raw)
+        self.assertEqual(control['turnId'], message['turnId'])
+        self.assertEqual(control['dispatch_turn_id'], message['consumedByTurnId'])
+        receipt = fake.dispatch_actor(2)
+        self.assertEqual(receipt['evidence_turn_id'], message['consumedByTurnId'])
+        self.assertEqual(fake.run.worker_stop({'id':'worker'})['state'], 'safe')
+        self.assertEqual(next(e for e in fake.snapshots['worker']['transcript']['entries'] if e.get('clientMessageId')==handle)['id'], message['id'])
 
     def test_worker_safe_cannot_exclude_another_turn(self):
         fake, artifact = self.prepared()
@@ -640,6 +658,52 @@ class RetirementTests(unittest.TestCase):
         h.publish(self.directory / 'recovery-authorization.json', h.canonical(dict(intent_sha256=intent, operator_session_id='operator', directive_ref='D-102')))
         self.assertEqual(self.retire()['hold'], 'unchanged')
         self.assertTrue(all(p.read_bytes() == raw for p, raw in originals.items()))
+
+    def prepare_manifest_without_intent(self):
+        publish = h.publish
+        def crash(path, raw):
+            if Path(path)==self.directory/'intent.json':
+                raise OSError('synthetic crash after manifest before intent')
+            return publish(path,raw)
+        with patch.object(h,'publish',side_effect=crash), self.assertRaises(OSError):
+            self.retire()
+    def test_retirement_manifest_without_intent_resumes_original_preparation(self):
+        self.prepare_manifest_without_intent()
+        original_manifest = h.private_read(self.directory/'manifest.json')
+        raw = {p:p.read_bytes() for p in (self.directory/'preconditions').rglob('*.raw')}
+        self.assertFalse((self.directory/'intent.json').exists())
+        self.assertTrue(self.run.exists())
+        self.assertEqual(self.retire()['hold'],'unchanged')
+        self.assertEqual(h.private_read(self.directory/'manifest.json'), original_manifest)
+        self.assertTrue(all(p.read_bytes()==value for p,value in raw.items()))
+
+    def test_prepared_manifest_rejects_authority_raw_or_copy_drift_before_intent(self):
+        self.prepare_manifest_without_intent()
+        authorization = self.directory/'authorization.json'
+        raw = next((self.directory/'preconditions').rglob('*.raw'))
+        copy = self.directory/'cli.original.bytes'
+        for path in [authorization, raw, copy]:
+            original = path.read_bytes()
+            replacement = h.canonical(dict(self.authorization, directive_ref='D-101')) if path==authorization else b'changed preserved bytes'
+            path.write_bytes(replacement)
+            try:
+                with self.subTest(path=path.name), self.assertRaises(h.Stop):
+                    self.retire()
+                self.assertFalse((self.directory/'intent.json').exists())
+                self.assertTrue(self.run.exists())
+            finally:
+                path.write_bytes(original)
+
+    def test_preparation_cannot_recreate_lost_intent_after_archive(self):
+        self.prepare_manifest_without_intent()
+        archive = self.root/'.retired'/h.RETIRABLE_RUN
+        h.mkdir(archive.parent)
+        h.os.rename(self.run, archive)
+        before = h.private_manifest(archive)
+        with self.assertRaisesRegex(h.Stop, 'archive without original intent UNKNOWN'):
+            self.retire()
+        self.assertFalse((self.directory/'intent.json').exists())
+        self.assertEqual(h.private_manifest(archive), before)
 
     def test_retirement_crash_before_run_rename_requires_named_recovery(self):
         self.crash_recovery('before')

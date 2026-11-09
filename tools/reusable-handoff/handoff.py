@@ -1267,9 +1267,9 @@ def directive_entry(snapshot, handle, old, payload):
         require(fields.get("origin") == "automation" and fields.get("senderSessionId") == old and
                 fields.get("senderProjectId") == PROJECT and fields.get("text") == "[from " + old + "] " + payload,
                 "producer directive provenance mismatch")
-        turn = entry.get("turnId") or entry.get("consumedByTurnId")
+        turn = entry.get("consumedByTurnId") or entry.get("turnId")
         require(turn and type(entry.get("sequence")) is int, "directive turn/sequence missing")
-        controls.append(dict(entry, turnId=turn))
+        controls.append(dict(entry, dispatch_turn_id=turn))
     require(len(controls) == 1, "producer directive provenance mismatch")
     return controls[0]
 
@@ -1291,7 +1291,7 @@ def producer_observation(run, sid, action, directory):
     phase = "worker-stop" if action == "worker-receipt" else "2a"
     control, payload = producer_control(run, sid, phase, snapshot)
     running = [t for t in transcript.get("turns", []) if t.get("state") == "running"]
-    require(len(running) == 1 and running[0]["id"] == control.get("turnId"), "producer evidence turn not unique/directive turn")
+    require(len(running) == 1 and running[0]["id"] == control["dispatch_turn_id"], "producer evidence turn not unique/directive turn")
     turn = running[0]["id"]
     observation_dir = mkdir(directory / "observations")
     raw = getattr(run.cli, "last_raw", canonical(snapshot))
@@ -2478,7 +2478,7 @@ def historical_retirement_checks(root, original, run_directory, cli, authorizati
         require(snap["session"].get("kind") == "worker" and snap["session"].get("projectId") == PROJECT and
                 not snap["session"].get("isTerminated") and quiescent(snap), "worker not terminal/held")
         message = directive_entry(snap, handle, old, payload_raw.decode())
-        require(completed(snap, message["turnId"]), "original D delivery/completion not proven")
+        require(completed(snap, message["dispatch_turn_id"]), "original D delivery/completion not proven")
         require(not any(e.get("sequence", 0) > message["sequence"] and
                         ((e.get("kind") == "message" and e.get("role") == "user") or
                          (e.get("kind") == "activity" and e.get("activityKind") == "system" and e.get("detail", {}).get("event") == "steer"))
@@ -2488,13 +2488,13 @@ def historical_retirement_checks(root, original, run_directory, cli, authorizati
         # Deliberately do not validate/follow a historical /1 receipt as executable /2 evidence.
         require(stop.get("schema") == "rh-worker-stop/1" and stop.get("run_id") == RETIRABLE_RUN and stop.get("worker_id") == sid and
                 stop.get("project_id") == PROJECT and stop.get("state") == "blocked" and stop.get("resume_state") == "held" and
-                stop.get("evidence_turn_id") == message["turnId"], "historical blocked/hold facts mismatch")
+                stop.get("evidence_turn_id") == message["dispatch_turn_id"], "historical blocked/hold facts mismatch")
         declared_materials = {(x["path"], x["sha256"]) for x in authorization.get("materials", []) if x.get("worker_id") == sid}
         for reference in stop.get("preservation", []):
             # Compare historical claims only. Read sources exclusively through the separately authorized actor-root list.
             if not Path(reference["path"]).is_relative_to(original / "workers" / sid):
                 require((reference["path"], reference["sha256"]) in declared_materials, "necessary historical material not explicitly preserved")
-        closed.append({"worker_id": sid, "handle": handle, "message_id": message["id"], "turn_id": message["turnId"],
+        closed.append({"worker_id": sid, "handle": handle, "message_id": message["id"], "turn_id": message["dispatch_turn_id"],
                        "directive_received": "D-3", "stop_state": "blocked", "last_ack_d": stop.get("stop_directive", {}).get("last_ack_d"),
                        "stop_sha256": digest(stop_raw), "payload_sha256": digest(payload_raw), "held": True})
     runner = decode(private_read(run_directory / "runner.json"))
@@ -2535,6 +2535,7 @@ def retire_run(root, run_id, initial):
             require(recovery.get("intent_sha256") == digest(private_read(existing)) and recovery.get("operator_session_id") == operator and
                     recovery.get("directive_ref") != authorization["directive_ref"] and re.fullmatch(r"D-[0-9]+", recovery.get("directive_ref", "")),
                     "pending retirement requires new named recovery authorization")
+        require(existing.exists() or not archive.exists(), "retirement archive without original intent UNKNOWN")
         current = archive if archive.exists() else original
         require(not (archive.exists() and original.exists()), "retirement source/archive conflict")
         require((current / "runner.lock").is_file(), "historical runner lock missing")
@@ -2550,7 +2551,10 @@ def retire_run(root, run_id, initial):
             saved_slot = archive / "retired-start-slot"
             slot_source = saved_slot if saved_slot.exists() else slot
             require(private_read(slot_source / "request.json") == private_read(current / "start.json"), "retirement slot not the original request")
-            if not existing.exists():
+            preparation = dict(authorization_sha256=digest(authorization_raw), operator_session_id=operator,
+                               old_id=old, start_sha256=state["start_sha256"], closed_effects=closed)
+            manifest_path = directory / "manifest.json"
+            if not existing.exists() and not manifest_path.exists():
                 material_refs = []
                 for item in authorization.get("materials", []):
                     sid = identifier(item["worker_id"])
@@ -2565,24 +2569,30 @@ def retire_run(root, run_id, initial):
                 publish(directory / "qualification.original.json", qualification_raw)
                 publish(directory / "cli.original.bytes", read_regular(root / ".qualified/ao"))
                 material_refs += [file_reference(directory / "qualification.original.json"), file_reference(directory / "cli.original.bytes")]
-                manifest = {"run": private_manifest(original), "slot": private_manifest(slot), "saved": material_refs, "preconditions": private_manifest(directory / "preconditions")}
+                manifest = {"run": private_manifest(original), "slot": private_manifest(slot), "saved": material_refs, "preconditions": private_manifest(directory / "preconditions"), "preparation": preparation}
                 publish(directory / "manifest.json", canonical(manifest))
+            manifest = decode(private_read(manifest_path))
+            if existing.exists():
+                intent = decode(private_read(existing))
+            else:
                 intent = {"schema": "rh-retirement-intent/1", "run_id": run_id, "old_id": old, "actor": "external-operator",
                           "operator_session_id": operator, "start_sha256": state["start_sha256"], "closed_effects": closed,
                           "preconditions_sha256": digest(canonical(manifest["preconditions"])),
                           "authorization_sha256": digest(authorization_raw), "manifest_sha256": digest(private_read(directory / "manifest.json")), "created_at": now()}
-                publish(existing, canonical(intent))
-            intent = decode(private_read(existing))
-            manifest = decode(private_read(directory / "manifest.json"))
-            require(intent["authorization_sha256"] == digest(authorization_raw) and intent["manifest_sha256"] == digest(private_read(directory / "manifest.json")) and
-                    intent["closed_effects"] == closed, "retirement original intent drift")
+            require(intent["authorization_sha256"] == digest(authorization_raw) and intent["manifest_sha256"] == digest(private_read(manifest_path)) and
+                    intent["closed_effects"] == closed and intent["preconditions_sha256"] == digest(canonical(manifest["preconditions"])),
+                    "retirement original intent drift")
+            require(manifest.get("preparation") == preparation, "retirement preparation binding drift")
             preconditions = private_manifest(directory / "preconditions")
-            require(digest(canonical(manifest["preconditions"])) == intent["preconditions_sha256"] and
-                    all(x in preconditions for x in manifest["preconditions"]), "retirement original preconditions changed")
+            require(all(x in preconditions for x in manifest["preconditions"]), "retirement original preconditions changed")
             actual = [x for x in private_manifest(current) if x["path"] != "retired-start-slot" and not x["path"].startswith("retired-start-slot/")]
             require(actual == manifest["run"] and private_manifest(slot_source) == manifest["slot"], "retirement originals changed")
             for ref in manifest["saved"]:
+                require(Path(ref["path"]).is_relative_to(directory), "retirement saved copy outside fixed directory")
+                confined(directory, str(Path(ref["path"]).relative_to(directory)))
                 hash_reference(ref)
+            if not existing.exists():
+                publish(existing, canonical(intent))
             mkdir(archive.parent)
             require(current.stat().st_dev == archive.parent.stat().st_dev == slot_source.stat().st_dev, "retirement filesystem mismatch")
             if current == original:

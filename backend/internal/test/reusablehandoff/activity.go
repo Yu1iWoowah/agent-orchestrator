@@ -20,6 +20,7 @@ import (
 
 // DirectiveInput supplies semantic messages to the real controller fixture.
 type DirectiveInput struct {
+	Rebatch  bool                    `json:"rebatch"`
 	Active   bool                    `json:"active"`
 	Messages []ports.ChatUserMessage `json:"messages"`
 }

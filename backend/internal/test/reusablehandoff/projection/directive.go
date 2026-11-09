@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -63,6 +64,19 @@ func (r directiveRegistry) Driver(domain.AgentHarness) (ports.ChatDriver, error)
 }
 func (r directiveRegistry) SupportsChat(domain.AgentHarness) bool { return true }
 
+// Only the first pre-provider persistence call fails; all queue/projection work stays real.
+type directiveInputFault struct {
+	*sqlite.Store
+	armed atomic.Bool
+}
+
+func (s *directiveInputFault) RecordProviderInput(ctx context.Context, id, text string) error {
+	if s.armed.Swap(false) {
+		return errors.New("fixture pre-provider persistence failure")
+	}
+	return s.Store.RecordProviderInput(ctx, id, text)
+}
+
 func directive(t *checks, bin string, input rh.Input) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -87,7 +101,8 @@ func directive(t *checks, bin string, input rh.Input) []byte {
 	}
 	p := &directiveProvider{events: make(chan ports.ChatEvent, 32), harness: harness}
 	var next atomic.Int64
-	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: directiveRegistry{directiveDriver{p}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("directive-%d", next.Add(1)) }})
+	fault := &directiveInputFault{Store: st}
+	svc := chatsvc.New(chatsvc.Options{Store: fault, Sessions: st, Drivers: directiveRegistry{directiveDriver{p}}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("directive-%d", next.Add(1)) }})
 	controller, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: receiver.ID, ProjectID: projectID, Harness: harness, WorkspacePath: t.root})
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +116,17 @@ func directive(t *checks, bin string, input rh.Input) []byte {
 			}
 			for _, turn := range rows.Turns {
 				if turn.ProviderTurnID == "fixture-provider-turn" {
+					if input.Directive.Rebatch {
+						matched := false
+						for _, m := range rows.Messages {
+							if m.ClientMessageID == input.Directive.Messages[0].ClientMessageID && m.ConsumedByTurnID != "" {
+								matched = true
+							}
+						}
+						if !matched {
+							continue
+						}
+					}
 					return
 				}
 			}
@@ -114,6 +140,18 @@ func directive(t *checks, bin string, input rh.Input) []byte {
 		}
 		await()
 	}
+	if input.Directive.Rebatch {
+		if input.Directive.Active || len(input.Directive.Messages) != 1 {
+			t.Fatal("rebatch requires one idle fallback")
+		}
+		created, err := st.AppendUserMessage(ctx, controller.ConversationID(), receiver.ID, controller.Generation(),
+			domain.ConversationMessage{ID: "queued-Q-message", Text: "earlier Q", ClientMessageID: "queued-Q", Origin: domain.MessageOriginAutomation},
+			"queued-Q-turn", time.Now().UTC().Add(-time.Second))
+		if err != nil || !created {
+			t.Fatal("seed queued Q", err)
+		}
+		fault.armed.Store(true)
+	}
 	for index, msg := range input.Directive.Messages {
 		result, err := svc.SteerOrSend(ctx, receiver.ID, msg, false)
 		if err != nil {
@@ -121,6 +159,23 @@ func directive(t *checks, bin string, input rh.Input) []byte {
 		}
 		if result.Steered != (input.Directive.Active || index > 0) {
 			t.Fatal("unexpected real steer/fallback outcome")
+		}
+		if input.Directive.Rebatch {
+			queued, err := st.ListQueuedBatch(ctx, controller.ConversationID(), 0)
+			if err != nil || len(queued) != 2 || queued[0].TurnID != "queued-Q-turn" || result.Turn.State != domain.TurnStateQueued {
+				t.Fatal("fallback did not retain Q and D", err)
+			}
+			for _, row := range queued {
+				if row.TurnID == "queued-Q-turn" {
+					continue
+				}
+				if row.ClientMessageID != msg.ClientMessageID {
+					t.Fatal("directive identity changed on requeue")
+				}
+			}
+			if _, err := svc.Send(ctx, receiver.ID, ports.ChatUserMessage{Text: "retry queue drain", ClientMessageID: "fixture-retry", Origin: domain.MessageOriginAutomation}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		await()
 	}
@@ -157,6 +212,18 @@ func directive(t *checks, bin string, input rh.Input) []byte {
 	turns := fixtureValue[[]any](t, transcript["turns"])
 	old := fixtureValue[map[string]any](t, turns[len(turns)-1])["id"]
 	actual := output[0].TurnID
+	if input.Directive.Rebatch {
+		m := output[0].Message
+		if m == nil || m.ConsumedByTurnID != "queued-Q-turn" || m.TurnID == m.ConsumedByTurnID {
+			t.Fatal("real projection lost follower identity")
+		}
+		for _, turn := range rows.Turns {
+			if turn.ID == m.TurnID {
+				t.Fatal("follower unexpectedly visible as execution turn")
+			}
+		}
+		actual = m.ConsumedByTurnID
+	}
 	for _, v := range turns {
 		turn := fixtureValue[map[string]any](t, v)
 		if turn["id"] == old {

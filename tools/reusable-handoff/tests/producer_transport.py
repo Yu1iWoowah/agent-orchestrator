@@ -23,9 +23,9 @@ def activity(snapshot, command, stdout, exit_code, actor, turn, identifier, sequ
         return json.load(response)
 
 
-def directive(snapshot, messages, active):
+def directive(snapshot, messages, active, rebatch=False):
     endpoint = os.environ["RH_ACTIVITY_PRODUCER"]
-    body = dict(snapshot=snapshot, actor=snapshot["session"]["id"], directive=dict(active=active, messages=messages))
+    body = dict(snapshot=snapshot, actor=snapshot["session"]["id"], directive=dict(active=active, messages=messages, rebatch=rebatch))
     request = urllib.request.Request(endpoint + "/directive", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=60) as response:
