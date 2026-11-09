@@ -60,6 +60,9 @@ export function setApiDaemonStatus(nextStatus: DaemonStatus): void {
 // still normalizes IDs for every resource, including ones a segment heuristic
 // would miss (orchestrators/{id}). Keep in sync with schema.ts.
 const ROUTE_TEMPLATES = [
+	"/api/v1/usage/sessions/{sessionId}/composition",
+	"/api/v1/sessions/{sessionId}/rca/override",
+	"/api/v1/rca/emergency-stop",
 	"/api/v1/orchestrator/replacements/{operationId}/diagnose",
 	"/api/v1/orchestrator/replacements/{operationId}/repair",
 	"/api/v1/projects/{id}/orchestrator/replacements",
@@ -255,6 +258,14 @@ function expectedProbeConflict(operation: string, status?: number): boolean {
 }
 const lastApiErrorAt = new Map<string, number>();
 
+const RCA_OPERATIONS = new Set([
+	"GET /api/v1/usage/sessions/:id/composition",
+	"DELETE /api/v1/usage/sessions/:id/composition",
+	"PUT /api/v1/sessions/:id/rca/override",
+	"DELETE /api/v1/sessions/:id/rca/override",
+	"PUT /api/v1/rca/emergency-stop",
+]);
+
 function reportApiError(
 	operation: string,
 	category: ApiErrorCategory,
@@ -262,6 +273,7 @@ function reportApiError(
 	code?: string,
 	requestId?: string,
 ): void {
+	if (RCA_OPERATIONS.has(operation)) return;
 	const key = `${operation}|${category}|${status ?? ""}`;
 	const now = Date.now();
 	const last = lastApiErrorAt.get(key);
@@ -328,7 +340,7 @@ async function runtimeFetch(input: Request): Promise<Response> {
 		}
 		throw error;
 	}
-	if (!response.ok) {
+	if (!response.ok && !RCA_OPERATIONS.has(operation)) {
 		// Best-effort read the daemon error envelope's `code` (via a clone so the
 		// caller still gets an unconsumed body) to drive classification.
 		let code: string | undefined;
@@ -355,6 +367,33 @@ export const apiClient = createClient<paths>({
 	baseUrl: initialApiBaseUrl,
 	fetch: runtimeFetch,
 });
+
+async function rcaResult<T>(pending: Promise<{ data?: T; error?: unknown }>): Promise<T> {
+	try {
+		const { data, error } = await pending;
+		if (error !== undefined || data === undefined) throw new Error("RCA unavailable");
+		return data;
+	} catch {
+		// Do not forward transport messages or error-envelope content to a
+		// renderer error boundary, console, telemetry, or persisted query state.
+		throw new Error("RCA unavailable");
+	}
+}
+
+type CompositionQuery = NonNullable<paths["/api/v1/usage/sessions/{sessionId}/composition"]["get"]["parameters"]["query"]>;
+
+export const compositionClient = {
+	get: ({ sessionId, query }: { sessionId: string; query?: CompositionQuery }) =>
+		rcaResult(apiClient.GET("/api/v1/usage/sessions/{sessionId}/composition", { params: { path: { sessionId }, query }, cache: "no-store" })),
+	set: ({ sessionId, enabled }: { sessionId: string; enabled: boolean }) =>
+		rcaResult(apiClient.PUT("/api/v1/sessions/{sessionId}/rca/override", { params: { path: { sessionId } }, body: { enabled }, cache: "no-store" })),
+	clear: ({ sessionId }: { sessionId: string }) =>
+		rcaResult(apiClient.DELETE("/api/v1/sessions/{sessionId}/rca/override", { params: { path: { sessionId } }, cache: "no-store" })),
+	emergencyStop: ({ enabled }: { enabled: boolean }) =>
+		rcaResult(apiClient.PUT("/api/v1/rca/emergency-stop", { body: { enabled }, cache: "no-store" })),
+	purge: ({ sessionId }: { sessionId: string }) =>
+		rcaResult(apiClient.DELETE("/api/v1/usage/sessions/{sessionId}/composition", { params: { path: { sessionId } }, cache: "no-store" })),
+};
 
 // Build each request against the daemon's current address, so runtimeFetch
 // passes it straight to fetch. Rebasing a request built against the

@@ -28,6 +28,35 @@ import (
 	"github.com/aoagents/agent-orchestrator/components/hcg/reporting"
 )
 
+// RCACompositionResponse contains only numeric estimates and safe references.
+type RCACompositionResponse domain.RCAComposition
+
+// RCAPolicyResponse reports effective RCA policy.
+type RCAPolicyResponse domain.RCAPolicyView
+
+// RCAEnabledRequest requires an explicit boolean control value.
+type RCAEnabledRequest struct {
+	Enabled *bool `json:"enabled" required:"true"`
+}
+
+// RCAStopResponse acknowledges the requested host stop.
+type RCAStopResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+// RCAPurgeResponse acknowledges numeric/scope deletion.
+type RCAPurgeResponse struct {
+	Purged bool `json:"purged"`
+}
+
+// RCACompositionQuery defines canonical paging and explicit snapshot analysis.
+type RCACompositionQuery struct {
+	AfterID   *int64 `query:"afterId,omitempty" minimum:"0"`
+	ThroughID *int64 `query:"throughId,omitempty" minimum:"0"`
+	Limit     *int64 `query:"limit,omitempty" minimum:"1" maximum:"1000"`
+	Analyze   *bool  `query:"analyze,omitempty"`
+}
+
 // HCGReportingResponse contains effective policy without local paths.
 type HCGReportingResponse reporting.View
 

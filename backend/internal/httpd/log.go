@@ -39,6 +39,18 @@ type captureHTTPErrorFunc func(context.Context, error, map[string]string, string
 func requestLoggerWithCapture(log *slog.Logger, sink ports.EventSink, captureHTTPError captureHTTPErrorFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isRCARequest(r) {
+				ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+				defer func() {
+					class := ww.Status() / 100
+					if class < 0 || class >= len(rcaRequests) {
+						class = 0
+					}
+					rcaRequests[class].Add(1)
+				}()
+				next.ServeHTTP(ww, r)
+				return
+			}
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			r, capturedErr := envelope.WithErrorCapture(r)
 			start := time.Now()

@@ -52,6 +52,7 @@ type APIDeps struct {
 	UsageSummary       controllers.UsageSummaryService
 	UsageEvents        controllers.UsageEventsService
 	HCGReporting       controllers.HCGReportingService
+	RCA                controllers.RCAService
 	SessionMemory      controllers.SessionMemoryService
 	SessionSteps       controllers.SessionStepsReader
 	PRs                prsvc.ActionManager
@@ -355,6 +356,7 @@ func (a *API) Register(root chi.Router) {
 			a.appDiagnostics.Register(r)
 			a.usage.Register(r)
 			mountHCGReporting(r, a.deps.HCGReporting)
+			controllers.RCAController{Svc: a.deps.RCA}.Register(r)
 			mountGuardianObservation(r, a.deps.GuardianObservability)
 			a.prs.Register(r)
 			a.reviews.Register(r)
