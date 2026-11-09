@@ -2512,6 +2512,58 @@ def zero_control_history(root, run_directory, cli, authorization, state, request
         require(authorization.get(key) == state[key], "zero-control authorization binding: " + key)
     require(authorization.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
             "zero-control original qualification binding")
+    declared = {Path(source["raw_relpath"]) for source in request["sources"]}
+    require(all(path.parts[0] == "evidence" and len(path.parts) > 1 for path in declared), "zero-control source scope")
+    parents = {parent for path in declared for parent in path.parents}
+    evidence = no_symlinks(run_directory / "evidence")
+    if evidence.exists():
+        require(evidence.is_dir(), "zero-control evidence type")
+        for path in evidence.rglob("*"):
+            no_symlinks(path)
+            relative = path.relative_to(run_directory)
+            require((path.is_file() and relative in declared) or (path.is_dir() and relative in parents),
+                    "unknown zero-control source evidence")
+    observations = no_symlinks(run_directory / "observations")
+    actors = {state["old_id"], *RETIRABLE_WORKERS}
+    labels = {"target-preflight", "worker-list"} | {prefix + sid for sid in actors for prefix in ("session-", "workspace-")}
+    registrations, observed_registrations = set(), set()
+    if observations.exists():
+        require(observations.is_dir(), "zero-control observations type")
+        for path in observations.iterdir():
+            no_symlinks(path)
+            require(path.is_file(), "unknown zero-control observation type")
+            raw_label = next((sid for sid in actors if re.fullmatch(r"workspace-list-" + re.escape(sid) + r"-[0-9a-f]{32}\.raw", path.name)), None)
+            if raw_label:
+                registrations.add(path.name)
+                continue
+            label, _, nonce = path.stem.rpartition("-")
+            require(path.suffix == ".json" and label in labels and re.fullmatch(r"[0-9a-f]{32}", nonce),
+                    "unknown zero-control observation")
+            value = decode(private_read(path))
+            require(isinstance(value, list) if label == "worker-list" else isinstance(value, dict), "zero-control observation shape")
+            if label == "worker-list":
+                require(all(isinstance(row, dict) and "id" in row for row in value) and
+                        {row["id"] for row in value} == set(RETIRABLE_WORKERS) and
+                        all(row.get("projectId") == PROJECT and row.get("role") == "worker" for row in value), "zero-control worker-list source")
+            elif label == "target-preflight":
+                require(value.get("account", {}).get("id") == request["target"]["account"] and
+                        value.get("catalog", {}).get("accountBinding", {}).get("accountId") == request["target"]["account"],
+                        "zero-control target-preflight source")
+            elif label.startswith("session-"):
+                require(value.get("session", {}).get("id") == label[len("session-"):] and
+                        value["session"].get("projectId") == PROJECT, "zero-control session observation source")
+            else:
+                sid = label[len("workspace-"):]
+                binding = state.get("workspace_bindings", {}).get(sid)
+                require(binding and value.get("session_id") == sid and value.get("path") == workspace_entry(request, sid)["path"] and
+                        all(value.get(key) == expected for key, expected in binding.items()), "zero-control workspace observation source")
+                reference = value["registration"]
+                source = Path(reference["path"])
+                require(source.parent == root / ZERO_CONTROL_RUN / "observations" and
+                        re.fullmatch(r"workspace-list-" + re.escape(sid) + r"-[0-9a-f]{32}\.raw", source.name) and
+                        digest(private_read(observations / source.name)) == reference["sha256"], "zero-control registration source")
+                observed_registrations.add(source.name)
+        require(registrations == observed_registrations, "unknown zero-control registration observation")
     # Only the observed partial before-snapshot layout is permitted, never a producer or dispatch trace.
     workers = run_directory / "workers"
     for actor in workers.iterdir() if workers.exists() else []:

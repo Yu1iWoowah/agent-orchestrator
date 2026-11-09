@@ -460,6 +460,59 @@ class ZeroControlRetirementTests(unittest.TestCase):
         with self.assertRaises(h.Stop):
             self.retire()
 
+    def test_unknown_observations_and_source_evidence_stop_before_archive(self):
+        for directory in ("observations", "evidence"):
+            with self.subTest(directory=directory):
+                unknown = self.run / directory / "unknown-audit-fixture.json"
+                h.publish(unknown, b'{"unknown_fixture":true}')
+                with self.assertRaises(h.Stop):
+                    self.retire()
+                self.assertTrue(unknown.is_file())
+                self.assertEqual(h.private_read(self.fixture.slot / "request.json"), self.request_raw)
+                self.assertFalse((self.directory / "receipt.json").exists())
+                self.assertFalse((self.fixture.root / ".retired" / h.ZERO_CONTROL_RUN).exists())
+                self.assertEqual(h.private_read(self.fixture.directory / "receipt.json"), self.previous_raw)
+                unknown.unlink()
+                unknown.parent.rmdir()
+
+    def test_declared_sources_and_named_observations_are_preserved(self):
+        from test_wire_contract import list_row
+        f = self.fixture
+        request = h.decode(self.request_raw)
+        request["target"]["account"] = "synthetic-account"
+        source_raw = h.canonical(f.snaps[f.old])
+        request["sources"] = [dict(raw_relpath="evidence/nested/original.json", raw_sha256=h.digest(source_raw))]
+        h.publish(self.run / request["sources"][0]["raw_relpath"], source_raw)
+        state = h.decode(h.private_read(self.run / "state.json"))
+        state["target"] = request["target"]
+        state["workspace_bindings"] = {}
+        recorder = SimpleNamespace(root=self.run)
+        for sid in (f.old, *h.RETIRABLE_WORKERS):
+            h.Run.evidence(recorder, "session-" + sid, f.snaps[sid])
+            binding = dict(path=str(f.data / sid), common=str(f.data / "common"), git_dir=str(f.data / "git" / sid),
+                           path_identity=[1, 2], git_identity=[3, 4])
+            state["workspace_bindings"][sid] = binding
+            request["workspace_index"].append(dict(session_id=sid, path=binding["path"]))
+            registration = self.run / "observations" / ("workspace-list-" + sid + "-" + "a" * 32 + ".raw")
+            h.publish(registration, b"synthetic registered-workspace observation\n")
+            h.Run.evidence(recorder, "workspace-" + sid,
+                dict(binding, session_id=sid, registration=h.file_reference(registration)))
+        h.Run.evidence(recorder, "worker-list", [list_row(f.snaps[sid]["session"]) for sid in h.RETIRABLE_WORKERS])
+        h.Run.evidence(recorder, "target-preflight", dict(account=dict(id="synthetic-account"),
+                       catalog=dict(accountBinding=dict(accountId="synthetic-account"))))
+        self.request_raw = h.canonical(request)
+        (self.run / "start.json").write_bytes(self.request_raw)
+        (f.slot / "request.json").write_bytes(self.request_raw)
+        state["start_sha256"] = h.digest(self.request_raw)
+        (self.run / "state.json").write_bytes(h.canonical(state))
+        authorization = h.decode(h.private_read(self.directory / "authorization.json"))
+        authorization.update(target=request["target"], start_sha256=state["start_sha256"])
+        (self.directory / "authorization.json").write_bytes(h.canonical(authorization))
+        before = h.private_manifest(self.run)
+        self.retire()
+        archived = f.root / ".retired" / h.ZERO_CONTROL_RUN
+        self.assertEqual([row for row in h.private_manifest(archived) if not row["path"].startswith("retired-start-slot")], before)
+
     def test_active_runner_wrong_slot_and_later_steer_block(self):
         f = self.fixture
         slot = f.slot / "request.json"
