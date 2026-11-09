@@ -268,11 +268,11 @@ class WorkspaceTests(unittest.TestCase):
         run = h.mkdir(root / h.ZERO_CONTROL_RUN)
         h.publish(root / ".qualified/qualification.json", b"{}")
         h.publish(run / "workers" / h.RETIRABLE_WORKERS[0] / ("before-" + "a" * 32) / "objects", b"not an objects directory")
-        state = dict(effects={}, project_id=h.PROJECT, target={}, script_sha256="fixture", cli_sha256="fixture",
+        state = dict(effects={}, old_id="historical-old", project_id=h.PROJECT, target={}, script_sha256="fixture", cli_sha256="fixture",
                      error="sensitive workspace content cannot be preserved: cloud/.env.example")
         authorization = dict(state, expected_effects=[], qualification_sha256=h.digest(b"{}"))
         with self.assertRaisesRegex(h.Stop, "partial snapshot"):
-            h.zero_control_history(root, run, None, authorization, state, {})
+            h.zero_control_history(root, run, None, authorization, state, {"sources": []})
 
     def test_copy_and_dependency_entries_do_not_inherit_template_exception(self):
         source = self.template()
