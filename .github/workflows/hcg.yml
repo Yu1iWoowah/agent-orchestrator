@@ -9,6 +9,7 @@ on:
       - "components/hcg/**"
       - "backend/internal/domain/usage.go"
       - "backend/internal/service/usage/**"
+      - "backend/internal/service/hcg/**"
       - "backend/internal/httpd/**"
       - "backend/internal/storage/sqlite/**"
       - "backend/internal/daemon/daemon.go"

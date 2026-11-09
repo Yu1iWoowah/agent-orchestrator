@@ -438,6 +438,7 @@ type Manager struct {
 	tuiSettingsValidator        ports.ChatAgentSettingsValidator
 	tuiSettingsFences           map[domain.SessionID]string
 	settingsGrants              ports.AgentSettingsGrantEnvironment
+	hcgReporting                ports.HCGReportingLaunchObserver
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -828,6 +829,7 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
+	HCGReporting  ports.HCGReportingLaunchObserver
 	ReplyLanguage settingssvc.ReplyLanguageSource
 	Runtime       runtimeController
 	Agents        ports.AgentResolver
@@ -911,6 +913,7 @@ func New(d Deps) *Manager {
 		agents:                         d.Agents,
 		workspace:                      d.Workspace,
 		store:                          d.Store,
+		hcgReporting:                   d.HCGReporting,
 		replyLanguage:                  d.ReplyLanguage,
 		defaults:                       d.Defaults,
 		chat:                           d.Chat,
@@ -1723,6 +1726,7 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 	}
 	namingHandedOff = true
 	m.nameTaskBranchLater(ctx, rec, ws, workspaceProject, taskName, cancelNaming)
+	m.notifyHCGReporting(rec)
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
@@ -4075,6 +4079,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	m.notifyHCGReporting(updated)
 	return RestoreResult{Session: updated, Mode: mode}, nil
 }
 

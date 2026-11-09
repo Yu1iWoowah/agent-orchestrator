@@ -33,6 +33,7 @@ type ChatControllerStart struct {
 	Harness       domain.AgentHarness
 	DataDir       string
 	WorkspacePath string
+	ArtifactDir   string
 	Env           map[string]string
 	Model         string
 	Effort        string

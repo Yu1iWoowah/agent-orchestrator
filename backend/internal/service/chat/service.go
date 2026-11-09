@@ -79,6 +79,9 @@ type Service struct {
 	after                   func(time.Duration) <-chan time.Time
 	onAccountChanged        func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged  func(domain.SessionID, string, ports.CodexCapacityObservation)
+
+	hcgReporting ports.HCGReportingLaunchObserver // guarded by mu
+
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
 	// session metadata before the next prompt routes or a later TUI rebuild.
 	onModelChanged   func(domain.SessionID, string)
@@ -1365,6 +1368,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		s.mu.Unlock()
 	}()
+
+	s.notifyHCGReporting(cfg, liveReconnect)
 
 	return controller, nil
 }

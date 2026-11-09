@@ -1,6 +1,8 @@
 # HCG usage reader
 
-HCG 是獨立 Go module，透過 daemon 唯讀 API 查詢「模型請求事件」。daemon 的既有 `model_usage_events` ledger 是唯一正本；這個元件沒有原生檔 reader、持久 token DB、cursor 或手工匯入格式。
+固定外部報表的部署、`ao usage` 操作與隔離驗證見 [reporting-acceptance.md](docs/reporting-acceptance.md)。
+
+HCG 是獨立 Go module，透過 daemon 唯讀 API 查詢「模型請求事件」。daemon 的既有 `model_usage_events` ledger 是唯一正本；canonical reader 沒有持久 token DB、cursor 或手工匯入格式。選用的固定外部報表由 `reporting` 薄接點提供，原生格式仍交第三方引擎解析。
 
 ## 操作與資料根
 
@@ -17,7 +19,7 @@ go run ./components/hcg/cmd/hcg usage sync --session <session-id> --json
 
 ## 數值與掃描限制
 
-- `source=daemon_ledger`；未整合外部報表，不與 `external_analysis` 相加或互補。
+- 本節 reader 的 `source=daemon_ledger`；不與選用報表的 `external_analysis` 相加或互補。
 - API 第一頁取得 `throughId`，後續頁面固定此新增列上界；它不是隔離的歷史 transaction snapshot。掃描期間既有列的 repair 與 binding/source/session metadata 都可能改變，下次查詢重新讀取。
 - `scanStatus=complete` 只表示有限分頁成功完成。失敗／重複或衝突 id/key／錯誤 cursor 會回 partial 或 unavailable，保留本次已接受頁面，exit 1；不補入先前快照。
 - input 已含 cache、output 分開；null 不補零、不重算 canonical token。id 是寫入次序，不能當最近已送出 request 順序。事件不等於完整輪次。
