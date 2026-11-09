@@ -416,9 +416,9 @@ func (q *Queries) GetUsageBindingBySessionHarnessRoot(ctx context.Context, arg G
 
 const getUsageEventsThroughID = `-- name: GetUsageEventsThroughID :one
 SELECT CAST(COALESCE(MAX(e.id), 0) AS INTEGER)
-FROM model_usage_events e LEFT JOIN usage_bindings b ON b.id = e.binding_id
-LEFT JOIN usage_execution_sources x ON x.id=e.execution_source_id
-WHERE COALESCE(b.session_id,x.session_id) = ?
+FROM model_usage_events e
+WHERE e.binding_id IN (SELECT ub.id FROM usage_bindings ub WHERE ub.session_id = ?1)
+   OR e.execution_source_id IN (SELECT ux.id FROM usage_execution_sources ux WHERE ux.session_id = ?1)
 `
 
 func (q *Queries) GetUsageEventsThroughID(ctx context.Context, sessionID domain.SessionID) (int64, error) {
@@ -1049,10 +1049,11 @@ func (q *Queries) ListLegacyUsageEvents(ctx context.Context, usageSourceID sql.N
 }
 
 const listLegacyUsageSourceIDs = `-- name: ListLegacyUsageSourceIDs :many
-SELECT DISTINCT mue.usage_source_id
+SELECT DISTINCT CAST(COALESCE(mue.usage_source_id, 0) AS INTEGER) AS usage_source_id
 FROM model_usage_events mue
-WHERE mue.billing_provider_id IS NULL
-   OR mue.billing_provider_source = 'inferred'
+WHERE (mue.billing_provider_id IS NULL
+   OR mue.billing_provider_source = 'inferred')
+  AND mue.usage_source_id IS NOT NULL
 ORDER BY mue.usage_source_id
 `
 
@@ -1062,15 +1063,15 @@ ORDER BY mue.usage_source_id
 // that index alone. Every event's usage_source_id references usage_sources, so
 // no join is needed; with the join the planner left the partial index for the
 // full usage_source index once sqlite_stat1 existed.
-func (q *Queries) ListLegacyUsageSourceIDs(ctx context.Context) ([]sql.NullInt64, error) {
+func (q *Queries) ListLegacyUsageSourceIDs(ctx context.Context) ([]int64, error) {
 	rows, err := q.db.QueryContext(ctx, listLegacyUsageSourceIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []sql.NullInt64{}
+	items := []int64{}
 	for rows.Next() {
-		var usage_source_id sql.NullInt64
+		var usage_source_id int64
 		if err := rows.Scan(&usage_source_id); err != nil {
 			return nil, err
 		}
@@ -1348,9 +1349,10 @@ SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
  e.usage_measurement_kind, e.input_tokens, e.cached_input_tokens,
  e.uncached_input_tokens, e.output_tokens, e.provider_usage_json,
  e.source_event_key, e.created_at, x.id AS execution_id, x.identity_json
-FROM model_usage_events e LEFT JOIN usage_bindings b ON b.id = e.binding_id
-LEFT JOIN usage_execution_sources x ON x.id=e.execution_source_id
-WHERE COALESCE(b.session_id,x.session_id) = ?1
+FROM model_usage_events e
+LEFT JOIN usage_execution_sources x ON x.id = e.execution_source_id
+WHERE (e.binding_id IN (SELECT ub.id FROM usage_bindings ub WHERE ub.session_id = ?1)
+ OR e.execution_source_id IN (SELECT ux.id FROM usage_execution_sources ux WHERE ux.session_id = ?1))
  AND e.id > ?2 AND e.id <= ?3
 ORDER BY e.id LIMIT ?4
 `

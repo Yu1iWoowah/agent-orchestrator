@@ -626,12 +626,12 @@ func (s *Store) ListLegacyUsageSources(ctx context.Context) ([]domain.UsageSourc
 	}
 	out := make([]domain.UsageSourceContext, 0, len(ids))
 	for _, id := range ids {
-		row, err := s.qr.GetUsageSourceWithBindingAndSession(ctx, id.Int64)
+		row, err := s.qr.GetUsageSourceWithBindingAndSession(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("get legacy usage source %d: %w", id.Int64, err)
+			return nil, fmt.Errorf("get legacy usage source %d: %w", id, err)
 		}
 		out = append(out, usageSourceContextFromGen(row))
 	}

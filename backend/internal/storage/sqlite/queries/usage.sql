@@ -491,10 +491,11 @@ RETURNING binding_id;
 -- that index alone. Every event's usage_source_id references usage_sources, so
 -- no join is needed; with the join the planner left the partial index for the
 -- full usage_source index once sqlite_stat1 existed.
-SELECT DISTINCT mue.usage_source_id
+SELECT DISTINCT CAST(COALESCE(mue.usage_source_id, 0) AS INTEGER) AS usage_source_id
 FROM model_usage_events mue
-WHERE mue.billing_provider_id IS NULL
-   OR mue.billing_provider_source = 'inferred'
+WHERE (mue.billing_provider_id IS NULL
+   OR mue.billing_provider_source = 'inferred')
+  AND mue.usage_source_id IS NOT NULL
 ORDER BY mue.usage_source_id;
 
 -- name: ListLegacyUsageEvents :many
@@ -649,8 +650,8 @@ ORDER BY s.project_id, s.num;
 -- name: GetUsageEventsThroughID :one
 SELECT CAST(COALESCE(MAX(e.id), 0) AS INTEGER)
 FROM model_usage_events e
-WHERE e.binding_id IN (SELECT id FROM usage_bindings WHERE session_id = sqlc.arg(session_id))
-   OR e.execution_source_id IN (SELECT id FROM usage_execution_sources WHERE session_id = sqlc.arg(session_id));
+WHERE e.binding_id IN (SELECT ub.id FROM usage_bindings ub WHERE ub.session_id = sqlc.arg(session_id))
+   OR e.execution_source_id IN (SELECT ux.id FROM usage_execution_sources ux WHERE ux.session_id = sqlc.arg(session_id));
 
 -- name: ListUsageEventsPage :many
 SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
@@ -659,8 +660,8 @@ SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
  e.source_event_key, e.created_at, x.id AS execution_id, x.identity_json
 FROM model_usage_events e
 LEFT JOIN usage_execution_sources x ON x.id = e.execution_source_id
-WHERE (e.binding_id IN (SELECT id FROM usage_bindings WHERE session_id = sqlc.arg(session_id))
- OR e.execution_source_id IN (SELECT id FROM usage_execution_sources WHERE session_id = sqlc.arg(session_id)))
+WHERE (e.binding_id IN (SELECT ub.id FROM usage_bindings ub WHERE ub.session_id = sqlc.arg(session_id))
+ OR e.execution_source_id IN (SELECT ux.id FROM usage_execution_sources ux WHERE ux.session_id = sqlc.arg(session_id)))
  AND e.id > sqlc.arg(after_id) AND e.id <= sqlc.arg(through_id)
 ORDER BY e.id LIMIT sqlc.arg(page_limit);
 

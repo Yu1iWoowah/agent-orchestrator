@@ -25,7 +25,8 @@ func IsRoutineInternalCLICommand(commandPath string) bool {
 }
 
 var routineInternalCLICommands = []string{
-	"ao app", // Consent and diagnostic activity stays local.
+	"ao usage delegation mcp", // Fixed stdio plumbing is not a new user operation.
+	"ao app",                  // Consent and diagnostic activity stays local.
 	"ao status",
 	"ao session ls",
 	"ao session top",
@@ -96,6 +97,14 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao usage integration clear":          {},
 	"ao usage integration emergency-stop": {},
 	"ao usage integration register":       {},
+	"ao usage delegation":                 {},
+	"ao usage delegation get":             {},
+	"ao usage delegation set":             {},
+	"ao usage delegation clear":           {},
+	"ao usage delegation emergency-stop":  {},
+	"ao usage delegation profiles":        {},
+	"ao usage delegation register":        {},
+	"ao usage delegation read":            {},
 
 	"ao account":                    {},
 	"ao account ls":                 {},
