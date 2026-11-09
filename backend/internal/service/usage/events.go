@@ -70,7 +70,7 @@ func (r *EventsReader) Events(ctx context.Context, id domain.SessionID, after in
 		rows = rows[:limit]
 	}
 	for _, row := range rows {
-		e := domain.UsageEventView{ID: row.ID, BindingID: row.BindingID, UsageSourceID: row.UsageSourceID, SourceEventKey: row.SourceEventKey,
+		e := domain.UsageEventView{Execution: row.Execution, ID: row.ID, BindingID: row.BindingID, UsageSourceID: row.UsageSourceID, SourceEventKey: row.SourceEventKey,
 			ProviderID: string(row.ProviderID), ModelID: row.ModelID, MeasurementKind: string(row.MeasurementKind), InputTokens: row.Tokens.InputTokens,
 			CachedInputTokens: row.Tokens.CachedInputTokens, UncachedInputTokens: row.Tokens.UncachedInputTokens, OutputTokens: row.Tokens.OutputTokens}
 		if !row.CreatedAt.IsZero() {

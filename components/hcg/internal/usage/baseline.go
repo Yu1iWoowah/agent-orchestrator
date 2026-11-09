@@ -58,39 +58,44 @@ type TokenTotals struct {
 
 // BaselineSource separates root, child and unknown provenance without new groups.
 type BaselineSource struct {
-	MeasurementKinds []string    `json:"measurementKinds"`
-	BindingID        int64       `json:"bindingId"`
-	Harness          string      `json:"harness"`
-	NativeRootID     string      `json:"nativeRootId"`
-	Scope            string      `json:"scope"`
-	Source           Source      `json:"source"`
-	Recorded         TokenTotals `json:"recorded"`
-	Undated          TokenTotals `json:"undated"`
+	Execution        *ExecutionSource `json:"execution,omitempty"`
+	MeasurementKinds []string         `json:"measurementKinds"`
+	BindingID        int64            `json:"bindingId"`
+	Harness          string           `json:"harness"`
+	NativeRootID     string           `json:"nativeRootId"`
+	Scope            string           `json:"scope"`
+	Source           Source           `json:"source"`
+	Recorded         TokenTotals      `json:"recorded"`
+	Undated          TokenTotals      `json:"undated"`
 }
 
 // BaselineSession retains query-time metadata and discovery/error facts.
 type BaselineSession struct {
-	Consistency    string           `json:"consistency"`
-	SessionID      string           `json:"sessionId"`
-	DataRoot       string           `json:"dataRoot"`
-	DataRootStatus string           `json:"dataRootStatus"`
-	ProjectID      string           `json:"projectId"`
-	Role           string           `json:"role"`
-	Mode           string           `json:"mode"`
-	AccountID      *string          `json:"accountId"`
-	MetadataAsOf   *time.Time       `json:"metadataAsOf"`
-	SourceAsOf     *time.Time       `json:"sourceAsOf"`
-	ThroughID      int64            `json:"throughId"`
-	ScanStatus     string           `json:"scanStatus"`
-	Reason         string           `json:"reason,omitempty"`
-	Bindings       []Binding        `json:"bindings"`
-	Sources        []BaselineSource `json:"sources"`
-	Recorded       TokenTotals      `json:"recorded"`
-	Undated        TokenTotals      `json:"undated"`
+	AuxiliaryRecorded TokenTotals      `json:"auxiliaryRecorded"`
+	AuxiliaryUndated  TokenTotals      `json:"auxiliaryUndated"`
+	Consistency       string           `json:"consistency"`
+	SessionID         string           `json:"sessionId"`
+	DataRoot          string           `json:"dataRoot"`
+	DataRootStatus    string           `json:"dataRootStatus"`
+	ProjectID         string           `json:"projectId"`
+	Role              string           `json:"role"`
+	Mode              string           `json:"mode"`
+	AccountID         *string          `json:"accountId"`
+	MetadataAsOf      *time.Time       `json:"metadataAsOf"`
+	SourceAsOf        *time.Time       `json:"sourceAsOf"`
+	ThroughID         int64            `json:"throughId"`
+	ScanStatus        string           `json:"scanStatus"`
+	Reason            string           `json:"reason,omitempty"`
+	Bindings          []Binding        `json:"bindings"`
+	Sources           []BaselineSource `json:"sources"`
+	Recorded          TokenTotals      `json:"recorded"`
+	Undated           TokenTotals      `json:"undated"`
 }
 
 // BaselineReport is a disposable canonical cohort, never a complete usage claim.
 type BaselineReport struct {
+	AuxiliaryRecorded TokenTotals `json:"auxiliaryRecorded"`
+	AuxiliaryUndated  TokenTotals `json:"auxiliaryUndated"`
 	Cohort
 	Source      string            `json:"source"`
 	Status      string            `json:"status"`
@@ -156,11 +161,24 @@ func Baseline(query Cohort, snapshots []Snapshot) (BaselineReport, error) {
 				continue
 			}
 			key := sourceKey{e.BindingID, e.UsageSourceID}
+			if e.Execution != nil {
+				if e.Execution.ID <= 0 || e.Execution.ProjectID != s.ProjectID || e.Execution.SessionID != id || e.BindingID != 0 || e.UsageSourceID != 0 {
+					return out, fmt.Errorf("conflicting execution source identity")
+				}
+				// A negative internal index cannot collide with native positive IDs.
+				key = sourceKey{0, -e.Execution.ID}
+			}
 			index, ok := indices[key]
 			if !ok {
 				index = len(row.Sources)
 				indices[key] = index
-				row.Sources = append(row.Sources, BaselineSource{BindingID: e.BindingID, Scope: "unknown", Source: Source{ID: e.UsageSourceID}})
+				source := BaselineSource{BindingID: e.BindingID, Scope: "unknown", Source: Source{ID: e.UsageSourceID}}
+				if e.Execution != nil {
+					source.Scope = "auxiliary"
+					source.Execution = e.Execution
+					source.Source = Source{ID: e.Execution.ID, Kind: "hcg_execution"}
+				}
+				row.Sources = append(row.Sources, source)
 			}
 			kind := metadataOrUnknown(e.MeasurementKind)
 			if !slices.Contains(row.Sources[index].MeasurementKinds, kind) {
@@ -169,6 +187,12 @@ func Baseline(query Cohort, snapshots []Snapshot) (BaselineReport, error) {
 			totals := []*TokenTotals{&out.Recorded, &row.Recorded, &row.Sources[index].Recorded}
 			if e.CreatedAt == nil {
 				totals = []*TokenTotals{&out.Undated, &row.Undated, &row.Sources[index].Undated}
+			}
+			if e.Execution != nil {
+				totals = []*TokenTotals{&out.AuxiliaryRecorded, &row.AuxiliaryRecorded, &row.Sources[index].Recorded}
+				if e.CreatedAt == nil {
+					totals = []*TokenTotals{&out.AuxiliaryUndated, &row.AuxiliaryUndated, &row.Sources[index].Undated}
+				}
 			}
 			// add replaces counter pointers, so copies retain the accepted prefix.
 			// Commit all levels only after every counter has been checked.

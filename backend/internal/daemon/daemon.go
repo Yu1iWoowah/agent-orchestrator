@@ -739,7 +739,7 @@ func Run(buildVersion string) error {
 	// Chat session, because waking it waits for admitted input to drain.
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, ReportingPolicyChanged: hcgReporting.ProjectPolicyChanged, RCAPolicyChanged: rcaService.ProjectPolicyChanged})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, ReportingPolicyChanged: hcgReporting.ProjectPolicyChanged, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged, RCAPolicyChanged: rcaService.ProjectPolicyChanged})
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
 		return errors.New("wire report delivery: session manager lacks semantic send support")
@@ -1177,6 +1177,7 @@ func Run(buildVersion string) error {
 		UsageEvents:        usagesvc.NewEventsReader(store),
 		HCGReporting:       hcgReporting,
 		RCA:                rcaService,
+		HCGDelegation:      hcgReporting,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,
 		Telemetry:          telemetrySink,

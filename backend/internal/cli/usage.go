@@ -20,6 +20,7 @@ type usageReportResponse struct {
 func newUsageCommand(c *commandContext) *cobra.Command {
 	root := &cobra.Command{Use: "usage", Short: "Query usage through the daemon"}
 	root.AddCommand(newUsageCompositionCommand(c))
+	root.AddCommand(newDelegationCommand(c))
 	integration := &cobra.Command{Use: "integration", Short: "Configure fixed optional usage reporting"}
 	root.AddCommand(integration)
 	for _, op := range []string{"get", "set", "clear", "emergency-stop", "register", "report"} {

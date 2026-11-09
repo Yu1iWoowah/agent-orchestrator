@@ -19,6 +19,7 @@ import (
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
 	RCA                   RCAConfig                   `json:"rca,omitempty,omitzero"`
+	HCGDelegation         HCGDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
 	HCGReporting          HCGReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability GuardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	OrchestratorHandoff   OrchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
@@ -179,11 +180,12 @@ func (c ProjectConfig) DefaultWorkerReviewer() (ReviewerHarness, AgentConfig) {
 
 // RoleOverride overrides the harness and/or agent config for a session role.
 type RoleOverride struct {
-	RCA            RCAConfig          `json:"rca,omitempty,omitzero"`
-	HCGReporting   HCGReportingConfig `json:"hcgReporting,omitempty,omitzero"`
-	AgentAccountID string             `json:"agentAccountId,omitempty"`
-	Harness        AgentHarness       `json:"agent,omitempty"`
-	AgentConfig    AgentConfig        `json:"agentConfig,omitempty"`
+	HCGDelegation  HCGDelegationToggle `json:"hcgDelegation,omitempty,omitzero"`
+	HCGReporting   HCGReportingConfig  `json:"hcgReporting,omitempty,omitzero"`
+	AgentAccountID string              `json:"agentAccountId,omitempty"`
+	Harness        AgentHarness        `json:"agent,omitempty"`
+	AgentConfig    AgentConfig         `json:"agentConfig,omitempty"`
+	RCA            RCAConfig           `json:"rca,omitempty,omitzero"`
 }
 
 // HCGReportingConfig uses nil for inheritance; false is an explicit opt-out.
@@ -279,6 +281,9 @@ func (c ProjectConfig) IsZero() bool {
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than surfacing at spawn.
 func (c ProjectConfig) Validate() error {
+	if err := c.HCGDelegation.Validate(); err != nil {
+		return fmt.Errorf("hcgDelegation: %w", err)
+	}
 	if c.AgentSettingsPolicy != nil {
 		if err := c.AgentSettingsPolicy.Validate(); err != nil {
 			return err

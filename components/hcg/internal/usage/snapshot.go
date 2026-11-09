@@ -5,20 +5,21 @@ import "time"
 
 // Event exposes only ledger identity and numeric usage.
 type Event struct {
-	ID                    int64          `json:"id"`
-	BindingID             int64          `json:"bindingId"`
-	UsageSourceID         int64          `json:"usageSourceId"`
-	SourceEventKey        string         `json:"sourceEventKey"`
-	ProviderID            string         `json:"providerId"`
-	ModelID               string         `json:"modelId"`
-	MeasurementKind       string         `json:"measurementKind"`
-	InputTokens           *int64         `json:"inputTokens"`
-	CachedInputTokens     *int64         `json:"cachedInputTokens"`
-	UncachedInputTokens   *int64         `json:"uncachedInputTokens"`
-	OutputTokens          *int64         `json:"outputTokens"`
-	CreatedAt             *time.Time     `json:"createdAt"`
-	ProviderUsage         map[string]any `json:"providerUsage"`
-	UsageProjectionStatus string         `json:"usageProjectionStatus" enum:"complete,partial,missing,invalid"`
+	Execution             *ExecutionSource `json:"execution,omitempty"`
+	ID                    int64            `json:"id"`
+	BindingID             int64            `json:"bindingId"`
+	UsageSourceID         int64            `json:"usageSourceId"`
+	SourceEventKey        string           `json:"sourceEventKey"`
+	ProviderID            string           `json:"providerId"`
+	ModelID               string           `json:"modelId"`
+	MeasurementKind       string           `json:"measurementKind"`
+	InputTokens           *int64           `json:"inputTokens"`
+	CachedInputTokens     *int64           `json:"cachedInputTokens"`
+	UncachedInputTokens   *int64           `json:"uncachedInputTokens"`
+	OutputTokens          *int64           `json:"outputTokens"`
+	CreatedAt             *time.Time       `json:"createdAt"`
+	ProviderUsage         map[string]any   `json:"providerUsage"`
+	UsageProjectionStatus string           `json:"usageProjectionStatus" enum:"complete,partial,missing,invalid"`
 }
 
 // Binding omits paths, parser state and credentials.
@@ -71,4 +72,22 @@ type Snapshot struct {
 	ScannedAt      time.Time `json:"scannedAt"`
 	Reason         string    `json:"reason,omitempty"`
 	Page
+}
+
+// ExecutionSource identifies auxiliary consumption independently of native sources.
+type ExecutionSource struct {
+	ID                    int64  `json:"id"`
+	ProjectID             string `json:"projectId"`
+	SessionID             string `json:"sessionId"`
+	DelegationID          string `json:"delegationId"`
+	AttemptID             string `json:"attemptId"`
+	BillingProvider       string `json:"billingProvider"`
+	ProfileID             string `json:"profileId"`
+	ProfileRevision       string `json:"profileRevision"`
+	ProfileDigest         string `json:"profileDigest"`
+	ProjectPolicyRevision string `json:"projectPolicyRevision"`
+	RequestID             string `json:"requestId"`
+	ResponseID            string `json:"responseId,omitempty"`
+	UnknownReason         string `json:"unknownReason,omitempty"`
+	FinishReason          string `json:"finishReason,omitempty"`
 }

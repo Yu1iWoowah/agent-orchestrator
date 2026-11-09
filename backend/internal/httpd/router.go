@@ -436,6 +436,25 @@ func mountHCGReporting(r chi.Router, svc controllers.HCGReportingService) {
 	})
 }
 
+func mountHCGDelegation(r chi.Router, svc controllers.HCGDelegationService) {
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if !localControlRequest(req) {
+					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
+					return
+				}
+				if svc == nil {
+					envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "HCG_DELEGATION_UNAVAILABLE", "Fixed delegation is unavailable.", nil)
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+		controllers.HCGDelegationController{Svc: svc}.Register(r)
+	})
+}
+
 // daemonProbePayload is shared by /healthz and /readyz. Dependency
 // initialization happens before the server is constructed, so a listening
 // daemon is ready to answer requests.

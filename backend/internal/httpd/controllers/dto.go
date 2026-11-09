@@ -4643,3 +4643,20 @@ type UsageEventsQuery struct {
 	ThroughID *int64 `query:"throughId,omitempty" minimum:"0"`
 	Limit     *int64 `query:"limit,omitempty" minimum:"1" maximum:"1000"`
 }
+
+// HCGDelegationResponse exposes effective fixed delegation policy.
+type HCGDelegationResponse reporting.DelegationView
+
+// HCGDelegationReadRequest carries the bounded question and explicit relative files.
+type HCGDelegationReadRequest reporting.DelegationRequest
+
+// HCGDelegationReadResponse exposes only the verified fixed reply.
+type HCGDelegationReadResponse reporting.DelegationReply
+
+// HCGDelegationRegistrationRequest carries an approved descriptor without key material.
+type HCGDelegationRegistrationRequest reporting.DelegationRegistration
+
+// HCGDelegationProfilesResponse lists safe immutable profile references.
+type HCGDelegationProfilesResponse struct {
+	Profiles []reporting.DelegationResolvedProfile `json:"profiles"`
+}

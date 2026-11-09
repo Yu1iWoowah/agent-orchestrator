@@ -9,6 +9,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/components/hcg/reporting"
 )
 
@@ -24,20 +25,37 @@ type Store interface {
 
 // Service keeps optional reports separate from native execution and canonical writes.
 type Service struct {
-	store    Store
-	root     string
-	core     *reporting.Consumer
-	metadata *metadataObserver
+	delegation *reporting.DelegationConsumer
+	store      Store
+	root       string
+	core       *reporting.Consumer
+	metadata   *metadataObserver
 }
 
 // New probes an existing registration at startup; failure disables only reporting.
 func New(ctx context.Context, root string, store Store) *Service {
+	return NewWithDelegationProvider(ctx, root, store, nil, nil)
+}
+
+// NewWithDelegationProvider supports the fixed offline provider fixture. The
+// production daemon passes no provider/credentials and cannot make paid calls.
+func NewWithDelegationProvider(ctx context.Context, root string, store Store, provider reporting.DelegationProvider, checkpoint func(context.Context, string)) *Service {
 	c, err := reporting.New(root)
 	s := &Service{store: store, root: root, core: c}
 	if err == nil {
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		c.Probe(probeCtx)
+	}
+	if writer, ok := store.(interface {
+		InsertExecutionUsage(context.Context, domain.ExecutionUsageReceipt, string) error
+	}); ok {
+		s.delegation = reporting.NewDelegation(root, delegationReceiptRecorder{canonical: usagesvc.NewExecutionRecorder(writer)}, provider, checkpoint)
+		recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 5*time.Second)
+		// Failed projections retain their pending receipt and worst hold. Startup
+		// never retries the provider or changes native session/policy state.
+		_ = s.delegation.RecoverDelegationReceipts(recoveryCtx)
+		recoveryCancel()
 	}
 	s.startMetadata(ctx)
 	return s

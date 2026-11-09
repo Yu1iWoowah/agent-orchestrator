@@ -145,3 +145,29 @@ func TestBaselineOverflowPreservesAcceptedPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestAuxiliaryReceiptExcludedFromNativeTotalsAndCurrent(t *testing.T) {
+	q, err := NewCohort([]string{"s"}, "2026-11-09T00:00:00Z", "2026-11-10T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := q.start
+	native := eventAt(at, 1, 1, 10, 0, 2)
+	auxiliary := eventAt(at, 2, 0, 100, 0, 20)
+	auxiliary.BindingID = 0
+	auxiliary.MeasurementKind = "provider_reported"
+	auxiliary.Execution = &ExecutionSource{ID: 1, ProjectID: "p", SessionID: "s", BillingProvider: "openai", ProfileRevision: "v1"}
+	snapshot := Snapshot{Source: "daemon_ledger", ScanStatus: "complete", Page: Page{SessionID: "s", ProjectID: "p", CurrentNativeID: "root", Bindings: []Binding{{ID: 1, SessionID: "s", Harness: "codex", NativeRootID: "root", State: "active", Sources: []Source{{ID: 1, Kind: "codex_rollout", NativeSessionID: "root", State: "active"}}}}, Events: []Event{native}}}
+	before := Current(snapshot)
+	snapshot.Events = append(snapshot.Events, auxiliary)
+	if after := Current(snapshot); !reflect.DeepEqual(before, after) {
+		t.Fatalf("auxiliary changed current: %+v %+v", before, after)
+	}
+	got, err := Baseline(q, []Snapshot{snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Recorded.EventCount != 1 || *got.Recorded.InputTokens != 10 || got.AuxiliaryRecorded.EventCount != 1 || *got.AuxiliaryRecorded.InputTokens != 100 || len(got.Sessions[0].Sources) != 2 || got.Sessions[0].Sources[1].Scope != "auxiliary" || got.Sessions[0].Sources[1].Execution.ProfileRevision != "v1" {
+		t.Fatalf("baseline=%+v", got)
+	}
+}
