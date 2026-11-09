@@ -320,38 +320,9 @@ func (b *Budget) reserve(ctx context.Context, e Execution, p Profile, payload []
 		if _, ok := s.Attempts[key]; ok {
 			return ErrBudgetBlocked
 		}
-		totals := map[string]int64{}
-		for _, provider := range []string{"openai", "anthropic"} {
-			external, ok := s.External[s.Period][provider]
-			if !ok || !external.Known || !external.OutsideGateOnly {
-				return ErrBudgetBlocked
-			}
-			totals[provider] = external.Nanos
-		}
-		for _, a := range s.Attempts {
-			if a.State != "settled" && a.State != "released" {
-				return ErrBudgetBlocked
-			} // one global in-flight, unknown freezes all
-			if a.State == "released" || a.Profile.Prices.Period > s.Period || a.SettledPeriod < s.Period {
-				continue
-			}
-			next, err := addMoney(totals[a.Profile.BillingProvider], *a.Charged)
-			if err != nil {
-				return err
-			}
-			totals[a.Profile.BillingProvider] = next
-		}
-		next, err := addMoney(totals[p.BillingProvider], worst)
-		if err != nil || next > providerCaps[p.BillingProvider] {
-			return ErrBudgetBlocked
-		}
-		totals[p.BillingProvider] = next
-		total, err := addMoney(totals["openai"], totals["anthropic"])
-		if err != nil || total > 630*nanoUSD {
-			return ErrBudgetBlocked
-		}
+
 		s.Attempts[key] = budgetAttempt{Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), ScopeDigest: scopeDigest, State: "reserved", Reserved: worst}
-		return nil
+		return checkBudgetCapacity(s, key)
 	})
 	return key, err
 }
@@ -363,6 +334,11 @@ func (b *Budget) transition(ctx context.Context, key, from, to string) error {
 		}
 		if to == "dispatched" && (s.Period != b.now().Format("2006-01") || a.Profile.Prices.Period != s.Period) {
 			return ErrBudgetBlocked
+		}
+		if to == "dispatched" {
+			if err := checkBudgetCapacity(s, key); err != nil {
+				return err
+			}
 		}
 		a.State = to
 		s.Attempts[key] = a
@@ -489,6 +465,9 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 				if !ok || a.State != "reserved" || s.Period != b.budget.now().Format("2006-01") || a.Profile.Prices.Period != s.Period {
 					return ErrBudgetBlocked
 				}
+				if err := checkBudgetCapacity(s, key); err != nil {
+					return err
+				}
 				a.State = "dispatched"
 				s.Attempts[key] = a
 				return nil
@@ -609,4 +588,53 @@ func (b *Budget) ReplayReceipt(ctx context.Context, key string, canonical Record
 		return ErrBudgetBlocked
 	}
 	return b.record(ctx, key, r, canonical)
+}
+
+// checkBudgetCapacity runs under the budget file lock for reserve and final
+// dispatch. The current reservation is included exactly once; any other open
+// attempt freezes admission, and changed outside-gate knowledge is authoritative.
+func checkBudgetCapacity(s *budgetState, reservedKey string) error {
+	totals := map[string]int64{}
+	for _, provider := range []string{"openai", "anthropic"} {
+		external, ok := s.External[s.Period][provider]
+		if !ok || !external.Known || !external.OutsideGateOnly || external.Nanos < 0 {
+			return ErrBudgetBlocked
+		}
+		totals[provider] = external.Nanos
+	}
+	for key, a := range s.Attempts {
+		if a.State == "released" {
+			continue
+		}
+		var amount int64
+		if a.State == "settled" {
+			if a.Profile.Prices.Period > s.Period || a.SettledPeriod < s.Period {
+				continue
+			}
+			if a.Charged == nil {
+				return ErrBudgetBlocked
+			}
+			amount = *a.Charged
+		} else if key == reservedKey && a.State == "reserved" {
+			amount = a.Reserved
+		} else {
+			return ErrBudgetBlocked
+		}
+		next, err := addMoney(totals[a.Profile.BillingProvider], amount)
+		if err != nil {
+			return err
+		}
+		totals[a.Profile.BillingProvider] = next
+	}
+	for provider, total := range totals {
+		cap, ok := providerCaps[provider]
+		if !ok || total > cap {
+			return ErrBudgetBlocked
+		}
+	}
+	total, err := addMoney(totals["openai"], totals["anthropic"])
+	if err != nil || total > 630*nanoUSD {
+		return ErrBudgetBlocked
+	}
+	return nil
 }

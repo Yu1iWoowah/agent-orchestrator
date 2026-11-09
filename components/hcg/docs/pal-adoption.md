@@ -50,7 +50,7 @@ coverage／omissions 由 HCG 從精確 wire 比對產生；來源過大或總範
 
 ## 固定引用回覆（.04）
 
-模型只可提出 `hcg.delegate-read/1` JSON 的 findings／evidence，HCG 拒絕未知欄位與未驗自由文字。每條 finding 指向 evidence IDs，推論另標 hypothesis；HCG 核 source／revision／原始 content hash、1-based range 與原 snapshot bytes 的逐字 quote，再產 quote hash、original relative path、observed_at／machine_checked。模型給 quote hash 時亦須相符；不同換行的 quote 不默認當原 bytes。機器只驗定位／引用，不保證語義支持或沒有漏事實。
+模型只可提出 `hcg.delegate-read/1` JSON 的 findings／evidence，HCG 拒絕未知欄位與未驗自由文字。每條 finding 指向 evidence IDs，推論另標 hypothesis；HCG 核 source／revision／原始 content hash、1-based range 與原 snapshot bytes 的逐字 quote，再產 quote hash、original relative path、observed_at／machine_checked。模型給 quote hash 時亦須相符；CRLF／bare CR 以明確 byte-offset 映射成模型可見的 LF logical lines；先逐字核對可見 quote，再由 AO 重建原始分隔 bytes 與 quote hash，原 content hash 不變。未對上原 snapshot hash／行映射仍拒絕。機器只驗定位／引用，不保證語義支持或沒有漏事實。
 
 固定 AO instruction／question／focus 與 source metadata 分開，最終 wire 仍經精確 gate；原相對路徑只在 AO 映射／回覆，不作 PAL 控制檔名。coverage 及 requested／injected digest 由 HCG 產生，模型自稱 complete 不受信任。not_found 僅適用已完整注入的本次範圍；超出 output_limit 就 blocked 並留 omission，不截斷成看似完整的答案。output_limit 是驗證後 JSON 的 byte 上限（預設 16 KiB，上限 64 KiB）；拒絕回覆的安全 metadata 不作原文 fallback。
 

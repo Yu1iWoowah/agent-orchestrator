@@ -171,8 +171,8 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 		if textHash(string(body)) != allowed[path] || !safeText(string(body)) {
 			return out, scopeFailure("blocked", id, "source_changed_or_sensitive")
 		}
-		text := strings.ReplaceAll(strings.ReplaceAll(string(body), "\r\n", "\n"), "\r", "\n")
-		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: filepath.ToSlash(path), Revision: approved.Revision, SHA256: allowed[path], Start: 1, End: len(strings.Split(text, "\n"))}, text: text, originalText: string(body), observedAt: time.Now().UTC()})
+		text, lines := sourceView(string(body))
+		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: filepath.ToSlash(path), Revision: approved.Revision, SHA256: allowed[path], Start: 1, End: len(lines)}, text: text, originalText: string(body), observedAt: time.Now().UTC()})
 	}
 	return out, nil
 }
@@ -194,4 +194,32 @@ func readSource(ctx context.Context, r io.Reader) ([]byte, error) {
 		}
 	}
 	return body, nil
+}
+
+// sourceView maps each displayed logical line to original UTF-8 byte offsets.
+// Terminators separate lines but are excluded from each line's content range.
+type sourceLine struct{ start, end int }
+
+func sourceView(raw string) (string, []sourceLine) {
+	lines := []sourceLine{}
+	start := 0
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\r' && raw[i] != '\n' {
+			continue
+		}
+		lines = append(lines, sourceLine{start, i})
+		if raw[i] == '\r' && i+1 < len(raw) && raw[i+1] == '\n' {
+			i++
+		}
+		start = i + 1
+	}
+	lines = append(lines, sourceLine{start, len(raw)})
+	var view strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			view.WriteByte('\n')
+		}
+		view.WriteString(raw[line.start:line.end])
+	}
+	return view.String(), lines
 }

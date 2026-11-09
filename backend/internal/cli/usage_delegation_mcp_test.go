@@ -133,3 +133,35 @@ func TestHCGDelegationCLIValidationAndEnvelope(t *testing.T) {
 		t.Fatalf("lost daemon envelope: %v", err)
 	}
 }
+
+type delegationFixtureTimeout struct{}
+
+func (delegationFixtureTimeout) Error() string   { return "synthetic HTTP client timeout" }
+func (delegationFixtureTimeout) Timeout() bool   { return true }
+func (delegationFixtureTimeout) Temporary() bool { return false }
+
+type delegationTimeoutTransport struct{}
+
+func (delegationTimeoutTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == "/internal/telemetry/cli-invoked" {
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	}
+	if r.Context().Err() != nil {
+		return nil, r.Context().Err()
+	}
+	return nil, delegationFixtureTimeout{}
+}
+func TestHCGDelegationHTTPClientTimeoutReturnsSafeJSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("injected transport should handle request") }))
+	defer server.Close()
+	writeRunFileFor(t, cfg, server)
+	out, _, err := executeCLI(t, Deps{HTTPClient: &http.Client{Transport: delegationTimeoutTransport{}}, ProcessAlive: func(int) bool { return true }}, "usage", "delegation", "read", "--session", "s", "--question", "synthetic question", "--path", "prompt.txt", "--json")
+	var reply struct {
+		Schema, Status, Reason, Answer string
+		Findings, Evidence             []any
+	}
+	if ExitCode(err) != 1 || json.Unmarshal([]byte(out), &reply) != nil || reply.Schema != "hcg.delegate-read/1" || reply.Status != "unavailable" || reply.Reason != "deadline_exceeded" || reply.Answer != "" || len(reply.Findings) != 0 || len(reply.Evidence) != 0 {
+		t.Fatal("HTTP client timeout did not return fixed unavailable JSON/exit 1")
+	}
+}

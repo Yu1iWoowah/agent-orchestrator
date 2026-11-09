@@ -115,6 +115,9 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 		if reason == "response_size_limit" {
 			out.Omissions = append(out.Omissions, Omission{Reason: reason})
 		}
+		if !safeOutputStrings(out) {
+			out = ReadReply{Schema: resultSchema, Status: "blocked", Reason: "unverified", Findings: []Finding{}, Evidence: []Evidence{}, Omissions: []Omission{}}
+		}
 		return out, ErrUnavailable
 	}
 	if limit == 0 {
@@ -137,12 +140,18 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 	if err := decoder.Decode(new(any)); err != io.EOF || proposal.Schema != resultSchema || (proposal.Status != "ok" && proposal.Status != "not_found") || proposal.Findings == nil || proposal.Evidence == nil {
 		return reject("unverified")
 	}
+	if !safeOutputStrings(proposal) {
+		return reject("unverified")
+	}
 	if proposal.Status == "not_found" {
 		if len(proposal.Findings) != 0 || len(proposal.Evidence) != 0 {
 			return reject("unverified")
 		}
 		out.Status = "not_found"
 		out.Reason = "not_found_in_injected_scope"
+		if !safeOutputStrings(out) {
+			return reject("unverified")
+		}
 		encoded, err := json.Marshal(out)
 		if err != nil || len(encoded) > limit {
 			return reject("response_size_limit")
@@ -166,14 +175,15 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 		if original == "" {
 			original = s.text
 		}
-		lines := strings.Split(original, "\n")
-		if e.LineEnd > len(lines) {
+		visible, ranges := sourceView(original)
+		if textHash(original) != s.SHA256 || visible != s.text || len(ranges) != s.End || e.LineEnd > len(ranges) {
 			return reject("unverified")
 		}
-		quote := strings.Join(lines[e.LineStart-1:e.LineEnd], "\n")
-		if quote != e.Quote {
+		visibleQuote := strings.Join(strings.Split(visible, "\n")[e.LineStart-1:e.LineEnd], "\n")
+		if visibleQuote != e.Quote {
 			return reject("unverified")
 		}
+		e.Quote = original[ranges[e.LineStart-1].start:ranges[e.LineEnd-1].end]
 		e.QuoteSHA256 = textHash(e.Quote)
 		evidenceIDs[e.ID] = true
 		out.Evidence = append(out.Evidence, Evidence{proposedEvidence: e, Path: s.Path, ObservedAt: sourceObservedAt(s, ctxTime), Verification: "machine_checked"})
@@ -199,6 +209,9 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 	}
 	out.Status = "ok"
 	out.Reason = "machine_checked_locations_only"
+	if !safeOutputStrings(out) {
+		return reject("unverified")
+	}
 	encoded, err := json.Marshal(out)
 	if err != nil || len(encoded) > limit {
 		return reject("response_size_limit")
@@ -211,4 +224,38 @@ func sourceObservedAt(s sourceSnapshot, fallback time.Time) time.Time {
 		return s.observedAt
 	}
 	return fallback.UTC()
+}
+
+// safeOutputStrings scans decoded values, including metadata and final replies;
+// JSON escaping cannot conceal a sentinel, assignment pattern or control byte.
+func safeOutputStrings(value any) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var decoded any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return false
+	}
+	var visit func(any) bool
+	visit = func(v any) bool {
+		switch x := v.(type) {
+		case string:
+			return safeText(x)
+		case []any:
+			for _, item := range x {
+				if !visit(item) {
+					return false
+				}
+			}
+		case map[string]any:
+			for key, item := range x {
+				if !safeText(key) || !visit(item) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return visit(decoded)
 }

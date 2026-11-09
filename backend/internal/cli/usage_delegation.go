@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -63,8 +65,9 @@ func newDelegationCommand(c *commandContext) *cobra.Command {
 			}
 			var result json.RawMessage
 			if err := c.doJSON(cmd.Context(), method, path, body, &result); err != nil {
-				if op == "read" && cmd.Context().Err() != nil {
-					_ = writeJSON(cmd.OutOrStdout(), delegationFailureJSON(cmd.Context()))
+				var timeout net.Error
+				if op == "read" && (cmd.Context().Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())) {
+					_ = writeJSON(cmd.OutOrStdout(), delegationFailureJSON(cmd.Context(), err))
 				}
 				return err
 			}
@@ -100,12 +103,17 @@ func newDelegationCommand(c *commandContext) *cobra.Command {
 	}})
 	return root
 }
-func delegationFailureJSON(ctx context.Context) json.RawMessage {
+func delegationFailureJSON(ctx context.Context, causes ...error) json.RawMessage {
 	reason := "daemon_unavailable"
-	if ctx.Err() == context.Canceled {
+	cause := ctx.Err()
+	if cause == nil && len(causes) > 0 {
+		cause = causes[0]
+	}
+	var timeout net.Error
+	if errors.Is(cause, context.Canceled) {
 		reason = "cancelled"
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(cause, context.DeadlineExceeded) || (errors.As(cause, &timeout) && timeout.Timeout()) {
 		reason = "deadline_exceeded"
 	}
 	raw, _ := json.Marshal(map[string]any{"schema": "hcg.delegate-read/1", "status": "unavailable", "reason": reason, "answer": "", "findings": []any{}, "evidence": []any{}, "omissions": []any{}})

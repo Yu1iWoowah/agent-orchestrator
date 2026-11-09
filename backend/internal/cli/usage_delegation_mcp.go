@@ -130,7 +130,7 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 				defer func() { mu.Lock(); delete(active, key); mu.Unlock() }()
 				var reply json.RawMessage
 				if err := c.doJSON(callCtx, http.MethodPost, "sessions/"+url.PathEscape(id)+"/hcg-delegation/read", args, &reply); err != nil {
-					reply = delegationFailureJSON(callCtx)
+					reply = delegationFailureJSON(callCtx, err)
 				}
 				var status usageReportResponse
 				_ = json.Unmarshal(reply, &status)
