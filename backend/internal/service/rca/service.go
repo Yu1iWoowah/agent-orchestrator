@@ -149,7 +149,11 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 	v, why := s.core.View(ctx, sessionKey(id), inputs)
 	out.Policy = policyView(v)
 	if s.projection != nil {
-		cached, ok, _ := s.projection.LoadSnapshot(ctx, rec.ProjectID, id)
+		cached, ok, loadErr := s.projection.LoadSnapshot(ctx, rec.ProjectID, id)
+		if loadErr != nil {
+			out.Reason = "storage_read_failed"
+			return out, nil //nolint:nilerr // Storage failure is a safe unavailable view; canonical remains readable.
+		}
 		if ok {
 			out.Recorded = &cached
 			out.Status, out.Reason = cached.Status, cached.Reason
@@ -201,7 +205,13 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 	if ok {
 		out.Status, out.Reason = job.status, job.reason
 		if job.status != "running" && (out.Recorded == nil || out.Recorded.ScopeRevision != job.revision) {
-			if cached, found, _ := s.projection.LoadSnapshot(ctx, rec.ProjectID, id); found {
+			cached, found, loadErr := s.projection.LoadSnapshot(ctx, rec.ProjectID, id)
+			if loadErr != nil {
+				out.Recorded = nil
+				out.Status, out.Reason = "unavailable", "storage_read_failed"
+				return out, nil //nolint:nilerr // Discard the partial row while preserving the canonical view.
+			}
+			if found {
 				out.Recorded = &cached
 			} else if job.status != "unavailable" {
 				out.Status, out.Reason = "unavailable", "analysis_not_requested"

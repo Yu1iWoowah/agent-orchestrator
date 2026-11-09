@@ -145,6 +145,9 @@ func pinRoot(path string) (authorizedRoot, string) {
 }
 
 func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, string) {
+	if len(s.roots) != len(s.allowlist) {
+		return nil, "scope_root_mismatch"
+	}
 	var roots []authorizedRoot
 	var paths []string
 	success := false
@@ -153,7 +156,9 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, st
 			closeRoots(roots)
 		}
 	}()
-	for _, root := range s.roots {
+	// Validate every slot before opening or enumerating any root. An absent
+	// approved slot remains absent; another allowlisted slot cannot replace it.
+	for slot, root := range s.roots {
 		if ctx.Err() != nil {
 			return nil, "canceled"
 		}
@@ -162,7 +167,7 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, st
 		}
 		actual, err := filepath.EvalSymlinks(root)
 		if os.IsNotExist(err) {
-			if !containsPath(s.allowlist, root) {
+			if filepath.Clean(root) != filepath.Clean(s.allowlist[slot]) {
 				return nil, "scope_root_mismatch"
 			}
 			continue
@@ -170,17 +175,19 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, st
 		if err != nil {
 			return nil, "source_metadata_failed"
 		}
-		if !containsPath(s.allowlist, actual) {
+		if filepath.Clean(actual) != filepath.Clean(s.allowlist[slot]) {
 			return nil, "scope_root_mismatch"
 		}
 		if !containsPath(paths, actual) {
-			pinned, reason := pinRoot(actual)
-			if reason != "" {
-				return nil, reason
-			}
-			roots = append(roots, pinned)
 			paths = append(paths, actual)
 		}
+	}
+	for _, path := range paths {
+		pinned, reason := pinRoot(path)
+		if reason != "" {
+			return nil, reason
+		}
+		roots = append(roots, pinned)
 	}
 	success = true
 	return roots, ""

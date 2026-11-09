@@ -122,8 +122,15 @@ func (s *DiskStore) directory() (bool, error) {
 	return true, nil
 }
 
-func (s *DiskStore) read(ctx context.Context, cleanup bool) (storedState, error) {
-	out := storedState{Version: 1, Sessions: map[string]storedSession{}}
+func (s *DiskStore) read(ctx context.Context, cleanup bool) (out storedState, readErr error) {
+	out = storedState{Version: 1, Sessions: map[string]storedSession{}}
+	// json.Decoder can populate nested rows before reporting an error. No
+	// partially decoded or unvalidated state may cross this read boundary.
+	defer func() {
+		if readErr != nil {
+			out = storedState{}
+		}
+	}()
 	if ctx.Err() != nil {
 		return out, errStorage
 	}
@@ -374,8 +381,11 @@ func (s *DiskStore) LoadSnapshot(ctx context.Context, project domain.ProjectID, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, err := s.read(ctx, true)
+	if err != nil {
+		return domain.RCARecordedState{}, false, err
+	}
 	row := state.Sessions[keyString(rcapolicy.Key{ProjectID: string(project), SessionID: string(id)})]
-	if row.Recorded == nil {
+	if row.Recorded == nil || !s.now().Before(row.Recorded.ObservedAt.Add(7*24*time.Hour)) {
 		return domain.RCARecordedState{}, false, err
 	}
 	return *row.Recorded, true, err
