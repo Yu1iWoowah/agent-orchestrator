@@ -83,7 +83,8 @@ type Service struct {
 	logger          *slog.Logger
 	withProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 
-	reportingPolicyChanged func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
+	reportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
+	delegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
@@ -113,7 +114,8 @@ type Deps struct {
 	WithProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 
 	// ReportingPolicyChanged cancels affected reports after durable policy changes.
-	ReportingPolicyChanged func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
+	ReportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
+	DelegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
 }
 
 // New returns a project service backed by the given durable store.
@@ -136,7 +138,8 @@ func NewWithDeps(d Deps) *Service {
 		logger:          d.Logger,
 		withProjectGate: d.WithProjectGate,
 
-		reportingPolicyChanged: d.ReportingPolicyChanged,
+		reportingPolicyChanged:  d.ReportingPolicyChanged,
+		delegationPolicyChanged: d.DelegationPolicyChanged,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
@@ -827,10 +830,16 @@ func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func
 	if m.reportingPolicyChanged != nil {
 		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
 	}
+	if m.delegationPolicyChanged != nil {
+		m.delegationPolicyChanged(domain.ProjectID(row.ID), row.Config.DelegationPolicySnapshot())
+	}
 	return nil
 }
 
 func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, after domain.ProjectConfig) {
+	if m.delegationPolicyChanged != nil && !reflect.DeepEqual(before.DelegationPolicySnapshot(), after.DelegationPolicySnapshot()) {
+		m.delegationPolicyChanged(id, after.DelegationPolicySnapshot())
+	}
 	if m.reportingPolicyChanged != nil && !reflect.DeepEqual(
 		[]domain.HCGReportingConfig{before.HCGReporting, before.Worker.HCGReporting, before.Orchestrator.HCGReporting},
 		[]domain.HCGReportingConfig{after.HCGReporting, after.Worker.HCGReporting, after.Orchestrator.HCGReporting}) {

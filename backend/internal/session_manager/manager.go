@@ -1726,7 +1726,7 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 	}
 	namingHandedOff = true
 	m.nameTaskBranchLater(ctx, rec, ws, workspaceProject, taskName, cancelNaming)
-	m.notifyHCGReporting(rec)
+	m.notifyHCGReporting(rec, env[ports.EnvHCGDelegationMCP] == "1")
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
@@ -4079,7 +4079,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	m.notifyHCGReporting(updated)
+	m.notifyHCGReporting(updated, env[ports.EnvHCGDelegationMCP] == "1")
 	return RestoreResult{Session: updated, Mode: mode}, nil
 }
 
@@ -6641,6 +6641,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 	}
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
 	setProtectedEnv(env, ports.EnvAgentSettingsGrant, "", caseInsensitive)
+	setProtectedEnv(env, ports.EnvHCGDelegationMCP, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
 	// The agent-browser service credential is host configuration, not a
@@ -6784,6 +6785,9 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, rec.ControllerOwner(), verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
+	}
+	if resolver, ok := m.hcgReporting.(ports.HCGDelegationMountResolver); ok && (rec.Kind == domain.KindWorker || rec.Kind == domain.KindOrchestrator) && rec.Harness == domain.HarnessCodex && resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: rec.ID, ProjectID: rec.ProjectID, Kind: rec.Kind, Harness: rec.Harness, Mode: domain.SessionModeTUI, DataRoot: m.dataDir}) {
+		env[ports.EnvHCGDelegationMCP] = "1"
 	}
 	return rec, env, nil
 }

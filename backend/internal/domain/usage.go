@@ -498,24 +498,26 @@ type SessionStep struct {
 type UsageLedgerEvent struct {
 	ID, BindingID, UsageSourceID int64
 	ModelUsageEvent
+	Execution *ExecutionUsageIdentity
 }
 
 // UsageEventView exposes only ledger identity and numeric usage.
 type UsageEventView struct {
-	ID                    int64          `json:"id"`
-	BindingID             int64          `json:"bindingId"`
-	UsageSourceID         int64          `json:"usageSourceId"`
-	SourceEventKey        string         `json:"sourceEventKey"`
-	ProviderID            string         `json:"providerId"`
-	ModelID               string         `json:"modelId"`
-	MeasurementKind       string         `json:"measurementKind"`
-	InputTokens           *int64         `json:"inputTokens"`
-	CachedInputTokens     *int64         `json:"cachedInputTokens"`
-	UncachedInputTokens   *int64         `json:"uncachedInputTokens"`
-	OutputTokens          *int64         `json:"outputTokens"`
-	CreatedAt             *time.Time     `json:"createdAt"`
-	ProviderUsage         map[string]any `json:"providerUsage"`
-	UsageProjectionStatus string         `json:"usageProjectionStatus" enum:"complete,partial,missing,invalid"`
+	Execution             *ExecutionUsageIdentity `json:"execution,omitempty"`
+	ID                    int64                   `json:"id"`
+	BindingID             int64                   `json:"bindingId,omitempty"`
+	UsageSourceID         int64                   `json:"usageSourceId,omitempty"`
+	SourceEventKey        string                  `json:"sourceEventKey"`
+	ProviderID            string                  `json:"providerId"`
+	ModelID               string                  `json:"modelId"`
+	MeasurementKind       string                  `json:"measurementKind"`
+	InputTokens           *int64                  `json:"inputTokens"`
+	CachedInputTokens     *int64                  `json:"cachedInputTokens"`
+	UncachedInputTokens   *int64                  `json:"uncachedInputTokens"`
+	OutputTokens          *int64                  `json:"outputTokens"`
+	CreatedAt             *time.Time              `json:"createdAt"`
+	ProviderUsage         map[string]any          `json:"providerUsage"`
+	UsageProjectionStatus string                  `json:"usageProjectionStatus" enum:"complete,partial,missing,invalid"`
 }
 
 // UsageBindingView omits paths, parser state and credentials.
@@ -557,4 +559,37 @@ type UsageEventsPage struct {
 	AccountID       *string            `json:"accountId"`
 	CurrentNativeID string             `json:"currentNativeId"`
 	Consistency     string             `json:"consistency"`
+}
+
+// ExecutionUsageIdentity is provenance from the trusted execution recorder.
+// It names an auxiliary source, never a fabricated native artifact/binding.
+type ExecutionUsageIdentity struct {
+	ID                    int64     `json:"id"`
+	ProjectID             string    `json:"projectId"`
+	SessionID             SessionID `json:"sessionId"`
+	DelegationID          string    `json:"delegationId"`
+	AttemptID             string    `json:"attemptId"`
+	BillingProvider       string    `json:"billingProvider"`
+	ProfileID             string    `json:"profileId"`
+	ProfileRevision       string    `json:"profileRevision"`
+	ProfileDigest         string    `json:"profileDigest"`
+	ProjectPolicyRevision string    `json:"projectPolicyRevision"`
+	RequestID             string    `json:"requestId"`
+	ResponseID            string    `json:"responseId,omitempty"`
+	UnknownReason         string    `json:"unknownReason,omitempty"`
+	FinishReason          string    `json:"finishReason,omitempty"`
+}
+
+// ExecutionUsageReceipt carries only trusted, bounded provider projections.
+// Descriptor and prices refer to dispatch time, not the current registration.
+type ExecutionUsageReceipt struct {
+	ProjectID                                                                          string
+	SessionID                                                                          SessionID
+	DelegationID, AttemptID                                                            string
+	BillingProvider, ProfileID, ProfileRevision, ProfileDigest                         string
+	ProjectPolicyRevision, ModelID, RequestID, ResponseID, UnknownReason, FinishReason string
+	ObservedAt                                                                         time.Time
+	Tokens                                                                             UsageTokenMetrics
+	TotalTokens, ReasoningOutputTokens                                                 *int64
+	Costs                                                                              UsageEventCosts
 }

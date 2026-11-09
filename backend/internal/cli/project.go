@@ -84,7 +84,8 @@ type agentConfig struct {
 
 // roleOverride mirrors domain.RoleOverride.
 type roleOverride struct {
-	HCGReporting hcgReportingConfig `json:"hcgReporting,omitempty,omitzero"`
+	HCGDelegation hcgReportingConfig `json:"hcgDelegation,omitempty,omitzero"`
+	HCGReporting  hcgReportingConfig `json:"hcgReporting,omitempty,omitzero"`
 
 	AgentAccountID string      `json:"agentAccountId,omitempty"`
 	Agent          string      `json:"agent,omitempty"`
@@ -119,6 +120,7 @@ type orchestratorHandoffConfig struct {
 }
 
 type projectConfig struct {
+	HCGDelegation         hcgDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
 	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
@@ -621,4 +623,14 @@ func confirmProjectRemoval(cmd *cobra.Command, id string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(line) == id, nil
+}
+
+type hcgDelegationProfileRef struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+}
+type hcgDelegationConfig struct {
+	Enabled         *bool                     `json:"enabled,omitempty"`
+	AllowedProfiles []hcgDelegationProfileRef `json:"allowedProfiles,omitempty"`
+	SelectedProfile *hcgDelegationProfileRef  `json:"selectedProfile,omitempty"`
 }

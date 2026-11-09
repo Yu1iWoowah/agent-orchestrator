@@ -38,7 +38,7 @@ func (m *Service) PatchSettings(ctx context.Context, id domain.ProjectID, in Pat
 	}
 	for key := range in.Config {
 		switch key {
-		case "defaultBranch", "sessionPrefix", "agentAccounts", "worker", "orchestrator", "reviewers", "autoReview", "workersRequestReview", "trackerIntake", "env", "postCreate", "preRemove":
+		case "hcgDelegation", "defaultBranch", "sessionPrefix", "agentAccounts", "worker", "orchestrator", "reviewers", "autoReview", "workersRequestReview", "trackerIntake", "env", "postCreate", "preRemove":
 		default:
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", "Setting cannot be patched: "+key, nil)
 		}

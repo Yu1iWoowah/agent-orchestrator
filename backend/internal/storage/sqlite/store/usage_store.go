@@ -404,7 +404,7 @@ func (s *Store) ApplyUsageChunk(
 				return err
 			}
 			existing, err := q.GetModelUsageEventByKey(ctx, gen.GetModelUsageEventByKeyParams{
-				BindingID:      source.BindingID,
+				BindingID:      sql.NullInt64{Int64: source.BindingID, Valid: true},
 				SourceEventKey: ev.SourceEventKey,
 			})
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -419,11 +419,11 @@ func (s *Store) ApplyUsageChunk(
 				// the same stable key, so this dedup hit can be a row still
 				// pointing at the retired generation. Repair skips that
 				// generation, so leaving it there strands the attribution.
-				if existing.UsageSourceID != sourceID {
+				if existing.UsageSourceID.Int64 != sourceID {
 					if _, err := q.RehomeOpenUsageEventToReplacementSource(
 						ctx,
 						gen.RehomeOpenUsageEventToReplacementSourceParams{
-							UsageSourceID:         sourceID,
+							UsageSourceID:         sql.NullInt64{Int64: sourceID, Valid: true},
 							ID:                    existing.ID,
 							ExpectedUsageSourceID: existing.UsageSourceID,
 						},
@@ -440,7 +440,7 @@ func (s *Store) ApplyUsageChunk(
 						EstimatedCostNanos:        ptrInt64ToNull(ev.Costs.EstimatedCostNanos),
 						PricingVersion:            ev.Costs.PricingVersion,
 						ID:                        existing.ID,
-						ExpectedUsageSourceID:     sourceID,
+						ExpectedUsageSourceID:     sql.NullInt64{Int64: sourceID, Valid: true},
 						ExpectedBillingProviderID: existing.BillingProviderID,
 					})
 					if err != nil {
@@ -517,7 +517,7 @@ func (s *Store) ListUsageCostCandidates(
 	for _, row := range rows {
 		out = append(out, domain.UsageCostCandidate{
 			ID:                row.ID,
-			BindingID:         row.BindingID,
+			BindingID:         row.BindingID.Int64,
 			ProviderID:        domain.UsageProviderID(row.ProviderID),
 			BillingProviderID: row.BillingProviderID.String,
 			ModelID:           row.ModelID,
@@ -575,7 +575,7 @@ func (s *Store) ApplyUsageCostUpdates(
 				EstimatedCostNanos:           ptrInt64ToNull(update.Costs.EstimatedCostNanos),
 				AttemptedPricingVersion:      update.Costs.PricingVersion,
 				ID:                           candidate.ID,
-				BindingID:                    candidate.BindingID,
+				BindingID:                    sql.NullInt64{Int64: candidate.BindingID, Valid: true},
 				ExpectedBillingProviderID:    stringOrNull(candidate.BillingProviderID),
 				ExpectedModelID:              candidate.ModelID,
 				ExpectedUsageMeasurementKind: string(candidate.MeasurementKind),
@@ -594,7 +594,7 @@ func (s *Store) ApplyUsageCostUpdates(
 				return err
 			}
 			applied++
-			affectedBindings[bindingID] = struct{}{}
+			affectedBindings[bindingID.Int64] = struct{}{}
 		}
 		bindingIDs := make([]int64, 0, len(affectedBindings))
 		for bindingID := range affectedBindings {
@@ -641,7 +641,7 @@ func (s *Store) ListLegacyUsageSources(ctx context.Context) ([]domain.UsageSourc
 // ListLegacyUsageEvents returns the immutable generic facts that transcript
 // attribution must match before provider and split repair is eligible.
 func (s *Store) ListLegacyUsageEvents(ctx context.Context, sourceID int64) ([]domain.LegacyUsageEvent, error) {
-	rows, err := s.qr.ListLegacyUsageEvents(ctx, sourceID)
+	rows, err := s.qr.ListLegacyUsageEvents(ctx, sql.NullInt64{Int64: sourceID, Valid: true})
 	if err != nil {
 		return nil, fmt.Errorf("list legacy usage events for source %d: %w", sourceID, err)
 	}
@@ -649,8 +649,8 @@ func (s *Store) ListLegacyUsageEvents(ctx context.Context, sourceID int64) ([]do
 	for _, row := range rows {
 		out = append(out, domain.LegacyUsageEvent{
 			ID:                    row.ID,
-			BindingID:             row.BindingID,
-			UsageSourceID:         row.UsageSourceID,
+			BindingID:             row.BindingID.Int64,
+			UsageSourceID:         row.UsageSourceID.Int64,
 			ProviderID:            domain.UsageProviderID(row.ProviderID),
 			BillingProviderID:     row.BillingProviderID.String,
 			BillingProviderSource: domain.UsageBillingProviderSource(row.BillingProviderSource.String),
@@ -709,8 +709,8 @@ func (s *Store) ApplyLegacyUsageRepairs(
 				EstimatedCostNanos:            ptrInt64ToNull(repair.Costs.EstimatedCostNanos),
 				PricingVersion:                repair.Costs.PricingVersion,
 				ID:                            candidate.ID,
-				BindingID:                     candidate.BindingID,
-				UsageSourceID:                 candidate.UsageSourceID,
+				BindingID:                     sql.NullInt64{Int64: candidate.BindingID, Valid: true},
+				UsageSourceID:                 sql.NullInt64{Int64: candidate.UsageSourceID, Valid: true},
 				ExpectedBillingProviderID:     stringOrNull(candidate.BillingProviderID),
 				ExpectedBillingProviderSource: stringOrNull(string(candidate.BillingProviderSource)),
 				ExpectedProviderID:            string(candidate.ProviderID),
@@ -735,7 +735,7 @@ func (s *Store) ApplyLegacyUsageRepairs(
 				return err
 			}
 			applied++
-			affectedBindings[bindingID] = struct{}{}
+			affectedBindings[bindingID.Int64] = struct{}{}
 		}
 		bindingIDs := make([]int64, 0, len(affectedBindings))
 		for bindingID := range affectedBindings {
@@ -892,8 +892,8 @@ func usageSourceInsertParams(rec domain.UsageSourceRecord) gen.InsertUsageSource
 
 func usageEventInsertParams(source gen.GetUsageSourceWithBindingAndSessionRow, ev domain.ModelUsageEvent) gen.InsertModelUsageEventParams {
 	return gen.InsertModelUsageEventParams{
-		BindingID:             source.BindingID,
-		UsageSourceID:         source.SourceID,
+		BindingID:             sql.NullInt64{Int64: source.BindingID, Valid: true},
+		UsageSourceID:         sql.NullInt64{Int64: source.SourceID, Valid: true},
 		ProviderID:            string(ev.ProviderID),
 		BillingProviderID:     stringOrNull(ev.BillingProviderID),
 		BillingProviderSource: stringOrNull(string(ev.BillingProviderSource)),
@@ -926,7 +926,7 @@ func stringOrNull(value string) sql.NullString {
 // HasOpenUsageAttribution reports whether a source still owns an event whose
 // billing attribution a repair pass could finish.
 func (s *Store) HasOpenUsageAttribution(ctx context.Context, sourceID int64) (bool, error) {
-	open, err := s.qr.HasOpenUsageAttribution(ctx, sourceID)
+	open, err := s.qr.HasOpenUsageAttribution(ctx, sql.NullInt64{Int64: sourceID, Valid: true})
 	if err != nil {
 		return false, fmt.Errorf("check open usage attribution for source %d: %w", sourceID, err)
 	}
@@ -1131,7 +1131,15 @@ func (s *Store) ListUsageEventsPage(ctx context.Context, id domain.SessionID, af
 		if r.CreatedAt.Valid {
 			e.CreatedAt = r.CreatedAt.Time
 		}
-		out = append(out, domain.UsageLedgerEvent{ID: r.ID, BindingID: r.BindingID, UsageSourceID: r.UsageSourceID, ModelUsageEvent: e})
+		var execution *domain.ExecutionUsageIdentity
+		if r.ExecutionID.Valid {
+			execution = &domain.ExecutionUsageIdentity{}
+			if err := json.Unmarshal([]byte(r.IdentityJson.String), execution); err != nil {
+				return nil, fmt.Errorf("execution identity: %w", err)
+			}
+			execution.ID = r.ExecutionID.Int64
+		}
+		out = append(out, domain.UsageLedgerEvent{ID: r.ID, BindingID: r.BindingID.Int64, UsageSourceID: r.UsageSourceID.Int64, ModelUsageEvent: e, Execution: execution})
 	}
 	return out, nil
 }

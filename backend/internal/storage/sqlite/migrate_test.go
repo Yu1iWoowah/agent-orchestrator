@@ -24,7 +24,7 @@ var expectedUsageTableColumns = map[string][]string{
 		"failure_count", "anomaly_count", "next_retry_at", "last_error_code", "updated_at",
 	},
 	"model_usage_events": {
-		"id", "binding_id", "usage_source_id", "provider_id", "billing_provider_id", "model_id",
+		"id", "binding_id", "usage_source_id", "execution_source_id", "provider_id", "billing_provider_id", "model_id",
 		"usage_measurement_kind", "input_tokens", "cached_input_tokens",
 		"uncached_input_tokens", "output_tokens", "provider_usage_json",
 		"source_event_key", "created_at",
