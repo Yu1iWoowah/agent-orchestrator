@@ -696,8 +696,19 @@ def workspace_git_inputs(workspace):
 def workspace_patch(workspace, inputs, cached=False):
     if not inputs["patch_paths"]:
         return b""
-    return old_git(["--literal-pathspecs", "diff", *(["--cached"] if cached else []), "--binary", "--no-renames",
-                    "--no-ext-diff", "--no-textconv", "--", *inputs["patch_paths"]], workspace=workspace)
+    raw = old_git(["--literal-pathspecs", "diff", *(["--cached"] if cached else []), "--raw", "-z", "--patch",
+                   "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--", *inputs["patch_paths"]], workspace=workspace)
+    if not raw:
+        return b""
+    # Read paths and patch from the same diff queue: a literal file path can still match new descendants.
+    metadata, separator, patch = raw.partition(b"\0\0")
+    records = metadata.split(b"\0")
+    approved = {os.fsencode(path) for path in inputs["patch_paths"]}
+    require(separator and len(records) % 2 == 0 and
+            all(records[i].startswith(b":") and records[i + 1] in approved and
+                not SENSITIVE_SOURCE.search(os.fsdecode(records[i + 1])) for i in range(0, len(records), 2)),
+            "workspace patch paths drifted outside approved files")
+    return patch
 
 
 def git_snapshot(workspace, destination):

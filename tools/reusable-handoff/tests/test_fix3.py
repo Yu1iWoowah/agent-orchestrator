@@ -228,6 +228,32 @@ class WorkspaceTests(unittest.TestCase):
         with patch.object(h, "old_git", side_effect=AssertionError("must not invoke unrestricted diff")):
             self.assertEqual(h.workspace_patch(self.repo, inputs), b"")
 
+    def test_file_to_directory_drift_never_saves_sensitive_child_patch(self):
+        for role in ("worker", "old"):
+            with self.subTest(role=role):
+                self.fresh("directory-drift-" + role)
+                if role == "old":
+                    workspace, run, plan = self.old()
+                    destination = run.root
+                else:
+                    workspace, destination = self.repo, self.root / "snapshot"
+                original = h.old_git
+                changed = False
+                def drift(args, **kwargs):
+                    nonlocal changed
+                    if "--binary" in args and not changed:
+                        changed = True
+                        (workspace / "plain").unlink()
+                        (workspace / "plain").mkdir()
+                        (workspace / "plain/.env").write_bytes(MARKER)
+                        self.git(workspace, "add", "-A", "--", "plain")
+                    return original(args, **kwargs)
+                with patch.object(h, "old_git", side_effect=drift), self.assertRaises(h.Stop):
+                    h.old_git_state(run, plan, workspace) if role == "old" else h.git_snapshot(workspace, destination)
+                self.assertTrue(changed)
+                self.no_marker(destination)
+                self.assertFalse((destination / "snapshot.json").exists())
+
     def test_empty_committed_template_intent_to_add_is_not_stage_zero_proof(self):
         source = self.template()
         source.write_bytes(b"")
