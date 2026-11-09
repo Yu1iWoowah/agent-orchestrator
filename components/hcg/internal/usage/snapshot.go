@@ -89,4 +89,5 @@ type ExecutionSource struct {
 	RequestID             string `json:"requestId"`
 	ResponseID            string `json:"responseId,omitempty"`
 	UnknownReason         string `json:"unknownReason,omitempty"`
+	FinishReason          string `json:"finishReason,omitempty"`
 }

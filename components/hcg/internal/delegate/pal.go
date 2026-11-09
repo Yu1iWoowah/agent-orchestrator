@@ -214,7 +214,9 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 		result.Receipt.ProfileDigest = profile.digest()
 		if transportErr != nil {
 			result.text = ""
-			result.Receipt.UnknownReason = "transport_failed"
+			if result.Receipt.UnknownReason != "" {
+				result.Receipt.UnknownReason = "transport_failed"
+			}
 			err = transportErr
 		}
 		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

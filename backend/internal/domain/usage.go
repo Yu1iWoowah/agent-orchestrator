@@ -577,6 +577,7 @@ type ExecutionUsageIdentity struct {
 	RequestID             string    `json:"requestId"`
 	ResponseID            string    `json:"responseId,omitempty"`
 	UnknownReason         string    `json:"unknownReason,omitempty"`
+	FinishReason          string    `json:"finishReason,omitempty"`
 }
 
 // ExecutionUsageReceipt carries only trusted, bounded provider projections.

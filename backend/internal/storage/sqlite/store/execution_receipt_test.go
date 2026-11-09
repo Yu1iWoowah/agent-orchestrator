@@ -24,7 +24,7 @@ func TestExecutionReceiptCanonicalReplay(t *testing.T) {
 			receipts = append(receipts, domain.ExecutionUsageReceipt{ProjectID: project, SessionID: sess.ID,
 				DelegationID: "delegation", AttemptID: "attempt", BillingProvider: provider,
 				ProfileID: provider + "-fixture", ProfileRevision: "v1", ProfileDigest: strings.Repeat("a", 64),
-				ProjectPolicyRevision: "policy-v1", ModelID: "fixture-model", RequestID: "same-request",
+				ProjectPolicyRevision: "policy-v1", FinishReason: "stop", ModelID: "fixture-model", RequestID: "same-request",
 				ObservedAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), Tokens: domain.UsageTokenMetrics{InputTokens: &n, OutputTokens: &o}})
 		}
 	}
@@ -66,7 +66,7 @@ func TestExecutionReceiptCanonicalReplay(t *testing.T) {
 			t.Fatalf("events=%+v bindings=%+v", page.Events, page.Bindings)
 		}
 		for _, event := range page.Events {
-			if event.Execution == nil || event.BindingID != 0 || event.UsageSourceID != 0 || event.Execution.ProjectID != receipts[i].ProjectID || event.Execution.ProfileRevision != "v1" || event.Execution.ProjectPolicyRevision != "policy-v1" || event.InputTokens == nil || *event.InputTokens != 10 {
+			if event.Execution == nil || event.BindingID != 0 || event.UsageSourceID != 0 || event.Execution.ProjectID != receipts[i].ProjectID || event.Execution.ProfileRevision != "v1" || event.Execution.ProjectPolicyRevision != "policy-v1" || event.Execution.FinishReason != "stop" || event.InputTokens == nil || *event.InputTokens != 10 {
 				t.Fatalf("event=%+v", event)
 			}
 		}

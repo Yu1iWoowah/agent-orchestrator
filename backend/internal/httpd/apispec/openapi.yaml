@@ -23636,6 +23636,8 @@ components:
           type: string
         delegationId:
           type: string
+        finishReason:
+          type: string
         id:
           format: int64
           type: integer

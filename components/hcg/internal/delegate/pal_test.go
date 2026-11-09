@@ -269,3 +269,20 @@ func TestPALCallerNeverReturnsUnverifiedText(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptIdentifiersNeverPersistSuspiciousProviderText(t *testing.T) {
+	p := budgetProfile("openai")
+	response := providerFixtureReply(p.Model, "answer")
+	response.Headers["x-request-id"] = "HCG_CANARY_DO_NOT_SEND"
+	out, err := projectResponse(p, response)
+	if err == nil || out.Receipt.RequestID != "" || out.Receipt.Usage.Input != nil {
+		t.Fatalf("unsafe header projected: %+v %v", out.Receipt, err)
+	}
+	response = providerFixtureReply(p.Model, "answer")
+	response.Body = []byte(strings.Replace(string(response.Body), "fixture-response", "HCG_CANARY_DO_NOT_SEND", 1))
+	out, err = projectResponse(p, response)
+	encoded, _ := json.Marshal(out.Receipt)
+	if err == nil || strings.Contains(string(encoded), "CANARY") || out.Receipt.RequestID != "fixture-request" {
+		t.Fatalf("unsafe response ID projected: %s %v", encoded, err)
+	}
+}

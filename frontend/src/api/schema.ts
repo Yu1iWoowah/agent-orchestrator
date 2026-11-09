@@ -7752,6 +7752,7 @@ export interface components {
             attemptId: string;
             billingProvider: string;
             delegationId: string;
+            finishReason?: string;
             /** Format: int64 */
             id: number;
             profileDigest: string;

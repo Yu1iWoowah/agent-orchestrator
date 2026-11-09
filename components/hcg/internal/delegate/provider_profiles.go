@@ -10,6 +10,7 @@ import (
 // Profile is a deployment snapshot, never supplied by the model/tool request.
 // Limits describe the reviewed model; OutputTokens is this attempt's hard cap.
 type Profile struct {
+	Prices          Prices `json:"prices"`
 	ID              string `json:"id"`
 	Revision        string `json:"revision"`
 	BillingProvider string `json:"billingProvider"`
@@ -33,7 +34,7 @@ func (p Profile) endpoint() string {
 }
 
 func (p Profile) valid() bool {
-	return p.endpoint() != "" && profileToken.MatchString(p.ID) && profileToken.MatchString(p.Revision) && profileToken.MatchString(p.Model) && p.Model != "auto" && p.Model != "latest" && p.Model != "default" && p.ContextTokens > 0 && p.MaxOutputTokens > 0 && p.OutputTokens > 0 && p.OutputTokens <= p.MaxOutputTokens && p.OutputTokens < p.ContextTokens
+	return safeText(p.ID) && safeText(p.Revision) && safeText(p.Model) && p.endpoint() != "" && profileToken.MatchString(p.ID) && profileToken.MatchString(p.Revision) && profileToken.MatchString(p.Model) && p.Model != "auto" && p.Model != "latest" && p.Model != "default" && p.ContextTokens > 0 && p.MaxOutputTokens > 0 && p.OutputTokens > 0 && p.OutputTokens <= p.MaxOutputTokens && p.OutputTokens < p.ContextTokens
 }
 
 func (p Profile) digest() string {

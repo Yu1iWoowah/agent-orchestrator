@@ -53,3 +53,13 @@ coverage／omissions 由 HCG 從精確 wire 比對產生；來源過大或總範
 模型只可提出 `hcg.delegate-read/1` JSON 的 findings／evidence，HCG 拒絕未知欄位與未驗自由文字。每條 finding 指向 evidence IDs，推論另標 hypothesis；HCG 核 source／revision／原始 content hash、1-based range 與原 snapshot bytes 的逐字 quote，再產 quote hash、original relative path、observed_at／machine_checked。模型給 quote hash 時亦須相符；不同換行的 quote 不默認當原 bytes。機器只驗定位／引用，不保證語義支持或沒有漏事實。
 
 固定 AO instruction／question／focus 與 source metadata 分開，最終 wire 仍經精確 gate；原相對路徑只在 AO 映射／回覆，不作 PAL 控制檔名。coverage 及 requested／injected digest 由 HCG 產生，模型自稱 complete 不受信任。not_found 僅適用已完整注入的本次範圍；超出 output_limit 就 blocked 並留 omission，不截斷成看似完整的答案。output_limit 是驗證後 JSON 的 byte 上限（預設 16 KiB，上限 64 KiB）；拒絕回覆的安全 metadata 不作原文 fallback。
+
+## 主機共用預算與收據故障閉環（.05）
+
+所有 project／session 與兩家 provider 共用同一 daemon 管理根下的 dollar journal；獨立 instance 亦遵守同一 file lock／atomic replacement。cap 固定為 OpenAI 300、Anthropic 400、合計 630 美元，最多全主機一個在途；沒有每 project／key／profile 的新 630。每次正式 wire 嘗試先驗不可變 descriptor、已核月期／外部非本 gate 支出與 hold、完整 model input ceiling／硬 output cap／價目，再持久預留；未知任一上界即拒送。報價以 nano-USD 整數向上取整，計入 cache 分桶造成的最壞 rounding 差額。
+
+reserve 後只以短 policy admission 判定 dispatch 授權，不持鎖等待 PAL／provider／canonical recorder。可證未送才 release；可能已送、未知 usage／價格涵蓋、月界／重啟、canonical 入帳失敗均保留 hold，不 TTL 歸零、不自動重送／換家。新月份須明示 host approval 且舊 hold 全閉合；同月外部支出不得降低或重複包含本 gate attempts。這些都是合成聲明與 fixture 驗證，沒有查真帳號或宣稱已觀測外部真支出。
+
+safe pending receipt spool 與活躍 daemon 的記憶體副本只為入同一 canonical ledger 重放，入帳／結算後移除；journal 只留美元／attempt／descriptor／receipt digest，不另存成功 token 帳本。pending 檔寫入也失敗時保留原 worst hold 與記憶體收據、停止新外送；若整機在無法持久寫入時故障，仍以既有 durable hold 為 UNKNOWN，不能假定零或自動恢復額度。晚到合法 usage 即使 caller 已取消仍記原 profile／policy／價目，不回過期答案、不按 current 重新定價。未知或衝突收據不能覆寫 pending 副本。
+
+backend 只經既有 `reporting` 薄公開 package 的固定 typed receipt adapter 接 canonical recorder，沒有新增 token 自報／匯入 HTTP API。非 Linux 缺 PAL 等價隔離維持 unavailable；Windows／darwin 在本機只作編譯驗證。

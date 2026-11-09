@@ -29,6 +29,7 @@ type Recorder interface {
 }
 
 type Receipt struct {
+	Charges                    Charges
 	ObservedAt                 time.Time
 	Execution                  Execution
 	ProfileID, ProfileRevision string
@@ -41,7 +42,14 @@ type Receipt struct {
 }
 
 func projectResponse(profile Profile, response WireResponse) (Result, error) {
-	out := Result{Receipt: Receipt{Provider: profile.BillingProvider, Model: profile.Model, RequestID: response.Headers["x-request-id"], UnknownReason: "response_invalid"}}
+	requestID := response.Headers["x-request-id"]
+	if requestID == "" {
+		requestID = response.Headers["request-id"]
+	}
+	if !safeReceiptID(requestID) {
+		requestID = ""
+	}
+	out := Result{Receipt: Receipt{Provider: profile.BillingProvider, Model: profile.Model, RequestID: requestID, UnknownReason: "response_invalid"}}
 	var raw struct {
 		ID, Model string
 		Choices   []struct {
@@ -63,10 +71,10 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 	if response.Status != 200 || json.Unmarshal(response.Body, &raw) != nil {
 		return out, ErrUnavailable
 	}
-	out.Receipt.ResponseID = raw.ID
-	if out.Receipt.RequestID == "" {
-		out.Receipt.RequestID = response.Headers["request-id"]
+	if raw.ID != "" && !safeReceiptID(raw.ID) {
+		return out, ErrUnavailable
 	}
+	out.Receipt.ResponseID = raw.ID
 	if raw.Model != profile.Model || len(raw.Choices) != 1 || out.Receipt.RequestID == "" {
 		return out, ErrUnavailable
 	}
@@ -104,3 +112,5 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 	out.text = raw.Choices[0].Message.Content
 	return out, nil
 }
+
+func safeReceiptID(value string) bool { return profileToken.MatchString(value) && safeText(value) }

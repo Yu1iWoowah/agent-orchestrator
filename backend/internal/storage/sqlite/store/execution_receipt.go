@@ -35,7 +35,7 @@ func (s *Store) InsertExecutionUsage(ctx context.Context, v domain.ExecutionUsag
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	identity := domain.ExecutionUsageIdentity{ProjectID: v.ProjectID, SessionID: v.SessionID, DelegationID: v.DelegationID, AttemptID: v.AttemptID, BillingProvider: v.BillingProvider, ProfileID: v.ProfileID, ProfileRevision: v.ProfileRevision, ProfileDigest: v.ProfileDigest, ProjectPolicyRevision: v.ProjectPolicyRevision, RequestID: v.RequestID, ResponseID: v.ResponseID, UnknownReason: v.UnknownReason}
+	identity := domain.ExecutionUsageIdentity{ProjectID: v.ProjectID, SessionID: v.SessionID, DelegationID: v.DelegationID, AttemptID: v.AttemptID, BillingProvider: v.BillingProvider, ProfileID: v.ProfileID, ProfileRevision: v.ProfileRevision, ProfileDigest: v.ProfileDigest, ProjectPolicyRevision: v.ProjectPolicyRevision, RequestID: v.RequestID, ResponseID: v.ResponseID, UnknownReason: v.UnknownReason, FinishReason: v.FinishReason}
 	b, err := json.Marshal(identity)
 	if err != nil {
 		return err
