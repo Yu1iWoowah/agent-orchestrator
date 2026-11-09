@@ -16,14 +16,16 @@ const userSuffix = "\n=== END CONTEXT ====\n=== END REQUEST ===\n\nPlease provid
 
 // PayloadAudit records only hashes and verified ranges, never source bodies.
 type PayloadAudit struct {
-	QuestionHash   string        `json:"questionHash"`
-	SystemHash     string        `json:"systemHash"`
-	TemplateHash   string        `json:"templateHash"`
-	PayloadHash    string        `json:"payloadHash"`
-	ManifestDigest string        `json:"manifestDigest"`
-	Coverage       string        `json:"coverage"`
-	Sources        []SourceRange `json:"sources"`
-	Omissions      []Omission    `json:"omissions"`
+	InstructionHash string        `json:"instructionHash"`
+	FocusHash       string        `json:"focusHash"`
+	QuestionHash    string        `json:"questionHash"`
+	SystemHash      string        `json:"systemHash"`
+	TemplateHash    string        `json:"templateHash"`
+	PayloadHash     string        `json:"payloadHash"`
+	ManifestDigest  string        `json:"manifestDigest"`
+	Coverage        string        `json:"coverage"`
+	Sources         []SourceRange `json:"sources"`
+	Omissions       []Omission    `json:"omissions"`
 }
 
 func numbered(text string) string {

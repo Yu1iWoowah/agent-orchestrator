@@ -43,7 +43,7 @@ func TestPALMissingCriticalScopeNeverDispatches(t *testing.T) {
 				p := Profile{ID: provider + "-fixture", Revision: "r1", BillingProvider: provider, Model: "fixture-model", ContextTokens: 8192, MaxOutputTokens: 4096, OutputTokens: 128}
 				result, err := c.DelegateRead(t.Context(), testExecution, p, request)
 				var scopeErr *ScopeError
-				if !errors.As(err, &scopeErr) || result.Text != "" || calls != 0 {
+				if !errors.As(err, &scopeErr) || result.text != "" || calls != 0 {
 					t.Fatalf("missing scope accepted: %+v %v calls=%d", result, err, calls)
 				}
 				if reason == "one_file_too_large" || reason == "total_too_large" {

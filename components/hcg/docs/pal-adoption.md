@@ -47,3 +47,9 @@ Q14 判斷只看上述 A 接點能否閉合。正式 provider 接點與這組最
 PAL 只見 opaque `sNNNN.txt` 唯讀副本，保留原 line mapping，時間固定為 epoch。HCG 依固定 PAL commit 核對 system SHA256、完整 question、來源逐字內容／行號、固定包裝與 final-exchange suffix hash；行號依 `utils/file_utils.py` 至少四欄。使用原生 `MAX_CONVERSATION_TURNS=1` 限制單次對話，沒有接受 continuation／history 的工具參數，也不對外回傳原 PAL continuation。任何包裝或實際注入差異均 blocked，不能用 processed_files 或 contains 代替驗證。
 
 coverage／omissions 由 HCG 從精確 wire 比對產生；來源過大或總範圍過大先回 scope_too_large，PAL 組裝時略過正文則 coverage=none、blocked，不回完整或全範圍 not_found。兩家分別驗過相同 gate；機器組裝成立不代表真模型不受語義注入影響。
+
+## 固定引用回覆（.04）
+
+模型只可提出 `hcg.delegate-read/1` JSON 的 findings／evidence，HCG 拒絕未知欄位與未驗自由文字。每條 finding 指向 evidence IDs，推論另標 hypothesis；HCG 核 source／revision／原始 content hash、1-based range 與原 snapshot bytes 的逐字 quote，再產 quote hash、original relative path、observed_at／machine_checked。模型給 quote hash 時亦須相符；不同換行的 quote 不默認當原 bytes。機器只驗定位／引用，不保證語義支持或沒有漏事實。
+
+固定 AO instruction／question／focus 與 source metadata 分開，最終 wire 仍經精確 gate；原相對路徑只在 AO 映射／回覆，不作 PAL 控制檔名。coverage 及 requested／injected digest 由 HCG 產生，模型自稱 complete 不受信任。not_found 僅適用已完整注入的本次範圍；超出 output_limit 就 blocked 並留 omission，不截斷成看似完整的答案。output_limit 是驗證後 JSON 的 byte 上限（預設 16 KiB，上限 64 KiB）；拒絕回覆的安全 metadata 不作原文 fallback。

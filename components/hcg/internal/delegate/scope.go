@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -52,7 +53,9 @@ func scopeFailure(status, id, reason string) error {
 
 type sourceSnapshot struct {
 	SourceRange
-	text string
+	text         string
+	originalText string
+	observedAt   time.Time
 }
 type preparedScope struct {
 	Sources        []sourceSnapshot
@@ -166,7 +169,7 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 			return out, scopeFailure("blocked", id, "source_changed_or_sensitive")
 		}
 		text := strings.ReplaceAll(strings.ReplaceAll(string(body), "\r\n", "\n"), "\r", "\n")
-		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: filepath.ToSlash(path), Revision: approved.Revision, SHA256: allowed[path], Start: 1, End: len(strings.Split(text, "\n"))}, text: text})
+		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: filepath.ToSlash(path), Revision: approved.Revision, SHA256: allowed[path], Start: 1, End: len(strings.Split(text, "\n"))}, text: text, originalText: string(body), observedAt: time.Now().UTC()})
 	}
 	return out, nil
 }

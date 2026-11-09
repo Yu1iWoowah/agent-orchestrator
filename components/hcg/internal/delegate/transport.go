@@ -101,6 +101,6 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 	if out.Receipt.FinishReason != "stop" || raw.Choices[0].Message.Content == "" {
 		return out, ErrUnavailable
 	}
-	out.Text = raw.Choices[0].Message.Content
+	out.text = raw.Choices[0].Message.Content
 	return out, nil
 }

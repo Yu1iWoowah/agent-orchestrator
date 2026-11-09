@@ -60,7 +60,7 @@ func (f *captureTransport) Do(_ context.Context, req WireRequest) (WireResponse,
 	if !strings.Contains(string(payload["messages"]), "QUESTION_MUST_SURVIVE") || !strings.Contains(string(payload["messages"]), "SYNTHETIC_SOURCE_142") {
 		f.t.Errorf("PAL assembly lost question/source: %s", req.Payload)
 	}
-	return WireResponse{Status: 200, Headers: map[string]string{"x-request-id": "fixture-request"}, Body: []byte(`{"id":"fixture-response","model":"` + f.profile.Model + `","choices":[{"message":{"content":"fixture-answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{}}}`)}, nil
+	return providerFixtureReply(f.profile.Model, validProposal("SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n")), nil
 }
 func TestPALFormalCallerBothProfiles(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
@@ -91,7 +91,7 @@ func TestPALFormalCallerBothProfiles(t *testing.T) {
 			if result.Audit.Coverage != "complete" || len(result.Audit.Sources) != 1 || len(result.Audit.Omissions) != 0 || result.Audit.Sources[0].Path != "prompt.txt" || result.Audit.Sources[0].Start != 1 || result.Audit.PayloadHash == "" {
 				t.Fatalf("missing exact payload coverage: %+v", result.Audit)
 			}
-			if len(transport.calls) != 1 || result.Text != "fixture-answer" {
+			if len(transport.calls) != 1 || result.Reply.Answer != "[fact] fixture-answer" || result.text != "" {
 				t.Fatalf("formal PAL caller not closed: calls=%d result=%+v", len(transport.calls), result)
 			}
 			var body struct {
@@ -101,12 +101,12 @@ func TestPALFormalCallerBothProfiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			for name, mutated := range map[string]string{"question_replaced": strings.Replace(body.Messages[1].Content, "QUESTION_MUST_SURVIVE", "replacement question", 1), "source_truncated": strings.Replace(body.Messages[1].Content, "SYNTHETIC_SOURCE_142", "", 1)} {
-				wire, audit, err := gatePayload(p, "QUESTION_MUST_SURVIVE", mutated, body.Messages[0].Content, result.sources)
+				wire, audit, err := gatePayload(p, questionPrompt("QUESTION_MUST_SURVIVE", "", result.sources), mutated, body.Messages[0].Content, result.sources)
 				if err == nil || len(wire) != 0 || audit.Coverage != "none" || len(audit.Omissions) != 1 {
 					t.Fatalf("%s accepted incomplete wire: %+v %v", name, audit, err)
 				}
 			}
-			if _, _, err := gatePayload(p, "QUESTION_MUST_SURVIVE", body.Messages[1].Content, body.Messages[0].Content+"\nDOCUMENT_DIRECTIVE", result.sources); err == nil {
+			if _, _, err := gatePayload(p, questionPrompt("QUESTION_MUST_SURVIVE", "", result.sources), body.Messages[1].Content, body.Messages[0].Content+"\nDOCUMENT_DIRECTIVE", result.sources); err == nil {
 				t.Fatal("source promoted into system")
 			}
 			if result.Receipt.Provider != provider || result.Receipt.RequestID != "fixture-request" || result.Receipt.Usage.Input == nil || *result.Receipt.Usage.Input != 10 || result.Receipt.Usage.CachedInput != nil || result.Receipt.FinishReason != "stop" || result.Receipt.ResponseID != "fixture-response" {
@@ -121,7 +121,7 @@ func TestProviderResponseDoesNotInventUsage(t *testing.T) {
 	for _, usage := range []string{`null`, `{}`, `{"prompt_tokens":10,"completion_tokens":2}`, `{"prompt_tokens":10,"completion_tokens":129,"total_tokens":139}`, `{"prompt_tokens":10,"completion_tokens":2,"total_tokens":13}`} {
 		response := WireResponse{Status: 200, Headers: map[string]string{"x-request-id": "request"}, Body: []byte(`{"model":"fixture-model","choices":[{"message":{"content":"not an accepted answer"}}],"usage":` + usage + `}`)}
 		out, err := projectResponse(p, response)
-		if err == nil || out.Text != "" {
+		if err == nil || out.text != "" {
 			t.Fatalf("missing/invalid usage became accepted: %s %+v %v", usage, out, err)
 		}
 	}
@@ -179,7 +179,7 @@ func TestPALCallerRetainsMissingUsageReceipt(t *testing.T) {
 		return WireResponse{Status: 200, Headers: map[string]string{"x-request-id": "known-request"}, Body: []byte(`{"id":"known-response","model":"fixture-model","choices":[{"message":{"content":"must not pass"}}]}`)}, nil
 	})}
 	out, err := c.DelegateRead(t.Context(), testExecution, p, approvedRequest(t, &c, "synthetic missing usage"))
-	if err == nil || out.Text != "" || calls != 1 {
+	if err == nil || out.text != "" || calls != 1 {
 		t.Fatalf("unknown usage accepted/retried: %+v %v calls=%d", out, err, calls)
 	}
 	if len(recorder.receipts) != 1 || recorder.receipts[0].RequestID != "known-request" || recorder.receipts[0].Provider != "anthropic" || recorder.receipts[0].Usage.Input != nil {
@@ -204,7 +204,7 @@ func TestPALProviderFailureNeverRetriesOrFallsBack(t *testing.T) {
 				return WireResponse{Status: 503, Headers: map[string]string{"x-request-id": "failed-request"}}, nil
 			})}
 			out, err := c.DelegateRead(t.Context(), testExecution, p, approvedRequest(t, &c, "synthetic provider failure"))
-			if err == nil || out.Text != "" || calls != 1 || len(recorder.receipts) != 1 || recorder.receipts[0].UnknownReason == "" {
+			if err == nil || out.text != "" || calls != 1 || len(recorder.receipts) != 1 || recorder.receipts[0].UnknownReason == "" {
 				t.Fatalf("failed provider retried/accepted/lost hold identity: %+v %v calls=%d receipts=%+v", out, err, calls, recorder.receipts)
 			}
 		})
@@ -243,5 +243,29 @@ func TestPALCallerRequiresReviewedSnapshot(t *testing.T) {
 	_, err := c.DelegateRead(t.Context(), testExecution, p, req)
 	if err == nil || calls != 0 {
 		t.Fatalf("unapproved snapshot reached broker: calls=%d err=%v", calls, err)
+	}
+}
+
+func providerFixtureReply(model, content string) WireResponse {
+	body, _ := json.Marshal(map[string]any{"id": "fixture-response", "model": model, "choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12, "prompt_tokens_details": map[string]any{}}})
+	return WireResponse{Status: 200, Headers: map[string]string{"x-request-id": "fixture-request"}, Body: body}
+}
+func TestPALCallerNeverReturnsUnverifiedText(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
+		t.Skip("isolated PAL required")
+	}
+	for _, provider := range []string{"openai", "anthropic"} {
+		t.Run(provider, func(t *testing.T) {
+			recorder := &memoryRecorder{}
+			c := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: t.TempDir()}, Recorder: recorder, Transport: transportFunc(func(_ context.Context, r WireRequest) (WireResponse, error) {
+				return providerFixtureReply(r.Model, "unverified free-form prose"), nil
+			})}
+			request := approvedRequest(t, &c, "inspect")
+			p := Profile{ID: provider + "-fixture", Revision: "r1", BillingProvider: provider, Model: "fixture-model", ContextTokens: 200000, MaxOutputTokens: 16384, OutputTokens: 128}
+			out, err := c.DelegateRead(t.Context(), testExecution, p, request)
+			if err == nil || out.Reply.Status != "blocked" || out.Reply.Answer != "" || len(recorder.receipts) != 1 {
+				t.Fatalf("unverified answer crossed boundary: %+v %v", out, err)
+			}
+		})
 	}
 }

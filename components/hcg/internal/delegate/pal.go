@@ -24,8 +24,10 @@ type Execution struct {
 }
 
 type Request struct {
-	Question string
-	Paths    []string
+	Question    string
+	Focus       string
+	OutputLimit int
+	Paths       []string
 }
 type PAL struct {
 	Python, Source, TempRoot string
@@ -38,9 +40,10 @@ type Consumer struct {
 	Recorder      Recorder
 }
 type Result struct {
+	Reply   ReadReply
 	Audit   PayloadAudit
 	sources preparedScope
-	Text    string
+	text    string
 	Receipt Receipt
 }
 
@@ -59,10 +62,14 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
+	if len(request.Focus) > 4096 || !safeText(request.Focus) || request.OutputLimit < 0 || request.OutputLimit > 65536 {
+		return Result{}, ErrUnavailable
+	}
 	scope, err := prepareScope(ctx, c.ApprovedScope, request.Question, request.Paths)
 	if err != nil {
 		return Result{}, err
 	}
+	palQuestion := questionPrompt(request.Question, request.Focus, scope)
 	dir, err := os.MkdirTemp(c.PAL.TempRoot, "p-")
 	if err != nil {
 		return Result{}, err
@@ -125,7 +132,7 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			_ = cmd.Wait()
 		}
 	}()
-	if err := json.NewEncoder(stdin).Encode(map[string]any{"profile": profile.childConfig(), "question": request.Question, "paths": paths}); err != nil {
+	if err := json.NewEncoder(stdin).Encode(map[string]any{"profile": profile.childConfig(), "question": palQuestion, "paths": paths}); err != nil {
 		return Result{}, err
 	}
 	scanner := bufio.NewScanner(stdout)
@@ -146,7 +153,10 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			if calls != 1 || message.Model != profile.Model {
 				return Result{}, ErrUnavailable
 			}
-			payload, audit, err := gatePayload(profile, request.Question, message.Prompt, message.System, scope)
+			payload, audit, err := gatePayload(profile, palQuestion, message.Prompt, message.System, scope)
+			audit.QuestionHash = textHash(request.Question)
+			audit.InstructionHash = textHash(responseInstructions)
+			audit.FocusHash = textHash(request.Focus)
 			if err != nil {
 				return Result{Audit: audit}, err
 			}
@@ -155,7 +165,7 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			if err != nil {
 				return Result{Receipt: result.Receipt, Audit: result.Audit}, err
 			}
-			if err := json.NewEncoder(stdin).Encode(map[string]any{"text": result.Text, "usage": map[string]int64{"input_tokens": *result.Receipt.Usage.Input, "output_tokens": *result.Receipt.Usage.Output, "total_tokens": *result.Receipt.Usage.Total}}); err != nil {
+			if err := json.NewEncoder(stdin).Encode(map[string]any{"text": result.text, "usage": map[string]int64{"input_tokens": *result.Receipt.Usage.Input, "output_tokens": *result.Receipt.Usage.Output, "total_tokens": *result.Receipt.Usage.Total}}); err != nil {
 				return Result{}, err
 			}
 		case "done":
@@ -170,7 +180,10 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 				}
 				return Result{}, ErrUnavailable
 			}
-			return result, nil
+			reply, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
+			result.text = ""
+			result.Reply = reply
+			return result, err
 		default:
 			return Result{}, ErrUnavailable
 		}
@@ -200,7 +213,7 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 		result.Receipt.ProfileID, result.Receipt.ProfileRevision = profile.ID, profile.Revision
 		result.Receipt.ProfileDigest = profile.digest()
 		if transportErr != nil {
-			result.Text = ""
+			result.text = ""
 			result.Receipt.UnknownReason = "transport_failed"
 			err = transportErr
 		}
@@ -208,7 +221,7 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 		recordErr := c.Recorder.Record(recordCtx, result.Receipt)
 		cancel()
 		if recordErr != nil {
-			result.Text = ""
+			result.text = ""
 			err = recordErr
 		}
 		done <- outcome{result, err}
