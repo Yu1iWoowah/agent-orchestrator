@@ -740,7 +740,21 @@ class ProtocolTests(unittest.TestCase):
                     elapsed[0] += 2
                 fake.run.sleep = advance
                 fake.running_receipt_reads = {sid: 2}
+                observations, original_session = [], fake.session
+                def record(session_id):
+                    value = original_session(session_id)
+                    if session_id == sid and fake.run.state.get("stage") == ("2a" if sid == "old" else "bootstrap"):
+                        observations.append(copy.deepcopy(value))
+                    return value
+                fake.session = record
                 h.run_protocol(fake.run)
+                identity = ("old-receipt" if sid == "old" else "bootstrap") + "-tool"
+                tools = [next(e for e in value["transcript"]["entries"] if e.get("id") == identity) for value in observations]
+                self.assertEqual([e["status"] for e in tools], ["running", "running", "completed"])
+                self.assertEqual(len({e["sequence"] for e in tools}), 1)
+                self.assertEqual(len({e["detail"]["rawCommand"] for e in tools}), 1)
+                self.assertEqual(len({e["detail"]["output"] for e in tools}), 1)
+                self.assertEqual(len({v["transcript"]["latestSequence"] for v in observations}), 1)
                 self.assertEqual(fake.run.state["outcome"], "complete")
                 self.assertEqual(fake.run.state["waits"][phase]["elapsed"], 6)
                 self.assertEqual(fake.mutations.count("2a"), 1)
@@ -1107,10 +1121,13 @@ class FlowFixture:
             turn.update(state="running")
             turn.pop("completedAt", None)
             snap["session"]["activity"]["state"] = "active"
-            sequence = snap["transcript"]["latestSequence"] + 1
-            snap["transcript"]["entries"].append(dict(id="timed-stream", kind="message", role="assistant", turnId=turn["id"],
-                                                     sequence=sequence, streaming=True, text="partial"))
-            snap = produced_activity(snap, "synthetic-running-command", "", None, sid, turn["id"], "timed-running-tool", sequence + 1)
+            current = max((e for e in snap["transcript"]["entries"] if e.get("role") == "assistant" and e.get("turnId") == turn["id"]), key=lambda e:e["sequence"])
+            current["streaming"] = True
+            action = "old-receipt" if sid == "old" else "bootstrap"
+            original = next(e for e in reversed(self.helper_events) if e["action"] == action)
+            identifier = action + "-tool"
+            entry = next(e for e in snap["transcript"]["entries"] if e.get("id") == identifier)
+            snap = produced_activity(snap, h.shlex.join(original["argv"]), original["stdout"], None, sid, turn["id"], identifier, entry["sequence"])
         return snap
 
     def sessions(self):

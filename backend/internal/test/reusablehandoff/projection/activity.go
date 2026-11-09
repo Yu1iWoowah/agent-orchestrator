@@ -67,7 +67,7 @@ func project(t *checks, bin string, input rh.Input, event ports.ChatEvent) []byt
 		Kind: "activity", ID: input.ID, TurnID: input.Turn, Sequence: input.Sequence, ActivityKind: string(event.ActivityKind),
 		Status: string(event.ActivityStatus), Summary: event.Summary, Detail: detail, CreatedAt: time.Unix(0, 0).UTC().Format(time.RFC3339),
 	})
-	conversation.LatestSequence = input.Sequence
+	conversation.LatestSequence = max(conversation.LatestSequence, input.Sequence)
 	conversation.SessionID = input.Actor
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
