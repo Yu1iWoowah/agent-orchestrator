@@ -13,7 +13,7 @@ import uuid
 from unittest.mock import patch
 
 from test_wire_contract import wire, wire_bytes, list_row
-from producer_transport import ActorTransport, activity as produced_activity
+from producer_transport import ActorTransport, activity as produced_activity, directive as persisted_directive
 
 SPEC = importlib.util.spec_from_file_location("handoff", Path(__file__).parents[1] / "handoff.py")
 h = importlib.util.module_from_spec(SPEC)
@@ -1076,7 +1076,7 @@ class FlowFixture:
         if action == "old-receipt":
             sequence = snap["transcript"]["latestSequence"] + 1
             snap["transcript"]["latestSequence"] = sequence
-            snap["transcript"]["entries"].append({"id": "old-ready", "sequence": sequence, "kind": "message", "role": "assistant", "turnId": "turn",
+            snap["transcript"]["entries"].append({"id": "old-ready", "sequence": sequence, "kind": "message", "role": "assistant", "turnId": snap["transcript"]["turns"][-1]["id"],
                 "text": h.status_command(self.run.root, self.run_id) + "；10分鐘未見new首報就查原run。"})
             with sqlite3.connect(self.data_dir / "ao.db") as db:
                 for entry in snap["transcript"]["entries"]:
@@ -1226,20 +1226,13 @@ class FlowFixture:
             payload = h.decode(args[args.index("--message") + 1])
             phase = payload["phase"]
             self.mutations.append(phase)
-            if phase == "worker-stop":
-                snap = self.snapshots[sid]
-                turn = snap["transcript"]["turns"][-1]["id"]
-                sequence = snap["transcript"]["latestSequence"] + 1
-                snap["transcript"]["latestSequence"] = sequence
-                snap["transcript"]["entries"].append(dict(id="worker-control", kind="message", role="user", origin="automation",
-                    senderSessionId="old", senderProjectId=h.PROJECT, turnId=turn, sequence=sequence,
-                    clientMessageId=self.run_id + ":worker-stop:" + sid, text="[from old] " + h.canonical(payload).decode()))
-                self.pending_actor = (sid, "worker-receipt")
-            elif phase == "2a":
-                self.snapshots["old"]["transcript"]["entries"].append({"id": "2a-control", "kind": "message", "role": "user", "origin": "automation",
-                    "senderSessionId": "old", "senderProjectId": h.PROJECT, "turnId": "turn", "sequence": 2,
-                    "clientMessageId": self.run_id + ":2a:old", "text": "[from old] " + h.canonical(payload).decode()})
-                self.pending_actor = ("old", "old-receipt")
+            if phase in ("worker-stop", "2a"):
+                handle = args[args.index("--client-message-id") + 1]
+                msg = dict(Text="[from old] " + h.canonical(payload).decode(), ClientMessageID=handle,
+                           Origin="automation", SenderSessionID="old", SenderProjectID=h.PROJECT)
+                active = self.snapshots[sid]["session"]["activity"]["state"] == "active"
+                self.snapshots[sid] = persisted_directive(self.snapshots[sid], [msg], active)
+                self.pending_actor = (sid, "worker-receipt" if phase == "worker-stop" else "old-receipt")
             elif phase in ("nonce", "final"):
                 snap = self.snapshots["new"]
                 snap["transcript"]["latestSequence"] += 1

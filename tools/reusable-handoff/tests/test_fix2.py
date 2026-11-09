@@ -82,6 +82,25 @@ class ProducerBoundaryTests(unittest.TestCase):
             (module / ".git/objects/info/alternates").write_text(str(repo / ".git/objects") + "\n")
         return repo, module, oid
 
+    def test_clean_porcelain_unfinished_git_operation_is_blocked_and_fingerprinted(self):
+        repo, module, oid = self.initialized_link()
+        self.git(module, "checkout", "-b", "side")
+        self.git(module, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "side")
+        self.git(module, "checkout", "--detach", oid)
+        self.git(module, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "merge", "--no-ff", "--no-commit", "side")
+        self.assertEqual(self.git(module, "status", "--porcelain"), "")
+        before = h.git_operation_facts(module)
+        (module / ".git/MERGE_MSG").write_text("changed ongoing merge message")
+        self.assertNotEqual(before, h.git_operation_facts(module))
+        for role in ("worker", "old"):
+            with self.subTest(role=role), self.assertRaisesRegex(h.Stop, "unfinished operation"):
+                h.gitlink_facts(repo, role)
+        self.git(module, "merge", "--abort")
+        self.assertTrue(h.gitlink_facts(repo))
+        self.git(module, "bisect", "start")
+        with self.assertRaisesRegex(h.Stop, "unfinished operation"):
+            h.gitlink_facts(repo)
+
     def test_initialized_worker_gitlink_is_real_and_clean(self):
         repo, module, oid = self.initialized_link()
         result = h.git_snapshot(repo, self.root / "snapshot")
@@ -167,6 +186,10 @@ class WorkerProducerTests(unittest.TestCase):
 
     def test_real_worker_helper_copies_material_and_runner_verifies_same_snapshot(self):
         fake, artifact = self.prepared()
+        controls = [e for e in fake.snapshots["worker"]["transcript"]["entries"] if e.get("detail", {}).get("event") == "steer"]
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["activityKind"], "system")
+        self.assertFalse(any(e.get("clientMessageId") == controls[0]["detail"]["clientMessageId"] for e in fake.snapshots["worker"]["transcript"]["entries"]))
         receipt = fake.dispatch_actor(2)
         self.assertEqual(receipt["schema"], "rh-worker-stop/2")
         self.assertEqual(receipt["state"], "safe")
@@ -184,6 +207,21 @@ class WorkerProducerTests(unittest.TestCase):
         (fake.worker_path / "tracked").write_text("later drift")
         with self.assertRaises(h.Stop):
             fake.run.worker_stop({"id": "worker"})
+
+    def test_real_steer_identity_payload_and_turn_are_not_interchangeable(self):
+        fake, _ = self.prepared()
+        original = copy.deepcopy(fake.snapshots['worker'])
+        for field, value in [('origin', 'human'), ('senderSessionId', 'other'), ('senderProjectId', 'other'), ('text', 'altered')]:
+            snap = copy.deepcopy(original)
+            control = next(e for e in snap['transcript']['entries'] if e.get('detail', {}).get('event') == 'steer')
+            control['detail'][field] = value
+            with self.subTest(field=field), self.assertRaises(h.Stop):
+                h.producer_control(fake.run, 'worker', 'worker-stop', snap)
+        snap = copy.deepcopy(original)
+        control = next(e for e in snap['transcript']['entries'] if e.get('detail', {}).get('event') == 'steer')
+        control.pop('turnId')
+        with self.assertRaisesRegex(h.Stop, 'turn/sequence'):
+            h.producer_control(fake.run, 'worker', 'worker-stop', snap)
 
     def test_worker_safe_cannot_exclude_another_turn(self):
         fake, artifact = self.prepared()
@@ -278,7 +316,7 @@ class WorkerProducerTests(unittest.TestCase):
     def test_duplicate_running_helper_cannot_be_self_excluded(self):
         fake, _ = self.prepared()
         command = h.helper_command(fake.run.root, 'worker-receipt', 'worker')
-        fake.snapshots['worker'] = activity(fake.snapshots['worker'], command, '', None, 'worker', 'turn', 'duplicate-helper', 9)
+        fake.snapshots['worker'] = activity(fake.snapshots['worker'], command, '', None, 'worker', fake.snapshots['worker']['transcript']['turns'][-1]['id'], 'duplicate-helper', 9)
         with self.assertRaisesRegex(h.Stop, 'self activity missing/ambiguous'):
             fake.dispatch_actor(2)
 
@@ -379,6 +417,16 @@ class OldProducerTests(unittest.TestCase):
         self.assertTrue(fake.run.workers())
         fake.run.state['stage'] = '2a'
         return fake
+
+    def test_active_old_2a_uses_real_durable_steer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = self.prepare(Path(temp))
+            fake.snapshots['old']['session']['activity']['state'] = 'active'
+            receipt = h.phase_2a(fake.run)
+            controls = [e for e in fake.snapshots['old']['transcript']['entries'] if e.get('detail', {}).get('event') == 'steer']
+            self.assertEqual(len(controls), 1)
+            self.assertEqual(receipt['evidence_turn_id'], controls[0]['turnId'])
+            self.assertEqual(fake.run.state['old_control_sequence'], controls[0]['sequence'])
 
     def test_old_helper_success_reentry_reads_original_and_changed_statement_stops(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -490,14 +538,30 @@ class RetirementTests(unittest.TestCase):
         self.authorization = dict(schema='rh-retirement-authorization/1', run_id=h.RETIRABLE_RUN, old_id=self.old, operator_session_id='operator',
                                   decision_ref='synthetic-authorization', directive_ref='D-100', start_sha256=state['start_sha256'], expected_effects=list(effects), materials=[])
         h.publish(self.directory / 'authorization.json', h.canonical(self.authorization))
-        self.initial = SimpleNamespace(data_dir=self.data, run_file=Path(state['run_file']))
-        self.cli = SimpleNamespace(sha256=state['cli_sha256'], data_dir=self.data, session=lambda sid:copy.deepcopy(self.snaps[sid]),
-            documents=lambda:dict(lease=dict(sessionId=self.old, frozen=False)), sessions=lambda:[dict(id=sid, projectId=h.PROJECT,
-                 role='orchestrator' if sid==self.old else 'worker', isTerminated=False) for sid in self.snaps])
+        from producer_transport import ActorTransport
+        from test_wire_contract import wire, list_row
+        fixture = SimpleNamespace(data_dir=self.data, snapshots=self.snaps,
+            documents=lambda: dict(wire("documents")["documents"], lease=dict(sessionId=self.old, frozen=False)),
+            sessions=lambda:[list_row(snap['session']) for snap in self.snaps.values()])
+        self.transport = ActorTransport(fixture)
+        self.addCleanup(self.transport.close)
+        self.initial = SimpleNamespace(data_dir=self.data, run_file=self.transport.run_file)
+        cli_bytes = self.transport.cli.read_bytes()
+        (self.root / '.qualified/ao').write_bytes(cli_bytes)
+        state.update(cli_sha256=h.digest(cli_bytes), run_file=str(self.initial.run_file))
+        (self.run / 'state.json').write_bytes(h.canonical(state))
+        (self.root / '.qualified/qualification.json').write_bytes(h.canonical(dict(schema='rh-cli-qualification/1', cli_sha256=state['cli_sha256'], script_sha256=state['script_sha256'])))
 
     def retire(self):
-        with patch.dict(os.environ, {'AO_SESSION_ID':'operator'}), patch.object(h, 'CLI', return_value=self.cli):
-            return h.retire_run(self.root, h.RETIRABLE_RUN, self.initial)
+        self.transport.sync()
+        executable = self.root / '.qualified/ao'
+        executable.chmod(0o700)
+        try:
+            with patch.dict(os.environ, {'AO_SESSION_ID':'operator'}):
+                return h.retire_run(self.root, h.RETIRABLE_RUN, self.initial)
+        finally:
+            # Qualification material is a private archival copy between invocations.
+            executable.chmod(0o600)
 
     def test_retire_preserves_original_bytes_holds_and_forbids_old_UUID(self):
         before = h.private_manifest(self.run)
@@ -513,6 +577,43 @@ class RetirementTests(unittest.TestCase):
         with self.assertRaises(h.Stop):
             h.load_run(self.root, h.RETIRABLE_RUN, self.initial)
 
+    def test_retirement_raw_cli_preconditions_are_bound_and_tampering_stops(self):
+        receipt = self.retire()
+        manifest = h.decode(h.private_read(self.directory / 'manifest.json'))
+        raw = list((self.directory / 'preconditions').rglob('*.raw'))
+        self.assertGreaterEqual(len(raw), 5)
+        self.assertTrue(any(x['path'].endswith('.raw') and x.get('sha256') == h.digest(raw[0].read_bytes()) for x in manifest['preconditions']))
+        final = h.decode(h.hash_reference(receipt['preconditions']))
+        self.assertEqual(final, h.private_manifest(self.directory / 'preconditions'))
+        raw[0].write_bytes(b'changed response')
+        with self.assertRaisesRegex(h.Stop, 'precondition raw evidence changed'):
+            h.retirement_guard(self.root, self.old)
+
+    def test_retirement_later_durable_steer_same_turn_is_unknown(self):
+        from producer_transport import directive
+        sid = h.RETIRABLE_WORKERS[0]
+        snap = self.snaps[sid]
+        original = snap['transcript']['entries'].pop()
+        msg = dict(Text=original['text'], ClientMessageID=original['clientMessageId'], Origin='automation',
+                   SenderSessionID=self.old, SenderProjectID=h.PROJECT)
+        later = dict(msg, Text='[from '+self.old+'] D-4 release hold', ClientMessageID='later-D-4')
+        snap = directive(snap, [msg, later], active=True)
+        controls = [e for e in snap['transcript']['entries'] if e.get('detail', {}).get('event') == 'steer']
+        self.assertEqual(len(controls), 2)
+        self.assertEqual(controls[0]['turnId'], controls[1]['turnId'])
+        turn = controls[0]['turnId']
+        snap['transcript']['turns'][-1].update(state='completed', completedAt=h.now())
+        snap['transcript']['incomplete'] = []
+        snap['session']['activity']['state'] = 'idle'
+        self.snaps[sid] = snap
+        stop = self.run / 'workers' / sid / 'stop.json'
+        value = h.decode(h.private_read(stop)); value['evidence_turn_id'] = turn
+        stop.write_bytes(h.canonical(value))
+        with self.assertRaisesRegex(h.Stop, 'later worker directive/authority UNKNOWN'):
+            self.retire()
+        self.assertTrue(self.run.exists())
+        self.assertFalse((self.directory / 'intent.json').exists())
+
     def test_retirement_nonterminal_or_unknown_effect_never_moves(self):
         self.snaps[h.RETIRABLE_WORKERS[0]]['transcript']['turns'][0]['state'] = 'running'
         with self.assertRaises(h.Stop):
@@ -525,6 +626,20 @@ class RetirementTests(unittest.TestCase):
         with self.assertRaises(h.Stop):
             self.retire()
         self.assertTrue(self.run.exists())
+
+    def test_retirement_crash_after_precondition_manifest_preserves_recovery(self):
+        publish = h.publish
+        def crash(path, raw):
+            if Path(path) == self.directory / 'receipt.json':
+                raise OSError('synthetic crash before completion receipt')
+            return publish(path, raw)
+        with patch.object(h, 'publish', side_effect=crash), self.assertRaises(OSError):
+            self.retire()
+        originals = {p: p.read_bytes() for p in (self.directory / 'preconditions').rglob('*.raw')}
+        intent = h.digest(h.private_read(self.directory / 'intent.json'))
+        h.publish(self.directory / 'recovery-authorization.json', h.canonical(dict(intent_sha256=intent, operator_session_id='operator', directive_ref='D-102')))
+        self.assertEqual(self.retire()['hold'], 'unchanged')
+        self.assertTrue(all(p.read_bytes() == raw for p, raw in originals.items()))
 
     def test_retirement_crash_before_run_rename_requires_named_recovery(self):
         self.crash_recovery('before')

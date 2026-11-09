@@ -18,16 +18,23 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
+// DirectiveInput supplies semantic messages to the real controller fixture.
+type DirectiveInput struct {
+	Active   bool                    `json:"active"`
+	Messages []ports.ChatUserMessage `json:"messages"`
+}
+
 // Input is the raw command result before the existing driver normalizes it.
 type Input struct {
-	Command  string          `json:"command"`
-	Stdout   string          `json:"stdout"`
-	ExitCode *int            `json:"exit_code"`
-	Actor    string          `json:"actor"`
-	Turn     string          `json:"turn"`
-	ID       string          `json:"id"`
-	Sequence int64           `json:"sequence"`
-	Snapshot json.RawMessage `json:"snapshot"`
+	Directive *DirectiveInput `json:"directive,omitempty"`
+	Command   string          `json:"command"`
+	Stdout    string          `json:"stdout"`
+	ExitCode  *int            `json:"exit_code"`
+	Actor     string          `json:"actor"`
+	Turn      string          `json:"turn"`
+	ID        string          `json:"id"`
+	Sequence  int64           `json:"sequence"`
+	Snapshot  json.RawMessage `json:"snapshot"`
 }
 
 // Repository finds the checkout for the isolated fixture binaries.
@@ -98,7 +105,10 @@ func RunSuite(t *testing.T, normalize func(Input) ports.ChatEvent) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		event := normalize(input)
+		var event ports.ChatEvent
+		if input.Directive == nil {
+			event = normalize(input)
+		}
 		raw, err := json.Marshal(struct {
 			Input Input
 			Event ports.ChatEvent
@@ -117,7 +127,11 @@ func RunSuite(t *testing.T, normalize func(Input) ports.ChatEvent) {
 				t.Errorf("remove projector scratch: %v", err)
 			}
 		}()
-		cmd := process.Command(bin, "--rh-project", dir)
+		action := "--rh-project"
+		if input.Directive != nil {
+			action = "--rh-directive"
+		}
+		cmd := process.Command(bin, action, dir)
 		cmd.Stdin = bytes.NewReader(raw)
 		out, err := cmd.CombinedOutput()
 		if err != nil {

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import urllib.request
+import urllib.error
 
 
 def activity(snapshot, command, stdout, exit_code, actor, turn, identifier, sequence):
@@ -20,6 +21,17 @@ def activity(snapshot, command, stdout, exit_code, actor, turn, identifier, sequ
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=60) as response:
         return json.load(response)
+
+
+def directive(snapshot, messages, active):
+    endpoint = os.environ["RH_ACTIVITY_PRODUCER"]
+    body = dict(snapshot=snapshot, actor=snapshot["session"]["id"], directive=dict(active=active, messages=messages))
+    request = urllib.request.Request(endpoint + "/directive", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=60) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(exc.read().decode()) from exc
 
 
 class ActorTransport:
@@ -63,6 +75,11 @@ else:raise SystemExit('unimplemented synthetic CLI transport: '+str(a))
         self.run_file.write_text(json.dumps(dict(port=self.server.server_port, pid=os.getpid())))
         self.run_file.chmod(0o600)
         self.base = "http://127.0.0.1:" + str(self.server.server_port) + "/api/v1/"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
 
     def sync(self):
         from test_wire_contract import wire, wire_bytes

@@ -58,15 +58,17 @@ func project(t *checks, bin string, input rh.Input, event ports.ChatEvent) []byt
 			conversation.Activities = append(conversation.Activities, activity)
 		}
 	}
-	var detail map[string]any
-	if err := json.Unmarshal(event.Detail, &detail); err != nil {
-		t.Fatal(err)
+	if len(event.Detail) > 0 {
+		var detail map[string]any
+		if err := json.Unmarshal(event.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		// Only identity/sequence belong to the fixture daemon. Detail/status are the untouched producer result.
+		conversation.Activities = append(conversation.Activities, controllers.ConversationActivityResponse{
+			Kind: "activity", ID: input.ID, TurnID: input.Turn, Sequence: input.Sequence, ActivityKind: string(event.ActivityKind),
+			Status: string(event.ActivityStatus), Summary: event.Summary, Detail: detail, CreatedAt: time.Unix(0, 0).UTC().Format(time.RFC3339),
+		})
 	}
-	// Only identity/sequence belong to the fixture daemon. Detail/status are the untouched producer result.
-	conversation.Activities = append(conversation.Activities, controllers.ConversationActivityResponse{
-		Kind: "activity", ID: input.ID, TurnID: input.Turn, Sequence: input.Sequence, ActivityKind: string(event.ActivityKind),
-		Status: string(event.ActivityStatus), Summary: event.Summary, Detail: detail, CreatedAt: time.Unix(0, 0).UTC().Format(time.RFC3339),
-	})
 	conversation.LatestSequence = max(conversation.LatestSequence, input.Sequence)
 	conversation.SessionID = input.Actor
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

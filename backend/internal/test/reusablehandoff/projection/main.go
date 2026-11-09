@@ -37,7 +37,7 @@ func main() {
 		Fixtures(&checks{os.Args[2]}, bin, os.Args[2])
 		return
 	}
-	if len(os.Args) == 3 && os.Args[1] == "--rh-project" {
+	if len(os.Args) == 3 && (os.Args[1] == "--rh-project" || os.Args[1] == "--rh-directive") {
 		t := &checks{os.Args[2]}
 		var request struct {
 			Input rh.Input
@@ -46,7 +46,11 @@ func main() {
 		if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = os.Stdout.Write(project(t, bin, request.Input, request.Event))
+		if os.Args[1] == "--rh-directive" {
+			_, _ = os.Stdout.Write(directive(t, bin, request.Input))
+		} else {
+			_, _ = os.Stdout.Write(project(t, bin, request.Input, request.Event))
+		}
 		return
 	}
 	cmd := cli.NewRootCommand(cli.DefaultDeps())

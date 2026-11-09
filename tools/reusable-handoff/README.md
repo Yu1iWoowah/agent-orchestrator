@@ -324,3 +324,5 @@ RH-FIX1 的 .voided/60cd2080 零效果作廢是不同規則，不能套到已有
 原 human a0b12708-fba2-4a7e-9024-bf4c8c8cee2e／revision 0／原正文及 T0=2026-11-08T19:39:02Z（second）只在原授權仍涵蓋 R1、沒有取消改向或新限制時沿用；新 script／UUID／A/B/D 不重設 T0。
 R1 成功後交 07 與 O2 真人清單並停等使用者另一次 O2 確認，不能自動進 R2。
 本 RH-FIX2 實作 PR 不操作既有 lab、dev 3002、三 actor，不實際退役、更新資格或重跑 R1。
+
+審查補強：固定 producer 沿原 clientMessageId 同時核對 active steer 的 system activity/detail 與 idle fallback 的 user message，sender、payload、turn 必須一致。退役遇到較晚 durable steer 一律視為新 directive／authority UNKNOWN。退役前 CLI 原始回應先存入私有 preconditions，每次核對獨立保存，再由 manifest／intent／完成回條綁 hash；恢復不覆寫舊觀測。initialized gitlink 使用 Git 的 git-path 核對 merge／rebase／cherry-pick／revert／bisect／sequencer metadata；存在進行中狀態即 blocked，metadata facts 也參與漂移核對。

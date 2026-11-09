@@ -556,6 +556,24 @@ class CLI:
         return self.read(["project", "documents", "info", "--project", PROJECT])["documents"]
 
 
+def git_operation_facts(workspace):
+    facts = {}
+    for name in ("MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_AUTOSTASH", "AUTO_MERGE", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                 "REBASE_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START", "BISECT_NAMES", "BISECT_EXPECTED_REV", "BISECT_HEAD"):
+        path = no_symlinks(old_git(["rev-parse", "--path-format=absolute", "--git-path", name], workspace=workspace).decode().strip())
+        rows = []
+        if path.exists():
+            for item in [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]:
+                no_symlinks(item)
+                require(item.is_file() or item.is_dir(), "gitlink operation metadata UNKNOWN")
+                row = dict(path=str(item.relative_to(path)), mode=stat.S_IMODE(item.stat().st_mode), directory=item.is_dir())
+                if item.is_file():
+                    row.update(sha256=digest(read_regular(item)), bytes=item.stat().st_size)
+                rows.append(row)
+        facts[name] = dict(path=str(path), entries=rows)
+    return facts
+
+
 def gitlink_facts(workspace, role="worker", parent_common=None, old_metadata=None):
     workspace = no_symlinks(workspace)
     git = lambda *args: old_git(args, workspace=workspace)
@@ -582,6 +600,8 @@ def gitlink_facts(workspace, role="worker", parent_common=None, old_metadata=Non
                     "gitlink object protection UNKNOWN")
             no_symlinks(common / "objects")
             require(sub("rev-parse", "HEAD").decode().strip() == oid, "gitlink HEAD/index mismatch")
+            operations = git_operation_facts(path)
+            require(not any(x["entries"] for x in operations.values()), "gitlink unfinished operation metadata")
             status = sub("status", "--porcelain=v1", "--untracked-files=all", "--ignored")
             index = sub("ls-files", "--stage", "-v", "-z")
             require(not status and all(x.startswith(b"H ") and not x[2:].startswith(b"160000 ")
@@ -590,7 +610,7 @@ def gitlink_facts(workspace, role="worker", parent_common=None, old_metadata=Non
                         common_identity=[common.stat().st_dev, common.stat().st_ino],
                         git_identity=[metadata.stat().st_dev, metadata.stat().st_ino],
                         path_identity=[path.stat().st_dev, path.stat().st_ino], head=oid,
-                        status=status.hex(), index=index.hex(),
+                        status=status.hex(), index=index.hex(), operations=operations,
                         gitfile=read_regular(path / ".git").hex() if (path / ".git").is_file() else None)
             if role == "old":
                 require(parent_common and common.is_relative_to(parent_common) and
@@ -1235,17 +1255,32 @@ def save_sources(directory, rows, subdirectory="saved"):
     return refs, provenance
 
 
+def directive_entry(snapshot, handle, old, payload):
+    controls = []
+    for entry in entries(snapshot):
+        steer = entry.get("kind") == "activity" and entry.get("activityKind") == "system" and entry.get("detail", {}).get("event") == "steer"
+        fields = entry.get("detail", {}) if steer else entry
+        if fields.get("clientMessageId") != handle:
+            continue
+        require((steer and entry.get("status") == "completed") or
+                (entry.get("kind") == "message" and entry.get("role") == "user"), "directive structural identity mismatch")
+        require(fields.get("origin") == "automation" and fields.get("senderSessionId") == old and
+                fields.get("senderProjectId") == PROJECT and fields.get("text") == "[from " + old + "] " + payload,
+                "producer directive provenance mismatch")
+        turn = entry.get("turnId") or entry.get("consumedByTurnId")
+        require(turn and type(entry.get("sequence")) is int, "directive turn/sequence missing")
+        controls.append(dict(entry, turnId=turn))
+    require(len(controls) == 1, "producer directive provenance mismatch")
+    return controls[0]
+
+
 def producer_control(run, sid, phase, snapshot):
     directory = run.root / "control" / (phase + "-" + sid)
     payload = private_read(directory / "payload.json").decode()
     intent = decode(private_read(directory / "intent.json"))
     expected = ["send", "--session", sid, "--steer", "--client-message-id", run.run_id + ":" + phase + ":" + sid, "--message", payload]
     require(intent.get("argv") == expected and (directory / "result.json").is_file(), "producer lacks accepted original directive")
-    controls = [e for e in entries(snapshot) if e.get("clientMessageId") == expected[5]]
-    require(len(controls) == 1 and controls[0].get("origin") == "automation" and controls[0].get("senderSessionId") == run.old and
-            controls[0].get("senderProjectId") == PROJECT and controls[0].get("text") == "[from " + run.old + "] " + payload,
-            "producer directive provenance mismatch")
-    return controls[0], decode(payload)
+    return directive_entry(snapshot, expected[5], run.old, payload), decode(payload)
 
 
 def producer_observation(run, sid, action, directory):
@@ -1618,11 +1653,9 @@ def phase_2a(run):
             return False
         replies = [e.get("text", "") for e in entries(snap) if e.get("role") == "assistant" and e.get("turnId") == finished_turn]
         require(any(status_command(run.root, run.run_id) in text and "10" in text for text in replies), "old ready reply lacks exact status/silence instruction")
-        controls = [e for e in entries(snap) if e.get("clientMessageId") == run.run_id + ":2a:" + run.old]
         payload = private_read(run.root / "control" / ("2a-" + run.old) / "payload.json").decode()
-        require(len(controls) == 1 and controls[0].get("origin") == "automation" and controls[0].get("senderSessionId") == run.old and
-                controls[0].get("text") == "[from " + run.old + "] " + payload, "2a original control provenance mismatch")
-        run.state["old_control_sequence"] = controls[0]["sequence"]
+        control = directive_entry(snap, run.run_id + ":2a:" + run.old, run.old, payload)
+        run.state["old_control_sequence"] = control["sequence"]
         documents = run.cli.documents()
         require(documents.get("lease", {}).get("sessionId") == run.old, "old not managed owner")
         # Wrapper uses snake_case while the normal CLI lease uses camelCase.
@@ -2352,6 +2385,12 @@ def verify_retired(root, run_id, intent):
             receipt.get("authorization_sha256") == digest(private_read(directory / "authorization.json")) == intent["authorization_sha256"],
             "retirement receipt binding invalid")
     manifest = decode(manifest_raw)
+    require(digest(canonical(manifest["preconditions"])) == intent["preconditions_sha256"], "retirement precondition binding changed")
+    require(Path(receipt["preconditions"]["path"]).parent == directory and Path(receipt["preconditions"]["path"]).name.startswith("preconditions-final-"), "retirement precondition reference outside fixed directory")
+    hash_reference(receipt["preconditions"])
+    final = decode(private_read(Path(receipt["preconditions"]["path"])))
+    require(private_manifest(directory / "preconditions") == final and all(x in final for x in manifest["preconditions"]),
+            "retirement precondition raw evidence changed")
     archive = no_symlinks(root / ".retired" / run_id)
     # The original run tree is immutable; the separately archived slot is the only added subtree.
     actual = [x for x in private_manifest(archive) if x["path"] != "retired-start-slot" and not x["path"].startswith("retired-start-slot/")]
@@ -2438,24 +2477,24 @@ def historical_retirement_checks(root, original, run_directory, cli, authorizati
         snap = cli.session(sid)
         require(snap["session"].get("kind") == "worker" and snap["session"].get("projectId") == PROJECT and
                 not snap["session"].get("isTerminated") and quiescent(snap), "worker not terminal/held")
-        messages = [e for e in entries(snap) if e.get("clientMessageId") == handle]
-        require(len(messages) == 1 and messages[0].get("origin") == "automation" and messages[0].get("senderSessionId") == old and
-                messages[0].get("senderProjectId") == PROJECT and messages[0].get("text") == "[from " + old + "] " + payload_raw.decode() and
-                completed(snap, messages[0].get("turnId")), "original D delivery/completion not proven")
-        require(not any(e.get("kind") == "message" and e.get("role") == "user" and e.get("sequence", 0) > messages[0]["sequence"]
+        message = directive_entry(snap, handle, old, payload_raw.decode())
+        require(completed(snap, message["turnId"]), "original D delivery/completion not proven")
+        require(not any(e.get("sequence", 0) > message["sequence"] and
+                        ((e.get("kind") == "message" and e.get("role") == "user") or
+                         (e.get("kind") == "activity" and e.get("activityKind") == "system" and e.get("detail", {}).get("event") == "steer"))
                         for e in entries(snap)), "later worker directive/authority UNKNOWN")
         stop_raw = private_read(run_directory / "workers" / sid / "stop.json")
         stop = decode(stop_raw)
         # Deliberately do not validate/follow a historical /1 receipt as executable /2 evidence.
         require(stop.get("schema") == "rh-worker-stop/1" and stop.get("run_id") == RETIRABLE_RUN and stop.get("worker_id") == sid and
                 stop.get("project_id") == PROJECT and stop.get("state") == "blocked" and stop.get("resume_state") == "held" and
-                stop.get("evidence_turn_id") == messages[0]["turnId"], "historical blocked/hold facts mismatch")
+                stop.get("evidence_turn_id") == message["turnId"], "historical blocked/hold facts mismatch")
         declared_materials = {(x["path"], x["sha256"]) for x in authorization.get("materials", []) if x.get("worker_id") == sid}
         for reference in stop.get("preservation", []):
             # Compare historical claims only. Read sources exclusively through the separately authorized actor-root list.
             if not Path(reference["path"]).is_relative_to(original / "workers" / sid):
                 require((reference["path"], reference["sha256"]) in declared_materials, "necessary historical material not explicitly preserved")
-        closed.append({"worker_id": sid, "handle": handle, "message_id": messages[0]["id"], "turn_id": messages[0]["turnId"],
+        closed.append({"worker_id": sid, "handle": handle, "message_id": message["id"], "turn_id": message["turnId"],
                        "directive_received": "D-3", "stop_state": "blocked", "last_ack_d": stop.get("stop_directive", {}).get("last_ack_d"),
                        "stop_sha256": digest(stop_raw), "payload_sha256": digest(payload_raw), "held": True})
     runner = decode(private_read(run_directory / "runner.json"))
@@ -2504,7 +2543,9 @@ def retire_run(root, run_id, initial):
             require(state["old_id"] == old and state["run_file"] == str(initial.run_file) and state["data_dir"] == str(initial.data_dir),
                     "retirement root/old/data identity mismatch")
             cli = CLI(root / ".qualified/ao", old, initial.data_dir, initial.run_file, mkdir(directory / "preconditions"))
+            cli.capture_root = mkdir(directory / "preconditions" / uuid.uuid4().hex)
             state, request, closed = historical_retirement_checks(root, original, current, cli, authorization)
+            require(list(cli.capture_root.glob("*.raw")), "retirement precondition raw responses missing")
             slot = root / ".start" / old
             saved_slot = archive / "retired-start-slot"
             slot_source = saved_slot if saved_slot.exists() else slot
@@ -2524,16 +2565,20 @@ def retire_run(root, run_id, initial):
                 publish(directory / "qualification.original.json", qualification_raw)
                 publish(directory / "cli.original.bytes", read_regular(root / ".qualified/ao"))
                 material_refs += [file_reference(directory / "qualification.original.json"), file_reference(directory / "cli.original.bytes")]
-                manifest = {"run": private_manifest(original), "slot": private_manifest(slot), "saved": material_refs}
+                manifest = {"run": private_manifest(original), "slot": private_manifest(slot), "saved": material_refs, "preconditions": private_manifest(directory / "preconditions")}
                 publish(directory / "manifest.json", canonical(manifest))
                 intent = {"schema": "rh-retirement-intent/1", "run_id": run_id, "old_id": old, "actor": "external-operator",
                           "operator_session_id": operator, "start_sha256": state["start_sha256"], "closed_effects": closed,
+                          "preconditions_sha256": digest(canonical(manifest["preconditions"])),
                           "authorization_sha256": digest(authorization_raw), "manifest_sha256": digest(private_read(directory / "manifest.json")), "created_at": now()}
                 publish(existing, canonical(intent))
             intent = decode(private_read(existing))
             manifest = decode(private_read(directory / "manifest.json"))
             require(intent["authorization_sha256"] == digest(authorization_raw) and intent["manifest_sha256"] == digest(private_read(directory / "manifest.json")) and
                     intent["closed_effects"] == closed, "retirement original intent drift")
+            preconditions = private_manifest(directory / "preconditions")
+            require(digest(canonical(manifest["preconditions"])) == intent["preconditions_sha256"] and
+                    all(x in preconditions for x in manifest["preconditions"]), "retirement original preconditions changed")
             actual = [x for x in private_manifest(current) if x["path"] != "retired-start-slot" and not x["path"].startswith("retired-start-slot/")]
             require(actual == manifest["run"] and private_manifest(slot_source) == manifest["slot"], "retirement originals changed")
             for ref in manifest["saved"]:
@@ -2555,9 +2600,12 @@ def retire_run(root, run_id, initial):
             else:
                 require(not list(slot.iterdir()), "candidate slot changed during retirement")
             require(private_manifest(saved_slot) == manifest["slot"], "retired slot changed")
+            final_preconditions = directory / ("preconditions-final-" + uuid.uuid4().hex + ".json")
+            publish(final_preconditions, canonical(private_manifest(directory / "preconditions")))
             receipt = {"schema": "rh-retired-run/1", "run_id": run_id, "old_id": old, "actor": "external-operator",
                        "operator_session_id": operator, "authorization_sha256": intent["authorization_sha256"],
                        "intent_sha256": digest(private_read(existing)), "manifest_sha256": intent["manifest_sha256"],
+                       "preconditions": file_reference(final_preconditions),
                        "closed_effects": closed, "original_run": str(original), "archive": str(archive), "hold": "unchanged", "created_at": now()}
             publish(directory / "receipt.json", canonical(receipt))
             verify_retired(root, run_id, intent)
