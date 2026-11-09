@@ -451,7 +451,7 @@ SELECT
     event.pricing_version,
     event.source_event_key
 FROM model_usage_events event
-WHERE event.billing_provider_id IS NOT NULL
+WHERE event.execution_source_id IS NULL AND event.billing_provider_id IS NOT NULL
   AND CASE lower(trim(event.billing_provider_id))
         WHEN 'z.ai' THEN 'zai'
         ELSE lower(trim(event.billing_provider_id))
@@ -648,15 +648,32 @@ ORDER BY s.project_id, s.num;
 
 -- name: GetUsageEventsThroughID :one
 SELECT CAST(COALESCE(MAX(e.id), 0) AS INTEGER)
-FROM model_usage_events e JOIN usage_bindings b ON b.id = e.binding_id
-WHERE b.session_id = ?;
+FROM model_usage_events e
+WHERE e.binding_id IN (SELECT id FROM usage_bindings WHERE session_id = sqlc.arg(session_id))
+   OR e.execution_source_id IN (SELECT id FROM usage_execution_sources WHERE session_id = sqlc.arg(session_id));
 
 -- name: ListUsageEventsPage :many
 SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
  e.usage_measurement_kind, e.input_tokens, e.cached_input_tokens,
  e.uncached_input_tokens, e.output_tokens, e.provider_usage_json,
- e.source_event_key, e.created_at
-FROM model_usage_events e JOIN usage_bindings b ON b.id = e.binding_id
-WHERE b.session_id = sqlc.arg(session_id)
+ e.source_event_key, e.created_at, x.id AS execution_id, x.identity_json
+FROM model_usage_events e
+LEFT JOIN usage_execution_sources x ON x.id = e.execution_source_id
+WHERE (e.binding_id IN (SELECT id FROM usage_bindings WHERE session_id = sqlc.arg(session_id))
+ OR e.execution_source_id IN (SELECT id FROM usage_execution_sources WHERE session_id = sqlc.arg(session_id)))
  AND e.id > sqlc.arg(after_id) AND e.id <= sqlc.arg(through_id)
 ORDER BY e.id LIMIT sqlc.arg(page_limit);
+
+-- name: GetExecutionReceiptDigest :one
+SELECT receipt_digest FROM usage_execution_sources
+WHERE session_id=? AND billing_provider=? AND profile_id=? AND profile_revision=? AND delegation_id=? AND attempt_id=?;
+
+-- name: InsertExecutionSource :one
+INSERT INTO usage_execution_sources(project_id,session_id,billing_provider,profile_id,profile_revision,profile_digest,delegation_id,attempt_id,request_id,receipt_digest,identity_json)
+SELECT sqlc.arg(project_id),sqlc.arg(session_id),sqlc.arg(billing_provider),sqlc.arg(profile_id),sqlc.arg(profile_revision),sqlc.arg(profile_digest),sqlc.arg(delegation_id),sqlc.arg(attempt_id),sqlc.arg(request_id),sqlc.arg(receipt_digest),sqlc.arg(identity_json)
+WHERE EXISTS(SELECT 1 FROM sessions WHERE id=sqlc.arg(session_id) AND project_id=sqlc.arg(project_id))
+RETURNING id;
+
+-- name: InsertExecutionUsageEvent :exec
+INSERT INTO model_usage_events(execution_source_id,provider_id,billing_provider_id,billing_provider_source,model_id,usage_measurement_kind,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,provider_usage_json,source_event_key,created_at,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version)
+VALUES(sqlc.arg(execution_source_id),sqlc.arg(provider_id),sqlc.arg(provider_id),'observed',sqlc.arg(model_id),'provider_reported',sqlc.narg(input_tokens),sqlc.narg(cached_input_tokens),sqlc.narg(uncached_input_tokens),sqlc.narg(output_tokens),sqlc.narg(provider_usage_json),sqlc.arg(source_event_key),sqlc.arg(created_at),sqlc.narg(input_cost_nanos),sqlc.narg(cached_input_cost_nanos),sqlc.narg(output_cost_nanos),sqlc.narg(estimated_cost_nanos),sqlc.arg(pricing_version));

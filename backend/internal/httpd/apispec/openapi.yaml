@@ -23628,6 +23628,48 @@ components:
       - coverage
       - providerAttribution
       type: object
+    ExecutionUsageIdentity:
+      properties:
+        attemptId:
+          type: string
+        billingProvider:
+          type: string
+        delegationId:
+          type: string
+        id:
+          format: int64
+          type: integer
+        profileDigest:
+          type: string
+        profileId:
+          type: string
+        profileRevision:
+          type: string
+        projectId:
+          type: string
+        projectPolicyRevision:
+          type: string
+        requestId:
+          type: string
+        responseId:
+          type: string
+        sessionId:
+          type: string
+        unknownReason:
+          type: string
+      required:
+      - id
+      - projectId
+      - sessionId
+      - delegationId
+      - attemptId
+      - billingProvider
+      - profileId
+      - profileRevision
+      - profileDigest
+      - projectPolicyRevision
+      - requestId
+      type: object
     ExitAgentResponse:
       properties:
         ok:
@@ -30630,6 +30672,8 @@ components:
           type:
           - "null"
           - string
+        execution:
+          $ref: '#/components/schemas/ExecutionUsageIdentity'
         id:
           format: int64
           type: integer
@@ -30670,8 +30714,6 @@ components:
           type: integer
       required:
       - id
-      - bindingId
-      - usageSourceId
       - sourceEventKey
       - providerId
       - modelId

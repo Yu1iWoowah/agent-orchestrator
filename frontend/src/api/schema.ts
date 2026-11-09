@@ -7748,6 +7748,22 @@ export interface components {
             /** Format: int64 */
             totalNanos: number;
         };
+        ExecutionUsageIdentity: {
+            attemptId: string;
+            billingProvider: string;
+            delegationId: string;
+            /** Format: int64 */
+            id: number;
+            profileDigest: string;
+            profileId: string;
+            profileRevision: string;
+            projectId: string;
+            projectPolicyRevision: string;
+            requestId: string;
+            responseId?: string;
+            sessionId: string;
+            unknownReason?: string;
+        };
         ExitAgentResponse: {
             ok: boolean;
             session: components["schemas"]["ControllersSessionView"];
@@ -10460,10 +10476,11 @@ export interface components {
         };
         UsageEventView: {
             /** Format: int64 */
-            bindingId: number;
+            bindingId?: number;
             cachedInputTokens: null | number;
             /** Format: date-time */
             createdAt: null | string;
+            execution?: components["schemas"]["ExecutionUsageIdentity"];
             /** Format: int64 */
             id: number;
             inputTokens: null | number;
@@ -10479,7 +10496,7 @@ export interface components {
             /** @enum {string} */
             usageProjectionStatus: "complete" | "partial" | "missing" | "invalid";
             /** Format: int64 */
-            usageSourceId: number;
+            usageSourceId?: number;
         };
         UsageEventsResponse: {
             accountId: null | string;

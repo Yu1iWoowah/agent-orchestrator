@@ -20,7 +20,10 @@ const PALCommit = "7afc7c1cc96e23992c8f105f960132c657883bb1"
 
 var ErrUnavailable = errors.New("delegation unavailable")
 
-type Execution struct{ ProjectID, SessionID, DelegationID, AttemptID string }
+type Execution struct {
+	ProjectID, SessionID, DelegationID, AttemptID string
+	ProjectPolicyRevision                         string
+}
 
 type Request struct {
 	Question string
@@ -191,6 +194,7 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 		response, transportErr := c.Transport.Do(ctx, request)
 		result, err := projectResponse(profile, response)
 		result.Receipt.Execution = execution
+		result.Receipt.ObservedAt = time.Now().UTC()
 		result.Receipt.ProfileID, result.Receipt.ProfileRevision = profile.ID, profile.Revision
 		result.Receipt.ProfileDigest = profile.digest()
 		if transportErr != nil {

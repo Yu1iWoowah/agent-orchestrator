@@ -172,6 +172,7 @@ var schemaNames = map[string]string{
 	"ReportingToolCounts":                                  "HCGReportingToolCounts",
 	"DomainHCGReportingConfig":                             "HCGReportingConfig",
 	"ControllersUsageEventsResponse":                       "UsageEventsResponse",
+	"DomainExecutionUsageIdentity":                         "ExecutionUsageIdentity",
 	"DomainUsageEventView":                                 "UsageEventView",
 	"DomainUsageBindingView":                               "UsageBindingView",
 	"DomainUsageSourceView":                                "UsageSourceView",

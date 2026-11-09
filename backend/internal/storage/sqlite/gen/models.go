@@ -825,8 +825,9 @@ type ManagedHarnessRelease struct {
 
 type ModelUsageEvent struct {
 	ID                    int64
-	BindingID             int64
-	UsageSourceID         int64
+	BindingID             sql.NullInt64
+	UsageSourceID         sql.NullInt64
+	ExecutionSourceID     sql.NullInt64
 	ProviderID            string
 	BillingProviderID     sql.NullString
 	ModelID               string
@@ -1506,6 +1507,21 @@ type UsageCodexSourceDiscovery struct {
 	NativeSessionID        string
 	DiscoveredChildIdsJson string
 	HasMixedChildTypes     int64
+}
+
+type UsageExecutionSource struct {
+	ID              int64
+	ProjectID       string
+	SessionID       string
+	BillingProvider string
+	ProfileID       string
+	ProfileRevision string
+	ProfileDigest   string
+	DelegationID    string
+	AttemptID       string
+	RequestID       string
+	ReceiptDigest   string
+	IdentityJson    string
 }
 
 type UsageSessionIntegrity struct {

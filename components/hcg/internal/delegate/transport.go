@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"time"
 )
 
 type WireRequest struct {
@@ -28,6 +29,7 @@ type Recorder interface {
 }
 
 type Receipt struct {
+	ObservedAt                 time.Time
 	Execution                  Execution
 	ProfileID, ProfileRevision string
 	ProfileDigest              string
