@@ -144,7 +144,8 @@ func RunSuite(t *testing.T, normalize func(Input) ports.ChatEvent) {
 	}))
 	defer server.Close()
 	tests := filepath.Join(Repository(t), "tools", "reusable-handoff", "tests")
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	// Include the actual repository-tree and retirement proofs in each driver suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
 	defer cancel()
 	cmd = process.CommandContext(ctx, "python3", "-I", "-B", "-m", "unittest", "discover", "-v", "-s", tests)
 	cmd.Env = append(os.Environ(), "RH_WIRE_FIXTURES="+fixtures, "RH_ACTIVITY_PRODUCER="+server.URL)

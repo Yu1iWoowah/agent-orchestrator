@@ -316,6 +316,46 @@ pending intent／半途 archive／缺 receipt 都阻擋同 old 的新 start；�
 中斷不搬回、不刪歷史、不重播；只在新的具名人工恢復授權（固定 recovery-authorization.json，原 intent_sha256、operator_session_id、新 directive_ref）下核原件並完成原提交。
 RH-FIX1 的 .voided/60cd2080 零效果作廢是不同規則，不能套到已有兩筆 D-3 的 run。
 
+## 已提交範本的 workspace 窄例外（RH-FIX3）
+
+敏感檔名 pattern 保持：.env、其點號後綴、credentials/auth/token/private-key 等名稱預設停止。
+只有最末 component 恰為 .env.example、父路徑沒有敏感 component，且同一 HEAD 在精確路徑有普通 blob，才可能放行。
+index 必須是相同 mode/OID 的唯一 stage0，沒有隱藏 flags；工作檔的執行權及 raw bytes 必須與該 HEAD blob 相同。
+clean/smudge filter、Git status clean、只是 tracked 或只有 git add 都不是證明。
+.env.sample/.env.template、已 commit 的其他敏感名稱、未追蹤或 ignored 敏感檔、dirty/staged/deleted/renamed/conflicted 範本都停止。
+
+worker snapshot、old Git 保全及兩個固定 helper 都先核全部名稱（含 HEAD/index 的刪除路徑與 ignored），再保存內容。
+範本 objects 使用當次已比對的 raw bytes；old 以原 ref/object 保護，內容 hash 納入切前／切後漂移核對。
+兩種 patch 只含本次盤點的非敏感精確路徑，禁跨路徑 rename；空路徑集合產空 patch。
+過程中 HEAD/index/名稱/範本 bytes 或檔案觀測漂移，不發布有效證據；old 不能以 discardable/rebuildable 分類跳過此閘門。
+
+此例外不適用 source_inputs、worker 必要材料、old 必要 copy 或 preserve_dependencies 的明列 seed；.env.example 在這些入口仍拒絕。
+不要把已有 snapshot/ref 保護的範本另加成必要 copy 或匯出依賴。
+這不是 secret scanner，不能證明已 commit 範本或普通檔名中沒有秘密；範本信任沿現有原碼審查／資格。
+程式只在記憶體比較值，錯誤只列路徑與原因，不把內容／diff 輸出到 agent 或報告。
+
+## ff137a22 的第二個具名退役案例
+
+同一 retire 入口額外只接受 ff137a22-e159-4603-ad70-1abd41681e5d，不提供任意 UUID/stage/force 政策。
+此 run 已 launch，但在 workers/stopped，completed_stages/effects 空、無 control 或 new_id，只有部分 before-snapshot。
+它不是未 launch 的 .voided/60cd2080，也不是有兩筆 D-3 派送的 .retired/33da56c1；不得改 state 偽裝成任一舊案例。
+
+authorization 沿 rh-retirement-authorization/1，另綁 project_id、target、script_sha256、cli_sha256、qualification_sha256，expected_effects 必須空。
+先核舊 script／CLI／資格、slot/start/source 原 bytes、只讀 wire、原 runner PID/SID/boot/launch、排他鎖及 actor 真終態／hold。
+已閉合的 33da56c1 receipt 及原 stop/final 歷史保持：D-3 received、dispatch turn completed、原 ACK、blocked/held 分開保存。
+不創造本 run 的 stop 回條，不重播 D-3/D-4，不發訊息讓 actor 變 idle。
+任一 control/UNKNOWN/producer/後續 phase、活 runner、slot 換包或未知檔案都停止。
+
+共用原 manifest/intent/receipt 提交：整 run 及 slot 原子封存到 .retired/ff137a22，保留舊資格及所有部分輸出，最後才發布 receipt。
+closed_effects=[] 只描述 ff137a22，不能抹掉 33da56c1 的兩效果；兩份 record 同時核驗，任一 pending 阻擋同 old 新 start，兩個退役 UUID 永不能執行。
+中斷仍需新的具名 recovery-authorization，不刪原件／搬回／改 outcome；merge 不等於實際退役授權。
+
+營運順序須另具名 D：保全原件 → 用新程式和仍未覆寫的舊 qualified bytes 退役 ff137a22 → 完整 receipt → 原子發布新 script 資格 → 新 A completed/settled → 新 B → 新 UUID/start 一次。
+不在 ff137a22 原地換碼／改 hash／continue；舊 A″/B 保留歷史，新 A 必須反映新資格／退役與當前事實。
+D-4若仍合法唯一且未派送，可由新 A 重新具名保留，不自動 D+1。
+原 human a0b12708…/revision0 與 T0=2026-11-08T19:39:02Z/second 只在原授權仍適用且無取消／增限時沿用，不請使用者重送來重設 T0。
+R1 任一 STOP 不 retry、不擅自 continue；R1 成功後仍在 R2 前停等真人確認。本 PR 不操作 lab，也不實作 B-RH-A-FACTCHECK。
+
 ## merge 後資格與 R1／R2 邊界
 
 先由主控另發具名 D，保存舊資格／FAIL 原件並以新 script bytes、實際 CLI bytes 重做資格，不替換 stable。

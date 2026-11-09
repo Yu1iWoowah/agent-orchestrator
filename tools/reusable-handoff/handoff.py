@@ -646,6 +646,60 @@ def verify_gitlink_protection(links):
                 "gitlink protected objects changed")
 
 
+def workspace_git_inputs(workspace):
+    """Inventory names before preserving content; only unchanged committed templates qualify."""
+    git = lambda *args: old_git(args, workspace=workspace)
+    head = git("rev-parse", "HEAD").decode().strip()
+    tree_raw = git("ls-tree", "-r", "-z", "--full-tree", head)
+    tree = {}
+    for record in filter(None, tree_raw.split(b"\0")):
+        header, name = record.split(b"\t", 1)
+        mode, kind, oid = header.decode().split()
+        tree[name] = (mode, kind, oid)
+    index_raw = git("ls-files", "--stage", "-v", "-z")
+    index = {}
+    for record in filter(None, index_raw.split(b"\0")):
+        header, name = record.split(b"\t", 1)
+        index.setdefault(name, []).append(tuple(header.decode().split()))
+    staged_names = git("diff", "--cached", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv",
+                       "--ita-invisible-in-index", "-z", head)
+    others = git("ls-files", "--others", "--exclude-standard", "-z")
+    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    files = set(index) | (set(others.split(b"\0")) - {b""})
+    names = set(tree) | files | (set(ignored.split(b"\0")) - {b""})
+    templates = {}
+    for name in sorted(names):
+        relative = os.fsdecode(name)
+        if not SENSITIVE_SOURCE.search(relative):
+            continue
+        reason = "sensitive workspace content cannot be preserved: " + relative
+        parts = Path(relative).parts
+        require(parts[-1] == ".env.example" and not SENSITIVE_SOURCE.search("/".join(parts[:-1])), reason)
+        entry = tree.get(name)
+        require(entry and entry[0] in ("100644", "100755") and entry[1] == "blob", reason)
+        mode, _, oid = entry
+        require(index.get(name) == [("H", mode, oid, "0")], reason)
+        require(name not in staged_names.split(b"\0"), reason)
+        source = confined(workspace, relative)
+        require(source.is_file(), reason)
+        info = source.stat()
+        require(bool(info.st_mode & 0o111) == (mode == "100755"), reason)
+        raw = read_regular(source)
+        require(raw == git("cat-file", "blob", oid), reason)
+        templates[relative] = dict(raw=raw, mode=stat.S_IMODE(info.st_mode),
+                                   identity=(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
+    return dict(head=head, tree=tree_raw, index=index_raw, staged_names=staged_names, others=others, ignored=ignored,
+                files=files, templates=templates,
+                patch_paths=sorted(os.fsdecode(n) for n in set(tree) | files if not SENSITIVE_SOURCE.search(os.fsdecode(n))))
+
+
+def workspace_patch(workspace, inputs, cached=False):
+    if not inputs["patch_paths"]:
+        return b""
+    return old_git(["--literal-pathspecs", "diff", *(["--cached"] if cached else []), "--binary", "--no-renames",
+                    "--no-ext-diff", "--no-textconv", "--", *inputs["patch_paths"]], workspace=workspace)
+
+
 def git_snapshot(workspace, destination):
     """Read-only Git plus preserved bytes, including staged and dirty content."""
     path = no_symlinks(workspace)
@@ -656,6 +710,7 @@ def git_snapshot(workspace, destination):
                                 stderr=subprocess.PIPE, timeout=30, check=False)
         require(result.returncode == 0, "workspace snapshot unavailable: " + result.stderr.decode(errors="replace"))
         return result.stdout
+    inputs = workspace_git_inputs(path)
     mkdir(destination)
     branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
     links = gitlink_facts(path)
@@ -663,12 +718,11 @@ def git_snapshot(workspace, destination):
               "branch": None if branch == "HEAD" else branch, "detached": branch == "HEAD",
               "status": git("status", "--porcelain=v1", "-z", "--untracked-files=all").hex(),
               "index": git("ls-files", "--stage", "-z").hex(), "files": {}}
-    for name, args in (("index.patch", ("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv")),
-                       ("worktree.patch", ("diff", "--binary", "--no-ext-diff", "--no-textconv"))):
-        raw = git(*args)
+    for name, cached in (("index.patch", True), ("worktree.patch", False)):
+        raw = workspace_patch(path, inputs, cached)
         publish(Path(destination) / name, raw)
         values[name] = digest(raw)
-    files = set(git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split(b"\0")) - {b""}
+    files = inputs["files"]
     for raw_name in sorted(files):
         name = os.fsdecode(raw_name)
         source = confined(path, name)
@@ -679,11 +733,12 @@ def git_snapshot(workspace, destination):
             values["files"][name] = {"missing": True}
             continue
         require(source.is_file(), "unsupported workspace object: " + name)
-        require(not SENSITIVE_SOURCE.search(name), "sensitive workspace content cannot be preserved: " + name)
-        raw = source.read_bytes()
+        template = inputs["templates"].get(name)
+        raw = template["raw"] if template else source.read_bytes()
         sha = digest(raw)
         publish(Path(destination) / "objects" / sha, raw)
-        values["files"][name] = {"sha256": sha, "mode": stat.S_IMODE(source.stat().st_mode)}
+        values["files"][name] = {"sha256": sha, "mode": template["mode"] if template else stat.S_IMODE(source.stat().st_mode)}
+    require(workspace_git_inputs(path) == inputs, "workspace source drift during snapshot")
     raw = canonical(values)
     publish(Path(destination) / "snapshot.json", raw)
     return {"path": str(Path(destination) / "snapshot.json"), "sha256": digest(raw),
@@ -721,6 +776,7 @@ def old_environment(run, workspace, common):
 def old_git_state(run, plan, workspace=None):
     workspace = no_symlinks(workspace or run.workspace(run.old))
     git = lambda *args: old_git(args, workspace=workspace)
+    inputs = workspace_git_inputs(workspace)
     common = no_symlinks(git("rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     metadata = no_symlinks(git("rev-parse", "--absolute-git-dir").decode().strip())
     require(common.is_dir() and metadata != common, "old must be a linked worktree with external common repository")
@@ -766,6 +822,8 @@ def old_git_state(run, plan, workspace=None):
             if path.is_file():
                 tree[relative].update(size=info.st_size, mtime_ns=info.st_mtime_ns)
             if os.fsencode(relative) in tracked:
+                if relative in inputs["templates"]:
+                    tree[relative]["sha256"] = digest(inputs["templates"][relative]["raw"])
                 continue
             matches = [(i, rule) for i, rule in enumerate(rules) if relative == rule.get("path") or
                        (rule.get("scope") == "directory" and relative.startswith(str(rule.get("path")) + "/"))]
@@ -802,11 +860,13 @@ def old_git_state(run, plan, workspace=None):
             require(relative in ("HEAD", "index", "commondir", "gitdir", "ORIG_HEAD", "logs/HEAD"),
                     "per-worktree Git dependency unresolved: " + relative)
             meta[relative] = {"bytes": read_regular(path).hex(), "mode": stat.S_IMODE(path.stat().st_mode)}
+    staged_patch = workspace_patch(workspace, inputs, True)
+    dirty_patch = workspace_patch(workspace, inputs)
+    require(workspace_git_inputs(workspace) == inputs, "workspace source drift during old preservation")
     return {"workspace": str(workspace), "common": str(common), "metadata_path": str(metadata),
             "head": head, "original_ref": ref, "ref_tip": tip, "environment": environment,
             "status": git("status", "--porcelain=v1", "-z", "--untracked-files=all").hex(),
-            "index": index.hex(), "staged_patch": git("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv").hex(),
-            "dirty_patch": git("diff", "--binary", "--no-ext-diff", "--no-textconv").hex(),
+            "index": index.hex(), "staged_patch": staged_patch.hex(), "dirty_patch": dirty_patch.hex(),
             "metadata": meta, "gitfile": read_regular(workspace / ".git").hex(), "gitlinks": links, "tree": tree, "classification": classified,
             "plan_sha256": digest(private_read(run.root / "old/preservation.json"))}
 
@@ -1384,6 +1444,7 @@ def worker_receipt(run):
     acting.capture_root = mkdir(directory / "wire")
     run.cli = acting
     workspace = bound_workspace(run, sid)
+    workspace_git_inputs(workspace)
     statement_raw = private_read(directory / "draft/statement.json")
     statement = decode(statement_raw)
     require(statement.get("schema") == "rh-worker-statement/1" and statement.get("run_id") == run.run_id and statement.get("worker_id") == sid,
@@ -1453,6 +1514,7 @@ def old_receipt(run):
     sid = identifier(os.environ.get("AO_SESSION_ID", ""))
     require(sid == run.old, "old-receipt must run as old")
     workspace = bound_workspace(run, sid)
+    workspace_git_inputs(workspace)
     directory = mkdir(run.root / "old")
     statement_raw = private_read(directory / "draft/statement.json")
     statement = decode(statement_raw)
@@ -2355,6 +2417,8 @@ def launch(root, continuation=False):
 
 
 RETIRABLE_RUN = "33da56c1-a652-4d16-b1aa-1042d3322f3f"
+ZERO_CONTROL_RUN = "ff137a22-e159-4603-ad70-1abd41681e5d"
+RETIRABLE_RUNS = (RETIRABLE_RUN, ZERO_CONTROL_RUN)
 RETIRABLE_WORKERS = ("agent-orchestrator-2", "agent-orchestrator-3")
 
 
@@ -2406,7 +2470,7 @@ def retirement_guard(root, old=None, run_id=None):
     sources = []
     retired = no_symlinks(root / ".retired")
     if retired.exists():
-        require(all(x.is_dir() and not x.is_symlink() and x.name == RETIRABLE_RUN and
+        require(all(x.is_dir() and not x.is_symlink() and x.name in RETIRABLE_RUNS and
                     (root / ".retirement" / x.name / "intent.json").is_file() for x in retired.iterdir()),
                 "retirement archive lacks original intent")
     directory = no_symlinks(root / ".retirement")
@@ -2414,7 +2478,7 @@ def retirement_guard(root, old=None, run_id=None):
         return sources
     for item in directory.iterdir():
         no_symlinks(item)
-        require(item.is_dir() and item.name == RETIRABLE_RUN, "unknown retirement record")
+        require(item.is_dir() and item.name in RETIRABLE_RUNS, "unknown retirement record")
         if not (item / "intent.json").exists():
             continue
         intent = decode(private_read(item / "intent.json"))
@@ -2427,14 +2491,87 @@ def retirement_guard(root, old=None, run_id=None):
     return sources
 
 
+def zero_control_history(root, run_directory, cli, authorization, state, request):
+    require(state.get("effects") == {} and authorization.get("expected_effects") == [] and
+            not (run_directory / "control").exists() and not state.get("new_id") and
+            set(state.get("stages", {})) <= {"workers"} and
+            state.get("error") == "sensitive workspace content cannot be preserved: cloud/.env.example",
+            "zero-control retirement effects/phase UNKNOWN")
+    for key in ("project_id", "target", "script_sha256", "cli_sha256"):
+        require(authorization.get(key) == state[key], "zero-control authorization binding: " + key)
+    require(authorization.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
+            "zero-control original qualification binding")
+    # Only the observed partial before-snapshot layout is permitted, never a producer or dispatch trace.
+    workers = run_directory / "workers"
+    for actor in workers.iterdir() if workers.exists() else []:
+        no_symlinks(actor)
+        require(actor.name in RETIRABLE_WORKERS and actor.is_dir(), "unknown zero-control worker evidence")
+        for before in actor.iterdir():
+            no_symlinks(before)
+            require(re.fullmatch(r"before-[0-9a-f]{32}", before.name) and before.is_dir(), "zero-control producer/phase evidence")
+            for item in before.rglob("*"):
+                no_symlinks(item)
+                relative = item.relative_to(before)
+                require((len(relative.parts) == 1 and ((item.name == "objects" and item.is_dir()) or
+                        (item.name in ("index.patch", "worktree.patch") and item.is_file()))) or
+                        (len(relative.parts) == 2 and relative.parts[0] == "objects" and
+                         re.fullmatch(r"[0-9a-f]{64}", item.name) and item.is_file()), "unknown partial snapshot evidence")
+    wire_paths = set()
+    for metadata in (run_directory / "wire").glob("*.json"):
+        wire = decode(private_read(metadata))
+        raw = no_symlinks(wire["raw_path"])
+        require(raw.parent == root / ZERO_CONTROL_RUN / "wire", "zero-control wire source outside run")
+        actual = run_directory / "wire" / raw.name
+        require(digest(private_read(actual)) == wire["sha256"], "zero-control wire bytes changed")
+        wire_paths.update((metadata, actual))
+        if "argv" in wire:
+            args = wire["argv"]
+            notice = ["report", "--needs-input", "--note", "RH3 " + ZERO_CONTROL_RUN + " STOP: " + state["error"][:650] +
+                      "; " + status_command(root / ZERO_CONTROL_RUN, ZERO_CONTROL_RUN)]
+            read_only = wire.get("returncode") == 0 and (args[:2] in (["account", "ls"], ["session", "get"], ["session", "ls"]) or
+                        args[:3] == ["project", "documents", "info"] or args == ["spawn", "--help"])
+            require(read_only or (args == notice and wire.get("returncode") in (0, 1)), "zero-control wire dispatch UNKNOWN")
+        else:
+            require(wire.get("path") in ("projects/" + PROJECT, "sessions/" + state["old_id"]) or
+                    wire.get("path", "").startswith("agents/codex/models?"), "zero-control API phase UNKNOWN")
+    require(not (run_directory / "wire").exists() or set((run_directory / "wire").iterdir()) == wire_paths,
+            "unknown zero-control wire evidence")
+    require(not any(p.name in ("intent.json", "sent.json", "result.json", "statement.json", "stop.json", "phase-2a.json", "preservation.json")
+                    for p in run_directory.rglob("*")), "zero-control dispatch/producer evidence")
+    previous = root / ".retirement" / RETIRABLE_RUN
+    previous_intent = decode(private_read(previous / "intent.json"))
+    verify_retired(root, RETIRABLE_RUN, previous_intent)
+    receipt = decode(private_read(previous / "receipt.json"))
+    require(receipt["old_id"] == state["old_id"] and len(receipt["closed_effects"]) == 2 and
+            {x["worker_id"] for x in receipt["closed_effects"]} == set(RETIRABLE_WORKERS), "prior hold responsibility changed")
+    archive = root / ".retired" / RETIRABLE_RUN
+    for closed in receipt["closed_effects"]:
+        sid = closed["worker_id"]
+        snap = cli.session(sid)
+        require(snap["session"].get("kind") == "worker" and snap["session"].get("projectId") == PROJECT and
+                not snap["session"].get("isTerminated") and quiescent(snap), "zero-control worker terminal state UNKNOWN")
+        payload = private_read(archive / "control" / ("worker-stop-" + sid) / "payload.json").decode()
+        message = directive_entry(snap, closed["handle"], state["old_id"], payload)
+        require(completed(snap, message["dispatch_turn_id"]) and message["id"] == closed["message_id"] and closed["held"],
+                "zero-control original hold receipt changed")
+        require(not any(e.get("sequence", 0) > message["sequence"] and
+                        ((e.get("kind") == "message" and e.get("role") == "user") or
+                         (e.get("kind") == "activity" and e.get("activityKind") == "system" and e.get("detail", {}).get("event") == "steer"))
+                        for e in entries(snap)), "later zero-control worker directive UNKNOWN")
+    require(all(w.get("reserved_stop_d") == "D-4" and w.get("hold_state") == "held" and
+                w.get("release", {}).get("mode") == "keep-held" for w in request["workers"]) and
+            {w["worker_id"] for w in request["workers"]} == set(RETIRABLE_WORKERS), "zero-control request hold/index changed")
+
+
 def historical_retirement_checks(root, original, run_directory, cli, authorization):
     state = decode(private_read(run_directory / "state.json"))
     request_raw = private_read(run_directory / "start.json")
     request = decode(request_raw)
     old = state["old_id"]
-    require(state.get("schema") == "rh-state/1" and state.get("run_id") == RETIRABLE_RUN and state.get("project_id") == PROJECT and
+    run_id = authorization["run_id"]
+    require(state.get("schema") == "rh-state/1" and state.get("run_id") == run_id and state.get("project_id") == PROJECT and
             state.get("stage") == "workers" and state.get("outcome") == "stopped" and state.get("completed_stages") == [], "retirement history not workers/stopped")
-    require(request.get("schema") == "rh-start-request/1" and request.get("request_id") == RETIRABLE_RUN and request.get("old_id") == old and
+    require(request.get("schema") == "rh-start-request/1" and request.get("request_id") == run_id and request.get("old_id") == old and
             request.get("target") == state["target"] and request.get("project_id") == PROJECT and
             digest(request_raw) == state["start_sha256"] == authorization["start_sha256"], "retirement start binding mismatch")
     require(digest(private_read(run_directory / "handoff.py")) == state["script_sha256"] and cli.sha256 == state["cli_sha256"] and
@@ -2444,13 +2581,14 @@ def historical_retirement_checks(root, original, run_directory, cli, authorizati
             "retirement original qualification mismatch")
     allowed = {"handoff.py", "start.json", "state.json", "old-initial-response.raw", "runner-intent.json", "runner.json", "runner.log", "runner.lock",
                "workers", "control", "wire", "evidence", "observations"}
-    if run_directory == root / ".retired" / RETIRABLE_RUN:
+    if run_directory == root / ".retired" / run_id:
         allowed.add("retired-start-slot")
     require(all(p.name in allowed for p in run_directory.iterdir()) and not (run_directory / "runner-continuations").exists(), "unexpected historical phase/producer")
     effects = {"worker-stop-" + sid for sid in RETIRABLE_WORKERS}
-    require(set(state.get("effects", {})) == effects and all(v in ("accepted", "observed-original") for v in state["effects"].values()) and
-            set(p.name for p in (run_directory / "control").iterdir()) == effects and set(authorization["expected_effects"]) == effects,
-            "retirement effects not exactly the two known stops")
+    if run_id == RETIRABLE_RUN:
+        require(set(state.get("effects", {})) == effects and all(v in ("accepted", "observed-original") for v in state["effects"].values()) and
+                set(p.name for p in (run_directory / "control").iterdir()) == effects and set(authorization["expected_effects"]) == effects,
+                "retirement effects not exactly the two known stops")
     old_snapshot = cli.session(old)
     require(old_snapshot["session"].get("kind") == "orchestrator" and old_snapshot["session"].get("projectId") == PROJECT and
             not old_snapshot["session"].get("isTerminated") and quiescent(old_snapshot), "old responsibility/terminal state unknown")
@@ -2460,7 +2598,9 @@ def historical_retirement_checks(root, original, run_directory, cli, authorizati
     require({row["id"] for row in live if row["role"] == "worker"} == set(RETIRABLE_WORKERS) and
             [row["id"] for row in live if row["role"] == "orchestrator"] == [old], "retirement live actor set changed")
     closed = []
-    for sid in RETIRABLE_WORKERS:
+    if run_id == ZERO_CONTROL_RUN:
+        zero_control_history(root, run_directory, cli, authorization, state, request)
+    for sid in RETIRABLE_WORKERS if run_id == RETIRABLE_RUN else ():
         control = run_directory / "control" / ("worker-stop-" + sid)
         payload_raw = private_read(control / "payload.json")
         payload = decode(payload_raw)
@@ -2515,7 +2655,7 @@ def historical_retirement_checks(root, original, run_directory, cli, authorizati
 
 
 def retire_run(root, run_id, initial):
-    require(run_id == RETIRABLE_RUN, "only the named historical run may retire")
+    require(run_id in RETIRABLE_RUNS, "only the named historical runs may retire")
     directory = mkdir(root / ".retirement" / run_id)
     authorization_raw = private_read(directory / "authorization.json")
     authorization = decode(authorization_raw)
