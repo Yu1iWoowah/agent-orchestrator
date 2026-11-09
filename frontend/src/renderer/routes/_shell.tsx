@@ -1389,7 +1389,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 	useEffect(
 		() => aoBridge.app.onOpenSettingsShortcut((section) =>
 			useUiStore.getState().openGlobalSettings(
-				section === "billing" && cachedCloudBillingMode(queryClient) === "self_serve" ? "billing" : undefined,
+				section === "protectedSides" ? "protectedSides" : section === "billing" && cachedCloudBillingMode(queryClient) === "self_serve" ? "billing" : undefined,
 			)),
 		[queryClient],
 	);

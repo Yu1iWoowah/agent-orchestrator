@@ -200,7 +200,10 @@ let stagedReleaseNotes: string | undefined;
 let stagedInCurrentProcess = false;
 let macRestartPreparation: Promise<UpdateInstallResult> | undefined;
 let macRestartRequested = false;
-let restartFailureHandler: (() => void) | undefined;
+let updateRestartAttempt: AbortController | undefined;
+let restartFailureHandler: (() => void | Promise<void>) | undefined;
+let installerActive = false;
+let installerError: Error | undefined;
 let macRestartProgress: Awaited<ReturnType<typeof startMacUpdateProgress>> | undefined;
 let nativeReadyVersion: string | undefined;
 let nativePreparationError: Error | undefined;
@@ -1829,7 +1832,7 @@ function wireUpdaterEvents(): void {
         // Squirrel can close the windows, then fail to persist its relaunch
         // request. Restore AO in that still-running process instead of leaving
         // the user with no app window and no possible automatic restart.
-        restartFailureHandler?.();
+        void recoverUpdateRestart(short);
       }
     });
   }
@@ -1997,6 +2000,7 @@ function wireUpdaterEvents(): void {
     }
   });
   autoUpdater.on("error", (err) => {
+    if (installerActive) void recoverUpdateRestart(err);
     clearDownloadStallWatchdog();
     if (handleMacStagingFailure(err)) {
       emitUpdateFailure(err);
@@ -2767,9 +2771,44 @@ function applyInstallOnQuitPolicy(): void {
 
 // quitAndInstallUpdate installs a downloaded update and relaunches. isSilent
 // false keeps the installer UI on Windows; isForceRunAfter relaunches the app.
-export function setUpdateRestartFailureHandler(handler: () => void): void { restartFailureHandler = handler; }
+export function setUpdateRestartFailureHandler(handler: () => void | Promise<void>): void { restartFailureHandler = handler; }
 
 export function isUpdateRestartRequested(): boolean { return macRestartRequested; }
+export function getUpdateRestartSignal(): AbortSignal | undefined { return updateRestartAttempt?.signal; }
+
+let protectedSideUpdateGuard: (() => Promise<boolean>) | undefined;
+export function setProtectedSideUpdateGuard(guard: () => Promise<boolean>): void { protectedSideUpdateGuard = guard; }
+
+async function recoverUpdateRestart(error: unknown): Promise<void> {
+  updateRestartAttempt?.abort();
+  installerActive = false;
+  macRestartPreparation = undefined;
+  installerError = error instanceof Error ? error : new Error(String(error));
+  macRestartRequested = false;
+  try { await restartFailureHandler?.(); }
+  catch (recoveryError) { console.error("failed to recover after update restart:", recoveryError); }
+}
+
+/** A late draft veto can cancel after shutdown admission but before app exit. */
+export async function cancelUpdateRestart(): Promise<void> {
+  const recovery = recoverUpdateRestart(new Error("Update restart canceled."));
+  await macRestartProgress?.fail("Update restart canceled.").catch(() => undefined);
+  await recovery;
+}
+
+async function installPreparedUpdate(): Promise<void> {
+  installerActive = true;
+  installerError = undefined;
+  try {
+    if (protectedSideUpdateGuard && !await protectedSideUpdateGuard()) throw new Error("Protected sides: open Protected sides in the sidebar or Settings, close the blocking side, then retry.");
+    if (installerError) throw installerError;
+    autoUpdater.quitAndInstall(false, true);
+    if (installerError) throw installerError;
+  } catch (error) {
+    await recoverUpdateRestart(error);
+    throw error;
+  }
+}
 
 export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<UpdateInstallResult> {
   if (confirmedVersion !== undefined && (typeof confirmedVersion !== "string" || !confirmedVersion.trim())) {
@@ -2783,6 +2822,10 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
   if (blocker !== undefined) {
     throw new Error(blocker);
   }
+  if (process.platform === "darwin" && macRestartPreparation) return macRestartPreparation;
+  updateRestartAttempt?.abort();
+  const attempt = new AbortController();
+  updateRestartAttempt = attempt;
   if (process.platform !== "darwin") {
     if (!hasStagedBuild() || lastStatus.state === "downloading" || lastStatus.state === "preparing") {
       throw new Error("The update is not ready to install. Check for updates again.");
@@ -2809,10 +2852,11 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
     }
-    autoUpdater.quitAndInstall(false, true);
+    // Preparation may download again while the daemon still accepts /compact.
+    // Obtain its fenced shutdown admission only after all preparation awaits.
+    await installPreparedUpdate();
     return;
   }
-  if (macRestartPreparation) return macRestartPreparation;
   let confirmation: UpdateInstallResult;
   macRestartPreparation = runSerializedUpdaterOperation("manual-install", async () => {
     let progress: Awaited<ReturnType<typeof startMacUpdateProgress>> | undefined;
@@ -2855,9 +2899,10 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         }),
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
-      autoUpdater.quitAndInstall(false, true);
+      await installPreparedUpdate();
       if (!macRestartRequested) throw nativePreparationError ?? new Error("The installer could not restart AO.");
     } catch (err) {
+      attempt.abort();
       macRestartRequested = false;
       stagedInCurrentProcess = false;
       nativeReadyVersion = undefined;

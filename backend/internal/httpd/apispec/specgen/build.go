@@ -450,6 +450,7 @@ var schemaNames = map[string]string{
 	"ChatSideRecoveryRecord":                               "SideRecoveryRecord",
 	"ChatSideRecoveryTurn":                                 "SideRecoveryTurn",
 	"DomainSideConversation":                               "SideConversation",
+	"DomainSideProtection":                                 "SideProtection",
 	"DomainSideTurn":                                       "SideTurn",
 	"DomainSideContent":                                    "SideContent",
 	"DomainSideMessage":                                    "SideMessage",

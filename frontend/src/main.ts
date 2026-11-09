@@ -6,6 +6,7 @@ import { SideCloseRecovery } from "./main/side-close";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
+import { confirmProtectedSideQuit, createUpdateShutdownLifecycle, requestUpdateShutdown, waitForUpdateDaemonExit } from "./main/protected-side-quit";
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
@@ -39,7 +40,10 @@ import {
 	checkForUpdatesNow,
 	downloadUpdateNow,
 	quitAndInstallUpdate,
+	cancelUpdateRestart,
+	setProtectedSideUpdateGuard,
 	isUpdateRestartRequested,
+	getUpdateRestartSignal,
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
@@ -903,11 +907,12 @@ async function createWindowInternal(): Promise<void> {
 		if (daemonStatus.state === "ready") establishAppDiagnosticsLink();
 	});
 	shellWebContents.once("destroyed", () => {
+		trayLifecycle.clearRendererReady();
 		trustedShellWebContents.delete(shellWebContents.id);
 		quitConfirm.reset();
 	});
 	// A reload drops any open quit dialog, so the next ⌘Q should ask again.
-	shellWebContents.on("did-start-loading", () => quitConfirm.reset());
+	shellWebContents.on("did-start-loading", () => { quitConfirm.reset(); trayLifecycle.clearRendererReady(); });
 
 	// On Windows the app paints its own title bar (WindowTitlebar), so the native
 	// menu bar is hidden (autoHideMenuBar above). The role-based menu is still
@@ -3901,24 +3906,92 @@ app.whenReady().then(async () => {
 // Ordinary macOS Quit closes the window and leaves the Dock; the tray stays.
 // Full exit drops the supervisor socket, stopping the app-owned daemon after
 // its grace period. Sessions survive.
-setUpdateRestartFailureHandler(() => {
-	if (!browserQuitRequested) focusMainWindow();
+async function allowProtectedSideQuit(): Promise<boolean> {
+	if (daemonStatus.state !== "ready" || !daemonStatus.port) return true;
+	return confirmProtectedSideQuit(`http://127.0.0.1:${daemonStatus.port}`, {
+		zh: operatorConsentZh,
+		showMessageBox: (options) => { focusMainWindow(); return dialog.showMessageBox(options); },
+		openEntry: () => trayLifecycle.openProtectedSides(),
+	});
+}
+let protectedSideQuitApproved = false;
+let updateShutdownTarget: { status: DaemonStatus; child: ChildProcess | null } | undefined;
+
+function confirmChatDraftQuit(): boolean {
+	if (chatDraftQuitConfirmed) return true;
+	chatDraftQuitConfirmed = confirmUnsafeChatDraftLeave(
+		chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog,
+	);
+	return chatDraftQuitConfirmed;
+}
+
+const updateShutdown = createUpdateShutdownLifecycle({
+	confirmLeave: confirmChatDraftQuit,
+	requestShutdown: async () => {
+		if (daemonStatus.state !== "ready" || !daemonStatus.port) throw new Error("AO daemon is unavailable; the update cannot obtain shutdown admission.");
+		const target = { status: daemonStatus, child: daemonProcess };
+		await requestUpdateShutdown(`http://127.0.0.1:${daemonStatus.port}`);
+		updateShutdownTarget = target;
+	},
+	setApproved: (approved) => {
+		protectedSideQuitApproved = approved;
+		if (!approved) {
+			chatDraftQuitConfirmed = false;
+			chatDraftWindowCloseConfirmed = false;
+			browserQuitRequested = false;
+			updateQuitDeadlineAttempt = undefined;
+			desktopQuit.cancelQuit();
+		}
+	},
+	restoreDaemon: async () => {
+		const target = updateShutdownTarget;
+		if (!target) return;
+		updateShutdownTarget = undefined;
+		// Recovery must not wait on browser cleanup: a stalled cleanup is also
+		// a reason the updater may leave this process alive.
+		browserCleanupComplete = false;
+		// POST /shutdown returns before teardown finishes. Never attach back to
+		// that still-live, admission-fenced daemon, including an adopted process.
+		await waitForUpdateDaemonExit({ child: target.child, pid: target.status.pid, isProcessAlive: processAlive });
+		supervisorLink?.dispose();
+		supervisorLink = null;
+		await startDaemonForRestart();
+	},
 });
 
-let updateQuitDeadlineArmed = false;
+async function recoverUpdateShutdown(): Promise<void> {
+	try { await updateShutdown.recover(); }
+	catch (error) { reportDaemonRestartFailure(error); }
+	finally { focusMainWindow(); }
+}
+setUpdateRestartFailureHandler(recoverUpdateShutdown);
+setProtectedSideUpdateGuard(async () => {
+	if (!await allowProtectedSideQuit()) return false;
+	if (!await updateShutdown.prepare()) throw new Error("Update restart canceled.");
+	return true;
+});
+let protectedSideQuitChecking = false;
+let updateQuitDeadlineAttempt: AbortSignal | undefined;
 app.on("before-quit", (event) => {
 	if (desktopQuit.handleBeforeQuit(event)) return;
+	if (!protectedSideQuitApproved) {
+		event.preventDefault();
+		if (!protectedSideQuitChecking) {
+			protectedSideQuitChecking = true;
+			void allowProtectedSideQuit().then((allowed) => {
+				protectedSideQuitChecking = false;
+				if (allowed) { protectedSideQuitApproved = true; app.quit(); }
+				else desktopQuit.cancelQuit();
+			});
+		}
+		return;
+	}
 	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
 		event.preventDefault();
-		if (confirmUnsafeChatDraftLeave(
-			chatDraftRisks,
-			(options) => dialog.showMessageBoxSync(options),
-			chatDraftDialog,
-		)) {
-			chatDraftQuitConfirmed = true;
+		if (confirmChatDraftQuit()) {
 			app.quit();
 		} else {
-			desktopQuit.cancelQuit();
+			void cancelUpdateRestart();
 		}
 		return;
 	}
@@ -3950,18 +4023,20 @@ app.on("before-quit", (event) => {
 				retireSides(),
 			]);
 			const finishQuit = () => {
-				browserCleanupComplete = true;
+				browserCleanupComplete = browserQuitRequested;
 				browserQuitCleanupPromise = null;
-				app.quit();
+				if (browserQuitRequested) app.quit();
 			};
 			browserQuitCleanupPromise = cleanup.then(() => undefined).finally(finishQuit);
 		}
-		if (isUpdateRestartRequested() && !updateQuitDeadlineArmed) {
-			updateQuitDeadlineArmed = true;
+		const updateAttempt = getUpdateRestartSignal();
+		if (isUpdateRestartRequested() && updateAttempt && !updateAttempt.aborted && updateQuitDeadlineAttempt !== updateAttempt) {
+			updateQuitDeadlineAttempt = updateAttempt;
 			// Also cover a normal quit already waiting on the same cleanup.
 			void finishUpdateQuit(browserQuitCleanupPromise, {
+				signal: updateAttempt,
 				quit: () => undefined, // The existing cleanup continuation owns normal quit.
-				exit: () => { if (isUpdateRestartRequested()) app.exit(0); },
+				exit: () => app.exit(0),
 				log: (error) => console.error("update shutdown:", error),
 			});
 		}
