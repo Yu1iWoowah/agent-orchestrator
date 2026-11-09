@@ -127,7 +127,7 @@ A 只在來源與全部準備事實仍適用時沿用；B 必須重做，由 old
 
 ## 三個階段與回條
 
-1. **worker 停點**：核本專案未 terminated 的 worker 集合。active worker 收具名 stop D，收束操作、保全 ref／dirty／原題，原子寫 `workers/<id>/stop.json`（`rh-worker-stop/1`），填真 turn-id，completed 後 hold。
+1. **worker 停點**：核本專案未 terminated 的 worker 集合。active worker 收具名 stop D，收束操作、保全 ref／dirty／原題，填語意 statement 後由固定 helper 原子寫 `workers/<id>/stop.json`（`rh-worker-stop/2`），填真 turn-id，completed 後 hold。
    靜止代記須正常 idle/exited、無 queued/running／未結工具，兩份相隔至少兩秒的 Git 內容快照相同，再核正常狀態；明標「未經worker自述」。quota／沒回本身不算 safe。
 2. **old 文件與原文**：全 safe 後一次具名 2a 控制訊息，old 用自己的 managed write／expected-hash 更新 A–F，正文帶 `handoff_run_id`，原子寫 `old/phase-2a.json`（`rh-old-2a/1`）。runner 核原 managed JSON、正本 hash、lease、run-id、真 completed；ready 回覆須給精確 status 與「10分鐘未見new首報就只查原run」提示。
    之後保存 cap0 active-lineage CLI 投影，以及 query_only transaction 中唯一 old conversation 的全分支白名單原文、必要附件／依賴。cut 不可變，delta 以父 hash 相連。
@@ -146,11 +146,11 @@ session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、
 
 ## old Git 保全與正常回收（v3.1 §6）
 
-2a 的 old 自己核對並原子發布 `old/preservation.json`（`rh-old-preservation/1`）：
-`run_id/old_id/evidence_turn_id/original_ref/classification[]`。
+2a 的 old 自己核對並填 `old/draft/statement.json`（`rh-old-statement/1`）；
+固定 old-receipt helper 產 `old/preservation.json`（`rh-old-preservation/2`）及 phase-2a 回條。
 每筆分類含 `path`、`disposition=copy|rebuildable|discardable` 及具體 `basis`；
 可重建／可丟棄的目錄可用 `scope=directory` 涵蓋子樹，不能只憑檔名或 Git clean 推斷。
-必要或唯一不可重建檔案逐一列 `copy={path,sha256}`，先保存於本 run 的 `old/saved/`，
+必要或唯一不可重建檔案逐一列 disposition=copy；helper 決定 `copy={path,sha256}` 並先保存於本 run 的 `old/saved/`，
 按原相對關係存放；證據另記原 mode／相對路徑，副本不冒稱原目錄。
 
 runner 列出整個 old worktree 的檔案／目錄範圍，閉合 untracked、ignored 與空目錄的分類，
@@ -158,7 +158,7 @@ runner 列出整個 old worktree 的檔案／目錄範圍，閉合 untracked、i
 `original_ref` 必須是回收範圍外 common repository 的既存 `refs/heads/...` 並保護 HEAD；
 assume-unchanged、skip-worktree 或其他未核清 index flags 在 kill 前停止，不清旗標或重設內容。
 未推 commit 仍受此規則保護。腳本不建立 ref；無保護 ref 的 detached HEAD 停止。
-submodule、巢狀 repo 或未知 per-worktree metadata 視為依賴未核清，切前停止，不提供通用備份。
+gitlink 採下節的有限規則；巢狀 repo 或未知 per-worktree metadata 仍切前停止，不提供通用備份。
 
 run、shared、old artifact、common repository 與材料副本不得和回收範圍重疊。
 正常 project metadata 必須正面可讀；目前只接受適用 `preRemove` 為空的情況。
@@ -238,16 +238,93 @@ Linux 需要 Go 與 python3。在私有 HOME／TMPDIR、清除 AO／provider 環
 
 ```text
 cd backend
-go test -count=1 -v -run '^TestReusableHandoffWire$' ./internal/cli
+go test -count=1 -v -run '^TestReusableHandoff(Wire|Producer)$' ./internal/cli ./internal/adapters/chatdriver/codexappserver ./internal/adapters/chatdriver/acp
 go test -race -count=1 -p 8 ./...
 ```
 
-TestReusableHandoffWire 每次用真 Cobra stdout 與現行 Go Response／ports／domain DTO serializer，在私有 t.TempDir 產 fixture，再以 python3 -I -B 執行整套 RH Python 測試。
+TestReusableHandoffWire 用真 Cobra stdout 與現行 Go DTO 產 wire fixture 並驗 CLI 邊界。
+兩個 TestReusableHandoffProducer 各執行完整 Python suite：真 helper 子程序的同次 argv／stdout／exit 先經現有 Codex normalizeItem 或 ACP toolEvent，再由測試專用 projector 的真 Cobra session transcript 格式化，最後交 Python consumer。
+projector 只處理合成 transport 與時間／身份，不替換 producer 的 output／content／內容衍生旗標；Go test 不遞迴呼叫 go test。
 CLI list 為 data/meta、row.role/activity 字串；detail 為 session.kind/activity 物件；不能互換或猜 workspace 欄位，路徑仍由 C3 workspace_index＋Git核。
-Python 只替換 subprocess／HTTP I/O；無 producer fixture 或缺 python3 明確失敗，不退回手組封套或人工刷新 golden。
+Python 只替換 subprocess／HTTP I/O；無 producer fixture 或缺 python3 明確失敗，不退回手組封套。activity golden 在 tests/fixtures/activities，由兩個 driver 每次重算逐 bytes 比對；只有明確設定 RH_UPDATE_ACTIVITIES=1 才可更新，CI 不自動寫檔。
 控制時序 fake 只改合成情境值，模板取同次 producer。-count=1 避免 Go test cache 忽略 Python 變更；-v 顯示 Python 確實執行。
 Go workflow 的 PR paths 包含 tools/reusable-handoff/**，僅 Python／README 變更也會選中既有 Go 測試，無新增 workflow。
 非 Linux 不執行此 Linux 交接腳本，但仍編譯原生受影響 Go 套件；不由 fixture 通過推論 provider 或實際交接資格。
 
 測試對照：TS-T01 停點／靜止／quota；T02 dirty 內容與集合；T03 白名單／分支／附件依賴／outbox；T04 四組 binding／UNKNOWN／approval／固定身分／start 重入；T05 三回條、工具寫入、S1/S2、首報與 nonce；T06 UNKNOWN／原 handle／report 續行／精確 token；T07 D／hold／原題／放行；T08 原時戳／獨立期限／無總時限。
 這些是可重現 fake 證據，不是 provider 性能數字或真實交接資格證明。
+
+
+## 固定 actor helper 與 statement（RH-FIX2）
+
+控制 payload 的 `command` 是唯一命令來源。固定形式如下；實際使用 payload 的精確 U／run-id／sid，不自行拼其他 root：
+
+```text
+umask 077; export TMPDIR=U/workers/<sid>/draft; python3 -I -B U/handoff.py worker-receipt --run <uuid>
+umask 077; export TMPDIR=U/old/draft; python3 -I -B U/handoff.py old-receipt --run <uuid>
+umask 077; export TMPDIR=U/bootstrap/new/draft; python3 -I -B U/handoff.py inspect --run <uuid> --path start.json --offset 0
+```
+
+允許的 shell 包裝只有規格化的單一 sh／bash／zsh `-c`／`-lc`。附加 writer、背景命令、任意 Python、inspect 的展開／glob／額外 operator 都停止。
+目錄 0700、檔案 0600；不要自行寫 stop、snapshot、preservation、phase-2a 或完成時刻。
+
+worker 填固定 `workers/<sid>/draft/statement.json`，schema=`rh-worker-statement/1`：
+`run_id/worker_id/requested_state/block_reason/preservation_sources/in_flight/pending_question_refs`。
+必要原件每筆填 `path/kind/basis`，來源只限已綁 workspace 或自己 AO artifact 的普通非敏感檔案。
+helper 將材料固定存到 `workers/<sid>/saved/<workspace|artifact>/<relative>`，保留原物，記 mode／hash／來源相對路徑與 provenance。
+在途操作填 `reference/activity_id/state/receipt_path`，只能引用同一次原操作的 terminal 證據；不能把手填 completed 當終態。
+stop／D／hold／原題 owner／放行權沿用 start，缺 D 不猜，缺放行權保持 hold。
+
+worker helper 保存原 CLI 回應與 exclusion proof，只排除本次唯一 running turn、本 turn streaming assistant、精確自身 helper activity。
+其他 queued／running turn、同 turn 其他工具、核准、無法映射的 incomplete、真正外部 job 都阻擋 safe。
+runner 仍等真 completed 且沒有必要 incomplete；idle 沒有自身 helper 例外。
+worker 自述及 script-quiescent 都用同一 `rh-workspace-snapshot/2`，保存相同 regular/index/patch bytes 與 gitlink facts。
+缺證據時 blocked／pending 可有 null snapshot 並具體說明原因；所有提供的引用仍須在該 worker 固定目錄內且 hash 正確。
+正常流程拒絕 stop/1，不以 blocked 繞過路徑檢查。
+
+old 先自己以正常 managed write／expected-hash 更新 A–F，原 `--json` bytes 保存為 `old/managed.json`。
+old statement 的 `classification[].path` 只以 old workspace 為基準，必為乾淨相對路徑；填 disposition／basis，必要檔逐檔 copy，可重建／可丟棄目錄才用 scope=directory。
+不接受 actor 自選 copy 目的地、絕對路徑、漏分類／重疊、缺保護 ref 或 lease 不符。
+old-receipt 核當下真 turn／managed 原回應／正文／lease／worker index，先固定必要副本與 preservation/2，最後才發布 phase-2a 作信號。
+無最後信號只 WAIT；有信號但引用缺失即 STOP。成功重呼叫僅相同 intent／輸入／原件 hash 可讀原結果，部分發布或 managed 效果不明不自動補寫。
+
+普通 helper／inspect JSON 的 lease.session_id、prepared_by.session_id 或讀檔文字不是背景工作。
+同一共用解碼器先核 AO status／turn／incomplete，再核精確 helper 與原檔，最後才從其他工具結果外層的明確 async envelope／傳輸 running handle 取 reference。
+outputMayBePartial 本身不代表 job；必要結果截斷、未知 handle、錯終態 reference 仍 WAIT／STOP。
+測試含真 bootstrap stdout 超過 64×1024 的反例，producer 真截斷旗標原封不動進 consumer，不能拿短 golden 替換。
+
+## gitlink 的有限保全
+
+真 index mode 160000、stage 0／OID 是資料來源。缺目錄或空目錄明記 uninitialized，不假稱子 repo 物件已保存。
+clean initialized worker 必須 HEAD=OID、無 dirty／untracked／ignored／nested、無 shallow／alternates／grafts、無隱藏 index flags，原工作目錄保留。
+old 還要求 child common 位於 parent common 內、在 old workspace 與會回收的 per-worktree metadata 外，同 filesystem，且既存 branch ref 保護 child HEAD 與完整物件。
+不新增 ref；切前漂移、切後 common/ref/object hash 不符均 STOP。非空假目錄、symlink、stage 衝突與不明狀態均不會降成 uninitialized。
+
+## 已派送 run 的具名窄退役
+
+`retire --run 33da56c1-a652-4d16-b1aa-1042d3322f3f` 只實作此具名歷史案例，不提供任意 run／root／force。
+merge 不授權執行；須使用者裁決及主控新 D。operator 在固定 `R/.retirement/<run>/authorization.json` 記 schema=rh-retirement-authorization/1、operator_session_id、decision_ref、directive_ref、old_id、start_sha256、精確 expected_effects 與必要 materials（worker_id/path/sha256/basis）。
+這是營運授權引用，不是簽章，腳本不產生人類授權。
+
+守門要求 workers/stopped、只有兩筆已知 D-3 accepted 且原傳遞／completed／blocked／held 可核，old 仍負責、兩 worker 無後來改向、原 runner 的 PID/SID/boot/啟動記錄正面可核為已結束。
+取得 old/start 鎖後才取 runner.lock，不 force、不發訊息或 lifecycle。slot 必須仍是原 start bytes，原材料可保全，任何 UNKNOWN 停。
+歷史 stop/1 只保全原 bytes 與 blocked／hold 事實，不跟讀其越界引用、不升版 safe。
+
+固定 intent／manifest／原資格及 CLI bytes、必要材料與 precondition 原件先落盤；整 run 原子 rename 到 `R/.retired/<run>/`，整槽移到其 retired-start-slot/，建立空唯一槽位。
+原 state 與 accepted／FAIL 歷史不改成 complete 或零效果。最後 `R/.retirement/<run>/receipt.json` 綁原件 hash／mode／layout、兩個 closed effects、責任及授權引用。
+pending intent／半途 archive／缺 receipt 都阻擋同 old 的新 start；退役 UUID 永遠不能 start／load_run／continue／_run。
+中斷不搬回、不刪歷史、不重播；只在新的具名人工恢復授權（固定 recovery-authorization.json，原 intent_sha256、operator_session_id、新 directive_ref）下核原件並完成原提交。
+RH-FIX1 的 .voided/60cd2080 零效果作廢是不同規則，不能套到已有兩筆 D-3 的 run。
+
+## merge 後資格與 R1／R2 邊界
+
+先由主控另發具名 D，保存舊資格／FAIL 原件並以新 script bytes、實際 CLI bytes 重做資格，不替換 stable。
+已收 D-3 的事實使舊 A 不再足夠：R1 需同一 old 的新 A completed／settled，重核 worker 現況、原授權與新保留 D，再由合法非 human B 通知發布新 UUID request 並 start。
+不自行遞增 D、不重播舊 handle、不拿舊 run 的 blocked 當新 safe。
+原 human a0b12708-fba2-4a7e-9024-bf4c8c8cee2e／revision 0／原正文及 T0=2026-11-08T19:39:02Z（second）只在原授權仍涵蓋 R1、沒有取消改向或新限制時沿用；新 script／UUID／A/B/D 不重設 T0。
+R1 成功後交 07 與 O2 真人清單並停等使用者另一次 O2 確認，不能自動進 R2。
+本 RH-FIX2 實作 PR 不操作既有 lab、dev 3002、三 actor，不實際退役、更新資格或重跑 R1。
+
+審查補強：固定 producer 沿原 clientMessageId 同時核對 active steer 的 system activity/detail 與 idle fallback 的 user message，sender、payload、turn 必須一致。退役遇到較晚 durable steer 一律視為新 directive／authority UNKNOWN。退役前 CLI 原始回應先存入私有 preconditions，每次核對獨立保存，再由 manifest／intent／完成回條綁 hash；恢復不覆寫舊觀測。initialized gitlink 使用 Git 的 git-path 核對 merge／rebase／cherry-pick／revert／bisect／sequencer metadata；存在進行中狀態即 blocked，metadata facts 也參與漂移核對。
+
+message 有 consumedByTurnId 時以它核對實際 dispatch turn，原 turnId／message ID／clientMessageId 保留。退役在 manifest 已發布、intent 尚未發布時，可核對原 preparation 授權／效果綁定、run／槽位／副本／preconditions 後沿同一 manifest 續建 intent；不刪改原件，任何漂移仍 STOP。
