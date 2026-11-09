@@ -90,9 +90,10 @@ func primaryNative(r domain.SessionRecord) (string, string) {
 }
 
 type authorizedRoot struct {
-	path string
-	dir  *os.Root
-	info fs.FileInfo
+	path  string
+	alias string
+	dir   *os.Root
+	info  fs.FileInfo
 }
 
 func closeRoots(roots []authorizedRoot) {
@@ -149,7 +150,7 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, st
 		return nil, "scope_root_mismatch"
 	}
 	var roots []authorizedRoot
-	var paths []string
+	var paths, aliases []string
 	success := false
 	defer func() {
 		if !success {
@@ -180,13 +181,15 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, st
 		}
 		if !containsPath(paths, actual) {
 			paths = append(paths, actual)
+			aliases = append(aliases, filepath.Clean(root))
 		}
 	}
-	for _, path := range paths {
+	for i, path := range paths {
 		pinned, reason := pinRoot(path)
 		if reason != "" {
 			return nil, reason
 		}
+		pinned.alias = aliases[i]
 		roots = append(roots, pinned)
 	}
 	success = true
@@ -269,7 +272,7 @@ func (s *scopeResolver) resolve(ctx context.Context, id domain.SessionID) ([]aut
 			return nil, reason
 		}
 		for _, root := range roots {
-			found, reason := filenameCandidates(ctx, root, native, roots)
+			found, reason := filenameCandidates(ctx, root, native)
 			if reason != "" {
 				return nil, reason
 			}
@@ -337,56 +340,99 @@ func (s *scopeResolver) conflict(ctx context.Context, selected domain.SessionID,
 	return ""
 }
 
+// relativePath maps metadata names to their already-pinned authority. It does
+// not consult the current filesystem or redirect into another approved root.
+func (r authorizedRoot) relativePath(path string) (string, bool) {
+	for _, name := range []string{r.path, r.alias} {
+		if name == "" {
+			continue
+		}
+		rel, err := filepath.Rel(name, path)
+		if err == nil && filepath.IsLocal(rel) {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
 func registeredCandidate(ctx context.Context, roots []authorizedRoot, path string) (authorizedSource, string) {
 	if !filepath.IsAbs(path) || filepath.Ext(path) != ".jsonl" || !strings.HasPrefix(filepath.Base(path), "rollout-") {
 		return authorizedSource{}, "scope_root_mismatch"
 	}
-	actual, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		inside := false
-		for _, root := range roots {
-			if rel, e := filepath.Rel(root.path, path); e == nil && filepath.IsLocal(rel) {
-				inside = true
-				break
-			}
-		}
-		if !inside {
-			return authorizedSource{}, "scope_root_mismatch"
-		}
-		return authorizedSource{}, "source_metadata_failed"
-	}
-	path = actual
-	if filepath.Ext(path) != ".jsonl" || !strings.HasPrefix(filepath.Base(path), "rollout-") {
-		return authorizedSource{}, "scope_root_mismatch"
-	}
 	for _, root := range roots {
-		rel, err := filepath.Rel(root.path, path)
-		if err != nil || !filepath.IsLocal(rel) {
-			continue
+		if relative, ok := root.relativePath(path); ok {
+			return metadataCandidate(ctx, root, relative)
 		}
-		return metadataCandidate(ctx, root, rel)
 	}
 	return authorizedSource{}, "scope_root_mismatch"
 }
 
 func metadataCandidate(ctx context.Context, root authorizedRoot, relative string) (authorizedSource, string) {
-	if ctx.Err() != nil {
-		return authorizedSource{}, "canceled"
+	// Resolve aliases one component at a time through the pinned authority.
+	// Absolute link targets are only lexical names for this same root, never
+	// permission to select a different approved root through EvalSymlinks.
+	for links := 0; links < 40; links++ {
+		if !filepath.IsLocal(relative) {
+			return authorizedSource{}, "scope_root_mismatch"
+		}
+		relative = filepath.Clean(relative)
+		parts := strings.Split(relative, string(filepath.Separator))
+		for i := range parts {
+			if ctx.Err() != nil {
+				return authorizedSource{}, "canceled"
+			}
+			name := filepath.Join(parts[:i+1]...)
+			info, err := root.dir.Lstat(name)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return authorizedSource{}, "source_metadata_failed"
+				}
+				return authorizedSource{}, "scope_root_mismatch"
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				target, err := root.dir.Readlink(name)
+				if err != nil {
+					return authorizedSource{}, "source_metadata_failed"
+				}
+				if filepath.IsAbs(target) {
+					var ok bool
+					target, ok = root.relativePath(target)
+					if !ok {
+						return authorizedSource{}, "scope_root_mismatch"
+					}
+				} else {
+					target = filepath.Join(filepath.Dir(name), target)
+				}
+				relative = filepath.Join(target, filepath.Join(parts[i+1:]...))
+				break
+			}
+			if i == len(parts)-1 {
+				if !info.Mode().IsRegular() {
+					return authorizedSource{}, "source_metadata_failed"
+				}
+				if filepath.Ext(relative) != ".jsonl" || !strings.HasPrefix(filepath.Base(relative), "rollout-") {
+					return authorizedSource{}, "scope_root_mismatch"
+				}
+				return authorizedSource{root: root.path, relative: relative, info: info, rootInfo: root.info, eof: info.Size()}, ""
+			}
+		}
 	}
-	info, err := root.dir.Stat(relative)
-	if err != nil || !info.Mode().IsRegular() {
-		return authorizedSource{}, "source_metadata_failed"
-	}
-	return authorizedSource{root: root.path, relative: relative, info: info, rootInfo: root.info, eof: info.Size()}, ""
+	return authorizedSource{}, "scope_root_mismatch"
 }
 
 var filenameUUID = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
-func filenameCandidates(ctx context.Context, root authorizedRoot, native string, roots []authorizedRoot) ([]authorizedSource, string) {
+func filenameCandidates(ctx context.Context, root authorizedRoot, native string) ([]authorizedSource, string) {
+	// The lexical root name must still identify the pinned directory. This is
+	// an identity check only; it never supplies a replacement candidate/root.
+	current, err := os.Stat(root.path)
+	if err != nil || !os.SameFile(root.info, current) {
+		return nil, "scope_root_mismatch"
+	}
 	r := root.dir
 	var out []authorizedSource
 	reason := ""
-	err := fs.WalkDir(r.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(r.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -414,7 +460,7 @@ func filenameCandidates(ctx context.Context, root authorizedRoot, native string,
 			reason = "ambiguous_source"
 			return fs.SkipAll
 		}
-		candidate, why := registeredCandidate(ctx, roots, filepath.Join(root.path, filepath.FromSlash(path)))
+		candidate, why := metadataCandidate(ctx, root, filepath.FromSlash(path))
 		if why != "" {
 			reason = why
 			return fs.SkipAll

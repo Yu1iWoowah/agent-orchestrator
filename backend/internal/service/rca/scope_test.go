@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 )
 
 type scopeFixture struct {
@@ -137,7 +139,7 @@ func TestScopeRootReplacementAfterValidation(t *testing.T) {
 		}
 		t.Fatal("replacement root admitted for content reading")
 	}
-	if sources, reason := filenameCandidates(t.Context(), roots[0], syntheticNativeID, roots); reason != "scope_root_mismatch" || len(sources) != 0 {
+	if sources, reason := filenameCandidates(t.Context(), roots[0], syntheticNativeID); reason != "scope_root_mismatch" || len(sources) != 0 {
 		t.Fatal("filename fallback admitted a redirected root")
 	}
 }
@@ -309,5 +311,221 @@ func TestScopeTUIGenerationAndHistoricalBinding(t *testing.T) {
 			_ = f.Close()
 		}
 		t.Fatal("registered physical identity mismatch admitted")
+	}
+}
+
+type pinnedRootSwapStore struct {
+	*scopeFixture
+	before func()
+}
+
+func (s *pinnedRootSwapStore) ListUsageBindingsForSession(ctx context.Context, id domain.SessionID) ([]domain.UsageBindingRecord, error) {
+	if s.before != nil {
+		f := s.before
+		s.before = nil
+		f()
+	}
+	return s.scopeFixture.ListUsageBindingsForSession(ctx, id)
+}
+func TestNewPinnedRootCannotPivotToAnotherAllowedRoot(t *testing.T) {
+	metadata, _, _ := scopeSetup(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	roots := usagesvc.SourceRoots{
+		AccountCodexSessions: filepath.Join(home, ".ao", "data", "agent-accounts", "history", "codex", "sessions"),
+		AccountCodexArchived: filepath.Join(home, ".ao", "data", "agent-accounts", "history", "codex", "archived_sessions"),
+		CodexSessions:        filepath.Join(home, ".codex", "sessions"), CodexArchived: filepath.Join(home, ".codex", "archived_sessions"),
+	}
+	rootA, rootB := roots.AccountCodexSessions, roots.CodexSessions
+	for _, root := range []string{rootA, rootB} {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := "rollout-audit-" + syntheticNativeID + ".jsonl"
+	pathA, pathB := filepath.Join(rootA, base), filepath.Join(rootB, base)
+	for _, path := range []string{pathA, pathB} {
+		if err := os.WriteFile(path, []byte(header()), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := os.Stat(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.Stat(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(a, b) {
+		t.Fatal("fixture must have two distinct entities")
+	}
+	moved := rootA + "-moved"
+	swap := &pinnedRootSwapStore{scopeFixture: metadata}
+	swap.before = func() {
+		if err := os.Rename(rootA, moved); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Remove(rootA)
+			if err := os.Rename(moved, rootA); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := os.Symlink(rootB, rootA); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := New(t.Context(), t.TempDir(), swap, &canonicalFixture{}, roots)
+	defer svc.Close()
+	sources, reason := svc.scope.resolve(t.Context(), "selected")
+	if reason != "" {
+		return
+	}
+	if len(sources) != 1 {
+		t.Fatalf("unexpected accepted entity count: %d", len(sources))
+	}
+	if !os.SameFile(sources[0].info, b) {
+		t.Fatal("fixture did not pivot")
+	}
+	f, why := sources[0].open(t.Context())
+	if f != nil {
+		_ = f.Close()
+	}
+	if why == "" {
+		t.Fatal("CONTRACT_VIOLATION: two distinct filename candidates collapsed to redirected allowed root; raw open admitted")
+	}
+}
+
+func TestScopePinnedAliasesKeepFileIdentity(t *testing.T) {
+	for _, kind := range []string{"relative_file", "absolute_file", "relative_parent", "absolute_parent", "loop", "non_rollout"} {
+		t.Run(kind, func(t *testing.T) {
+			metadata, resolver, path := scopeSetup(t)
+			alias := filepath.Join(filepath.Dir(path), "rollout-alias-"+syntheticNativeID+".jsonl")
+			target := filepath.Base(path)
+			switch kind {
+			case "absolute_file":
+				target = path
+			case "relative_parent", "absolute_parent":
+				dir := filepath.Join(filepath.Dir(path), "dir")
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path, filepath.Join(dir, filepath.Base(path))); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(filepath.Dir(path), "parent")
+				parentTarget := "dir"
+				if kind == "absolute_parent" {
+					parentTarget = dir
+				}
+				if err := os.Symlink(parentTarget, link); err != nil {
+					t.Skip("symlinks unavailable")
+				}
+				path = filepath.Join(dir, filepath.Base(path))
+				alias = filepath.Join(link, filepath.Base(path))
+				target = ""
+			case "loop":
+				target = filepath.Base(alias)
+			case "non_rollout":
+				target = "private.txt"
+				if err := os.WriteFile(filepath.Join(filepath.Dir(path), target), []byte("synthetic not a rollout"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if target != "" {
+				if err := os.Symlink(target, alias); err != nil {
+					t.Skip("symlinks unavailable")
+				}
+			}
+			metadata.bindings["selected"] = []domain.UsageBindingRecord{{ID: 1, SessionID: "selected", Harness: domain.HarnessCodex, NativeRootID: syntheticNativeID}}
+			metadata.sources[1] = []domain.UsageSourceRecord{{ID: 2, BindingID: 1, Kind: domain.UsageSourceCodexRollout, NativeSessionID: syntheticNativeID, Generation: 1, ArtifactPath: alias}}
+			sources, reason := resolver.resolve(t.Context(), "selected")
+			if kind == "loop" || kind == "non_rollout" {
+				if reason != "scope_root_mismatch" || len(sources) != 0 {
+					t.Fatal("invalid file alias admitted")
+				}
+				return
+			}
+			if reason != "" || len(sources) != 1 {
+				t.Fatalf("valid pinned alias rejected: %s", reason)
+			}
+			original, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(original, sources[0].info) {
+				t.Fatal("alias substituted a different entity")
+			}
+			f, why := sources[0].open(t.Context())
+			if why != "" {
+				t.Fatal("valid alias cannot open original file")
+			}
+			_ = f.Close()
+		})
+	}
+}
+
+type rootSwapContext struct {
+	context.Context
+	once sync.Once
+	swap func()
+}
+
+func (c *rootSwapContext) Err() error { c.once.Do(c.swap); return c.Context.Err() }
+
+func TestScopeLateRootPivotKeepsPinnedEntry(t *testing.T) {
+	_, resolver, path := scopeSetup(t)
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, filepath.Base(path)), []byte(header()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver.roots = append(resolver.roots, other)
+	resolver.allowlist = append(resolver.allowlist, other)
+	roots, reason := resolver.resolvedRoots(t.Context())
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	defer closeRoots(roots)
+	original, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, err := os.Stat(filepath.Join(other, filepath.Base(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(original, outside) {
+		t.Fatal("fixture entities must differ")
+	}
+	root := filepath.Dir(path)
+	moved := root + "-moved"
+	ctx := &rootSwapContext{Context: t.Context(), swap: func() {
+		// The first WalkDir callback runs after filenameCandidates checks the root
+		// name. Changing it here must not redirect any entry obtained from its FD.
+		if err := os.Rename(root, moved); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Remove(root)
+			if err := os.Rename(moved, root); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := os.Symlink(other, root); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	sources, reason := filenameCandidates(ctx, roots[0], syntheticNativeID)
+	if reason != "" || len(sources) != 1 || !os.SameFile(sources[0].info, original) || os.SameFile(sources[0].info, outside) {
+		t.Fatal("pinned entry was redirected after root check")
+	}
+	f, why := sources[0].open(t.Context())
+	if f != nil {
+		_ = f.Close()
+	}
+	if f != nil || why != "source_identity_changed" {
+		t.Fatal("changed root admitted raw open")
 	}
 }
