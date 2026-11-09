@@ -81,15 +81,33 @@ func TestPALFormalCallerBothProfiles(t *testing.T) {
 			transport := &captureTransport{t: t, profile: p}
 			recorder := &memoryRecorder{}
 			c := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: root, diagnostics: os.Stderr}, Transport: transport, Recorder: recorder}
-			result, err := c.DelegateRead(t.Context(), testExecution, p, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{source}})
+			result, err := c.DelegateRead(t.Context(), testExecution, p, approvedRequest(t, &c, "QUESTION_MUST_SURVIVE", source))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(recorder.receipts) != 1 || recorder.receipts[0].Execution != testExecution || recorder.receipts[0].ProfileRevision != "r1" {
 				t.Fatalf("trusted recorder seam: %+v", recorder.receipts)
 			}
+			if result.Audit.Coverage != "complete" || len(result.Audit.Sources) != 1 || len(result.Audit.Omissions) != 0 || result.Audit.Sources[0].Path != "prompt.txt" || result.Audit.Sources[0].Start != 1 || result.Audit.PayloadHash == "" {
+				t.Fatalf("missing exact payload coverage: %+v", result.Audit)
+			}
 			if len(transport.calls) != 1 || result.Text != "fixture-answer" {
 				t.Fatalf("formal PAL caller not closed: calls=%d result=%+v", len(transport.calls), result)
+			}
+			var body struct {
+				Messages []struct{ Role, Content string }
+			}
+			if err := json.Unmarshal(transport.calls[0].Payload, &body); err != nil {
+				t.Fatal(err)
+			}
+			for name, mutated := range map[string]string{"question_replaced": strings.Replace(body.Messages[1].Content, "QUESTION_MUST_SURVIVE", "replacement question", 1), "source_truncated": strings.Replace(body.Messages[1].Content, "SYNTHETIC_SOURCE_142", "", 1)} {
+				wire, audit, err := gatePayload(p, "QUESTION_MUST_SURVIVE", mutated, body.Messages[0].Content, result.sources)
+				if err == nil || len(wire) != 0 || audit.Coverage != "none" || len(audit.Omissions) != 1 {
+					t.Fatalf("%s accepted incomplete wire: %+v %v", name, audit, err)
+				}
+			}
+			if _, _, err := gatePayload(p, "QUESTION_MUST_SURVIVE", body.Messages[1].Content, body.Messages[0].Content+"\nDOCUMENT_DIRECTIVE", result.sources); err == nil {
+				t.Fatal("source promoted into system")
 			}
 			if result.Receipt.Provider != provider || result.Receipt.RequestID != "fixture-request" || result.Receipt.Usage.Input == nil || *result.Receipt.Usage.Input != 10 || result.Receipt.Usage.CachedInput != nil || result.Receipt.FinishReason != "stop" || result.Receipt.ResponseID != "fixture-response" {
 				t.Fatalf("receipt projection lost provenance/UNKNOWN: %+v", result.Receipt)
@@ -128,8 +146,9 @@ func TestPALCallerCancelsUncooperativeTransport(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
+	request := approvedRequest(t, &c, "synthetic cancellation")
 	go func() {
-		_, err := c.DelegateRead(ctx, testExecution, p, Request{Question: "synthetic cancellation"})
+		_, err := c.DelegateRead(ctx, testExecution, p, request)
 		done <- err
 	}()
 	select {
@@ -159,7 +178,7 @@ func TestPALCallerRetainsMissingUsageReceipt(t *testing.T) {
 		calls++
 		return WireResponse{Status: 200, Headers: map[string]string{"x-request-id": "known-request"}, Body: []byte(`{"id":"known-response","model":"fixture-model","choices":[{"message":{"content":"must not pass"}}]}`)}, nil
 	})}
-	out, err := c.DelegateRead(t.Context(), testExecution, p, Request{Question: "synthetic missing usage"})
+	out, err := c.DelegateRead(t.Context(), testExecution, p, approvedRequest(t, &c, "synthetic missing usage"))
 	if err == nil || out.Text != "" || calls != 1 {
 		t.Fatalf("unknown usage accepted/retried: %+v %v calls=%d", out, err, calls)
 	}
@@ -184,7 +203,7 @@ func TestPALProviderFailureNeverRetriesOrFallsBack(t *testing.T) {
 				}
 				return WireResponse{Status: 503, Headers: map[string]string{"x-request-id": "failed-request"}}, nil
 			})}
-			out, err := c.DelegateRead(t.Context(), testExecution, p, Request{Question: "synthetic provider failure"})
+			out, err := c.DelegateRead(t.Context(), testExecution, p, approvedRequest(t, &c, "synthetic provider failure"))
 			if err == nil || out.Text != "" || calls != 1 || len(recorder.receipts) != 1 || recorder.receipts[0].UnknownReason == "" {
 				t.Fatalf("failed provider retried/accepted/lost hold identity: %+v %v calls=%d receipts=%+v", out, err, calls, recorder.receipts)
 			}
@@ -207,5 +226,22 @@ func TestRawUsageDetailsRemainProviderSpecific(t *testing.T) {
 		} else if result.Receipt.Usage.CachedInput != nil || result.Receipt.Usage.ReasoningOutput != nil {
 			t.Fatalf("compatibility details incorrectly promoted: %+v", result.Receipt)
 		}
+	}
+}
+
+func TestPALCallerRequiresReviewedSnapshot(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
+		t.Skip("isolated PAL required")
+	}
+	calls := 0
+	c := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: t.TempDir()}, Recorder: &memoryRecorder{}, Transport: transportFunc(func(context.Context, WireRequest) (WireResponse, error) { calls++; return WireResponse{}, nil })}
+	req := approvedRequest(t, &c, "inspect reviewed fixture")
+	if err := os.WriteFile(req.Paths[0], []byte("changed after approval"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := Profile{ID: "openai-fixture", Revision: "r1", BillingProvider: "openai", Model: "fixture-model", ContextTokens: 200000, MaxOutputTokens: 16384, OutputTokens: 128}
+	_, err := c.DelegateRead(t.Context(), testExecution, p, req)
+	if err == nil || calls != 0 {
+		t.Fatalf("unapproved snapshot reached broker: calls=%d err=%v", calls, err)
 	}
 }

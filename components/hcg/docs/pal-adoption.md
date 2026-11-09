@@ -39,3 +39,11 @@ OpenAI cache／reasoning 明細只在原始欄位明示且在合計範圍內才�
 `HCG_PAL_TESTS=1` 且明示固定 PAL source／Python venv 時，`internal/delegate` 的聚焦 race 測例驗：兩家正式組裝／獨立 cap／原始 usage／billing 歸因、O1 basename與角色邊界、未知或非法 usage、provider failure 單次且零 fallback、取消不合作 provider、UNKNOWN 收據身份與 provider-specific 明細。測例只用合成 profile/context/transport/recorder，零真 API／真 key。
 
 Q14 判斷只看上述 A 接點能否閉合。正式 provider 接點與這組最小離線 gate 可成立，沒有因此切 B/C；後續完整來源／budget／同 caller 驗收若發現 A 無法滿足契約，仍須停止並回主控。`.02` 成立後才新增 `.01` migration；整個七子項完成且全量通過前不交付功能 PR。真正付費 lab／語料／key／模式批准另授權，缺證據即 blocked，不以 mock 成功當 paid-ready。
+
+## 精確 payload 與 sanitized snapshot（.03）
+
+執行端只接受 AO 具名審核的 `ApprovedScope`，逐檔釘 path／revision／SHA256；root-relative 開檔防越界、拒非 regular、秘密路徑、binary／可疑憑證及 canary，讀取有大小與取消界。這個 deny scanner 不能證任意正文安全；目前驗收只用已核合成資料，真 repo／log 仍需具名 sanitized manifest 與另行授權。來源變更即拒絕，不沿用舊 hash。
+
+PAL 只見 opaque `sNNNN.txt` 唯讀副本，保留原 line mapping，時間固定為 epoch。HCG 依固定 PAL commit 核對 system SHA256、完整 question、來源逐字內容／行號、固定包裝與 final-exchange suffix hash；行號依 `utils/file_utils.py` 至少四欄。使用原生 `MAX_CONVERSATION_TURNS=1` 限制單次對話，沒有接受 continuation／history 的工具參數，也不對外回傳原 PAL continuation。任何包裝或實際注入差異均 blocked，不能用 processed_files 或 contains 代替驗證。
+
+coverage／omissions 由 HCG 從精確 wire 比對產生；來源過大或總範圍過大先回 scope_too_large，PAL 組裝時略過正文則 coverage=none、blocked，不回完整或全範圍 not_found。兩家分別驗過相同 gate；機器組裝成立不代表真模型不受語義注入影響。

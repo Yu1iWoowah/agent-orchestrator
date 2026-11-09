@@ -6,13 +6,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -34,11 +32,14 @@ type PAL struct {
 	diagnostics              io.Writer
 }
 type Consumer struct {
-	PAL       PAL
-	Transport Transport
-	Recorder  Recorder
+	ApprovedScope ApprovedScope
+	PAL           PAL
+	Transport     Transport
+	Recorder      Recorder
 }
 type Result struct {
+	Audit   PayloadAudit
+	sources preparedScope
 	Text    string
 	Receipt Receipt
 }
@@ -58,6 +59,10 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
+	scope, err := prepareScope(ctx, c.ApprovedScope, request.Question, request.Paths)
+	if err != nil {
+		return Result{}, err
+	}
 	dir, err := os.MkdirTemp(c.PAL.TempRoot, "p-")
 	if err != nil {
 		return Result{}, err
@@ -68,24 +73,20 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			return Result{}, err
 		}
 	}
-	paths := make([]string, 0, len(request.Paths))
-	for i, path := range request.Paths {
+	paths := make([]string, 0, len(scope.Sources))
+	for _, source := range scope.Sources {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
-		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
-			return Result{}, ErrUnavailable
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
+		path := filepath.Join(dir, "view", source.ID+".txt")
+		if err := os.WriteFile(path, []byte(source.text), 0600); err != nil {
 			return Result{}, err
 		}
-		name := fmt.Sprintf("s%04d.txt", i)
-		if err := os.WriteFile(filepath.Join(dir, "view", name), b, 0600); err != nil {
+		epoch := time.Unix(0, 0)
+		if err := os.Chtimes(path, epoch, epoch); err != nil {
 			return Result{}, err
 		}
-		paths = append(paths, "/view/"+name)
+		paths = append(paths, "/view/"+source.ID+".txt")
 	}
 	bridge := filepath.Join(dir, "bridge.py")
 	if err := os.WriteFile(bridge, palBridge, 0600); err != nil {
@@ -96,7 +97,7 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 	if _, err := os.Stat("/lib64"); err == nil {
 		args = append(args, "--ro-bind", "/lib64", "/lib64")
 	}
-	args = append(args, "--proc", "/proc", "--dev", "/dev", "--dir", "/runtime", "--ro-bind", venv, "/runtime/v", "--ro-bind", c.PAL.Source, "/pal", "--ro-bind", filepath.Join(dir, "view"), "/view", "--ro-bind", bridge, "/bridge.py", "--dir", "/home", "--bind", filepath.Join(dir, "cache"), "/home/pal", "--chdir", "/pal", "--clearenv", "--setenv", "HOME", "/home/pal", "--setenv", "TMPDIR", "/home/pal", "--setenv", "PYTHONDONTWRITEBYTECODE", "1", "--setenv", "DEFAULT_MODEL", profile.Model, "--setenv", "DISABLED_TOOLS", "clink,thinkdeep,planner,consensus,codereview,precommit,debug,secaudit,docgen,analyze,refactor,tracer,testgen,challenge,apilookup", "/runtime/v/bin/python", "/bridge.py")
+	args = append(args, "--proc", "/proc", "--dev", "/dev", "--dir", "/runtime", "--ro-bind", venv, "/runtime/v", "--ro-bind", c.PAL.Source, "/pal", "--ro-bind", filepath.Join(dir, "view"), "/view", "--ro-bind", bridge, "/bridge.py", "--dir", "/home", "--bind", filepath.Join(dir, "cache"), "/home/pal", "--chdir", "/pal", "--clearenv", "--setenv", "HOME", "/home/pal", "--setenv", "TMPDIR", "/home/pal", "--setenv", "PYTHONDONTWRITEBYTECODE", "1", "--setenv", "DEFAULT_MODEL", profile.Model, "--setenv", "MAX_CONVERSATION_TURNS", "1", "--setenv", "DISABLED_TOOLS", "clink,thinkdeep,planner,consensus,codereview,precommit,debug,secaudit,docgen,analyze,refactor,tracer,testgen,challenge,apilookup", "/runtime/v/bin/python", "/bridge.py")
 	cmd := exec.CommandContext(ctx, "bwrap", args...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	cmd.WaitDelay = 2 * time.Second
@@ -142,16 +143,17 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 		switch message.Kind {
 		case "provider":
 			calls++
-			if calls != 1 || message.Model != profile.Model || message.System == "" || !strings.Contains(message.Prompt, request.Question) {
+			if calls != 1 || message.Model != profile.Model {
 				return Result{}, ErrUnavailable
 			}
-			payload, err := json.Marshal(map[string]any{"model": profile.Model, "messages": []map[string]string{{"role": "system", "content": message.System}, {"role": "user", "content": message.Prompt}}, "max_completion_tokens": profile.OutputTokens})
+			payload, audit, err := gatePayload(profile, request.Question, message.Prompt, message.System, scope)
 			if err != nil {
-				return Result{}, err
+				return Result{Audit: audit}, err
 			}
 			result, err = c.dispatch(ctx, execution, profile, WireRequest{Provider: profile.BillingProvider, Endpoint: endpoint, Model: profile.Model, Payload: payload})
+			result.Audit, result.sources = audit, scope
 			if err != nil {
-				return Result{Receipt: result.Receipt}, err
+				return Result{Receipt: result.Receipt, Audit: result.Audit}, err
 			}
 			if err := json.NewEncoder(stdin).Encode(map[string]any{"text": result.Text, "usage": map[string]int64{"input_tokens": *result.Receipt.Usage.Input, "output_tokens": *result.Receipt.Usage.Output, "total_tokens": *result.Receipt.Usage.Total}}); err != nil {
 				return Result{}, err
