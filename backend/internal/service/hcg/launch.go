@@ -35,11 +35,13 @@ func policyVersion(in reporting.Inputs) [32]byte {
 }
 
 type launchItem struct {
-	notice   ports.HCGReportingLaunch
-	snapshot reporting.PreparedLaunch
-	version  [32]byte
-	valid    bool
-	done     chan struct{}
+	delegationSnapshot reporting.PreparedDelegationLaunch
+	delegationValid    bool
+	notice             ports.HCGReportingLaunch
+	snapshot           reporting.PreparedLaunch
+	version            [32]byte
+	valid              bool
+	done               chan struct{}
 }
 
 // This is an ephemeral queue for one fixed metadata consumer, not a durable
@@ -58,18 +60,23 @@ type metadataObserver struct {
 func (s *Service) startMetadata(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	s.metadata = &metadataObserver{items: map[string]*launchItem{}, wake: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel}
-	if s.core == nil {
+	if s.core == nil && s.delegation == nil {
 		close(s.metadata.done)
 		return
 	}
 	if projects, err := s.store.ListProjects(ctx); err == nil {
 		for _, p := range projects {
 			s.metadata.policies.Store(domain.ProjectID(p.ID), projectPolicy{p.Config.ReportingPolicySnapshot()})
+			if s.delegation != nil {
+				s.delegation.ProjectPolicyChanged(p.ID, delegationPolicy(p.Config.DelegationPolicySnapshot()))
+			}
 		}
 	}
 	if sessions, err := s.store.ListSessions(ctx, ""); err == nil {
 		for _, rec := range sessions {
-			_ = s.core.Prime(ctx, s.identity(rec))
+			if s.core != nil {
+				_ = s.core.Prime(ctx, s.identity(rec))
+			}
 		}
 	}
 	go s.runMetadata(ctx)
@@ -77,6 +84,9 @@ func (s *Service) startMetadata(ctx context.Context) {
 
 // Close stops only this service's metadata work, never a native process.
 func (s *Service) Close() {
+	if s.delegation != nil {
+		s.delegation.Close()
+	}
 	if s.metadata != nil {
 		s.metadata.cancel()
 		<-s.metadata.done
@@ -108,7 +118,7 @@ func (s *Service) ProjectPolicyChanged(id domain.ProjectID, p domain.HCGReportin
 }
 
 func (s *Service) validNotice(n ports.HCGReportingLaunch) bool {
-	if s.core == nil || n.DataRoot != s.root || n.Owner.Kind != domain.ConversationOwnerSession || n.Owner.ID != string(n.SessionID) || (n.Kind != domain.KindWorker && n.Kind != domain.KindOrchestrator) || n.CommittedOwner.IsTerminated || n.CommittedOwner.Harness != n.Harness || n.CommittedOwner.Mode != n.Mode {
+	if n.DataRoot != s.root || n.Owner.Kind != domain.ConversationOwnerSession || n.Owner.ID != string(n.SessionID) || (n.Kind != domain.KindWorker && n.Kind != domain.KindOrchestrator) || n.CommittedOwner.IsTerminated || n.CommittedOwner.Harness != n.Harness || n.CommittedOwner.Mode != n.Mode {
 		return false
 	}
 	switch n.Origin {
@@ -158,12 +168,15 @@ func (s *Service) ReportingLaunchReady(n ports.HCGReportingLaunch) {
 	item := &launchItem{notice: n, done: make(chan struct{})}
 	m.items[key] = item
 	policy, _ := m.policies.Load(n.ProjectID)
-	if policy, known := policy.(projectPolicy); known {
+	if policy, known := policy.(projectPolicy); known && s.core != nil {
 		inputs := policy.inputs(n.Kind)
 		item.snapshot, item.valid = s.core.CaptureLaunch(noticeIdentity(n), inputs, n.Fresh)
 		item.version = policyVersion(inputs)
 	}
-	if !item.valid {
+	if s.delegation != nil {
+		item.delegationSnapshot, item.delegationValid = s.delegation.CaptureLaunch(noticeIdentity(n), n.Fresh, n.DelegationConfigured)
+	}
+	if !item.valid && !item.delegationValid {
 		close(item.done)
 		return
 	}
@@ -231,8 +244,10 @@ func (s *Service) storeReady(ctx context.Context, item *launchItem) {
 	}
 	// A changed project version cannot be silently relabelled as the earlier
 	// successful launch's settings. Live attachments preserve the old snapshot.
-	if n.Fresh && policyVersion(inputs) != item.version {
-		return
+	if item.valid && s.core != nil && (!n.Fresh || policyVersion(inputs) == item.version) {
+		_ = s.core.StoreLaunch(ctx, item.snapshot, id)
 	}
-	_ = s.core.StoreLaunch(ctx, item.snapshot, id)
+	if item.delegationValid && s.delegation != nil {
+		_ = s.delegation.StoreLaunch(ctx, item.delegationSnapshot, id)
+	}
 }

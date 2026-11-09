@@ -23,7 +23,10 @@ type ApprovedScope struct {
 	Name, Revision, Root string
 	Files                []ApprovedFile
 }
-type ApprovedFile struct{ Path, SHA256 string }
+type ApprovedFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
 type SourceRange struct {
 	ID       string `json:"id"`
 	Path     string `json:"path"`

@@ -10,6 +10,7 @@ import (
 type WireRequest struct {
 	Provider, Endpoint, Model string
 	Payload                   []byte
+	ScopeDigest               string
 }
 type WireResponse struct {
 	Status  int

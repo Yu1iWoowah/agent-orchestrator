@@ -20,5 +20,11 @@ func (s *Service) notifyHCGReporting(cfg StartConfig, live bool) {
 	s.mu.RLock()
 	observer := s.hcgReporting
 	s.mu.RUnlock()
-	ports.NotifyHCGReportingLaunch(observer, ports.HCGReportingLaunch{Origin: ports.HCGReportingMainChat, Owner: owner, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness, Mode: domain.SessionModeChat, DataRoot: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, ArtifactDir: cfg.ArtifactDir, CommittedOwner: cfg.ExpectedControllerOwner, Fresh: !live})
+	configured := false
+	for _, server := range cfg.MCPServers {
+		if server.Name == "hcg" && server.Type == "stdio" && len(server.Args) == 3 && server.Args[0] == "usage" && server.Args[1] == "delegation" && server.Args[2] == "mcp" {
+			configured = true
+		}
+	}
+	ports.NotifyHCGReportingLaunch(observer, ports.HCGReportingLaunch{DelegationConfigured: configured, Origin: ports.HCGReportingMainChat, Owner: owner, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness, Mode: domain.SessionModeChat, DataRoot: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, ArtifactDir: cfg.ArtifactDir, CommittedOwner: cfg.ExpectedControllerOwner, Fresh: !live})
 }

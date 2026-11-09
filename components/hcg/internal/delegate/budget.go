@@ -39,9 +39,9 @@ type Charges struct {
 // ExternalSpend excludes this gate's attempts; includes uncontrolled spend and
 // holds across all accounts/projects of the billing family, not per key.
 type ExternalSpend struct {
-	Known           bool
-	OutsideGateOnly bool
-	Nanos           int64
+	Known           bool  `json:"known"`
+	OutsideGateOnly bool  `json:"outsideGateOnly"`
+	Nanos           int64 `json:"nanos"`
 }
 
 type budgetAttempt struct {
@@ -49,6 +49,7 @@ type budgetAttempt struct {
 	Profile       Profile
 	ProfileDigest string
 	PayloadHash   string
+	ScopeDigest   string
 	State         string
 	Reserved      int64
 	Charged       *int64
@@ -79,6 +80,9 @@ func (b *Budget) now() time.Time {
 }
 
 func (b *Budget) update(ctx context.Context, change func(*budgetState) error) error {
+	return b.updateGuarded(ctx, change, nil)
+}
+func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) error, guard func(func() error) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -142,7 +146,11 @@ func (b *Budget) update(ctx context.Context, change func(*budgetState) error) er
 	if err != nil || len(data) > 4<<20 {
 		return ErrBudgetBlocked
 	}
-	return atomicBudgetFile(ctx, path, data)
+	persist := func() error { return atomicBudgetFile(ctx, path, data) }
+	if guard != nil {
+		return guard(persist)
+	}
+	return persist()
 }
 
 func validBudgetState(state budgetState) error {
@@ -161,7 +169,7 @@ func validBudgetState(state budgetState) error {
 			return ErrBudgetBlocked
 		}
 		worst, worstErr := worstCharge(a.Profile)
-		if key != attemptKey(a.Execution, a.Profile) || worstErr != nil || a.Reserved != worst || a.ProfileDigest != a.Profile.digest() || len(a.PayloadHash) != 64 || a.Execution.ProjectPolicyRevision == "" {
+		if key != attemptKey(a.Execution, a.Profile) || worstErr != nil || a.Reserved != worst || a.ProfileDigest != a.Profile.digest() || len(a.PayloadHash) != 64 || !validDigest(a.ScopeDigest) || a.Execution.ProjectPolicyRevision == "" {
 			return ErrBudgetBlocked
 		}
 		switch a.State {
@@ -296,8 +304,8 @@ func worstCharge(p Profile) (int64, error) {
 	return total, nil
 }
 
-func (b *Budget) reserve(ctx context.Context, e Execution, p Profile, payload []byte) (string, error) {
-	if e.ProjectID == "" || e.SessionID == "" || e.DelegationID == "" || e.AttemptID == "" || e.ProjectPolicyRevision == "" {
+func (b *Budget) reserve(ctx context.Context, e Execution, p Profile, payload []byte, scopeDigest string) (string, error) {
+	if !validDigest(scopeDigest) || e.ProjectID == "" || e.SessionID == "" || e.DelegationID == "" || e.AttemptID == "" || e.ProjectPolicyRevision == "" {
 		return "", ErrBudgetBlocked
 	}
 	worst, err := worstCharge(p)
@@ -342,7 +350,7 @@ func (b *Budget) reserve(ctx context.Context, e Execution, p Profile, payload []
 		if err != nil || total > 630*nanoUSD {
 			return ErrBudgetBlocked
 		}
-		s.Attempts[key] = budgetAttempt{Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), State: "reserved", Reserved: worst}
+		s.Attempts[key] = budgetAttempt{Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), ScopeDigest: scopeDigest, State: "reserved", Reserved: worst}
 		return nil
 	})
 	return key, err
@@ -433,18 +441,20 @@ func receiptCharges(a budgetAttempt, r Receipt) (Charges, error) {
 // budgetBridge is the final consumer's sole transport+recorder pair. Admission
 // is a short policy revision linearization, never a lock held over provider I/O.
 type budgetBridge struct {
-	budget    *Budget
-	execution Execution
-	profile   Profile
-	actual    Transport
-	canonical Recorder
-	authorize func(context.Context) bool
-	key       string
-	started   bool
+	budget       *Budget
+	execution    Execution
+	profile      Profile
+	actual       Transport
+	canonical    Recorder
+	authorize    func(context.Context) bool
+	commitGuard  func(context.Context, func() error) error
+	afterReserve func(context.Context)
+	key          string
+	started      bool
 }
 
 func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, error) {
-	if b.actual == nil || b.canonical == nil || b.authorize == nil || r.Provider != b.profile.BillingProvider || r.Endpoint != b.profile.endpoint() || r.Model != b.profile.Model {
+	if b.actual == nil || b.canonical == nil || (b.authorize == nil && b.commitGuard == nil) || r.Provider != b.profile.BillingProvider || r.Endpoint != b.profile.endpoint() || r.Model != b.profile.Model {
 		return WireResponse{}, ErrBudgetBlocked
 	}
 	var body struct {
@@ -457,18 +467,35 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 	if d.Decode(&body) != nil || d.Decode(new(any)) != io.EOF || body.Model != b.profile.Model || body.Max != b.profile.OutputTokens || len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" {
 		return WireResponse{}, ErrBudgetBlocked
 	}
-	key, err := b.budget.reserve(ctx, b.execution, b.profile, r.Payload)
+	key, err := b.budget.reserve(ctx, b.execution, b.profile, r.Payload, r.ScopeDigest)
 	if err != nil {
 		return WireResponse{}, err
 	}
 	b.key = key
-	if !b.authorize(ctx) || ctx.Err() != nil {
+	if b.afterReserve != nil {
+		b.afterReserve(ctx)
+	}
+	if (b.authorize != nil && !b.authorize(ctx)) || ctx.Err() != nil {
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = b.budget.releaseUnsent(releaseCtx, key)
 		return WireResponse{}, ErrBudgetBlocked
 	}
-	if err := b.budget.transition(ctx, key, "reserved", "dispatched"); err != nil {
+	dispatch := func() error { return b.budget.transition(ctx, key, "reserved", "dispatched") }
+	if b.commitGuard != nil {
+		dispatch = func() error {
+			return b.budget.updateGuarded(ctx, func(s *budgetState) error {
+				a, ok := s.Attempts[key]
+				if !ok || a.State != "reserved" || s.Period != b.budget.now().Format("2006-01") || a.Profile.Prices.Period != s.Period {
+					return ErrBudgetBlocked
+				}
+				a.State = "dispatched"
+				s.Attempts[key] = a
+				return nil
+			}, func(persist func() error) error { return b.commitGuard(ctx, persist) })
+		}
+	}
+	if err := dispatch(); err != nil {
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = b.budget.releaseUnsent(releaseCtx, key)

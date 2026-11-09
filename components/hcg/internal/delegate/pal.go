@@ -34,6 +34,7 @@ type PAL struct {
 	diagnostics              io.Writer
 }
 type Consumer struct {
+	checkpoint    func(context.Context, string)
 	ApprovedScope ApprovedScope
 	PAL           PAL
 	Transport     Transport
@@ -132,7 +133,13 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			_ = cmd.Wait()
 		}
 	}()
+	if err := c.atCheckpoint(ctx, "pal_assembly"); err != nil {
+		return Result{}, err
+	}
 	if err := json.NewEncoder(stdin).Encode(map[string]any{"profile": profile.childConfig(), "question": palQuestion, "paths": paths}); err != nil {
+		return Result{}, err
+	}
+	if err := c.atCheckpoint(ctx, "pal_ipc"); err != nil {
 		return Result{}, err
 	}
 	scanner := bufio.NewScanner(stdout)
@@ -160,7 +167,7 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			if err != nil {
 				return Result{Audit: audit}, err
 			}
-			result, err = c.dispatch(ctx, execution, profile, WireRequest{Provider: profile.BillingProvider, Endpoint: endpoint, Model: profile.Model, Payload: payload})
+			result, err = c.dispatch(ctx, execution, profile, WireRequest{Provider: profile.BillingProvider, Endpoint: endpoint, Model: profile.Model, Payload: payload, ScopeDigest: audit.ScopeDigest})
 			result.Audit, result.sources = audit, scope
 			if err != nil {
 				return Result{Receipt: result.Receipt, Audit: result.Audit}, err
@@ -180,8 +187,17 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 				}
 				return Result{}, ErrUnavailable
 			}
+			if err := c.atCheckpoint(ctx, "answer_validation"); err != nil {
+				return Result{Receipt: result.Receipt}, err
+			}
+			if err := ctx.Err(); err != nil {
+				return Result{Receipt: result.Receipt}, err
+			}
 			reply, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
 			result.text = ""
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return Result{Receipt: result.Receipt}, cancelErr
+			}
 			result.Reply = reply
 			return result, err
 		default:
@@ -236,5 +252,24 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 		return got.result, got.err
 	case <-ctx.Done():
 		return Result{}, ctx.Err()
+	}
+}
+
+// Fixed constructor-only fault points share the caller's cancellation bound.
+// Production has no checkpoint; no HTTP/tool input can install one.
+func (c *Consumer) atCheckpoint(ctx context.Context, point string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.checkpoint == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() { c.checkpoint(ctx, point); close(done) }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return ctx.Err()
 	}
 }

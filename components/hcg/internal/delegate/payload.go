@@ -16,6 +16,7 @@ const userSuffix = "\n=== END CONTEXT ====\n=== END REQUEST ===\n\nPlease provid
 
 // PayloadAudit records only hashes and verified ranges, never source bodies.
 type PayloadAudit struct {
+	ScopeDigest     string        `json:"scopeDigest"`
 	InstructionHash string        `json:"instructionHash"`
 	FocusHash       string        `json:"focusHash"`
 	QuestionHash    string        `json:"questionHash"`
@@ -79,5 +80,7 @@ func gatePayload(profile Profile, question, prompt, system string, scope prepare
 	for _, source := range scope.Sources {
 		audit.Sources = append(audit.Sources, source.SourceRange)
 	}
+	scopeBytes, _ := json.Marshal(audit.Sources)
+	audit.ScopeDigest = textHash(string(scopeBytes))
 	return payload, audit, nil
 }

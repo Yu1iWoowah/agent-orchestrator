@@ -10,14 +10,15 @@ import (
 // Profile is a deployment snapshot, never supplied by the model/tool request.
 // Limits describe the reviewed model; OutputTokens is this attempt's hard cap.
 type Profile struct {
-	Prices          Prices `json:"prices"`
-	ID              string `json:"id"`
-	Revision        string `json:"revision"`
-	BillingProvider string `json:"billingProvider"`
-	Model           string `json:"model"`
-	ContextTokens   int64  `json:"contextTokens"`
-	MaxOutputTokens int64  `json:"maxOutputTokens"`
-	OutputTokens    int64  `json:"outputTokens"`
+	DeploymentDigest string `json:"deploymentDigest,omitempty"`
+	Prices           Prices `json:"prices"`
+	ID               string `json:"id"`
+	Revision         string `json:"revision"`
+	BillingProvider  string `json:"billingProvider"`
+	Model            string `json:"model"`
+	ContextTokens    int64  `json:"contextTokens"`
+	MaxOutputTokens  int64  `json:"maxOutputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
 }
 
 var profileToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)

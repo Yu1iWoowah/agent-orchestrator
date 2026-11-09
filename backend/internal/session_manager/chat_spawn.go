@@ -272,7 +272,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            in.systemPrompt,
 		AdditionalDirectories:   workspaceProjectDirectories(in.workspace.Path, in.workspaceProject),
-		MCPServers:              m.aoMCPServers(in.cfg.Harness, env),
+		MCPServers:              m.chatMCPServers(in.cfg.Harness, in.cfg.Kind, id, domain.ProjectID(in.project.ID), env),
 		ExpectedControllerOwner: in.record.ControllerOwner(),
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
 			prepared, launchEnv, prepareErr := m.prepareChatControllerEnv(
@@ -563,7 +563,7 @@ func (m *Manager) resumeChatController(
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            systemPrompt,
 		AdditionalDirectories:   additionalDirectories,
-		MCPServers:              m.aoMCPServers(rec.Harness, env),
+		MCPServers:              m.chatMCPServers(rec.Harness, rec.Kind, rec.ID, rec.ProjectID, env),
 		ExpectedControllerOwner: rec.ControllerOwner(),
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
 			if err := m.guardReplacementNativeResumeLaunch(launchCtx, rec, controllerGeneration); err != nil {
@@ -779,4 +779,19 @@ func (m *Manager) restoredWorkspaceProjectDirectories(
 		directories = append(directories, row.WorktreePath)
 	}
 	return directories, nil
+}
+
+func (m *Manager) chatMCPServers(harness domain.AgentHarness, kind domain.SessionKind, id domain.SessionID, project domain.ProjectID, env map[string]string) []ports.ChatMCPServerConfig {
+	servers := m.aoMCPServers(harness, env)
+	if len(servers) == 0 || (kind != domain.KindWorker && kind != domain.KindOrchestrator) || (harness != domain.HarnessCodex && harness != domain.HarnessClaudeCode) {
+		return servers
+	}
+	resolver, ok := m.hcgReporting.(ports.HCGDelegationMountResolver)
+	if !ok || !resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: id, ProjectID: project, Kind: kind, Harness: harness, Mode: domain.SessionModeChat, DataRoot: m.dataDir}) {
+		return servers
+	}
+	server := servers[0]
+	server.Name = "hcg"
+	server.Args = []string{"usage", "delegation", "mcp"}
+	return append(servers, server)
 }

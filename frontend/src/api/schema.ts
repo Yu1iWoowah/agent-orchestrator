@@ -1460,6 +1460,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/hcg-delegation/emergency-stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Fixed delegation; native primary loopback only */
+        put: operations["setHCGDelegationStop"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/hcg-delegation/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fixed delegation; native primary loopback only */
+        get: operations["listHCGDelegationProfiles"];
+        /** Fixed delegation; native primary loopback only */
+        put: operations["registerHCGDelegationProfile"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hcg-reporting/emergency-stop": {
         parameters: {
             query?: never;
@@ -3891,6 +3926,58 @@ export interface paths {
         post?: never;
         /** Purge local guardian observation metadata */
         delete: operations["purgeGuardianObservability"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/hcg-delegation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fixed delegation; native primary loopback only */
+        get: operations["getHCGDelegation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/hcg-delegation/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Fixed delegation; native primary loopback only */
+        put: operations["setHCGDelegationOverride"];
+        post?: never;
+        /** Fixed delegation; native primary loopback only */
+        delete: operations["clearHCGDelegationOverride"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/hcg-delegation/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fixed delegation; native primary loopback only */
+        post: operations["readHCGDelegation"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -7591,6 +7678,132 @@ export interface components {
             orchestratorId?: string;
             workerId: string;
         };
+        DelegationApprovedFile: {
+            path: string;
+            sha256: string;
+        };
+        DelegationCoverage: {
+            approved_ranges: components["schemas"]["DelegationSourceRange"][];
+            coverage_status: string;
+            injected_ranges: components["schemas"]["DelegationSourceRange"][];
+            injected_scope_digest: string;
+            requested_scope_digest: string;
+        };
+        DelegationCredentialReference: {
+            name: string;
+            provider: string;
+            version: string;
+        };
+        DelegationDeployment: {
+            credentialRef: components["schemas"]["DelegationCredentialReference"];
+            inputs: components["schemas"]["DelegationInputManifest"][];
+            installation: components["schemas"]["DelegationInstallation"];
+            profile: components["schemas"]["DelegationProfile"];
+            workspace: string;
+        };
+        DelegationEvidence: {
+            content_sha256: string;
+            id: string;
+            line_end: number;
+            line_start: number;
+            /** Format: date-time */
+            observed_at: string;
+            path: string;
+            quote: string;
+            quote_sha256: string;
+            revision: string;
+            source_id: string;
+            verification: string;
+        };
+        DelegationExternalSpend: {
+            known: boolean;
+            /** Format: int64 */
+            nanos: number;
+            outsideGateOnly: boolean;
+        };
+        DelegationFinding: {
+            evidence_ids: string[];
+            id: string;
+            kind: string;
+            text: string;
+        };
+        DelegationInputManifest: {
+            files: components["schemas"]["DelegationApprovedFile"][];
+            name: string;
+            projectId: string;
+            revision: string;
+        };
+        DelegationInstallation: {
+            adapterVersion: string;
+            commit: string;
+            configDigest: string;
+            lockDigest: string;
+            pythonDigest: string;
+            pythonVersion: string;
+            runtimeDigest: string;
+            source: string;
+            sourceDigest: string;
+            templateVersion: string;
+            venv: string;
+        };
+        DelegationOmission: {
+            reason: string;
+            sourceId?: string;
+        };
+        DelegationPrices: {
+            billableUsageCovered: boolean;
+            /** Format: int64 */
+            cachedInputNanoUSDPerMillion: number;
+            /** Format: int64 */
+            inputNanoUSDPerMillion: number;
+            limitsCertified: boolean;
+            /** Format: int64 */
+            outputNanoUSDPerMillion: number;
+            period: string;
+            version: string;
+        };
+        DelegationProfile: {
+            billingProvider: string;
+            /** Format: int64 */
+            contextTokens: number;
+            id: string;
+            /** Format: int64 */
+            maxOutputTokens: number;
+            model: string;
+            /** Format: int64 */
+            outputTokens: number;
+            prices: components["schemas"]["DelegationPrices"];
+            revision: string;
+        };
+        DelegationProfileRef: {
+            id: string;
+            revision: string;
+        };
+        DelegationResolvedProfile: {
+            available: boolean;
+            billing_provider: string;
+            current: boolean;
+            digest: string;
+            id: string;
+            model: string;
+            priceVersion: string;
+            reason: string;
+            revision: string;
+        };
+        DelegationSourceRange: {
+            endLine: number;
+            id: string;
+            path: string;
+            revision: string;
+            sha256: string;
+            startLine: number;
+        };
+        DelegationUsageReference: {
+            attempt_id: string;
+            profile_digest: string;
+            request_id?: string;
+            status: string;
+        };
         DesktopArtifactLocationResponse: {
             artifactDir: string;
             sessionId: string;
@@ -7959,6 +8172,74 @@ export interface components {
             /** Format: date-time */
             until: string;
         };
+        HCGDelegationConfig: {
+            allowedProfiles?: components["schemas"]["HCGProfileRef"][];
+            enabled?: null | boolean;
+            selectedProfile?: components["schemas"]["HCGProfileRef"];
+        };
+        HCGDelegationProfilesResponse: {
+            profiles: components["schemas"]["DelegationResolvedProfile"][];
+        };
+        HCGDelegationReadRequest: {
+            focus?: string;
+            output_limit?: number;
+            paths: string[];
+            question: string;
+        };
+        HCGDelegationReadResponse: {
+            answer: string;
+            backend: string;
+            billing_provider: string;
+            coverage: components["schemas"]["DelegationCoverage"];
+            delegation_id: string;
+            evidence: components["schemas"]["DelegationEvidence"][];
+            findings: components["schemas"]["DelegationFinding"][];
+            model: string;
+            omissions: components["schemas"]["DelegationOmission"][];
+            profile_id: string;
+            profile_revision: string;
+            project_id: string;
+            reason: string;
+            schema: string;
+            session_id: string;
+            status: string;
+            usage_ref: components["schemas"]["DelegationUsageReference"];
+        };
+        HCGDelegationRegistrationRequest: {
+            deployment: components["schemas"]["DelegationDeployment"];
+            externalSpend: {
+                [key: string]: components["schemas"]["DelegationExternalSpend"];
+            } | null;
+        };
+        HCGDelegationResponse: {
+            active: boolean;
+            allowedProfiles: components["schemas"]["DelegationProfileRef"][];
+            available: boolean;
+            effectiveEnabled: boolean;
+            emergencyStop: boolean;
+            hostProfileCurrentRevision: string;
+            inputs: components["schemas"]["HCGReportingInputs"];
+            manifestRevision: number;
+            mountConfigured: boolean;
+            mountEnabled: boolean;
+            mountKnown: boolean;
+            mountProfile: null | components["schemas"]["DelegationProfileRef"];
+            profileEligibility: string;
+            projectId: string;
+            projectOptIn: boolean;
+            projectPolicyRevision: string;
+            reason: string;
+            requested: boolean;
+            resolvedProfile: null | components["schemas"]["DelegationResolvedProfile"];
+            selectedProfile: null | components["schemas"]["DelegationProfileRef"];
+            selectionSource: string;
+            sessionId: string;
+            sessionOverride: string;
+            source: string;
+        };
+        HCGDelegationToggle: {
+            enabled?: null | boolean;
+        };
         HCGEnabledRequest: {
             enabled: null | boolean;
         };
@@ -7974,6 +8255,10 @@ export interface components {
             engine: string;
             reason: string;
             version: string;
+        };
+        HCGProfileRef: {
+            id: string;
+            revision: string;
         };
         HCGReportRequest: {
             /** @enum {string} */
@@ -8637,6 +8922,7 @@ export interface components {
                 [key: string]: string;
             };
             guardianObservability?: components["schemas"]["GuardianObservabilityConfig"];
+            hcgDelegation?: components["schemas"]["HCGDelegationConfig"];
             hcgReporting?: components["schemas"]["HCGReportingConfig"];
             orchestrator?: components["schemas"]["RoleOverride"];
             orchestratorHandoff?: components["schemas"]["OrchestratorHandoffConfig"];
@@ -9393,6 +9679,7 @@ export interface components {
             agent?: string;
             agentAccountId?: string;
             agentConfig?: components["schemas"]["AgentConfig"];
+            hcgDelegation?: components["schemas"]["HCGDelegationToggle"];
             hcgReporting?: components["schemas"]["HCGReportingConfig"];
         };
         RollbackConversationResponse: {
@@ -16167,6 +16454,236 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setHCGDelegationStop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HCGEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGStopResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listHCGDelegationProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGDelegationProfilesResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    registerHCGDelegationProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HCGDelegationRegistrationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGDelegationProfilesResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -25880,6 +26397,322 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getHCGDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGDelegationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setHCGDelegationOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HCGEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGDelegationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    clearHCGDelegationOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGDelegationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    readHCGDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HCGDelegationReadRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HCGDelegationReadResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

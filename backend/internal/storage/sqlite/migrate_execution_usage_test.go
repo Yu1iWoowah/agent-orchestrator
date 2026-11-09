@@ -43,6 +43,9 @@ func TestExecutionUsageMigrationPreservesNativeLedger(t *testing.T) {
 	if rows.Next() {
 		t.Fatal("migration left broken foreign keys")
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	var seq int64
 	if err := db.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name='model_usage_events'`).Scan(&seq); err != nil {
 		t.Fatal(err)

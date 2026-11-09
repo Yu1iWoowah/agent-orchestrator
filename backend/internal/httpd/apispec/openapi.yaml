@@ -4040,6 +4040,164 @@ paths:
         is signed in as
       tags:
       - github
+  /api/v1/hcg-delegation/emergency-stop:
+    put:
+      operationId: setHCGDelegationStop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGStopResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/hcg-delegation/profiles:
+    get:
+      operationId: listHCGDelegationProfiles
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationProfilesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+    put:
+      operationId: registerHCGDelegationProfile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGDelegationRegistrationRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationProfilesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
   /api/v1/hcg-reporting/emergency-stop:
     put:
       operationId: setHCGReportingStop
@@ -11993,6 +12151,245 @@ paths:
       summary: Read local metadata-only guardian observations
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/hcg-delegation:
+    get:
+      operationId: getHCGDelegation
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-delegation/override:
+    delete:
+      operationId: clearHCGDelegationOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+    put:
+      operationId: setHCGDelegationOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-delegation/read:
+    post:
+      operationId: readHCGDelegation
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGDelegationReadRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationReadResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
   /api/v1/sessions/{sessionId}/hcg-reporting:
     get:
       operationId: getHCGReporting
@@ -23217,6 +23614,344 @@ components:
       - ok
       - workerId
       type: object
+    DelegationApprovedFile:
+      properties:
+        path:
+          type: string
+        sha256:
+          type: string
+      required:
+      - path
+      - sha256
+      type: object
+    DelegationCoverage:
+      properties:
+        approved_ranges:
+          items:
+            $ref: '#/components/schemas/DelegationSourceRange'
+          type: array
+        coverage_status:
+          type: string
+        injected_ranges:
+          items:
+            $ref: '#/components/schemas/DelegationSourceRange'
+          type: array
+        injected_scope_digest:
+          type: string
+        requested_scope_digest:
+          type: string
+      required:
+      - requested_scope_digest
+      - injected_scope_digest
+      - coverage_status
+      - approved_ranges
+      - injected_ranges
+      type: object
+    DelegationCredentialReference:
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        version:
+          type: string
+      required:
+      - provider
+      - name
+      - version
+      type: object
+    DelegationDeployment:
+      properties:
+        credentialRef:
+          $ref: '#/components/schemas/DelegationCredentialReference'
+        inputs:
+          items:
+            $ref: '#/components/schemas/DelegationInputManifest'
+          type: array
+        installation:
+          $ref: '#/components/schemas/DelegationInstallation'
+        profile:
+          $ref: '#/components/schemas/DelegationProfile'
+        workspace:
+          type: string
+      required:
+      - profile
+      - credentialRef
+      - workspace
+      - installation
+      - inputs
+      type: object
+    DelegationEvidence:
+      properties:
+        content_sha256:
+          type: string
+        id:
+          type: string
+        line_end:
+          type: integer
+        line_start:
+          type: integer
+        observed_at:
+          format: date-time
+          type: string
+        path:
+          type: string
+        quote:
+          type: string
+        quote_sha256:
+          type: string
+        revision:
+          type: string
+        source_id:
+          type: string
+        verification:
+          type: string
+      required:
+      - id
+      - source_id
+      - revision
+      - content_sha256
+      - line_start
+      - line_end
+      - quote
+      - quote_sha256
+      - path
+      - observed_at
+      - verification
+      type: object
+    DelegationExternalSpend:
+      properties:
+        known:
+          type: boolean
+        nanos:
+          format: int64
+          type: integer
+        outsideGateOnly:
+          type: boolean
+      required:
+      - known
+      - outsideGateOnly
+      - nanos
+      type: object
+    DelegationFinding:
+      properties:
+        evidence_ids:
+          items:
+            type: string
+          type: array
+        id:
+          type: string
+        kind:
+          type: string
+        text:
+          type: string
+      required:
+      - id
+      - kind
+      - text
+      - evidence_ids
+      type: object
+    DelegationInputManifest:
+      properties:
+        files:
+          items:
+            $ref: '#/components/schemas/DelegationApprovedFile'
+          type: array
+        name:
+          type: string
+        projectId:
+          type: string
+        revision:
+          type: string
+      required:
+      - projectId
+      - name
+      - revision
+      - files
+      type: object
+    DelegationInstallation:
+      properties:
+        adapterVersion:
+          type: string
+        commit:
+          type: string
+        configDigest:
+          type: string
+        lockDigest:
+          type: string
+        pythonDigest:
+          type: string
+        pythonVersion:
+          type: string
+        runtimeDigest:
+          type: string
+        source:
+          type: string
+        sourceDigest:
+          type: string
+        templateVersion:
+          type: string
+        venv:
+          type: string
+      required:
+      - source
+      - venv
+      - commit
+      - sourceDigest
+      - runtimeDigest
+      - pythonDigest
+      - configDigest
+      - lockDigest
+      - pythonVersion
+      - adapterVersion
+      - templateVersion
+      type: object
+    DelegationOmission:
+      properties:
+        reason:
+          type: string
+        sourceId:
+          type: string
+      required:
+      - reason
+      type: object
+    DelegationPrices:
+      properties:
+        billableUsageCovered:
+          type: boolean
+        cachedInputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        inputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        limitsCertified:
+          type: boolean
+        outputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        period:
+          type: string
+        version:
+          type: string
+      required:
+      - version
+      - period
+      - inputNanoUSDPerMillion
+      - cachedInputNanoUSDPerMillion
+      - outputNanoUSDPerMillion
+      - limitsCertified
+      - billableUsageCovered
+      type: object
+    DelegationProfile:
+      properties:
+        billingProvider:
+          type: string
+        contextTokens:
+          format: int64
+          type: integer
+        id:
+          type: string
+        maxOutputTokens:
+          format: int64
+          type: integer
+        model:
+          type: string
+        outputTokens:
+          format: int64
+          type: integer
+        prices:
+          $ref: '#/components/schemas/DelegationPrices'
+        revision:
+          type: string
+      required:
+      - prices
+      - id
+      - revision
+      - billingProvider
+      - model
+      - contextTokens
+      - maxOutputTokens
+      - outputTokens
+      type: object
+    DelegationProfileRef:
+      properties:
+        id:
+          type: string
+        revision:
+          type: string
+      required:
+      - id
+      - revision
+      type: object
+    DelegationResolvedProfile:
+      properties:
+        available:
+          type: boolean
+        billing_provider:
+          type: string
+        current:
+          type: boolean
+        digest:
+          type: string
+        id:
+          type: string
+        model:
+          type: string
+        priceVersion:
+          type: string
+        reason:
+          type: string
+        revision:
+          type: string
+      required:
+      - id
+      - revision
+      - billing_provider
+      - model
+      - digest
+      - available
+      - current
+      - priceVersion
+      - reason
+      type: object
+    DelegationSourceRange:
+      properties:
+        endLine:
+          type: integer
+        id:
+          type: string
+        path:
+          type: string
+        revision:
+          type: string
+        sha256:
+          type: string
+        startLine:
+          type: integer
+      required:
+      - id
+      - path
+      - revision
+      - sha256
+      - startLine
+      - endLine
+      type: object
+    DelegationUsageReference:
+      properties:
+        attempt_id:
+          type: string
+        profile_digest:
+          type: string
+        request_id:
+          type: string
+        status:
+          type: string
+      required:
+      - status
+      - attempt_id
+      - profile_digest
+      type: object
     DesktopArtifactLocationResponse:
       properties:
         artifactDir:
@@ -24246,6 +24981,212 @@ components:
       - since
       - until
       type: object
+    HCGDelegationConfig:
+      properties:
+        allowedProfiles:
+          items:
+            $ref: '#/components/schemas/HCGProfileRef'
+          type: array
+        enabled:
+          type:
+          - "null"
+          - boolean
+        selectedProfile:
+          $ref: '#/components/schemas/HCGProfileRef'
+      type: object
+    HCGDelegationProfilesResponse:
+      properties:
+        profiles:
+          items:
+            $ref: '#/components/schemas/DelegationResolvedProfile'
+          type: array
+      required:
+      - profiles
+      type: object
+    HCGDelegationReadRequest:
+      properties:
+        focus:
+          type: string
+        output_limit:
+          type: integer
+        paths:
+          items:
+            type: string
+          type: array
+        question:
+          type: string
+      required:
+      - question
+      - paths
+      type: object
+    HCGDelegationReadResponse:
+      properties:
+        answer:
+          type: string
+        backend:
+          type: string
+        billing_provider:
+          type: string
+        coverage:
+          $ref: '#/components/schemas/DelegationCoverage'
+        delegation_id:
+          type: string
+        evidence:
+          items:
+            $ref: '#/components/schemas/DelegationEvidence'
+          type: array
+        findings:
+          items:
+            $ref: '#/components/schemas/DelegationFinding'
+          type: array
+        model:
+          type: string
+        omissions:
+          items:
+            $ref: '#/components/schemas/DelegationOmission'
+          type: array
+        profile_id:
+          type: string
+        profile_revision:
+          type: string
+        project_id:
+          type: string
+        reason:
+          type: string
+        schema:
+          type: string
+        session_id:
+          type: string
+        status:
+          type: string
+        usage_ref:
+          $ref: '#/components/schemas/DelegationUsageReference'
+      required:
+      - schema
+      - delegation_id
+      - status
+      - answer
+      - findings
+      - evidence
+      - omissions
+      - reason
+      - backend
+      - model
+      - billing_provider
+      - profile_id
+      - profile_revision
+      - project_id
+      - session_id
+      - usage_ref
+      - coverage
+      type: object
+    HCGDelegationRegistrationRequest:
+      properties:
+        deployment:
+          $ref: '#/components/schemas/DelegationDeployment'
+        externalSpend:
+          additionalProperties:
+            $ref: '#/components/schemas/DelegationExternalSpend'
+          type:
+          - object
+          - "null"
+      required:
+      - deployment
+      - externalSpend
+      type: object
+    HCGDelegationResponse:
+      properties:
+        active:
+          type: boolean
+        allowedProfiles:
+          items:
+            $ref: '#/components/schemas/DelegationProfileRef'
+          type: array
+        available:
+          type: boolean
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        hostProfileCurrentRevision:
+          type: string
+        inputs:
+          $ref: '#/components/schemas/HCGReportingInputs'
+        manifestRevision:
+          minimum: 0
+          type: integer
+        mountConfigured:
+          type: boolean
+        mountEnabled:
+          type: boolean
+        mountKnown:
+          type: boolean
+        mountProfile:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationProfileRef'
+        profileEligibility:
+          type: string
+        projectId:
+          type: string
+        projectOptIn:
+          type: boolean
+        projectPolicyRevision:
+          type: string
+        reason:
+          type: string
+        requested:
+          type: boolean
+        resolvedProfile:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationResolvedProfile'
+            type: object
+        selectedProfile:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationProfileRef'
+        selectionSource:
+          type: string
+        sessionId:
+          type: string
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - mountConfigured
+      - projectId
+      - sessionId
+      - inputs
+      - source
+      - sessionOverride
+      - projectOptIn
+      - effectiveEnabled
+      - emergencyStop
+      - requested
+      - active
+      - available
+      - reason
+      - allowedProfiles
+      - selectedProfile
+      - resolvedProfile
+      - selectionSource
+      - projectPolicyRevision
+      - hostProfileCurrentRevision
+      - profileEligibility
+      - mountKnown
+      - mountEnabled
+      - mountProfile
+      - manifestRevision
+      type: object
+    HCGDelegationToggle:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      type: object
     HCGEnabledRequest:
       properties:
         enabled:
@@ -24287,6 +25228,16 @@ components:
       - version
       - available
       - reason
+      type: object
+    HCGProfileRef:
+      properties:
+        id:
+          type: string
+        revision:
+          type: string
+      required:
+      - id
+      - revision
       type: object
     HCGReportRequest:
       properties:
@@ -26003,6 +26954,8 @@ components:
           type: object
         guardianObservability:
           $ref: '#/components/schemas/GuardianObservabilityConfig'
+        hcgDelegation:
+          $ref: '#/components/schemas/HCGDelegationConfig'
         hcgReporting:
           $ref: '#/components/schemas/HCGReportingConfig'
         orchestrator:
@@ -27877,6 +28830,8 @@ components:
           type: string
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
+        hcgDelegation:
+          $ref: '#/components/schemas/HCGDelegationToggle'
         hcgReporting:
           $ref: '#/components/schemas/HCGReportingConfig'
       type: object

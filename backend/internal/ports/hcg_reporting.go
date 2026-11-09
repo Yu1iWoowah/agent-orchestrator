@@ -16,6 +16,7 @@ const (
 
 // HCGReportingLaunch contains committed metadata only, never env or execution.
 type HCGReportingLaunch struct {
+	DelegationConfigured                 bool
 	Origin                               HCGReportingOrigin
 	Owner                                domain.ConversationOwner
 	SessionID                            domain.SessionID
@@ -40,3 +41,19 @@ func NotifyHCGReportingLaunch(observer HCGReportingLaunchObserver, notice HCGRep
 	defer func() { _ = recover() }()
 	observer.ReportingLaunchReady(notice)
 }
+
+// HCGDelegationMount is pre-launch typed metadata, not a grant/controller owner.
+type HCGDelegationMount struct {
+	SessionID domain.SessionID
+	ProjectID domain.ProjectID
+	Kind      domain.SessionKind
+	Harness   domain.AgentHarness
+	Mode      domain.SessionMode
+	DataRoot  string
+}
+
+// HCGDelegationMountResolver resolves only fixed pre-launch metadata.
+type HCGDelegationMountResolver interface{ DelegationMountRequested(HCGDelegationMount) bool }
+
+// EnvHCGDelegationMCP is set only by the native launch coordinator.
+const EnvHCGDelegationMCP = "AO_HCG_DELEGATION_MCP"

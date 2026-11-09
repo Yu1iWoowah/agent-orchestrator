@@ -3,6 +3,9 @@ import asyncio
 import json
 import sys
 
+if sys.version_info[:3] != (3, 12, 3):
+    raise RuntimeError("fixed Python runtime unavailable")
+
 sys.path.insert(0, "/pal")
 from providers.custom import CustomProvider
 from providers.registry import ModelProviderRegistry
