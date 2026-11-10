@@ -108,6 +108,12 @@ else:raise SystemExit('unimplemented synthetic CLI transport: '+str(a))
         f.snapshots[actor] = activity(snap, raw_command, "", None, actor, turn["id"], identifier, sequence)
         self.sync()
         f.run.save()
+        journal = h.Journal(f.data_dir, f.run.run_id)
+        if not (journal.root / "binding.json").exists():
+            # Scenario preparation ends before the first real actor execution.
+            journal.bind(dict(root=str(f.run.root.parent), old_id=f.run.old,
+                              start_sha256=h.digest(h.private_read(f.run.root / "start.json")),
+                              qualification_sha256=h.digest(h.private_read(f.run.root.parent / ".qualified/qualification.json"))))
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL")}
         env.update(HOME=str(f.home), TMPDIR=str(directory / "draft"), AO_DATA_DIR=str(f.data_dir), AO_RUN_FILE=str(self.run_file),
                    AO_SESSION_ID=actor, AO_PROJECT_ID=h.PROJECT, AO_BROWSER_CAPABILITY="synthetic-capability")

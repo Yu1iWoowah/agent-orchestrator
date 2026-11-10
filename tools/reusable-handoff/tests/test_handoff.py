@@ -100,7 +100,7 @@ class ProtocolTests(unittest.TestCase):
             fail = False
             last_received = 0
 
-            def call(self, args, timeout=30, deadline=None, on_dispatch=None):
+            def call(self, args, timeout=30, deadline=None, on_dispatch=None, **kwargs):
                 if on_dispatch:
                     on_dispatch()
                 self.calls.append(args)
@@ -119,13 +119,13 @@ class ProtocolTests(unittest.TestCase):
         with patch.object(h, "qualified") as qualified:
             # Even an incomplete archive reserves the retired UUID.
             with self.assertRaisesRegex(h.Stop, "retired"):
-                h.start(root, None, "old", target())
+                h.start(root, None, "old", target(), req["request_id"])
             h.publish(retired / "start.json", h.canonical(req))
             destination = h.mkdir(root / req["request_id"])
             h.publish(destination / "start.json", h.canonical(req))
             h.publish(destination / "state.json", h.canonical({"outcome": "pending"}))
             with self.assertRaisesRegex(h.Stop, "retired"):
-                h.start(root, None, "old", target())
+                h.start(root, None, "old", target(), req["request_id"])
             qualified.assert_not_called()
 
     def test_new_UUID_ignores_hidden_archive_but_not_unresolved_active_run(self):
@@ -137,11 +137,11 @@ class ProtocolTests(unittest.TestCase):
         h.mkdir(root / ".voided" / str(uuid.uuid4()))
         with patch.object(h, "qualified", side_effect=h.Stop("qualification reached")):
             with self.assertRaisesRegex(h.Stop, "qualification reached"):
-                h.start(root, None, "old", target())
+                h.start(root, None, "old", target(), req["request_id"])
         prior = h.mkdir(root / str(uuid.uuid4()))
         h.publish(prior / "state.json", h.canonical({"old_id": "old", "outcome": "pending"}))
         with patch.object(h, "qualified") as qualified, self.assertRaisesRegex(h.Stop, "unresolved run"):
-            h.start(root, None, "old", target())
+            h.start(root, None, "old", target(), req["request_id"])
         qualified.assert_not_called()
 
     def test_T06_unknown_effect_never_replayed(self):
@@ -179,10 +179,15 @@ class ProtocolTests(unittest.TestCase):
         run_file = self.root / "fake-running.json"
         h.publish(run_file, b'{"port":1}')
         cli = h.CLI(Path("/usr/bin/true"), "old", self.root, run_file, self.root)
-        marked = []
-        with patch.object(h.time, "monotonic", side_effect=[0, 2]), patch.object(h.subprocess, "run") as invoked:
+        cli.execution = h.Journal(self.root, str(uuid.uuid4())).register("start", "old")
+        self.addCleanup(cli.execution.close)
+        marked, clock = [], [0]
+        def dispatched():
+            marked.append(True)
+            clock[0] = 2
+        with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), patch.object(h.subprocess, "run") as invoked:
             with self.assertRaises(h.WindowElapsed):
-                cli.call([], deadline=1, on_dispatch=lambda: marked.append(True))
+                cli.call(["spawn", "--help"], deadline=1, on_dispatch=dispatched)
         self.assertEqual(marked, [True])
         invoked.assert_not_called()
 
@@ -202,7 +207,7 @@ class ProtocolTests(unittest.TestCase):
     def test_audit_expired_dispatch_marker_is_not_an_unknown_effect(self):
         run = self.run_fixture()
         original = run.cli.call
-        def expired(args, timeout=30, deadline=None, on_dispatch=None):
+        def expired(args, timeout=30, deadline=None, on_dispatch=None, **kwargs):
             on_dispatch()
             raise h.WindowElapsed()
         run.cli.call = expired
@@ -214,7 +219,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Stop, "guard not ready"):
             run.effect("kill", ["session", "kill", "old"], 60, guard)
         self.assertEqual(run.state["effects"]["kill"], "not-dispatched")
-        self.assertFalse((run.root / "control/kill/sent.json").exists())
+        self.assertTrue((run.root / "control/kill/sent.json").exists())
         run.cli.call = original
         run.effect("kill", ["session", "kill", "old"], 60)
         self.assertEqual(len(run.cli.calls), 1)
@@ -861,11 +866,14 @@ class ProtocolTests(unittest.TestCase):
             def sessions(self):
                 return []
         cli = PreparedCLI()
+        cli.execution = h.Journal(self.root, req["request_id"]).register("start", "old")
+        self.addCleanup(cli.execution.close)
+        h.publish(root / ".qualified/qualification.json", h.canonical(dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL)))
         with patch.object(h, "qualified", return_value=cli), patch.object(h, "validate_sources_live", return_value=snapshot()), \
              patch.object(h, "target_preflight", return_value={}), patch.object(h, "native_identity", return_value="old-native"), \
              patch.object(h, "launch") as launch:
-            first = h.start(root, cli, "old", target())
-            second = h.start(root, cli, "old", target())
+            first = h.start(root, cli, "old", target(), req["request_id"])
+            second = h.start(root, cli, "old", target(), req["request_id"])
             self.assertEqual(first["run_id"], second["run_id"])
             self.assertEqual(launch.call_count, 1)
             self.assertEqual(h.private_read(root / req["request_id"] / "start.json"), raw)
@@ -875,7 +883,7 @@ class ProtocolTests(unittest.TestCase):
             # A byte change cannot steal the already-bound UUID.
             (slot / "request.json").write_bytes(raw + b"\n")
             with self.assertRaises(h.Stop):
-                h.start(root, cli, "old", target())
+                h.start(root, cli, "old", target(), req["request_id"])
 
     def test_T05_initial_bootstrap_human_origin_is_not_new_authority(self):
         run = self.run_fixture()
@@ -1049,7 +1057,13 @@ class FlowFixture:
         self.executable = self.transport.cli
         self.sha256 = h.digest(self.executable.read_bytes())
         self.run_file = self.transport.run_file
-        self.run.state.update(schema="rh-state/1", run_id=self.run_id, old_id="old", target=self.target,
+        qualification = dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL,
+                             cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
+        h.publish(directory.parent / ".qualified/qualification.json", h.canonical(qualification))
+        journal = h.Journal(self.data_dir, self.run_id)
+        self.run.state.update(call_protocol=h.CALL_PROTOCOL, journal=str(journal.root),
+                              qualification_sha256=h.digest(h.canonical(qualification)),
+                              schema="rh-state/1", run_id=self.run_id, old_id="old", target=self.target,
                               data_dir=str(root), run_file=str(self.run_file), daemon_base=self.transport.base,
                               cli_path=str(self.executable), cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
         self.run.workspace("old")
@@ -1171,7 +1185,7 @@ class FlowFixture:
         h.publish(reply, raw)
         return {"path": str(path), "sha256": h.digest(content)}, {"path": str(reply), "sha256": h.digest(raw)}
 
-    def call(self, args, timeout=30, deadline=None, on_dispatch=None):
+    def call(self, args, timeout=30, deadline=None, on_dispatch=None, **kwargs):
         if deadline is not None and h.time.monotonic() > deadline:
             raise h.WindowElapsed()
         if on_dispatch:
