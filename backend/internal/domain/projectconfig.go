@@ -198,8 +198,8 @@ type RCAConfig struct {
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
-// RCAPolicySnapshot holds only the project and worker RCA parents.
-type RCAPolicySnapshot struct{ Project, Worker *bool }
+// RCAPolicySnapshot holds only the named project and role RCA parents.
+type RCAPolicySnapshot struct{ Project, Worker, Orchestrator *bool }
 
 // RCAPolicySnapshot returns detached RCA policy inputs.
 func (c ProjectConfig) RCAPolicySnapshot() RCAPolicySnapshot {
@@ -210,7 +210,7 @@ func (c ProjectConfig) RCAPolicySnapshot() RCAPolicySnapshot {
 		b := *v
 		return &b
 	}
-	return RCAPolicySnapshot{copyBool(c.RCA.Enabled), copyBool(c.Worker.RCA.Enabled)}
+	return RCAPolicySnapshot{Project: copyBool(c.RCA.Enabled), Worker: copyBool(c.Worker.RCA.Enabled), Orchestrator: copyBool(c.Orchestrator.RCA.Enabled)}
 }
 
 // HCGReportingPolicySnapshot excludes every unrelated setting and credential.

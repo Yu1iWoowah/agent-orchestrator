@@ -9,7 +9,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/components/hcg/policy"
 )
 
-type Key struct{ ProjectID, SessionID string }
+type Key struct{ ProjectID, SessionID, Role string }
+type parentKey struct{ project, role string }
+
+func keyRole(k Key) string {
+	if k.Role == "" {
+		return "worker"
+	}
+	return k.Role
+}
+func parent(k Key) parentKey { return parentKey{k.ProjectID, keyRole(k)} }
+
 type HostState struct {
 	Revision uint64 `json:"revision"`
 	Stop     bool   `json:"stop"`
@@ -54,14 +64,14 @@ type Consumer struct {
 	host      HostState
 	ready     bool
 	manifests map[Key]policy.Manifest
-	parents   map[string]policy.Inputs
-	projects  map[string]uint64
+	parents   map[parentKey]policy.Inputs
+	projects  map[parentKey]uint64
 	sessions  map[Key]uint64
 	jobs      map[Key]*Ticket
 }
 
 func New(ctx context.Context, store ManifestStore) *Consumer {
-	c := &Consumer{store: store, manifests: map[Key]policy.Manifest{}, parents: map[string]policy.Inputs{}, projects: map[string]uint64{}, sessions: map[Key]uint64{}, jobs: map[Key]*Ticket{}}
+	c := &Consumer{store: store, manifests: map[Key]policy.Manifest{}, parents: map[parentKey]policy.Inputs{}, projects: map[parentKey]uint64{}, sessions: map[Key]uint64{}, jobs: map[Key]*Ticket{}}
 	if store != nil {
 		var err error
 		c.host, err = store.LoadHost(ctx)
@@ -81,9 +91,11 @@ func freeze(in policy.Inputs) policy.Inputs {
 	return policy.Inputs{Project: copyBool(in.Project), Role: copyBool(in.Role), Session: copyBool(in.Session), EmergencyStop: in.EmergencyStop}
 }
 func sameBool(a, b *bool) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
-func allowed(k Key) bool       { return k.ProjectID == "agent-orchestrator" && k.SessionID != "" }
+func allowed(k Key) bool {
+	return k.ProjectID == "agent-orchestrator" && k.SessionID != "" && (keyRole(k) == "worker" || keyRole(k) == "orchestrator")
+}
 func (c *Consumer) revision(k Key) Revision {
-	return Revision{k, c.projects[k.ProjectID], c.sessions[k], c.host.Revision}
+	return Revision{k, c.projects[parent(k)], c.sessions[k], c.host.Revision}
 }
 func (c *Consumer) Revision(k Key) Revision { c.mu.Lock(); defer c.mu.Unlock(); return c.revision(k) }
 
@@ -95,26 +107,26 @@ func (c *Consumer) invalidate(k Key) {
 	}
 }
 
-func (c *Consumer) observe(project string, in policy.Inputs) {
+func (c *Consumer) observe(p parentKey, in policy.Inputs) {
 	in.Session, in.EmergencyStop = nil, false
-	before, known := c.parents[project]
-	c.parents[project] = freeze(in)
+	before, known := c.parents[p]
+	c.parents[p] = freeze(in)
 	if known && (!sameBool(before.Project, in.Project) || !sameBool(before.Role, in.Role)) {
-		c.projects[project]++
+		c.projects[p]++
 		for key := range c.jobs {
-			if key.ProjectID == project {
+			if parent(key) == p {
 				c.invalidate(key)
 			}
 		}
 	}
 }
 
-// Only typed RCA project/worker values enter here. Unrelated settings and other
+// Only typed RCA project/role values enter here. Unrelated settings and other
 // consumers cannot revoke or enable this consumer's jobs.
-func (c *Consumer) ProjectPolicyChanged(project string, in policy.Inputs) {
+func (c *Consumer) ProjectPolicyChanged(project, role string, in policy.Inputs) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.observe(project, in)
+	c.observe(parentKey{project, role}, in)
 }
 
 func (c *Consumer) view(ctx context.Context, k Key, in policy.Inputs) (View, string) {
@@ -124,7 +136,7 @@ func (c *Consumer) view(ctx context.Context, k Key, in policy.Inputs) (View, str
 	if !c.ready || ctx.Err() != nil {
 		return View{}, "storage_unavailable"
 	}
-	c.observe(k.ProjectID, in)
+	c.observe(parent(k), in)
 	m, loaded := c.manifests[k]
 	if !loaded {
 		stored, ok, err := c.store.Load(ctx, k)
@@ -140,7 +152,7 @@ func (c *Consumer) view(ctx context.Context, k Key, in policy.Inputs) (View, str
 	in = freeze(in)
 	in.Session = m.Inputs.Session
 	in.EmergencyStop = c.host.Stop
-	p := policy.Resolve("worker", in)
+	p := policy.Resolve(keyRole(k), in)
 	override := "inherit"
 	if in.Session != nil {
 		override = "off"
@@ -175,7 +187,7 @@ func (c *Consumer) SetOverride(ctx context.Context, k Key, in policy.Inputs, ena
 	if previous.Revision > 0 {
 		before = &previous
 	}
-	next := policy.Revise(before, "worker", in)
+	next := policy.Revise(before, keyRole(k), in)
 	if c.store.Save(ctx, k, next) != nil {
 		return View{}, "storage_unavailable"
 	}

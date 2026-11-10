@@ -103,7 +103,8 @@ func (s *Service) Close() {
 // ProjectPolicyChanged revokes jobs when a durable RCA parent changes.
 func (s *Service) ProjectPolicyChanged(id domain.ProjectID, in domain.RCAPolicySnapshot) {
 	if id == "agent-orchestrator" {
-		s.core.ProjectPolicyChanged(string(id), policy.Inputs{Project: in.Project, Role: in.Worker})
+		s.core.ProjectPolicyChanged(string(id), "worker", policy.Inputs{Project: in.Project, Role: in.Worker})
+		s.core.ProjectPolicyChanged(string(id), "orchestrator", policy.Inputs{Project: in.Project, Role: in.Orchestrator})
 	}
 }
 func sessionKey(id domain.SessionID) rcapolicy.Key {

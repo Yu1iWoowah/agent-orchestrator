@@ -38,7 +38,7 @@ func flag(v bool) *bool { return &v }
 func TestRCAOverrideClearStopAndABA(t *testing.T) {
 	store := &fakeManifests{rows: map[Key]policy.Manifest{}}
 	c := New(t.Context(), store)
-	k := Key{"agent-orchestrator", "selected"}
+	k := Key{ProjectID: "agent-orchestrator", SessionID: "selected"}
 	in := policy.Inputs{Project: flag(true)}
 	if v, why := c.SetOverride(t.Context(), k, in, flag(false)); why != "" || v.EffectiveEnabled || v.SessionOverride != "off" {
 		t.Fatalf("explicit false: %+v %s", v, why)
@@ -75,19 +75,19 @@ func TestRCAOverrideClearStopAndABA(t *testing.T) {
 	if why := c.EmergencyStop(t.Context(), false); why != "" {
 		t.Fatal(why)
 	}
-	if v, _ := c.View(t.Context(), Key{"agent-orchestrator", "other"}, policy.Inputs{}); v.EffectiveEnabled {
+	if v, _ := c.View(t.Context(), Key{ProjectID: "agent-orchestrator", SessionID: "other"}, policy.Inputs{}); v.EffectiveEnabled {
 		t.Fatal("unstop silently enabled")
 	}
 }
 
 func TestRCAParentInvalidationFencesAdmissionAndCommit(t *testing.T) {
 	c := New(t.Context(), &fakeManifests{rows: map[Key]policy.Manifest{}})
-	k := Key{"agent-orchestrator", "selected"}
+	k := Key{ProjectID: "agent-orchestrator", SessionID: "selected"}
 	in := policy.Inputs{Project: flag(true)}
-	c.ProjectPolicyChanged(k.ProjectID, in)
+	c.ProjectPolicyChanged(k.ProjectID, "worker", in)
 	before := c.Revision(k)
-	c.ProjectPolicyChanged(k.ProjectID, policy.Inputs{Project: flag(false)})
-	c.ProjectPolicyChanged(k.ProjectID, in)
+	c.ProjectPolicyChanged(k.ProjectID, "worker", policy.Inputs{Project: flag(false)})
+	c.ProjectPolicyChanged(k.ProjectID, "worker", in)
 	if _, _, why := c.Begin(t.Context(), k, in, before); why != "policy_changed" {
 		t.Fatal("stale pre-read receipt admitted")
 	}
@@ -95,11 +95,11 @@ func TestRCAParentInvalidationFencesAdmissionAndCommit(t *testing.T) {
 	if why != "" {
 		t.Fatal(why)
 	}
-	c.ProjectPolicyChanged("unrelated", policy.Inputs{Project: flag(false)})
+	c.ProjectPolicyChanged("unrelated", "worker", policy.Inputs{Project: flag(false)})
 	if why := c.Commit(ticket, func(context.Context) error { return nil }); why != "" {
 		t.Fatal("unrelated project canceled report")
 	}
-	_, _, why = c.Begin(t.Context(), Key{"another-project", "selected"}, in, c.Revision(Key{"another-project", "selected"}))
+	_, _, why = c.Begin(t.Context(), Key{ProjectID: "another-project", SessionID: "selected"}, in, c.Revision(Key{ProjectID: "another-project", SessionID: "selected"}))
 	if why != "scope_not_allowed" {
 		t.Fatal("other project admitted")
 	}
@@ -108,7 +108,7 @@ func TestRCAParentInvalidationFencesAdmissionAndCommit(t *testing.T) {
 func TestRCAStorageFailureAndPurgeInvalidation(t *testing.T) {
 	s := &fakeManifests{rows: map[Key]policy.Manifest{}}
 	c := New(t.Context(), s)
-	k := Key{"agent-orchestrator", "selected"}
+	k := Key{ProjectID: "agent-orchestrator", SessionID: "selected"}
 	in := policy.Inputs{Project: flag(true)}
 	ticket, _, why := c.Begin(t.Context(), k, in, c.Revision(k))
 	if why != "" {
@@ -129,5 +129,32 @@ func TestRCAStorageFailureAndPurgeInvalidation(t *testing.T) {
 	c.Invalidate(k)
 	if why := c.Commit(ticket, func(context.Context) error { t.Fatal("purged job wrote result"); return nil }); why != "policy_changed" {
 		t.Fatal(why)
+	}
+}
+
+func TestRCARoleParentsAreIndependent(t *testing.T) {
+	c := New(t.Context(), &fakeManifests{rows: map[Key]policy.Manifest{}})
+	worker := Key{ProjectID: "agent-orchestrator", SessionID: "worker", Role: "worker"}
+	orchestrator := Key{ProjectID: "agent-orchestrator", SessionID: "orchestrator", Role: "orchestrator"}
+	on := policy.Inputs{Project: flag(false), Role: flag(true)}
+	off := policy.Inputs{Project: flag(false), Role: flag(false)}
+	if _, why := c.View(t.Context(), worker, on); why != "" {
+		t.Fatal(why)
+	}
+	ticket, _, why := c.Begin(t.Context(), worker, on, c.Revision(worker))
+	if why != "" {
+		t.Fatal(why)
+	}
+	if view, why := c.View(t.Context(), orchestrator, off); why != "" || view.EffectiveEnabled {
+		t.Fatal("orchestrator opt-out ignored", why)
+	}
+	if ticket.Context().Err() != nil {
+		t.Fatal("orchestrator parent replaced/revoked worker parent")
+	}
+	if why := c.Commit(ticket, func(context.Context) error { return nil }); why != "" {
+		t.Fatal(why)
+	}
+	if _, why := c.View(t.Context(), Key{ProjectID: "agent-orchestrator", SessionID: "reviewer", Role: "reviewer"}, on); why != "scope_not_allowed" {
+		t.Fatal("unsupported RCA role admitted")
 	}
 }
