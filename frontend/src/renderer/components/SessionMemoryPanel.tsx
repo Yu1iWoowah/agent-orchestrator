@@ -51,6 +51,7 @@ import {
 	settingsDialogHeaderClass,
 } from "./ui/dialog";
 import { SettingsSection } from "./settings/SettingsSection";
+import { SessionCompositionPanel } from "./SessionCompositionPanel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 // Stable identity for the loading state: `data ?? []` would hand useMemo a
@@ -595,6 +596,8 @@ function SessionRow({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
+	const [compositionOpen, setCompositionOpen] = useState(false);
+	const canAnalyze = session.workspaceId === "agent-orchestrator" && session.provider === "codex" && !isOrchestratorSession(session) && !session.hostId;
 	const working = session.activity?.state === "active";
 	const recent = reading.activity?.recent ?? [];
 	const canExpand = reading.processes.length > 0 || recent.length > 0;
@@ -618,6 +621,20 @@ function SessionRow({
 						<div className="min-w-0">
 							<div className="truncate text-sm font-medium text-settings-label" title={session.title}>{session.title}</div>
 							<StatusLine current={reading.activity?.current} session={session} working={working} />
+							{canAnalyze ? (
+								<Button
+									aria-expanded={compositionOpen}
+									size="sm"
+									variant="ghost"
+									onKeyDown={(event) => event.stopPropagation()}
+									onClick={(event) => {
+										event.stopPropagation();
+										setCompositionOpen((open) => !open);
+									}}
+								>
+									{t("rca.title")}
+								</Button>
+							) : null}
 						</div>
 					</div>
 				</td>
@@ -631,6 +648,13 @@ function SessionRow({
 					{formatCPU(reading.cpuPercent)}
 				</td>
 			</tr>
+			{canAnalyze && compositionOpen ? (
+				<tr>
+					<td className="p-3" colSpan={columnCount}>
+						<SessionCompositionPanel key={session.id} sessionId={session.id} />
+					</td>
+				</tr>
+			) : null}
 			{isExpanded ? <ProcessRows processes={reading.processes} /> : null}
 			{isExpanded && recent.length > 0 ? <RecentSteps steps={recent} /> : null}
 			{isExpanded ? <SpacerRow /> : null}
