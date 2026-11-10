@@ -186,6 +186,8 @@ var schemaNames = map[string]string{
 	"ReportingDelegationInputManifest":                     "DelegationInputManifest",
 	"ReportingDelegationInstallation":                      "DelegationInstallation",
 	"ReportingDelegationDeployment":                        "DelegationDeployment",
+	"ReportingDelegationLabGrant":                          "DelegationLabGrant",
+	"ReportingDelegationLabSession":                        "DelegationLabSession",
 	"ReportingDelegationRegistration":                      "DelegationRegistration",
 	"ReportingDelegationResolvedProfile":                   "DelegationResolvedProfile",
 	"ReportingDelegationView":                              "DelegationView",

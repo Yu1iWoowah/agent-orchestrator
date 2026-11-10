@@ -56,11 +56,14 @@ type DelegationDeployment struct {
 }
 
 type DelegationRegistration struct {
+	Grant         *DelegationLabGrant                `json:"grant"`
 	Deployment    DelegationDeployment               `json:"deployment"`
 	ExternalSpend map[string]DelegationExternalSpend `json:"externalSpend"`
 }
 
 type DelegationResolvedProfile struct {
+	RunID           string `json:"runId"`
+	OwnerRoot       string `json:"ownerRoot"`
 	ID              string `json:"id"`
 	Revision        string `json:"revision"`
 	BillingProvider string `json:"billing_provider"`
@@ -73,6 +76,8 @@ type DelegationResolvedProfile struct {
 }
 
 type DelegationView struct {
+	RunID                      string                     `json:"runId"`
+	OwnerRoot                  string                     `json:"ownerRoot"`
 	MountConfigured            bool                       `json:"mountConfigured"`
 	ProjectID                  string                     `json:"projectId"`
 	SessionID                  string                     `json:"sessionId"`
@@ -205,4 +210,24 @@ type DelegationRequest struct {
 	Paths       []string `json:"paths"`
 	Focus       string   `json:"focus,omitempty"`
 	OutputLimit int      `json:"output_limit,omitempty"`
+}
+
+type DelegationLabSession struct {
+	ProjectID string `json:"projectId"`
+	SessionID string `json:"sessionId"`
+}
+
+// DelegationLabGrant is operator-only registration data, never a model tool argument.
+// One immutable run owns this root; only its explicit session list may grow.
+type DelegationLabGrant struct {
+	RunID               string                          `json:"runId"`
+	OwnerRoot           string                          `json:"ownerRoot"`
+	CanonicalOwner      DelegationLabSession            `json:"canonicalOwner"`
+	StartsAt            time.Time                       `json:"startsAt"`
+	ExpiresAt           time.Time                       `json:"expiresAt"`
+	Profiles            map[string]DelegationProfileRef `json:"profiles"`
+	Bindings            []DelegationLabSession          `json:"bindings"`
+	ProviderCapNanos    map[string]int64                `json:"providerCapNanos"`
+	TotalCapNanos       int64                           `json:"totalCapNanos"`
+	AttemptsPerProvider int                             `json:"attemptsPerProvider"`
 }

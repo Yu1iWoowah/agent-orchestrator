@@ -1,6 +1,6 @@
 # HCG-P1-PR1 離線驗收與付費停點
 
-本工項只驗固定 PAL 代讀的整合與離線閘門。production daemon 沒有 credential resolver／provider transport，註冊成功也不代表可以付費執行；`available=false` 時工具不掛載。合成 provider 只透過 constructor dependency 注入，沒有 HTTP、環境變數或工具參數可將 daemon 切成 fixture 模式。
+本工項只驗固定 PAL 代讀的整合與離線閘門。P1-PR1 原交付不含 production resolver；後續 HCG-LAB-PR1 的受控 parent 只在唯一持鎖 owner 與明示 run grant 下可用，參見 [lab 規程](lab-runbook.md)。無 grant／`available=false` 時工具不掛載，merge 不代表可執行付費。合成 provider 只透過 constructor dependency 注入，沒有 HTTP、環境變數或工具參數可將 daemon 切成 fixture 模式。
 
 ## 固定依賴與唯一 caller
 

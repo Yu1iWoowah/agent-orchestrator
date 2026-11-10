@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
@@ -16,10 +17,10 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 		unknown                                                    bool
 		wantCalls                                                  int
 	}{
-		{"family_cap", 280, 0, 290, 0, false, 0},
-		{"global_cap", 280, 330, 280, 340, false, 0},
-		{"unknown", 280, 0, 280, 0, true, 0},
-		{"exact_caps_count_own_hold_once", 280, 330, 280, 330, false, 1},
+		{"family_cap", 295, 0, 298, 0, false, 0},
+		{"global_cap", 295, 330, 295, 335, false, 0},
+		{"unknown", 295, 0, 295, 0, true, 0},
+		{"exact_caps_count_own_hold_once", 295, 330, 295, 330, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, worktree := t.TempDir(), t.TempDir()
@@ -34,6 +35,7 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 			sink := &receiptSink{}
 			calls := 0
 			var c *Coordinator
+			grant := labGrantFixture(root, "p", "s", time.Now())
 			id := integration.Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree, LaunchID: "launch", NativeID: "native", ControllerGeneration: "generation"}
 			c = NewCoordinator(root, sink, func(d Deployment) Transport {
 				return transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
@@ -45,7 +47,7 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 					return
 				}
 				before := c.PolicyRevision(id)
-				if err := c.Register(ctx, Registration{Deployment: deployment, ExternalSpend: spend(tc.afterOpenAI, tc.afterAnthropic, tc.unknown)}); err != nil {
+				if err := c.Register(ctx, Registration{Grant: grant, Deployment: deployment, ExternalSpend: spend(tc.afterOpenAI, tc.afterAnthropic, tc.unknown)}); err != nil {
 					t.Fatal(err)
 				}
 				if c.PolicyRevision(id) != before {
@@ -53,7 +55,7 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 				}
 			})
 			defer c.Close()
-			if err := c.Register(t.Context(), Registration{Deployment: deployment, ExternalSpend: spend(tc.beforeOpenAI, tc.beforeAnthropic, false)}); err != nil {
+			if err := c.Register(t.Context(), Registration{Grant: grant, Deployment: deployment, ExternalSpend: spend(tc.beforeOpenAI, tc.beforeAnthropic, false)}); err != nil {
 				t.Fatal(err)
 			}
 			policy := delegationPolicy(deployment.Profile)

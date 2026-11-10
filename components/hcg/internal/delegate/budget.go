@@ -18,6 +18,7 @@ const nanoUSD = int64(1_000_000_000)
 
 var providerCaps = map[string]int64{"openai": 300 * nanoUSD, "anthropic": 400 * nanoUSD}
 var ErrBudgetBlocked = errors.New("delegation budget unavailable")
+var ErrNotSent = errors.New("delegation request was not sent")
 var ErrUsagePending = errors.New("canonical delegation usage pending")
 
 // Prices are an immutable reviewed deployment snapshot. Unknown coverage or
@@ -45,18 +46,21 @@ type ExternalSpend struct {
 }
 
 type budgetAttempt struct {
-	Execution     Execution
-	Profile       Profile
-	ProfileDigest string
-	PayloadHash   string
-	ScopeDigest   string
-	State         string
-	Reserved      int64
-	Charged       *int64
-	ReceiptDigest string
-	SettledPeriod string
+	LabRunID       string
+	EverDispatched bool
+	Execution      Execution
+	Profile        Profile
+	ProfileDigest  string
+	PayloadHash    string
+	ScopeDigest    string
+	State          string
+	Reserved       int64
+	Charged        *int64
+	ReceiptDigest  string
+	SettledPeriod  string
 }
 type budgetState struct {
+	Grant    *LabGrant `json:"grant,omitempty"`
 	Version  int
 	Period   string
 	External map[string]map[string]ExternalSpend
@@ -66,6 +70,7 @@ type budgetState struct {
 // Budget is one daemon-wide journal directory, shared across every project and
 // both fixed billing families. File locking also protects separate instances.
 type Budget struct {
+	OwnerRoot    string
 	Dir          string
 	Now          func() time.Time
 	pending      sync.Map
@@ -83,6 +88,9 @@ func (b *Budget) update(ctx context.Context, change func(*budgetState) error) er
 	return b.updateGuarded(ctx, change, nil)
 }
 func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) error, guard func(func() error) error) error {
+	return b.withState(ctx, change, guard, true)
+}
+func (b *Budget) withState(ctx context.Context, change func(*budgetState) error, guard func(func() error) error, write bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -118,7 +126,7 @@ func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) er
 	}
 	path := filepath.Join(b.Dir, "budget.json")
 	state := budgetState{Version: 1, External: map[string]map[string]ExternalSpend{}, Attempts: map[string]budgetAttempt{}}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, sourceOpenFlags, 0)
 	if err == nil {
 		info, err := f.Stat()
 		if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
@@ -142,6 +150,9 @@ func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) er
 	if err := change(&state); err != nil {
 		return err
 	}
+	if !write {
+		return nil
+	}
 	data, err := json.Marshal(state)
 	if err != nil || len(data) > 4<<20 {
 		return ErrBudgetBlocked
@@ -154,6 +165,9 @@ func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) er
 }
 
 func validBudgetState(state budgetState) error {
+	if state.Grant != nil && !state.Grant.valid(state.Grant.OwnerRoot) {
+		return ErrBudgetBlocked
+	}
 	for period, providers := range state.External {
 		if _, err := time.Parse("2006-01", period); err != nil {
 			return ErrBudgetBlocked
@@ -165,6 +179,9 @@ func validBudgetState(state budgetState) error {
 		}
 	}
 	for key, a := range state.Attempts {
+		if a.LabRunID != "" && (state.Grant == nil || a.LabRunID != state.Grant.RunID || !state.Grant.bound(a.Execution.ProjectID, a.Execution.SessionID) || (a.State != "reserved" && a.State != "released" && !a.EverDispatched) || (a.State == "reserved" && a.EverDispatched)) {
+			return ErrBudgetBlocked
+		}
 		if _, err := time.Parse("2006-01", a.Profile.Prices.Period); err != nil {
 			return ErrBudgetBlocked
 		}
@@ -219,6 +236,9 @@ func atomicBudgetFile(ctx context.Context, path string, data []byte) error {
 // ApprovePeriod is an explicit host operation. It never clears open holds or
 // resets on a clock/month change, and never reinterprets earlier receipts.
 func (b *Budget) ApprovePeriod(ctx context.Context, period string, external map[string]ExternalSpend) error {
+	return b.approvePeriod(ctx, period, external, nil)
+}
+func (b *Budget) approvePeriod(ctx context.Context, period string, external map[string]ExternalSpend, grant *LabGrant) error {
 	if period != b.now().Format("2006-01") || len(external) != 2 {
 		return ErrBudgetBlocked
 	}
@@ -229,6 +249,13 @@ func (b *Budget) ApprovePeriod(ctx context.Context, period string, external map[
 		}
 	}
 	return b.update(ctx, func(s *budgetState) error {
+		if grant != nil {
+			merged, err := mergeLabGrant(s.Grant, grant)
+			if err != nil {
+				return ErrBudgetBlocked
+			}
+			s.Grant = merged
+		}
 		if s.Period != "" && period < s.Period {
 			return ErrBudgetBlocked
 		}
@@ -321,8 +348,12 @@ func (b *Budget) reserve(ctx context.Context, e Execution, p Profile, payload []
 			return ErrBudgetBlocked
 		}
 
-		s.Attempts[key] = budgetAttempt{Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), ScopeDigest: scopeDigest, State: "reserved", Reserved: worst}
-		return checkBudgetCapacity(s, key)
+		runID := ""
+		if s.Grant != nil {
+			runID = s.Grant.RunID
+		}
+		s.Attempts[key] = budgetAttempt{LabRunID: runID, Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), ScopeDigest: scopeDigest, State: "reserved", Reserved: worst}
+		return checkBudgetCapacity(s, key, b.now(), b.OwnerRoot)
 	})
 	return key, err
 }
@@ -336,9 +367,12 @@ func (b *Budget) transition(ctx context.Context, key, from, to string) error {
 			return ErrBudgetBlocked
 		}
 		if to == "dispatched" {
-			if err := checkBudgetCapacity(s, key); err != nil {
+			if err := checkBudgetCapacity(s, key, b.now(), b.OwnerRoot); err != nil {
 				return err
 			}
+		}
+		if to == "dispatched" {
+			a.EverDispatched = true
 		}
 		a.State = to
 		s.Attempts[key] = a
@@ -465,9 +499,10 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 				if !ok || a.State != "reserved" || s.Period != b.budget.now().Format("2006-01") || a.Profile.Prices.Period != s.Period {
 					return ErrBudgetBlocked
 				}
-				if err := checkBudgetCapacity(s, key); err != nil {
+				if err := checkBudgetCapacity(s, key, b.budget.now(), b.budget.OwnerRoot); err != nil {
 					return err
 				}
+				a.EverDispatched = true
 				a.State = "dispatched"
 				s.Attempts[key] = a
 				return nil
@@ -487,7 +522,14 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		return WireResponse{}, err
 	}
 	b.started = true
-	return b.actual.Do(ctx, r)
+	response, err := b.actual.Do(ctx, r)
+	if errors.Is(err, ErrNotSent) {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = b.budget.releaseUnsent(releaseCtx, key)
+		b.started = false
+	}
+	return response, err
 }
 func (b *budgetBridge) Record(ctx context.Context, r Receipt) error {
 	if !b.started {
@@ -576,7 +618,7 @@ func (b *Budget) ReplayReceipt(ctx context.Context, key string, canonical Record
 	if value, ok := b.pending.Load(key); ok {
 		return b.record(ctx, key, value.(Receipt), canonical)
 	}
-	f, err := os.Open(filepath.Join(b.Dir, key+".pending"))
+	f, err := os.OpenFile(filepath.Join(b.Dir, key+".pending"), sourceOpenFlags, 0)
 	if err != nil {
 		return ErrBudgetBlocked
 	}
@@ -593,7 +635,7 @@ func (b *Budget) ReplayReceipt(ctx context.Context, key string, canonical Record
 // checkBudgetCapacity runs under the budget file lock for reserve and final
 // dispatch. The current reservation is included exactly once; any other open
 // attempt freezes admission, and changed outside-gate knowledge is authoritative.
-func checkBudgetCapacity(s *budgetState, reservedKey string) error {
+func checkBudgetCapacity(s *budgetState, reservedKey string, now time.Time, root string) error {
 	totals := map[string]int64{}
 	for _, provider := range []string{"openai", "anthropic"} {
 		external, ok := s.External[s.Period][provider]
@@ -636,5 +678,5 @@ func checkBudgetCapacity(s *budgetState, reservedKey string) error {
 	if err != nil || total > 630*nanoUSD {
 		return ErrBudgetBlocked
 	}
-	return nil
+	return checkLabCapacity(s, reservedKey, now, root)
 }

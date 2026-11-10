@@ -37,8 +37,8 @@ func New(ctx context.Context, root string, store Store) *Service {
 	return NewWithDelegationProvider(ctx, root, store, nil, nil)
 }
 
-// NewWithDelegationProvider supports the fixed offline provider fixture. The
-// production daemon passes no provider/credentials and cannot make paid calls.
+// NewWithDelegationProvider is a trusted constructor seam for the locked lab
+// owner and offline fixtures. Registration still requires an explicit run grant.
 func NewWithDelegationProvider(ctx context.Context, root string, store Store, provider reporting.DelegationProvider, checkpoint func(context.Context, string)) *Service {
 	c, err := reporting.New(root)
 	s := &Service{store: store, root: root, core: c}
@@ -54,7 +54,9 @@ func NewWithDelegationProvider(ctx context.Context, root string, store Store, pr
 		recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 5*time.Second)
 		// Failed projections retain their pending receipt and worst hold. Startup
 		// never retries the provider or changes native session/policy state.
-		_ = s.delegation.RecoverDelegationReceipts(recoveryCtx)
+		if grant := s.delegation.LabGrant(); grant == nil || s.validateLabOwner(recoveryCtx, grant) == nil {
+			_ = s.delegation.RecoverDelegationReceipts(recoveryCtx)
+		}
 		recoveryCancel()
 	}
 	s.startMetadata(ctx)

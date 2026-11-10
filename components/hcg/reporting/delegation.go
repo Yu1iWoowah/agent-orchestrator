@@ -8,8 +8,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
 
-// DelegationProvider is the trusted fixed HTTP-provider seam. The default
-// daemon has no credential resolver/provider: paid operation stays unavailable.
+// ErrDelegationNotSent is returned only when the trusted parent can prove no HTTP send.
+var ErrDelegationNotSent = delegate.ErrNotSent
+
+// DelegationProvider is the trusted fixed HTTP-provider seam. Without an
+// explicit operator run grant, even a configured lab parent stays unavailable.
 // Fixtures exercise this same caller; neither command/env nor model tool args
 // can replace the endpoint, provider or immutable deployment.
 type DelegationProvider interface {
@@ -119,4 +122,19 @@ func (c *DelegationConsumer) MountRequested(id Identity) bool {
 // It cannot import caller-provided counters or issue another provider request.
 func (c *DelegationConsumer) RecoverDelegationReceipts(ctx context.Context) error {
 	return c.core.RecoverReceipts(ctx)
+}
+
+func (c *DelegationConsumer) LabGrant() *DelegationLabGrant {
+	g := c.core.LabGrant()
+	if g == nil {
+		return nil
+	}
+	var out DelegationLabGrant
+	if delegationWire(g, &out) != nil {
+		return nil
+	}
+	return &out
+}
+func CheckDelegationOwnerStartup(ctx context.Context, root string) error {
+	return delegate.CheckLabStartup(ctx, root)
 }

@@ -219,6 +219,9 @@ func Run(buildVersion string) error {
 	// Open the durable store and bring up the CDC substrate: DB triggers capture
 	// changes into change_log, the poller tails it, and the broadcaster fans
 	// events out to live transports.
+	if err := hcgsvc.CheckDelegationOwnerStartup(context.Background(), cfg.DataDir); err != nil {
+		return fmt.Errorf("HCG canonical owner unavailable: %w", err)
+	}
 	store, err := sqlite.Open(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -230,7 +233,7 @@ func Run(buildVersion string) error {
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
 	}
-	hcgReporting := hcgsvc.New(context.Background(), cfg.DataDir, store)
+	hcgReporting := hcgsvc.NewLabOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
 	defer hcgReporting.Close()
 	rcaRoots, _ := usagesvc.DefaultSourceRoots(context.Background(), cfg.DataDir, cfg.StateDir)
 	rcaService := rcasvc.New(context.Background(), cfg.DataDir, store, usagesvc.NewEventsReader(store), rcaRoots)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
@@ -34,7 +35,9 @@ func deploymentFixture(t *testing.T, provider, project, source string) Deploymen
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Deployment{Profile: budgetProfile(provider), CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: runtimeDigest, PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
+	profile := budgetProfile(provider)
+	profile.Prices.InputPerMillion, profile.Prices.CachedInputPerMillion = 50*nanoUSD, 50*nanoUSD
+	return Deployment{Profile: profile, CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: runtimeDigest, PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
 }
 func delegationPolicy(p Profile) PolicySnapshot {
 	enabled := true
@@ -94,7 +97,11 @@ func TestFixtureRuntimeApprovalStillRejectsChangedBytes(t *testing.T) {
 }
 func approveFixture(t *testing.T, c *Coordinator, d Deployment) {
 	t.Helper()
-	if err := c.Register(t.Context(), Registration{Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err != nil {
+	g := c.LabGrant()
+	if g == nil {
+		g = labGrantFixture(c.root, d.Inputs[0].ProjectID, "s", time.Now())
+	}
+	if err := c.Register(t.Context(), Registration{Grant: g, Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -229,19 +236,20 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 			}
 			changed := deployment
 			changed.Profile.Prices.Version = "different-price"
-			if err := c.Register(t.Context(), Registration{Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
+			if err := c.Register(t.Context(), Registration{Grant: c.LabGrant(), Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
 				t.Fatal("immutable revision overwritten")
 			}
 			changed.Profile.Revision = "v2"
-			approveFixture(t, c, changed)
-			if view := c.Get(id, policy); view.Reason != "profile_revision_stale" || view.Active {
-				t.Fatalf("old selection followed current implicitly: %+v", view)
+			if err := c.Register(t.Context(), Registration{Grant: c.LabGrant(), Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
+				t.Fatal("run accepted an ungranted revision")
 			}
 			next := delegationPolicy(changed.Profile)
 			c.ProjectPolicyChanged("p", next)
-			if view := c.Get(id, next); !view.Active || view.MountProfile.Revision != "v1" {
-				t.Fatalf("new selection rewrote original mount: %+v", view)
+			if c.Get(id, next).Active {
+				t.Fatal("ungranted revision became active")
 			}
+			c.ProjectPolicyChanged("p", policy)
+			next = policy
 			liveID := id
 			liveID.ControllerGeneration = "new-controller"
 			prepared, ok := c.CaptureLaunch(liveID, false, false)
@@ -289,6 +297,13 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 			sink.err = nil
 			restarted := NewCoordinator(root, sink, factory, nil)
 			defer restarted.Close()
+			for _, profile := range restarted.Profiles() {
+				if profile.Available {
+					t.Fatal("startup recovery enabled transport without explicit reauthorization")
+				}
+			}
+			grant := restarted.LabGrant()
+			restarted.budget.Now = func() time.Time { return grant.ExpiresAt.Add(time.Second) }
 			if err := restarted.RecoverReceipts(t.Context()); err != nil {
 				t.Fatal(err)
 			}

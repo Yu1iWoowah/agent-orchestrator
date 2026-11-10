@@ -62,10 +62,13 @@ type Deployment struct {
 	Inputs        []InputManifest     `json:"inputs"`
 }
 type Registration struct {
+	Grant         *LabGrant                `json:"grant"`
 	Deployment    Deployment               `json:"deployment"`
 	ExternalSpend map[string]ExternalSpend `json:"externalSpend"`
 }
 type ResolvedProfile struct {
+	RunID           string `json:"runId"`
+	OwnerRoot       string `json:"ownerRoot"`
 	ID              string `json:"id"`
 	Revision        string `json:"revision"`
 	BillingProvider string `json:"billing_provider"`
@@ -77,6 +80,8 @@ type ResolvedProfile struct {
 	Reason          string `json:"reason"`
 }
 type DelegationView struct {
+	RunID                      string                   `json:"runId"`
+	OwnerRoot                  string                   `json:"ownerRoot"`
 	ProjectID                  string                   `json:"projectId"`
 	SessionID                  string                   `json:"sessionId"`
 	Inputs                     integration.PolicyInputs `json:"inputs"`
@@ -113,6 +118,7 @@ type sessionMount struct {
 	Revision     uint64
 }
 type deploymentState struct {
+	Grant    *LabGrant `json:"grant,omitempty"`
 	Version  int
 	Stop     bool
 	Current  map[string]string
@@ -137,6 +143,7 @@ type PreparedDelegationLaunch struct {
 }
 
 type Coordinator struct {
+	grantReady                       bool
 	closed                           bool
 	root, dir, epoch                 string
 	mu                               sync.Mutex
@@ -156,7 +163,7 @@ type Coordinator struct {
 func NewCoordinator(root string, canonical Recorder, provider func(Deployment) Transport, checkpoint func(context.Context, string)) *Coordinator {
 	c := &Coordinator{root: root, dir: filepath.Join(root, "hcg", "delegation"), epoch: rand.Text(), policies: map[string]PolicySnapshot{}, projectVersions: map[string]uint64{}, sessionVersions: map[string]uint64{}, jobs: map[string]delegationJob{}, canonical: canonical, provider: provider, checkpoint: checkpoint}
 	c.state = deploymentState{Version: 1, Current: map[string]string{}, History: map[string]Deployment{}, Sessions: map[string]sessionMount{}}
-	c.budget = &Budget{Dir: filepath.Join(c.dir, "budget")}
+	c.budget = &Budget{OwnerRoot: root, Dir: filepath.Join(c.dir, "budget")}
 	raw, err := os.ReadFile(filepath.Join(c.dir, "registry.json"))
 	if err == nil {
 		if len(raw) > 4<<20 || json.Unmarshal(raw, &c.state) != nil || c.state.Version != 1 || c.state.Current == nil || c.state.History == nil || c.state.Sessions == nil {
@@ -262,6 +269,9 @@ func (c *Coordinator) edit(ctx context.Context, apply func(*deploymentState) err
 }
 func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 	d := r.Deployment
+	if !r.Grant.valid(c.root) || !r.Grant.current(c.budget.now()) || r.Grant.Profiles[d.Profile.BillingProvider] != (ProfileRef{ID: d.Profile.ID, Revision: d.Profile.Revision}) {
+		return ErrUnavailable
+	}
 	if err := validateDeployment(d); err != nil {
 		return err
 	}
@@ -273,10 +283,11 @@ func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 	if err := verifyInstallation(ctx, d.Installation); err != nil {
 		return err
 	}
-	if err := c.budget.ApprovePeriod(ctx, d.Profile.Prices.Period, r.ExternalSpend); err != nil {
-		return err
-	}
-	return c.edit(ctx, func(s *deploymentState) error {
+	err := c.edit(ctx, func(s *deploymentState) error {
+		grant, err := mergeLabGrant(s.Grant, r.Grant)
+		if err != nil {
+			return err
+		}
 		for _, old := range s.History {
 			if old.Profile.ID == d.Profile.ID && old.Profile.Revision == d.Profile.Revision && old.Profile.digest() != digest {
 				return ErrUnavailable
@@ -288,10 +299,29 @@ func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 				return ErrUnavailable
 			}
 		}
+		// edit holds the registration mutation lock. Reject all immutable
+		// conflicts before recovery or approval can commit the budget grant.
+		if err := c.prepareRegistration(ctx); err != nil {
+			return err
+		}
+		if err := c.budget.ApproveLabRun(ctx, r.Grant, d.Profile.Prices.Period, r.ExternalSpend); err != nil {
+			return err
+		}
+		s.Grant = grant
 		s.History[digest] = d
 		s.Current[d.Profile.ID] = digest
 		return nil
 	}, "", "", true)
+	if err == nil {
+		c.mu.Lock()
+		if !c.grantReady {
+			c.hostVersion++
+			c.cancelJobs("", "")
+		}
+		c.grantReady = true
+		c.mu.Unlock()
+	}
+	return err
 }
 func (c *Coordinator) Profiles() []ResolvedProfile {
 	c.mu.Lock()
@@ -303,12 +333,16 @@ func (c *Coordinator) Profiles() []ResolvedProfile {
 	return rows
 }
 func (c *Coordinator) profileView(key string, d Deployment) ResolvedProfile {
-	available := c.loadErr == nil && c.provider != nil && runtime.GOOS == "linux" && d.AdapterDigest == textHash(string(palBridge))
+	available := c.grantReady && c.state.Grant.current(c.budget.now()) && c.state.Grant.Profiles[d.Profile.BillingProvider] == (ProfileRef{ID: d.Profile.ID, Revision: d.Profile.Revision}) && c.loadErr == nil && c.provider != nil && runtime.GOOS == "linux" && d.AdapterDigest == textHash(string(palBridge))
 	reason := "registered"
 	if !available {
 		reason = "transport_or_isolation_unavailable"
 	}
-	return ResolvedProfile{ID: d.Profile.ID, Revision: d.Profile.Revision, BillingProvider: d.Profile.BillingProvider, Model: d.Profile.Model, Digest: key, Available: available, Current: c.state.Current[d.Profile.ID] == key, PriceVersion: d.Profile.Prices.Version, Reason: reason}
+	run, root := "", ""
+	if c.state.Grant != nil {
+		run, root = c.state.Grant.RunID, c.state.Grant.OwnerRoot
+	}
+	return ResolvedProfile{RunID: run, OwnerRoot: root, ID: d.Profile.ID, Revision: d.Profile.Revision, BillingProvider: d.Profile.BillingProvider, Model: d.Profile.Model, Digest: key, Available: available, Current: c.state.Current[d.Profile.ID] == key, PriceVersion: d.Profile.Prices.Version, Reason: reason}
 }
 func (c *Coordinator) viewLocked(id integration.Identity, p PolicySnapshot) (DelegationView, Deployment) {
 	m, known := c.state.Sessions[id.SessionID]
@@ -320,6 +354,9 @@ func (c *Coordinator) viewLocked(id integration.Identity, p PolicySnapshot) (Del
 	}
 	resolved := integration.ResolvePolicy(id.Role, in)
 	v := DelegationView{ProjectID: id.ProjectID, SessionID: id.SessionID, Inputs: in, Source: resolved.Source, SessionOverride: "inherit", ProjectOptIn: in.Project != nil && *in.Project, EmergencyStop: c.state.Stop, AllowedProfiles: append([]ProfileRef{}, p.Project.AllowedProfiles...), SelectedProfile: p.Project.SelectedProfile, SelectionSource: "project.config", ProjectPolicyRevision: tokenString(c.token(id)), ProfileEligibility: "blocked", MountConfigured: m.Configured, MountKnown: known && m.Known, MountEnabled: m.MountEnabled, MountProfile: m.MountProfile, ManifestRevision: m.Revision}
+	if c.state.Grant != nil {
+		v.RunID, v.OwnerRoot = c.state.Grant.RunID, c.state.Grant.OwnerRoot
+	}
 	if m.Override != nil {
 		if *m.Override {
 			v.SessionOverride = "on"
@@ -335,6 +372,9 @@ func (c *Coordinator) viewLocked(id integration.Identity, p PolicySnapshot) (Del
 	}
 	if c.loadErr != nil || c.closed {
 		return fail("registry_unavailable")
+	}
+	if !c.grantReady || !c.state.Grant.current(c.budget.now()) || !c.state.Grant.bound(id.ProjectID, id.SessionID) {
+		return fail("lab_authorization_unavailable")
 	}
 	if id.DataRoot != c.root || (id.Role != "worker" && id.Role != "orchestrator") || (id.Harness != "codex" && id.Harness != "claude-code") {
 		return fail("unsupported")
@@ -491,6 +531,11 @@ func (c *Coordinator) Read(ctx context.Context, id integration.Identity, p Polic
 		c.mu.Unlock()
 		return failureReply(execution, d.Profile, "unavailable", view.Reason)
 	}
+	if c.state.Grant != nil {
+		bounded, end := context.WithDeadline(ctx, c.state.Grant.ExpiresAt)
+		defer end()
+		ctx = bounded
+	}
 	jobID := execution.AttemptID
 	c.jobs[jobID] = delegationJob{id.SessionID, id.ProjectID, cancel}
 	c.mu.Unlock()
@@ -600,6 +645,10 @@ func (c *Coordinator) MountRequested(id integration.Identity) bool {
 // RecoverReceipts is startup reconciliation only: retry trusted canonical
 // writes, never paid requests, current profile resolution or answer delivery.
 func (c *Coordinator) RecoverReceipts(ctx context.Context) error {
+	state, err := c.checkJournal(ctx)
+	if err != nil {
+		return err
+	}
 	keys := map[string]bool{}
 	c.budget.pending.Range(func(key, value any) bool { keys[key.(string)] = true; return true })
 	entries, err := os.ReadDir(c.budget.Dir)
@@ -608,11 +657,22 @@ func (c *Coordinator) RecoverReceipts(ctx context.Context) error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.IsDir() && strings.HasSuffix(name, ".pending") {
+		if strings.HasSuffix(name, ".pending") {
 			key := strings.TrimSuffix(name, ".pending")
-			if validDigest(key) {
-				keys[key] = true
+			if !validDigest(key) || !entry.Type().IsRegular() {
+				return ErrBudgetBlocked
 			}
+			keys[key] = true
+		}
+	}
+	for key, a := range state.Attempts {
+		if a.State == "usage_pending" && !keys[key] {
+			return ErrUsagePending
+		}
+	}
+	for key := range keys {
+		if _, ok := state.Attempts[key]; !ok {
+			return ErrBudgetBlocked
 		}
 	}
 	var first error
