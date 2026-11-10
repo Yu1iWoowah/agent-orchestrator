@@ -667,7 +667,14 @@ describe("recorded content entry", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Recorded content" }));
 		expect(screen.queryByTestId("session-composition")).not.toBeInTheDocument();
 	});
-	it.each<Partial<WorkspaceSession>>([{ provider: "claude-code" }, { workspaceId: "other" }, { kind: "orchestrator" }, { hostId: "remote" }])("does not offer out-of-scope sources %j", async (overrides) => {
+
+ it.each(["worker","orchestrator"] satisfies WorkspaceSession["kind"][])("offers local Claude Chat %s through the existing entry",async(kind)=>{
+  showWorker({provider:"claude-code",mode:"chat",kind});
+  await userEvent.click(screen.getByTestId("app-memory-indicator"));
+  expect(screen.getByRole("button",{name:"Recorded content"})).toBeInTheDocument();
+  expect(compositionGetMock).not.toHaveBeenCalled();
+ });
+	it.each<Partial<WorkspaceSession>>([{ provider: "claude-code" }, {provider:"claude-code",mode:"tui"}, {provider:"claude-code",mode:"chat",hostId:"remote"}, { workspaceId: "other" }, { kind: "orchestrator" }, { hostId: "remote" }])("does not offer out-of-scope sources %j", async (overrides) => {
 		showWorker(overrides);
 		await userEvent.click(screen.getByTestId("app-memory-indicator"));
 		expect(screen.queryByRole("button", { name: "Recorded content" })).not.toBeInTheDocument();

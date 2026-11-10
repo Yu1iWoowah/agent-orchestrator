@@ -456,6 +456,24 @@ func (c *Consumer) Begin(ctx context.Context, k Key, in policy.Inputs, receipt R
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.begin(ctx, k, in, receipt)
+}
+
+// BeginCached admits native headers only against already-verified memory.
+// It does not warm storage or re-observe a stale launch's policy inputs.
+func (c *Consumer) BeginCached(ctx context.Context, k Key, receipt Revision) (*Ticket, View, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt != c.revision(k) {
+		return nil, View{}, "policy_changed"
+	}
+	in, known := c.parents[parent(k)]
+	if !known {
+		return nil, View{}, "writer_busy"
+	}
+	return c.begin(ctx, k, in, receipt)
+}
+func (c *Consumer) begin(ctx context.Context, k Key, in policy.Inputs, receipt Revision) (*Ticket, View, string) {
 	v, why := c.view(ctx, k, in)
 	if why != "" {
 		return nil, v, why

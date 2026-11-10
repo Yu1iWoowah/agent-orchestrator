@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -238,6 +239,7 @@ func Run(buildVersion string) error {
 	rcaRoots, _ := usagesvc.DefaultSourceRoots(context.Background(), cfg.DataDir, cfg.StateDir)
 	rcaService := rcasvc.New(context.Background(), cfg.DataDir, store, usagesvc.NewEventsReader(store), rcaRoots)
 	defer rcaService.Close()
+	rcaService.SetClaudeLaunchEndpoint("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/api/v1/rca/otlp/v1/logs")
 	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
@@ -488,6 +490,7 @@ func Run(buildVersion string) error {
 		},
 	})
 	chatSvc.SetHCGReportingObserver(hcgReporting)
+	chatSvc.SetRCAClaudeLaunchControl(rcaService)
 	chatSvc.SetRenderCheck(renderViaDesktop(browserBroker, "__render-check"))
 	chatSvc.SetRenderMeasure(renderViaDesktop(browserBroker, "__render-measure"))
 

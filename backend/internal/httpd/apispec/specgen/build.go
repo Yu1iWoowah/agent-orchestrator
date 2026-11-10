@@ -114,7 +114,9 @@ func Build() ([]byte, error) {
 		for _, param := range op.pathParams {
 			oc.AddReqStructure(param)
 		}
-		if op.reqBody != nil {
+		if op.reqContentType != "" {
+			oc.AddReqStructure(op.reqBody, openapi.WithContentType(op.reqContentType), func(cu *openapi.ContentUnit) { cu.Format = "binary" }, openapi.WithCustomize(markRequestBodyRequired))
+		} else if op.reqBody != nil {
 			// AddReqStructure leaves requestBody.required absent, which
 			// OpenAPI reads as optional. Most of these bodies are mandatory, so
 			// force it — otherwise validators/generators treat the body as
@@ -168,6 +170,8 @@ var schemaNames = map[string]string{
 	"DomainRCABucket":                                      "RCABucket",
 	"DomainRCARecordedTurn":                                "RCARecordedTurn",
 	"DomainRCARecordedSnapshot":                            "RCARecordedSnapshot",
+	"DomainRCAClaudeInline":                                "RCAClaudeInline",
+	"DomainRCAClaudeAttempt":                               "RCAClaudeAttempt",
 	"DomainRCARecordedState":                               "RCARecordedState",
 	"DomainRCAPolicyView":                                  "RCAPolicyView",
 	"DomainRCACanonicalEvent":                              "RCACanonicalEvent",
@@ -963,6 +967,7 @@ type operation struct {
 	reqBody                   any   // JSON request body struct, nil when the op takes none
 	// optionalReqBody declares the body without marking it required, for the
 	// handlers that accept an empty body as a meaningful default.
+	reqContentType  string
 	optionalReqBody bool
 	resps           []respUnit
 	contentTypes    map[int]string // optional non-JSON response content types by status
@@ -1289,6 +1294,7 @@ func usageOperations() []operation {
 			reqBody:    controllers.HCGReportRequest{},
 			resps:      []respUnit{{http.StatusOK, controllers.HCGReportResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 
+		{method: http.MethodPost, path: "/api/v1/rca/otlp/v1/logs", id: "ingestRCAOTLPLogs", tag: "usage", summary: "Native primary HTTP/1 only; known length identity OTLP protobuf; empty ACK means numeric handoff, not durable storage", pathParams: []any{controllers.RCAOTLPHeader{}}, reqBody: "", reqContentType: "application/x-protobuf", resps: []respUnit{{http.StatusOK, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusMethodNotAllowed, envelope.APIError{}}, {http.StatusLengthRequired, envelope.APIError{}}, {http.StatusRequestEntityTooLarge, envelope.APIError{}}, {http.StatusUnsupportedMediaType, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{method: http.MethodGet, path: "/api/v1/usage/sessions/{sessionId}/composition", id: "getSessionComposition", tag: "usage",
 			summary:    "Query recorded-content estimates and current canonical usage; analyze explicitly starts a selected-worker snapshot",
 			pathParams: []any{controllers.SessionIDParam{}, controllers.RCACompositionQuery{}},

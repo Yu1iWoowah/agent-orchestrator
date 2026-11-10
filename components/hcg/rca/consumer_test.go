@@ -300,3 +300,23 @@ func TestRCAOtherRolePendingDoesNotRevokeReservedCommit(t *testing.T) {
 		t.Fatal("other role pending metadata revoked approved worker:", why)
 	}
 }
+
+func TestRCACachedAdmissionCannotReobserveStaleParents(t *testing.T) {
+	c := New(t.Context(), &fakeManifests{rows: map[Key]policy.Manifest{}})
+	key := Key{ProjectID: "agent-orchestrator", SessionID: "claude", Role: "orchestrator"}
+	on := policy.Inputs{Project: flag(true)}
+	if _, why := c.View(t.Context(), key, on); why != "" {
+		t.Fatal(why)
+	}
+	old := c.Revision(key)
+	c.ProjectPolicyChanged(key.ProjectID, "orchestrator", policy.Inputs{Project: flag(false)})
+	if _, _, why := c.BeginCached(t.Context(), key, old); why != "policy_changed" {
+		t.Fatal("stale launch admitted")
+	}
+	if _, v, why := c.BeginCached(t.Context(), key, c.Revision(key)); why != "disabled" || v.EffectiveEnabled {
+		t.Fatal("old launch rewrote the current parent")
+	}
+	if _, _, why := c.BeginCached(t.Context(), Key{ProjectID: "agent-orchestrator", SessionID: "cold", Role: "orchestrator"}, c.Revision(Key{ProjectID: "agent-orchestrator", SessionID: "cold", Role: "orchestrator"})); why != "writer_busy" {
+		t.Fatal("cold native admission warmed storage")
+	}
+}

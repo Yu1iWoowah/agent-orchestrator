@@ -1,5 +1,43 @@
 # RCA native export capability evidence
 
+## 2026-11-10：Claude inline 實作與 F0 邊界
+
+本節依 Claude OTel delta rev3（SHA-256 `9e0e0cc6fcf7728cf94a10b6ec4e31f00819dfe6fe108e69253d862f28aaafb6`）、使用者 `rca-claude-otel-total-review-1` 與 D-29／D-30。只交付 F0 免費合成驗證；**N0 NOT_RUN，正式 Claude source UNKNOWN/off，Claude／階段1仍未完成**。下方 PR1 的歷史結果保留，不追認 native supported。
+
+| 來源／模式 | 本輪證據 | 正式能力 |
+| --- | --- | --- |
+| 本專案 Claude Chat orchestrator | 合成 OTLP、真 controller/service/middleware、具名 dev renderer 與 CLI controls；fake launch 能力格 | UNKNOWN/off；未讀現用 binary、provider home 或 settings，未啟 native／模型 |
+| 本專案 Claude Chat worker | 獨立角色政策與 capture、同一組真 caller／故障邊界的合成對照 | UNKNOWN/off；不能由主控格外推 |
+| Claude TUI／review／side／其他 project／遠端 | scope 或 native／listener 邊界拒收 | 未納入本來源；不自動降級到 transcript／file／proxy |
+| Codex recorded worker | 沿原 reader／exact roots／numeric projection，與 Claude 共用 writer／quota／host-stop | 原方向三行為保留；Codex OTel 仍 UNKNOWN/off |
+
+正式 driver 只傳已解析的 native／bridge 路徑與 OS；目前未有核准的版本／SDK／有效設定證據，能力 gate 不注入 OTel。可信 constructor 能力依賴僅供合成測試；沒有 HTTP／project-config 能力授權入口。N0 前須另核具名版本、帳號／session、可信 metadata 接法與預算，不能將 fake profile 換名為 supported。
+
+### 接收、歸因與數字
+
+- 只在既有 primary loopback `POST /api/v1/rca/otlp/v1/logs` 接 native HTTP/1 OTLP protobuf；所有 Origin／browser metadata 拒收。LAN／WebSocket tunnel 在 auth 與 shared router 前固定404；HTTP/2只終止該 stream，不關共用連線、WebSocket 或 sibling。
+- 已知 Content-Length、identity encoding、每 batch ≤1 MiB、全 host 一個正在讀取／分類的 batch，無 raw／numeric pending queue。讀取 deadline 2秒；≤256 records、encoded record/body 各≤256 KiB、JSON depth≤32，先檢容器預算再解碼。encoded record 含 protobuf/attributes overhead，因此可接受的實際 body 可能比256 KiB更小。
+- 每 batch≤512 component rows、數字交接≤1 MiB；每 capture transient indices≤4,096筆、單 native ID≤256 bytes、全 host index charge≤16 MiB。配額是容器／payload預算，不能當 Go RSS 或 native queue 的硬上限。
+- marker 是 AO 產生的非秘密 namespace，不是 bearer。AO project/session/role/controller/launch/native identity 與當前 manifest/revision 才是 authority；payload 的 project／role／account／query_source 不授權。未證 child（含相同 session ID 卻帶 query_source／child 關係）排除並記 unpaired，不猜回主來源。
+- `claudeInline` 是獨立數字分支，`recorded` 的 Codex file offset／turn 意義不變。attempt 是 ordinal；同事件去重、重試不同 attempt、衝突停來源。native IDs 與重送比對 digest 只留有額度的記憶體，不持久化。
+- 六桶互斥，只量已解碼可見片段；method=`utf8_bytes_div4_v1`，每片段 UTF-8 bytes/4 向上取整再加總。tool 宣告計入 tool_schema，arguments 不充作 schema/result；MCP只留固定數字維度，未觀察 schema 時為 null。hidden thinking／截斷／未見內容保持 UNKNOWN。
+- canonical events 只經原 EventsReader 讀取；response usage 不另入帳。目前不能證明 native opaque key 到既有 canonical key 的鏈，canonical attempt 引用為 null，明示 unmatched；不用 timestamp／token 數猜 join，也不建另一份 ledger。
+
+### controls、持久化與有限保證
+
+`ao usage composition` 與原 SessionCompositionPanel 共用 get/on/off/clear/host-stop/resume/purge。Claude 不提供 file Analyze；on 只 requested，等正常且核准的 safe launch，live session 不熱換 env／不重啟。off、host-stop、purge、owner/generation 變更撤回 namespace；resume 不復活舊 marker。正式版本未證時 requested 可以是 on，active 仍 off。
+
+數字仍用原 v1 document 的獨立 Claude 欄位、同一 writer 與 `state.next`，保留既有 Codex／manifest。共同限額為16 MiB/session、128 MiB/host、7天，含 old+staging 峰值；每次寫前扣預計峰值後仍須達 `max(2 GiB, ceil(volume bytes/100))`。不做 pool B、R證明、image/volume/mount/container。
+
+慢 write/flush 不持 policy 鎖。候選 I/O 後重核 ticket/revision 再批准；未批准候選不能當有效投影。ACK只表示 raw 已釋引用、數字安全交接，**不是 durable**。撤回先在記憶體生效；metadata未落盤回 `revocation_persistence_pending`，新啟用／admission不繞過。查詢只回當前 off/busy/unavailable，不等 writer；writer busy 與 capture active 分開。
+
+已進 OS 的 write/Sync/Rename 可能在 off 返回後才物理完成；不保證取消 OS I/O，也不在死磁碟上宣稱 durable 停用成功。statfs不是 reservation；Go／SDK allocator、swap、native retry／diagnostics亦未由本輪證成零殘留。
+
+F0 以可釋放 write/flush barrier、真 TCP慢送/終止、真 LAN h2與同一 WebSocket h2 sibling、A/B合成 canary與本地 fake EventSink/Sentry、非 RCA對照及正常 click/鍵盤驗證上述邊界。native queue/BLRP有效程度、RSS、下一真 prompt/tool、正常 native exit及全鏈 diagnostics均 NOT_RUN；舊 PR1有限觀測不補齊這些格。
+
+## PR1 歷史能力驗證（2026-11-08）
+
+
 後續方向三的 [Codex 已記錄內容粗估](README.md) 與本頁 native export gate 分開：RCA-P1-PR2 OTel 仍 blocked，原 PR3 由 RCA-DIR3-PR1 supersede。下列 2026-11-08 紀錄是原驗證結果，不因新增 reader 而追認 native gate 通過。
 
 本文件記錄 RCA-P1-PR1 的版本能力驗證，日期為 2026-11-08。**結果是 gate FAIL：Claude 原文來源維持 UNKNOWN/off。**

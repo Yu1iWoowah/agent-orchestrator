@@ -83,7 +83,7 @@ func newUsageCompositionCommand(c *commandContext) *cobra.Command {
 		}}
 		cmd.Flags().BoolVar(&jsonOut, "json", false, "Output numeric JSON")
 		if op != "emergency-stop" {
-			cmd.Flags().StringVar(&session, "session", "", "Selected AO worker session")
+			cmd.Flags().StringVar(&session, "session", "", "Selected AO session")
 		}
 		if op == "set" || op == "emergency-stop" {
 			cmd.Flags().StringVar(&enabled, "enabled", "", "Explicit true or false")
@@ -92,7 +92,7 @@ func newUsageCompositionCommand(c *commandContext) *cobra.Command {
 			cmd.Flags().BoolVar(&yes, "yes", false, "Confirm numeric/scope purge")
 		}
 		if op == "get" {
-			cmd.Flags().BoolVar(&analyze, "analyze", false, "Explicitly analyze the selected worker's current source snapshot")
+			cmd.Flags().BoolVar(&analyze, "analyze", false, "Explicitly analyze the selected Codex worker source snapshot; Claude inline is launch-driven")
 			cmd.Flags().Int64Var(&after, "after-id", 0, "Canonical paging cursor")
 			cmd.Flags().Int64Var(&through, "through-id", 0, "Canonical insertion bound")
 			cmd.Flags().Int64Var(&limit, "limit", 200, "Canonical page size (1..1000)")

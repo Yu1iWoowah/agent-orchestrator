@@ -227,3 +227,42 @@ func TestDiskStoreCandidatePreservesConfirmedProjection(t *testing.T) {
 		t.Fatal("approved candidate not durable")
 	}
 }
+
+func TestClaudeNumericStoragePreservesCodexAndManifest(t *testing.T) {
+	disk := testDiskStore(t)
+	ctx := t.Context()
+	key := rcapolicy.Key{ProjectID: "agent-orchestrator", SessionID: "selected"}
+	manifest := policy.Revise(nil, "worker", policy.Inputs{})
+	if err := disk.Save(ctx, key, manifest); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	recorded := domain.RCARecordedState{ProjectID: "agent-orchestrator", SessionID: "selected", ObservedAt: now.Add(24 * time.Hour), Status: "ready", Snapshots: []domain.RCARecordedSnapshot{}}
+	if err := disk.SaveSnapshot(ctx, recorded); err != nil {
+		t.Fatal(err)
+	}
+	value := domain.RCAClaudeInline{ProjectID: recorded.ProjectID, SessionID: recorded.SessionID, CaptureID: "11111111-1111-4111-8111-111111111111", Role: "worker", Requested: true, Active: true, Coverage: "observed_inline_attempt", Method: "utf8_bytes_div4_v1", ObservedAt: now, Attempts: []domain.RCAClaudeAttempt{{Ordinal: 1, Buckets: emptyBuckets(), Reasons: []string{"retained_context_unknown"}}}}
+	if err := disk.StageClaudeInline(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.FinishSnapshot(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := disk.LoadClaudeInline(ctx, value.ProjectID, value.SessionID)
+	if err != nil || !ok || row.Active || row.Reason != "source_stopped" || len(row.Attempts) != 1 {
+		t.Fatal("restart trusted an old capture or lost numeric history")
+	}
+	if _, ok, err := disk.LoadSnapshot(ctx, recorded.ProjectID, recorded.SessionID); err != nil || !ok {
+		t.Fatal("Claude replaced Codex")
+	}
+	if got, ok, err := disk.Load(ctx, key); err != nil || !ok || got.Revision != manifest.Revision {
+		t.Fatal("Claude replaced manifest")
+	}
+	disk.now = func() time.Time { return now.Add(7 * 24 * time.Hour) }
+	if _, ok, err := disk.LoadClaudeInline(ctx, value.ProjectID, value.SessionID); err != nil || ok {
+		t.Fatal("expired Claude numbers served")
+	}
+	if _, ok, err := disk.LoadSnapshot(ctx, recorded.ProjectID, recorded.SessionID); err != nil || !ok {
+		t.Fatal("Claude expiration removed unexpired Codex")
+	}
+}

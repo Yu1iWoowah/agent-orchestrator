@@ -19,10 +19,11 @@ import (
 var errStorage = errors.New("RCA storage unavailable")
 
 type storedSession struct {
-	ProjectID domain.ProjectID         `json:"projectId"`
-	SessionID domain.SessionID         `json:"sessionId"`
-	Manifest  policy.Manifest          `json:"manifest"`
-	Recorded  *domain.RCARecordedState `json:"recorded"`
+	ProjectID    domain.ProjectID         `json:"projectId"`
+	SessionID    domain.SessionID         `json:"sessionId"`
+	Manifest     policy.Manifest          `json:"manifest"`
+	Recorded     *domain.RCARecordedState `json:"recorded"`
+	ClaudeInline *domain.RCAClaudeInline  `json:"claudeInline,omitempty"`
 }
 type storedState struct {
 	Version  int                      `json:"version"`
@@ -164,9 +165,14 @@ func (s *DiskStore) read(ctx context.Context, cleanup bool) (out storedState, re
 		if key != keyString(rcapolicy.Key{ProjectID: string(row.ProjectID), SessionID: string(row.SessionID)}) || !safeStoredSession(row) {
 			return storedState{}, s.fail("storage_read_failed")
 		}
+		if cleanup && row.ClaudeInline != nil && !s.now().Before(row.ClaudeInline.ObservedAt.Add(7*24*time.Hour)) {
+			row.ClaudeInline = nil
+			out.Sessions[key] = row
+			changed = true
+		}
 		if cleanup && row.Recorded != nil && !s.now().Before(row.Recorded.ObservedAt.Add(7*24*time.Hour)) {
 			row.Recorded = nil
-			if row.Manifest.Revision == 0 {
+			if row.Manifest.Revision == 0 && row.ClaudeInline == nil {
 				delete(out.Sessions, key)
 			} else {
 				out.Sessions[key] = row
@@ -235,7 +241,7 @@ func (s *DiskStore) prepare(ctx context.Context, next storedState) (prepareErr e
 	for key, row := range next.Sessions {
 		if row.Recorded != nil && !s.now().Before(row.Recorded.ObservedAt.Add(7*24*time.Hour)) {
 			row.Recorded = nil
-			if row.Manifest.Revision == 0 {
+			if row.Manifest.Revision == 0 && row.ClaudeInline == nil {
 				delete(next.Sessions, key)
 			} else {
 				next.Sessions[key] = row
@@ -462,6 +468,8 @@ func (s *DiskStore) StageSnapshot(ctx context.Context, value domain.RCARecordedS
 	state.Sessions[keyString(k)] = row
 	return s.prepare(ctx, state)
 }
+
+// FinishSnapshot finalizes only a staged candidate approved by the common fence.
 func (s *DiskStore) FinishSnapshot(ctx context.Context, accepted bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -486,7 +494,7 @@ func (s *DiskStore) SaveSnapshot(ctx context.Context, value domain.RCARecordedSt
 	return s.save(ctx, state)
 }
 
-// Purge removes numeric scope while retaining policy overrides.
+// PurgeNumbers removes numeric scope while retaining policy overrides.
 func (s *DiskStore) PurgeNumbers(ctx context.Context, key rcapolicy.Key) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -499,7 +507,50 @@ func (s *DiskStore) PurgeNumbers(ctx context.Context, key rcapolicy.Key) error {
 	if !ok {
 		return nil
 	}
-	row.Recorded = nil
+	row.Recorded, row.ClaudeInline = nil, nil
 	state.Sessions[k] = row
 	return s.save(ctx, state)
+}
+
+// LoadClaudeInline returns validated, unexpired numeric history. Restart never
+// reconstructs a live source from this row; the service must supply fresh scope.
+func (s *DiskStore) LoadClaudeInline(ctx context.Context, project domain.ProjectID, id domain.SessionID) (domain.RCAClaudeInline, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.read(ctx, true)
+	if err != nil {
+		return domain.RCAClaudeInline{}, false, err
+	}
+	row := state.Sessions[keyString(rcapolicy.Key{ProjectID: string(project), SessionID: string(id)})]
+	if row.ClaudeInline == nil || !s.now().Before(row.ClaudeInline.ObservedAt.Add(7*24*time.Hour)) {
+		return domain.RCAClaudeInline{}, false, nil
+	}
+	value := *row.ClaudeInline
+	value.Active = false
+	value.Reason = "source_stopped"
+	return value, true, nil
+}
+
+// StageClaudeInline uses the same v1 document, staging peak, quota and writer as
+// recorded Codex snapshots. It never replaces a recorded or manifest field.
+func (s *DiskStore) StageClaudeInline(ctx context.Context, value domain.RCAClaudeInline) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.read(ctx, false)
+	if err != nil {
+		return err
+	}
+	k := rcapolicy.Key{ProjectID: string(value.ProjectID), SessionID: string(value.SessionID)}
+	row := state.Sessions[keyString(k)]
+	if row.ClaudeInline != nil && row.ClaudeInline.CaptureID == value.CaptureID {
+		previous := row.ClaudeInline
+		value.Attempts = append(append([]domain.RCAClaudeAttempt{}, previous.Attempts...), value.Attempts...)
+	}
+	value.Active = false
+	row.ProjectID, row.SessionID, row.ClaudeInline = value.ProjectID, value.SessionID, &value
+	if !safeStoredSession(row) {
+		return s.fail("storage_write_failed")
+	}
+	state.Sessions[keyString(k)] = row
+	return s.prepare(ctx, state)
 }

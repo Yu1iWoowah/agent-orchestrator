@@ -98,6 +98,7 @@ type RCAComposition struct {
 	Reason             string            `json:"reason"`
 	RequestComposition string            `json:"requestComposition"`
 	Recorded           *RCARecordedState `json:"recorded"`
+	ClaudeInline       *RCAClaudeInline  `json:"claudeInline"`
 	Canonical          RCACanonicalPage  `json:"canonical"`
 	Baseline           RCABaseline       `json:"baseline"`
 }
@@ -108,4 +109,32 @@ type RCAQuery struct {
 	ThroughID *int64
 	Limit     int64
 	Analyze   bool
+}
+
+// RCAClaudeAttempt is an observed inline attempt, never a wire request or a
+// file offset. Canonical references remain nil until an exact key chain is proven.
+type RCAClaudeAttempt struct {
+	Ordinal          int64        `json:"ordinal"`
+	Buckets          [6]RCABucket `json:"buckets"`
+	MCPBytes         *int64       `json:"mcpBytes"`
+	Reasons          []string     `json:"reasons"`
+	CanonicalEventID *int64       `json:"canonicalEventId"`
+}
+
+// RCAClaudeInline contains AO references and fixed numeric/quality fields only.
+// Native identifiers, exporter marker, paths and body hashes are never stored.
+type RCAClaudeInline struct {
+	ProjectID      ProjectID          `json:"projectId"`
+	SessionID      SessionID          `json:"sessionId"`
+	CaptureID      string             `json:"captureId"`
+	Role           string             `json:"role"`
+	Requested      bool               `json:"requested"`
+	Active         bool               `json:"active"`
+	Reason         string             `json:"reason"`
+	Coverage       string             `json:"coverage"`
+	Method         string             `json:"method"`
+	ObservedAt     time.Time          `json:"observedAt"`
+	Attempts       []RCAClaudeAttempt `json:"attempts"`
+	Unpaired       int64              `json:"unpaired"`
+	DroppedBatches int64              `json:"droppedBatches"`
 }

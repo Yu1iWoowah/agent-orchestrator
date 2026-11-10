@@ -61,6 +61,10 @@ func rcaWrite(w http.ResponseWriter, r *http.Request, value any, err error) {
 		var typed *apierr.Error
 		if errors.As(err, &typed) {
 			switch typed.Code {
+			case "RCA_UNAVAILABLE":
+				if typed.Message == "revocation_persistence_pending" || typed.Message == "writer_busy" {
+					message = typed.Message
+				}
 			case "SESSION_NOT_FOUND":
 				status, kind, code, message = 404, "not_found", typed.Code, "Unknown session"
 			case "RCA_SCOPE_NOT_ALLOWED":
@@ -164,6 +168,15 @@ func (c RCAController) ingest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	defer func() {
+		if value := recover(); value != nil {
+			if panicErr, ok := value.(error); ok && errors.Is(panicErr, http.ErrAbortHandler) {
+				panic(http.ErrAbortHandler)
+			}
+			svc.RejectClaude(markers[0], "analysis_failed")
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}()
 	admission, why := svc.AdmitClaude(r.Context(), markers[0])
 	if why != "" {
 		status := http.StatusServiceUnavailable

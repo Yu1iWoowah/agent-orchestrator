@@ -3,6 +3,7 @@ package httpd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,10 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 )
 
 const rcaRawPath = "/api/v1/rca/otlp/v1/logs"
@@ -108,99 +110,113 @@ func (l *rcaRawLifetime) finish() {
 	})
 }
 
-func rcaRawTransportGuard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isRCARawRequest(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		// Native raw diagnostics never echo an incoming request-id/header value.
-		requestID := uuid.NewString()
-		r = r.WithContext(context.WithValue(r.Context(), middleware.RequestIDKey, requestID))
-		w.Header().Set(middleware.RequestIDHeader, requestID)
-		if r.ProtoMajor >= 2 {
-			rejectRCARawStream(w, r)
-			return
-		}
-		if !rcaRawNative(r) {
-			rejectRCARawHTTP1(w, r, http.StatusForbidden)
-			return
-		}
-		if r.Method != http.MethodPost {
-			rejectRCARawHTTP1(w, r, http.StatusMethodNotAllowed)
-			return
-		}
-		if r.ContentLength < 0 || len(r.TransferEncoding) > 0 {
-			rejectRCARawHTTP1(w, r, http.StatusLengthRequired)
-			return
-		}
-		if r.ContentLength > rcaRawBodyLimit {
-			rejectRCARawHTTP1(w, r, http.StatusRequestEntityTooLarge)
-			return
-		}
-		encoding := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding")))
-		if len(r.Header.Values("Content-Encoding")) > 1 || encoding != "" && encoding != "identity" || len(r.Header.Values("Content-Type")) != 1 || strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))) != "application/x-protobuf" {
-			rejectRCARawHTTP1(w, r, http.StatusUnsupportedMediaType)
-			return
-		}
-		controller := http.NewResponseController(w)
-		if controller.SetReadDeadline(time.Now().Add(2*time.Second)) != nil {
-			rejectRCARawHTTP1(w, r, http.StatusServiceUnavailable)
-			return
-		}
-		conn, _ := r.Context().Value(rcaConnKey{}).(net.Conn)
-		var mu sync.Mutex
-		active := true
-		interrupt := func() {
-			mu.Lock()
-			defer mu.Unlock()
-			if active && controller.SetReadDeadline(time.Now()) != nil {
-				if conn != nil {
-					_ = conn.Close()
+func rcaRawTransportGuardWithReject(reject func(string, string)) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !isRCARawRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Native raw diagnostics never echo an incoming request-id/header value.
+			requestID := uuid.NewString()
+			r = r.WithContext(context.WithValue(r.Context(), middleware.RequestIDKey, requestID))
+			w.Header().Set(middleware.RequestIDHeader, requestID)
+			if r.ProtoMajor >= 2 {
+				rejectRCARawStream(w, r)
+				return
+			}
+			if !rcaRawNative(r) {
+				rejectRCARawHTTP1(w, r, http.StatusForbidden)
+				return
+			}
+			rejectCapture := func(reason string) {
+				markers := r.Header.Values("X-AO-RCA-Capture")
+				if reject != nil && len(markers) == 1 {
+					reject(markers[0], reason)
 				}
 			}
-		}
-		stop := context.AfterFunc(r.Context(), interrupt)
-		deactivate := func() { stop(); mu.Lock(); active = false; mu.Unlock() }
-		defer deactivate()
-		lifetime := &rcaRawLifetime{}
-		defer func() {
-			defer lifetime.finish()
-			if value := recover(); value != nil {
-				if value == http.ErrAbortHandler {
-					panic(value)
+			if r.Method != http.MethodPost {
+				rejectCapture("unknown_schema")
+				rejectRCARawHTTP1(w, r, http.StatusMethodNotAllowed)
+				return
+			}
+			if r.ContentLength < 0 || len(r.TransferEncoding) > 0 {
+				rejectCapture("invalid_otlp")
+				rejectRCARawHTTP1(w, r, http.StatusLengthRequired)
+				return
+			}
+			if r.ContentLength > rcaRawBodyLimit {
+				rejectCapture("batch_limit")
+				rejectRCARawHTTP1(w, r, http.StatusRequestEntityTooLarge)
+				return
+			}
+			encoding := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding")))
+			if len(r.Header.Values("Content-Encoding")) > 1 || encoding != "" && encoding != "identity" || len(r.Header.Values("Content-Type")) != 1 || strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))) != "application/x-protobuf" {
+				rejectCapture("unknown_schema")
+				rejectRCARawHTTP1(w, r, http.StatusUnsupportedMediaType)
+				return
+			}
+			controller := http.NewResponseController(w)
+			if controller.SetReadDeadline(time.Now().Add(2*time.Second)) != nil {
+				rejectCapture("unsupported_capability")
+				rejectRCARawHTTP1(w, r, http.StatusServiceUnavailable)
+				return
+			}
+			conn, _ := r.Context().Value(rcaConnKey{}).(net.Conn)
+			var mu sync.Mutex
+			active := true
+			interrupt := func() {
+				mu.Lock()
+				defer mu.Unlock()
+				if active && controller.SetReadDeadline(time.Now()) != nil {
+					if conn != nil {
+						_ = conn.Close()
+					}
 				}
-				rejectRCARawHTTP1(w, r, http.StatusInternalServerError)
 			}
-		}()
-		r = r.WithContext(requestscope.WithRCARawFinished(r.Context(), lifetime.register))
-		body := &rcaRawBody{Reader: r.Body, remaining: r.ContentLength}
-		r.Body = body
-		r = r.WithContext(requestscope.WithRCARawInterrupt(r.Context(), interrupt))
-		response := &rcaRawResponse{header: make(http.Header)}
-		next.ServeHTTP(response, r)
-		deactivate()
-		if response.status != http.StatusOK || body.remaining != 0 {
-			status := response.status
-			if status < 400 || status > 599 {
-				status = http.StatusBadRequest
+			stop := context.AfterFunc(r.Context(), interrupt)
+			deactivate := func() { stop(); mu.Lock(); active = false; mu.Unlock() }
+			defer deactivate()
+			lifetime := &rcaRawLifetime{}
+			defer func() {
+				defer lifetime.finish()
+				if value := recover(); value != nil {
+					if panicErr, ok := value.(error); ok && errors.Is(panicErr, http.ErrAbortHandler) {
+						panic(http.ErrAbortHandler)
+					}
+					rejectCapture("analysis_failed")
+					rejectRCARawHTTP1(w, r, http.StatusInternalServerError)
+				}
+			}()
+			r = r.WithContext(requestscope.WithRCARawFinished(r.Context(), lifetime.register))
+			body := &rcaRawBody{Reader: r.Body, remaining: r.ContentLength}
+			r.Body = body
+			r = r.WithContext(requestscope.WithRCARawInterrupt(r.Context(), interrupt))
+			response := &rcaRawResponse{header: make(http.Header)}
+			next.ServeHTTP(response, r)
+			deactivate()
+			if response.status != http.StatusOK || body.remaining != 0 {
+				status := response.status
+				if status < 400 || status > 599 {
+					status = http.StatusBadRequest
+				}
+				rejectRCARawHTTP1(w, r, status)
+				return
 			}
-			rejectRCARawHTTP1(w, r, status)
-			return
-		}
-		if controller.SetReadDeadline(time.Time{}) != nil || controller.SetWriteDeadline(time.Now().Add(time.Second)) != nil {
-			rejectRCARawHTTP1(w, r, http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-protobuf")
-		w.Header().Set("Content-Length", "0")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusOK)
-		if controller.Flush() != nil {
-			panic(http.ErrAbortHandler)
-		}
-		_ = controller.SetWriteDeadline(time.Time{})
-	})
+			if controller.SetReadDeadline(time.Time{}) != nil || controller.SetWriteDeadline(time.Now().Add(time.Second)) != nil {
+				rejectRCARawHTTP1(w, r, http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-protobuf")
+			w.Header().Set("Content-Length", "0")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			if controller.Flush() != nil {
+				panic(http.ErrAbortHandler)
+			}
+			_ = controller.SetWriteDeadline(time.Time{})
+		})
+	}
 }
 func rawRejectedError(r *http.Request, status int) envelope.APIError {
 	value := envelope.APIError{Error: "bad_request", Code: "RCA_RAW_REJECTED", Message: "RCA raw batch rejected", RequestID: middleware.GetReqID(r.Context())}
@@ -217,14 +233,14 @@ func rejectRCARawHTTP1(w http.ResponseWriter, r *http.Request, status int) {
 	if hijacker, ok := w.(http.Hijacker); ok {
 		conn, buffer, err := hijacker.Hijack()
 		if err == nil {
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			if conn.SetReadDeadline(time.Now()) != nil || conn.SetWriteDeadline(time.Now().Add(time.Second)) != nil {
 				return
 			}
 			body, _ := json.Marshal(rawRejectedError(r, status))
-			_, _ = fmt.Fprintf(buffer.Writer, "HTTP/1.1 %d %s\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", status, http.StatusText(status), len(body))
-			_, _ = buffer.Writer.Write(body)
-			_ = buffer.Writer.Flush()
+			_, _ = fmt.Fprintf(buffer, "HTTP/1.1 %d %s\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", status, http.StatusText(status), len(body))
+			_, _ = buffer.Write(body)
+			_ = buffer.Flush()
 			return
 		}
 	}

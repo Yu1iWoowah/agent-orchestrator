@@ -14,10 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
-	"github.com/coder/websocket"
 )
 
 type rcaWireConn struct {
@@ -287,7 +288,7 @@ func TestRCARemoteHTTP2RejectPreservesSameConnection(t *testing.T) {
 				}
 				defer response.Body.Close()
 				body, _ := io.ReadAll(response.Body)
-				if response.StatusCode != 200 || string(body) != "after-ok" || dials.Load() != 1 {
+				if response.StatusCode != http.StatusOK || string(body) != "after-ok" || dials.Load() != 1 {
 					t.Fatal("follow-up required reconnect or failed")
 				}
 			})
@@ -404,7 +405,7 @@ func TestRCARawHTTP1HeadersTerminateWithoutDrain(t *testing.T) {
 			router.Post(rcaRawPath, func(w http.ResponseWriter, r *http.Request) {
 				delegated.Add(1)
 				w.Header().Set("X-Untrusted", "B_SYNTHETIC_RESPONSE")
-				w.WriteHeader(503)
+				w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = io.WriteString(w, "B_SYNTHETIC_RESPONSE")
 			})
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -498,7 +499,7 @@ func TestRCARawSuccessKeepsOrdinaryConnectionSemantics(t *testing.T) {
 	router.Post(rcaRawPath, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("X-Untrusted", "B_SYNTHETIC_RESPONSE")
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "B_SYNTHETIC_RESPONSE")
 	})
 	router.Get("/__ordinary", func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ordinary-ok") })
@@ -522,7 +523,7 @@ func TestRCARawSuccessKeepsOrdinaryConnectionSemantics(t *testing.T) {
 	}
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if response.StatusCode != 200 || len(body) != 0 || strings.Contains(fmt.Sprint(response.Header), "SYNTHETIC") {
+	if response.StatusCode != http.StatusOK || len(body) != 0 || strings.Contains(fmt.Sprint(response.Header), "SYNTHETIC") {
 		t.Fatal("raw success exposed inner diagnostics")
 	}
 	response, err = client.Get(server.URL + "/__ordinary")

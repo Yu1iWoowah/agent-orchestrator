@@ -12,6 +12,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/components/hcg/policy"
 	rcapolicy "github.com/aoagents/agent-orchestrator/components/hcg/rca"
@@ -32,6 +33,8 @@ type EventsReader interface {
 type ProjectionStore interface {
 	rcapolicy.ManifestStore
 	LoadSnapshot(context.Context, domain.ProjectID, domain.SessionID) (domain.RCARecordedState, bool, error)
+	LoadClaudeInline(context.Context, domain.ProjectID, domain.SessionID) (domain.RCAClaudeInline, bool, error)
+	StageClaudeInline(context.Context, domain.RCAClaudeInline) error
 	StageSnapshot(context.Context, domain.RCARecordedState) error
 	FinishSnapshot(context.Context, bool) error
 	Ready(context.Context) error
@@ -44,24 +47,36 @@ type jobState struct{ revision, status, reason string }
 
 // Service coordinates authorized recorded-content estimates.
 type Service struct {
-	store      MetadataStore
-	events     EventsReader
-	projection ProjectionStore
-	core       *rcapolicy.Consumer
-	scope      *scopeResolver
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.Mutex
-	jobs       map[domain.SessionID]jobState
-	closed     bool
-	failed     bool
-	queryBusy  atomic.Bool
+	store                    MetadataStore
+	events                   EventsReader
+	projection               ProjectionStore
+	core                     *rcapolicy.Consumer
+	scope                    *scopeResolver
+	ctx                      context.Context
+	cancel                   context.CancelFunc
+	wg                       sync.WaitGroup
+	mu                       sync.Mutex
+	jobs                     map[domain.SessionID]jobState
+	closed                   bool
+	failed                   bool
+	queryBusy                atomic.Bool
+	captures                 map[string]*claudeCapture
+	captureSessions          map[domain.SessionID]*claudeCapture
+	indexBytes               int
+	claudeReason             map[domain.SessionID]string
+	claudeEndpoint, dataRoot string
+	pendingClaude            map[domain.SessionID]claudePrepared
+	claudeCapabilities       map[claudeCapability]bool
+	claudeCapabilityCheck    ClaudeCapabilityCheck
 }
 
-// New never launches a native agent or opens a transcript. Source descriptors
-// are resolved only after an explicit, enabled analysis of a selected worker.
-func New(ctx context.Context, root string, store MetadataStore, events EventsReader, roots usagesvc.SourceRoots) *Service {
+// ClaudeCapabilityCheck is a trusted constructor dependency for a named native
+// evidence matrix. The daemon supplies none while N0 is NOT_RUN. It is never
+// derived from project config, exporter headers or a user-facing API.
+type ClaudeCapabilityCheck func(ports.RCAClaudeRuntime, domain.SessionKind) bool
+
+// New does not launch native agents; source descriptors require explicit analysis.
+func New(ctx context.Context, root string, store MetadataStore, events EventsReader, roots usagesvc.SourceRoots, approved ...ClaudeCapabilityCheck) *Service {
 	projection, err := NewDiskStore(root)
 	var disk ProjectionStore
 	if err == nil {
@@ -73,7 +88,12 @@ func New(ctx context.Context, root string, store MetadataStore, events EventsRea
 		filepath.Join(home, ".ao", "data", "agent-accounts", "history", "codex", "archived_sessions"),
 		filepath.Join(home, ".codex", "sessions"), filepath.Join(home, ".codex", "archived_sessions"),
 	}
-	return newService(ctx, store, events, disk, &scopeResolver{store: store, roots: []string{roots.AccountCodexSessions, roots.AccountCodexArchived, roots.CodexSessions, roots.CodexArchived}, allowlist: allow})
+	svc := newService(ctx, store, events, disk, &scopeResolver{store: store, roots: []string{roots.AccountCodexSessions, roots.AccountCodexArchived, roots.CodexSessions, roots.CodexArchived}, allowlist: allow})
+	svc.dataRoot = root
+	if len(approved) == 1 {
+		svc.claudeCapabilityCheck = approved[0]
+	}
+	return svc
 }
 
 func newService(ctx context.Context, store MetadataStore, events EventsReader, disk ProjectionStore, scope *scopeResolver) *Service {
@@ -82,7 +102,7 @@ func newService(ctx context.Context, store MetadataStore, events EventsReader, d
 	if disk != nil {
 		manifests = disk
 	}
-	return &Service{store: store, events: events, projection: disk, core: rcapolicy.New(ctx, manifests), scope: scope, ctx: ctx, cancel: cancel, jobs: map[domain.SessionID]jobState{}}
+	return &Service{store: store, events: events, projection: disk, core: rcapolicy.New(ctx, manifests), scope: scope, ctx: ctx, cancel: cancel, jobs: map[domain.SessionID]jobState{}, captures: map[string]*claudeCapture{}, captureSessions: map[domain.SessionID]*claudeCapture{}, claudeReason: map[domain.SessionID]string{}, pendingClaude: map[domain.SessionID]claudePrepared{}}
 }
 
 // Close cancels RCA jobs and releases owned handles.
@@ -107,6 +127,13 @@ func (s *Service) ProjectPolicyChanged(id domain.ProjectID, in domain.RCAPolicyS
 	if id == "agent-orchestrator" {
 		s.core.ProjectPolicyChanged(string(id), "worker", policy.Inputs{Project: in.Project, Role: in.Worker})
 		s.core.ProjectPolicyChanged(string(id), "orchestrator", policy.Inputs{Project: in.Project, Role: in.Orchestrator})
+		s.mu.Lock()
+		for _, capture := range s.captureSessions {
+			if !s.core.Current(capture.receipt) {
+				s.dropClaude(capture, "source_stopped")
+			}
+		}
+		s.mu.Unlock()
 	}
 }
 func sessionKey(id domain.SessionID) rcapolicy.Key {
@@ -121,7 +148,8 @@ func (s *Service) facts(ctx context.Context, id domain.SessionID) (domain.Sessio
 	if !ok {
 		return rec, policy.Inputs{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
-	if rec.ProjectID != "agent-orchestrator" || rec.Kind != domain.KindWorker || rec.Harness != domain.HarnessCodex {
+	codexWorker := rec.Kind == domain.KindWorker && rec.Harness == domain.HarnessCodex
+	if rec.ProjectID != "agent-orchestrator" || !codexWorker && !claudeScope(rec) {
 		return rec, policy.Inputs{}, apierr.Forbidden("RCA_SCOPE_NOT_ALLOWED", "scope_not_allowed")
 	}
 	project, ok, err := s.store.GetProject(ctx, string(rec.ProjectID))
@@ -129,7 +157,19 @@ func (s *Service) facts(ctx context.Context, id domain.SessionID) (domain.Sessio
 		return rec, policy.Inputs{}, apierr.Internal("RCA_UNAVAILABLE", "source_metadata_failed")
 	}
 	in := project.Config.RCAPolicySnapshot()
-	return rec, policy.Inputs{Project: in.Project, Role: in.Worker}, nil
+	role := in.Worker
+	if rec.Kind == domain.KindOrchestrator {
+		role = in.Orchestrator
+	}
+	return rec, policy.Inputs{Project: in.Project, Role: role}, nil
+}
+
+func keyFor(rec domain.SessionRecord) rcapolicy.Key {
+	key := sessionKey(rec.ID)
+	if rec.Kind == domain.KindOrchestrator {
+		key.Role = "orchestrator"
+	}
+	return key
 }
 
 func policyView(v rcapolicy.View) domain.RCAPolicyView {
@@ -140,9 +180,18 @@ func policyView(v rcapolicy.View) domain.RCAPolicyView {
 func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuery) (domain.RCAComposition, error) {
 	key := sessionKey(id)
 	receipt := s.core.Revision(key)
+	orchestratorKey := key
+	orchestratorKey.Role = "orchestrator"
+	orchestratorReceipt := s.core.Revision(orchestratorKey)
 	rec, inputs, err := s.facts(ctx, id)
 	if err != nil {
 		return domain.RCAComposition{}, err
+	}
+	if rec.Kind == domain.KindOrchestrator {
+		key, receipt = orchestratorKey, orchestratorReceipt
+	}
+	if claudeScope(rec) {
+		return s.getClaude(ctx, rec, inputs, q, key, receipt)
 	}
 	out := domain.RCAComposition{ProjectID: rec.ProjectID, SessionID: id, Status: "unavailable", Reason: "analysis_not_requested", RequestComposition: "UNKNOWN", Baseline: baseline(approvedBaseline)}
 	page, err := s.events.Events(ctx, id, q.AfterID, q.ThroughID, q.Limit)
@@ -162,6 +211,8 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 			out.Reason = "analysis_failed"
 		} else if view.EffectiveEnabled && job.status == "running" && reason == "writer_busy" {
 			out.Status = "running"
+		} else if view.EffectiveEnabled && job.status == "unavailable" && reason == "writer_busy" && safeReason(job.reason) {
+			out.Reason = job.reason
 		}
 		return out
 	}
@@ -476,18 +527,19 @@ func (s *Service) resume(ctx context.Context) error {
 
 // SetOverride revokes work and changes only the session RCA override.
 func (s *Service) SetOverride(ctx context.Context, id domain.SessionID, enabled *bool) (domain.RCAPolicyView, error) {
-	_, inputs, err := s.facts(ctx, id)
+	rec, inputs, err := s.facts(ctx, id)
 	if err != nil {
 		return domain.RCAPolicyView{}, err
 	}
 	// Revoke existing work even when storage rejects the control write.
-	s.core.Invalidate(sessionKey(id))
+	s.core.Invalidate(keyFor(rec))
+	s.revokeClaude(id, "source_stopped")
 	if enabled == nil || *enabled {
 		if err := s.resume(ctx); err != nil {
 			return domain.RCAPolicyView{}, err
 		}
 	}
-	v, why := s.core.SetOverride(ctx, sessionKey(id), inputs, enabled)
+	v, why := s.core.SetOverride(ctx, keyFor(rec), inputs, enabled)
 	if why != "" {
 		return domain.RCAPolicyView{}, apierr.Internal("RCA_UNAVAILABLE", why)
 	}
@@ -501,6 +553,9 @@ func (s *Service) EmergencyStop(ctx context.Context, stop bool) error {
 			return err
 		}
 	}
+	if stop {
+		s.revokeAllClaude()
+	}
 	if why := s.core.EmergencyStop(ctx, stop); why != "" {
 		return apierr.Internal("RCA_UNAVAILABLE", why)
 	}
@@ -509,13 +564,16 @@ func (s *Service) EmergencyStop(ctx context.Context, stop bool) error {
 
 // Purge removes RCA numbers and scope without deleting native/canonical data.
 func (s *Service) Purge(ctx context.Context, id domain.SessionID) error {
-	if _, _, err := s.facts(ctx, id); err != nil {
+	rec, _, err := s.facts(ctx, id)
+	if err != nil {
 		return err
 	}
+	s.core.Invalidate(keyFor(rec))
+	s.revokeClaude(id, "source_stopped")
 	s.mu.Lock()
 	delete(s.jobs, id)
 	s.mu.Unlock()
-	if why := s.core.Purge(ctx, sessionKey(id)); why != "" {
+	if why := s.core.Purge(ctx, keyFor(rec)); why != "" {
 		return apierr.Internal("RCA_UNAVAILABLE", why)
 	}
 	return nil

@@ -16,6 +16,9 @@ func safeStoredSession(row storedSession) bool {
 	if row.Manifest.Revision > 0 && row.Manifest.Policy != policy.Resolve("worker", row.Manifest.Inputs) {
 		return false
 	}
+	if !safeClaudeInline(row.ClaudeInline, row.ProjectID, row.SessionID) {
+		return false
+	}
 	r := row.Recorded
 	if r == nil {
 		return true
@@ -65,8 +68,28 @@ func safeStatus(status string) bool {
 }
 func safeReason(reason string) bool {
 	switch reason {
-	case "", "invalid_snapshot", "window_head_gap", "source_read_failed", "canceled", "incomplete_tail", "record_limit", "parse_limit", "invalid_record", "source_identity_mismatch", "unsupported_source_version", "subagent_source", "fork_context_unknown", "projection_limit", "compaction_gap", "unknown_schema", "retained_context_unknown", "source_version_unknown", "hidden_thinking", "source_truncated", "missing_key", "unknown_fields", "unsupported_content", "no_observed_content", "source_missing", "ambiguous_source", "source_metadata_failed", "scope_root_mismatch", "scope_not_allowed", "native_generation_unknown", "native_identity_unknown", "source_enumeration_incomplete", "source_identity_changed", "policy_changed", "storage_unavailable", "storage_low_space", "storage_space_unknown", "storage_identity_changed", "storage_read_failed", "storage_write_failed", "session_limit", "host_limit", "disabled", "analysis_running", "analysis_not_requested":
+	case "analysis_failed", "source_stopped", "waiting_safe_launch", "unsupported_capability", "exporter_conflict", "writer_busy", "revocation_persistence_pending", "invalid_otlp", "batch_limit", "body_limit", "record_count_limit", "identity_limit", "identity_conflict", "unmatched_attempt", "capture_limit", "invalid_snapshot", "", "window_head_gap", "source_read_failed", "canceled", "incomplete_tail", "record_limit", "parse_limit", "invalid_record", "source_identity_mismatch", "unsupported_source_version", "subagent_source", "fork_context_unknown", "projection_limit", "compaction_gap", "unknown_schema", "retained_context_unknown", "source_version_unknown", "hidden_thinking", "source_truncated", "missing_key", "unknown_fields", "unsupported_content", "no_observed_content", "source_missing", "ambiguous_source", "source_metadata_failed", "scope_root_mismatch", "scope_not_allowed", "native_generation_unknown", "native_identity_unknown", "source_enumeration_incomplete", "source_identity_changed", "policy_changed", "storage_unavailable", "storage_low_space", "storage_space_unknown", "storage_identity_changed", "storage_read_failed", "storage_write_failed", "session_limit", "host_limit", "disabled", "analysis_running", "analysis_not_requested":
 		return true
 	}
 	return false
+}
+
+func safeClaudeInline(v *domain.RCAClaudeInline, project domain.ProjectID, session domain.SessionID) bool {
+	if v == nil {
+		return true
+	}
+	if v.ProjectID != project || v.SessionID != session || !validNativeID(v.CaptureID) || (v.Role != "worker" && v.Role != "orchestrator") || v.Method != "utf8_bytes_div4_v1" || v.Coverage != "observed_inline_attempt" || v.ObservedAt.IsZero() || !safeReason(v.Reason) || v.Unpaired < 0 || v.DroppedBatches < 0 || len(v.Attempts) > claudeIndexEntries {
+		return false
+	}
+	for i, a := range v.Attempts {
+		if a.Ordinal != int64(i+1) || !safeBuckets(a.Buckets) || (a.MCPBytes != nil && (*a.MCPBytes < 0 || a.Buckets[1].Bytes == nil || *a.MCPBytes > *a.Buckets[1].Bytes)) || (a.MCPBytes == nil) != (a.Buckets[1].Bytes == nil) || a.CanonicalEventID != nil {
+			return false
+		}
+		for _, reason := range a.Reasons {
+			if !safeReason(reason) {
+				return false
+			}
+		}
+	}
+	return true
 }

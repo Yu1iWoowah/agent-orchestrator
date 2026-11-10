@@ -60,6 +60,7 @@ export function setApiDaemonStatus(nextStatus: DaemonStatus): void {
 // still normalizes IDs for every resource, including ones a segment heuristic
 // would miss (orchestrators/{id}). Keep in sync with schema.ts.
 const ROUTE_TEMPLATES = [
+ "/api/v1/rca/otlp/v1/logs",
 	"/api/v1/usage/sessions/{sessionId}/composition",
 	"/api/v1/sessions/{sessionId}/rca/override",
 	"/api/v1/rca/emergency-stop",
@@ -259,6 +260,7 @@ function expectedProbeConflict(operation: string, status?: number): boolean {
 const lastApiErrorAt = new Map<string, number>();
 
 const RCA_OPERATIONS = new Set([
+ "POST /api/v1/rca/otlp/v1/logs",
 	"GET /api/v1/usage/sessions/:id/composition",
 	"DELETE /api/v1/usage/sessions/:id/composition",
 	"PUT /api/v1/sessions/:id/rca/override",
