@@ -181,7 +181,7 @@ func (s *scopeResolver) resolvedRoots(ctx context.Context) ([]authorizedRoot, st
 		}
 		if !containsPath(paths, actual) {
 			paths = append(paths, actual)
-			aliases = append(aliases, filepath.Clean(root))
+			aliases = append(aliases, root)
 		}
 	}
 	for i, path := range paths {
@@ -343,13 +343,29 @@ func (s *scopeResolver) conflict(ctx context.Context, selected domain.SessionID,
 // relativePath maps metadata names to their already-pinned authority. It does
 // not consult the current filesystem or redirect into another approved root.
 func (r authorizedRoot) relativePath(path string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		return "", false
+	}
+	path = filepath.ToSlash(path)
 	for _, name := range []string{r.path, r.alias} {
 		if name == "" {
 			continue
 		}
-		rel, err := filepath.Rel(name, path)
-		if err == nil && filepath.IsLocal(rel) {
-			return rel, true
+		name = strings.TrimRight(filepath.ToSlash(name), "/")
+		if path == name || (os.PathSeparator == '\\' && strings.EqualFold(path, name)) {
+			return ".", true
+		}
+		prefix := name + "/"
+		if len(path) < len(prefix) {
+			continue
+		}
+		matches := path[:len(prefix)] == prefix
+		if os.PathSeparator == '\\' {
+			matches = strings.EqualFold(path[:len(prefix)], prefix)
+		}
+		if matches {
+			// Preserve pending dot components; Rel and Clean change the physical target.
+			return filepath.FromSlash(path[len(prefix):]), true
 		}
 	}
 	return "", false
@@ -368,56 +384,76 @@ func registeredCandidate(ctx context.Context, roots []authorizedRoot, path strin
 }
 
 func metadataCandidate(ctx context.Context, root authorizedRoot, relative string) (authorizedSource, string) {
-	// Resolve aliases one component at a time through the pinned authority.
-	// Absolute link targets are only lexical names for this same root, never
-	// permission to select a different approved root through EvalSymlinks.
-	for links := 0; links < 40; links++ {
-		if !filepath.IsLocal(relative) {
-			return authorizedSource{}, "scope_root_mismatch"
+	if filepath.IsAbs(relative) || filepath.VolumeName(relative) != "" {
+		return authorizedSource{}, "scope_root_mismatch"
+	}
+	// Only resolved directories enter the stack. Expand pending symlinks
+	// before interpreting a following dot-dot, without leaving this authority.
+	pending := strings.Split(filepath.ToSlash(relative), "/")
+	var resolved []string
+	links := 0
+	for len(pending) > 0 {
+		if ctx.Err() != nil {
+			return authorizedSource{}, "canceled"
 		}
-		relative = filepath.Clean(relative)
-		parts := strings.Split(relative, string(filepath.Separator))
-		for i := range parts {
-			if ctx.Err() != nil {
-				return authorizedSource{}, "canceled"
-			}
-			name := filepath.Join(parts[:i+1]...)
-			info, err := root.dir.Lstat(name)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return authorizedSource{}, "source_metadata_failed"
-				}
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
 				return authorizedSource{}, "scope_root_mismatch"
 			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				target, err := root.dir.Readlink(name)
-				if err != nil {
-					return authorizedSource{}, "source_metadata_failed"
-				}
-				if filepath.IsAbs(target) {
-					var ok bool
-					target, ok = root.relativePath(target)
-					if !ok {
-						return authorizedSource{}, "scope_root_mismatch"
-					}
-				} else {
-					target = filepath.Join(filepath.Dir(name), target)
-				}
-				relative = filepath.Join(target, filepath.Join(parts[i+1:]...))
-				break
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+		name := strings.Join(append(resolved, part), string(filepath.Separator))
+		info, err := root.dir.Lstat(name)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return authorizedSource{}, "source_metadata_failed"
 			}
-			if i == len(parts)-1 {
-				if !info.Mode().IsRegular() {
-					return authorizedSource{}, "source_metadata_failed"
-				}
-				if filepath.Ext(relative) != ".jsonl" || !strings.HasPrefix(filepath.Base(relative), "rollout-") {
+			return authorizedSource{}, "scope_root_mismatch"
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			links++
+			if links >= 40 {
+				return authorizedSource{}, "scope_root_mismatch"
+			}
+			target, err := root.dir.Readlink(name)
+			if err != nil {
+				return authorizedSource{}, "source_metadata_failed"
+			}
+			if filepath.IsAbs(target) {
+				var ok bool
+				target, ok = root.relativePath(target)
+				if !ok {
 					return authorizedSource{}, "scope_root_mismatch"
 				}
-				return authorizedSource{root: root.path, relative: relative, info: info, rootInfo: root.info, eof: info.Size()}, ""
+				resolved = nil
+			} else if filepath.VolumeName(target) != "" {
+				return authorizedSource{}, "scope_root_mismatch"
 			}
+			pending = append(strings.Split(filepath.ToSlash(target), "/"), pending...)
+			continue
 		}
+		resolved = append(resolved, part)
+		if len(pending) > 0 {
+			if !info.IsDir() {
+				return authorizedSource{}, "source_metadata_failed"
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return authorizedSource{}, "source_metadata_failed"
+		}
+		if filepath.Ext(name) != ".jsonl" || !strings.HasPrefix(filepath.Base(name), "rollout-") {
+			return authorizedSource{}, "scope_root_mismatch"
+		}
+		return authorizedSource{root: root.path, relative: name, info: info, rootInfo: root.info, eof: info.Size()}, ""
 	}
-	return authorizedSource{}, "scope_root_mismatch"
+	return authorizedSource{}, "source_metadata_failed"
 }
 
 var filenameUUID = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)

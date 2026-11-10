@@ -529,3 +529,107 @@ func TestScopeLateRootPivotKeepsPinnedEntry(t *testing.T) {
 		t.Fatal("changed root admitted raw open")
 	}
 }
+
+func TestScopeSymlinkDotDotUsesPhysicalParent(t *testing.T) {
+	for _, kind := range []string{"identity", "no_identity", "missing_decoy", "absolute_target", "registered_path", "absolute_via", "absolute_root", "escape", "missing_component", "file_component"} {
+		t.Run(kind, func(t *testing.T) {
+			metadata, resolver, oldPath := scopeSetup(t)
+			root := filepath.Dir(oldPath)
+			base := filepath.Base(oldPath)
+			if err := os.MkdirAll(filepath.Join(root, "d", "s"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			intended := filepath.Join(root, "d", base)
+			if err := os.Rename(oldPath, intended); err != nil {
+				t.Fatal(err)
+			}
+			if kind != "missing_decoy" {
+				if err := os.WriteFile(oldPath, []byte(header()), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			viaTarget := filepath.Join("d", "s")
+			if kind == "absolute_via" {
+				viaTarget = filepath.Join(root, "d", "s")
+			}
+			if kind == "absolute_root" {
+				viaTarget = root
+			}
+			if err := os.Symlink(viaTarget, filepath.Join(root, "via")); err != nil {
+				t.Skip("symlinks unavailable")
+			}
+			// Deliberately concatenate: Join would itself erase the regression shape.
+			sep := string(filepath.Separator)
+			target := "via" + sep + ".." + sep + base
+			alias := filepath.Join(root, "rollout-alias-"+syntheticNativeID+".jsonl")
+			switch kind {
+			case "absolute_root":
+				target = "via" + sep + "d" + sep + base
+			case "absolute_target":
+				target = root + sep + target
+			case "registered_path":
+				alias = root + sep + target
+			case "escape":
+				target = ".." + sep + filepath.Base(root) + sep + "d" + sep + base
+			case "missing_component":
+				target = "missing" + sep + ".." + sep + base
+			case "file_component":
+				target = base + sep + ".." + sep + base
+			}
+			if kind != "registered_path" {
+				if err := os.Symlink(target, alias); err != nil {
+					t.Fatal(err)
+				}
+			}
+			intendedInfo, err := os.Stat(intended)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind != "missing_decoy" {
+				decoy, err := os.Stat(oldPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if os.SameFile(intendedInfo, decoy) {
+					t.Fatal("fixture requires different F/G inodes")
+				}
+			}
+			identity := ""
+			if kind == "identity" {
+				f, err := os.Open(intended)
+				if err != nil {
+					t.Fatal(err)
+				}
+				identity, err = usagesvc.SourceIdentityFromFile(f)
+				_ = f.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			metadata.bindings["selected"] = []domain.UsageBindingRecord{{ID: 1, SessionID: "selected", Harness: domain.HarnessCodex, NativeRootID: syntheticNativeID}}
+			metadata.sources[1] = []domain.UsageSourceRecord{{ID: 2, BindingID: 1, Kind: domain.UsageSourceCodexRollout, NativeSessionID: syntheticNativeID, Generation: 1, ArtifactPath: alias, FileIdentity: identity}}
+			sources, reason := resolver.resolve(t.Context(), "selected")
+			if kind == "escape" || kind == "missing_component" || kind == "file_component" {
+				if reason == "" || len(sources) != 0 {
+					t.Fatal("invalid traversal admitted")
+				}
+				return
+			}
+			if reason != "" || len(sources) != 1 {
+				t.Fatalf("physical symlink target rejected: %s", reason)
+			}
+			if !os.SameFile(sources[0].info, intendedInfo) {
+				t.Fatal("symlink/.. selected lexical F instead of physical G")
+			}
+			f, why := sources[0].open(t.Context())
+			if why != "" {
+				t.Fatalf("original FileIdentity rejected: %s", why)
+			}
+			opened, err := f.Stat()
+			_ = f.Close()
+			if err != nil || !os.SameFile(opened, intendedInfo) {
+				t.Fatal("opened the wrong entity")
+			}
+		})
+	}
+}
