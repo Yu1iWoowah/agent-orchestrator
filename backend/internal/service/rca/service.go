@@ -330,6 +330,8 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 			}
 			if why == "writer_busy" && hasJob && job.status == "running" {
 				value.status = "running"
+			} else if why == "writer_busy" && hasJob && job.status == "unavailable" && safeReason(job.reason) {
+				value.reason = job.reason
 			}
 		}
 	}()

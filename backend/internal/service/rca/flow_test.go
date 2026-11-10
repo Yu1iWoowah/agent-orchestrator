@@ -609,3 +609,32 @@ func TestCompositionQueryBoundsSlowStatfs(t *testing.T) {
 	}
 	svc.wg.Wait()
 }
+
+func TestCompletedSourceFailureSurvivesWriterReleaseWindow(t *testing.T) {
+	svc, _, _, _ := flowSetup(t)
+	key := sessionKey("selected")
+	_, inputs, err := svc.facts(t.Context(), "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, why := svc.core.View(t.Context(), key, inputs); why != "" {
+		t.Fatal(why)
+	}
+	ticket, _, why := svc.core.Begin(t.Context(), key, inputs, svc.core.Revision(key))
+	if why != "" {
+		t.Fatal(why)
+	}
+	if why := svc.core.Reserve(ticket); why != "" {
+		t.Fatal(why)
+	}
+	defer svc.core.Finish(ticket)
+	// The source job has already closed its reader and recorded a fixed failure,
+	// but its deferred writer release has not run yet.
+	svc.mu.Lock()
+	svc.jobs["selected"] = jobState{status: "unavailable", reason: "scope_root_mismatch"}
+	svc.mu.Unlock()
+	out, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200})
+	if err != nil || out.Recorded != nil || out.Reason != "scope_root_mismatch" {
+		t.Fatalf("completed failure hidden: %s", out.Reason)
+	}
+}
