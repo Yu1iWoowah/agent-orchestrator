@@ -336,3 +336,62 @@ func TestCompositionRejectsPartialStoreRowsAtBothLoads(t *testing.T) {
 		})
 	}
 }
+
+func TestAuditAliasDotDotServicePreservesSelectedSource(t *testing.T) {
+	svc, metadata, _, _ := flowSetup(t)
+	root := svc.scope.roots[0]
+	matches, err := filepath.Glob(filepath.Join(root, "rollout-*"+syntheticNativeID+".jsonl"))
+	if err != nil || len(matches) != 1 {
+		t.Fatal("invalid fixture root")
+	}
+	pathB := matches[0]
+	body := func(output string) string {
+		return header() + `{"type":"response_item","payload":{"type":"function_call_output","output":"` + output + `"}}` + "\n"
+	}
+	if err := os.WriteFile(pathB, []byte(body("BBBB")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "real", "deep"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pathC := filepath.Join(root, "real", filepath.Base(pathB))
+	if err := os.WriteFile(pathC, []byte(body("CCCCCCCCCCCC")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("real", "deep"), filepath.Join(root, "jump")); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "rollout-alias-"+syntheticNativeID+".jsonl")
+	if err := os.Symlink("jump/../"+filepath.Base(pathB), alias); err != nil {
+		t.Fatal(err)
+	}
+	nativeInfo, err := os.Stat(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedInfo, err := os.Stat(pathC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(nativeInfo, expectedInfo) {
+		t.Fatal("native target fixture invalid")
+	}
+	metadata.bindings["selected"] = []domain.UsageBindingRecord{{ID: 1, SessionID: "selected", Harness: domain.HarnessCodex, NativeRootID: syntheticNativeID}}
+	metadata.sources[1] = []domain.UsageSourceRecord{{ID: 2, BindingID: 1, Kind: domain.UsageSourceCodexRollout, NativeSessionID: syntheticNativeID, Generation: 1, ArtifactPath: alias}}
+	if _, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Analyze: true, Limit: 200}); err != nil {
+		t.Fatal(err)
+	}
+	out := completedFlow(t, svc)
+	t.Logf("status=%s recorded=%v", out.Status, out.Recorded != nil)
+	if out.Recorded == nil {
+		return
+	} // Safe unavailable/UNKNOWN is acceptable.
+	if len(out.Recorded.Snapshots) != 1 {
+		t.Fatal("unexpected snapshot count")
+	}
+	got := measured(out.Recorded.Snapshots[0].Buckets[3].Bytes)
+	t.Logf("selected_native_target_bytes=12 returned_bytes=%d", got)
+	if got != 12 {
+		t.Fatalf("CONTRACT_VIOLATION: selected native target has 12 bytes, service returned %d bytes", got)
+	}
+}

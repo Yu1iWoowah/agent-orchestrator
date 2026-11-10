@@ -633,3 +633,56 @@ func TestScopeSymlinkDotDotUsesPhysicalParent(t *testing.T) {
 		})
 	}
 }
+
+func TestAuditAliasDotDotKeepsNativeFileIdentity(t *testing.T) {
+	metadata, resolver, pathB := scopeSetup(t)
+	root := filepath.Dir(pathB)
+	dir := filepath.Join(root, "real", "deep")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	pathC := filepath.Join(root, "real", filepath.Base(pathB))
+	if err := os.WriteFile(pathC, []byte(header()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("real", "deep"), filepath.Join(root, "jump")); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "rollout-alias-"+syntheticNativeID+".jsonl")
+	if err := os.Symlink("jump/../"+filepath.Base(pathB), alias); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := os.Stat(pathC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.Stat(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(expected, c) || os.SameFile(expected, b) {
+		t.Fatal("fixture native alias semantics invalid")
+	}
+	metadata.bindings["selected"] = []domain.UsageBindingRecord{{ID: 1, SessionID: "selected", Harness: domain.HarnessCodex, NativeRootID: syntheticNativeID}}
+	metadata.sources[1] = []domain.UsageSourceRecord{{ID: 2, BindingID: 1, Kind: domain.UsageSourceCodexRollout, NativeSessionID: syntheticNativeID, Generation: 1, ArtifactPath: alias}}
+	sources, why := resolver.resolve(t.Context(), "selected")
+	if why != "" {
+		return
+	} // Safe rejection is acceptable; substituting a file is not.
+	if len(sources) != 1 {
+		t.Fatal("unexpected fixture candidate count")
+	}
+	if !os.SameFile(sources[0].info, expected) {
+		f, reason := sources[0].open(t.Context())
+		if f != nil {
+			_ = f.Close()
+		}
+		if reason == "" {
+			t.Fatal("CONTRACT_VIOLATION: alias with symlink/.. resolved to a different entity and admitted raw open")
+		}
+	}
+}
