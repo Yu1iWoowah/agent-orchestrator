@@ -18,6 +18,7 @@ const nanoUSD = int64(1_000_000_000)
 
 var providerCaps = map[string]int64{"openai": 300 * nanoUSD, "anthropic": 400 * nanoUSD}
 var ErrBudgetBlocked = errors.New("delegation budget unavailable")
+var ErrNotSent = errors.New("delegation request was not sent")
 var ErrUsagePending = errors.New("canonical delegation usage pending")
 
 // Prices are an immutable reviewed deployment snapshot. Unknown coverage or
@@ -487,7 +488,14 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		return WireResponse{}, err
 	}
 	b.started = true
-	return b.actual.Do(ctx, r)
+	response, err := b.actual.Do(ctx, r)
+	if errors.Is(err, ErrNotSent) {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = b.budget.releaseUnsent(releaseCtx, key)
+		b.started = false
+	}
+	return response, err
 }
 func (b *budgetBridge) Record(ctx context.Context, r Receipt) error {
 	if !b.started {

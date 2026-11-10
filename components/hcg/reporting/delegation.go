@@ -8,8 +8,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
 
-// DelegationProvider is the trusted fixed HTTP-provider seam. The default
-// daemon has no credential resolver/provider: paid operation stays unavailable.
+// ErrDelegationNotSent is returned only when the trusted parent can prove no HTTP send.
+var ErrDelegationNotSent = delegate.ErrNotSent
+
+// DelegationProvider is the trusted fixed HTTP-provider seam. Without an
+// explicit operator run grant, even a configured lab parent stays unavailable.
 // Fixtures exercise this same caller; neither command/env nor model tool args
 // can replace the endpoint, provider or immutable deployment.
 type DelegationProvider interface {

@@ -37,8 +37,8 @@ func New(ctx context.Context, root string, store Store) *Service {
 	return NewWithDelegationProvider(ctx, root, store, nil, nil)
 }
 
-// NewWithDelegationProvider supports the fixed offline provider fixture. The
-// production daemon passes no provider/credentials and cannot make paid calls.
+// NewWithDelegationProvider is a trusted constructor seam for the locked lab
+// owner and offline fixtures. Registration still requires an explicit run grant.
 func NewWithDelegationProvider(ctx context.Context, root string, store Store, provider reporting.DelegationProvider, checkpoint func(context.Context, string)) *Service {
 	c, err := reporting.New(root)
 	s := &Service{store: store, root: root, core: c}

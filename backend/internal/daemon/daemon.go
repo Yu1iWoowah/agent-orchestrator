@@ -233,7 +233,7 @@ func Run(buildVersion string) error {
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
 	}
-	hcgReporting := hcgsvc.New(context.Background(), cfg.DataDir, store)
+	hcgReporting := hcgsvc.NewLabOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
 	defer hcgReporting.Close()
 	rcaRoots, _ := usagesvc.DefaultSourceRoots(context.Background(), cfg.DataDir, cfg.StateDir)
 	rcaService := rcasvc.New(context.Background(), cfg.DataDir, store, usagesvc.NewEventsReader(store), rcaRoots)
