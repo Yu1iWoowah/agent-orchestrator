@@ -401,6 +401,8 @@ pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manife
 - 明示 accepted_preintent_limitation；完整 coverage 逐 scope/path/hash 列所有 run 檔案、舊 `.retirement/<run>/preconditions/**`、舊授權／失敗結果與已保全 external attempt。
 - calls 逐筆記同一 call fact 的 kind/capability/expected_effect/phase/actor/target/result、producer_ref 及 source_refs；保留缺少 HTTP／UTC 的限制。
 - producer_ref 綁 script_sha256、原碼 location 與 execution role；source_refs 逐筆標 capture-metadata／capture-output 與原 path/hash。metadata 的結果、raw hash 及宣告的 kind／scope 都須相符。
+- 各已核 scope 的 capture sidecar／raw 配對逐筆盤點，完成 constructor／result 核驗才計入分類，且每份恰對一筆 call；supporting 不得藏 capture，外部 attempt 也不可漏列。
+- 原 run 保留原 script／CLI／qualification binding。非 run scope 另列 producer_bindings：scope、script_ref（已 coverage 的 scope/path/sha256）及實際 cli_sha256；CLI 不同時還須 cli_ref 凍結 bytes。各 call 的 script_sha256／cli_sha256 必須對上該 scope 已核版本，不能把較新前驗改填原 run hash。
 - 未捕獲的可能嘗試仍是保證上限。未知 call 或未分類操作不能簽成 read_only；未知控制不放行。
 
 新 maintenance 有自己的 native intent／result／close，與歷史資料共存、時間與來源分開。不能把新前驗再塞回 retrospective review。

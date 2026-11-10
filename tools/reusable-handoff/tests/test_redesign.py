@@ -286,6 +286,46 @@ h.Journal(pathlib.Path(sys.argv[2]),sys.argv[3]).register('start','old')
             h.prior_journal_guard(new, "old")
 
 
+    def test_bootstrap_loaded_before_new_id_syncs_its_own_execution(self):
+        from test_handoff import snapshot
+        for mode in ("late-binding", "wrong-actor", "binding-conflict"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                data = h.mkdir(Path(temporary) / "data")
+                run_id = str(uuid.uuid4())
+                root = h.mkdir(data / run_id)
+                draft = h.mkdir(root / "bootstrap/new/draft")
+                h.publish(data / "running.json", b'{"port":1}')
+                request = dict(request_id=run_id, old_id="old", workers=[], target={}, authority=dict(source_refs=["human"]))
+                h.publish(root / "start.json", h.canonical(request))
+                state = dict(start_sha256=h.digest(h.canonical(request)), stage="spawn", outcome="running")
+                h.publish(root / "state.json", h.canonical(state))
+                cli = h.CLI(Path("/usr/bin/true"), "old", data, data / "running.json", data)
+                cli.execution = h.Journal(data, run_id).register("bootstrap", "new")
+                run = h.Run(root, cli)
+                self.assertNotIn("new", cli.execution.bindings)
+                if mode == "binding-conflict":
+                    cli.execution.new_id = "unrelated"
+                receipt = dict(run_id=run_id, new_id="new", evidence_turn_id="bootstrap")
+                def publish_binding(seconds):
+                    h.replace_private(root / "state.json", dict(state, new_id="new"))
+                    h.publish(root / "bootstrap/new/receipt.json", h.canonical(receipt))
+                snap = snapshot("active", turns=[dict(id="bootstrap", state="running")])
+                snap["session"].update(id="new")
+                with patch.dict(os.environ, AO_SESSION_ID="other" if mode == "wrong-actor" else "new", TMPDIR=str(draft)), \
+                        patch.object(h.time, "sleep", side_effect=publish_binding), \
+                        patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=h.canonical(snap), stderr=b"")) as transport:
+                    if mode == "late-binding":
+                        self.assertEqual(h.producer(run, "bootstrap"), receipt)
+                        self.assertEqual(cli.execution.new_id, "new")
+                        self.assertIn("new", cli.execution.bindings)
+                        self.assertEqual(transport.call_count, 1)
+                    else:
+                        with self.assertRaises(h.Stop):
+                            h.producer(run, "bootstrap")
+                        transport.assert_not_called()
+                cli.execution.close()
+
+
 class HistoricalDatasetTests(unittest.TestCase):
     def test_every_historical_capture_has_source_and_explicit_classification(self):
         rows = h.decode((Path(__file__).parent / "fixtures/historical-captures.json").read_bytes())["captures"]
@@ -345,83 +385,153 @@ class HistoricalDatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Stop, "new generation"):
             h.historical_facts(None, None, None, {"call_protocol": h.CALL_PROTOCOL}, {}, {})
 
+    def historical_fixture(self, temporary):
+        data = h.mkdir(Path(temporary) / "data")
+        run_id = str(uuid.uuid4())
+        root = h.mkdir(data / "projects" / h.PROJECT / "orchestrator/.private-handoff-runs")
+        current = h.mkdir(root / run_id)
+        directory = h.mkdir(root / ".retirement" / run_id)
+        external = h.mkdir(data / "artifacts/operator/attempt")
+        h.publish(current / "handoff.py", b"# frozen pre-protocol fixture; never execute\n")
+        request = dict(old_id="old", workers=[], target={}, authority=dict(source_refs=["original-human"]))
+        h.publish(current / "start.json", h.canonical(request))
+        executable = Path("/usr/bin/true")
+        state = dict(run_id=run_id, script_sha256=h.digest(h.private_read(current / "handoff.py")),
+                     cli_sha256=h.digest(executable.read_bytes()), data_dir=str(data))
+        h.publish(current / "state.json", h.canonical(state))
+        h.publish(directory / "qualification.original.json", h.canonical(dict(schema="rh-cli-qualification/1",
+                  script_sha256=state["script_sha256"], cli_sha256=state["cli_sha256"])))
+        h.publish(directory / "prior/authorization.original.json", b'{"historical":"original bytes"}')
+        h.publish(directory / "prior/material-reference.json", h.canonical(h.file_reference(current / "handoff.py")))
+        later = directory / "prior/later-handoff.py"
+        h.publish(later, b"# frozen later retirement producer; never execute\n")
+        later_sha = h.digest(h.private_read(later))
+        calls = []
+        scopes = {"run": current, "retirement": directory, "external-one": external}
+        examples = [
+            ("run", "wire/project", "http", {"path": "projects/" + h.PROJECT}, "observation", "project-observation", "none", "start", None, None),
+            ("retirement", "preconditions/failed", "cli", {"argv": ["report", "--needs-input", "--note", "synthetic progress"], "returncode": 1},
+             "progress-notification", "progress-report-only", "notification", "_run", run_id + ":progress-notification", 1),
+            ("external-one", "attempt", "cli", {"argv": ["project", "documents", "info", "--project", h.PROJECT, "--json"], "returncode": 1},
+             "observation", "project-observation", "none", "start", None, 1),
+        ]
+        for scope, stem, transport, metadata, kind, capability, expected, role, effect_id, code in examples:
+            raw = b'{}'
+            metadata = dict(metadata, sha256=h.digest(raw))
+            h.publish(scopes[scope] / (stem + ".raw"), raw)
+            h.publish(scopes[scope] / (stem + ".json"), h.canonical(metadata))
+            producer_sha = state["script_sha256"] if scope == "run" else later_sha
+            calls.append(dict(call_id=str(uuid.uuid4()), run_id=run_id, origin="retrospective-review", script_sha256=producer_sha, cli_sha256=state["cli_sha256"],
+                kind=kind, capability=capability, expected_effect=expected, transport=transport, phase="preflight", actor="old",
+                target=dict(project_id=h.PROJECT), effect_id=effect_id, terminal="returned", result=dict(returncode=code, stdout_sha256=h.digest(raw)),
+                producer_ref=dict(script_sha256=producer_sha, location="CLI.get/call", role=role),
+                source_refs=[dict(scope=scope, path=stem + ext, sha256=h.digest(h.private_read(scopes[scope] / (stem + ext))),
+                                  role="capture-metadata" if ext == ".json" else "capture-output") for ext in (".json", ".raw")]))
+        calls[0]["source_refs"].append(dict(scope="retirement", path="prior/material-reference.json",
+            sha256=h.digest(h.private_read(directory / "prior/material-reference.json")), role="supporting"))
+        inputs = dict(run=h.private_manifest(current), prior_retirement=[x for x in h.private_manifest(directory)
+                      if x["path"].startswith(("prior/", "preconditions/"))],
+                      external_attempts=[dict(root=str(external), scope="external-one", manifest=h.private_manifest(external), authorization_ref="approved-original-attempt")])
+        coverage = []
+        for scope, rows in [("run", inputs["run"]), ("retirement", inputs["prior_retirement"]), ("external-one", inputs["external_attempts"][0]["manifest"])]:
+            coverage.extend(dict(scope=scope, path=x["path"], sha256=x["sha256"]) for x in rows if not x["directory"])
+        review = dict(origin="retrospective-review", run_id=run_id, operator_session_id="operator", reviewed_at="synthetic-review-time",
+                      decision_ref="accepted-original-limits", accepted_preintent_limitation=True,
+                      input_manifest_sha256=h.digest(h.canonical(inputs)), script_sha256=state["script_sha256"], cli_sha256=state["cli_sha256"],
+                      coverage=coverage, calls=calls,
+                      producer_bindings=[dict(scope=scope, script_ref=dict(scope="retirement", path="prior/later-handoff.py", sha256=later_sha),
+                                              cli_sha256=state["cli_sha256"]) for scope in ("retirement", "external-one")])
+        h.publish(directory / "historical-review.json", h.canonical(review))
+        authorization = dict(operator_session_id="operator", input_manifest_sha256=review["input_manifest_sha256"],
+                             historical_review_sha256=h.digest(h.canonical(review)), evidence_roots=[str(external)])
+        return SimpleNamespace(data=data, run_id=run_id, root=root, current=current, directory=directory,
+                               request=request, executable=executable, state=state, inputs=inputs,
+                               review=review, authorization=authorization)
+
+    def review_facts(self, fixture):
+        raw = h.canonical(fixture.review)
+        (fixture.directory / "historical-review.json").write_bytes(raw)
+        fixture.authorization["historical_review_sha256"] = h.digest(raw)
+        return h.historical_facts(fixture.root, fixture.current, fixture.directory, fixture.state, fixture.authorization, fixture.inputs)
+
     def test_prior_failed_attempt_external_evidence_and_native_maintenance_coexist(self):
         with tempfile.TemporaryDirectory() as temporary:
-            data = h.mkdir(Path(temporary) / "data")
-            run_id = str(uuid.uuid4())
-            root = h.mkdir(data / "projects" / h.PROJECT / "orchestrator/.private-handoff-runs")
-            current = h.mkdir(root / run_id)
-            directory = h.mkdir(root / ".retirement" / run_id)
-            external = h.mkdir(data / "artifacts/operator/attempt")
-            h.publish(current / "handoff.py", b"# frozen pre-protocol fixture; never execute\n")
-            request = dict(old_id="old", workers=[], target={}, authority=dict(source_refs=["original-human"]))
-            h.publish(current / "start.json", h.canonical(request))
-            executable = Path("/usr/bin/true")
-            state = dict(run_id=run_id, script_sha256=h.digest(h.private_read(current / "handoff.py")),
-                         cli_sha256=h.digest(executable.read_bytes()), data_dir=str(data))
-            h.publish(current / "state.json", h.canonical(state))
-            h.publish(directory / "qualification.original.json", h.canonical(dict(schema="rh-cli-qualification/1",
-                      script_sha256=state["script_sha256"], cli_sha256=state["cli_sha256"])))
-            h.publish(directory / "prior/authorization.original.json", b'{"historical":"original bytes"}')
-            calls = []
-            scopes = {"run": current, "retirement": directory, "external-one": external}
-            examples = [
-                ("run", "wire/project", "http", {"path": "projects/" + h.PROJECT}, "observation", "project-observation", "none", "start", None, None),
-                ("retirement", "preconditions/failed", "cli", {"argv": ["report", "--needs-input", "--note", "synthetic progress"], "returncode": 1},
-                 "progress-notification", "progress-report-only", "notification", "_run", run_id + ":progress-notification", 1),
-                ("external-one", "attempt", "cli", {"argv": ["project", "documents", "info", "--project", h.PROJECT, "--json"], "returncode": 1},
-                 "observation", "project-observation", "none", "start", None, 1),
-            ]
-            for scope, stem, transport, metadata, kind, capability, expected, role, effect_id, code in examples:
-                raw = b'{}'
-                metadata = dict(metadata, sha256=h.digest(raw))
-                h.publish(scopes[scope] / (stem + ".raw"), raw)
-                h.publish(scopes[scope] / (stem + ".json"), h.canonical(metadata))
-                calls.append(dict(call_id=str(uuid.uuid4()), run_id=run_id, origin="retrospective-review", script_sha256=state["script_sha256"],
-                    kind=kind, capability=capability, expected_effect=expected, transport=transport, phase="preflight", actor="old",
-                    target=dict(project_id=h.PROJECT), effect_id=effect_id, terminal="returned", result=dict(returncode=code, stdout_sha256=h.digest(raw)),
-                    producer_ref=dict(script_sha256=state["script_sha256"], location="CLI.get/call", role=role),
-                    source_refs=[dict(scope=scope, path=stem + ext, sha256=h.digest(h.private_read(scopes[scope] / (stem + ext))),
-                                      role="capture-metadata" if ext == ".json" else "capture-output") for ext in (".json", ".raw")]))
-            inputs = dict(run=h.private_manifest(current), prior_retirement=[x for x in h.private_manifest(directory)
-                          if x["path"].startswith(("prior/", "preconditions/"))],
-                          external_attempts=[dict(root=str(external), scope="external-one", manifest=h.private_manifest(external), authorization_ref="approved-original-attempt")])
-            coverage = []
-            for scope, rows in [("run", inputs["run"]), ("retirement", inputs["prior_retirement"]), ("external-one", inputs["external_attempts"][0]["manifest"])]:
-                coverage.extend(dict(scope=scope, path=x["path"], sha256=x["sha256"]) for x in rows if not x["directory"])
-            review = dict(origin="retrospective-review", run_id=run_id, operator_session_id="operator", reviewed_at="synthetic-review-time",
-                          decision_ref="accepted-original-limits", accepted_preintent_limitation=True,
-                          input_manifest_sha256=h.digest(h.canonical(inputs)), script_sha256=state["script_sha256"], cli_sha256=state["cli_sha256"],
-                          coverage=coverage, calls=calls)
-            h.publish(directory / "historical-review.json", h.canonical(review))
-            authorization = dict(operator_session_id="operator", input_manifest_sha256=review["input_manifest_sha256"],
-                                 historical_review_sha256=h.digest(h.canonical(review)), evidence_roots=[str(external)])
+            c = self.historical_fixture(temporary)
             with patch.object(h.subprocess, "run") as transport:
-                historical = h.historical_facts(root, current, directory, state, authorization, inputs)
+                historical = self.review_facts(c)
                 transport.assert_not_called()
             self.assertEqual(len(historical), 3)
             self.assertEqual(historical[1]["result"]["returncode"], 1)
+            self.assertNotEqual(historical[0]["script_sha256"], historical[1]["script_sha256"])
+            self.assertEqual(historical[0]["script_sha256"], c.state["script_sha256"])
             self.assertEqual(h.effect_closure(historical), {})
-            h.publish(data / "running.json", b'{"port":1}')
-            journal = h.Journal(data, run_id)
-            journal.bind(dict(root=str(root), old_id="old", start_sha256=h.digest(h.canonical(request)), qualification_sha256="a" * 64))
+            h.publish(c.data / "running.json", b'{"port":1}')
+            journal = h.Journal(c.data, c.run_id)
+            journal.bind(dict(root=str(c.root), old_id="old", start_sha256=h.digest(h.canonical(c.request)), qualification_sha256="a" * 64))
             fence = journal.freeze("operator", "D-99", "b" * 64)
             execution = journal.register("retire", "operator", maintenance=fence["token"])
-            execution.configure(request)
-            cli = h.CLI(executable, "operator", data, data / "running.json", data)
+            execution.configure(c.request)
+            cli = h.CLI(c.executable, "operator", c.data, c.data / "running.json", c.data)
             cli.execution = execution
             with patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{"documents":{}}', stderr=b"")):
                 cli.documents()
             execution.close()
             native = journal.facts()
             self.assertEqual([f["origin"] for f in historical + native], ["retrospective-review"] * 3 + ["native-intent"])
-            self.assertEqual(native[0]["kind"], "observation")
-            # Hash-bound but incomplete review is still UNKNOWN, not read-only.
-            review["coverage"] = coverage[:-1]
-            (directory / "historical-review.json").write_bytes(h.canonical(review))
-            authorization["historical_review_sha256"] = h.digest(h.canonical(review))
+            c.review["coverage"] = c.review["coverage"][:-1]
             with self.assertRaisesRegex(h.Stop, "coverage"):
-                h.historical_facts(root, current, directory, state, authorization, inputs)
+                self.review_facts(c)
+
+    def test_complete_coverage_cannot_hide_unclassified_or_duplicate_capture(self):
+        for mode in ("missing-call", "supporting", "external-missing", "duplicate", "cross-pair", "scope-alias"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                c = self.historical_fixture(temporary)
+                # Same producer versions isolate capture accounting from version checks.
+                for fact in c.review["calls"]:
+                    fact["script_sha256"] = fact["producer_ref"]["script_sha256"] = c.state["script_sha256"]
+                c.review["producer_bindings"] = [dict(scope=scope, cli_sha256=c.state["cli_sha256"],
+                    script_ref=dict(scope="run", path="handoff.py", sha256=c.state["script_sha256"]))
+                    for scope in ("retirement", "external-one")]
+                if mode in ("missing-call", "supporting"):
+                    removed = c.review["calls"].pop(1)
+                    if mode == "supporting":
+                        for source in removed["source_refs"]:
+                            source["role"] = "supporting"
+                        c.review["calls"][0]["source_refs"].extend(removed["source_refs"])
+                elif mode == "external-missing":
+                    c.review["calls"].pop()
+                elif mode == "duplicate":
+                    duplicate = h.decode(h.canonical(c.review["calls"][0]))
+                    duplicate["call_id"] = str(uuid.uuid4())
+                    c.review["calls"].append(duplicate)
+                elif mode == "cross-pair":
+                    c.review["calls"][0]["source_refs"][1] = c.review["calls"][2]["source_refs"][1]
+                else:
+                    attempt = h.decode(h.canonical(c.inputs["external_attempts"][0]))
+                    attempt["scope"] = "external-two"
+                    c.inputs["external_attempts"].append(attempt)
+                    c.review["coverage"].extend([dict(row, scope="external-two") for row in c.review["coverage"]
+                                                if row["scope"] == "external-one"])
+                    duplicate = h.decode(h.canonical(c.review["calls"][2]))
+                    duplicate["call_id"] = str(uuid.uuid4())
+                    for source in duplicate["source_refs"]:
+                        source["scope"] = "external-two"
+                    c.review["calls"].append(duplicate)
+                    c.review["producer_bindings"].append(dict(c.review["producer_bindings"][-1], scope="external-two"))
+                    c.authorization["input_manifest_sha256"] = c.review["input_manifest_sha256"] = h.digest(h.canonical(c.inputs))
+                with self.assertRaisesRegex(h.Stop, "capture"):
+                    self.review_facts(c)
+
+    def test_unapproved_or_unfrozen_historical_producer_is_rejected(self):
+        for mode in ("unapproved", "wrong-bytes"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                c = self.historical_fixture(temporary)
+                if mode == "unapproved":
+                    c.review["producer_bindings"] = []
+                else:
+                    c.review["producer_bindings"][0]["script_ref"]["sha256"] = "f" * 64
+                with self.assertRaises(h.Stop):
+                    self.review_facts(c)
 
 
 class LegacyReceiptTests(unittest.TestCase):

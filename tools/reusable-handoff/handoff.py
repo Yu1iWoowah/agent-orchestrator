@@ -2791,6 +2791,12 @@ def producer(run, action):
     require(os.environ.get("AO_SESSION_ID") == sid, "producer must run as actual new session")
     draft = run.root / "bootstrap/new/draft"
     require(os.environ.get("TMPDIR") == str(draft), "bootstrap TMPDIR mismatch")
+    execution = getattr(run.cli, "execution", None)
+    if execution:
+        require(execution.registration["actor"] == sid and execution.registration["role"] == action and
+                execution.new_id in (None, sid), "producer execution binding changed")
+        execution.bindings.add(sid)
+        execution.new_id = sid
     acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, draft)
     acting.execution = getattr(run.cli, "execution", None)
     snap = acting.session(sid)
@@ -3143,6 +3149,51 @@ def historical_facts(root, current, directory, state, authorization, inputs):
     for row in inputs.get("external_attempts", []):
         required |= {(row["scope"], x["path"]) for x in row["manifest"] if not x["directory"]}
     require(required == seen, "historical evidence coverage incomplete or extra")
+    # Inventory producer sidecars in every approved scope, not just wire paths.
+    captures, capture_objects = {}, set()
+    for key in sorted(required):
+        scope, name = key
+        if not name.endswith(".json"):
+            continue
+        output = scope, str(Path(name).with_suffix(".raw"))
+        try:
+            wire = decode(private_read(confined(scopes[scope], name)))
+        except Stop:
+            require(output not in required, "historical capture metadata unreadable")
+            continue
+        candidate = output in required or (isinstance(wire, dict) and
+                    ("raw_path" in wire or ("sha256" in wire and "argv" in wire)))
+        if not candidate:
+            continue
+        info = confined(scopes[scope], name).stat()
+        identity = info.st_dev, info.st_ino
+        require(identity not in capture_objects, "historical capture appears in multiple scopes")
+        capture_objects.add(identity)
+        require(isinstance(wire, dict) and (("argv" in wire) != ("path" in wire)) and output in required and
+                wire.get("sha256") == digest(private_read(confined(scopes[scope], output[1]))),
+                "historical capture pair UNKNOWN")
+        if wire.get("raw_path"):
+            require(Path(wire["raw_path"]).name == Path(output[1]).name, "historical capture output identity changed")
+        captures[key] = (output, wire)
+    captured = set(captures) | {value[0] for value in captures.values()}
+
+    def reviewed_reference(reference):
+        key = reference["scope"], reference["path"]
+        require(key in seen, "historical producer reference outside reviewed scope")
+        return hash_reference(dict(path=str(confined(scopes[key[0]], key[1])), sha256=reference["sha256"]))
+
+    require(digest(private_read(current / "handoff.py")) == state["script_sha256"], "original run producer changed")
+    versions = {("run", state["script_sha256"], state["cli_sha256"])}
+    for binding in review.get("producer_bindings", []):
+        scope = binding["scope"]
+        require(scope in scopes and scope != "run", "historical producer scope invalid")
+        script_sha = digest(reviewed_reference(binding["script_ref"]))
+        cli_sha = binding["cli_sha256"]
+        if cli_sha != state["cli_sha256"]:
+            require(digest(reviewed_reference(binding["cli_ref"])) == cli_sha, "historical producer CLI changed")
+        version = scope, script_sha, cli_sha
+        require(version not in versions, "duplicate historical producer binding")
+        versions.add(version)
     facts, consumed = [], set()
     request = decode(private_read(current / "start.json"))
     for fact in review.get("calls", []):
@@ -3152,20 +3203,24 @@ def historical_facts(root, current, directory, state, authorization, inputs):
                 fact.get("terminal") in ("returned", "timeout", "error", "not-started") and fact.get("result") and fact.get("source_refs"),
                 "historical call semantics UNKNOWN")
         producer = fact["producer_ref"]
-        require(isinstance(producer, dict) and producer.get("script_sha256") == state["script_sha256"] and
+        require(isinstance(producer, dict) and producer.get("script_sha256") == fact.get("script_sha256") and
                 producer.get("location") and producer.get("role"), "historical producer identity UNKNOWN")
         metadata, outputs = [], []
         for row in fact["source_refs"]:
             key = row["scope"], row["path"]
             require(key in seen and digest(private_read(confined(scopes[key[0]], key[1]))) == row["sha256"], "historical call source mismatch")
-            consumed.add(key)
+            require(row.get("role") in ("capture-metadata", "capture-output", "supporting"), "historical capture source role UNKNOWN")
             if row.get("role") == "capture-metadata":
-                metadata.append(decode(private_read(confined(scopes[key[0]], key[1]))))
+                metadata.append(key)
             elif row.get("role") == "capture-output":
-                outputs.append(row["sha256"])
-        require(len(metadata) == 1, "historical call metadata missing/ambiguous")
-        wire = metadata[0]
-        require(len(outputs) == 1 and outputs[0] == wire.get("sha256") == fact["result"].get("stdout_sha256") and
+                outputs.append(key)
+            else:
+                require(key not in captured, "historical capture cannot be supporting")
+        require(len(metadata) == len(outputs) == 1 and metadata[0] in captures and
+                captures[metadata[0]][0] == outputs[0], "historical capture metadata/output pair mismatch")
+        require(not ({metadata[0], outputs[0]} & consumed), "historical capture classified more than once")
+        wire = captures[metadata[0]][1]
+        require(wire.get("sha256") == fact["result"].get("stdout_sha256") and
                 fact["result"].get("returncode") == wire.get("returncode"), "historical captured result changed or inferred")
         transport = fact.get("transport")
         require(transport in ("cli", "http"), "historical transport UNKNOWN")
@@ -3180,18 +3235,20 @@ def historical_facts(root, current, directory, state, authorization, inputs):
             execution.new_id = state["new_id"]
         execution.authority_refs = request["authority"]["source_refs"]
         execution.refresh_authority = fact.get("refresh_authority")
-        adapter = type("HistoricalCLI", (), {"env": {"AO_SESSION_ID": fact["actor"]}, "sha256": state["cli_sha256"]})()
+        require((metadata[0][0], fact.get("script_sha256"), fact.get("cli_sha256")) in versions,
+                "historical producer version not authorized for capture scope")
+        adapter = type("HistoricalCLI", (), {"env": {"AO_SESSION_ID": fact["actor"]}, "sha256": fact["cli_sha256"]})()
         descriptor = execution.descriptor(adapter, transport, parameters,
             read=fact["kind"] in ("observation", "metadata-refresh"), effect_id=fact.get("effect_id"), verifying=True)
         require(all(descriptor[key] == fact.get(key) for key in ("kind", "capability", "expected_effect", "target", "effect_id")),
                 "historical classification differs from producer capability")
         if transport == "cli" and "--message" in parameters["argv"]:
             fact["message_sha256"] = digest(parameters["argv"][parameters["argv"].index("--message") + 1].encode())
-        require(fact.get("run_id") == state["run_id"] and fact.get("script_sha256") == state["script_sha256"], "historical call generation mismatch")
+        require(fact.get("run_id") == state["run_id"], "historical call generation mismatch")
+        consumed.update((metadata[0], outputs[0]))
         facts.append(fact)
     require(len({f["call_id"] for f in facts}) == len(facts), "duplicate historical call identity")
-    captured = {(scope, path) for scope, path in required if "/wire/" in "/" + path or path.startswith("preconditions/")}
-    require(captured <= consumed, "unclassified historical capture UNKNOWN")
+    require(captured == consumed, "unclassified historical capture UNKNOWN")
     return facts
 
 

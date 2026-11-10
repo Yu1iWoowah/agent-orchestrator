@@ -105,6 +105,11 @@ class WireContractTests(unittest.TestCase):
             self.assertEqual(self.cli.sessions(), [])
 
     def test_finalize_notifies_only_true_list_workers(self):
+        self.cli.execution.close()
+        self.cli.execution = self.cli.execution.journal.register("finalize", "old")
+        self.addCleanup(self.cli.execution.close)
+        self.cli.execution.phase = "final"
+        self.cli.execution.bindings = {"old", "new", "worker"}
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old",
                               state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3},
                               request={"workers": []})
