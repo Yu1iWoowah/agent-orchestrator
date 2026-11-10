@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
@@ -94,7 +95,11 @@ func TestFixtureRuntimeApprovalStillRejectsChangedBytes(t *testing.T) {
 }
 func approveFixture(t *testing.T, c *Coordinator, d Deployment) {
 	t.Helper()
-	if err := c.Register(t.Context(), Registration{Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err != nil {
+	g := c.LabGrant()
+	if g == nil {
+		g = labGrantFixture(c.root, d.Inputs[0].ProjectID, "s", time.Now())
+	}
+	if err := c.Register(t.Context(), Registration{Grant: g, Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -229,19 +234,20 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 			}
 			changed := deployment
 			changed.Profile.Prices.Version = "different-price"
-			if err := c.Register(t.Context(), Registration{Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
+			if err := c.Register(t.Context(), Registration{Grant: c.LabGrant(), Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
 				t.Fatal("immutable revision overwritten")
 			}
 			changed.Profile.Revision = "v2"
-			approveFixture(t, c, changed)
-			if view := c.Get(id, policy); view.Reason != "profile_revision_stale" || view.Active {
-				t.Fatalf("old selection followed current implicitly: %+v", view)
+			if err := c.Register(t.Context(), Registration{Grant: c.LabGrant(), Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
+				t.Fatal("run accepted an ungranted revision")
 			}
 			next := delegationPolicy(changed.Profile)
 			c.ProjectPolicyChanged("p", next)
-			if view := c.Get(id, next); !view.Active || view.MountProfile.Revision != "v1" {
-				t.Fatalf("new selection rewrote original mount: %+v", view)
+			if c.Get(id, next).Active {
+				t.Fatal("ungranted revision became active")
 			}
+			c.ProjectPolicyChanged("p", policy)
+			next = policy
 			liveID := id
 			liveID.ControllerGeneration = "new-controller"
 			prepared, ok := c.CaptureLaunch(liveID, false, false)

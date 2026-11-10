@@ -96,7 +96,7 @@ func (s *Service) DelegationProfiles(context.Context) ([]reporting.DelegationRes
 
 // RegisterDelegation registers an immutable approved descriptor.
 func (s *Service) RegisterDelegation(ctx context.Context, r reporting.DelegationRegistration) ([]reporting.DelegationResolvedProfile, error) {
-	if s.delegation == nil || s.delegation.Register(ctx, r) != nil {
+	if s.delegation == nil || s.validateLabOwner(ctx, r.Grant) != nil || s.delegation.Register(ctx, r) != nil {
 		return nil, delegationUnavailable()
 	}
 	return s.delegation.Profiles(), nil

@@ -120,3 +120,18 @@ func (c *DelegationConsumer) MountRequested(id Identity) bool {
 func (c *DelegationConsumer) RecoverDelegationReceipts(ctx context.Context) error {
 	return c.core.RecoverReceipts(ctx)
 }
+
+func (c *DelegationConsumer) LabGrant() *DelegationLabGrant {
+	g := c.core.LabGrant()
+	if g == nil {
+		return nil
+	}
+	var out DelegationLabGrant
+	if delegationWire(g, &out) != nil {
+		return nil
+	}
+	return &out
+}
+func CheckDelegationOwnerStartup(ctx context.Context, root string) error {
+	return delegate.CheckLabStartup(ctx, root)
+}

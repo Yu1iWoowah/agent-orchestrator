@@ -82,7 +82,7 @@ func fixtureRuntimeDigest(t *testing.T, venv string) string {
 	return hex.EncodeToString(aggregate.Sum(nil))
 }
 
-func fixedDelegationRegistration(t *testing.T, family, project, body string) reporting.DelegationRegistration {
+func fixedDelegationRegistration(t *testing.T, family, project, body, root string, bindings []reporting.DelegationLabSession) reporting.DelegationRegistration {
 	t.Helper()
 	venv := filepath.Dir(filepath.Dir(os.Getenv("HCG_TEST_PAL_PYTHON")))
 	read := func(path string) []byte {
@@ -93,7 +93,11 @@ func fixedDelegationRegistration(t *testing.T, family, project, body string) rep
 		}
 		return b
 	}
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	grant := &reporting.DelegationLabGrant{RunID: "synthetic-run", OwnerRoot: root, CanonicalOwner: bindings[0], StartsAt: start, ExpiresAt: start.Add(24*time.Hour - time.Nanosecond), Profiles: map[string]reporting.DelegationProfileRef{"openai": {ID: "openai-fixture", Revision: "v1"}, "anthropic": {ID: "anthropic-fixture", Revision: "v1"}}, Bindings: bindings, ProviderCapNanos: map[string]int64{"openai": 10000000000, "anthropic": 10000000000}, TotalCapNanos: 20000000000, AttemptsPerProvider: 26}
 	return reporting.DelegationRegistration{
+		Grant: grant,
 		Deployment: reporting.DelegationDeployment{
 			Profile:       reporting.DelegationProfile{ID: family + "-fixture", Revision: "v1", BillingProvider: family, Model: "fixture-model", ContextTokens: 100000, MaxOutputTokens: 16384, OutputTokens: 128, Prices: reporting.DelegationPrices{Version: "synthetic-price-v1", Period: time.Now().UTC().Format("2006-01"), InputPerMillion: 200000000000, CachedInputPerMillion: 200000000000, LimitsCertified: true, BillableUsageCovered: true}},
 			CredentialRef: reporting.DelegationCredentialReference{Provider: family, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace",
@@ -118,11 +122,14 @@ func TestHCGDelegationSameCallerOffline(t *testing.T) {
 		t.Run(family, func(t *testing.T) {
 			ctx := t.Context()
 			cfg := setConfigEnv(t)
-			store, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+			store, err := sqlite.Open(cfg.dataDir)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer store.Close()
+			if err := os.Chmod(cfg.dataDir, 0700); err != nil {
+				t.Fatal(err)
+			}
 			worktree := t.TempDir()
 			body := "SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n"
 			if err := os.WriteFile(filepath.Join(worktree, "prompt.txt"), []byte(body), 0600); err != nil {
@@ -182,7 +189,7 @@ func TestHCGDelegationSameCallerOffline(t *testing.T) {
 				}
 				return out
 			}
-			approved := fixedDelegationRegistration(t, family, project.ID, body)
+			approved := fixedDelegationRegistration(t, family, project.ID, body, cfg.dataDir, []reporting.DelegationLabSession{{ProjectID: project.ID, SessionID: string(rec.ID)}})
 			wrongFamily := approved
 			wrongFamily.Deployment.CredentialRef.Provider = map[string]string{"openai": "anthropic", "anthropic": "openai"}[family]
 			rejected, _ := json.Marshal(wrongFamily)
@@ -300,12 +307,15 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 	}
 	ctx := t.Context()
 	cfg := setConfigEnv(t)
-	dbDir := filepath.Join(t.TempDir(), "db")
+	dbDir := cfg.dataDir
 	store, err := sqlite.Open(dbDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if err := os.Chmod(cfg.dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	body := "SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n"
 	projects := map[string]domain.ProjectRecord{}
 	sessions := map[string]domain.SessionRecord{}
@@ -397,7 +407,7 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 		projects[family] = p
 	}
 	for _, family := range []string{"openai", "anthropic"} {
-		registration := fixedDelegationRegistration(t, family, projects[family].ID, body)
+		registration := fixedDelegationRegistration(t, family, projects[family].ID, body, cfg.dataDir, []reporting.DelegationLabSession{{ProjectID: projects["openai"].ID, SessionID: string(sessions["openai"].ID)}, {ProjectID: projects["anthropic"].ID, SessionID: string(sessions["anthropic"].ID)}})
 		registrations[family] = registration
 		register(registration)
 	}
@@ -487,7 +497,7 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 			}
 		}
 	}
-	// A v1 reservation cannot dispatch after the host commits v2.
+	// An out-of-grant revision is refused; a legal host-stop ABA still cancels the reservation.
 	phase.Store(1)
 	finished := make(chan outcome, 1)
 	go func() { finished <- execute(readArgs("openai")...) }()
@@ -500,7 +510,10 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 	v2.Deployment.Profile.Revision = "v2"
 	v2.Deployment.CredentialRef.Version = "v2"
 	v2.Deployment.Profile.Prices.Version = "price-v2"
-	register(v2)
+	rejectedRevision, _ := json.Marshal(v2)
+	call(1, "register", "--profile-json", string(rejectedRevision))
+	call(0, "emergency-stop", "--enabled=true")
+	call(0, "emergency-stop", "--enabled=false")
 	select {
 	case result := <-finished:
 		if ExitCode(result.err) != 1 {
@@ -513,20 +526,17 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 		t.Fatal("stale reserved attempt dispatched")
 	}
 	phase.Store(0)
-	if out := call(1, readArgs("openai")...); !strings.Contains(out, "profile_revision_stale") {
-		t.Fatalf("implicit upgrade: %s", out)
-	}
-	selectRevision("openai", "v2")
+	selectRevision("openai", "v1")
 	call(0, readArgs("openai")...)
 	view, err := svc.GetDelegation(ctx, sessions["openai"].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.MountProfile == nil || view.MountProfile.Revision != "v1" || view.ResolvedProfile.Revision != "v2" {
+	if view.MountProfile == nil || view.MountProfile.Revision != "v1" || view.ResolvedProfile.Revision != "v1" {
 		t.Fatalf("launch/current mixed: %+v", view)
 	}
-	// Once dispatch is authorized, v2 remains the receipt/price identity even if
-	// the host publishes v3 and the uncooperative provider returns after cancel.
+	// Once dispatched, the original granted v1 remains the receipt/price identity
+	// through host-stop and a refused revision update, including a late reply.
 	phase.Store(2)
 	go func() { finished <- execute(readArgs("openai")...) }()
 	var old reporting.DelegationProviderRequest
@@ -541,7 +551,10 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 	v3.Deployment.Profile.Prices.InputPerMillion = 300000000000
 	v3.Deployment.Profile.Prices.CachedInputPerMillion = 300000000000
 	v3.Deployment.CredentialRef.Version = "v3"
-	register(v3)
+	rejectedRevision, _ = json.Marshal(v3)
+	call(1, "register", "--profile-json", string(rejectedRevision))
+	call(0, "emergency-stop", "--enabled=true")
+	call(0, "emergency-stop", "--enabled=false")
 	select {
 	case result := <-finished:
 		if ExitCode(result.err) != 1 || strings.Contains(result.out, "fixture-answer") {
@@ -555,7 +568,7 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 	if calls.Load() != before {
 		t.Fatal("in-flight hold allowed another project/provider")
 	}
-	if old.ProfileRevision != "v2" || old.CredentialRef.Version != "v2" {
+	if old.ProfileRevision != "v1" || old.CredentialRef.Version != "v1" {
 		t.Fatalf("transport re-resolved current: %+v", old)
 	}
 	release <- struct{}{}
@@ -571,7 +584,7 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 		}
 		if len(ledger) == 3 {
 			last := ledger[2]
-			if last.Execution == nil || last.Execution.ProfileRevision != "v2" {
+			if last.Execution == nil || last.Execution.ProfileRevision != "v1" {
 				t.Fatalf("late receipt repriced: %+v", last)
 			}
 			// This product reader intentionally omits costs. Verify only this
@@ -589,11 +602,11 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 			var input, output, total sql.NullInt64
 			err = readonly.QueryRowContext(ctx, `SELECT e.pricing_version,e.input_cost_nanos,e.output_cost_nanos,e.estimated_cost_nanos
               FROM model_usage_events e JOIN usage_execution_sources x ON x.id=e.execution_source_id
-              WHERE e.id=? AND x.session_id=? AND x.project_id=? AND x.profile_id=? AND x.profile_revision=? AND x.billing_provider=?`, last.ID, string(sessions["openai"].ID), projects["openai"].ID, "openai-fixture", "v2", "openai").Scan(&price, &input, &output, &total)
+              WHERE e.id=? AND x.session_id=? AND x.project_id=? AND x.profile_id=? AND x.profile_revision=? AND x.billing_provider=?`, last.ID, string(sessions["openai"].ID), projects["openai"].ID, "openai-fixture", "v1", "openai").Scan(&price, &input, &output, &total)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if price != "price-v2" || input.Valid || !output.Valid || output.Int64 != 0 || !total.Valid || total.Int64 != 2000000 {
+			if price != "synthetic-price-v1" || input.Valid || !output.Valid || output.Int64 != 0 || !total.Valid || total.Int64 != 2000000 {
 				t.Fatalf("late canonical price/cost changed: %q input=%v output=%v total=%v", price, input, output, total)
 			}
 			break

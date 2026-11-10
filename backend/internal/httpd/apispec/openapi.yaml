@@ -24075,6 +24075,64 @@ components:
       - adapterVersion
       - templateVersion
       type: object
+    DelegationLabGrant:
+      properties:
+        attemptsPerProvider:
+          type: integer
+        bindings:
+          items:
+            $ref: '#/components/schemas/DelegationLabSession'
+          type: array
+        canonicalOwner:
+          $ref: '#/components/schemas/DelegationLabSession'
+        expiresAt:
+          format: date-time
+          type: string
+        ownerRoot:
+          type: string
+        profiles:
+          additionalProperties:
+            $ref: '#/components/schemas/DelegationProfileRef'
+          type:
+          - object
+          - "null"
+        providerCapNanos:
+          additionalProperties:
+            format: int64
+            type: integer
+          type:
+          - object
+          - "null"
+        runId:
+          type: string
+        startsAt:
+          format: date-time
+          type: string
+        totalCapNanos:
+          format: int64
+          type: integer
+      required:
+      - runId
+      - ownerRoot
+      - canonicalOwner
+      - startsAt
+      - expiresAt
+      - profiles
+      - bindings
+      - providerCapNanos
+      - totalCapNanos
+      - attemptsPerProvider
+      type: object
+    DelegationLabSession:
+      properties:
+        projectId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      type: object
     DelegationOmission:
       properties:
         reason:
@@ -24167,13 +24225,19 @@ components:
           type: string
         model:
           type: string
+        ownerRoot:
+          type: string
         priceVersion:
           type: string
         reason:
           type: string
         revision:
           type: string
+        runId:
+          type: string
       required:
+      - runId
+      - ownerRoot
       - id
       - revision
       - billing_provider
@@ -25359,7 +25423,13 @@ components:
           type:
           - object
           - "null"
+        grant:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationLabGrant'
+            type: object
       required:
+      - grant
       - deployment
       - externalSpend
       type: object
@@ -25394,6 +25464,8 @@ components:
           anyOf:
           - type: "null"
           - $ref: '#/components/schemas/DelegationProfileRef'
+        ownerRoot:
+          type: string
         profileEligibility:
           type: string
         projectId:
@@ -25411,6 +25483,8 @@ components:
           - type: "null"
           - $ref: '#/components/schemas/DelegationResolvedProfile'
             type: object
+        runId:
+          type: string
         selectedProfile:
           anyOf:
           - type: "null"
@@ -25424,6 +25498,8 @@ components:
         source:
           type: string
       required:
+      - runId
+      - ownerRoot
       - mountConfigured
       - projectId
       - sessionId

@@ -7799,6 +7799,29 @@ export interface components {
             templateVersion: string;
             venv: string;
         };
+        DelegationLabGrant: {
+            attemptsPerProvider: number;
+            bindings: components["schemas"]["DelegationLabSession"][];
+            canonicalOwner: components["schemas"]["DelegationLabSession"];
+            /** Format: date-time */
+            expiresAt: string;
+            ownerRoot: string;
+            profiles: {
+                [key: string]: components["schemas"]["DelegationProfileRef"];
+            } | null;
+            providerCapNanos: {
+                [key: string]: number;
+            } | null;
+            runId: string;
+            /** Format: date-time */
+            startsAt: string;
+            /** Format: int64 */
+            totalCapNanos: number;
+        };
+        DelegationLabSession: {
+            projectId: string;
+            sessionId: string;
+        };
         DelegationOmission: {
             reason: string;
             sourceId?: string;
@@ -7839,9 +7862,11 @@ export interface components {
             digest: string;
             id: string;
             model: string;
+            ownerRoot: string;
             priceVersion: string;
             reason: string;
             revision: string;
+            runId: string;
         };
         DelegationSourceRange: {
             endLine: number;
@@ -8263,6 +8288,7 @@ export interface components {
             externalSpend: {
                 [key: string]: components["schemas"]["DelegationExternalSpend"];
             } | null;
+            grant: null | components["schemas"]["DelegationLabGrant"];
         };
         HCGDelegationResponse: {
             active: boolean;
@@ -8277,6 +8303,7 @@ export interface components {
             mountEnabled: boolean;
             mountKnown: boolean;
             mountProfile: null | components["schemas"]["DelegationProfileRef"];
+            ownerRoot: string;
             profileEligibility: string;
             projectId: string;
             projectOptIn: boolean;
@@ -8284,6 +8311,7 @@ export interface components {
             reason: string;
             requested: boolean;
             resolvedProfile: null | components["schemas"]["DelegationResolvedProfile"];
+            runId: string;
             selectedProfile: null | components["schemas"]["DelegationProfileRef"];
             selectionSource: string;
             sessionId: string;

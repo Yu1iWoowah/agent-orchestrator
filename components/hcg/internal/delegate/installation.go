@@ -317,6 +317,9 @@ func stageInstallation(ctx context.Context, jobDir string, i Installation) (PAL,
 }
 
 func validateSavedDeployments(s deploymentState) error {
+	if s.Grant != nil && !s.Grant.valid(s.Grant.OwnerRoot) {
+		return ErrUnavailable
+	}
 	for key, d := range s.History {
 		original := d.Profile.DeploymentDigest
 		digest := d.Profile.digest()
