@@ -119,12 +119,20 @@ func (s *Service) PrepareClaudeEnvironment(ctx context.Context, n ports.RCAClaud
 func (s *Service) ClaudeLaunchReady(ctx context.Context, n ports.RCAClaudeLaunch, live bool) {
 	s.mu.Lock()
 	prepared, ok := s.pendingClaude[n.SessionID]
-	delete(s.pendingClaude, n.SessionID)
 	s.mu.Unlock()
-	if live || !ok || prepared.generation != n.Generation {
+	if !ok || prepared.generation != n.Generation {
 		return
 	}
-	if !s.core.Current(prepared.receipt) {
+	// Keep the prepared generation visible to stop until arm transfers it to
+	// a capture under the same lock. Cleanup must not erase a newer launch.
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if current, exists := s.pendingClaude[n.SessionID]; exists && current.id == prepared.id {
+			delete(s.pendingClaude, n.SessionID)
+		}
+	}()
+	if live || !s.core.Current(prepared.receipt) {
 		return
 	}
 	rec, _, err := s.facts(ctx, n.SessionID)

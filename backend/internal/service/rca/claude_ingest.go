@@ -126,6 +126,13 @@ func (s *Service) armClaudeCandidate(ctx context.Context, rec domain.SessionReco
 	if s.indexBytes+1024 > claudeIndexBytes {
 		return "", "capture_limit"
 	}
+	if prepared.generation != "" {
+		pending, ok := s.pendingClaude[rec.ID]
+		if !ok || pending.id != prepared.id || pending.generation != prepared.generation {
+			return "", "source_stopped"
+		}
+		delete(s.pendingClaude, rec.ID)
+	}
 	c.charge = 1024
 	s.indexBytes += 1024
 	s.captures[c.marker], s.captureSessions[rec.ID] = c, c
