@@ -483,7 +483,7 @@ class HistoricalDatasetTests(unittest.TestCase):
                 self.review_facts(c)
 
     def test_complete_coverage_cannot_hide_unclassified_or_duplicate_capture(self):
-        for mode in ("missing-call", "supporting", "external-missing", "duplicate", "cross-pair", "scope-alias"):
+        for mode in ("missing-call", "supporting", "external-missing", "external-unknown-missing", "duplicate", "cross-pair", "scope-alias"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 c = self.historical_fixture(temporary)
                 # Same producer versions isolate capture accounting from version checks.
@@ -498,8 +498,18 @@ class HistoricalDatasetTests(unittest.TestCase):
                         for source in removed["source_refs"]:
                             source["role"] = "supporting"
                         c.review["calls"][0]["source_refs"].extend(removed["source_refs"])
-                elif mode == "external-missing":
+                elif mode in ("external-missing", "external-unknown-missing"):
                     c.review["calls"].pop()
+                    if mode == "external-unknown-missing":
+                        external = Path(c.inputs["external_attempts"][0]["root"])
+                        metadata = h.decode(h.private_read(external / "attempt.json"))
+                        metadata["argv"] = ["unknown-control", "synthetic-target"]
+                        (external / "attempt.json").write_bytes(h.canonical(metadata))
+                        c.inputs["external_attempts"][0]["manifest"] = h.private_manifest(external)
+                        for row in c.review["coverage"]:
+                            if row["scope"] == "external-one" and row["path"] == "attempt.json":
+                                row["sha256"] = h.digest(h.private_read(external / "attempt.json"))
+                        c.authorization["input_manifest_sha256"] = c.review["input_manifest_sha256"] = h.digest(h.canonical(c.inputs))
                 elif mode == "duplicate":
                     duplicate = h.decode(h.canonical(c.review["calls"][0]))
                     duplicate["call_id"] = str(uuid.uuid4())
@@ -570,6 +580,69 @@ class LegacyReceiptTests(unittest.TestCase):
                 with self.assertRaisesRegex(h.Stop, "retired"):
                     h.retirement_guard(root, run_id=old_id)
             self.assertEqual(before, h.private_manifest(root))
+
+
+class ControlledMaterialTests(unittest.TestCase):
+    def test_worker_control_preservation_requires_existing_authorized_materials(self):
+        for mode in ("external-ok", "internal-ok", "missing-and-unapproved", "external-unapproved", "external-missing",
+                     "hash-drift", "wrong-worker", "duplicate-authorization", "internal-missing", "extra-missing"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                data = h.mkdir(Path(temporary) / "data")
+                current = h.mkdir(data / "run")
+                workspace = h.mkdir(data / "worktrees" / h.PROJECT / "worker")
+                run_id, sid = str(uuid.uuid4()), "worker"
+                handle = run_id + ":worker-stop:" + sid
+                rules = dict(worker_id=sid, reserved_stop_d="D-77", hold_state="held", release=dict(mode="keep-held"))
+                request = dict(old_id="old", workers=[rules], workspace_index=[dict(session_id=sid, kind="worker", path=str(workspace))])
+                state = dict(run_id=run_id)
+                payload = dict(run_id=run_id, recipient=sid, old_id="old", phase="worker-stop", instruction=dict(directive="D-77", rules=rules))
+                raw = h.canonical(payload)
+                control = current / "control" / ("worker-stop-" + sid)
+                argv = ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", raw.decode()]
+                h.publish(control / "payload.json", raw)
+                h.publish(control / "intent.json", h.canonical(dict(argv=argv)))
+                material = (current / "workers" / sid / "saved/necessary.txt") if mode.startswith("internal") else workspace / "necessary.txt"
+                h.publish(material, b"synthetic necessary material")
+                sha = h.digest(h.read_regular(material))
+                if not mode.startswith("internal"):
+                    material.chmod(0o644)
+                reference = dict(path=str(material), sha256=sha, kind="necessary-material")
+                item = dict(reference, worker_id=sid, basis="original worker preservation")
+                materials = [] if mode in ("internal-ok", "internal-missing", "missing-and-unapproved", "external-unapproved") else [item]
+                if mode == "wrong-worker":
+                    item["worker_id"] = "other"
+                if mode == "duplicate-authorization":
+                    materials.append(dict(item))
+                if mode == "extra-missing":
+                    materials.append(dict(item, path=str(workspace / "also-necessary.txt")))
+                if mode in ("missing-and-unapproved", "external-missing", "internal-missing"):
+                    material.unlink()
+                if mode == "hash-drift":
+                    material.write_bytes(b"changed material")
+                stop = dict(schema="rh-worker-stop/1", run_id=run_id, worker_id=sid, project_id=h.PROJECT,
+                            state="blocked", resume_state="held", evidence_turn_id="turn", preservation=[reference],
+                            stop_directive=dict(last_ack_d="D-1", next_d="D-77"))
+                h.publish(current / "workers" / sid / "stop.json", h.canonical(stop))
+                message = dict(id="directive", kind="message", role="user", sequence=1, turnId="turn", clientMessageId=handle,
+                               origin="automation", senderSessionId="old", senderProjectId=h.PROJECT, text="[from old] " + raw.decode())
+                def snapshot(actor, kind, entries):
+                    return dict(session=dict(id=actor, kind=kind, projectId=h.PROJECT, isTerminated=False, activity=dict(state="idle")),
+                                transcript=dict(incomplete=[], truncatedFields=0, turns=[dict(id="turn", state="completed", completedAt="synthetic-completed")], entries=entries))
+                snaps = {"old": snapshot("old", "orchestrator", []), sid: snapshot(sid, "worker", [message])}
+                cli = SimpleNamespace(data_dir=data, session=lambda actor: snaps[actor], documents=lambda: dict(lease=dict(sessionId="old", frozen=False)),
+                                      sessions=lambda: [dict(id=k, role=v["session"]["kind"], projectId=h.PROJECT, isTerminated=False) for k, v in snaps.items()])
+                fact = dict(kind="worker-control", expected_effect="worker-control", effect_id=handle, target=dict(session_id=sid),
+                            origin="retrospective-review", message_sha256=h.digest(raw), terminal="returned", result=dict(returncode=0))
+                if mode.endswith("-ok"):
+                    closed = h.retirement_preconditions(cli, state, request, {handle: [fact]}, dict(materials=materials), current)
+                    self.assertTrue(closed[0]["held"])
+                    self.assertEqual(closed[0]["preservation"][0]["sha256"], sha)
+                    self.assertEqual((closed[0]["last_ack_d"], closed[0]["next_d"]), ("D-1", "D-77"))
+                else:
+                    with self.assertRaises(h.Stop):
+                        h.retirement_preconditions(cli, state, request, {handle: [fact]}, dict(materials=materials), current)
+                self.assertFalse((current.parent / ".retirement" / run_id / "receipt.json").exists())
+                self.assertTrue(current.is_dir())
 
 
 class RetirementTests(unittest.TestCase):

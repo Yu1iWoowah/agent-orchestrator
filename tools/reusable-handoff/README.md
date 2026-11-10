@@ -382,6 +382,7 @@ opaque 材料由 manifest／producer／核收清單綁定，不執行內容。pa
 - runner 與 helper 真結束，boot／PID／啟動身分可核；舊鎖不是 launch 證明。
 - managed lease／old 責任與 actor 集合仍成立，slot 沒換包。
 - 每個 worker 的已接收 directive、實際 consuming turn completed、原 stop、ACK、hold 分開核對；後來 user／durable steer 指令使授權 UNKNOWN。
+- 受控 worker 的 stop.preservation 逐筆閉合：run 內副本核原 bytes/hash；run 外原件須有同 worker/path/hash 的唯一授權 materials，限原 workspace/artifact roots。每筆授權材料都先核存在與 hash，再由保存階段複製；缺項或漂移不得產生退役 receipt。
 - 沒新控制的 worker 有原持續 hold 與 quiescent 證據。不能為了退役先送指令或把 blocked 改 safe。
 - lifecycle／managed／ownership 已變而責任或資料保護無法證明，就保持 STOP；CLI returncode 0 不夠。
 

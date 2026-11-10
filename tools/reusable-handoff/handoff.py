@@ -3289,6 +3289,10 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
     documents = cli.documents()
     require(documents.get("lease", {}).get("sessionId") == old and not documents["lease"].get("frozen"), "managed responsibility changed")
     workers = {w["worker_id"]: w for w in request["workers"]}
+    materials = authorization.get("materials", [])
+    require(isinstance(materials, list) and all(isinstance(item, dict) and item.get("worker_id") in workers and
+            isinstance(item.get("path"), str) and isinstance(item.get("sha256"), str) and
+            re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) for item in materials), "authorized material index UNKNOWN")
     live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
     require({x["id"] for x in live if x["role"] == "worker"} == set(workers) and
             [x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
@@ -3298,6 +3302,12 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
         snap = cli.session(sid)
         require(snap["session"].get("id") == sid and snap["session"].get("kind") == "worker" and
                 snap["session"].get("projectId") == PROJECT and quiescent(snap), "worker not terminal/held")
+        declared = [item for item in materials if item["worker_id"] == sid]
+        verified = []
+        if declared:
+            verified = source_inputs(type("Sources", (), {"cli": cli})(), sid,
+                                     Path(workspace_entry(request, sid)["path"]), declared)
+            require(all(row["sha256"] == item["sha256"] for row, item in zip(verified, declared)), "authorized material changed")
         key = "worker-stop-" + sid
         control = current / "control" / key
         if control.exists():
@@ -3330,11 +3340,25 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
             require(stop.get("run_id") == state["run_id"] and stop.get("worker_id") == sid and
                     stop.get("resume_state") == "held" and stop.get("state") in ("safe", "pending", "blocked") and
                     stop.get("evidence_turn_id") == message["dispatch_turn_id"], "original worker hold evidence UNKNOWN")
+            require(isinstance(stop.get("preservation"), list), "worker preservation list UNKNOWN")
+            preserved = []
+            for reference in stop["preservation"]:
+                require(isinstance(reference, dict) and isinstance(reference.get("path"), str) and
+                        isinstance(reference.get("sha256"), str) and
+                        re.fullmatch(r"[0-9a-f]{64}", reference.get("sha256", "")), "worker preservation reference UNKNOWN")
+                path = no_symlinks(reference["path"])
+                if path.is_relative_to(current):
+                    hash_reference(reference)
+                    preserved.append(dict(reference, storage="run"))
+                else:
+                    authorized = [item for item in verified if Path(item["path"]) == path and item["sha256"] == reference["sha256"]]
+                    require(len(authorized) == 1, "worker preservation lacks unique authorized material")
+                    preserved.append(dict(authorized[0], storage="authorized-material"))
             closed.append(dict(worker_id=sid, effect_id=matched[0], handle=handle, message_id=message["id"],
                                turn_id=message["dispatch_turn_id"], directive_received=payload["instruction"]["directive"],
                                stop_state=stop["state"], last_ack_d=stop.get("stop_directive", {}).get("last_ack_d"),
                                next_d=stop.get("stop_directive", {}).get("next_d"), held=True,
-                               stop_sha256=digest(stop_raw), payload_sha256=digest(payload_raw)))
+                               stop_sha256=digest(stop_raw), payload_sha256=digest(payload_raw), preservation=preserved))
         else:
             hold = authorization.get("hold_evidence", {}).get(sid)
             require(rules.get("hold_state") == "held" and rules.get("release", {}).get("mode") == "keep-held" and hold,
