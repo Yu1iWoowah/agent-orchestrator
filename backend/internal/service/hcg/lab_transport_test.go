@@ -89,7 +89,7 @@ func TestLabTransportFixedFamiliesAndSafeProjection(t *testing.T) {
 				if family == "openai" && r.Header.Get("OpenAI-Project") != "synthetic-workspace" {
 					t.Error("project accounting binding missing")
 				}
-				return &http.Response{StatusCode: 200, Header: http.Header{"X-Request-Id": {"synthetic-request"}, "Set-Cookie": {labFixtureMarker}}, Body: io.NopCloser(strings.NewReader(`{"model":"fixture-model","usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)), Request: r}, nil
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": {"synthetic-request"}, "Set-Cookie": {labFixtureMarker}}, Body: io.NopCloser(strings.NewReader(`{"model":"fixture-model","usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)), Request: r}, nil
 			}))
 			out, err := provider.Call(t.Context(), labRequest(family))
 			if err != nil || calls != 1 || out.Status != 200 || out.RequestID != "synthetic-request" || strings.Contains(string(out.Body), labFixtureMarker) {

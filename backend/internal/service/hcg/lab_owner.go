@@ -9,6 +9,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/components/hcg/reporting"
 )
 
+// CheckDelegationOwnerStartup rejects missing canonical DBs before opening SQLite.
 func CheckDelegationOwnerStartup(ctx context.Context, root string) error {
 	return reporting.CheckDelegationOwnerStartup(ctx, root)
 }
@@ -31,7 +32,7 @@ func (s *Service) validateLabOwner(ctx context.Context, grant *reporting.Delegat
 	}
 	resolved, err := filepath.EvalSymlinks(root)
 	info, statErr := os.Lstat(root)
-	if err != nil || resolved != root || statErr != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if err != nil || resolved != root || statErr != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return delegationUnavailable()
 	}
 	owner := false

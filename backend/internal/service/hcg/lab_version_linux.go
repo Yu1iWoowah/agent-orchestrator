@@ -25,12 +25,12 @@ func readLabVersion(ctx context.Context, root string, ref reporting.DelegationCr
 	if err != nil {
 		return nil, errLabTransport
 	}
-	defer func() { unix.Close(fd) }()
+	defer func() { _ = unix.Close(fd) }()
 	check := func(fd int, kind uint32, mode uint32) bool {
 		var stat unix.Stat_t
-		return unix.Fstat(fd, &stat) == nil && stat.Mode&unix.S_IFMT == kind && stat.Mode&0777 == mode && stat.Uid == uint32(os.Geteuid())
+		return unix.Fstat(fd, &stat) == nil && stat.Mode&unix.S_IFMT == kind && stat.Mode&0o777 == mode && int64(stat.Uid) == int64(os.Geteuid())
 	}
-	if !check(fd, unix.S_IFDIR, 0700) {
+	if !check(fd, unix.S_IFDIR, 0o700) {
 		return nil, errLabTransport
 	}
 	for _, name := range []string{ref.Provider, ref.Name} {
@@ -41,9 +41,9 @@ func readLabVersion(ctx context.Context, root string, ref reporting.DelegationCr
 		if err != nil {
 			return nil, errLabTransport
 		}
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		fd = next
-		if !check(fd, unix.S_IFDIR, 0700) {
+		if !check(fd, unix.S_IFDIR, 0o700) {
 			return nil, errLabTransport
 		}
 	}
@@ -52,8 +52,8 @@ func readLabVersion(ctx context.Context, root string, ref reporting.DelegationCr
 		return nil, errLabTransport
 	}
 	file := os.NewFile(uintptr(fileFD), "lab-version")
-	defer file.Close()
-	if !check(fileFD, unix.S_IFREG, 0600) || ctx.Err() != nil {
+	defer func() { _ = file.Close() }()
+	if !check(fileFD, unix.S_IFREG, 0o600) || ctx.Err() != nil {
 		return nil, errLabTransport
 	}
 	body, err := io.ReadAll(io.LimitReader(file, 16385))

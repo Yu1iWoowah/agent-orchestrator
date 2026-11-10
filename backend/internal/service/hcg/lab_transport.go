@@ -34,8 +34,8 @@ type labHTTPProvider struct {
 	client *http.Client
 }
 
-// NewLabHTTPProvider's dependencies are trusted constructor seams, never HTTP
-// or model arguments. The daemon uses its fixed OS-user store and no override.
+// NewLabHTTPProvider accepts trusted constructor dependencies, never HTTP or
+// model arguments. The daemon uses its fixed OS-user store and no override.
 func NewLabHTTPProvider(root string, transport http.RoundTripper) reporting.DelegationProvider {
 	if transport == nil {
 		transport = &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second, DisableKeepAlives: true}
@@ -78,7 +78,7 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	var credential labCredential
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&credential) != nil || decoder.Decode(new(any)) != io.EOF || credential.Provider != r.BillingProvider || credential.Name != r.CredentialRef.Name || credential.Version != r.CredentialRef.Version || credential.Workspace != r.Workspace || len(credential.Secret) == 0 || len(credential.Secret) > 4096 {
+	if decoder.Decode(&credential) != nil || decoder.Decode(new(any)) != io.EOF || credential.Provider != r.BillingProvider || credential.Name != r.CredentialRef.Name || credential.Version != r.CredentialRef.Version || credential.Workspace != r.Workspace || credential.Secret == "" || len(credential.Secret) > 4096 {
 		return unsent()
 	}
 	for _, c := range credential.Secret {
@@ -100,7 +100,7 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	// that reviewed binding. No arbitrary caller header or workspace override.
 	response, err := p.client.Do(request)
 	if response != nil && response.Body != nil {
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 	}
 	if err != nil {
 		if ctx.Err() != nil {
