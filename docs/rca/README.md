@@ -1,7 +1,7 @@
 # Codex 已記錄內容粗估
 
 RCA-DIR3-PR1 將 Codex worker 既有記錄的內容粗估與 AO canonical usage 並列。
-它不重建 provider request；`requestComposition` 固定為 `UNKNOWN`。目前沒有新增畫面，renderer 提供 typed client，既有 session 畫面由 PR5 接入。
+它不重建 provider request；`requestComposition` 固定為 `UNKNOWN`。renderer 沿 typed client 在既有資源視窗與診斷頁提供已記錄內容面板。
 
 ## 選定與分析
 
@@ -25,6 +25,35 @@ ao usage composition get --session <id> --json
 | `purge --session <id> --yes` | 撤回 job 並刪除 RCA 數字／scope，保留 override、canonical 與 native 檔 |
 
 父層設定、owner／launch generation、source 身分及 revision 在讀後、寫回前再驗。off→on 的 ABA 不讓舊工作回填。容量或寫入故障後不自動重試；明示控制操作須先重新驗證儲存。
+
+## 畫面與控制
+
+啟用「開發人員模式」與「診斷」後，在「記憶體」視窗或「診斷」頁面找到 session 列。
+只有本機 `agent-orchestrator` 專案的 Codex worker 提供「已記錄內容」按鈕；其他專案、orchestrator、Claude 與 remote session 不提供此入口。
+點選這個按鈕明示選定 session，只查現有數字，不自動讀取來源。展開的面板沿正式 typed API fetch，不讓 renderer 讀 native 檔案。
+
+1. 「Session RCA 設定」可選「開啟」「關閉」或「繼承」。面板另列 project／worker 角色與最終生效狀態；繼承不是強制開啟。
+2. 按「分析所選 session」才要求新 snapshot。執行期間輪詢狀態，不重複提交分析；未開啟或主機暫停時不能要求分析。
+3. 「停止此 session 的 RCA」明示關閉並撤回分析；「刪除粗估」撤回工作並刪除數字，保留 policy、canonical 與 native。
+4. 「暫停此主機的 RCA」影響此主機所有 RCA，按「恢復此主機的 RCA」才恢復；不會暫停 native session 或改寫正本用量。
+
+控制操作開始就撤下舊畫面數字，完成後重查。session 切換與 off→on 的舊回應不得回填新畫面。
+關閉面板停止 renderer 輪詢，不持久化數字 query cache；要撤回分析請使用停止／刪除控制。
+傳輸或控制失敗只顯示固定錯誤訊息，不將回應原文送到 renderer 錯誤邊界或 telemetry。
+
+介面文字提供英文與繁中；其他現有語系的新 RCA 字串暫沿用英文。
+
+### 數字的閱讀方式
+
+- **已記錄內容粗估**：固定六類各列 bytes 與各可見片段 `ceil(bytes/4)` 後加總的粗估，沒有 request 占比、計費總量或隱藏 overhead。
+- **Session／turn**：可選來源 snapshot、session snapshot、未配對內容與記錄 turn ordinal；ordinal 不是 provider request，也不與 canonical event 猜配。
+- **Coverage**：同時列分析 bytes、固定讀窗、records、來源版本與品質缺口；partial 不顯示成完整輸入。
+- **正本用量**：原 canonical events 的獨立數字頁，不和粗估相加；本頁無 rows 是 UNKNOWN，不是用量 0。尚有後續頁時明示本頁不是 session 總量。
+- **基線，非此請求**：獨立的已核基線。缺附件或不符 digest 時保持 UNKNOWN，不啟 provider 補做。
+
+已知固定品質碼尚無本地化標籤時直接顯示代碼，未辨識字串保持 UNKNOWN。
+缺欄位顯示 UNKNOWN，只有實際觀察的空值可以是 0；可見 thinking 為 0 也不能表示隱藏 thinking 為 0。
+完整逐 request composition 始終 UNKNOWN。此畫面只完成 Codex 方向三的可見閉環；原 native OTel PR2、原 PR3 與 Claude PR4 的交付／停點不因畫面而變更。
 
 ## 來源與品質
 
