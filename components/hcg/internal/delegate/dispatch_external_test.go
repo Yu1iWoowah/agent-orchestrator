@@ -17,10 +17,10 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 		unknown                                                    bool
 		wantCalls                                                  int
 	}{
-		{"family_cap", 280, 0, 290, 0, false, 0},
-		{"global_cap", 280, 330, 280, 340, false, 0},
-		{"unknown", 280, 0, 280, 0, true, 0},
-		{"exact_caps_count_own_hold_once", 280, 330, 280, 330, false, 1},
+		{"family_cap", 295, 0, 298, 0, false, 0},
+		{"global_cap", 295, 330, 295, 335, false, 0},
+		{"unknown", 295, 0, 295, 0, true, 0},
+		{"exact_caps_count_own_hold_once", 295, 330, 295, 330, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, worktree := t.TempDir(), t.TempDir()

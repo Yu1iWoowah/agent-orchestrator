@@ -99,7 +99,7 @@ func fixedDelegationRegistration(t *testing.T, family, project, body, root strin
 	return reporting.DelegationRegistration{
 		Grant: grant,
 		Deployment: reporting.DelegationDeployment{
-			Profile:       reporting.DelegationProfile{ID: family + "-fixture", Revision: "v1", BillingProvider: family, Model: "fixture-model", ContextTokens: 100000, MaxOutputTokens: 16384, OutputTokens: 128, Prices: reporting.DelegationPrices{Version: "synthetic-price-v1", Period: time.Now().UTC().Format("2006-01"), InputPerMillion: 200000000000, CachedInputPerMillion: 200000000000, LimitsCertified: true, BillableUsageCovered: true}},
+			Profile:       reporting.DelegationProfile{ID: family + "-fixture", Revision: "v1", BillingProvider: family, Model: "fixture-model", ContextTokens: 100000, MaxOutputTokens: 16384, OutputTokens: 128, Prices: reporting.DelegationPrices{Version: "synthetic-price-v1", Period: time.Now().UTC().Format("2006-01"), InputPerMillion: 50000000000, CachedInputPerMillion: 50000000000, LimitsCertified: true, BillableUsageCovered: true}},
 			CredentialRef: reporting.DelegationCredentialReference{Provider: family, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace",
 			Installation: reporting.DelegationInstallation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: "7afc7c1cc96e23992c8f105f960132c657883bb1", SourceDigest: "bac632c7fbe275c2f9389be3a56e69ada6a1d35d29cbc80ce575a46389608f4d", RuntimeDigest: fixtureRuntimeDigest(t, venv), PythonDigest: fixtureDigest(read(filepath.Join(venv, "bin", "python"))), ConfigDigest: fixtureDigest(read(filepath.Join(venv, "pyvenv.cfg"))), LockDigest: "799a72fd49b931a9f50152a6342f574efa1eb8eb89ba500e3f3e7f5859357666", PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: "hcg.delegate-read/1"},
 			Inputs:       []reporting.DelegationInputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []reporting.DelegationApprovedFile{{Path: "prompt.txt", SHA256: fixtureDigest([]byte(body))}}}},
@@ -606,7 +606,7 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if price != "synthetic-price-v1" || input.Valid || !output.Valid || output.Int64 != 0 || !total.Valid || total.Int64 != 2000000 {
+			if price != "synthetic-price-v1" || input.Valid || !output.Valid || output.Int64 != 0 || !total.Valid || total.Int64 != 500000 {
 				t.Fatalf("late canonical price/cost changed: %q input=%v output=%v total=%v", price, input, output, total)
 			}
 			break

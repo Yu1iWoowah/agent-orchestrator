@@ -163,7 +163,7 @@ type Coordinator struct {
 func NewCoordinator(root string, canonical Recorder, provider func(Deployment) Transport, checkpoint func(context.Context, string)) *Coordinator {
 	c := &Coordinator{root: root, dir: filepath.Join(root, "hcg", "delegation"), epoch: rand.Text(), policies: map[string]PolicySnapshot{}, projectVersions: map[string]uint64{}, sessionVersions: map[string]uint64{}, jobs: map[string]delegationJob{}, canonical: canonical, provider: provider, checkpoint: checkpoint}
 	c.state = deploymentState{Version: 1, Current: map[string]string{}, History: map[string]Deployment{}, Sessions: map[string]sessionMount{}}
-	c.budget = &Budget{Dir: filepath.Join(c.dir, "budget")}
+	c.budget = &Budget{OwnerRoot: root, Dir: filepath.Join(c.dir, "budget")}
 	raw, err := os.ReadFile(filepath.Join(c.dir, "registry.json"))
 	if err == nil {
 		if len(raw) > 4<<20 || json.Unmarshal(raw, &c.state) != nil || c.state.Version != 1 || c.state.Current == nil || c.state.History == nil || c.state.Sessions == nil {
@@ -283,7 +283,7 @@ func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 	if err := verifyInstallation(ctx, d.Installation); err != nil {
 		return err
 	}
-	if err := c.budget.ApprovePeriod(ctx, d.Profile.Prices.Period, r.ExternalSpend); err != nil {
+	if err := c.budget.ApproveLabRun(ctx, r.Grant, d.Profile.Prices.Period, r.ExternalSpend); err != nil {
 		return err
 	}
 	err := c.edit(ctx, func(s *deploymentState) error {
@@ -525,6 +525,11 @@ func (c *Coordinator) Read(ctx context.Context, id integration.Identity, p Polic
 		}
 		c.mu.Unlock()
 		return failureReply(execution, d.Profile, "unavailable", view.Reason)
+	}
+	if c.state.Grant != nil {
+		bounded, end := context.WithDeadline(ctx, c.state.Grant.ExpiresAt)
+		defer end()
+		ctx = bounded
 	}
 	jobID := execution.AttemptID
 	c.jobs[jobID] = delegationJob{id.SessionID, id.ProjectID, cancel}

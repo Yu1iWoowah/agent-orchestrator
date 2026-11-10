@@ -1,10 +1,13 @@
 package delegate
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
 
 func labGrantFixture(root, project, session string, now time.Time) *LabGrant {
@@ -15,6 +18,33 @@ func labGrantFixture(root, project, session string, now time.Time) *LabGrant {
 		StartsAt: start, ExpiresAt: start.Add(24*time.Hour - time.Nanosecond),
 		Profiles: map[string]ProfileRef{"openai": {ID: "openai-fixture", Revision: "v1"}, "anthropic": {ID: "anthropic-fixture", Revision: "v1"}},
 		Bindings: []LabSession{owner}, ProviderCapNanos: map[string]int64{"openai": 10 * nanoUSD, "anthropic": 10 * nanoUSD}, TotalCapNanos: 20 * nanoUSD, AttemptsPerProvider: 26}
+}
+
+func TestLabRunRejectsWorstReservationAboveFamilyCap(t *testing.T) {
+	root, worktree := t.TempDir(), t.TempDir()
+	body := "public synthetic line\n"
+	if err := os.WriteFile(filepath.Join(worktree, "prompt.txt"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	d := deploymentFixture(t, "openai", "p", body)
+	d.Profile.Prices.InputPerMillion, d.Profile.Prices.CachedInputPerMillion = 200*nanoUSD, 200*nanoUSD
+	calls := 0
+	c := NewCoordinator(root, &receiptSink{}, func(Deployment) Transport {
+		return transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
+			calls++
+			return providerFixtureReply(d.Profile.Model, validProposal(body)), nil
+		})
+	}, nil)
+	defer c.Close()
+	approveFixture(t, c, d)
+	policy := delegationPolicy(d.Profile)
+	c.ProjectPolicyChanged("p", policy)
+	id := integration.Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree, LaunchID: "launch", NativeID: "native", ControllerGeneration: "generation"}
+	launchFixture(t, c, id)
+	out := c.Read(t.Context(), id, policy, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{"prompt.txt"}}, c.PolicyRevision(id))
+	if out.Status != "unavailable" || calls != 0 {
+		t.Fatalf("run cap failed: status=%s calls=%d", out.Status, calls)
+	}
 }
 
 func TestLabRegistrationRequiresExplicitRunGrant(t *testing.T) {

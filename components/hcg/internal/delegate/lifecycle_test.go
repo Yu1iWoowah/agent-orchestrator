@@ -35,7 +35,9 @@ func deploymentFixture(t *testing.T, provider, project, source string) Deploymen
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Deployment{Profile: budgetProfile(provider), CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: runtimeDigest, PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
+	profile := budgetProfile(provider)
+	profile.Prices.InputPerMillion, profile.Prices.CachedInputPerMillion = 50*nanoUSD, 50*nanoUSD
+	return Deployment{Profile: profile, CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: runtimeDigest, PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
 }
 func delegationPolicy(p Profile) PolicySnapshot {
 	enabled := true
