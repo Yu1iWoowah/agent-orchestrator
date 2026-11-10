@@ -268,9 +268,6 @@ func (c *Coordinator) edit(ctx context.Context, apply func(*deploymentState) err
 	return nil
 }
 func (c *Coordinator) Register(ctx context.Context, r Registration) error {
-	if err := c.prepareRegistration(ctx); err != nil {
-		return err
-	}
 	d := r.Deployment
 	if !r.Grant.valid(c.root) || !r.Grant.current(c.budget.now()) || r.Grant.Profiles[d.Profile.BillingProvider] != (ProfileRef{ID: d.Profile.ID, Revision: d.Profile.Revision}) {
 		return ErrUnavailable
@@ -286,15 +283,11 @@ func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 	if err := verifyInstallation(ctx, d.Installation); err != nil {
 		return err
 	}
-	if err := c.budget.ApproveLabRun(ctx, r.Grant, d.Profile.Prices.Period, r.ExternalSpend); err != nil {
-		return err
-	}
 	err := c.edit(ctx, func(s *deploymentState) error {
 		grant, err := mergeLabGrant(s.Grant, r.Grant)
 		if err != nil {
 			return err
 		}
-		s.Grant = grant
 		for _, old := range s.History {
 			if old.Profile.ID == d.Profile.ID && old.Profile.Revision == d.Profile.Revision && old.Profile.digest() != digest {
 				return ErrUnavailable
@@ -306,6 +299,15 @@ func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 				return ErrUnavailable
 			}
 		}
+		// edit holds the registration mutation lock. Reject all immutable
+		// conflicts before recovery or approval can commit the budget grant.
+		if err := c.prepareRegistration(ctx); err != nil {
+			return err
+		}
+		if err := c.budget.ApproveLabRun(ctx, r.Grant, d.Profile.Prices.Period, r.ExternalSpend); err != nil {
+			return err
+		}
+		s.Grant = grant
 		s.History[digest] = d
 		s.Current[d.Profile.ID] = digest
 		return nil

@@ -76,3 +76,46 @@ func TestLabMissingPendingReceiptBlocksResume(t *testing.T) {
 		t.Fatal("incomplete recovery altered hold or invented usage")
 	}
 }
+
+func TestLabRejectedDescriptorPreservesGrantAndAllowsRetry(t *testing.T) {
+	for _, family := range []string{"openai", "anthropic"} {
+		t.Run(family, func(t *testing.T) {
+			c := NewCoordinator(t.TempDir(), &receiptSink{}, nil, nil)
+			defer c.Close()
+			d := deploymentFixture(t, family, "p", "synthetic source")
+			approveFixture(t, c, d)
+			paths := []string{filepath.Join(c.dir, "registry.json"), filepath.Join(c.budget.Dir, "budget.json")}
+			before := make([]string, len(paths))
+			for i, path := range paths {
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[i] = string(raw)
+			}
+			g := c.LabGrant()
+			g.Bindings = append(g.Bindings, LabSession{ProjectID: "p", SessionID: "another-approved-session"})
+			request := Registration{Grant: g, Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}
+			request.Deployment.Workspace = "mistaken-workspace"
+			if err := c.Register(t.Context(), request); err == nil {
+				t.Fatal("conflicting immutable descriptor accepted")
+			}
+			for i, path := range paths {
+				raw, err := os.ReadFile(path)
+				if err != nil || string(raw) != before[i] {
+					t.Fatal("rejected descriptor changed persistent grant or journal")
+				}
+			}
+			request.Deployment = d
+			if err := c.Register(t.Context(), request); err != nil {
+				t.Fatalf("corrected registration could not retry: %v", err)
+			}
+			if !c.LabGrant().bound("p", "another-approved-session") {
+				t.Fatal("successful retry lost added binding")
+			}
+			if _, err := c.checkJournal(t.Context()); err != nil {
+				t.Fatalf("successful retry left inconsistent grants: %v", err)
+			}
+		})
+	}
+}

@@ -140,13 +140,17 @@ func TestLabResolverRejectsBeforeHTTP(t *testing.T) {
 }
 
 func TestLabHTTPRejectsRedirectAndSecretEcho(t *testing.T) {
-	for _, mode := range []string{"redirect", "error_body", "decoded_echo"} {
+	for _, mode := range []string{"redirect", "error_body", "decoded_echo", "completion_echo"} {
 		t.Run(mode, func(t *testing.T) {
 			root, _ := labCredentialFixture(t, "openai")
 			calls := 0
 			p := NewLabHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
 				calls++
 				status, body := 200, `{"echo":"\u0053YNTHETIC_TRANSPORT_MARKER"}`
+				if mode == "completion_echo" {
+					raw, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"findings":[{"text":"\u0053YNTHETIC_TRANSPORT_MARKER"}]}`}}}})
+					body = string(raw)
+				}
 				if mode == "redirect" {
 					status = 302
 				}

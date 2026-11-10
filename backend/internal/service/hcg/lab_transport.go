@@ -126,6 +126,21 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	if json.Unmarshal(body, &decoded) == nil && labEchoesCredential(decoded, credential.Secret) {
 		return out, errLabTransport
 	}
+	// The completion is JSON encoded inside the provider's JSON envelope.
+	// Scan its decoded strings here, before any text reaches the PAL child.
+	var completion struct {
+		Choices []struct {
+			Message struct{ Content string }
+		}
+	}
+	if json.Unmarshal(body, &completion) == nil {
+		for _, choice := range completion.Choices {
+			var reply any
+			if json.Unmarshal([]byte(choice.Message.Content), &reply) == nil && labEchoesCredential(reply, credential.Secret) {
+				return out, errLabTransport
+			}
+		}
+	}
 	out.Body = body
 	return out, nil
 }

@@ -85,6 +85,21 @@ func (h *labHTTPFixture) provider(t *testing.T) reporting.DelegationProvider {
 			delete(parsed, "usage")
 			response.Body, _ = json.Marshal(parsed)
 		}
+		if mode == 5 {
+			var envelope map[string]any
+			if err := json.Unmarshal(response.Body, &envelope); err != nil {
+				return nil, err
+			}
+			message := envelope["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+			var completion map[string]any
+			if err := json.Unmarshal([]byte(message["content"].(string)), &completion); err != nil {
+				return nil, err
+			}
+			completion["findings"].([]any)[0].(map[string]any)["text"] = labHeaderMarker
+			raw, _ := json.Marshal(completion)
+			message["content"] = strings.ReplaceAll(string(raw), labHeaderMarker, `\u0053`+labHeaderMarker[1:])
+			response.Body, _ = json.Marshal(envelope)
+		}
 		if mode == 3 {
 			response.Status = 401
 			response.Body = []byte(labHeaderMarker)
@@ -266,5 +281,21 @@ func TestHCGLabHTTPCallerFaultsPreserveNativeFacts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHCGLabNestedCompletionEchoStopsAtParent(t *testing.T) {
+	for _, family := range []string{"openai", "anthropic"} {
+		t.Run(family, func(t *testing.T) {
+			h := newLabHTTPFixture(t, family)
+			h.placeNoncredentialMarker(t)
+			h.mode.Store(5)
+			f := newLabCaller(t, family, h.provider(t))
+			f.registerAndLaunch(t)
+			assertLabSafeFailure(t, f.call(t, 1, f.readArgs()...))
+			if h.calls.Load() != 1 {
+				t.Fatal("nested echo was retried")
+			}
+		})
 	}
 }
