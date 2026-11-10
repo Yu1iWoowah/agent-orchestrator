@@ -90,10 +90,11 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 			var call struct {
 				Name      string          `json:"name"`
 				Arguments json.RawMessage `json:"arguments"`
+				Meta      json.RawMessage `json:"_meta"`
 			}
 			d := json.NewDecoder(bytes.NewReader(req.Params))
 			d.DisallowUnknownFields()
-			if d.Decode(&call) != nil || d.Decode(new(any)) != io.EOF || call.Name != "hcg_delegate_read" {
+			if d.Decode(&call) != nil || d.Decode(new(any)) != io.EOF || call.Name != "hcg_delegate_read" || !validDelegationMCPMetadata(call.Meta) {
 				resp.Error = &mcpError{Code: -32602, Message: "invalid HCG tool request"}
 				send(resp)
 				continue
@@ -143,4 +144,31 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 		}
 	}
 	return scanner.Err()
+}
+
+// Metadata is validated at the wire boundary and never projected into HCG args.
+func validDelegationMCPMetadata(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var meta map[string]json.RawMessage
+	if json.Unmarshal(raw, &meta) != nil || meta == nil {
+		return false
+	}
+	token, present := meta["progressToken"]
+	if !present {
+		return true
+	}
+	d := json.NewDecoder(bytes.NewReader(token))
+	d.UseNumber()
+	var value any
+	if d.Decode(&value) != nil {
+		return false
+	}
+	switch value.(type) {
+	case string, json.Number:
+		return true
+	default:
+		return false
+	}
 }
