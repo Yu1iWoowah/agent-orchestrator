@@ -5,6 +5,8 @@ Only CLI mutations are permitted. HTTP is read-only; SQLite is scoped query_only
 This module has no import-time I/O. Tests inject the CLI, clock and observations.
 """
 import argparse
+import contextlib
+from collections.abc import Mapping
 import datetime as dt
 import fcntl
 import hashlib
@@ -22,6 +24,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import uuid
 
 PROJECT = "agent-orchestrator"
@@ -86,7 +89,8 @@ def no_symlinks(path):
 
 def private_read(path):
     path = no_symlinks(path)
-    require(stat.S_IMODE(path.stat().st_mode) == 0o600 and path.is_file(), "expected private file: " + str(path))
+    require(path.is_file() and stat.S_IMODE(path.stat().st_mode) == 0o600 and path.stat().st_nlink == 1,
+            "expected private regular file: " + str(path))
     return path.read_bytes()
 
 
@@ -474,67 +478,576 @@ def cli_environment(old, data_dir, run_file, temp):
     return env
 
 
+CALL_PROTOCOL = "rh-calls/1"
+CALL_EFFECTS = {"observation": "none", "local-help": "none", "metadata-refresh": "metadata",
+                "worker-control": "worker-control", "handoff-lifecycle": "lifecycle",
+                "managed-write": "managed-write", "progress-notification": "notification"}
+_OPERATION_SEAL = object()
+
+
+class Operation(Mapping):
+    """Only a constructor-minted immutable operation may reach transport."""
+    __slots__ = ("_owner", "_raw")
+
+    def __init__(self, owner, value, seal):
+        require(seal is _OPERATION_SEAL, "unsealed operation")
+        object.__setattr__(self, "_owner", owner)
+        object.__setattr__(self, "_raw", canonical(value))
+
+    def __setattr__(self, key, value):
+        raise Stop("sealed operation is immutable")
+
+    def __getitem__(self, key):
+        return decode(self._raw)[key]
+
+    def __iter__(self):
+        return iter(decode(self._raw))
+
+    def __len__(self):
+        return len(decode(self._raw))
+
+
+def replace_private(path, value):
+    path = no_symlinks(path)
+    temp = path.with_name("." + path.name + "." + uuid.uuid4().hex)
+    publish(temp, canonical(value))
+    os.replace(temp, path)
+    sync_directory(path.parent)
+
+
+def process_identity(pid=None):
+    # /proc start time distinguishes PID reuse. No environment or cmdline values.
+    pid = os.getpid() if pid is None else pid
+    raw = Path("/proc", str(pid), "stat").read_text()
+    return dict(pid=pid, sid=os.getsid(pid), boot_id=boot_id(),
+                start_ticks=raw[raw.rindex(")") + 2:].split()[19])
+
+
+def process_ended(identity):
+    require(identity.get("boot_id") == boot_id(), "execution boot identity UNKNOWN")
+    try:
+        raw = Path("/proc", str(identity["pid"]), "stat").read_text()
+    except FileNotFoundError:
+        return True
+    fields = raw[raw.rindex(")") + 2:].split()
+    return fields[19] != identity["start_ticks"] or fields[0] == "Z"
+
+
+class Journal:
+    """One fixed local admission domain; it never moves with a reclaimed run."""
+    def __init__(self, data, run_id):
+        require(str(uuid.UUID(run_id)) == run_id, "canonical run selector required")
+        self.run_id = run_id
+        path = no_symlinks(data) / "projects" / PROJECT / "orchestrator/.handoff-journal" / run_id
+        created = not path.exists()
+        self.root = mkdir(path)
+        require(created or (self.root / "admission.lock").is_file(), "missing admission lock identity")
+        with self.mutex():
+            if not (self.root / "admission.json").exists():
+                require(created, "missing admission state cannot be recreated open")
+                publish(self.root / "admission.json", canonical(dict(schema=CALL_PROTOCOL, run_id=run_id, status="open")))
+            self.state()
+
+    @contextlib.contextmanager
+    def mutex(self):
+        path = no_symlinks(self.root / "admission.lock")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "r+b") as handle:
+            info = os.fstat(handle.fileno())
+            require(info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600, "admission lock identity invalid")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+
+    def state(self):
+        value = decode(private_read(self.root / "admission.json"))
+        require(value.get("schema") == CALL_PROTOCOL and value.get("run_id") == self.run_id and
+                value.get("status") in ("open", "retiring", "retired"), "admission binding invalid")
+        return value
+
+    def bind(self, binding, source_root=None):
+        with self.mutex():
+            require(self.state()["status"] == "open", "journal not open")
+            if source_root is not None:
+                raw = private_read(source_root / "request.json")
+                require(digest(raw) == binding["start_sha256"], "preflight request changed before binding")
+                request = decode(raw)
+                publish(self.root / "bound/start.json", raw)
+                qualification = private_read(Path(binding["root"]) / ".qualified/qualification.json")
+                require(digest(qualification) == binding["qualification_sha256"], "preflight qualification changed")
+                publish(self.root / "bound/qualification.json", qualification)
+                publish(self.root / "bound/handoff.py", read_regular(Path(__file__)))
+                for source in request["sources"]:
+                    original = private_read(confined(source_root, source["raw_relpath"]))
+                    require(digest(original) == source["raw_sha256"], "preflight source changed")
+                    publish(confined(self.root / "bound", source["raw_relpath"]), original)
+            publish(self.root / "binding.json", canonical(dict(binding, run_id=self.run_id, protocol=CALL_PROTOCOL)))
+
+    def register(self, role, actor, maintenance=None):
+        require(role in ("start", "_run", "continue", "worker-receipt", "old-receipt", "bootstrap", "finalize", "inspect", "retire", "locate"), "unknown execution role")
+        identifier(actor)
+        with self.mutex():
+            state = self.state()
+            previous = self.root / "executions"
+            for directory in previous.iterdir() if previous.exists() else []:
+                registration = decode(private_read(directory / "registration.json"))
+                require((directory / "close.json").exists() or not process_ended(registration["process"]),
+                        "dead unclosed execution requires named adjudication")
+                if (directory / "close.json").exists():
+                    closed = decode(private_read(directory / "close.json"))
+                    require(closed.get("files") == [x for x in private_manifest(directory) if x["path"] != "close.json"], "closed execution drift")
+                    for intent in directory.glob("calls/*/intent.json"):
+                        require((intent.parent / "result.json").is_file(), "unclosed call requires named adjudication")
+                require(not maintenance or registration["role"] != "retire", "orphan maintenance execution blocks registration")
+            if maintenance:
+                require(role == "retire" and state["status"] == "retiring" and state["token"] == maintenance and
+                        state["operator"] == actor and not state.get("maintenance_id"), "invalid maintenance admission")
+            else:
+                require(state["status"] == "open" and role != "retire", "execution admission denied")
+            execution_id = str(uuid.uuid4())
+            directory = mkdir(self.root / "executions" / execution_id)
+            registration = dict(schema=CALL_PROTOCOL, execution_id=execution_id, run_id=self.run_id, role=role,
+                                actor=actor, process=process_identity(), script_sha256=digest(Path(__file__).read_bytes()),
+                                created_at=now(), maintenance=maintenance)
+            publish(directory / "registration.json", canonical(registration))
+            if maintenance:
+                state["maintenance_id"] = execution_id
+                replace_private(self.root / "admission.json", state)
+        return Execution(self, directory, registration)
+
+    def freeze(self, operator, directive, authorization_sha256):
+        require(re.fullmatch(r"D-[0-9]+", directive or "") and re.fullmatch(r"[0-9a-f]{64}", authorization_sha256), "named freeze authorization required")
+        with self.mutex():
+            state = self.state()
+            require(state["status"] == "open", "retirement fence already established")
+            executions = sorted(x.name for x in (self.root / "executions").iterdir()) if (self.root / "executions").exists() else []
+            state.update(status="retiring", operator=operator, directive=directive, authorization_sha256=authorization_sha256,
+                         token=str(uuid.uuid4()), frozen_executions=executions, frozen_at=now())
+            replace_private(self.root / "admission.json", state)
+            return state
+
+    def facts(self, require_ended=False):
+        facts = []
+        request, run_root = None, None
+        if (self.root / "binding.json").exists():
+            binding = decode(private_read(self.root / "binding.json"))
+            bound = no_symlinks(binding["root"])
+            require(bound.name == ".private-handoff-runs" and bound.is_relative_to(self.root.parent.parent), "journal binding root invalid")
+            run_root = bound / self.run_id
+            if not run_root.exists():
+                run_root = bound / ".retired" / self.run_id
+            source = self.root / "bound/start.json"
+            raw = private_read(source if source.exists() else run_root / "start.json")
+            require(digest(raw) == binding["start_sha256"], "journal request binding changed")
+            if (run_root / "start.json").exists():
+                require(private_read(run_root / "start.json") == raw, "journal/run request mismatch")
+            request = decode(raw)
+        executions = self.root / "executions"
+        for directory in sorted(executions.iterdir()) if executions.exists() else []:
+            no_symlinks(directory)
+            registration = decode(private_read(directory / "registration.json"))
+            require(registration["execution_id"] == directory.name and registration["run_id"] == self.run_id, "execution identity mismatch")
+            if require_ended:
+                require(process_ended(registration["process"]), "execution still alive or UNKNOWN")
+            require((directory / "close.json").is_file(), "execution not closed")
+            close = decode(private_read(directory / "close.json"))
+            actual = [x for x in private_manifest(directory) if x["path"] != "close.json"]
+            require(close.get("execution_id") == directory.name and close.get("files") == actual, "execution close manifest mismatch")
+            calls = directory / "calls"
+            allowed = {"intent.json", "attempt.json", "result.json", "stdout.raw", "stderr.raw", "payload.raw", "lease.lock"}
+            for call in sorted(calls.iterdir()) if calls.exists() else []:
+                require(all(p.is_file() and p.name in allowed for p in call.iterdir()), "orphan call evidence")
+                intent_raw = private_read(call / "intent.json")
+                intent = decode(intent_raw)
+                result = decode(private_read(call / "result.json"))
+                require(intent.get("schema") == CALL_PROTOCOL and intent.get("call_id") == call.name and
+                        intent.get("execution_id") == directory.name and intent.get("run_id") == self.run_id and
+                        intent.get("actor") == registration["actor"] and intent.get("script_sha256") == registration["script_sha256"] and
+                        intent.get("kind") in CALL_EFFECTS and intent.get("expected_effect") == CALL_EFFECTS[intent["kind"]], "call descriptor invalid")
+                require(result.get("intent_sha256") == digest(intent_raw) and result.get("call_id") == call.name,
+                        "call result binding invalid")
+                require(result.get("terminal") in ("returned", "timeout", "error", "http-error", "not-started", "admission-denied"),
+                        "call terminal state UNKNOWN")
+                require(result.get("stdout_sha256") == digest(private_read(call / "stdout.raw")) and
+                        result.get("stderr_sha256") == digest(private_read(call / "stderr.raw")), "call raw hash mismatch")
+                parameters = dict(intent["parameters"])
+                if "argv" in parameters:
+                    argv = []
+                    for argument in parameters["argv"]:
+                        if isinstance(argument, dict):
+                            raw = private_read(confined(call, argument["payload"]))
+                            require(digest(raw) == argument["sha256"], "native payload reference mismatch")
+                            argument = raw.decode()
+                        argv.append(argument)
+                    parameters["argv"] = argv
+                execution = Execution(self, directory, registration)
+                execution.phase = intent["phase"]
+                if request:
+                    execution.configure(request, binding["start_sha256"])
+                    state = decode(private_read(run_root / "state.json")) if (run_root / "state.json").exists() else {}
+                    if state.get("new_id"):
+                        execution.bindings.add(state["new_id"])
+                        execution.new_id = state["new_id"]
+                else:
+                    execution.bindings = {registration["actor"], intent["target"].get("session_id", registration["actor"])}
+                    execution.refresh_authority = intent.get("refresh_authority")
+                adapter = type("RecordedCLI", (), {"env": {"AO_SESSION_ID": registration["actor"],
+                    "TMPDIR": str(run_root / "bootstrap/new/draft") if run_root else ""}, "sha256": intent["cli_sha256"],
+                    "recorded_transport_binding": intent["transport_binding"]})()
+                descriptor = execution.descriptor(adapter, intent["transport"], parameters,
+                    read=intent["kind"] in ("observation", "metadata-refresh"), effect_id=intent.get("effect_id"), verifying=True)
+                require(all(descriptor[key] == intent.get(key) for key in ("kind", "capability", "expected_effect", "target", "effect_id", "refresh_authority", "transport_binding")),
+                        "native descriptor differs from constructor")
+                if (call / "attempt.json").exists():
+                    require(result.get("attempt_sha256") == digest(private_read(call / "attempt.json")), "call attempt binding mismatch")
+                else:
+                    require(result.get("terminal") in ("admission-denied", "not-started"), "call without dispatch evidence UNKNOWN")
+                facts.append(dict(intent, origin="native-intent", terminal=result["terminal"], result=result,
+                                  evidence={"path": str(call), "intent_sha256": digest(intent_raw)}))
+            require(set(p.name for p in directory.iterdir()) <= {"registration.json", "calls", "close.json"}, "orphan execution evidence")
+        return facts
+
+
+class Execution:
+    def __init__(self, journal, directory, registration):
+        self.journal, self.directory, self.registration = journal, directory, registration
+        self.phase = "locate" if registration["role"] == "start" else registration["role"]
+        self.bindings = set()
+        self.authority_refs = []
+        self.refresh_authority = None
+        self.request_target = None
+        self.old_id, self.new_id = None, None
+        self._active_operation = None
+        self._transport_claimed = False
+        self.last_call_id = None
+
+    def configure(self, request, start_sha256=None):
+        self.bindings = {request["old_id"], *(w["worker_id"] for w in request["workers"])}
+        self.authority_refs = request["authority"]["source_refs"]
+        self.request_target = request["target"]
+        self.old_id = request["old_id"]
+        # A capability proof references the original human authority. It never
+        # creates or broadens that authority and is separate from request bytes.
+        path = self.journal.root / "capabilities.json"
+        if path.exists():
+            proof = decode(private_read(path))
+            expected_start = start_sha256 or decode(private_read(self.journal.root / "binding.json"))["start_sha256"]
+            require(proof.get("run_id") == self.journal.run_id and proof.get("start_sha256") == expected_start and
+                    proof.get("scope") == "daemon-account-catalog-global" and proof.get("source_refs") and
+                    set(proof["source_refs"]) <= set(self.authority_refs) and proof.get("original_authority_covers_global_refresh") is True,
+                    "global refresh authority proof mismatch")
+            self.refresh_authority = file_reference(path)
+
+    def descriptor(self, cli, transport, parameters, read=False, effect_id=None, verifying=False):
+        require(verifying or not (self.directory / "close.json").exists(), "execution already closed")
+        require(self.phase in ("locate", "preflight", "prepared", "workers", "2a", "export", "retire", "spawn", "native",
+                              "bootstrap", "resume", "nonce", "final", "_run", "continue", "worker-receipt", "old-receipt", "finalize", "inspect"),
+                "operation phase UNKNOWN")
+        actor = cli.env["AO_SESSION_ID"]
+        require(actor == self.registration["actor"], "execution actor mismatch")
+        target = {"project_id": PROJECT}
+        kind, capability = "observation", "project-observation"
+        if transport == "http":
+            path = parameters["path"]
+            parsed = urllib.parse.urlsplit(path)
+            parts = parsed.path.split("/")
+            if parts == ["projects", PROJECT]:
+                pass
+            elif len(parts) in (2, 3) and parts[0] == "sessions" and (len(parts) == 2 or parts[2] == "conversation"):
+                target["session_id"] = identifier(parts[1])
+            elif len(parts) == 4 and parts[:3] == ["agents", "accounts", "sessions"]:
+                target["session_id"] = identifier(parts[3])
+            elif len(parts) == 3 and parts[0] == "agents" and parts[1] in ("codex", "claude-code") and parts[2] == "models":
+                target.update(harness=parts[1], selection=urllib.parse.parse_qs(parsed.query))
+                capability = "target-model-catalog"
+            else:
+                raise Stop("unknown API operation constructor")
+        else:
+            args = parameters["argv"]
+            require(args and all(isinstance(x, str) for x in args), "nonliteral/empty CLI arguments")
+            def value(flag):
+                require(args.count(flag) == 1 and args.index(flag) + 1 < len(args), "missing/duplicate CLI flag " + flag)
+                return args[args.index(flag) + 1]
+            if args[:2] == ["session", "get"]:
+                require(len(args) >= 3, "missing session")
+                target["session_id"] = identifier(args[2])
+                allowed = {"--json", "--transcript", "--cap", "--before"}
+                require(all(not x.startswith("--") or x in allowed for x in args[3:]), "unsupported read flag")
+            elif args[:2] == ["session", "ls"]:
+                require(value("--project") == PROJECT and set(x for x in args[2:] if x.startswith("--")) <=
+                        {"--project", "--all", "--include-terminated", "--json"}, "session list scope mismatch")
+            elif args[:3] == ["project", "documents", "info"]:
+                require(value("--project") == PROJECT and set(args[3:]) <= {"--project", PROJECT, "--json"}, "documents scope mismatch")
+            elif args == ["spawn", "--help"]:
+                kind, capability = "local-help", "local-cli-usage"
+            elif args[:2] == ["account", "ls"]:
+                require("--refresh" in args and set(x for x in args[2:] if x.startswith("--")) <=
+                        {"--provider", "--refresh", "--json"}, "account refresh constructor mismatch")
+                require(self.refresh_authority, "original authority does not positively cover global account refresh")
+                kind, capability = "metadata-refresh", "daemon-account-catalog-global"
+                effect_id = self.journal.run_id + ":metadata-refresh"
+                target.update(scope="all-eligible-daemon-accounts", operations=["identity", "limits", "contained-profile-prepare"],
+                              client_filter=value("--provider") if "--provider" in args else None)
+            elif not read and args and args[0] == "send":
+                target["session_id"] = identifier(value("--session"))
+                require("--steer" in args and "--client-message-id" in args and
+                        (("--message" in args) != ("--recover-only" in args)), "control constructor mismatch")
+                base = ["send", "--session", target["session_id"], "--steer"]
+                expected = (base + ["--recover-only", "--client-message-id", value("--client-message-id")] if "--recover-only" in args else
+                            base + ["--client-message-id", value("--client-message-id"), "--message", value("--message")])
+                require(args == expected, "noncanonical control argv")
+                kind, capability = "worker-control", "fixed-sender-steer"
+                effect_id = value("--client-message-id")
+            elif not read and (args[0] == "spawn" or args[:2] in (["session", "kill"], ["session", "exit-agent"], ["session", "resume-agent"])):
+                operation = args[0] if args[0] == "spawn" else args[1]
+                require(value("--project") == PROJECT, "lifecycle project mismatch")
+                if args[0] == "session":
+                    target["session_id"] = identifier(args[2])
+                    require(args == ["session", operation, target["session_id"], "--project", PROJECT] +
+                            ([] if operation == "kill" else ["--json"]), "noncanonical lifecycle argv")
+                    if self.old_id:
+                        require(target["session_id"] == (self.old_id if operation == "kill" else self.new_id), "lifecycle target outside bound old/new")
+                else:
+                    require(self.request_target, "spawn target binding missing")
+                    expected = ["spawn", "--project", PROJECT, "--kind", "orchestrator", "--agent", self.request_target["harness"],
+                                "--account", self.request_target["account"], "--mode", "chat", "--model", self.request_target["model"],
+                                "--effort", self.request_target["effort"], "--approval-mode", self.request_target["approval_mode"],
+                                "--name", value("--name"), "--prompt", value("--prompt")]
+                    require(args == expected, "spawn differs from bound target")
+                kind, capability = "handoff-lifecycle", "handoff-" + operation
+                require(effect_id, "lifecycle effect identity missing")
+            elif not read and args[:3] == ["project", "documents", "write"]:
+                require(value("--project") == PROJECT and args[3] == "handoff-receipts/" + self.journal.run_id + ".md", "managed capability mismatch")
+                source = no_symlinks(value("--file"))
+                require(source.is_relative_to(Path(cli.env["TMPDIR"])), "managed source outside actor draft")
+                parameters = dict(parameters, file_source={"path": str(source), "sha256": digest(private_read(source))})
+                kind, capability = "managed-write", "handoff-receipt-write"
+                effect_id = effect_id or self.journal.run_id + ":managed-write"
+            elif not read and args[:2] == ["report", "--needs-input"]:
+                require(len(args) == 4 and args[2] == "--note", "progress-only report capability required")
+                kind, capability = "progress-notification", "progress-report-only"
+                effect_id = self.journal.run_id + ":progress-notification"
+            else:
+                raise Stop("unknown CLI operation constructor")
+        if "session_id" in target:
+            require(target["session_id"] in self.bindings, "unbound session operation")
+        require(self.registration["role"] != "retire" or kind in ("observation", "local-help"), "maintenance capability denied")
+        roles = {"worker-control": ("_run", "finalize"), "handoff-lifecycle": ("_run",),
+                 "managed-write": ("bootstrap",), "progress-notification": ("_run",), "metadata-refresh": ("start",)}
+        require(kind not in roles or self.registration["role"] in roles[kind], "operation role/capability mismatch")
+        transport_binding = getattr(cli, "recorded_transport_binding", None) if verifying else cli.transport_binding()
+        if not verifying:
+            require(Path(transport_binding["data_dir"]) == self.journal.root.parents[4], "transport data scope mismatch")
+        return Operation(self, dict(kind=kind, capability=capability, expected_effect=CALL_EFFECTS[kind], target=target,
+                    authority_refs=self.authority_refs, effect_id=effect_id, transport=transport, parameters=parameters,
+                    actor=actor, phase=self.phase, script_sha256=digest(Path(__file__).read_bytes()), cli_sha256=cli.sha256,
+                    transport_binding=transport_binding,
+                    refresh_authority=self.refresh_authority if kind == "metadata-refresh" else None), _OPERATION_SEAL)
+
+    def dispatch(self, cli, descriptor, deadline=None, on_dispatch=None):
+        require(isinstance(descriptor, Operation) and descriptor._owner is self and
+                isinstance(cli, _CLI) and cli.execution is self, "unsealed or foreign operation")
+        journal = self.journal
+        call_id = str(uuid.uuid4())
+        lease = None
+        with journal.mutex():
+            require(self._active_operation is None, "execution transport already active")
+            state = journal.state()
+            require(descriptor["script_sha256"] == self.registration["script_sha256"], "execution script bytes changed")
+            allowed = state["status"] == "open" or (state["status"] == "retiring" and
+                state.get("maintenance_id") == self.registration["execution_id"] and state.get("token") == self.registration["maintenance"])
+            require(allowed, "dispatch admission denied")
+            if descriptor["kind"] in ("worker-control", "handoff-lifecycle", "managed-write"):
+                recover = "--recover-only" in descriptor["parameters"].get("argv", [])
+                for previous in journal.root.glob("executions/*/calls/*/intent.json"):
+                    old = decode(private_read(previous))
+                    if old.get("effect_id") != descriptor["effect_id"]:
+                        continue
+                    require(all(old.get(key) == descriptor[key] for key in
+                                ("kind", "capability", "target", "actor", "transport_binding")),
+                            "effect handle binding changed")
+                    if not recover:
+                        original = dict(old["parameters"])
+                        if "argv" in original:
+                            original["argv"] = [hash_reference({"path": str(confined(previous.parent, x["payload"])),
+                                                               "sha256": x["sha256"]}).decode() if isinstance(x, dict) else x
+                                                for x in original["argv"]]
+                        require(original == descriptor["parameters"], "effect handle parameters changed")
+                    result_path = previous.parent / "result.json"
+                    not_started = result_path.exists() and decode(private_read(result_path)).get("terminal") == "not-started"
+                    require(recover or not_started, "effect already attempted; original-handle recovery only")
+            directory = mkdir(self.directory / "calls" / call_id)
+            parameters = dict(descriptor["parameters"])
+            argv = parameters.get("argv")
+            if argv:
+                argv = list(argv)
+                for flag in ("--message", "--note", "--prompt"):
+                    if flag in argv:
+                        index = argv.index(flag) + 1
+                        payload = argv[index].encode()
+                        publish(directory / "payload.raw", payload)
+                        argv[index] = {"payload": "payload.raw", "sha256": digest(payload)}
+                parameters["argv"] = argv
+            intent = dict(descriptor, parameters=parameters, schema=CALL_PROTOCOL, call_id=call_id,
+                          execution_id=self.registration["execution_id"], run_id=journal.run_id, created_at=now())
+            publish(directory / "intent.json", canonical(intent))
+            lease = open(directory / "lease.lock", "a+b")
+            os.chmod(directory / "lease.lock", 0o600)
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            expired = deadline is not None and time.monotonic() > deadline
+            if not expired:
+                publish(directory / "attempt.json", canonical(dict(call_id=call_id, intent_sha256=digest(canonical(intent)), at=now())))
+            self.last_call_id = call_id
+            self._active_operation, self._transport_claimed = descriptor, False
+        raw, stderr, terminal, code = b"", b"", "not-started", None
+        try:
+            if expired:
+                raise WindowElapsed()
+            if on_dispatch:
+                on_dispatch()
+            if deadline is not None and time.monotonic() > deadline:
+                raise WindowElapsed()
+            fixed = decode(private_read(directory / "intent.json"))["parameters"]
+            materialized = dict(fixed)
+            if "argv" in fixed:
+                materialized["argv"] = []
+                for argument in fixed["argv"]:
+                    if isinstance(argument, dict):
+                        payload = private_read(directory / argument["payload"])
+                        require(digest(payload) == argument["sha256"], "call payload changed")
+                        argument = payload.decode()
+                    materialized["argv"].append(argument)
+            require(materialized == descriptor["parameters"], "materialized operation differs from intent")
+            if fixed.get("file_source"):
+                hash_reference(fixed["file_source"])
+            raw, stderr, code = _CLI._transport(cli, descriptor, materialized, deadline)
+            terminal = "returned"
+            return raw, stderr, code
+        except WindowElapsed:
+            terminal = "not-started"
+            raise
+        except subprocess.TimeoutExpired as exc:
+            raw, stderr, terminal = exc.stdout or b"", exc.stderr or b"", "timeout"
+            raise
+        except urllib.error.HTTPError as exc:
+            raw, code, terminal = exc.read(), exc.code, "http-error"
+            stderr = str(exc).encode()
+            raise
+        except BaseException as exc:
+            terminal = "error"
+            stderr = (type(exc).__name__ + ": " + str(exc)).encode()
+            raise
+        finally:
+            try:
+                publish(directory / "stdout.raw", raw)
+                publish(directory / "stderr.raw", stderr)
+                result = dict(call_id=call_id, terminal=terminal, returncode=code, completed_at=now(),
+                              dispatched_monotonic=getattr(cli, "last_dispatched", None), received_monotonic=getattr(cli, "last_received", None),
+                              intent_sha256=digest(private_read(directory / "intent.json")),
+                              attempt_sha256=digest(private_read(directory / "attempt.json")) if (directory / "attempt.json").exists() else None,
+                              stdout_sha256=digest(raw), stderr_sha256=digest(stderr))
+                publish(directory / "result.json", canonical(result))
+            finally:
+                self._active_operation = None
+                lease.close()
+
+    def close(self):
+        require(self.registration["process"] == process_identity(), "only execution owner may close")
+        with self.journal.mutex():
+            path = self.directory / "close.json"
+            if not path.exists():
+                publish(path, canonical(dict(execution_id=self.registration["execution_id"], closed_at=now(),
+                                            files=private_manifest(self.directory))))
+
+    def effect_attempts(self, effect_id):
+        attempts = []
+        for path in self.journal.root.glob("executions/*/calls/*/intent.json"):
+            intent = decode(private_read(path))
+            if intent.get("effect_id") != effect_id:
+                continue
+            result_path = path.parent / "result.json"
+            result = decode(private_read(result_path)) if result_path.exists() else None
+            if result:
+                require(result.get("intent_sha256") == digest(private_read(path)) and result.get("call_id") == path.parent.name and
+                        result.get("stdout_sha256") == digest(private_read(path.parent / "stdout.raw")) and
+                        result.get("stderr_sha256") == digest(private_read(path.parent / "stderr.raw")), "effect call binding mismatch")
+            attempts.append((intent, result, path.parent))
+        return sorted(attempts, key=lambda item: item[0]["created_at"])
+
+    def successful_effect(self, effect_id):
+        successful = [x for x in self.effect_attempts(effect_id) if x[1] and
+                      x[1]["terminal"] == "returned" and x[1]["returncode"] == 0]
+        return successful[-1] if successful else None
+
+
 class CLI:
     def __init__(self, executable, old, data_dir, run_file, temp):
         self.executable = no_symlinks(executable)
         self.sha256 = digest(self.executable.read_bytes())
         self.env = cli_environment(old, data_dir, run_file, temp)
         self.data_dir, self.run_file = Path(data_dir), Path(run_file)
-        run = decode(self.run_file.read_bytes())
+        raw = self.run_file.read_bytes()
+        self.run_file_sha256 = digest(raw)
+        run = decode(raw)
         port = run["port"]
         require(type(port) is int and 0 < port < 65536, "invalid daemon port")
         self.base = "http://127.0.0.1:" + str(port) + "/api/v1/"
 
-    def capture(self, label, raw, metadata):
-        if not getattr(self, "capture_root", None):
-            self.__dict__.setdefault("pending_wire", []).append((label, raw, metadata))
-            return
-        path = self.capture_root / (label + "-" + uuid.uuid4().hex)
-        publish(path.with_suffix(".raw"), raw)
-        publish(path.with_suffix(".json"), canonical(dict(metadata, sha256=digest(raw), raw_path=str(path.with_suffix(".raw")))))
+    def transport_binding(self):
+        return dict(data_dir=str(self.data_dir), run_file=str(self.run_file), run_file_sha256=self.run_file_sha256, daemon_base=self.base)
 
-    def call(self, args, timeout=30, deadline=None, on_dispatch=None):
+    def call(self, args, timeout=30, deadline=None, on_dispatch=None, *, read=False, effect_id=None):
         require(digest(self.executable.read_bytes()) == self.sha256, "qualified CLI changed")
-        dispatched = time.monotonic()
-        if deadline is not None and dispatched > deadline:
-            raise WindowElapsed()
-        if on_dispatch:
-            on_dispatch()
-        dispatched = time.monotonic()
-        if deadline is not None and dispatched > deadline:
-            raise WindowElapsed()  # No subprocess: caller can record not-dispatched.
-        self.last_dispatched = dispatched
-        try:
-            result = subprocess.run([str(self.executable), *args], env=self.env, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False)
-        except subprocess.TimeoutExpired as exc:
-            self.capture("cli-timeout", exc.stdout or b"", {"argv": args, "timeout": timeout,
-                         "stderr": (exc.stderr or b"").decode(errors="replace"), "effect": "UNKNOWN"})
-            raise
-        self.last_received = time.monotonic()
-        self.last_raw = result.stdout
-        self.last_stderr = result.stderr.decode(errors="replace")
-        self.capture("cli", result.stdout, {"argv": args, "returncode": result.returncode,
-                     "stderr": result.stderr.decode(errors="replace"), "dispatched_monotonic": dispatched,
-                     "received_monotonic": self.last_received})
-        require(result.returncode == 0, "CLI error: " + result.stderr.decode(errors="replace"))
-        return result.stdout
+        execution = getattr(self, "execution", None)
+        require(execution is not None, "durable execution context required")
+        descriptor = execution.descriptor(self, "cli", {"argv": args, "timeout": timeout}, read=read, effect_id=effect_id)
+        self.last_dispatched, self.last_received = None, None
+        raw, stderr, code = execution.dispatch(self, descriptor, deadline, on_dispatch)
+        self.last_raw = raw
+        self.last_stderr = stderr.decode(errors="replace")
+        require(code == 0, "CLI error: " + self.last_stderr)
+        return raw
 
     def read(self, args):
-        return decode(self.call([*args, "--json"]))
+        return decode(self.call([*args, "--json"], read=True))
 
     def get(self, path):
         require(not path.startswith(("/", "http")) and ".." not in path, "invalid API read path")
+        execution = getattr(self, "execution", None)
+        require(execution is not None, "durable execution context required")
+        descriptor = execution.descriptor(self, "http", {"method": "GET", "path": path})
+        self.last_dispatched, self.last_received = None, None
+        raw, _, _ = execution.dispatch(self, descriptor)
+        return decode(raw)
+
+    def _transport(self, operation, parameters, deadline=None):
+        require(operation._owner is self.execution and self.execution._active_operation is operation and
+                not self.execution._transport_claimed and parameters == operation["parameters"], "transport requires one admitted operation")
+        self.execution._transport_claimed = True
+        require(operation["actor"] == self.env["AO_SESSION_ID"] and
+                operation["transport_binding"] == self.transport_binding() and
+                self.env["AO_DATA_DIR"] == str(self.data_dir) and self.env["AO_RUN_FILE"] == str(self.run_file) and
+                self.env["AO_PROJECT_ID"] == PROJECT and digest(self.run_file.read_bytes()) == self.run_file_sha256,
+                "transport actor/location drift before I/O")
+        require(digest(self.executable.read_bytes()) == self.sha256 == operation["cli_sha256"], "qualified CLI changed before dispatch")
+        self.last_dispatched = time.monotonic()
+        if deadline is not None and self.last_dispatched > deadline:
+            self.last_dispatched = None
+            raise WindowElapsed()
+        if operation["transport"] == "cli":
+            result = subprocess.run([str(self.executable), *parameters["argv"]], env=self.env, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=parameters["timeout"], check=False)
+            self.last_received = time.monotonic()
+            return result.stdout, result.stderr, result.returncode
+        require(operation["transport"] == "http" and parameters["method"] == "GET", "HTTP mutation refused")
         # No redirects, proxies or non-loopback endpoints; never HTTP mutations.
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):
                 raise Stop("API redirect refused")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        with opener.open(self.base + path, timeout=30) as response:
+        with opener.open(self.base + parameters["path"], timeout=30) as response:
             raw = response.read()
             self.last_received = time.monotonic()
-            self.capture("http-get", raw, {"path": path, "received_at": now()})
-            return decode(raw)
+            return raw, b"", 0
 
     def session(self, sid):
         return self.read(["session", "get", identifier(sid), "--transcript", "500", "--cap", "0"])
@@ -554,6 +1067,9 @@ class CLI:
 
     def documents(self):
         return self.read(["project", "documents", "info", "--project", PROJECT])["documents"]
+
+
+_CLI = CLI  # Keep the transport implementation fixed when tests inject constructors.
 
 
 def git_operation_facts(workspace):
@@ -775,6 +1291,8 @@ def old_environment(run, workspace, common):
     require(hooks == [], "PreRemove impact UNKNOWN; no kill")
     documents = run.cli.documents()
     paths = [run.root, Path(documents["sharedDir"]), common, run.cli.data_dir / "artifacts" / run.old]
+    if getattr(run.cli, "execution", None):
+        paths.append(run.cli.execution.journal.root)
     fixed_paths = list(paths)
     paths += [Path(x) for x in run.state.get("preservation_paths", [])]
     for path in paths:
@@ -953,10 +1471,12 @@ class Run:
         self.state = decode(private_read(self.root / "state.json"))
         require(digest(private_read(self.root / "start.json")) == self.state["start_sha256"], "bound start changed")
         self.old, self.target, self.run_id = self.request["old_id"], self.request["target"], self.request["request_id"]
-        self.cli.capture_root = mkdir(self.root / "wire")
-        for label, raw, metadata in getattr(self.cli, "pending_wire", []):
-            self.cli.capture(label, raw, metadata)
-        self.cli.pending_wire = []
+        if getattr(cli, "execution", None):
+            cli.execution.configure(self.request, self.state["start_sha256"])
+            if self.state.get("new_id"):
+                cli.execution.bindings.add(self.state["new_id"])
+                cli.execution.new_id = self.state["new_id"]
+            cli.execution.phase = self.state.get("stage", "prepared")
         self.recovered = set()
 
     def save(self):
@@ -1021,17 +1541,36 @@ class Run:
     def effect(self, key, args, timeout, before_call=None):
         directory = mkdir(self.root / "control" / key)
         intent_path, result_path = directory / "intent.json", directory / "result.json"
+        execution = getattr(self.cli, "execution", None)
+        effect_id = args[args.index("--client-message-id") + 1] if "--client-message-id" in args else key
+        attempts = execution.effect_attempts(effect_id) if execution else []
         if intent_path.exists():
             intent = decode(private_read(intent_path))
             require(intent["argv"] == args, "intent changed: " + key)
+            successful = [x for x in attempts if x[1] and x[1]["terminal"] == "returned" and x[1]["returncode"] == 0]
+            if successful:
+                call_intent, call_result, call_directory = successful[-1]
+                raw = private_read(call_directory / "stdout.raw")
+                if not result_path.exists():
+                    publish(result_path, canonical(dict(stdout=raw.decode(), stderr=private_read(call_directory / "stderr.raw").decode(errors="replace"),
+                        sha256=digest(raw), accepted_at=call_result["completed_at"], call_id=call_intent["call_id"])))
+                business = decode(private_read(result_path))
+                require(business.get("call_id") == call_intent["call_id"] and business.get("sha256") == digest(raw) and
+                        business.get("stdout") == raw.decode(), "business receipt differs from canonical call result")
+                self.state.setdefault("effects", {})[key] = "accepted"
+                self.save()
+                return business
             if result_path.exists():
+                require(not execution, "business receipt lacks canonical successful result")
                 return decode(private_read(result_path))
-            if (directory / "sent.json").exists():
+            not_started = (bool(attempts) and all(x[1] and x[1]["terminal"] == "not-started" for x in attempts)) if execution else self.state.get("effects", {}).get(key) == "not-dispatched"
+            if (directory / "sent.json").exists() and not not_started:
                 if args[0] == "send" and "--client-message-id" in args:
                     sid = args[args.index("--session") + 1]
                     handle = args[args.index("--client-message-id") + 1]
                     raw = self.cli.call(["send", "--session", sid, "--steer", "--recover-only", "--client-message-id", handle], 60)
-                    result = {"stdout": raw.decode(), "recovered_original_handle": handle, "observed_at": now()}
+                    result = {"stdout": raw.decode(), "sha256": digest(raw), "call_id": getattr(getattr(self.cli, "execution", None), "last_call_id", None),
+                              "recovered_original_handle": handle, "observed_at": now()}
                     publish(result_path, canonical(result))
                     self.state["effects"][key] = "observed-original"
                     self.save()
@@ -1040,6 +1579,8 @@ class Run:
                     self.evidence("kill-unknown-observation", self.cli.read(["session", "get", self.old]))
                     raise Stop("UNKNOWN kill receipt; terminated does not prove preservation; no spawn")
                 raise Stop("UNKNOWN effect; recover original intent only: " + key)
+        else:
+            require(not attempts, "canonical effect without original business intent")
         intent = {"argv": args, "created_at": now(), "actor": "detached-runner", "run_id": self.run_id,
                   "old_id": self.old, "new_id": self.state.get("new_id"), "authority_refs": self.request["authority"]["source_refs"]}
         if not intent_path.exists():
@@ -1048,24 +1589,24 @@ class Run:
         self.save()
         sent_path = directory / "sent.json"
         def dispatched():
-            publish(sent_path, canonical({"at": now(), "monotonic": self.clock()}))
+            if not sent_path.exists():
+                publish(sent_path, canonical({"at": now(), "monotonic": self.clock()}))
             self.state["effects"][key] = "UNKNOWN"
             self.save()
         while True:
             deadline = before_call() if before_call else None
             try:
-                raw = self.cli.call(args, timeout, deadline=deadline, on_dispatch=dispatched)
+                raw = self.cli.call(args, timeout, deadline=deadline, on_dispatch=dispatched, effect_id=key)
                 break
             except WindowElapsed:
                 # The adapter proved no subprocess was started. Reobserve S1/S2,
                 # retaining the original bounded idle wait and mutation intent.
                 self.evidence("not-dispatched-" + key, {"at": now(), "reason": "idle window elapsed before subprocess"})
-                sent_path.unlink(missing_ok=True)
-                sync_directory(directory)
                 self.state["effects"][key] = "not-dispatched"
                 self.save()
                 continue
-        result = {"stdout": raw.decode(), "stderr": getattr(self.cli, "last_stderr", ""), "sha256": digest(raw), "accepted_at": now()}
+        result = {"stdout": raw.decode(), "stderr": getattr(self.cli, "last_stderr", ""), "sha256": digest(raw), "accepted_at": now(),
+                  "call_id": getattr(getattr(self.cli, "execution", None), "last_call_id", None)}
         publish(result_path, canonical(result))
         self.state["effects"][key] = "accepted"
         self.save()
@@ -1452,7 +1993,7 @@ def worker_receipt(run):
     require(rules and rules["reserved_stop_d"] and workspace_entry(run.request, sid)["kind"] == "worker", "worker producer not in bound rules")
     directory = mkdir(run.root / "workers" / sid)
     acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, directory / "draft")
-    acting.capture_root = mkdir(directory / "wire")
+    acting.execution = getattr(run.cli, "execution", None)
     run.cli = acting
     workspace = bound_workspace(run, sid)
     workspace_git_inputs(workspace)
@@ -1988,6 +2529,9 @@ def spawn_new(run):
             pass
         intent = decode(private_read(intent_path))
         sid = match_spawn(run.cli.sessions(), token, intent["created_at"])
+    if getattr(run.cli, "execution", None):
+        run.cli.execution.bindings.add(sid)
+        run.cli.execution.new_id = sid
     actual = run.cli.get("sessions/" + identifier(sid))["session"]
     require(not actual.get("isTerminated") and actual.get("status") != "failed", "original new provision failed")
     require(actual.get("harness") == run.target["harness"] and actual.get("mode") == "chat", "spawn target identity mismatch")
@@ -2148,6 +2692,8 @@ def run_protocol(run):
         if name in state.setdefault("completed_stages", []):
             return
         state["stage"] = name
+        if getattr(run.cli, "execution", None):
+            run.cli.execution.phase = name
         state.setdefault("stages", {}).setdefault(name, {"started_at": now()})
         run.save()
         action()
@@ -2245,7 +2791,14 @@ def producer(run, action):
     require(os.environ.get("AO_SESSION_ID") == sid, "producer must run as actual new session")
     draft = run.root / "bootstrap/new/draft"
     require(os.environ.get("TMPDIR") == str(draft), "bootstrap TMPDIR mismatch")
+    execution = getattr(run.cli, "execution", None)
+    if execution:
+        require(execution.registration["actor"] == sid and execution.registration["role"] == action and
+                execution.new_id in (None, sid), "producer execution binding changed")
+        execution.bindings.add(sid)
+        execution.new_id = sid
     acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, draft)
+    acting.execution = getattr(run.cli, "execution", None)
     snap = acting.session(sid)
     running = [t for t in snap["transcript"].get("turns", []) if t["state"] == "running"]
     require(len(running) == 1, "producer needs unique actual running turn")
@@ -2275,19 +2828,27 @@ def producer(run, action):
         shared_path = Path(documents["sharedDir"]) / relative
         managed_path = run.root / "bootstrap/new/evidence/managed.json"
         intent = run.root / "bootstrap/new/evidence/managed-intent.json"
-        require(not intent.exists(), "UNKNOWN managed write; do not rewrite")
+        known = acting.execution.successful_effect(run.run_id + ":managed-write") if getattr(acting, "execution", None) else None
+        require(not intent.exists() or known, "UNKNOWN managed write; do not rewrite")
         publish(intent, canonical({"path": relative, "sha256": digest(text.encode()), "actor": sid}))
-        # This grant is used only by its owning new process for the managed call.
-        capability = os.environ.get("AO_BROWSER_CAPABILITY")
-        require(capability, "own managed capability missing")
-        acting.env["AO_BROWSER_CAPABILITY"] = capability
-        raw = acting.call(["project", "documents", "write", relative, "--project", PROJECT,
-                           "--file", str(source), "--expected-hash", "missing", "--json"])
-        del acting.env["AO_BROWSER_CAPABILITY"]
+        if known:
+            raw = private_read(known[2] / "stdout.raw")
+            call_id = known[0]["call_id"]
+        else:
+            # The capability value stays in the child environment, never journal.
+            capability = os.environ.get("AO_BROWSER_CAPABILITY")
+            require(capability, "own managed capability missing")
+            acting.env["AO_BROWSER_CAPABILITY"] = capability
+            try:
+                raw = acting.call(["project", "documents", "write", relative, "--project", PROJECT,
+                                   "--file", str(source), "--expected-hash", "missing", "--json"])
+            finally:
+                del acting.env["AO_BROWSER_CAPABILITY"]
+            call_id = getattr(getattr(acting, "execution", None), "last_call_id", None)
         publish(managed_path, raw)
         documents = acting.documents()
         receipt = {"schema": "rh-new-receipt/1", "run_id": run.run_id, "old_id": run.old, "new_id": sid,
-                   "evidence_turn_id": turn, "created_at": now(),
+                   "evidence_turn_id": turn, "created_at": now(), "managed_call_id": call_id,
                    "target": {k: run.target[k] for k in ("harness", "account", "model", "effort", "approval_mode")},
                    "native_id": actual["native_id"],
                    "sources": {"handoff_sha256": run.state["handoff"]["sha256"], "manifest_sha256": run.state["manifest"]["sha256"],
@@ -2315,11 +2876,21 @@ def producer(run, action):
         directory = run.root / "bootstrap/new/notifications" / wid
         intent, result = directory / "intent.json", directory / "result.json"
         if not result.exists():
-            require(not intent.exists(), "UNKNOWN final notification; recover original handle")
-            publish(intent, canonical({"worker_id": wid, "payload": text, "sha256": digest(text.encode()), "at": now()}))
-            raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", run.run_id + ":release:" + wid, "--message", text], 60)
-            publish(result, canonical({"accepted": True, "stdout": raw.decode(), "read": "UNKNOWN", "executed": "UNKNOWN"}))
-        notifications.append({"worker_id": wid, "receipt": str(result), "accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"})
+            handle = run.run_id + ":release:" + wid
+            known = acting.execution.successful_effect(handle) if getattr(acting, "execution", None) else None
+            require(not intent.exists() or known, "UNKNOWN final notification; recover original handle")
+            if intent.exists():
+                require(decode(private_read(intent)).get("sha256") == digest(text.encode()), "final payload changed")
+            else:
+                publish(intent, canonical({"worker_id": wid, "payload": text, "sha256": digest(text.encode()), "at": now()}))
+            if known:
+                raw, call_id = private_read(known[2] / "stdout.raw"), known[0]["call_id"]
+            else:
+                raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", handle, "--message", text], 60)
+                call_id = getattr(getattr(acting, "execution", None), "last_call_id", None)
+            publish(result, canonical({"accepted": True, "stdout": raw.decode(), "call_id": call_id, "read": "UNKNOWN", "executed": "UNKNOWN"}))
+        notifications.append({"worker_id": wid, "receipt": str(result), "call_id": decode(private_read(result)).get("call_id"),
+                              "accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"})
     final = {"run_id": run.run_id, "new_id": sid, "evidence_turn_id": turn, "notifications": notifications, "created_at": now()}
     publish(run.root / "bootstrap/new/final.json", canonical(final))
     return final
@@ -2338,7 +2909,7 @@ def lock(path):
     return handle
 
 
-def locate(old=None, create=False):
+def locate(old=None, create=False, execution=None):
     require(sys.platform == "linux", "Linux only")
     data = no_symlinks(os.environ.get("AO_DATA_DIR") or str(Path.home() / ".ao/data"))
     run_file = no_symlinks(os.environ.get("AO_RUN_FILE") or str(Path.home() / ".ao/running.json"))
@@ -2347,6 +2918,7 @@ def locate(old=None, create=False):
     require(installed, "ao CLI missing")
     # Resolve the explicitly installed executable, not arbitrary data symlinks.
     initial = CLI(Path(installed).resolve(), old or os.environ.get("AO_SESSION_ID", ""), data, run_file, data)
+    initial.execution = execution
     documents = initial.documents()
     location = location_info(initial)
     shared = no_symlinks(documents["sharedDir"])
@@ -2365,8 +2937,10 @@ def qualified(root, old, initial, temp):
     executable = directory / "ao"
     require(digest(read_regular(executable)) == qualification.get("cli_sha256") and
             digest(read_regular(Path(__file__).absolute())) == qualification.get("script_sha256") and
-            qualification.get("schema") == "rh-cli-qualification/1", "fixed CLI/script qualification mismatch")
+            qualification.get("schema") == "rh-cli-qualification/2" and qualification.get("call_protocol") == CALL_PROTOCOL,
+            "fixed CLI/script qualification mismatch")
     cli = CLI(executable, old, initial.data_dir, initial.run_file, temp)
+    cli.execution = initial.execution
     cli.script_sha256 = qualification["script_sha256"]
     return cli
 
@@ -2403,6 +2977,8 @@ def validate_sources_live(req, cli):
 
 def write_initial_state(root, req, raw, cli):
     state = {"schema": "rh-state/1", "run_id": req["request_id"], "project_id": PROJECT, "old_id": req["old_id"],
+             "call_protocol": CALL_PROTOCOL, "journal": str(cli.execution.journal.root),
+             "qualification_sha256": digest(private_read(root.parent / ".qualified/qualification.json")),
              "target": req["target"], "start_sha256": digest(raw), "authority_source_refs": req["authority"]["source_refs"],
              "worker_index_sha256": digest(canonical(req["workers"])), "original_t0": req["authority"],
              "cli_path": str(cli.executable), "cli_sha256": cli.sha256,
@@ -2424,13 +3000,14 @@ def launch(root, continuation=False):
                              env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                              start_new_session=True, close_fds=True)
     log.close()
-    publish(directory / "runner.json", canonical({"pid": child.pid, "sid": child.pid, "launched_at": now()}))
+    publish(directory / "runner.json", canonical({"pid": child.pid, "sid": child.pid, "launched_at": now(), "process": process_identity(child.pid)}))
 
 
-RETIRABLE_RUN = "33da56c1-a652-4d16-b1aa-1042d3322f3f"
-ZERO_CONTROL_RUN = "ff137a22-e159-4603-ad70-1abd41681e5d"
-RETIRABLE_RUNS = (RETIRABLE_RUN, ZERO_CONTROL_RUN)
-RETIRABLE_WORKERS = ("agent-orchestrator-2", "agent-orchestrator-3")
+def canonical_uuid(value):
+    try:
+        return str(uuid.UUID(value)) == value
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 def private_manifest(root):
@@ -2449,7 +3026,7 @@ def private_manifest(root):
     return result
 
 
-def verify_retired(root, run_id, intent):
+def verify_retired_v1(root, run_id, intent):
     directory = root / ".retirement" / run_id
     receipt_raw = private_read(directory / "receipt.json")
     receipt = decode(receipt_raw)
@@ -2481,7 +3058,7 @@ def retirement_guard(root, old=None, run_id=None):
     sources = []
     retired = no_symlinks(root / ".retired")
     if retired.exists():
-        require(all(x.is_dir() and not x.is_symlink() and x.name in RETIRABLE_RUNS and
+        require(all(x.is_dir() and not x.is_symlink() and canonical_uuid(x.name) and
                     (root / ".retirement" / x.name / "intent.json").is_file() for x in retired.iterdir()),
                 "retirement archive lacks original intent")
     directory = no_symlinks(root / ".retirement")
@@ -2489,11 +3066,14 @@ def retirement_guard(root, old=None, run_id=None):
         return sources
     for item in directory.iterdir():
         no_symlinks(item)
-        require(item.is_dir() and item.name in RETIRABLE_RUNS, "unknown retirement record")
+        require(item.is_dir() and canonical_uuid(item.name), "unknown retirement record")
         if not (item / "intent.json").exists():
+            authorization = decode(private_read(item / "authorization.json"))
+            require(authorization.get("run_id") == item.name and authorization.get("old_id"), "unknown retirement record")
+            require(old != authorization["old_id"], "pending retirement blocks this old")
             continue
         intent = decode(private_read(item / "intent.json"))
-        require(intent.get("schema") == "rh-retirement-intent/1" and intent.get("run_id") == item.name and
+        require(intent.get("schema") in ("rh-retirement-intent/1", "rh-retirement-intent/2") and intent.get("run_id") == item.name and
                 intent.get("old_id"), "invalid retirement intent")
         require(run_id != item.name, "retired UUID cannot execute")
         if old == intent["old_id"]:
@@ -2502,340 +3082,555 @@ def retirement_guard(root, old=None, run_id=None):
     return sources
 
 
-def zero_control_history(root, run_directory, cli, authorization, state, request):
-    require(state.get("effects") == {} and authorization.get("expected_effects") == [] and
-            not (run_directory / "control").exists() and not state.get("new_id") and
-            set(state.get("stages", {})) <= {"workers"} and
-            state.get("error") == "sensitive workspace content cannot be preserved: cloud/.env.example",
-            "zero-control retirement effects/phase UNKNOWN")
-    for key in ("project_id", "target", "script_sha256", "cli_sha256"):
-        require(authorization.get(key) == state[key], "zero-control authorization binding: " + key)
-    require(authorization.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
-            "zero-control original qualification binding")
-    declared = {Path(source["raw_relpath"]) for source in request["sources"]}
-    require(all(path.parts[0] == "evidence" and len(path.parts) > 1 for path in declared), "zero-control source scope")
-    parents = {parent for path in declared for parent in path.parents}
-    evidence = no_symlinks(run_directory / "evidence")
-    if evidence.exists():
-        require(evidence.is_dir(), "zero-control evidence type")
-        for path in evidence.rglob("*"):
-            no_symlinks(path)
-            relative = path.relative_to(run_directory)
-            require((path.is_file() and relative in declared) or (path.is_dir() and relative in parents),
-                    "unknown zero-control source evidence")
-    observations = no_symlinks(run_directory / "observations")
-    actors = {state["old_id"], *RETIRABLE_WORKERS}
-    labels = {"target-preflight", "worker-list"} | {prefix + sid for sid in actors for prefix in ("session-", "workspace-")}
-    registrations, observed_registrations = set(), set()
-    if observations.exists():
-        require(observations.is_dir(), "zero-control observations type")
-        for path in observations.iterdir():
-            no_symlinks(path)
-            require(path.is_file(), "unknown zero-control observation type")
-            raw_label = next((sid for sid in actors if re.fullmatch(r"workspace-list-" + re.escape(sid) + r"-[0-9a-f]{32}\.raw", path.name)), None)
-            if raw_label:
-                registrations.add(path.name)
-                continue
-            label, _, nonce = path.stem.rpartition("-")
-            require(path.suffix == ".json" and label in labels and re.fullmatch(r"[0-9a-f]{32}", nonce),
-                    "unknown zero-control observation")
-            value = decode(private_read(path))
-            require(isinstance(value, list) if label == "worker-list" else isinstance(value, dict), "zero-control observation shape")
-            if label == "worker-list":
-                require(all(isinstance(row, dict) and "id" in row for row in value) and
-                        {row["id"] for row in value} == set(RETIRABLE_WORKERS) and
-                        all(row.get("projectId") == PROJECT and row.get("role") == "worker" for row in value), "zero-control worker-list source")
-            elif label == "target-preflight":
-                require(value.get("account", {}).get("id") == request["target"]["account"] and
-                        value.get("catalog", {}).get("accountBinding", {}).get("accountId") == request["target"]["account"],
-                        "zero-control target-preflight source")
-            elif label.startswith("session-"):
-                require(value.get("session", {}).get("id") == label[len("session-"):] and
-                        value["session"].get("projectId") == PROJECT, "zero-control session observation source")
-            else:
-                sid = label[len("workspace-"):]
-                binding = state.get("workspace_bindings", {}).get(sid)
-                require(binding and value.get("session_id") == sid and value.get("path") == workspace_entry(request, sid)["path"] and
-                        all(value.get(key) == expected for key, expected in binding.items()), "zero-control workspace observation source")
-                reference = value["registration"]
-                source = Path(reference["path"])
-                require(source.parent == root / ZERO_CONTROL_RUN / "observations" and
-                        re.fullmatch(r"workspace-list-" + re.escape(sid) + r"-[0-9a-f]{32}\.raw", source.name) and
-                        digest(private_read(observations / source.name)) == reference["sha256"], "zero-control registration source")
-                observed_registrations.add(source.name)
-        require(registrations == observed_registrations, "unknown zero-control registration observation")
-    # Only the observed partial before-snapshot layout is permitted, never a producer or dispatch trace.
-    workers = run_directory / "workers"
-    for actor in workers.iterdir() if workers.exists() else []:
-        no_symlinks(actor)
-        require(actor.name in RETIRABLE_WORKERS and actor.is_dir(), "unknown zero-control worker evidence")
-        for before in actor.iterdir():
-            no_symlinks(before)
-            require(re.fullmatch(r"before-[0-9a-f]{32}", before.name) and before.is_dir(), "zero-control producer/phase evidence")
-            for item in before.rglob("*"):
-                no_symlinks(item)
-                relative = item.relative_to(before)
-                require((len(relative.parts) == 1 and ((item.name == "objects" and item.is_dir()) or
-                        (item.name in ("index.patch", "worktree.patch") and item.is_file()))) or
-                        (len(relative.parts) == 2 and relative.parts[0] == "objects" and
-                         re.fullmatch(r"[0-9a-f]{64}", item.name) and item.is_file()), "unknown partial snapshot evidence")
-    wire_paths = set()
-    for metadata in (run_directory / "wire").glob("*.json"):
-        wire = decode(private_read(metadata))
-        raw = no_symlinks(wire["raw_path"])
-        require(raw.parent == root / ZERO_CONTROL_RUN / "wire", "zero-control wire source outside run")
-        actual = run_directory / "wire" / raw.name
-        require(digest(private_read(actual)) == wire["sha256"], "zero-control wire bytes changed")
-        wire_paths.update((metadata, actual))
-        if "argv" in wire:
-            args = wire["argv"]
-            notice = ["report", "--needs-input", "--note", "RH3 " + ZERO_CONTROL_RUN + " STOP: " + state["error"][:650] +
-                      "; " + status_command(root / ZERO_CONTROL_RUN, ZERO_CONTROL_RUN)]
-            read_only = wire.get("returncode") == 0 and (args[:2] in (["account", "ls"], ["session", "get"], ["session", "ls"]) or
-                        args[:3] == ["project", "documents", "info"] or args == ["spawn", "--help"])
-            require(read_only or (args == notice and wire.get("returncode") in (0, 1)), "zero-control wire dispatch UNKNOWN")
-        else:
-            require(wire.get("path") in ("projects/" + PROJECT, "sessions/" + state["old_id"]) or
-                    wire.get("path", "").startswith("agents/codex/models?"), "zero-control API phase UNKNOWN")
-    require(not (run_directory / "wire").exists() or set((run_directory / "wire").iterdir()) == wire_paths,
-            "unknown zero-control wire evidence")
-    require(not any(p.name in ("intent.json", "sent.json", "result.json", "statement.json", "stop.json", "phase-2a.json", "preservation.json")
-                    for p in run_directory.rglob("*")), "zero-control dispatch/producer evidence")
-    previous = root / ".retirement" / RETIRABLE_RUN
-    previous_intent = decode(private_read(previous / "intent.json"))
-    verify_retired(root, RETIRABLE_RUN, previous_intent)
-    receipt = decode(private_read(previous / "receipt.json"))
-    require(receipt["old_id"] == state["old_id"] and len(receipt["closed_effects"]) == 2 and
-            {x["worker_id"] for x in receipt["closed_effects"]} == set(RETIRABLE_WORKERS), "prior hold responsibility changed")
-    archive = root / ".retired" / RETIRABLE_RUN
-    for closed in receipt["closed_effects"]:
-        sid = closed["worker_id"]
-        snap = cli.session(sid)
-        require(snap["session"].get("kind") == "worker" and snap["session"].get("projectId") == PROJECT and
-                not snap["session"].get("isTerminated") and quiescent(snap), "zero-control worker terminal state UNKNOWN")
-        payload = private_read(archive / "control" / ("worker-stop-" + sid) / "payload.json").decode()
-        message = directive_entry(snap, closed["handle"], state["old_id"], payload)
-        require(completed(snap, message["dispatch_turn_id"]) and message["id"] == closed["message_id"] and closed["held"],
-                "zero-control original hold receipt changed")
-        require(not any(e.get("sequence", 0) > message["sequence"] and
-                        ((e.get("kind") == "message" and e.get("role") == "user") or
-                         (e.get("kind") == "activity" and e.get("activityKind") == "system" and e.get("detail", {}).get("event") == "steer"))
-                        for e in entries(snap)), "later zero-control worker directive UNKNOWN")
-    require(all(w.get("reserved_stop_d") == "D-4" and w.get("hold_state") == "held" and
-                w.get("release", {}).get("mode") == "keep-held" for w in request["workers"]) and
-            {w["worker_id"] for w in request["workers"]} == set(RETIRABLE_WORKERS), "zero-control request hold/index changed")
+# RH-REDESIGN retirement uses semantic call facts, never a run/URL whitelist.
 
-
-def historical_retirement_checks(root, original, run_directory, cli, authorization):
-    state = decode(private_read(run_directory / "state.json"))
-    request_raw = private_read(run_directory / "start.json")
-    request = decode(request_raw)
-    old = state["old_id"]
-    run_id = authorization["run_id"]
-    require(state.get("schema") == "rh-state/1" and state.get("run_id") == run_id and state.get("project_id") == PROJECT and
-            state.get("stage") == "workers" and state.get("outcome") == "stopped" and state.get("completed_stages") == [], "retirement history not workers/stopped")
-    require(request.get("schema") == "rh-start-request/1" and request.get("request_id") == run_id and request.get("old_id") == old and
-            request.get("target") == state["target"] and request.get("project_id") == PROJECT and
-            digest(request_raw) == state["start_sha256"] == authorization["start_sha256"], "retirement start binding mismatch")
-    require(digest(private_read(run_directory / "handoff.py")) == state["script_sha256"] and cli.sha256 == state["cli_sha256"] and
-            state["cli_path"] == str(root / ".qualified/ao"), "historical fixed bytes mismatch")
-    qualification = decode(private_read(root / ".qualified/qualification.json"))
-    require(qualification == dict(schema="rh-cli-qualification/1", cli_sha256=state["cli_sha256"], script_sha256=state["script_sha256"]),
-            "retirement original qualification mismatch")
-    allowed = {"handoff.py", "start.json", "state.json", "old-initial-response.raw", "runner-intent.json", "runner.json", "runner.log", "runner.lock",
-               "workers", "control", "wire", "evidence", "observations"}
-    if run_directory == root / ".retired" / run_id:
-        allowed.add("retired-start-slot")
-    require(all(p.name in allowed for p in run_directory.iterdir()) and not (run_directory / "runner-continuations").exists(), "unexpected historical phase/producer")
-    effects = {"worker-stop-" + sid for sid in RETIRABLE_WORKERS}
-    if run_id == RETIRABLE_RUN:
-        require(set(state.get("effects", {})) == effects and all(v in ("accepted", "observed-original") for v in state["effects"].values()) and
-                set(p.name for p in (run_directory / "control").iterdir()) == effects and set(authorization["expected_effects"]) == effects,
-                "retirement effects not exactly the two known stops")
-    old_snapshot = cli.session(old)
-    require(old_snapshot["session"].get("kind") == "orchestrator" and old_snapshot["session"].get("projectId") == PROJECT and
-            not old_snapshot["session"].get("isTerminated") and quiescent(old_snapshot), "old responsibility/terminal state unknown")
-    documents = cli.documents()
-    require(documents.get("lease", {}).get("sessionId") == old and not documents.get("lease", {}).get("frozen"), "retirement old managed responsibility changed")
-    live = [row for row in cli.sessions() if row["projectId"] == PROJECT and not row["isTerminated"]]
-    require({row["id"] for row in live if row["role"] == "worker"} == set(RETIRABLE_WORKERS) and
-            [row["id"] for row in live if row["role"] == "orchestrator"] == [old], "retirement live actor set changed")
-    closed = []
-    if run_id == ZERO_CONTROL_RUN:
-        zero_control_history(root, run_directory, cli, authorization, state, request)
-    for sid in RETIRABLE_WORKERS if run_id == RETIRABLE_RUN else ():
-        control = run_directory / "control" / ("worker-stop-" + sid)
-        payload_raw = private_read(control / "payload.json")
-        payload = decode(payload_raw)
-        intent = decode(private_read(control / "intent.json"))
-        result = decode(private_read(control / "result.json"))
-        private_read(control / "sent.json")
-        handle = RETIRABLE_RUN + ":worker-stop:" + sid
-        require(intent.get("argv") == ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", payload_raw.decode()] and
-                result.get("sha256") == digest(result.get("stdout", "").encode()), "historical dispatch receipt mismatch")
-        rules = next(x for x in request["workers"] if x["worker_id"] == sid)
-        require(payload.get("run_id") == RETIRABLE_RUN and payload.get("old_id") == old and payload.get("actor") == "detached-runner" and
-                payload.get("recipient") == sid and payload.get("phase") == "worker-stop" and payload["instruction"]["directive"] == rules["reserved_stop_d"] == "D-3" and
-                payload["instruction"]["rules"] == rules and rules["release"]["mode"] == "keep-held", "historical directive/hold mismatch")
-        snap = cli.session(sid)
-        require(snap["session"].get("kind") == "worker" and snap["session"].get("projectId") == PROJECT and
-                not snap["session"].get("isTerminated") and quiescent(snap), "worker not terminal/held")
-        message = directive_entry(snap, handle, old, payload_raw.decode())
-        require(completed(snap, message["dispatch_turn_id"]), "original D delivery/completion not proven")
-        require(not any(e.get("sequence", 0) > message["sequence"] and
-                        ((e.get("kind") == "message" and e.get("role") == "user") or
-                         (e.get("kind") == "activity" and e.get("activityKind") == "system" and e.get("detail", {}).get("event") == "steer"))
-                        for e in entries(snap)), "later worker directive/authority UNKNOWN")
-        stop_raw = private_read(run_directory / "workers" / sid / "stop.json")
-        stop = decode(stop_raw)
-        # Deliberately do not validate/follow a historical /1 receipt as executable /2 evidence.
-        require(stop.get("schema") == "rh-worker-stop/1" and stop.get("run_id") == RETIRABLE_RUN and stop.get("worker_id") == sid and
-                stop.get("project_id") == PROJECT and stop.get("state") == "blocked" and stop.get("resume_state") == "held" and
-                stop.get("evidence_turn_id") == message["dispatch_turn_id"], "historical blocked/hold facts mismatch")
-        declared_materials = {(x["path"], x["sha256"]) for x in authorization.get("materials", []) if x.get("worker_id") == sid}
-        for reference in stop.get("preservation", []):
-            # Compare historical claims only. Read sources exclusively through the separately authorized actor-root list.
-            if not Path(reference["path"]).is_relative_to(original / "workers" / sid):
-                require((reference["path"], reference["sha256"]) in declared_materials, "necessary historical material not explicitly preserved")
-        closed.append({"worker_id": sid, "handle": handle, "message_id": message["id"], "turn_id": message["dispatch_turn_id"],
-                       "directive_received": "D-3", "stop_state": "blocked", "last_ack_d": stop.get("stop_directive", {}).get("last_ack_d"),
-                       "stop_sha256": digest(stop_raw), "payload_sha256": digest(payload_raw), "held": True})
-    runner = decode(private_read(run_directory / "runner.json"))
-    require(runner.get("pid") == runner.get("sid") and type(runner.get("pid")) is int and runner["pid"] > 1 and
-            runner.get("launched_at") and state.get("waits", {}).get("workers", {}).get("boot_id") == boot_id(), "runner PID/SID/boot provenance unknown")
-    try:
-        os.stat("/proc/" + str(runner["pid"]))
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise Stop("runner liveness UNKNOWN: " + str(exc)) from exc
+def verify_retired(root, run_id, intent, committed=True):
+    if intent.get("schema") == "rh-retirement-intent/1":
+        return verify_retired_v1(root, run_id, intent)
+    directory = root / ".retirement" / run_id
+    receipt_raw = private_read(directory / "receipt.json")
+    receipt = decode(receipt_raw)
+    manifest_raw = private_read(directory / "manifest.json")
+    require(receipt.get("schema") == "rh-retired-run/2" and receipt.get("run_id") == run_id and
+            receipt.get("intent_sha256") == digest(private_read(directory / "intent.json")) and
+            receipt.get("manifest_sha256") == intent.get("manifest_sha256") == digest(manifest_raw) and
+            receipt.get("authorization_sha256") == intent.get("authorization_sha256") == digest(private_read(directory / "authorization.json")) and
+            receipt.get("closed_effects") == intent.get("closed_effects") and receipt.get("hold") == "unchanged",
+            "retirement receipt binding invalid")
+    manifest = decode(manifest_raw)
+    archive = root / ".retired" / run_id
+    actual = [x for x in private_manifest(archive) if x["path"] != "retired-start-slot" and not x["path"].startswith("retired-start-slot/")]
+    require(actual == manifest["run"] and private_manifest(archive / "retired-start-slot") == manifest["slot"], "retired original bytes/layout changed")
+    require(private_manifest(directory / "journal.original") == manifest["journal"] and
+            private_manifest(directory / "saved") == manifest["saved"], "retirement saved evidence changed")
+    journal = no_symlinks(manifest["journal_root"])
+    admission = decode(private_read(journal / "admission.json"))
+    require(admission.get("token") == intent.get("fence_token"), "retirement fence binding changed")
+    if committed:
+        require(admission.get("status") == "retired" and admission.get("receipt_sha256") == digest(receipt_raw), "retirement fence not committed")
     else:
-        raise Stop("runner PID alive or reused; do not force")
-    require((run_directory / "runner-intent.json").is_file(), "original launch intent missing")
-    for source in request["sources"]:
-        require(digest(private_read(confined(run_directory, source["raw_relpath"]))) == source["raw_sha256"], "retirement source bytes changed")
-    return state, request, closed
+        require(admission.get("status") == "retiring", "retirement recovery fence invalid")
+    require([x for x in private_manifest(journal) if x["path"] != "admission.json"] ==
+            [x for x in manifest["journal"] if x["path"] != "admission.json"], "retired journal changed")
+    return dict(path=str(directory / "receipt.json"), sha256=digest(receipt_raw), old_id=intent["old_id"])
 
 
-def retire_run(root, run_id, initial):
-    require(run_id in RETIRABLE_RUNS, "only the named historical runs may retire")
-    directory = mkdir(root / ".retirement" / run_id)
+def historical_facts(root, current, directory, state, authorization, inputs):
+    require(not state.get("call_protocol"), "new generation cannot use retrospective review")
+    raw = private_read(directory / "historical-review.json")
+    review = decode(raw)
+    require(authorization.get("historical_review_sha256") == digest(raw) and
+            review.get("origin") == "retrospective-review" and review.get("run_id") == state["run_id"] and
+            review.get("operator_session_id") == authorization["operator_session_id"] and review.get("reviewed_at") and
+            review.get("decision_ref") and review.get("accepted_preintent_limitation") is True and
+            review.get("input_manifest_sha256") == authorization["input_manifest_sha256"] and
+            review.get("script_sha256") == state["script_sha256"] and review.get("cli_sha256") == state["cli_sha256"],
+            "explicit retrospective review binding missing")
+    qualification = decode(private_read(directory / "qualification.original.json"))
+    require(qualification.get("schema") == "rh-cli-qualification/1" and
+            qualification.get("script_sha256") == state["script_sha256"] and qualification.get("cli_sha256") == state["cli_sha256"],
+            "historical qualification binding mismatch")
+    scopes = {"run": current, "retirement": directory}
+    for row in inputs.get("external_attempts", []):
+        path = no_symlinks(row["root"])
+        allowed = [Path(state["data_dir"]) / "artifacts", Path.home() / ".ao/data/artifacts"]
+        require(any(path.is_relative_to(base) for base in allowed) and str(path) in authorization.get("evidence_roots", []) and row.get("authorization_ref") and
+                row.get("manifest") == private_manifest(path), "external attempt scope or bytes UNKNOWN")
+        require(row["scope"] not in scopes, "duplicate historical scope")
+        scopes[row["scope"]] = path
+    seen = set()
+    for row in review.get("coverage", []):
+        require(row["scope"] in scopes, "unapproved historical evidence scope")
+        path = confined(scopes[row["scope"]], row["path"])
+        require(digest(private_read(path)) == row["sha256"] and (row["scope"], row["path"]) not in seen, "historical coverage hash/duplicate mismatch")
+        seen.add((row["scope"], row["path"]))
+    required = {("run", x["path"]) for x in inputs["run"] if not x["directory"]}
+    required |= {("retirement", x["path"]) for x in inputs.get("prior_retirement", []) if not x["directory"]}
+    for row in inputs.get("external_attempts", []):
+        required |= {(row["scope"], x["path"]) for x in row["manifest"] if not x["directory"]}
+    require(required == seen, "historical evidence coverage incomplete or extra")
+    calls = review.get("calls", [])
+    require(isinstance(calls, list) and all(isinstance(fact, dict) and isinstance(fact.get("source_refs"), list) and
+            all(isinstance(ref, dict) for ref in fact["source_refs"]) for fact in calls), "historical call sources UNKNOWN")
+    supporting = {(ref.get("scope"), ref.get("path")) for fact in calls for ref in fact["source_refs"] if ref.get("role") == "supporting"}
+
+    def capture_position(scope, name):
+        # Frozen CLI.capture writers: Run.wire, worker-receipt.wire and
+        # retire.preconditions; an external-attempt scope owns its captures.
+        parts = Path(name).parts
+        if scope == "run":
+            return parts[0] == "wire" or (len(parts) >= 4 and parts[0] == "workers" and parts[2] == "wire")
+        return parts[0] == "preconditions" if scope == "retirement" else True
+
+    for scope, name in required:
+        if name.endswith(".raw"):
+            metadata = scope, str(Path(name).with_suffix(".json"))
+            if capture_position(scope, name):
+                require(metadata in required, "historical capture raw lacks metadata UNKNOWN")
+            else:
+                require(metadata in required or (scope, name) in supporting, "retained raw lacks independent provenance UNKNOWN")
+    # Inventory producer sidecars in every approved scope, not just wire paths.
+    captures, capture_objects = {}, set()
+    for key in sorted(required):
+        scope, name = key
+        if not name.endswith(".json"):
+            continue
+        output = scope, str(Path(name).with_suffix(".raw"))
+        try:
+            wire = decode(private_read(confined(scopes[scope], name)))
+        except Stop:
+            require(output not in required, "historical capture metadata unreadable")
+            continue
+        candidate = output in required or (isinstance(wire, dict) and
+                    ("raw_path" in wire or ("sha256" in wire and "argv" in wire)))
+        if not candidate:
+            continue
+        info = confined(scopes[scope], name).stat()
+        identity = info.st_dev, info.st_ino
+        require(identity not in capture_objects, "historical capture appears in multiple scopes")
+        capture_objects.add(identity)
+        require(isinstance(wire, dict) and (("argv" in wire) != ("path" in wire)) and output in required and
+                wire.get("sha256") == digest(private_read(confined(scopes[scope], output[1]))),
+                "historical capture pair UNKNOWN")
+        if wire.get("raw_path"):
+            require(Path(wire["raw_path"]).name == Path(output[1]).name, "historical capture output identity changed")
+        captures[key] = (output, wire)
+    captured = set(captures) | {value[0] for value in captures.values()}
+
+    def reviewed_reference(reference):
+        key = reference["scope"], reference["path"]
+        require(key in seen, "historical producer reference outside reviewed scope")
+        return hash_reference(dict(path=str(confined(scopes[key[0]], key[1])), sha256=reference["sha256"]))
+
+    require(digest(private_read(current / "handoff.py")) == state["script_sha256"], "original run producer changed")
+    versions = {("run", state["script_sha256"], state["cli_sha256"])}
+    for binding in review.get("producer_bindings", []):
+        scope = binding["scope"]
+        require(scope in scopes and scope != "run", "historical producer scope invalid")
+        script_sha = digest(reviewed_reference(binding["script_ref"]))
+        cli_sha = binding["cli_sha256"]
+        if cli_sha != state["cli_sha256"]:
+            require(digest(reviewed_reference(binding["cli_ref"])) == cli_sha, "historical producer CLI changed")
+        version = scope, script_sha, cli_sha
+        require(version not in versions, "duplicate historical producer binding")
+        versions.add(version)
+    facts, consumed = [], set()
+    request = decode(private_read(current / "start.json"))
+    for fact in review.get("calls", []):
+        require(fact.get("origin") == "retrospective-review" and fact.get("kind") in CALL_EFFECTS and
+                fact.get("expected_effect") == CALL_EFFECTS[fact["kind"]] and fact.get("producer_ref") and
+                fact.get("phase") and fact.get("actor") and fact.get("target") and fact.get("capability") and
+                fact.get("terminal") in ("returned", "timeout", "error", "not-started") and fact.get("result") and fact.get("source_refs"),
+                "historical call semantics UNKNOWN")
+        producer = fact["producer_ref"]
+        require(isinstance(producer, dict) and producer.get("script_sha256") == fact.get("script_sha256") and
+                producer.get("location") and producer.get("role"), "historical producer identity UNKNOWN")
+        metadata, outputs = [], []
+        for row in fact["source_refs"]:
+            key = row["scope"], row["path"]
+            require(key in seen and digest(private_read(confined(scopes[key[0]], key[1]))) == row["sha256"], "historical call source mismatch")
+            require(row.get("role") in ("capture-metadata", "capture-output", "supporting"), "historical capture source role UNKNOWN")
+            if row.get("role") == "capture-metadata":
+                metadata.append(key)
+            elif row.get("role") == "capture-output":
+                outputs.append(key)
+            else:
+                require(key not in captured, "historical capture cannot be supporting")
+        require(len(metadata) == len(outputs) == 1 and metadata[0] in captures and
+                captures[metadata[0]][0] == outputs[0], "historical capture metadata/output pair mismatch")
+        require(not ({metadata[0], outputs[0]} & consumed), "historical capture classified more than once")
+        wire = captures[metadata[0]][1]
+        require(wire.get("sha256") == fact["result"].get("stdout_sha256") and
+                fact["result"].get("returncode") == wire.get("returncode"), "historical captured result changed or inferred")
+        transport = fact.get("transport")
+        require(transport in ("cli", "http"), "historical transport UNKNOWN")
+        parameters = ({"argv": wire["argv"], "timeout": wire.get("timeout", 30)} if transport == "cli" else
+                      {"method": "GET", "path": wire["path"]})
+        context = type("HistoricalContext", (), {"root": directory, "run_id": state["run_id"]})()
+        execution = Execution(context, directory / "review-only", dict(actor=fact["actor"], role=producer["role"]))
+        execution.phase = fact["phase"]
+        execution.bindings = {request["old_id"], *(x["worker_id"] for x in request["workers"])}
+        if state.get("new_id"):
+            execution.bindings.add(state["new_id"])
+            execution.new_id = state["new_id"]
+        execution.authority_refs = request["authority"]["source_refs"]
+        execution.refresh_authority = fact.get("refresh_authority")
+        require((metadata[0][0], fact.get("script_sha256"), fact.get("cli_sha256")) in versions,
+                "historical producer version not authorized for capture scope")
+        adapter = type("HistoricalCLI", (), {"env": {"AO_SESSION_ID": fact["actor"]}, "sha256": fact["cli_sha256"]})()
+        descriptor = execution.descriptor(adapter, transport, parameters,
+            read=fact["kind"] in ("observation", "metadata-refresh"), effect_id=fact.get("effect_id"), verifying=True)
+        require(all(descriptor[key] == fact.get(key) for key in ("kind", "capability", "expected_effect", "target", "effect_id")),
+                "historical classification differs from producer capability")
+        if transport == "cli" and "--message" in parameters["argv"]:
+            fact["message_sha256"] = digest(parameters["argv"][parameters["argv"].index("--message") + 1].encode())
+        require(fact.get("run_id") == state["run_id"], "historical call generation mismatch")
+        consumed.update((metadata[0], outputs[0]))
+        facts.append(fact)
+    require(len({f["call_id"] for f in facts}) == len(facts), "duplicate historical call identity")
+    require(captured == consumed, "unclassified historical capture UNKNOWN")
+    return facts
+
+
+def effect_closure(facts):
+    controls = {}
+    for fact in facts:
+        kind = fact.get("kind")
+        require(kind in CALL_EFFECTS and fact.get("expected_effect") == CALL_EFFECTS[kind], "effect classification UNKNOWN")
+        if kind in ("observation", "local-help") or fact.get("terminal") == "not-started":
+            continue
+        result = fact["result"]
+        if kind in ("metadata-refresh", "progress-notification"):
+            expected = "daemon-account-catalog-global" if kind == "metadata-refresh" else "progress-report-only"
+            require(fact.get("capability") == expected and fact.get("terminal") in ("returned", "error", "timeout"), "bounded local effect capability UNKNOWN")
+            if kind == "metadata-refresh":
+                require(fact.get("refresh_authority") and fact.get("target", {}).get("scope") == "all-eligible-daemon-accounts", "global refresh authority UNKNOWN")
+            continue
+        require(kind == "worker-control" and fact.get("effect_id"), "control/lifecycle responsibility UNKNOWN")
+        controls.setdefault(fact["effect_id"], []).append(fact)
+    for rows in controls.values():
+        require(any(x.get("terminal") == "returned" and x["result"].get("returncode") == 0 for x in rows),
+                "original control outcome UNKNOWN")
+    return controls
+
+
+def verify_partial_snapshots(current):
+    for pattern in ("workers/*/before-*/objects", "workers/*/after-*/objects"):
+        for path in current.glob(pattern):
+            no_symlinks(path)
+            require(path.is_dir(), "partial snapshot object metadata UNKNOWN")
+
+def retirement_preconditions(cli, state, request, controls, authorization, current):
+    old = request["old_id"]
+    snap = cli.session(old)
+    require(snap["session"].get("id") == old and snap["session"].get("kind") == "orchestrator" and
+            snap["session"].get("projectId") == PROJECT and not snap["session"].get("isTerminated") and quiescent(snap),
+            "old responsibility/terminal state UNKNOWN")
+    documents = cli.documents()
+    require(documents.get("lease", {}).get("sessionId") == old and not documents["lease"].get("frozen"), "managed responsibility changed")
+    workers = {w["worker_id"]: w for w in request["workers"]}
+    materials = authorization.get("materials", [])
+    require(isinstance(materials, list) and all(isinstance(item, dict) and item.get("worker_id") in workers and
+            isinstance(item.get("path"), str) and isinstance(item.get("sha256"), str) and
+            re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) for item in materials), "authorized material index UNKNOWN")
+    live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
+    require({x["id"] for x in live if x["role"] == "worker"} == set(workers) and
+            [x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
+    require(not state.get("new_id"), "new ownership responsibility not proven for retirement")
+    closed, remaining = [], set(controls)
+    for sid, rules in workers.items():
+        snap = cli.session(sid)
+        require(snap["session"].get("id") == sid and snap["session"].get("kind") == "worker" and
+                snap["session"].get("projectId") == PROJECT and quiescent(snap), "worker not terminal/held")
+        declared = [item for item in materials if item["worker_id"] == sid]
+        verified = []
+        if declared:
+            verified = source_inputs(type("Sources", (), {"cli": cli})(), sid,
+                                     Path(workspace_entry(request, sid)["path"]), declared)
+            require(all(row["sha256"] == item["sha256"] for row, item in zip(verified, declared)), "authorized material changed")
+        key = "worker-stop-" + sid
+        control = current / "control" / key
+        if control.exists():
+            payload_raw = private_read(control / "payload.json")
+            payload = decode(payload_raw)
+            intent = decode(private_read(control / "intent.json"))
+            argv = intent["argv"]
+            handle = argv[argv.index("--client-message-id") + 1]
+            matched = [effect_id for effect_id, rows in controls.items() if any(
+                row.get("target", {}).get("session_id") == sid and effect_id in (key, handle) for row in rows)]
+            require(len(matched) == 1, "worker dispatch not in call facts")
+            remaining.discard(matched[0])
+            message_hashes = []
+            for fact in controls[matched[0]]:
+                if fact.get("origin") == "retrospective-review":
+                    message_hashes.append(fact.get("message_sha256"))
+                else:
+                    original = fact.get("parameters", {}).get("argv", [])
+                    if "--message" in original:
+                        message_hashes.append(original[original.index("--message") + 1]["sha256"])
+            require(digest(payload_raw) in message_hashes, "worker payload not bound to original canonical call")
+            require(payload.get("run_id") == state["run_id"] and payload.get("recipient") == sid and payload.get("old_id") == old and
+                    argv == ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", payload_raw.decode()], "worker original intent/payload changed")
+            message = directive_entry(snap, handle, old, payload_raw.decode())
+            turns = {x["id"]: x for x in snap["transcript"].get("turns", [])}
+            turn = turns.get(message["dispatch_turn_id"], {})
+            require(turn.get("state") == "completed" and turn.get("completedAt"), "worker dispatch turn not completed")
+            stop_raw = private_read(current / "workers" / sid / "stop.json")
+            stop = decode(stop_raw)
+            require(stop.get("run_id") == state["run_id"] and stop.get("worker_id") == sid and
+                    stop.get("resume_state") == "held" and stop.get("state") in ("safe", "pending", "blocked") and
+                    stop.get("evidence_turn_id") == message["dispatch_turn_id"], "original worker hold evidence UNKNOWN")
+            require(isinstance(stop.get("preservation"), list), "worker preservation list UNKNOWN")
+            preserved = []
+            for reference in stop["preservation"]:
+                require(isinstance(reference, dict) and isinstance(reference.get("path"), str) and
+                        isinstance(reference.get("sha256"), str) and
+                        re.fullmatch(r"[0-9a-f]{64}", reference.get("sha256", "")), "worker preservation reference UNKNOWN")
+                path = no_symlinks(reference["path"])
+                if path.is_relative_to(current):
+                    hash_reference(reference)
+                    preserved.append(dict(reference, storage="run"))
+                else:
+                    authorized = [item for item in verified if Path(item["path"]) == path and item["sha256"] == reference["sha256"]]
+                    require(len(authorized) == 1, "worker preservation lacks unique authorized material")
+                    preserved.append(dict(authorized[0], storage="authorized-material"))
+            closed.append(dict(worker_id=sid, effect_id=matched[0], handle=handle, message_id=message["id"],
+                               turn_id=message["dispatch_turn_id"], directive_received=payload["instruction"]["directive"],
+                               stop_state=stop["state"], last_ack_d=stop.get("stop_directive", {}).get("last_ack_d"),
+                               next_d=stop.get("stop_directive", {}).get("next_d"), held=True,
+                               stop_sha256=digest(stop_raw), payload_sha256=digest(payload_raw), preservation=preserved))
+        else:
+            hold = authorization.get("hold_evidence", {}).get(sid)
+            require(rules.get("hold_state") == "held" and rules.get("release", {}).get("mode") == "keep-held" and hold,
+                    "uncontrolled worker continuing hold UNKNOWN")
+            path = no_symlinks(hold["snapshot"]["path"])
+            require(path.is_relative_to(current) or path.is_relative_to(current.parent / ".retirement" / state["run_id"]), "hold evidence outside authorized retirement roots")
+            evidence = decode(hash_reference(hold["snapshot"]))
+            original = [e for e in entries(evidence) if e.get("id") == hold["message_id"]]
+            matches = [e for e in entries(snap) if e.get("id") == hold["message_id"]]
+            require(len(original) == len(matches) == 1 and original[0] == matches[0] and hold.get("held") is True,
+                    "continuous hold anchor drift")
+            message = matches[0]
+            closed.append(dict(worker_id=sid, held=True, source="continuing-original-hold", anchor=hold["snapshot"]))
+        require(not any(e.get("sequence", 0) > message["sequence"] and (
+            (e.get("kind") == "message" and e.get("role") == "user") or
+            (e.get("kind") == "activity" and e.get("activityKind") == "system" and e.get("detail", {}).get("event") == "steer"))
+            for e in entries(snap)), "new directive/authority UNKNOWN")
+    require(not remaining, "unclosed extra control effect")
+    return closed
+
+
+def copy_private_tree(source, destination):
+    original = private_manifest(source)
+    mkdir(destination)
+    for row in original:
+        path = confined(destination, row["path"])
+        if row["directory"]:
+            mkdir(path)
+        else:
+            publish(path, private_read(confined(source, row["path"])))
+    require(private_manifest(source) == original == private_manifest(destination), "preservation copy drift")
+
+
+def retire_run(root, run_id, initial=None):
+    require(canonical_uuid(run_id), "canonical retirement UUID required")
+    root = no_symlinks(root)
+    directory = no_symlinks(root / ".retirement" / run_id)
     authorization_raw = private_read(directory / "authorization.json")
     authorization = decode(authorization_raw)
     operator = identifier(os.environ.get("AO_SESSION_ID", ""))
-    require(authorization.get("schema") == "rh-retirement-authorization/1" and authorization.get("run_id") == run_id and
-            authorization.get("operator_session_id") == operator and authorization.get("decision_ref") and
-            re.fullmatch(r"D-[0-9]+", authorization.get("directive_ref", "")), "explicit operator retirement authorization missing")
+    require(authorization.get("schema") == "rh-retirement-authorization/2" and authorization.get("run_id") == run_id and
+            authorization.get("project_id") == PROJECT and authorization.get("operator_session_id") == operator and
+            authorization.get("decision_ref") and re.fullmatch(r"D-[0-9]+", authorization.get("directive_ref", "")),
+            "explicit named retirement authorization missing")
     old = identifier(authorization["old_id"])
     original, archive = root / run_id, root / ".retired" / run_id
-    with lock(root / (".old-" + old + ".lock")):
-        existing = directory / "intent.json"
-        if (directory / "receipt.json").exists():
-            verify_retired(root, run_id, decode(private_read(existing)))
-            return decode(private_read(directory / "receipt.json"))
-        if existing.exists():
+    intent_path = directory / "intent.json"
+    if (directory / "receipt.json").exists():
+        intent = decode(private_read(intent_path))
+        original_state = decode(private_read(archive / "state.json"))
+        journal = Journal(Path(original_state["data_dir"]), run_id)
+        if journal.state()["status"] != "retired":
             recovery = decode(private_read(directory / "recovery-authorization.json"))
-            require(recovery.get("intent_sha256") == digest(private_read(existing)) and recovery.get("operator_session_id") == operator and
+            require(recovery.get("operator_session_id") == operator and recovery.get("fence_token") == intent["fence_token"] and
                     recovery.get("directive_ref") != authorization["directive_ref"] and re.fullmatch(r"D-[0-9]+", recovery.get("directive_ref", "")),
-                    "pending retirement requires new named recovery authorization")
-        require(existing.exists() or not archive.exists(), "retirement archive without original intent UNKNOWN")
-        current = archive if archive.exists() else original
-        require(not (archive.exists() and original.exists()), "retirement source/archive conflict")
-        require((current / "runner.lock").is_file(), "historical runner lock missing")
-        with lock(current / "runner.lock"):
-            state = decode(private_read(current / "state.json"))
-            require(state["old_id"] == old and state["run_file"] == str(initial.run_file) and state["data_dir"] == str(initial.data_dir),
-                    "retirement root/old/data identity mismatch")
-            cli = CLI(root / ".qualified/ao", old, initial.data_dir, initial.run_file, mkdir(directory / "preconditions"))
-            cli.capture_root = mkdir(directory / "preconditions" / uuid.uuid4().hex)
-            state, request, closed = historical_retirement_checks(root, original, current, cli, authorization)
-            require(list(cli.capture_root.glob("*.raw")), "retirement precondition raw responses missing")
+                    "receipt commit requires named recovery")
+            verify_retired(root, run_id, intent, committed=False)
+            with journal.mutex():
+                replace_private(journal.root / "admission.json", dict(journal.state(), status="retired",
+                                receipt_sha256=digest(private_read(directory / "receipt.json"))))
+        verify_retired(root, run_id, intent)
+        return decode(private_read(directory / "receipt.json"))
+    require(not (root / ".voided" / run_id).exists(), "voided UUID cannot retire again")
+    require(not (original.exists() and archive.exists()), "source/archive conflict")
+    current = archive if archive.exists() else original
+    inputs_raw = private_read(directory / "input-manifest.json")
+    inputs = decode(inputs_raw)
+    require(authorization.get("input_manifest_sha256") == digest(inputs_raw), "authorized input manifest changed")
+    generated = {"authorization.json", "input-manifest.json", "qualification.original.json", "historical-review.json",
+                 "retire-owner.lock", "manifest.json", "intent.json", "receipt.json", "recovery-authorization.json"}
+    prior = [x for x in private_manifest(directory) if not x["directory"] and x["path"] not in generated and
+             not x["path"].startswith(("saved/", "journal.original/"))]
+    expected_prior = [x for x in inputs.get("prior_retirement", []) if not x["directory"]]
+    require(prior == expected_prior, "unreviewed prior retirement evidence UNKNOWN")
+    state = decode(private_read(current / "state.json"))
+    request_raw = private_read(current / "start.json")
+    request = decode(request_raw)
+    require(state.get("run_id") == request.get("request_id") == run_id and state.get("old_id") == request.get("old_id") == old and
+            state.get("project_id") == request.get("project_id") == PROJECT and state.get("target") == request.get("target") and
+            state.get("start_sha256") == authorization.get("start_sha256") == digest(request_raw) and
+            digest(private_read(current / "handoff.py")) == state.get("script_sha256"), "retirement original binding mismatch")
+    data = no_symlinks(state["data_dir"])
+    require(root.is_relative_to(data / "projects" / PROJECT / "orchestrator") and
+            no_symlinks(state["run_file"]).is_relative_to(data.parent), "retirement data/run-file scope changed")
+    journal = Journal(data, run_id)
+    binding = decode(private_read(journal.root / "binding.json"))
+    require(binding.get("root") == str(root) and binding.get("old_id") == old and binding.get("start_sha256") == state["start_sha256"], "retirement offline root binding mismatch")
+    with lock(directory / "retire-owner.lock"):
+        fence = journal.state()
+        if fence["status"] == "open":
+            fence = journal.freeze(operator, authorization["directive_ref"], digest(authorization_raw))
+        else:
+            recovery = decode(private_read(directory / "recovery-authorization.json"))
+            require(fence["status"] == "retiring" and fence.get("authorization_sha256") == digest(authorization_raw) and
+                    recovery.get("operator_session_id") == operator and recovery.get("fence_token") == fence["token"] and
+                    recovery.get("directive_ref") != authorization["directive_ref"] and
+                    re.fullmatch(r"D-[0-9]+", recovery.get("directive_ref", "")), "pending retirement requires new named recovery")
+        # No admission mutex is held while taking old/start then runner locks.
+        with lock(root / (".old-" + old + ".lock")), lock(current / "runner.lock"):
             slot = root / ".start" / old
-            saved_slot = archive / "retired-start-slot"
-            slot_source = saved_slot if saved_slot.exists() else slot
-            require(private_read(slot_source / "request.json") == private_read(current / "start.json"), "retirement slot not the original request")
-            preparation = dict(authorization_sha256=digest(authorization_raw), operator_session_id=operator,
-                               old_id=old, start_sha256=state["start_sha256"], closed_effects=closed)
+            slot_source = archive / "retired-start-slot" if (archive / "retired-start-slot").exists() else slot
+            actual = [x for x in private_manifest(current) if x["path"] != "retired-start-slot" and not x["path"].startswith("retired-start-slot/")]
+            verify_partial_snapshots(current)
+            require(actual == inputs["run"] and private_manifest(slot_source) == inputs["slot"] and
+                    private_read(slot_source / "request.json") == request_raw, "retirement original/slot drift")
+            qualification_raw = private_read(directory / "qualification.original.json")
+            require(digest(qualification_raw) == inputs["qualification_sha256"] == binding["qualification_sha256"], "original qualification changed")
+            executable = no_symlinks(state["cli_path"])
+            require(digest(read_regular(executable)) == state["cli_sha256"], "retirement transport CLI changed")
             manifest_path = directory / "manifest.json"
-            if not existing.exists() and not manifest_path.exists():
-                material_refs = []
+            if not manifest_path.exists():
+                native = state.get("call_protocol") == CALL_PROTOCOL
+                if native:
+                    require(state.get("qualification_sha256") == digest(qualification_raw), "native qualification binding changed")
+                    qualification = decode(qualification_raw)
+                    require(qualification.get("schema") == "rh-cli-qualification/2" and qualification.get("call_protocol") == CALL_PROTOCOL and
+                            qualification.get("script_sha256") == state["script_sha256"] and qualification.get("cli_sha256") == state["cli_sha256"] and
+                            state.get("journal") == str(journal.root), "native qualification identity mismatch")
+                    facts = journal.facts(require_ended=True)
+                    require(fence["frozen_executions"], "native execution set missing")
+                else:
+                    facts = historical_facts(root, current, directory, state, authorization, inputs)
+                    require(not fence["frozen_executions"], "historical run has unreviewed native executions")
+                controls = effect_closure(facts)
+                effect_ids = {x["effect_id"] for x in facts if x.get("effect_id")}
+                require(effect_ids == set(authorization.get("expected_effect_ids", [])), "authorized effect set changed")
+                for key in state.get("effects", {}):
+                    require((current / "control" / key / "intent.json").is_file(), "state effect lacks original business intent")
+                for control in (current / "control").iterdir() if (current / "control").exists() else []:
+                    if not ((control / "sent.json").exists() or (control / "result.json").exists()):
+                        continue
+                    original_args = decode(private_read(control / "intent.json"))["argv"]
+                    original_effect = original_args[original_args.index("--client-message-id") + 1] if "--client-message-id" in original_args else control.name
+                    require(original_effect in effect_ids, "dispatched business effect absent from call facts")
+                launch_path = current / "runner.json"
+                if launch_path.exists():
+                    runner = decode(private_read(launch_path))
+                    identity = runner.get("process")
+                    if identity:
+                        require(process_ended(identity), "runner still alive")
+                    else:
+                        require(not native and runner.get("pid") == runner.get("sid") and
+                                state.get("waits", {}).get("workers", {}).get("boot_id") == boot_id(), "runner identity UNKNOWN")
+                        require(not Path("/proc", str(runner["pid"])).exists(), "runner PID alive or reused")
+                    require((current / "runner-intent.json").is_file(), "launch intent missing")
+                else:
+                    require(not (current / "runner-intent.json").exists() and state.get("stage") == "prepared" and
+                            not state.get("effects"), "prelaunch evidence UNKNOWN")
+                execution = journal.register("retire", operator, maintenance=fence["token"])
+                execution.configure(request, state["start_sha256"])
+                cli = CLI(executable, operator, data, state["run_file"], directory)
+                require(cli.base == state["daemon_base"], "retirement daemon location changed")
+                cli.execution = execution
+                try:
+                    closed = retirement_preconditions(cli, state, request, controls, authorization, current)
+                    closed.extend(dict(effect_id=effect_id, kind=rows[-1]["kind"], terminal="attempt-terminal", delivery="UNKNOWN",
+                                       call_ids=[x["call_id"] for x in rows])
+                                  for effect_id in sorted(effect_ids - set(controls))
+                                  for rows in [[x for x in facts if x.get("effect_id") == effect_id]])
+                finally:
+                    execution.close()
+                all_facts = journal.facts()
+                require(set(x.name for x in (journal.root / "executions").iterdir()) ==
+                        set(fence["frozen_executions"]) | {execution.registration["execution_id"]}, "frozen execution set changed")
+                for source in request["sources"]:
+                    require(digest(private_read(confined(current, source["raw_relpath"]))) == source["raw_sha256"], "authority source changed")
+                saved = mkdir(directory / "saved")
+                publish(saved / "qualification.json", qualification_raw)
+                publish(saved / "cli.bytes", read_regular(executable))
                 for item in authorization.get("materials", []):
                     sid = identifier(item["worker_id"])
-                    require(sid in RETIRABLE_WORKERS, "retirement material actor mismatch")
-                    workspace = no_symlinks(workspace_entry(request, sid)["path"])
-                    rows = source_inputs(type("Sources", (), {"cli": cli})(), sid, workspace,
-                                         [dict(path=item["path"], kind="historical-necessary-material", basis=item["basis"])])
-                    require(rows[0]["sha256"] == item["sha256"], "retirement material changed")
-                    refs, provenance = save_sources(mkdir(directory / "materials" / sid), rows)
-                    material_refs.extend(refs)
-                qualification_raw = private_read(root / ".qualified/qualification.json")
-                publish(directory / "qualification.original.json", qualification_raw)
-                publish(directory / "cli.original.bytes", read_regular(root / ".qualified/ao"))
-                material_refs += [file_reference(directory / "qualification.original.json"), file_reference(directory / "cli.original.bytes")]
-                manifest = {"run": private_manifest(original), "slot": private_manifest(slot), "saved": material_refs, "preconditions": private_manifest(directory / "preconditions"), "preparation": preparation}
-                publish(directory / "manifest.json", canonical(manifest))
-            manifest = decode(private_read(manifest_path))
-            if existing.exists():
-                intent = decode(private_read(existing))
-            else:
-                intent = {"schema": "rh-retirement-intent/1", "run_id": run_id, "old_id": old, "actor": "external-operator",
-                          "operator_session_id": operator, "start_sha256": state["start_sha256"], "closed_effects": closed,
-                          "preconditions_sha256": digest(canonical(manifest["preconditions"])),
-                          "authorization_sha256": digest(authorization_raw), "manifest_sha256": digest(private_read(directory / "manifest.json")), "created_at": now()}
-            require(intent["authorization_sha256"] == digest(authorization_raw) and intent["manifest_sha256"] == digest(private_read(manifest_path)) and
-                    intent["closed_effects"] == closed and intent["preconditions_sha256"] == digest(canonical(manifest["preconditions"])),
-                    "retirement original intent drift")
-            require(manifest.get("preparation") == preparation, "retirement preparation binding drift")
-            preconditions = private_manifest(directory / "preconditions")
-            require(all(x in preconditions for x in manifest["preconditions"]), "retirement original preconditions changed")
-            actual = [x for x in private_manifest(current) if x["path"] != "retired-start-slot" and not x["path"].startswith("retired-start-slot/")]
-            require(actual == manifest["run"] and private_manifest(slot_source) == manifest["slot"], "retirement originals changed")
-            for ref in manifest["saved"]:
-                require(Path(ref["path"]).is_relative_to(directory), "retirement saved copy outside fixed directory")
-                confined(directory, str(Path(ref["path"]).relative_to(directory)))
-                hash_reference(ref)
-            if not existing.exists():
-                publish(existing, canonical(intent))
+                    require(sid in {w["worker_id"] for w in request["workers"]}, "material worker outside original index")
+                    rows = source_inputs(type("Sources", (), {"cli": cli})(), sid, Path(workspace_entry(request, sid)["path"]), [item])
+                    require(rows[0]["sha256"] == item["sha256"], "necessary material changed")
+                    save_sources(mkdir(saved / sid), rows)
+                copy_private_tree(journal.root, directory / "journal.original")
+                manifest = dict(run=inputs["run"], slot=inputs["slot"], journal=private_manifest(directory / "journal.original"),
+                    journal_root=str(journal.root), saved=private_manifest(saved), closed_effects=closed,
+                    call_facts_sha256=digest(canonical(facts)), native_preconditions=all_facts,
+                    authorization_sha256=digest(authorization_raw), fence_token=fence["token"])
+                publish(manifest_path, canonical(manifest))
+            # Existing manifest is the immutable preparation, including after a
+            # crash before intent. No fresh capture or dispatch on this branch.
+            manifest_raw = private_read(manifest_path)
+            manifest = decode(manifest_raw)
+            require(manifest["run"] == inputs["run"] and manifest["slot"] == inputs["slot"] and
+                    manifest["authorization_sha256"] == digest(authorization_raw) and manifest["fence_token"] == fence["token"] and
+                    private_manifest(directory / "journal.original") == manifest["journal"] and
+                    private_manifest(directory / "saved") == manifest["saved"], "immutable retirement preparation changed")
+            require(private_manifest(journal.root) == manifest["journal"], "frozen journal drift before commit")
+            intent = dict(schema="rh-retirement-intent/2", run_id=run_id, old_id=old, authorization_sha256=digest(authorization_raw),
+                          manifest_sha256=digest(manifest_raw), fence_token=fence["token"], closed_effects=manifest["closed_effects"])
+            publish(intent_path, canonical(intent))
             mkdir(archive.parent)
-            require(current.stat().st_dev == archive.parent.stat().st_dev == slot_source.stat().st_dev, "retirement filesystem mismatch")
-            if current == original:
-                require(not archive.exists(), "retirement archive already exists")
-                os.rename(original, archive)
+            require(current.stat().st_dev == archive.parent.stat().st_dev, "retirement must use same filesystem")
+            if not archive.exists():
+                os.rename(current, archive)
                 sync_directory(root)
                 sync_directory(archive.parent)
-            if not saved_slot.exists():
-                os.rename(slot, saved_slot)
+            if not (archive / "retired-start-slot").exists():
+                os.rename(slot, archive / "retired-start-slot")
                 sync_directory(slot.parent)
                 sync_directory(archive)
             if not slot.exists():
                 mkdir(slot)
-                sync_directory(slot.parent)
-            else:
-                require(not list(slot.iterdir()), "candidate slot changed during retirement")
-            require(private_manifest(saved_slot) == manifest["slot"], "retired slot changed")
-            final_preconditions = directory / ("preconditions-final-" + uuid.uuid4().hex + ".json")
-            publish(final_preconditions, canonical(private_manifest(directory / "preconditions")))
-            receipt = {"schema": "rh-retired-run/1", "run_id": run_id, "old_id": old, "actor": "external-operator",
-                       "operator_session_id": operator, "authorization_sha256": intent["authorization_sha256"],
-                       "intent_sha256": digest(private_read(existing)), "manifest_sha256": intent["manifest_sha256"],
-                       "preconditions": file_reference(final_preconditions),
-                       "closed_effects": closed, "original_run": str(original), "archive": str(archive), "hold": "unchanged", "created_at": now()}
-            publish(directory / "receipt.json", canonical(receipt))
+            require(not list(slot.iterdir()), "candidate slot changed during retirement")
+            receipt = dict(schema="rh-retired-run/2", run_id=run_id, old_id=old, hold="unchanged",
+                authorization_sha256=digest(authorization_raw), intent_sha256=digest(private_read(intent_path)),
+                manifest_sha256=digest(manifest_raw), closed_effects=manifest["closed_effects"])
+            with journal.mutex():
+                require(journal.state()["token"] == fence["token"], "retirement fence changed")
+                publish(directory / "receipt.json", canonical(receipt))
+                committed = dict(journal.state(), status="retired", receipt_sha256=digest(canonical(receipt)))
+                replace_private(journal.root / "admission.json", committed)
             verify_retired(root, run_id, intent)
             return receipt
 
 
-def start(root, initial, old, target):
+def prior_journal_guard(journal, old):
+    for directory in journal.root.parent.iterdir():
+        require(directory.is_dir() and canonical_uuid(directory.name), "unknown project journal")
+        if directory == journal.root or not (directory / "binding.json").exists():
+            continue
+        binding = decode(private_read(directory / "binding.json"))
+        if binding.get("old_id") != old:
+            continue
+        root = no_symlinks(binding["root"])
+        require(root.name == ".private-handoff-runs" and root.is_relative_to(journal.root.parent.parent), "prior journal root invalid")
+        receipt = root / ".retirement" / directory.name / "receipt.json"
+        if receipt.exists():
+            verify_retired(root, directory.name, decode(private_read(receipt.parent / "intent.json")))
+            continue
+        path = root / directory.name / "state.json"
+        require(path.exists() and decode(private_read(path)).get("outcome") == "complete", "old has unresolved prior journal")
+
+
+def start(root, initial, old, target, selector=None):
     with lock(root / (".old-" + identifier(old) + ".lock")):
         slot = root / ".start" / old
         raw = private_read(slot / "request.json")
         req = validate_request(decode(raw), slot, old, target)
+        require(selector == req["request_id"], "start selector differs from published request")
         require(not no_symlinks(root / ".voided" / req["request_id"]).exists(), "request UUID is retired")
         retirement_guard(root, old, req["request_id"])
         destination = root / req["request_id"]
         if (destination / "start.json").exists():
             require(private_read(destination / "start.json") == raw, "UUID bound to different request")
-            return decode(private_read(destination / "state.json"))
+            state = decode(private_read(destination / "state.json"))
+            require(state.get("call_protocol") == CALL_PROTOCOL and state.get("script_sha256") == digest(Path(__file__).read_bytes()) and
+                    state.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
+                    "cached historical generation cannot execute")
+            return state
         for directory in root.iterdir():
             if directory.name.startswith(".") or not directory.is_dir():
                 continue
@@ -2843,6 +3638,11 @@ def start(root, initial, old, target):
             state = decode(private_read(directory / "state.json"))
             require(state["old_id"] != old or state["outcome"] == "complete", "old already has unresolved run")
         cli = qualified(root, old, initial, slot)
+        prior_journal_guard(cli.execution.journal, old)
+        cli.execution.configure(req, digest(raw))
+        cli.execution.phase = "preflight"
+        cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw),
+            qualification_sha256=digest(private_read(root / ".qualified/qualification.json"))), source_root=slot)
         old_snap = validate_sources_live(req, cli)
         preflight = target_preflight(cli, target)
         mkdir(destination)
@@ -2869,14 +3669,23 @@ def start(root, initial, old, target):
         return run.state
 
 
-def load_run(root, run_id, initial):
+def load_run(root, run_id, initial, execution=None):
     require(str(uuid.UUID(run_id)) == run_id, "canonical run UUID required")
     retirement_guard(root, run_id=run_id)
     directory = root / run_id
     state = decode(private_read(directory / "state.json"))
     retirement_guard(root, state["old_id"], run_id)
     require(state["script_sha256"] == digest(Path(__file__).read_bytes()), "run script changed")
+    require(state.get("call_protocol") == CALL_PROTOCOL and
+            state.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
+            "run qualification/protocol mismatch; historical runs cannot execute")
+    require(execution is not None and state.get("journal") == str(execution.journal.root), "normal loader requires fixed journal")
+    binding = decode(private_read(execution.journal.root / "binding.json"))
+    require(binding.get("root") == str(root) and binding.get("old_id") == state["old_id"] and
+            binding.get("start_sha256") == state["start_sha256"] == digest(private_read(directory / "start.json")) and
+            binding.get("qualification_sha256") == state["qualification_sha256"], "run/journal immutable binding mismatch")
     cli = CLI(state["cli_path"], state["old_id"], state["data_dir"], state["run_file"], directory)
+    cli.execution = execution
     require(cli.sha256 == state["cli_sha256"], "run CLI changed")
     require(cli.base == state["daemon_base"], "run daemon location changed")
     return Run(directory, cli)
@@ -2887,6 +3696,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     begin = sub.add_parser("start")
+    begin.add_argument("--run", required=True)
     begin.add_argument("--old", required=True)
     for key in ("harness", "account", "model", "effort", "approval-mode"):
         begin.add_argument("--" + key, required=True)
@@ -2897,17 +3707,56 @@ def main(argv=None):
     inspect.add_argument("--path", required=True)
     inspect.add_argument("--offset", type=int, required=True)
     args = parser.parse_args(argv)
+    execution = None
     try:
+        require(str(uuid.UUID(args.run)) == args.run, "canonical run UUID required")
+        data = no_symlinks(os.environ.get("AO_DATA_DIR") or str(Path.home() / ".ao/data"))
+        require(data.is_relative_to(Path.home() / ".ao"), "AO state must remain under ~/.ao")
+        journal_path = data / "projects" / PROJECT / "orchestrator/.handoff-journal" / args.run
+        binding = decode(private_read(journal_path / "binding.json")) if (journal_path / "binding.json").exists() else None
+        local_root = no_symlinks(binding["root"]) if binding else None
+        if local_root:
+            require(local_root.name == ".private-handoff-runs" and
+                    local_root.is_relative_to(data / "projects" / PROJECT / "orchestrator"), "local journal root binding invalid")
+        if args.action == "status":
+            require(local_root, "local run binding missing; no discovery for status")
+            directory = local_root / ".retirement" / args.run
+            if (directory / "receipt.json").exists():
+                intent = decode(private_read(directory / "intent.json"))
+                verify_retired(local_root, args.run, intent)
+                print(private_read(directory / "receipt.json").decode())
+            else:
+                result = decode(private_read(local_root / args.run / "state.json"))
+                result["admission"] = decode(private_read(journal_path / "admission.json"))["status"]
+                result["next_step"] = "等待具名退役恢復；不 start／continue。" if result["admission"] != "open" else "只查原 run；未知效果先核原 handle。"
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if args.action != "retire":
+            journal = Journal(data, args.run)
+            actor = getattr(args, "old", None) or os.environ.get("AO_SESSION_ID")
+            if not actor and local_root:
+                actor = decode(private_read(local_root / args.run / "state.json"))["old_id"]
+            execution = journal.register(args.action, identifier(actor or ""))
         entry = no_symlinks(Path(__file__).absolute()).parent
-        if args.action != "start" and entry.name == args.run and entry.parent.name == ".private-handoff-runs":
+        if args.action == "retire":
+            require(local_root, "retirement requires offline local binding before I/O")
+            root, initial = local_root, None
+        elif args.action != "start" and entry.name == args.run and entry.parent.name == ".private-handoff-runs":
             require(entry.is_relative_to(Path.home() / ".ao"), "bound entry outside AO state")
             root, initial = entry.parent, None
         else:
-            root, initial = locate(getattr(args, "old", None), create=args.action == "start")
+            if local_root:
+                root, initial = local_root, None
+                if args.action == "start":
+                    run_file = no_symlinks(os.environ.get("AO_RUN_FILE") or str(Path.home() / ".ao/running.json"))
+                    initial = CLI(Path(shutil.which("ao")).resolve(), args.old, data, run_file, data)
+                    initial.execution = execution
+            else:
+                root, initial = locate(getattr(args, "old", None), create=args.action == "start", execution=execution)
         if args.action == "start":
             target = {k: getattr(args, k) for k in ("harness", "account", "model", "effort", "approval_mode")}
             target["mode"] = "chat"
-            result = start(root, initial, args.old, target)
+            result = start(root, initial, args.old, target, args.run)
         elif args.action == "status":
             require(str(uuid.UUID(args.run)) == args.run, "canonical run UUID required")
             result = decode(private_read(root / args.run / "state.json"))
@@ -2919,7 +3768,7 @@ def main(argv=None):
         elif args.action == "retire":
             result = retire_run(root, args.run, initial)
         else:
-            run = load_run(root, args.run, initial)
+            run = load_run(root, args.run, initial, execution)
             if args.action == "inspect":
                 require(os.environ.get("AO_SESSION_ID") == run.state.get("new_id"), "inspect must run as new")
                 require(args.offset >= 0, "invalid inspect offset")
@@ -2963,6 +3812,9 @@ def main(argv=None):
     except (Stop, OSError, ValueError, TypeError, LookupError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
         print("STOP: " + str(exc), file=sys.stderr)
         return 1
+    finally:
+        if execution:
+            execution.close()
 
 
 if __name__ == "__main__":

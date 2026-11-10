@@ -6,10 +6,10 @@
 
 ## 操作界面
 
-外部 start 入口只收 old 與明確 target：
+外部 start 入口收已發布的 run selector、old 與明確 target；selector 不是第二份授權：
 
 ```text
-python3 tools/reusable-handoff/handoff.py start --old <old-id> \
+python3 tools/reusable-handoff/handoff.py start --run <published-request-UUID> --old <old-id> \
   --harness <claude-code|codex> --account <account-id> \
   --model <exact-model-id> --effort <exact-effort> \
   --approval-mode bypass-permissions
@@ -41,7 +41,8 @@ old worktree 之後消失不影響入口。固定副本的 status 可直接讀�
 
 ```json
 {
-  "schema": "rh-cli-qualification/1",
+  "schema": "rh-cli-qualification/2",
+  "call_protocol": "rh-calls/1",
   "cli_sha256": "<qualified CLI bytes SHA256>",
   "script_sha256": "<this handoff.py bytes SHA256>"
 }
@@ -102,28 +103,15 @@ idle 單獨、failed／recovered／interrupted 都不算 A 完成；不能讓 A 
 同一 old 在 B 自己讀 A 定稿原件，重核 conversation／branch／message／role／turn／正文、原授權版本與後續取消／改向，以及 A 準備的全部事實仍適用。
 有 worker、D／hold／原題或路徑漂移、來源不足即停，不以 B 的新決定補 A，不自動重做 A。
 B 保存正常 CLI 回應原 bytes，從中取實際 revision、正文 hash 及 raw hash；不合成原件、不硬填 revision、不正規化正文。
-B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同 B 輪呼叫既有 start，回真 run-id／status 後結束。
+B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同 B 輪呼叫 start --run <該 UUID>，回真 run-id／status 後結束。
 原 human／T0／精度不變，不請人類重送授權；任何 STOP 不改包救過、不重試或擅自 continue。
 後續仍完整走 worker、2a、匯出／保全與 native 核驗，A completed 不等於 old 可 kill。
 
-### 作廢與資格界線
+### 資格切換
 
-start 拒絕固定 R/.voided/<uuid> 已存在的 UUID，包括未完成封存；hidden archive 不是另一個啟動入口。
-作廢是具名核准的 operator 操作，不提供通用清理器；不能證明無控制效果、有 runner 或 UNKNOWN 的 run 不可自行退役。
-已建但未 launch 的部分 run 不能當成「從未建 run」直接覆寫；同 request 再 start 可能只回 cached state。
-
-RH-FIX1 核准的 R1 個案採完整封存後新 UUID，不續用舊 run；實際執行仍須另有具名 D。
-operator 先依同序取得 old start 鎖與該 run runner 鎖，排除並行啟動，不 force 解鎖。
-核固定版本、state／來源與全部 wire，正面證明無 runner、control intent／sent／result、managed 或 lifecycle 效果；未知檔案或缺證即停。
-鎖內保存完整 manifest，整份 run 原子 rename 到同 filesystem 的 R/.voided/<uuid>，原槽整槽封存在其 retired-start-slot/，逐檔核 hash／mode／相對關係並 fsync 父目錄。
-另原子保存具名 void-receipt.json、決定來源、前後路徑及 manifest／原資格 hash；不改歷史 state 冒充 completed，不刪失敗原件。
-此只限具名零控制效果個案，不是所有 prepared/pending run 都可作廢；中途失敗保留已有效果並停，不自動重搬或新 start。
-
-merge 後另經明確授權，保全原 package／資格／CLI／script bytes 與 hash，確認無 active run／runner後，鎖內原子發布完整 qualification 三欄。
-記新 merge／script／CLI hash、wire 測試證據與新 package manifest；binary 未變仍核 hash/help/wire，不只手換 script hash 字串。
-不得原地換已綁 run 的副本再 continue；封存的舊 script 只作證據，禁止再由 archive 執行。
-A 只在來源與全部準備事實仍適用時沿用；B 必須重做，由 old 自行核、發新 UUID，原 human／T0 不變。
-本節不是任何 lab／production 的操作授權，shared 與歷史文件不由此改寫。
+正常執行只接受 qualification/2 與 rh-calls/1。原 qualification/1、原 script、CLI bytes 與失敗紀錄只作歷史證據，不能啟動或 continue。
+資格更新須另行具名授權；先完成原 run 的完整核收／退役 receipt，才發布新資格。不能覆寫原件後再補舊 hash。
+已 void 的墓碑與已退役 receipt 只讀核驗，禁止重用 UUID。不要對舊 run 執行新／舊 script 來補 intent。
 
 ## 三個階段與回條
 
@@ -238,7 +226,7 @@ Linux 需要 Go 與 python3。在私有 HOME／TMPDIR、清除 AO／provider 環
 
 ```text
 cd backend
-go test -count=1 -v -run '^TestReusableHandoff(Wire|Producer)$' ./internal/cli ./internal/adapters/chatdriver/codexappserver ./internal/adapters/chatdriver/acp
+go test -count=1 -v -run '^TestReusableHandoff(Wire|Producer|AccountRefreshIsGlobalBeforeCLIFilter)$' ./internal/cli ./internal/adapters/chatdriver/codexappserver ./internal/adapters/chatdriver/acp
 go test -race -count=1 -p 8 ./...
 ```
 
@@ -300,22 +288,6 @@ clean initialized worker 必須 HEAD=OID、無 dirty／untracked／ignored／nes
 old 還要求 child common 位於 parent common 內、在 old workspace 與會回收的 per-worktree metadata 外，同 filesystem，且既存 branch ref 保護 child HEAD 與完整物件。
 不新增 ref；切前漂移、切後 common/ref/object hash 不符均 STOP。非空假目錄、symlink、stage 衝突與不明狀態均不會降成 uninitialized。
 
-## 已派送 run 的具名窄退役
-
-`retire --run 33da56c1-a652-4d16-b1aa-1042d3322f3f` 只實作此具名歷史案例，不提供任意 run／root／force。
-merge 不授權執行；須使用者裁決及主控新 D。operator 在固定 `R/.retirement/<run>/authorization.json` 記 schema=rh-retirement-authorization/1、operator_session_id、decision_ref、directive_ref、old_id、start_sha256、精確 expected_effects 與必要 materials（worker_id/path/sha256/basis）。
-這是營運授權引用，不是簽章，腳本不產生人類授權。
-
-守門要求 workers/stopped、只有兩筆已知 D-3 accepted 且原傳遞／completed／blocked／held 可核，old 仍負責、兩 worker 無後來改向、原 runner 的 PID/SID/boot/啟動記錄正面可核為已結束。
-取得 old/start 鎖後才取 runner.lock，不 force、不發訊息或 lifecycle。slot 必須仍是原 start bytes，原材料可保全，任何 UNKNOWN 停。
-歷史 stop/1 只保全原 bytes 與 blocked／hold 事實，不跟讀其越界引用、不升版 safe。
-
-固定 intent／manifest／原資格及 CLI bytes、必要材料與 precondition 原件先落盤；整 run 原子 rename 到 `R/.retired/<run>/`，整槽移到其 retired-start-slot/，建立空唯一槽位。
-原 state 與 accepted／FAIL 歷史不改成 complete 或零效果。最後 `R/.retirement/<run>/receipt.json` 綁原件 hash／mode／layout、兩個 closed effects、責任及授權引用。
-pending intent／半途 archive／缺 receipt 都阻擋同 old 的新 start；退役 UUID 永遠不能 start／load_run／continue／_run。
-中斷不搬回、不刪歷史、不重播；只在新的具名人工恢復授權（固定 recovery-authorization.json，原 intent_sha256、operator_session_id、新 directive_ref）下核原件並完成原提交。
-RH-FIX1 的 .voided/60cd2080 零效果作廢是不同規則，不能套到已有兩筆 D-3 的 run。
-
 ## 已提交範本的 workspace 窄例外（RH-FIX3）
 
 敏感檔名 pattern 保持：.env、其點號後綴、credentials/auth/token/private-key 等名稱預設停止。
@@ -334,37 +306,121 @@ worker snapshot、old Git 保全及兩個固定 helper 都先核全部名稱（�
 這不是 secret scanner，不能證明已 commit 範本或普通檔名中沒有秘密；範本信任沿現有原碼審查／資格。
 程式只在記憶體比較值，錯誤只列路徑與原因，不把內容／diff 輸出到 agent 或報告。
 
-## ff137a22 的第二個具名退役案例
+## 呼叫 journal 與唯一執行邊界（RH-REDESIGN）
 
-同一 retire 入口額外只接受 ff137a22-e159-4603-ad70-1abd41681e5d，不提供任意 UUID/stage/force 政策。
-此 run 已 launch，但在 workers/stopped，completed_stages/effects 空、無 control 或 new_id，只有部分 before-snapshot。
-它不是未 launch 的 .voided/60cd2080，也不是有兩筆 D-3 派送的 .retired/33da56c1；不得改 state 偽裝成任一舊案例。
+所有 script 的 AO CLI／HTTP 呼叫，包括 locate、start、runner、actor helper、STOP report 與 retire 前驗，都經同一 executor。
+constructor 產生不可變、綁 execution 的 descriptor；自由字典、其他 execution 的 descriptor 或改過的 argv 不可進 transport。
+executor 固定呼叫同一底層 transport，並重核 CLI／run-file bytes 與 data root；caller 不能注入另一個 I/O callback。
+Git、唯讀 SQLite export、檔案保全不屬 AO transport；它們原有安全檢查不變。journal 不宣稱攔截其他人的 CLI 或 provider 活動。
 
-authorization 沿 rh-retirement-authorization/1，另綁 project_id、target、script_sha256、cli_sha256、qualification_sha256，expected_effects 必須空。
-先核舊 script／CLI／資格、slot/start/source 原 bytes、只讀 wire、原 runner PID/SID/boot/launch、排他鎖及 actor 真終態／hold。
-已閉合的 33da56c1 receipt 及原 stop/final 歷史保持：D-3 received、dispatch turn completed、原 ACK、blocked/held 分開保存。
-不創造本 run 的 stop 回條，不重播 D-3/D-4，不發訊息讓 actor 變 idle。
-任一 control/UNKNOWN/producer/後續 phase、活 runner、slot 換包或未知檔案都停止。
+固定根是 `J=D/projects/agent-orchestrator/orchestrator/.handoff-journal/<run>/`，與 run／old workspace 分開。
+D 在第一筆 API 前由非空 AO_DATA_DIR（否則 HOME/.ao/data）絕對化。目錄 0700、檔案 0600；拒 symlink、hardlink 與 root alias。
+每個 execution 有 UUID、role、actor、PID／SID／boot／process-start identity 與獨立目錄，不共用 counter 或 append log。
+preflight 前在 J/bound 保存 start、qualification、固定 script 與來源原 bytes；即使尚未建立 run，證據也不依賴可變啟動槽位。
+同一 old 的未決 journal 會阻擋另一 UUID；不能用換 request 避開 preflight 停點。
+每個 call 的私有目錄保存：
 
-共用原 manifest/intent/receipt 提交：整 run 及 slot 原子封存到 .retired/ff137a22，保留舊資格及所有部分輸出，最後才發布 receipt。
-closed_effects=[] 只描述 ff137a22，不能抹掉 33da56c1 的兩效果；兩份 record 同時核驗，任一 pending 阻擋同 old 新 start，兩個退役 UUID 永不能執行。
-中斷仍需新的具名 recovery-authorization，不刪原件／搬回／改 outcome；merge 不等於實際退役授權。
+- `intent.json`：run／execution／call id、phase、actor／target、semantic capability、權限引用、script／CLI SHA256、精確 method/path 或 argv。
+- `payload.raw`：message／prompt／note 的原 bytes；intent 以 hash 與精確 argv 位置引用，不放在公開 fixture。
+- `attempt.json`：dispatch 前 fsync 的嘗試標記，回指 intent hash；它不代表服務已受理。
+- `stdout.raw`、`stderr.raw`、`result.json`：同 call 的原回應與 terminal／returncode、intent／attempt hash。失敗也先保存再交原 consumer。
+- `lease.lock`：維持至 terminal result 落盤；execution 最後發不可變 `close.json`，列完整檔案 manifest。
 
-營運順序須另具名 D：保全原件 → 用新程式和仍未覆寫的舊 qualified bytes 退役 ff137a22 → 完整 receipt → 原子發布新 script 資格 → 新 A completed/settled → 新 B → 新 UUID/start 一次。
-不在 ff137a22 原地換碼／改 hash／continue；舊 A″/B 保留歷史，新 A 必須反映新資格／退役與當前事實。
-D-4若仍合法唯一且未派送，可由新 A 重新具名保留，不自動 D+1。
-原 human a0b12708…/revision0 與 T0=2026-11-08T19:39:02Z/second 只在原授權仍適用且無取消／增限時沿用，不請使用者重送來重設 T0。
-R1 任一 STOP 不 retry、不擅自 continue；R1 成功後仍在 R2 前停等真人確認。本 PR 不操作 lab，也不實作 B-RH-A-FACTCHECK。
+HTTP timeout／OSError、非零 subprocess、deadline 的 not-started 都留各自結果；dispatch 後沒有 result 是 UNKNOWN，不重送。
+業務 receipt 保留原用途並引用 call_id。worker handle 跨 call 保持不變，recover-only 仍是受控操作。
+CLI stdout 不包含其內部 HTTP method/path/count，這些欄位不能由 argv 猜值。
+正常增加同 constructor 的 bound read、cursor 或已支援 harness catalog，不需修改 retire 的 URL／argv 清單。
 
-## merge 後資格與 R1／R2 邊界
+### Admission 與封存
 
-先由主控另發具名 D，保存舊資格／FAIL 原件並以新 script bytes、實際 CLI bytes 重做資格，不替換 stable。
-已收 D-3 的事實使舊 A 不再足夠：R1 需同一 old 的新 A completed／settled，重核 worker 現況、原授權與新保留 D，再由合法非 human B 通知發布新 UUID request 並 start。
-不自行遞增 D、不重播舊 handle、不拿舊 run 的 blocked 當新 safe。
-原 human a0b12708-fba2-4a7e-9024-bf4c8c8cee2e／revision 0／原正文及 T0=2026-11-08T19:39:02Z（second）只在原授權仍涵蓋 R1、沒有取消改向或新限制時沿用；新 script／UUID／A/B/D 不重設 T0。
-R1 成功後交 07 與 O2 真人清單並停等使用者另一次 O2 確認，不能自動進 R2。
-本 RH-FIX2 實作 PR 不操作既有 lab、dev 3002、三 actor，不實際退役、更新資格或重跑 R1。
+`admission.lock` 與 `admission.json` 固定留在 J，不跟 run rename，狀態為 open／retiring／retired。
+execution 登記與每次 dispatch 都重新取得同一 admission 許可；舊 guard 通過不是跨 fence 的許可。
+retire 先以具名授權凍結普通入口，再排空原 execution／lease；活 writer、未 close、孤兒 raw、漏 result 都 STOP。
+在途呼叫只可完成已納集合的 result 與 close；不能再開普通呼叫。retire 不 kill writer 或發訊息讓 worker 變 idle。
+唯一 maintenance execution 綁本次 token／operator，只可做退役觀測；不能 refresh、report、steer 或 lifecycle。
+maintenance close 後固定集合並保全 journal，封存到 receipt 之間不再做 AO I/O。
+失敗保持 retiring，不自動 reopen。恢復須新的具名 D，沿原 manifest／intent 完成，不產生另一組 capture 或重派控制。
+retired 的 status 只核本機 binding／原件／receipt，不開 execution 或 discovery API；缺 binding 明示 STOP。
 
-審查補強：固定 producer 沿原 clientMessageId 同時核對 active steer 的 system activity/detail 與 idle fallback 的 user message，sender、payload、turn 必須一致。退役遇到較晚 durable steer 一律視為新 directive／authority UNKNOWN。退役前 CLI 原始回應先存入私有 preconditions，每次核對獨立保存，再由 manifest／intent／完成回條綁 hash；恢復不覆寫舊觀測。initialized gitlink 使用 Git 的 git-path 核對 merge／rebase／cherry-pick／revert／bisect／sequencer metadata；存在進行中狀態即 blocked，metadata facts 也參與漂移核對。
+### 全域 account catalog 權限
 
-message 有 consumedByTurnId 時以它核對實際 dispatch turn，原 turnId／message ID／clientMessageId 保留。退役在 manifest 已發布、intent 尚未發布時，可核對原 preparation 授權／效果綁定、run／槽位／副本／preconditions 後沿同一 manifest 續建 intent；不刪改原件，任何漂移仍 STOP。
+`ao account ls --provider … --refresh` 先要求 daemon refresh 全部符合條件的帳號，CLI 才篩 provider。
+能力包括不同 provider 的 identity／limits 與 contained-profile Prepare；不宣稱只是讀 cache，也不假設修改 credential。
+指定 target account 不是全域 refresh 授權。原範圍不足或不能正面核清，script 在 I/O 前 STOP，交主控裁定；不改 daemon、不擴權。
+
+已核執行者在 J 的 `capabilities.json` 保留這項核對，引用原 human authority，不產生新的同意：
+
+```json
+{
+  "run_id": "<published UUID>",
+  "start_sha256": "<request original bytes SHA256>",
+  "scope": "daemon-account-catalog-global",
+  "source_refs": ["<original human authority reference>"],
+  "original_authority_covers_global_refresh": true
+}
+```
+
+這是原授權語意核對的持久記錄；boolean、hash 或欄位本身不是人類同意的密碼學證明，不能自行填 true 來放行。
+缺檔、scope／start／source_refs 不符都拒絕。request 的原來源、T0、兩輪 A/B 與 target 格式不變。
+
+## 通用 retire 與歷史核收
+
+唯一入口 `retire --run <canonical-UUID>`。無 force、legacy、逐 run 分支或自動退役。
+呼叫前必須有 J/binding.json 綁定 root／old／start／原 qualification hash；舊 run 由已核離線核收提供，不能先 discovery 來繞過 fence。
+
+固定 `.retirement/<run>/authorization.json` 使用 `rh-retirement-authorization/2`，綁 run_id、old_id、project_id、operator_session_id、decision_ref、本次 directive_ref（D 編號）、start_sha256、input_manifest_sha256、expected_effect_ids。
+必要時加 hold_evidence（原 snapshot／message 錨點）、materials（worker_id/path/hash/kind/basis）及已授權 evidence_roots。
+總審通用機制不是本次退役 D；授權必須指名原件與 run。
+
+`input-manifest.json` 列完整 run／slot 的 private_manifest、qualification_sha256、prior_retirement 舊原件清單；external_attempts 逐一列 scope/root/manifest/authorization_ref。
+原 qualification bytes 存 `qualification.original.json`。任何未知的舊前驗、缺檔或 hash／mode／layout 不符即 STOP。
+opaque 材料由 manifest／producer／核收清單綁定，不執行內容。partial snapshot 與 Git operation metadata 不能假作已完成保全。
+
+退役還須正面成立：
+
+- 每個 execution／call／effect 完整閉合；新 generation 缺 intent 不得降級。
+- runner 與 helper 真結束，boot／PID／啟動身分可核；舊鎖不是 launch 證明。
+- managed lease／old 責任與 actor 集合仍成立，slot 沒換包。
+- 每個 worker 的已接收 directive、實際 consuming turn completed、原 stop、ACK、hold 分開核對；後來 user／durable steer 指令使授權 UNKNOWN。
+- 受控 worker 的 stop.preservation 逐筆閉合：run 內副本核原 bytes/hash；run 外原件須有同 worker/path/hash 的唯一授權 materials，限原 workspace/artifact roots。每筆授權材料都先核存在與 hash，再由保存階段複製；缺項或漂移不得產生退役 receipt。
+- 沒新控制的 worker 有原持續 hold 與 quiescent 證據。不能為了退役先送指令或把 blocked 改 safe。
+- lifecycle／managed／ownership 已變而責任或資料保護無法證明，就保持 STOP；CLI returncode 0 不夠。
+
+progress-notification 只具固定進度回報能力，是 effect，不列 read。當本地呼叫終結且無其他在途，可記 attempt-terminal；送達仍可 UNKNOWN，不能推論已受理。
+metadata-refresh 也不是 read，須全域 scope／原授權與本地終態；保留成功或失敗。控制派送 UNKNOWN 不可套用通知規則。
+
+提交保存完整 journal 副本、原資格／CLI、必要材料與不可變 manifest／intent；同 filesystem 原子 rename run 到 `.retired/<uuid>`，整槽保存到其 retired-start-slot，再建空槽。
+receipt/2 綁授權、fence、固定 execution 集合及 effect／hold 原件；不改原 state 為 complete。
+pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manifest 後、intent 前中斷也沿原 manifest 恢復，不覆寫原件。
+
+### Retrospective provenance 的保證上限
+
+舊 run 沒有 pre-intent，不能補造。去識別調查 ledger 只用來找來源與測試，不能代替私有 raw bytes 或當年的權限。
+已總審接納此歷史替代證明且另有本次具名 D，才可使用 `historical-review.json`：
+
+- origin=retrospective-review、run/operator/審核時間/decision_ref，綁 input manifest、凍結 script／CLI、原 qualification。
+- 明示 accepted_preintent_limitation；完整 coverage 逐 scope/path/hash 列所有 run 檔案、舊 `.retirement/<run>/preconditions/**`、舊授權／失敗結果與已保全 external attempt。
+- calls 逐筆記同一 call fact 的 kind/capability/expected_effect/phase/actor/target/result、producer_ref 及 source_refs；保留缺少 HTTP／UTC 的限制。
+- producer_ref 綁 script_sha256、原碼 location 與 execution role；source_refs 逐筆標 capture-metadata／capture-output 與原 path/hash。metadata 的結果、raw hash 及宣告的 kind／scope 都須相符。
+- 各已核 scope 的 capture sidecar／raw 配對逐筆盤點，完成 constructor／result 核驗才計入分類，且每份恰對一筆 call；supporting 不得藏 capture，外部 attempt 也不可漏列。
+- 原 run 保留原 script／CLI／qualification binding。非 run scope 另列 producer_bindings：scope、script_ref（已 coverage 的 scope/path/sha256）及實際 cli_sha256；CLI 不同時還須 cli_ref 凍結 bytes。各 call 的 script_sha256／cli_sha256 必須對上該 scope 已核版本，不能把較新前驗改填原 run hash。
+- 未捕獲的可能嘗試仍是保證上限。未知 call 或未分類操作不能簽成 read_only；未知控制不放行。
+
+新 maintenance 有自己的 native intent／result／close，與歷史資料共存、時間與來源分開。不能把新前驗再塞回 retrospective review。
+舊 rh-retired-run/1 與 void receipt 只有 schema 驅動的唯讀核驗／墓碑能力，原 bytes 與效果不變；不重退或重跑舊 script。
+
+## 測試資料與營運界線
+
+`tests/fixtures/historical-captures.json` 保留三份具名去識別 ledger 的來源 hash 與全部 201＋5 筆形狀。
+| 歷史來源 | 原捕獲／額外前驗 | 原狀態與判定 |
+| --- | ---: | --- |
+| 60cd2080 | 10／0 | prepared/pending、未 launch、effects 空；CLI list envelope 停，之後已行政作廢，只讀核墓碑 |
+| 33da56c1 | 169／5 | workers/stopped，兩筆 stop 已 accepted；原回合尚 running，後來前驗才 completed，既有退役收據仍保留兩效果 |
+| ff137a22 | 22／0 | workers/stopped、已 launch、無 worker control；範本保存拒絕，舊退役 reader 又在 bound-worker GET 停，未宣稱退役成功 |
+
+CLI 內部 HTTP／60 的 UTC 仍未捕獲；33 原最後 running 與後來 retirement completed 分開，W2 ACK 仍 D-1／next D-3。
+206 筆不包含 D48 額外失敗前驗；歷史核收另列其來源與限制。沒有任何一次完整成功真 R1 的主張，後段仍是 synthetic proof。
+
+本 PR 不操作 lab、任何 run、資格或 actor。merge 後另具名 D：必要 P0／原件核收 → 通用 retire 指定舊 run → 完整 receipt → 新 qualification/2 → 新 A completed/settled → 新 B／新 UUID／start --run 一次 → 完整 R1／07。
+原 human／T0 只在原授權仍適用且無取消增限時沿用；不足交主控，不要求重送來重設 T0。
+R1 任一 STOP 不 retry／continue，R1 成功後在 R2 前等真人具名確認。不合併 B-RH-A-FACTCHECK，也不恢復已撤回的 RH-FIX4。

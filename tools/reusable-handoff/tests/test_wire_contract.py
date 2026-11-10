@@ -12,6 +12,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import patch
 
 
@@ -50,6 +51,11 @@ class WireContractTests(unittest.TestCase):
         self.root.chmod(0o700)
         h.publish(self.root / "run.json", b'{"port":1}')
         self.cli = h.CLI(Path("/usr/bin/true"), "old", self.root, self.root / "run.json", self.root)
+        self.cli.execution = h.Journal(self.root, str(uuid.uuid4())).register("_run", "old")
+        self.cli.execution.bindings = {"old", "worker", "new"}
+        self.cli.execution.request_target = dict(harness="codex", account="acct", model="model", effort="high", approval_mode="bypass-permissions")
+        self.addCleanup(self.cli.execution.close)
+        self.cli.execution.refresh_authority = {"path": "synthetic-human-scope", "sha256": "a" * 64}
 
     def transport(self, name):
         return patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=wire_bytes(name), stderr=b""))
@@ -99,6 +105,11 @@ class WireContractTests(unittest.TestCase):
             self.assertEqual(self.cli.sessions(), [])
 
     def test_finalize_notifies_only_true_list_workers(self):
+        self.cli.execution.close()
+        self.cli.execution = self.cli.execution.journal.register("finalize", "old")
+        self.addCleanup(self.cli.execution.close)
+        self.cli.execution.phase = "final"
+        self.cli.execution.bindings = {"old", "new", "worker"}
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old",
                               state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3},
                               request={"workers": []})
@@ -114,6 +125,7 @@ class WireContractTests(unittest.TestCase):
         self.assertEqual([a[a.index("--session") + 1] for a in calls if a[0] == "send"], ["worker"])
 
     def test_http_DTOs_support_both_targets_and_fail_closed(self):
+        self.cli.execution.registration["role"] = "start"
         for harness in ("codex", "claude-code"):
             provider = "codex" if harness == "codex" else "claude"
             target = dict(harness=harness, account="acct", model="model", effort="high", approval_mode="bypass-permissions", mode="chat")
@@ -209,7 +221,7 @@ class WireContractTests(unittest.TestCase):
     def test_control_stdout_is_not_required_to_be_JSON(self):
         for name in ("send", "spawn", "exit", "report"):
             with self.subTest(name=name), self.transport(name):
-                self.assertEqual(self.cli.call([name]), wire_bytes(name))
+                self.assertEqual(self.cli.call({"send": ["send", "--session", "old", "--steer", "--client-message-id", "handle", "--message", "fixture"], "spawn": ["spawn", "--project", h.PROJECT, "--kind", "orchestrator", "--agent", "codex", "--account", "acct", "--mode", "chat", "--model", "model", "--effort", "high", "--approval-mode", "bypass-permissions", "--name", "fixture", "--prompt", "fixture"], "exit": ["session", "exit-agent", "old", "--project", h.PROJECT, "--json"], "report": ["report", "--needs-input", "--note", "fixture"]}[name], effect_id=name), wire_bytes(name))
 
     def test_detail_and_transcript_are_real_cli_projections(self):
         for name in ("snapshot", "claude-snapshot", "active", "page", "before"):
@@ -232,11 +244,11 @@ class WireContractTests(unittest.TestCase):
             documents = self.cli.documents()
         self.assertEqual(h.lease_view(documents), dict(session_id="old", epoch=1, frozen=False))
         with self.transport("resume"):
-            result = self.cli.read(["session", "resume-agent", "old"])
+            result = h.decode(self.cli.call(["session", "resume-agent", "old", "--project", h.PROJECT, "--json"], effect_id="resume"))
         self.assertEqual(result["resumeMode"], "native")
         for name, text in [("kill", "killed"), ("kill-preserved", "workspace preserved"), ("kill-pending", "workspace cleanup pending")]:
             with self.subTest(name=name), self.transport(name):
-                self.assertIn(text.encode(), self.cli.call(["session", "kill", "old"]))
+                self.assertIn(text.encode(), self.cli.call(["session", "kill", "old", "--project", h.PROJECT], effect_id=name))
 
 
 if __name__ == "__main__":
