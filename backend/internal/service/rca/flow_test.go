@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -394,4 +395,217 @@ func TestAuditAliasDotDotServicePreservesSelectedSource(t *testing.T) {
 	if got != 12 {
 		t.Fatalf("CONTRACT_VIOLATION: selected native target has 12 bytes, service returned %d bytes", got)
 	}
+}
+
+func TestCompositionSlowCandidateRevocationFence(t *testing.T) {
+	for _, fault := range []string{"write", "flush"} {
+		for _, control := range []string{"off", "host-stop"} {
+			t.Run(fault+"/"+control, func(t *testing.T) {
+				svc, _, disk, _ := flowSetup(t)
+				entered, release := make(chan struct{}), make(chan struct{})
+				var unblock sync.Once
+				defer unblock.Do(func() { close(release) })
+				var block sync.Once
+				if fault == "write" {
+					original := disk.write
+					disk.write = func(f *os.File, b []byte) (int, error) {
+						block.Do(func() { close(entered); <-release })
+						return original(f, b)
+					}
+				} else {
+					original := disk.flush
+					disk.flush = func(f *os.File) error { block.Do(func() { close(entered); <-release }); return original(f) }
+				}
+				if _, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Analyze: true, Limit: 200}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-entered:
+				case <-time.After(2 * time.Second):
+					t.Fatal("candidate did not enter controlled I/O")
+				}
+				stopped := make(chan error, 1)
+				go func() {
+					if control == "off" {
+						off := false
+						_, err := svc.SetOverride(t.Context(), "selected", &off)
+						stopped <- err
+					} else {
+						stopped <- svc.EmergencyStop(t.Context(), true)
+					}
+				}()
+				select {
+				case err := <-stopped:
+					if err == nil || !strings.Contains(err.Error(), "revocation_persistence_pending") {
+						t.Errorf("pending durability not reported: %v", err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Error("revocation waited for disk")
+				}
+				read := make(chan domain.RCAComposition, 1)
+				go func() {
+					out, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200})
+					if err != nil {
+						read <- domain.RCAComposition{Reason: "unexpected_error"}
+						return
+					}
+					read <- out
+				}()
+				waited := false
+				select {
+				case out := <-read:
+					if out.Recorded != nil || out.Policy.EffectiveEnabled || len(out.Canonical.Events) != 1 {
+						t.Error("query exposed revoked candidate or lost canonical")
+					}
+				case <-time.After(2 * time.Second):
+					waited = true
+					t.Error("query waited for blocked writer")
+				}
+				unblock.Do(func() { close(release) })
+				if waited {
+					<-read
+				}
+				svc.wg.Wait()
+				if control == "off" {
+					on := true
+					if _, err := svc.SetOverride(t.Context(), "selected", &on); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := svc.EmergencyStop(t.Context(), false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				out, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200})
+				if err != nil || out.Recorded != nil || len(out.Canonical.Events) != 1 {
+					t.Fatal("late unapproved candidate became readable after resume")
+				}
+			})
+		}
+	}
+}
+
+type fencedSnapshotStore struct {
+	ProjectionStore
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (s *fencedSnapshotStore) LoadSnapshot(ctx context.Context, p domain.ProjectID, id domain.SessionID) (domain.RCARecordedState, bool, error) {
+	row, ok, err := s.ProjectionStore.LoadSnapshot(ctx, p, id)
+	s.once.Do(func() { close(s.entered); <-s.release })
+	return row, ok, err
+}
+func TestCompositionQueryCannotReturnAcrossRevocation(t *testing.T) {
+	svc, _, disk, _ := flowSetup(t)
+	if _, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Analyze: true, Limit: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if out := completedFlow(t, svc); out.Recorded == nil {
+		t.Fatal("confirmed snapshot missing")
+	}
+	metadataEntered, metadataRelease := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(metadataRelease) })
+	var writeOnce sync.Once
+	originalWrite := disk.write
+	disk.write = func(f *os.File, b []byte) (int, error) {
+		writeOnce.Do(func() { close(metadataEntered); <-metadataRelease })
+		return originalWrite(f, b)
+	}
+	wrapper := &fencedSnapshotStore{ProjectionStore: disk, entered: make(chan struct{}), release: make(chan struct{})}
+	svc.projection = wrapper
+	done := make(chan domain.RCAComposition, 1)
+	go func() { out, _ := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200}); done <- out }()
+	<-wrapper.entered
+	off := false
+	if _, err := svc.SetOverride(t.Context(), "selected", &off); err == nil || !strings.Contains(err.Error(), "revocation_persistence_pending") {
+		t.Errorf("unexpected control durability: %v", err)
+	}
+	close(wrapper.release)
+	var out domain.RCAComposition
+	select {
+	case out = <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("query waited for pending revocation metadata flush")
+		releaseOnce.Do(func() { close(metadataRelease) })
+		out = <-done
+	}
+	select {
+	case <-metadataEntered:
+	case <-time.After(2 * time.Second):
+		t.Error("pending metadata was not handed to sole writer")
+	}
+	releaseOnce.Do(func() { close(metadataRelease) })
+	if out.Recorded != nil || out.Status != "unavailable" || out.Reason != "policy_changed" {
+		t.Fatal("late query returned numbers across off fence")
+	}
+}
+
+func TestCompositionPurgeDuringSlowCandidateDeletesConfirmedNumbers(t *testing.T) {
+	svc, _, disk, _ := flowSetup(t)
+	if _, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Analyze: true, Limit: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if out := completedFlow(t, svc); out.Recorded == nil {
+		t.Fatal("confirmed snapshot missing")
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var unblock, block sync.Once
+	defer unblock.Do(func() { close(release) })
+	original := disk.write
+	disk.write = func(f *os.File, b []byte) (int, error) {
+		block.Do(func() { close(entered); <-release })
+		return original(f, b)
+	}
+	if _, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Analyze: true, Limit: 200}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	if err := svc.Purge(t.Context(), "selected"); err == nil || !strings.Contains(err.Error(), "revocation_persistence_pending") {
+		t.Errorf("purge claimed durability while writer blocked: %v", err)
+	}
+	if out, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200}); err != nil || out.Recorded != nil {
+		t.Fatal("pending purge exposed numbers")
+	}
+	unblock.Do(func() { close(release) })
+	svc.wg.Wait()
+	out, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200})
+	if err != nil || out.Recorded != nil || len(out.Canonical.Events) != 1 {
+		t.Fatal("deferred purge lost; confirmed or candidate numbers reappeared")
+	}
+}
+
+func TestCompositionQueryBoundsSlowStatfs(t *testing.T) {
+	svc, _, disk, _ := flowSetup(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var unblock, block sync.Once
+	defer unblock.Do(func() { close(release) })
+	original := disk.space
+	disk.space = func(root *os.Root) (volumeSpace, error) {
+		block.Do(func() { close(entered); <-release })
+		return original(root)
+	}
+	response := make(chan domain.RCAComposition, 1)
+	go func() { out, _ := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200}); response <- out }()
+	<-entered
+	off := false
+	if _, err := svc.SetOverride(t.Context(), "selected", &off); err == nil || !strings.Contains(err.Error(), "revocation_persistence_pending") {
+		t.Errorf("off did not return pending during statfs: %v", err)
+	}
+	waited := false
+	select {
+	case out := <-response:
+		if out.Recorded != nil || out.Policy.EffectiveEnabled || len(out.Canonical.Events) != 1 {
+			t.Error("slow statfs query lost current off/canonical")
+		}
+	case <-time.After(2 * time.Second):
+		waited = true
+		t.Error("query waited indefinitely for statfs")
+	}
+	unblock.Do(func() { close(release) })
+	if waited {
+		<-response
+	}
+	svc.wg.Wait()
 }

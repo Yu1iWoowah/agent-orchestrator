@@ -184,3 +184,46 @@ func TestDiskStoreStatFailureIdentityAndExpiredCleanup(t *testing.T) {
 		t.Fatal("expired data served or cleanup retried")
 	}
 }
+
+func TestDiskStoreCandidatePreservesConfirmedProjection(t *testing.T) {
+	s := testDiskStore(t)
+	state := domain.RCARecordedState{ProjectID: "agent-orchestrator", SessionID: "selected", ScopeRevision: "11111111-1111-4111-8111-111111111111", ObservedAt: time.Now().UTC(), Status: "ready", Snapshots: []domain.RCARecordedSnapshot{}}
+	if err := s.SaveSnapshot(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	candidate := state
+	candidate.ScopeRevision = "22222222-2222-4222-8222-222222222222"
+	if err := s.StageSnapshot(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := s.LoadSnapshot(t.Context(), state.ProjectID, state.SessionID)
+	if err != nil || !ok || row.ScopeRevision != state.ScopeRevision {
+		t.Fatal("unapproved staging replaced confirmed numbers")
+	}
+	reopened, err := NewDiskStore(s.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err = reopened.LoadSnapshot(t.Context(), state.ProjectID, state.SessionID)
+	reopened.Close()
+	if err != nil || !ok || row.ScopeRevision != state.ScopeRevision {
+		t.Fatal("restart trusted unapproved staging")
+	}
+	if err := s.FinishSnapshot(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err = s.LoadSnapshot(t.Context(), state.ProjectID, state.SessionID)
+	if err != nil || !ok || row.ScopeRevision != state.ScopeRevision {
+		t.Fatal("withdrawal cleared confirmed Codex data")
+	}
+	if err := s.StageSnapshot(t.Context(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishSnapshot(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err = s.LoadSnapshot(t.Context(), state.ProjectID, state.SessionID)
+	if err != nil || !ok || row.ScopeRevision != candidate.ScopeRevision {
+		t.Fatal("approved candidate not durable")
+	}
+}

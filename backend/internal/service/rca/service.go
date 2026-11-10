@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,8 +32,8 @@ type EventsReader interface {
 type ProjectionStore interface {
 	rcapolicy.ManifestStore
 	LoadSnapshot(context.Context, domain.ProjectID, domain.SessionID) (domain.RCARecordedState, bool, error)
-	SaveSnapshot(context.Context, domain.RCARecordedState) error
-	Purge(context.Context, domain.ProjectID, domain.SessionID) error
+	StageSnapshot(context.Context, domain.RCARecordedState) error
+	FinishSnapshot(context.Context, bool) error
 	Ready(context.Context) error
 	Resume(context.Context) error
 	Reason() string
@@ -55,6 +56,7 @@ type Service struct {
 	jobs       map[domain.SessionID]jobState
 	closed     bool
 	failed     bool
+	queryBusy  atomic.Bool
 }
 
 // New never launches a native agent or opens a transcript. Source descriptors
@@ -136,7 +138,8 @@ func policyView(v rcapolicy.View) domain.RCAPolicyView {
 
 // Get reads a numeric view; Analyze explicitly requests a new snapshot.
 func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuery) (domain.RCAComposition, error) {
-	receipt := s.core.Revision(sessionKey(id))
+	key := sessionKey(id)
+	receipt := s.core.Revision(key)
 	rec, inputs, err := s.facts(ctx, id)
 	if err != nil {
 		return domain.RCAComposition{}, err
@@ -147,48 +150,177 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 		return out, err
 	}
 	out.Canonical = canonicalProjection(page)
-	v, why := s.core.View(ctx, sessionKey(id), inputs)
-	out.Policy = policyView(v)
-	if s.projection != nil {
-		cached, ok, loadErr := s.projection.LoadSnapshot(ctx, rec.ProjectID, id)
-		if loadErr != nil {
-			out.Reason = "storage_read_failed"
-			return out, nil //nolint:nilerr // Storage failure is a safe unavailable view; canonical remains readable.
+	busy := func(reason string) domain.RCAComposition {
+		view, _ := s.core.CachedView(ctx, key, inputs)
+		out.Policy = policyView(view)
+		out.Status, out.Reason = "unavailable", reason
+		s.mu.Lock()
+		job := s.jobs[id]
+		failed := s.failed
+		s.mu.Unlock()
+		if failed {
+			out.Reason = "analysis_failed"
+		} else if view.EffectiveEnabled && job.status == "running" && reason == "writer_busy" {
+			out.Status = "running"
 		}
-		if ok {
-			out.Recorded = &cached
-			out.Status, out.Reason = cached.Status, cached.Reason
-		}
+		return out
 	}
-	if why != "" {
-		out.Status, out.Reason = "unavailable", why
-		return out, nil
-	}
-	if !v.EffectiveEnabled {
-		out.Status, out.Reason = "unavailable", "disabled"
-		return out, nil
+	if !s.queryBusy.CompareAndSwap(false, true) {
+		return busy("writer_busy"), nil
 	}
 	s.mu.Lock()
-	failed := s.failed
-	s.mu.Unlock()
-	if failed {
-		out.Status, out.Reason = "unavailable", "analysis_failed"
-		return out, nil
+	if s.closed {
+		s.mu.Unlock()
+		s.queryBusy.Store(false)
+		return busy("canceled"), nil
 	}
-	ready := s.projection != nil && s.projection.Ready(ctx) == nil
-	if !ready {
-		out.Status, out.Reason = "unavailable", s.storageReason()
+	s.wg.Add(1)
+	s.mu.Unlock()
+	type numericResult struct {
+		view           rcapolicy.View
+		recorded       *domain.RCARecordedState
+		status, reason string
+		blocked        bool
+	}
+	result := make(chan numericResult, 1)
+	readCtx, cancel := context.WithCancel(s.ctx)
+	stop := context.AfterFunc(ctx, cancel)
+	go func() {
+		value := numericResult{status: "unavailable", reason: "analysis_not_requested"}
+		defer func() {
+			if recover() != nil {
+				s.mu.Lock()
+				s.failed = true
+				s.mu.Unlock()
+				s.core.Unavailable()
+				value = numericResult{status: "unavailable", reason: "analysis_failed", blocked: true}
+			}
+			stop()
+			cancel()
+			s.queryBusy.Store(false)
+			s.wg.Done()
+			result <- value
+		}()
+		view, why := s.core.View(readCtx, key, inputs)
+		value.view = view
+		s.mu.Lock()
+		job, hasJob := s.jobs[id]
+		failed := s.failed
+		s.mu.Unlock()
+		if failed {
+			value.reason = "analysis_failed"
+			value.blocked = true
+			return
+		}
+		if why != "" {
+			value.reason = why
+			value.blocked = true
+			if why == "storage_unavailable" {
+				value.reason = s.storageReason()
+			}
+			if hasJob && job.status == "unavailable" {
+				value.reason = job.reason
+			}
+			if why == "writer_busy" && hasJob && job.status == "running" && view.EffectiveEnabled {
+				value.status = "running"
+			}
+			return
+		}
+		if !view.EffectiveEnabled {
+			value.reason = "disabled"
+			value.blocked = true
+			return
+		}
+		if hasJob && job.status == "running" {
+			value.status, value.reason = "running", "analysis_running"
+			value.blocked = true
+			return
+		}
+		if s.projection == nil {
+			value.reason = "storage_unavailable"
+			value.blocked = true
+			return
+		}
+		loadFailed := false
+		why = s.core.WithStorage(readCtx, func(ctx context.Context) error {
+			load := func() error {
+				row, found, err := s.projection.LoadSnapshot(ctx, rec.ProjectID, id)
+				if err != nil {
+					loadFailed = true
+					return err
+				}
+				if found {
+					value.recorded = &row
+					value.status, value.reason = row.Status, row.Reason
+				}
+				return nil
+			}
+			if err := load(); err != nil {
+				return err
+			}
+			if err := s.projection.Ready(ctx); err != nil {
+				return err
+			}
+			if hasJob && job.status != "running" && (value.recorded == nil || value.recorded.ScopeRevision != job.revision) {
+				return load()
+			}
+			return nil
+		})
+		if why != "" {
+			value.recorded = nil
+			value.status, value.reason = "unavailable", why
+			value.blocked = true
+			if loadFailed {
+				value.reason = "storage_read_failed"
+				s.core.Unavailable()
+			} else if why == "storage_unavailable" {
+				value.reason = s.storageReason()
+				s.core.Unavailable()
+			}
+			if why == "writer_busy" && hasJob && job.status == "running" {
+				value.status = "running"
+			}
+		}
+	}()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	var value numericResult
+	select {
+	case value = <-result:
+	case <-ctx.Done():
+		cancel()
+		return busy("canceled"), nil
+	case <-timer.C:
+		cancel()
+		return busy("writer_busy"), nil
+	}
+	out.Policy = policyView(value.view)
+	out.Recorded = value.recorded
+	out.Status, out.Reason = value.status, value.reason
+	if value.blocked {
+		fresh, _ := s.core.CachedView(ctx, key, inputs)
+		out.Policy = policyView(fresh)
+		if !fresh.EffectiveEnabled && out.Status == "running" {
+			out.Status = "unavailable"
+		}
 		return out, nil
 	}
 	if q.Analyze {
-		ticket, _, why := s.core.Begin(s.ctx, sessionKey(id), inputs, receipt)
+		ticket, _, why := s.core.Begin(s.ctx, key, inputs, receipt)
 		if why == "" {
+			if why := s.core.Reserve(ticket); why != "" {
+				s.core.Finish(ticket)
+				out.Recorded = nil
+				out.Status, out.Reason = "unavailable", why
+				return out, nil
+			}
 			job := jobState{revision: uuid.NewString(), status: "running", reason: "analysis_running"}
 			s.mu.Lock()
 			if s.closed || s.failed {
 				s.mu.Unlock()
 				s.core.Finish(ticket)
 				out.Status, out.Reason = "unavailable", "canceled"
+				out.Recorded = nil
 				return out, nil
 			}
 			s.jobs[id] = job
@@ -197,26 +329,25 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 			go s.analyze(ticket, rec, job.revision)
 		} else if why != "analysis_running" {
 			out.Status, out.Reason = "unavailable", why
+			out.Recorded = nil
 			return out, nil
 		}
 	}
 	s.mu.Lock()
-	job, ok := s.jobs[id]
+	job, hasJob := s.jobs[id]
+	failed, closed := s.failed, s.closed
 	s.mu.Unlock()
-	if ok {
+	if hasJob {
 		out.Status, out.Reason = job.status, job.reason
-		if job.status != "running" && (out.Recorded == nil || out.Recorded.ScopeRevision != job.revision) {
-			cached, found, loadErr := s.projection.LoadSnapshot(ctx, rec.ProjectID, id)
-			if loadErr != nil {
-				out.Recorded = nil
-				out.Status, out.Reason = "unavailable", "storage_read_failed"
-				return out, nil //nolint:nilerr // Discard the partial row while preserving the canonical view.
-			}
-			if found {
-				out.Recorded = &cached
-			} else if job.status != "unavailable" {
-				out.Status, out.Reason = "unavailable", "analysis_not_requested"
-			}
+		if job.status != "running" && out.Recorded == nil && job.status != "unavailable" {
+			out.Status, out.Reason = "unavailable", "analysis_not_requested"
+		}
+	}
+	if failed || closed || ctx.Err() != nil || !s.core.Current(receipt) {
+		out.Recorded = nil
+		out.Status, out.Reason = "unavailable", "policy_changed"
+		if failed {
+			out.Reason = "analysis_failed"
 		}
 	}
 	return out, nil
@@ -250,7 +381,7 @@ func (s *Service) analyze(ticket *rcapolicy.Ticket, rec domain.SessionRecord, re
 				s.jobs[rec.ID] = jobState{revision: revision, status: "unavailable", reason: "analysis_failed"}
 			}
 			s.mu.Unlock()
-			s.core.Close()
+			s.core.Unavailable()
 		}
 	}()
 	value := domain.RCARecordedState{ProjectID: rec.ProjectID, SessionID: rec.ID, ScopeRevision: revision, ObservedAt: time.Now().UTC(), Status: "ready", Snapshots: []domain.RCARecordedSnapshot{}}
@@ -309,10 +440,10 @@ func (s *Service) analyze(ticket *rcapolicy.Ticket, rec domain.SessionRecord, re
 		if !observed {
 			value.Status, value.Reason = "unavailable", "no_observed_content"
 		}
-		reason = s.core.Commit(ticket, func(ctx context.Context) error { return s.projection.SaveSnapshot(ctx, value) })
+		reason = s.core.Commit(ticket, func(ctx context.Context) error { return s.projection.StageSnapshot(ctx, value) }, nil, s.projection.FinishSnapshot)
 		if reason == "storage_unavailable" {
 			reason = s.storageReason()
-			s.core.Close()
+			s.core.Unavailable()
 		}
 	}
 	s.mu.Lock()
@@ -328,7 +459,13 @@ func (s *Service) analyze(ticket *rcapolicy.Ticket, rec domain.SessionRecord, re
 }
 
 func (s *Service) resume(ctx context.Context) error {
-	if s.projection == nil || s.projection.Resume(ctx) != nil || s.core.Recover(ctx) != "" {
+	if s.projection == nil {
+		return apierr.Internal("RCA_UNAVAILABLE", "storage_unavailable")
+	}
+	if why := s.core.Recover(ctx, s.projection.Resume); why != "" {
+		if why == "revocation_persistence_pending" || why == "writer_busy" {
+			return apierr.Internal("RCA_UNAVAILABLE", why)
+		}
 		return apierr.Internal("RCA_UNAVAILABLE", s.storageReason())
 	}
 	s.mu.Lock()
@@ -345,12 +482,14 @@ func (s *Service) SetOverride(ctx context.Context, id domain.SessionID, enabled 
 	}
 	// Revoke existing work even when storage rejects the control write.
 	s.core.Invalidate(sessionKey(id))
-	if err := s.resume(ctx); err != nil {
-		return domain.RCAPolicyView{}, err
+	if enabled == nil || *enabled {
+		if err := s.resume(ctx); err != nil {
+			return domain.RCAPolicyView{}, err
+		}
 	}
 	v, why := s.core.SetOverride(ctx, sessionKey(id), inputs, enabled)
 	if why != "" {
-		return domain.RCAPolicyView{}, apierr.Internal("RCA_UNAVAILABLE", s.storageReason())
+		return domain.RCAPolicyView{}, apierr.Internal("RCA_UNAVAILABLE", why)
 	}
 	return policyView(v), nil
 }
@@ -363,26 +502,21 @@ func (s *Service) EmergencyStop(ctx context.Context, stop bool) error {
 		}
 	}
 	if why := s.core.EmergencyStop(ctx, stop); why != "" {
-		return apierr.Internal("RCA_UNAVAILABLE", s.storageReason())
+		return apierr.Internal("RCA_UNAVAILABLE", why)
 	}
 	return nil
 }
 
 // Purge removes RCA numbers and scope without deleting native/canonical data.
 func (s *Service) Purge(ctx context.Context, id domain.SessionID) error {
-	rec, _, err := s.facts(ctx, id)
-	if err != nil {
+	if _, _, err := s.facts(ctx, id); err != nil {
 		return err
 	}
-	s.core.Invalidate(sessionKey(id))
 	s.mu.Lock()
 	delete(s.jobs, id)
 	s.mu.Unlock()
-	if err := s.resume(ctx); err != nil {
-		return err
-	}
-	if s.projection.Purge(ctx, rec.ProjectID, id) != nil {
-		return apierr.Internal("RCA_UNAVAILABLE", s.storageReason())
+	if why := s.core.Purge(ctx, sessionKey(id)); why != "" {
+		return apierr.Internal("RCA_UNAVAILABLE", why)
 	}
 	return nil
 }
