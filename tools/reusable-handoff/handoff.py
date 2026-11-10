@@ -3149,6 +3149,26 @@ def historical_facts(root, current, directory, state, authorization, inputs):
     for row in inputs.get("external_attempts", []):
         required |= {(row["scope"], x["path"]) for x in row["manifest"] if not x["directory"]}
     require(required == seen, "historical evidence coverage incomplete or extra")
+    calls = review.get("calls", [])
+    require(isinstance(calls, list) and all(isinstance(fact, dict) and isinstance(fact.get("source_refs"), list) and
+            all(isinstance(ref, dict) for ref in fact["source_refs"]) for fact in calls), "historical call sources UNKNOWN")
+    supporting = {(ref.get("scope"), ref.get("path")) for fact in calls for ref in fact["source_refs"] if ref.get("role") == "supporting"}
+
+    def capture_position(scope, name):
+        # Frozen CLI.capture writers: Run.wire, worker-receipt.wire and
+        # retire.preconditions; an external-attempt scope owns its captures.
+        parts = Path(name).parts
+        if scope == "run":
+            return parts[0] == "wire" or (len(parts) >= 4 and parts[0] == "workers" and parts[2] == "wire")
+        return parts[0] == "preconditions" if scope == "retirement" else True
+
+    for scope, name in required:
+        if name.endswith(".raw"):
+            metadata = scope, str(Path(name).with_suffix(".json"))
+            if capture_position(scope, name):
+                require(metadata in required, "historical capture raw lacks metadata UNKNOWN")
+            else:
+                require(metadata in required or (scope, name) in supporting, "retained raw lacks independent provenance UNKNOWN")
     # Inventory producer sidecars in every approved scope, not just wire paths.
     captures, capture_objects = {}, set()
     for key in sorted(required):

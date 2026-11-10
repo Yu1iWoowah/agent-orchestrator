@@ -427,6 +427,10 @@ class HistoricalDatasetTests(unittest.TestCase):
                 producer_ref=dict(script_sha256=producer_sha, location="CLI.get/call", role=role),
                 source_refs=[dict(scope=scope, path=stem + ext, sha256=h.digest(h.private_read(scopes[scope] / (stem + ext))),
                                   role="capture-metadata" if ext == ".json" else "capture-output") for ext in (".json", ".raw")]))
+        h.publish(current / "old-initial-response.raw", b"retained response copy")
+        for fact in calls[:2]:
+            fact["source_refs"].append(dict(scope="run", path="old-initial-response.raw",
+                sha256=h.digest(h.private_read(current / "old-initial-response.raw")), role="supporting"))
         calls[0]["source_refs"].append(dict(scope="retirement", path="prior/material-reference.json",
             sha256=h.digest(h.private_read(directory / "prior/material-reference.json")), role="supporting"))
         inputs = dict(run=h.private_manifest(current), prior_retirement=[x for x in h.private_manifest(directory)
@@ -483,7 +487,7 @@ class HistoricalDatasetTests(unittest.TestCase):
                 self.review_facts(c)
 
     def test_complete_coverage_cannot_hide_unclassified_or_duplicate_capture(self):
-        for mode in ("missing-call", "supporting", "external-missing", "external-unknown-missing", "duplicate", "cross-pair", "scope-alias"):
+        for mode in ("missing-call", "supporting", "external-missing", "external-unknown-missing", "outside-supporting", "duplicate", "cross-pair", "scope-alias"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 c = self.historical_fixture(temporary)
                 # Same producer versions isolate capture accounting from version checks.
@@ -510,6 +514,22 @@ class HistoricalDatasetTests(unittest.TestCase):
                             if row["scope"] == "external-one" and row["path"] == "attempt.json":
                                 row["sha256"] = h.digest(h.private_read(external / "attempt.json"))
                         c.authorization["input_manifest_sha256"] = c.review["input_manifest_sha256"] = h.digest(h.canonical(c.inputs))
+                elif mode == "outside-supporting":
+                    removed = c.review["calls"].pop(1)
+                    for ref in removed["source_refs"]:
+                        if ref["role"].startswith("capture-"):
+                            old = c.directory / ref["path"]
+                            renamed = "prior/relocated" + old.suffix
+                            old.rename(c.directory / renamed)
+                            for row in c.review["coverage"]:
+                                if (row["scope"], row["path"]) == (ref["scope"], ref["path"]):
+                                    row["path"] = renamed
+                            ref["path"] = renamed
+                        ref["role"] = "supporting"
+                    c.review["calls"][0]["source_refs"].extend(removed["source_refs"])
+                    c.inputs["prior_retirement"] = [row for row in h.private_manifest(c.directory)
+                        if row["path"].startswith(("prior/", "preconditions/"))]
+                    c.authorization["input_manifest_sha256"] = c.review["input_manifest_sha256"] = h.digest(h.canonical(c.inputs))
                 elif mode == "duplicate":
                     duplicate = h.decode(h.canonical(c.review["calls"][0]))
                     duplicate["call_id"] = str(uuid.uuid4())
@@ -531,6 +551,43 @@ class HistoricalDatasetTests(unittest.TestCase):
                     c.authorization["input_manifest_sha256"] = c.review["input_manifest_sha256"] = h.digest(h.canonical(c.inputs))
                 with self.assertRaisesRegex(h.Stop, "capture"):
                     self.review_facts(c)
+
+    def test_raw_only_capture_crash_is_unknown_in_all_producer_scopes(self):
+        for scope, metadata_path in (("run", "wire/project.json"), ("retirement", "preconditions/failed.json"),
+                                     ("external-one", "attempt.json"), ("run", "workers/worker/wire/cli-crash.json")):
+            for supporting in (False, True):
+                with self.subTest(scope=scope, path=metadata_path, supporting=supporting), tempfile.TemporaryDirectory() as temporary:
+                    c = self.historical_fixture(temporary)
+                    roots = {"run": c.current, "retirement": c.directory, "external-one": Path(c.inputs["external_attempts"][0]["root"])}
+                    metadata = roots[scope] / metadata_path
+                    if metadata.exists():
+                        metadata.unlink()
+                        c.review["coverage"] = [row for row in c.review["coverage"] if (row["scope"], row["path"]) != (scope, metadata_path)]
+                        c.review["calls"] = [fact for fact in c.review["calls"] if not any(
+                            ref["role"] == "capture-metadata" and (ref["scope"], ref["path"]) == (scope, metadata_path)
+                            for ref in fact["source_refs"])]
+                    else:
+                        # CLI.capture's first durable publish, before its sidecar.
+                        raw = metadata.with_suffix(".raw")
+                        h.publish(raw, b"partial response, effect UNKNOWN")
+                        c.review["coverage"].append(dict(scope=scope, path=str(Path(metadata_path).with_suffix(".raw")),
+                                                         sha256=h.digest(h.private_read(raw))))
+                    if supporting:
+                        raw_path = str(Path(metadata_path).with_suffix(".raw"))
+                        c.review["calls"][0]["source_refs"].append(dict(scope=scope, path=raw_path, role="supporting",
+                            sha256=h.digest(h.private_read(roots[scope] / raw_path))))
+                    self.assertFalse(metadata.exists())
+                    self.assertTrue(metadata.with_suffix(".raw").is_file())
+                    c.inputs["run"] = h.private_manifest(c.current)
+                    c.inputs["prior_retirement"] = [row for row in h.private_manifest(c.directory)
+                        if row["path"].startswith(("prior/", "preconditions/"))]
+                    c.inputs["external_attempts"][0]["manifest"] = h.private_manifest(roots["external-one"])
+                    c.authorization["input_manifest_sha256"] = c.review["input_manifest_sha256"] = h.digest(h.canonical(c.inputs))
+                    before = h.private_manifest(c.current)
+                    with self.assertRaisesRegex(h.Stop, "capture raw.*UNKNOWN"):
+                        self.review_facts(c)
+                    self.assertEqual(before, h.private_manifest(c.current))
+                    self.assertFalse((c.directory / "receipt.json").exists())
 
     def test_unapproved_or_unfrozen_historical_producer_is_rejected(self):
         for mode in ("unapproved", "wrong-bytes"):
