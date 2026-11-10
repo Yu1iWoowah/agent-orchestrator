@@ -268,6 +268,9 @@ func (c *Coordinator) edit(ctx context.Context, apply func(*deploymentState) err
 	return nil
 }
 func (c *Coordinator) Register(ctx context.Context, r Registration) error {
+	if err := c.prepareRegistration(ctx); err != nil {
+		return err
+	}
 	d := r.Deployment
 	if !r.Grant.valid(c.root) || !r.Grant.current(c.budget.now()) || r.Grant.Profiles[d.Profile.BillingProvider] != (ProfileRef{ID: d.Profile.ID, Revision: d.Profile.Revision}) {
 		return ErrUnavailable
@@ -640,6 +643,10 @@ func (c *Coordinator) MountRequested(id integration.Identity) bool {
 // RecoverReceipts is startup reconciliation only: retry trusted canonical
 // writes, never paid requests, current profile resolution or answer delivery.
 func (c *Coordinator) RecoverReceipts(ctx context.Context) error {
+	state, err := c.checkJournal(ctx)
+	if err != nil {
+		return err
+	}
 	keys := map[string]bool{}
 	c.budget.pending.Range(func(key, value any) bool { keys[key.(string)] = true; return true })
 	entries, err := os.ReadDir(c.budget.Dir)
@@ -648,11 +655,22 @@ func (c *Coordinator) RecoverReceipts(ctx context.Context) error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.IsDir() && strings.HasSuffix(name, ".pending") {
+		if strings.HasSuffix(name, ".pending") {
 			key := strings.TrimSuffix(name, ".pending")
-			if validDigest(key) {
-				keys[key] = true
+			if !validDigest(key) || !entry.Type().IsRegular() {
+				return ErrBudgetBlocked
 			}
+			keys[key] = true
+		}
+	}
+	for key, a := range state.Attempts {
+		if a.State == "usage_pending" && !keys[key] {
+			return ErrUsagePending
+		}
+	}
+	for key := range keys {
+		if _, ok := state.Attempts[key]; !ok {
+			return ErrBudgetBlocked
 		}
 	}
 	var first error

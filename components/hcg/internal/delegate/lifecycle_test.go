@@ -297,6 +297,13 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 			sink.err = nil
 			restarted := NewCoordinator(root, sink, factory, nil)
 			defer restarted.Close()
+			for _, profile := range restarted.Profiles() {
+				if profile.Available {
+					t.Fatal("startup recovery enabled transport without explicit reauthorization")
+				}
+			}
+			grant := restarted.LabGrant()
+			restarted.budget.Now = func() time.Time { return grant.ExpiresAt.Add(time.Second) }
 			if err := restarted.RecoverReceipts(t.Context()); err != nil {
 				t.Fatal(err)
 			}

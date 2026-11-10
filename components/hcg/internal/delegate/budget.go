@@ -88,6 +88,9 @@ func (b *Budget) update(ctx context.Context, change func(*budgetState) error) er
 	return b.updateGuarded(ctx, change, nil)
 }
 func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) error, guard func(func() error) error) error {
+	return b.withState(ctx, change, guard, true)
+}
+func (b *Budget) withState(ctx context.Context, change func(*budgetState) error, guard func(func() error) error, write bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -123,7 +126,7 @@ func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) er
 	}
 	path := filepath.Join(b.Dir, "budget.json")
 	state := budgetState{Version: 1, External: map[string]map[string]ExternalSpend{}, Attempts: map[string]budgetAttempt{}}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, sourceOpenFlags, 0)
 	if err == nil {
 		info, err := f.Stat()
 		if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
@@ -146,6 +149,9 @@ func (b *Budget) updateGuarded(ctx context.Context, change func(*budgetState) er
 	}
 	if err := change(&state); err != nil {
 		return err
+	}
+	if !write {
+		return nil
 	}
 	data, err := json.Marshal(state)
 	if err != nil || len(data) > 4<<20 {
@@ -612,7 +618,7 @@ func (b *Budget) ReplayReceipt(ctx context.Context, key string, canonical Record
 	if value, ok := b.pending.Load(key); ok {
 		return b.record(ctx, key, value.(Receipt), canonical)
 	}
-	f, err := os.Open(filepath.Join(b.Dir, key+".pending"))
+	f, err := os.OpenFile(filepath.Join(b.Dir, key+".pending"), sourceOpenFlags, 0)
 	if err != nil {
 		return ErrBudgetBlocked
 	}
