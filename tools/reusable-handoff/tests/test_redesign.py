@@ -88,6 +88,46 @@ class JournalTests(unittest.TestCase):
         facts = cli.execution.journal.facts()
         self.assertEqual(facts[0]["terminal"], "timeout")
 
+    def test_effect_handle_binds_payload_and_recovery_target_before_io(self):
+        cli = self.cli()
+        cli.execution.close()
+        cli.execution = cli.execution.journal.register("_run", "old")
+        cli.execution.phase = "workers"
+        cli.execution.bindings = {"old", "other"}
+        self.addCleanup(cli.execution.close)
+        handle = str(uuid.uuid4())
+        args = ["send", "--session", "old", "--steer", "--client-message-id", handle, "--message", "original"]
+        with patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{}', stderr=b"")) as transport:
+            with self.assertRaises(h.WindowElapsed):
+                cli.call(args, deadline=0)
+            with self.assertRaisesRegex(h.Stop, "effect handle parameters changed"):
+                cli.call(args[:-1] + ["changed"])
+            transport.assert_not_called()
+        recover = ["send", "--session", "old", "--steer", "--recover-only", "--client-message-id", handle]
+        with patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{}', stderr=b"")):
+            cli.call(args)
+            cli.call(recover)
+        with patch.object(h.subprocess, "run") as transport:
+            with self.assertRaisesRegex(h.Stop, "effect handle binding changed"):
+                cli.call(recover[:2] + ["other"] + recover[3:])
+            transport.assert_not_called()
+        fresh = args[:5] + [str(uuid.uuid4())] + args[6:]
+        with self.assertRaises(h.WindowElapsed):
+            cli.call(fresh, deadline=0)
+        prior = next(p for p in cli.execution.directory.glob("calls/*/intent.json")
+                     if h.decode(h.private_read(p))["effect_id"] == fresh[5])
+        outside = self.data / "outside-call.raw"
+        h.publish(outside, b"original")
+        corrupted = h.decode(h.private_read(prior))
+        corrupted["parameters"]["argv"][-1]["payload"] = str(outside)
+        prior.write_bytes(h.canonical(corrupted))
+        with patch.object(h, "hash_reference", wraps=h.hash_reference) as reader, \
+                patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{}', stderr=b"")) as transport:
+            with self.assertRaises(h.Stop):
+                cli.call(fresh)
+            reader.assert_not_called()
+            transport.assert_not_called()
+
     def test_refresh_requires_global_authority_before_io(self):
         cli = self.cli()
         with patch.object(h.subprocess, "run") as transport:

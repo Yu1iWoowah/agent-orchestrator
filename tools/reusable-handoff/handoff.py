@@ -862,6 +862,16 @@ class Execution:
                     old = decode(private_read(previous))
                     if old.get("effect_id") != descriptor["effect_id"]:
                         continue
+                    require(all(old.get(key) == descriptor[key] for key in
+                                ("kind", "capability", "target", "actor", "transport_binding")),
+                            "effect handle binding changed")
+                    if not recover:
+                        original = dict(old["parameters"])
+                        if "argv" in original:
+                            original["argv"] = [hash_reference({"path": str(confined(previous.parent, x["payload"])),
+                                                               "sha256": x["sha256"]}).decode() if isinstance(x, dict) else x
+                                                for x in original["argv"]]
+                        require(original == descriptor["parameters"], "effect handle parameters changed")
                     result_path = previous.parent / "result.json"
                     not_started = result_path.exists() and decode(private_read(result_path)).get("terminal") == "not-started"
                     require(recover or not_started, "effect already attempted; original-handle recovery only")
