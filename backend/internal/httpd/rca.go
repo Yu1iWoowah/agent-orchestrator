@@ -12,6 +12,9 @@ import (
 // Only the actual fixed query/control routes receive the diagnostic exception,
 // independent of method/status so rejection and off/5xx cannot bypass it.
 func isRCAPath(path string) bool {
+	if isRCARawPath(path) {
+		return true
+	}
 	parts := strings.Split(strings.TrimSuffix(path, "/"), "/")
 	if path == "/api/v1/rca/emergency-stop" || path == "/api/v1/rca/emergency-stop/" {
 		return true
@@ -59,7 +62,7 @@ func rcaOriginMiddleware(origins []string) func(http.Handler) http.Handler {
 			} else {
 				trusted = false
 			}
-			if !local || !trusted {
+			if !local || !trusted || (isRCARawRequest(r) && len(values) > 0) {
 				envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "RCA_ORIGIN_FORBIDDEN", "Trusted renderer or native loopback access is required", nil)
 				return
 			}

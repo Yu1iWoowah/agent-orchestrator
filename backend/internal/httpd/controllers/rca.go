@@ -13,6 +13,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // RCAService exposes numeric queries and local RCA controls.
@@ -21,6 +23,12 @@ type RCAService interface {
 	SetOverride(context.Context, domain.SessionID, *bool) (domain.RCAPolicyView, error)
 	EmergencyStop(context.Context, bool) error
 	Purge(context.Context, domain.SessionID) error
+}
+
+// RCAInlineService is native raw admission, kept separate from numeric callers.
+type RCAInlineService interface {
+	AdmitClaude(context.Context, string) (ports.RCAInlineAdmission, string)
+	RejectClaude(string, string)
 }
 
 // RCAController serves the fixed RCA HTTP surface.
@@ -38,6 +46,7 @@ func (c RCAController) Register(r chi.Router) {
 				next.ServeHTTP(w, req)
 			})
 		})
+		r.Post("/rca/otlp/v1/logs", c.ingest)
 		r.Get("/usage/sessions/{sessionId}/composition", c.get)
 		r.Delete("/usage/sessions/{sessionId}/composition", c.purge)
 		r.Put("/sessions/{sessionId}/rca/override", c.set)
@@ -141,4 +150,40 @@ func (c RCAController) stop(w http.ResponseWriter, r *http.Request) {
 func (c RCAController) purge(w http.ResponseWriter, r *http.Request) {
 	err := c.Svc.Purge(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")))
 	rcaWrite(w, r, RCAPurgeResponse{Purged: true}, err)
+}
+
+func (c RCAController) ingest(w http.ResponseWriter, r *http.Request) {
+	svc, ok := c.Svc.(RCAInlineService)
+	interrupt := requestscope.RCARawInterrupt(r.Context())
+	if !ok || interrupt == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	markers := r.Header.Values("X-AO-RCA-Capture")
+	if len(markers) != 1 {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	admission, why := svc.AdmitClaude(r.Context(), markers[0])
+	if why != "" {
+		status := http.StatusServiceUnavailable
+		if why == "source_stopped" {
+			status = http.StatusForbidden
+		}
+		w.WriteHeader(status)
+		return
+	}
+	if !requestscope.OnRCARawFinished(r.Context(), admission.Release) {
+		admission.Release()
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	stop := context.AfterFunc(admission.Context(), interrupt)
+	defer stop()
+	why = admission.Read(r.Body, r.ContentLength)
+	if why != "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
