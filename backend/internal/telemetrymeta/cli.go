@@ -89,6 +89,12 @@ var legacyActorlessSystemCLICommands = map[string]struct{}{
 }
 
 var legacyActorlessUserCLICommands = map[string]struct{}{
+	"ao usage composition":                {},
+	"ao usage composition get":            {},
+	"ao usage composition set":            {},
+	"ao usage composition clear":          {},
+	"ao usage composition emergency-stop": {},
+	"ao usage composition purge":          {},
 	"ao usage":                            {},
 	"ao usage report":                     {},
 	"ao usage integration":                {},

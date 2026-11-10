@@ -7426,6 +7426,49 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/rca/emergency-stop:
+    put:
+      operationId: setRCAEmergencyStop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RCAEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAStopResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set host recorded-content stop without changing opt-ins
+      tags:
+      - usage
   /api/v1/remote-host/account-token:
     post:
       operationId: issueRemoteHostAccountToken
@@ -14590,6 +14633,107 @@ paths:
       summary: Replace an open question payload and advance its version
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/rca/override:
+    delete:
+      operationId: clearSessionRCAOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAPolicyResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Clear override and inherit recorded-content policy
+      tags:
+      - usage
+    put:
+      operationId: setSessionRCAOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RCAEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAPolicyResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set recorded-content session override
+      tags:
+      - usage
   /api/v1/sessions/{sessionId}/renders:
     post:
       operationId: publishSessionRender
@@ -17505,6 +17649,131 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Get detailed token and estimated cost usage for one session
+      tags:
+      - usage
+  /api/v1/usage/sessions/{sessionId}/composition:
+    delete:
+      operationId: purgeSessionComposition
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAPurgeResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Purge recorded-content numbers and scopes; preserve canonical/native
+        data
+      tags:
+      - usage
+    get:
+      operationId: getSessionComposition
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: query
+        name: afterId
+        schema:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: throughId
+        schema:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: limit
+        schema:
+          maximum: 1000
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: analyze
+        schema:
+          type:
+          - "null"
+          - boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCACompositionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Query recorded-content estimates and current canonical usage; analyze
+        explicitly starts a selected-worker snapshot
       tags:
       - usage
   /api/v1/usage/sessions/{sessionId}/events:
@@ -26972,6 +27241,8 @@ components:
           items:
             type: string
           type: array
+        rca:
+          $ref: '#/components/schemas/RCAConfig'
         reviewers:
           items:
             $ref: '#/components/schemas/DomainReviewerConfig'
@@ -27613,6 +27884,353 @@ components:
       required:
       - expectedVersion
       - payload
+      type: object
+    RCABaseline:
+      properties:
+        bytes:
+          type:
+          - "null"
+          - integer
+        estimatedTokens:
+          type:
+          - "null"
+          - integer
+        method:
+          type: string
+        status:
+          type: string
+      required:
+      - status
+      - method
+      - bytes
+      - estimatedTokens
+      type: object
+    RCABucket:
+      properties:
+        bytes:
+          type:
+          - "null"
+          - integer
+        category:
+          type: string
+        estimatedTokens:
+          type:
+          - "null"
+          - integer
+      required:
+      - category
+      - bytes
+      - estimatedTokens
+      type: object
+    RCACanonicalEvent:
+      properties:
+        bindingId:
+          format: int64
+          type: integer
+        cachedInputTokens:
+          type:
+          - "null"
+          - integer
+        id:
+          format: int64
+          type: integer
+        inputTokens:
+          type:
+          - "null"
+          - integer
+        outputTokens:
+          type:
+          - "null"
+          - integer
+        usageSourceId:
+          format: int64
+          type: integer
+      required:
+      - id
+      - bindingId
+      - usageSourceId
+      - inputTokens
+      - outputTokens
+      - cachedInputTokens
+      type: object
+    RCACanonicalPage:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/RCACanonicalEvent'
+          type: array
+        hasMore:
+          type: boolean
+        metadataAsOf:
+          format: date-time
+          type: string
+        nextAfterId:
+          format: int64
+          type: integer
+        sourceAsOf:
+          format: date-time
+          type: string
+        throughId:
+          format: int64
+          type: integer
+      required:
+      - throughId
+      - nextAfterId
+      - hasMore
+      - events
+      - metadataAsOf
+      - sourceAsOf
+      type: object
+    RCACompositionResponse:
+      properties:
+        baseline:
+          $ref: '#/components/schemas/RCABaseline'
+        canonical:
+          $ref: '#/components/schemas/RCACanonicalPage'
+        policy:
+          $ref: '#/components/schemas/RCAPolicyView'
+        projectId:
+          type: string
+        reason:
+          type: string
+        recorded:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/RCARecordedState'
+            type: object
+        requestComposition:
+          type: string
+        sessionId:
+          type: string
+        status:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      - policy
+      - status
+      - reason
+      - requestComposition
+      - recorded
+      - canonical
+      - baseline
+      type: object
+    RCAConfig:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      type: object
+    RCAEnabledRequest:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      required:
+      - enabled
+      type: object
+    RCAPolicyResponse:
+      properties:
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        manifestRevision:
+          minimum: 0
+          type: integer
+        project:
+          type:
+          - "null"
+          - boolean
+        role:
+          type:
+          - "null"
+          - boolean
+        session:
+          type:
+          - "null"
+          - boolean
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - project
+      - role
+      - session
+      - source
+      - sessionOverride
+      - effectiveEnabled
+      - emergencyStop
+      - manifestRevision
+      type: object
+    RCAPolicyView:
+      properties:
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        manifestRevision:
+          minimum: 0
+          type: integer
+        project:
+          type:
+          - "null"
+          - boolean
+        role:
+          type:
+          - "null"
+          - boolean
+        session:
+          type:
+          - "null"
+          - boolean
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - project
+      - role
+      - session
+      - source
+      - sessionOverride
+      - effectiveEnabled
+      - emergencyStop
+      - manifestRevision
+      type: object
+    RCAPurgeResponse:
+      properties:
+        purged:
+          type: boolean
+      required:
+      - purged
+      type: object
+    RCARecordedSnapshot:
+      properties:
+        analyzedBytes:
+          format: int64
+          type: integer
+        association:
+          type: string
+        bindingId:
+          type:
+          - "null"
+          - integer
+        buckets:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        endOffset:
+          format: int64
+          type: integer
+        method:
+          type: string
+        reasons:
+          items:
+            type: string
+          type: array
+        records:
+          format: int64
+          type: integer
+        scopeId:
+          type: string
+        sourceGeneration:
+          type:
+          - "null"
+          - integer
+        sourceVersion:
+          type: string
+        startOffset:
+          format: int64
+          type: integer
+        status:
+          type: string
+        turns:
+          items:
+            $ref: '#/components/schemas/RCARecordedTurn'
+          type: array
+        unpaired:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        usageSourceId:
+          type:
+          - "null"
+          - integer
+      required:
+      - scopeId
+      - usageSourceId
+      - bindingId
+      - sourceGeneration
+      - association
+      - method
+      - sourceVersion
+      - status
+      - reasons
+      - startOffset
+      - endOffset
+      - analyzedBytes
+      - records
+      - buckets
+      - turns
+      - unpaired
+      type: object
+    RCARecordedState:
+      properties:
+        observedAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        scopeRevision:
+          type: string
+        sessionId:
+          type: string
+        snapshots:
+          items:
+            $ref: '#/components/schemas/RCARecordedSnapshot'
+          type: array
+        status:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      - scopeRevision
+      - observedAt
+      - status
+      - reason
+      - snapshots
+      type: object
+    RCARecordedTurn:
+      properties:
+        buckets:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        ordinal:
+          format: int64
+          type: integer
+      required:
+      - ordinal
+      - buckets
+      type: object
+    RCAStopResponse:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
       type: object
     RebuildReviewerAccountRequest:
       properties:
@@ -28834,6 +29452,8 @@ components:
           $ref: '#/components/schemas/HCGDelegationToggle'
         hcgReporting:
           $ref: '#/components/schemas/HCGReportingConfig'
+        rca:
+          $ref: '#/components/schemas/RCAConfig'
       type: object
     RollbackConversationResponse:
       properties:

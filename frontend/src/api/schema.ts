@@ -2593,6 +2593,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/rca/emergency-stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set host recorded-content stop without changing opt-ins */
+        put: operations["setRCAEmergencyStop"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/remote-host/account-token": {
         parameters: {
             query?: never;
@@ -4456,6 +4473,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/rca/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set recorded-content session override */
+        put: operations["setSessionRCAOverride"];
+        post?: never;
+        /** Clear override and inherit recorded-content policy */
+        delete: operations["clearSessionRCAOverride"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/renders": {
         parameters: {
             query?: never;
@@ -5419,6 +5454,24 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/usage/sessions/{sessionId}/composition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Query recorded-content estimates and current canonical usage; analyze explicitly starts a selected-worker snapshot */
+        get: operations["getSessionComposition"];
+        put?: never;
+        post?: never;
+        /** Purge recorded-content numbers and scopes; preserve canonical/native data */
+        delete: operations["purgeSessionComposition"];
         options?: never;
         head?: never;
         patch?: never;
@@ -8929,6 +8982,7 @@ export interface components {
             orchestratorRules?: string;
             postCreate?: string[];
             preRemove?: string[];
+            rca?: components["schemas"]["RCAConfig"];
             reviewers?: components["schemas"]["DomainReviewerConfig"][];
             sessionPrefix?: string;
             symlinks?: string[];
@@ -9184,6 +9238,120 @@ export interface components {
             /** Format: int64 */
             expectedVersion: number;
             payload: components["schemas"]["AttentionQuestionPayload"];
+        };
+        RCABaseline: {
+            bytes: null | number;
+            estimatedTokens: null | number;
+            method: string;
+            status: string;
+        };
+        RCABucket: {
+            bytes: null | number;
+            category: string;
+            estimatedTokens: null | number;
+        };
+        RCACanonicalEvent: {
+            /** Format: int64 */
+            bindingId: number;
+            cachedInputTokens: null | number;
+            /** Format: int64 */
+            id: number;
+            inputTokens: null | number;
+            outputTokens: null | number;
+            /** Format: int64 */
+            usageSourceId: number;
+        };
+        RCACanonicalPage: {
+            events: components["schemas"]["RCACanonicalEvent"][];
+            hasMore: boolean;
+            /** Format: date-time */
+            metadataAsOf: string;
+            /** Format: int64 */
+            nextAfterId: number;
+            /** Format: date-time */
+            sourceAsOf: string;
+            /** Format: int64 */
+            throughId: number;
+        };
+        RCACompositionResponse: {
+            baseline: components["schemas"]["RCABaseline"];
+            canonical: components["schemas"]["RCACanonicalPage"];
+            policy: components["schemas"]["RCAPolicyView"];
+            projectId: string;
+            reason: string;
+            recorded: null | components["schemas"]["RCARecordedState"];
+            requestComposition: string;
+            sessionId: string;
+            status: string;
+        };
+        RCAConfig: {
+            enabled?: null | boolean;
+        };
+        RCAEnabledRequest: {
+            enabled: null | boolean;
+        };
+        RCAPolicyResponse: {
+            effectiveEnabled: boolean;
+            emergencyStop: boolean;
+            manifestRevision: number;
+            project: null | boolean;
+            role: null | boolean;
+            session: null | boolean;
+            sessionOverride: string;
+            source: string;
+        };
+        RCAPolicyView: {
+            effectiveEnabled: boolean;
+            emergencyStop: boolean;
+            manifestRevision: number;
+            project: null | boolean;
+            role: null | boolean;
+            session: null | boolean;
+            sessionOverride: string;
+            source: string;
+        };
+        RCAPurgeResponse: {
+            purged: boolean;
+        };
+        RCARecordedSnapshot: {
+            /** Format: int64 */
+            analyzedBytes: number;
+            association: string;
+            bindingId: null | number;
+            buckets: components["schemas"]["RCABucket"][] | null;
+            /** Format: int64 */
+            endOffset: number;
+            method: string;
+            reasons: string[];
+            /** Format: int64 */
+            records: number;
+            scopeId: string;
+            sourceGeneration: null | number;
+            sourceVersion: string;
+            /** Format: int64 */
+            startOffset: number;
+            status: string;
+            turns: components["schemas"]["RCARecordedTurn"][];
+            unpaired: components["schemas"]["RCABucket"][] | null;
+            usageSourceId: null | number;
+        };
+        RCARecordedState: {
+            /** Format: date-time */
+            observedAt: string;
+            projectId: string;
+            reason: string;
+            scopeRevision: string;
+            sessionId: string;
+            snapshots: components["schemas"]["RCARecordedSnapshot"][];
+            status: string;
+        };
+        RCARecordedTurn: {
+            buckets: components["schemas"]["RCABucket"][] | null;
+            /** Format: int64 */
+            ordinal: number;
+        };
+        RCAStopResponse: {
+            enabled: boolean;
         };
         RebuildReviewerAccountRequest: {
             /** @description Explicit account for a fresh reviewer execution. The previous conversation and binding remain historical; the next trigger starts a new native conversation. */
@@ -9681,6 +9849,7 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             hcgDelegation?: components["schemas"]["HCGDelegationToggle"];
             hcgReporting?: components["schemas"]["HCGReportingConfig"];
+            rca?: components["schemas"]["RCAConfig"];
         };
         RollbackConversationResponse: {
             turnsDiscarded: number;
@@ -20914,6 +21083,66 @@ export interface operations {
             };
         };
     };
+    setRCAEmergencyStop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RCAEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RCAStopResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     issueRemoteHostAccountToken: {
         parameters: {
             query?: never;
@@ -29346,6 +29575,137 @@ export interface operations {
             };
         };
     };
+    setSessionRCAOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RCAEnabledRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RCAPolicyResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    clearSessionRCAOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RCAPolicyResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     publishSessionRender: {
         parameters: {
             query?: never;
@@ -32714,6 +33074,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionUsageResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionComposition: {
+        parameters: {
+            query?: {
+                afterId?: null | number;
+                throughId?: null | number;
+                limit?: null | number;
+                analyze?: null | boolean;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RCACompositionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    purgeSessionComposition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RCAPurgeResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

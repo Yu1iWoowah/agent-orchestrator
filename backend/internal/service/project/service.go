@@ -85,6 +85,7 @@ type Service struct {
 
 	reportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
 	delegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
+	rcaPolicyChanged        func(domain.ProjectID, domain.RCAPolicySnapshot)
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
@@ -116,6 +117,7 @@ type Deps struct {
 	// ReportingPolicyChanged cancels affected reports after durable policy changes.
 	ReportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
 	DelegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
+	RCAPolicyChanged        func(domain.ProjectID, domain.RCAPolicySnapshot)
 }
 
 // New returns a project service backed by the given durable store.
@@ -140,6 +142,7 @@ func NewWithDeps(d Deps) *Service {
 
 		reportingPolicyChanged:  d.ReportingPolicyChanged,
 		delegationPolicyChanged: d.DelegationPolicyChanged,
+		rcaPolicyChanged:        d.RCAPolicyChanged,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
@@ -830,6 +833,9 @@ func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func
 	if m.reportingPolicyChanged != nil {
 		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
 	}
+	if m.rcaPolicyChanged != nil {
+		m.rcaPolicyChanged(domain.ProjectID(row.ID), row.Config.RCAPolicySnapshot())
+	}
 	if m.delegationPolicyChanged != nil {
 		m.delegationPolicyChanged(domain.ProjectID(row.ID), row.Config.DelegationPolicySnapshot())
 	}
@@ -844,6 +850,9 @@ func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, afte
 		[]domain.HCGReportingConfig{before.HCGReporting, before.Worker.HCGReporting, before.Orchestrator.HCGReporting},
 		[]domain.HCGReportingConfig{after.HCGReporting, after.Worker.HCGReporting, after.Orchestrator.HCGReporting}) {
 		m.reportingPolicyChanged(id, after.ReportingPolicySnapshot())
+	}
+	if m.rcaPolicyChanged != nil && !reflect.DeepEqual(before.RCAPolicySnapshot(), after.RCAPolicySnapshot()) {
+		m.rcaPolicyChanged(id, after.RCAPolicySnapshot())
 	}
 }
 

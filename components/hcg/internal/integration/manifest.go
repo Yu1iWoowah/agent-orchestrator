@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/aoagents/agent-orchestrator/components/hcg/policy"
 )
 
 const EngineName = "llm-usage-metrics"
@@ -20,35 +22,11 @@ const ManifestVersion = 1
 
 var ErrManifestUnavailable = errors.New("reporting manifest unavailable")
 
-type PolicyInputs struct {
-	Project       *bool `json:"project"`
-	Role          *bool `json:"role"`
-	Session       *bool `json:"session"`
-	EmergencyStop bool  `json:"emergencyStop"`
-}
-
-type Policy struct {
-	Enabled bool   `json:"enabled"`
-	Source  string `json:"source"`
-}
+type PolicyInputs = policy.Inputs
+type Policy = policy.Policy
 
 func ResolvePolicy(role string, in PolicyInputs) Policy {
-	if role != "worker" && role != "orchestrator" {
-		return Policy{Source: "unsupported_role"}
-	}
-	p := Policy{Source: "default"}
-	for _, v := range []struct {
-		value *bool
-		name  string
-	}{{in.Project, "project"}, {in.Role, "role"}, {in.Session, "session"}} {
-		if v.value != nil {
-			p = Policy{*v.value, v.name}
-		}
-	}
-	if in.EmergencyStop {
-		return Policy{Source: "emergency_stop"}
-	}
-	return p
+	return policy.Resolve(role, in)
 }
 
 // Identity comes from AO-owned session facts, never from the tool or HTTP body.
@@ -123,7 +101,13 @@ func LaunchManifest(previous *Manifest, id Identity, in PolicyInputs, engine *En
 		}
 		in.Session = previous.Inputs.Session
 	}
-	p := ResolvePolicy(id.Role, in)
+	var previousPolicy *policy.Manifest
+	if previous != nil {
+		previousPolicy = &policy.Manifest{Revision: previous.Revision}
+	}
+	state := policy.Revise(previousPolicy, id.Role, in)
+	revision = state.Revision
+	p := state.Policy
 	m := Manifest{SchemaVersion: ManifestVersion, Revision: revision, Identity: id, Inputs: in, Policy: p, Engine: engine, Namespace: id.namespace(), Reason: "disabled"}
 	requested := in
 	requested.EmergencyStop = false

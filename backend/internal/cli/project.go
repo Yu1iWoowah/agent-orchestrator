@@ -86,10 +86,15 @@ type agentConfig struct {
 type roleOverride struct {
 	HCGDelegation hcgReportingConfig `json:"hcgDelegation,omitempty,omitzero"`
 	HCGReporting  hcgReportingConfig `json:"hcgReporting,omitempty,omitzero"`
+	RCA           rcaConfig          `json:"rca,omitempty,omitzero"`
 
 	AgentAccountID string      `json:"agentAccountId,omitempty"`
 	Agent          string      `json:"agent,omitempty"`
 	AgentConfig    agentConfig `json:"agentConfig,omitempty"`
+}
+
+type rcaConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // trackerIntakeConfig mirrors domain.TrackerIntakeConfig.
@@ -120,6 +125,7 @@ type orchestratorHandoffConfig struct {
 }
 
 type projectConfig struct {
+	RCA                   rcaConfig                   `json:"rca,omitempty,omitzero"`
 	HCGDelegation         hcgDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
 	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`

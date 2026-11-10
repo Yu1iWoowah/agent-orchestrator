@@ -94,7 +94,7 @@ var lanControlBlockedPrefixes = []string{
 // no 403/401 that would confirm the path exists.
 func lanControlBlock(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isLANControlBlockedPath(r.URL.Path) || isLANControlBlockedRequest(r.Method, r.URL.Path) {
+		if isRCARequest(r) || isLANControlBlockedPath(r.URL.Path) || isLANControlBlockedRequest(r.Method, r.URL.Path) {
 			notFoundJSON(w, r)
 			return
 		}
@@ -116,6 +116,9 @@ func isLANControlBlockedRequest(method, path string) bool {
 // beneath it ("/api/v1/mobile/status") but must not catch unrelated siblings
 // such as "/api/v1/mobileapp".
 func isLANControlBlockedPath(path string) bool {
+	if isRCAPath(path) || path == "/api/v1/rca" || strings.HasPrefix(path, "/api/v1/rca/") {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/v1/sessions/") && (strings.Contains(path, "/hcg-reporting") || strings.Contains(path, "/hcg-delegation")) {
 		return true
 	}

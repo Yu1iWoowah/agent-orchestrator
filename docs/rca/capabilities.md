@@ -1,5 +1,7 @@
 # RCA native export capability evidence
 
+後續方向三的 [Codex 已記錄內容粗估](README.md) 與本頁 native export gate 分開：RCA-P1-PR2 OTel 仍 blocked，原 PR3 由 RCA-DIR3-PR1 supersede。下列 2026-11-08 紀錄是原驗證結果，不因新增 reader 而追認 native gate 通過。
+
 本文件記錄 RCA-P1-PR1 的版本能力驗證，日期為 2026-11-08。**結果是 gate FAIL：Claude 原文來源維持 UNKNOWN/off。**
 這是有效的能力驗證結果；沒有啟用 production capture、修改 launch driver 或建立第二份 usage ledger。
 

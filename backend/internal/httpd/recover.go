@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,10 @@ import (
 )
 
 func recoverTelemetry(log *slog.Logger, sink ports.EventSink) func(http.Handler) http.Handler {
+	return recoverTelemetryWithCapture(log, sink, sentryobs.CapturePanic)
+}
+
+func recoverTelemetryWithCapture(log *slog.Logger, sink ports.EventSink, capture func(context.Context, any, string, map[string]string, string)) func(http.Handler) http.Handler {
 	log = loggerOrDefault(log)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,6 +32,10 @@ func recoverTelemetry(log *slog.Logger, sink ports.EventSink) func(http.Handler)
 					// daemon failure, and only the server can cut the response short.
 					if rec == http.ErrAbortHandler { //nolint:errorlint // net/http aborts quietly on exactly this value
 						panic(rec)
+					}
+					if isRCARequest(r) {
+						writeRecoveredError(w, r)
+						return
 					}
 					stack := string(debug.Stack())
 					log.Error("http handler panic",
@@ -58,7 +67,7 @@ func recoverTelemetry(log *slog.Logger, sink ports.EventSink) func(http.Handler)
 						})
 					}
 					// Capture the panic to Sentry with its Go stack.
-					sentryobs.CapturePanic(r.Context(), rec, stack, map[string]string{
+					capture(r.Context(), rec, stack, map[string]string{
 						"component":  "httpd",
 						"operation":  "http_request_panic",
 						"method":     r.Method,
