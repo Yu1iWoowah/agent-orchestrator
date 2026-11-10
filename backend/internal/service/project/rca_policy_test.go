@@ -54,11 +54,19 @@ func TestRCAPolicyDurableAndIndependent(t *testing.T) {
 	if rcaCalls != 3 {
 		t.Fatal("patch missed cancellation")
 	}
+	config.Worker.RCA.Enabled = &on
+	config.Orchestrator.RCA.Enabled = &off
+	if _, err := svc.SetConfig(t.Context(), "agent-orchestrator", project.SetConfigInput{Config: config}); err != nil {
+		t.Fatal(err)
+	}
+	if rcaCalls != 4 || reportingCalls != 1 {
+		t.Fatal("orchestrator RCA policy did not independently notify")
+	}
 	failing := project.NewWithDeps(project.Deps{Store: failingProjectUpsertStore{st}, RCAPolicyChanged: notify})
 	if _, err := failing.SetConfig(t.Context(), "agent-orchestrator", project.SetConfigInput{}); err == nil {
 		t.Fatal("expected failure")
 	}
-	if rcaCalls != 3 {
+	if rcaCalls != 4 {
 		t.Fatal("failed write revoked policy")
 	}
 }

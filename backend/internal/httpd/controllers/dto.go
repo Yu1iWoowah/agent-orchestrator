@@ -31,6 +31,11 @@ import (
 // RCACompositionResponse contains only numeric estimates and safe references.
 type RCACompositionResponse domain.RCAComposition
 
+// RCAOTLPHeader carries a non-secret native capture namespace, never a bearer.
+type RCAOTLPHeader struct {
+	Capture string `header:"X-AO-RCA-Capture" required:"true" maxLength:"36"`
+}
+
 // RCAPolicyResponse reports effective RCA policy.
 type RCAPolicyResponse domain.RCAPolicyView
 

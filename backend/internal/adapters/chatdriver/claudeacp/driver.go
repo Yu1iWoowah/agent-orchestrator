@@ -154,6 +154,11 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 					"authDuration", authDuration, "modelsDuration", time.Since(modelsStarted))
 			}
 			env := claudeACPLaunchEnv(cfg.Env, claudeBinary, cfg.Model, models)
+			bridge := runtimeLaunch.command
+			if len(runtimeLaunch.args) > 0 {
+				bridge = runtimeLaunch.args[0]
+			}
+			applyClaudeRCAEnvironment(ctx, cfg.RCAEnvironment, env, ports.RCAClaudeRuntime{BinaryPath: claudeBinary, BridgePath: bridge, OS: runtime.GOOS})
 			return acpdriver.Launch{
 				Command: runtimeLaunch.command,
 				Args:    runtimeLaunch.args,
@@ -562,4 +567,36 @@ func requireNodeVersion(ctx context.Context, node string) error {
 	}
 	nodeVersionsChecked.Store(node, struct{}{})
 	return nil
+}
+
+// applyClaudeRCAEnvironment runs after the normal account guard. The observer
+// sees only key names. Unknown capability, panic or conflict leaves native env
+// untouched; neither this helper nor RCA reads provider settings/credentials.
+func applyClaudeRCAEnvironment(ctx context.Context, prepare ports.RCAClaudeEnvironment, env map[string]string, observed ports.RCAClaudeRuntime) {
+	if prepare == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		keys = append(keys, key)
+	}
+	delta := prepare(ctx, observed, keys)
+	for key := range delta {
+		switch key {
+		case "CLAUDE_CODE_ENABLE_TELEMETRY", "OTEL_LOGS_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_TRACES_EXPORTER", "OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_LOG_RAW_API_BODIES", "OTEL_BLRP_MAX_QUEUE_SIZE", "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", "OTEL_BLRP_EXPORT_TIMEOUT":
+		default:
+			return
+		}
+		if _, present := env[key]; present {
+			return
+		}
+	}
+	for key, value := range delta {
+		env[key] = value
+	}
 }

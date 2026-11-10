@@ -7469,6 +7469,90 @@ paths:
       summary: Set host recorded-content stop without changing opt-ins
       tags:
       - usage
+  /api/v1/rca/otlp/v1/logs:
+    post:
+      operationId: ingestRCAOTLPLogs
+      parameters:
+      - in: header
+        name: X-AO-RCA-Capture
+        required: true
+        schema:
+          maxLength: 36
+          type: string
+      requestBody:
+        content:
+          application/x-protobuf:
+            schema:
+              format: binary
+              type: string
+        required: true
+      responses:
+        "200":
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "405":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Method Not Allowed
+        "411":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Length Required
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Native primary HTTP/1 only; known length identity OTLP protobuf; empty
+        ACK means numeric handoff, not durable storage
+      tags:
+      - usage
   /api/v1/remote-host/account-token:
     post:
       operationId: issueRemoteHostAccountToken
@@ -28057,12 +28141,95 @@ components:
       - metadataAsOf
       - sourceAsOf
       type: object
+    RCAClaudeAttempt:
+      properties:
+        buckets:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        canonicalEventId:
+          type:
+          - "null"
+          - integer
+        mcpBytes:
+          type:
+          - "null"
+          - integer
+        ordinal:
+          format: int64
+          type: integer
+        reasons:
+          items:
+            type: string
+          type: array
+      required:
+      - ordinal
+      - buckets
+      - mcpBytes
+      - reasons
+      - canonicalEventId
+      type: object
+    RCAClaudeInline:
+      properties:
+        active:
+          type: boolean
+        attempts:
+          items:
+            $ref: '#/components/schemas/RCAClaudeAttempt'
+          type: array
+        captureId:
+          type: string
+        coverage:
+          type: string
+        droppedBatches:
+          format: int64
+          type: integer
+        method:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        requested:
+          type: boolean
+        role:
+          type: string
+        sessionId:
+          type: string
+        unpaired:
+          format: int64
+          type: integer
+      required:
+      - projectId
+      - sessionId
+      - captureId
+      - role
+      - requested
+      - active
+      - reason
+      - coverage
+      - method
+      - observedAt
+      - attempts
+      - unpaired
+      - droppedBatches
+      type: object
     RCACompositionResponse:
       properties:
         baseline:
           $ref: '#/components/schemas/RCABaseline'
         canonical:
           $ref: '#/components/schemas/RCACanonicalPage'
+        claudeInline:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/RCAClaudeInline'
+            type: object
         policy:
           $ref: '#/components/schemas/RCAPolicyView'
         projectId:
@@ -28088,6 +28255,7 @@ components:
       - reason
       - requestComposition
       - recorded
+      - claudeInline
       - canonical
       - baseline
       type: object

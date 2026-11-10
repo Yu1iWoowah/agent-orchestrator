@@ -2610,6 +2610,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/rca/otlp/v1/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Native primary HTTP/1 only; known length identity OTLP protobuf; empty ACK means numeric handoff, not durable storage */
+        post: operations["ingestRCAOTLPLogs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/remote-host/account-token": {
         parameters: {
             query?: never;
@@ -9301,9 +9318,36 @@ export interface components {
             /** Format: int64 */
             throughId: number;
         };
+        RCAClaudeAttempt: {
+            buckets: components["schemas"]["RCABucket"][] | null;
+            canonicalEventId: null | number;
+            mcpBytes: null | number;
+            /** Format: int64 */
+            ordinal: number;
+            reasons: string[];
+        };
+        RCAClaudeInline: {
+            active: boolean;
+            attempts: components["schemas"]["RCAClaudeAttempt"][];
+            captureId: string;
+            coverage: string;
+            /** Format: int64 */
+            droppedBatches: number;
+            method: string;
+            /** Format: date-time */
+            observedAt: string;
+            projectId: string;
+            reason: string;
+            requested: boolean;
+            role: string;
+            sessionId: string;
+            /** Format: int64 */
+            unpaired: number;
+        };
         RCACompositionResponse: {
             baseline: components["schemas"]["RCABaseline"];
             canonical: components["schemas"]["RCACanonicalPage"];
+            claudeInline: null | components["schemas"]["RCAClaudeInline"];
             policy: components["schemas"]["RCAPolicyView"];
             projectId: string;
             reason: string;
@@ -21162,6 +21206,120 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    ingestRCAOTLPLogs: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-AO-RCA-Capture": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-protobuf": string;
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Method Not Allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Length Required */
+            411: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unsupported Media Type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

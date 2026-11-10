@@ -10,6 +10,7 @@ export function compositionFixture(): components["schemas"]["RCACompositionRespo
 		status: "partial",
 		reason: "",
 		requestComposition: "UNKNOWN",
+		claudeInline: null,
 		policy: {
 			project: true,
 			role: null,

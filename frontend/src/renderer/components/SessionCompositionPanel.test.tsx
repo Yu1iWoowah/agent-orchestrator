@@ -79,3 +79,77 @@ it("preserves fixed API quality codes without echoing arbitrary strings", async 
 	await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
 	expect(await screen.findByText("Unavailable · storage_unavailable", { exact: true })).toBeInTheDocument();
 });
+
+it("shows Claude observed attempts independently from canonical usage and recorded offsets", async () => {
+	const data = compositionFixture();
+	const buckets = data.recorded?.snapshots[0].buckets;
+	if (!buckets) throw new Error("missing numeric fixture");
+	data.recorded = null;
+	data.claudeInline = {
+		projectId: data.projectId,
+		sessionId: data.sessionId,
+		captureId: "ao-capture",
+		role: "orchestrator",
+		requested: true,
+		active: true,
+		reason: "",
+		coverage: "observed_inline_attempt",
+		method: "utf8_bytes_div4_v1",
+		observedAt: "2026-11-10T00:00:00Z",
+		unpaired: 1,
+		droppedBatches: 2,
+		attempts: [
+			{ ordinal: 1, buckets, mcpBytes: null, reasons: ["unmatched_attempt", "hidden_thinking"], canonicalEventId: null },
+			{
+				ordinal: 2,
+				buckets: [{ category: "conversation_history", bytes: 20, estimatedTokens: 5 }],
+				mcpBytes: null,
+				reasons: [],
+				canonicalEventId: null,
+			},
+		],
+	};
+	client.get.mockResolvedValue(data);
+	render(<SessionCompositionPanel sessionId="worker-1" />);
+	expect(await screen.findByRole("table", { name: "Observed inline content estimates" })).toHaveTextContent("Tool results");
+	expect(screen.getByText("Requested: On · Source: Active")).toBeInTheDocument();
+	expect(screen.getByText(/Orchestrator: Inherit/)).toBeInTheDocument();
+	expect(screen.getByText("Hidden thinking is not observed")).toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Analyze selected session" })).not.toBeInTheDocument();
+	expect(screen.queryByRole("combobox", { name: "Snapshot granularity" })).not.toBeInTheDocument();
+	await userEvent.click(screen.getByRole("combobox", { name: "Observed attempt" }));
+	await userEvent.click(screen.getByRole("option", { name: "Observed attempt 2" }));
+	expect(screen.getByRole("row", { name: "Conversation / history 20 5" })).toBeInTheDocument();
+	expect(screen.getByRole("table", { name: "Canonical usage" })).toHaveTextContent("42");
+	expect(screen.getByText(/Complete request composition: UNKNOWN/)).toBeInTheDocument();
+});
+
+it("keeps a requested Claude source off while waiting for an approved launch", async () => {
+	const data = compositionFixture();
+	data.recorded = null;
+	data.status = "unavailable";
+	data.reason = "waiting_safe_launch";
+	data.claudeInline = {
+		projectId: data.projectId,
+		sessionId: data.sessionId,
+		captureId: "",
+		role: "worker",
+		requested: true,
+		active: false,
+		reason: "waiting_safe_launch",
+		coverage: "observed_inline_attempt",
+		method: "utf8_bytes_div4_v1",
+		observedAt: "",
+		unpaired: 0,
+		droppedBatches: 0,
+		attempts: [],
+	};
+	client.get.mockResolvedValue(data);
+	render(<SessionCompositionPanel sessionId="worker-1" />);
+	expect(await screen.findByText("Requested: On · Source: Off")).toBeInTheDocument();
+	expect(screen.getAllByText(/waiting for a normal approved launch/).length).toBeGreaterThan(0);
+	expect(screen.queryByRole("table", { name: "Observed inline content estimates" })).not.toBeInTheDocument();
+	expect(client.set).not.toHaveBeenCalled();
+	await userEvent.click(screen.getByRole("button", { name: "Stop RCA for session" }));
+	await waitFor(() => expect(client.set).toHaveBeenCalledWith({ sessionId: "worker-1", enabled: false }));
+});

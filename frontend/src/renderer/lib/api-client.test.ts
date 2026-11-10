@@ -508,3 +508,20 @@ describe("apiErrorDetails", () => {
 		},
 	);
 });
+
+describe("native raw RCA diagnostic exclusion",()=>{
+ afterEach(()=>vi.restoreAllMocks());
+ it("excludes the fixed OTLP route from HTTP and transport diagnostics",async()=>{
+  setApiBaseUrl("http://127.0.0.1:45873");
+  for(const canary of ["A_SYNTHETIC_CREDENTIAL_CANARY","B_SYNTHETIC_CONTENT_CANARY"]){
+   for(const status of [400,403,413,500,503]){
+    vi.clearAllMocks();vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({message:canary,code:canary}),{status,headers:{"Content-Type":"application/json"}}));
+    await apiClient.POST("/api/v1/rca/otlp/v1/logs",{params:{header:{"X-AO-RCA-Capture":"synthetic"}},body:canary,headers:{"Content-Type":"application/x-protobuf"}});
+    expect(captureRendererEvent).not.toHaveBeenCalled();expect(captureApiErrorToSentry).not.toHaveBeenCalled();
+   }
+   vi.clearAllMocks();vi.spyOn(globalThis,"fetch").mockRejectedValue(new Error(canary));
+   await apiClient.POST("/api/v1/rca/otlp/v1/logs",{params:{header:{"X-AO-RCA-Capture":"synthetic"}},body:canary}).catch(()=>undefined);
+   expect(captureRendererEvent).not.toHaveBeenCalled();expect(captureApiErrorToSentry).not.toHaveBeenCalled();
+  }
+ });
+});

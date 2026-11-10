@@ -38,6 +38,10 @@ const reasons = [
 	"disabled",
 	"analysis_not_requested",
 	"analysis_running",
+	"waiting_safe_launch",
+	"unsupported_capability",
+	"exporter_conflict",
+	"source_stopped",
 ] as const;
 const fixedReasonCodes = [
 	"ambiguous_source",
@@ -62,6 +66,16 @@ const fixedReasonCodes = [
 	"storage_unavailable",
 	"subagent_source",
 	"unsupported_content",
+	"writer_busy",
+	"revocation_persistence_pending",
+	"invalid_otlp",
+	"batch_limit",
+	"body_limit",
+	"record_count_limit",
+	"identity_limit",
+	"identity_conflict",
+	"unmatched_attempt",
+	"capture_limit",
 ] as const;
 const reasonKey = (value: string) => {
 	const reason = reasons.find((item) => item === value);
@@ -126,29 +140,86 @@ function Snapshot({ snapshot }: { snapshot: NonNullable<SessionComposition["reco
 					))}
 				</ul>
 			) : null}
-			<div className="overflow-x-auto">
-				<table className="w-full text-left text-xs" aria-label={t("rca.buckets")}>
-					<thead>
-						<tr className="border-b border-border">
-							<th className="py-2 font-medium">{t("rca.category")}</th>
-							<th className="px-2 text-right font-medium">{t("rca.bytes")}</th>
-							<th className="text-right font-medium">{t("rca.estimate")}</th>
-						</tr>
-					</thead>
-					<tbody>
-						{categories.map((category) => {
-							const bucket = buckets?.find((item) => item.category === category);
-							return (
-								<tr className="border-b border-border last:border-0" key={category}>
-									<th className="py-2 font-normal">{t(`rca.category.${category}`)}</th>
-									<td className="px-2 text-right tabular-nums">{number(bucket?.bytes)}</td>
-									<td className="text-right tabular-nums">{number(bucket?.estimatedTokens)}</td>
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
-			</div>
+			<BucketTable buckets={buckets} label={t("rca.buckets")} />
+		</>
+	);
+}
+
+function BucketTable({
+	buckets,
+	label,
+}: {
+	buckets: NonNullable<SessionComposition["recorded"]>["snapshots"][number]["buckets"] | undefined;
+	label: string;
+}) {
+	const { t } = useTranslation();
+	return (
+		<div className="overflow-x-auto">
+			<table className="w-full text-left text-xs" aria-label={label}>
+				<thead>
+					<tr className="border-b border-border">
+						<th className="py-2 font-medium">{t("rca.category")}</th>
+						<th className="px-2 text-right font-medium">{t("rca.bytes")}</th>
+						<th className="text-right font-medium">{t("rca.estimate")}</th>
+					</tr>
+				</thead>
+				<tbody>
+					{categories.map((category) => {
+						const bucket = buckets?.find((item) => item.category === category);
+						return (
+							<tr className="border-b border-border last:border-0" key={category}>
+								<th className="py-2 font-normal">{t(`rca.category.${category}`)}</th>
+								<td className="px-2 text-right tabular-nums">{number(bucket?.bytes)}</td>
+								<td className="text-right tabular-nums">{number(bucket?.estimatedTokens)}</td>
+							</tr>
+						);
+					})}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
+function ClaudeInline({ inline, showNumbers }: { inline: NonNullable<SessionComposition["claudeInline"]>; showNumbers: boolean }) {
+	const { t } = useTranslation();
+	const [ordinal, setOrdinal] = useState("1");
+	const attempt = showNumbers ? (inline.attempts.find((item) => String(item.ordinal) === ordinal) ?? inline.attempts[0]) : undefined;
+	return (
+		<>
+			<h4 className="font-medium text-foreground">{t("rca.claude.title")}</h4>
+			<p role="status">
+				{t("rca.claude.state", {
+					requested: t(inline.requested ? "rca.policy.on" : "rca.policy.off"),
+					active: t(inline.active ? "rca.claude.active" : "rca.claude.inactive"),
+				})}
+			</p>
+			{inline.reason ? <p>{reasonText(inline.reason, t)}</p> : null}
+			{attempt ? (
+				<>
+					<Select value={String(attempt.ordinal)} onValueChange={setOrdinal}>
+						<SelectTrigger aria-label={t("rca.claude.attemptSelector")} size="sm">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{inline.attempts.map((item) => (
+								<SelectItem key={item.ordinal} value={String(item.ordinal)}>
+									{t("rca.claude.attempt", { number: number(item.ordinal) })}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					<p>{t("rca.claude.coverage")}</p>
+					<p>{t("rca.method")}</p>
+					{attempt.reasons.map((reason, index) => (
+						<p key={`${reasonKey(reason)}:${index}`}>{reasonText(reason, t)}</p>
+					))}
+					<BucketTable buckets={attempt.buckets} label={t("rca.claude.estimates")} />
+					<p>{t("rca.claude.mcp", { bytes: number(attempt.mcpBytes) })}</p>
+					<p>{t("rca.claude.gaps", { unpaired: number(inline.unpaired), dropped: number(inline.droppedBatches) })}</p>
+				</>
+			) : (
+				<p>{t("rca.claude.noAttempts")}</p>
+			)}
 		</>
 	);
 }
@@ -185,16 +256,18 @@ export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 							))}
 						</SelectContent>
 					</Select>
-					<Button
-						disabled={pending || !policy?.effectiveEnabled || policy.emergencyStop}
-						size="sm"
-						variant="outline"
-						onClick={() => {
-							void run("analyze");
-						}}
-					>
-						{t("rca.analyze")}
-					</Button>
+					{!data?.claudeInline ? (
+						<Button
+							disabled={pending || !policy?.effectiveEnabled || policy.emergencyStop}
+							size="sm"
+							variant="outline"
+							onClick={() => {
+								void run("analyze");
+							}}
+						>
+							{t("rca.analyze")}
+						</Button>
+					) : null}
 					<Button
 						disabled={pending}
 						size="sm"
@@ -232,10 +305,16 @@ export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 					<>
 						<p role="status">
 							{t(`rca.status.${quality(data.status)}`)}
-							{data.reason ? ` · ${reasonText(data.reason, t)}` : ""}
+							{data.reason && !data.claudeInline ? ` · ${reasonText(data.reason, t)}` : ""}
 						</p>
 						<p>
-							{t("rca.parents", {
+							{t(data.claudeInline ? "rca.claude.parents" : "rca.parents", {
+								roleName:
+									data.claudeInline?.role === "orchestrator"
+										? t("settings.models.orchestratorRole")
+										: data.claudeInline?.role === "worker"
+											? t("settings.models.workerRole")
+											: "UNKNOWN",
 								project: policy?.project == null ? t("rca.policy.inherit") : t(policy.project ? "rca.policy.on" : "rca.policy.off"),
 								role: policy?.role == null ? t("rca.policy.inherit") : t(policy.role ? "rca.policy.on" : "rca.policy.off"),
 								effective: t(policy?.effectiveEnabled ? "rca.policy.on" : "rca.policy.off"),
@@ -255,7 +334,13 @@ export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 								</SelectContent>
 							</Select>
 						) : null}
-						{snapshot ? (
+						{data.claudeInline ? (
+							<ClaudeInline
+								key={data.claudeInline.captureId}
+								inline={data.claudeInline}
+								showNumbers={Boolean(policy?.effectiveEnabled && !policy.emergencyStop && data.status !== "unavailable")}
+							/>
+						) : snapshot ? (
 							<Snapshot key={`${snapshot.scopeId}:${data.recorded?.scopeRevision}`} snapshot={snapshot} />
 						) : (
 							<p>{t("rca.noSnapshot")}</p>

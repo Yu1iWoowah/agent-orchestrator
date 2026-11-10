@@ -597,7 +597,10 @@ function SessionRow({
 }) {
 	const { t } = useTranslation();
 	const [compositionOpen, setCompositionOpen] = useState(false);
-	const canAnalyze = session.workspaceId === "agent-orchestrator" && session.provider === "codex" && !isOrchestratorSession(session) && !session.hostId;
+	const canAnalyze = session.workspaceId === "agent-orchestrator" && !session.hostId && (
+   (session.provider === "codex" && !isOrchestratorSession(session)) ||
+   (session.provider === "claude-code" && session.mode === "chat" && (session.kind == null || session.kind === "worker" || session.kind === "orchestrator"))
+ );
 	const working = session.activity?.state === "active";
 	const recent = reading.activity?.recent ?? [];
 	const canExpand = reading.processes.length > 0 || recent.length > 0;

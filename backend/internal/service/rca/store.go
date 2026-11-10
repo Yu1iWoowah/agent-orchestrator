@@ -19,10 +19,11 @@ import (
 var errStorage = errors.New("RCA storage unavailable")
 
 type storedSession struct {
-	ProjectID domain.ProjectID         `json:"projectId"`
-	SessionID domain.SessionID         `json:"sessionId"`
-	Manifest  policy.Manifest          `json:"manifest"`
-	Recorded  *domain.RCARecordedState `json:"recorded"`
+	ProjectID    domain.ProjectID         `json:"projectId"`
+	SessionID    domain.SessionID         `json:"sessionId"`
+	Manifest     policy.Manifest          `json:"manifest"`
+	Recorded     *domain.RCARecordedState `json:"recorded"`
+	ClaudeInline *domain.RCAClaudeInline  `json:"claudeInline,omitempty"`
 }
 type storedState struct {
 	Version  int                      `json:"version"`
@@ -35,6 +36,8 @@ type storedState struct {
 // both quotas. There is no WAL, raw cache, journal, log or retry spool.
 type DiskStore struct {
 	mu                  sync.Mutex
+	reasonMu            sync.RWMutex
+	staged              fs.FileInfo
 	base, dir           *os.Root
 	path                string
 	baseInfo, dirInfo   fs.FileInfo
@@ -82,8 +85,10 @@ func (s *DiskStore) Close() {
 }
 
 // Reason returns a fixed, latched RCA storage reason.
-func (s *DiskStore) Reason() string { s.mu.Lock(); defer s.mu.Unlock(); return s.reason }
+func (s *DiskStore) Reason() string { s.reasonMu.RLock(); defer s.reasonMu.RUnlock(); return s.reason }
 func (s *DiskStore) fail(reason string) error {
+	s.reasonMu.Lock()
+	defer s.reasonMu.Unlock()
 	if s.reason == "" {
 		s.reason = reason
 	}
@@ -160,9 +165,14 @@ func (s *DiskStore) read(ctx context.Context, cleanup bool) (out storedState, re
 		if key != keyString(rcapolicy.Key{ProjectID: string(row.ProjectID), SessionID: string(row.SessionID)}) || !safeStoredSession(row) {
 			return storedState{}, s.fail("storage_read_failed")
 		}
+		if cleanup && row.ClaudeInline != nil && !s.now().Before(row.ClaudeInline.ObservedAt.Add(7*24*time.Hour)) {
+			row.ClaudeInline = nil
+			out.Sessions[key] = row
+			changed = true
+		}
 		if cleanup && row.Recorded != nil && !s.now().Before(row.Recorded.ObservedAt.Add(7*24*time.Hour)) {
 			row.Recorded = nil
-			if row.Manifest.Revision == 0 {
+			if row.Manifest.Revision == 0 && row.ClaudeInline == nil {
 				delete(out.Sessions, key)
 			} else {
 				out.Sessions[key] = row
@@ -216,13 +226,22 @@ func (s *DiskStore) Ready(ctx context.Context) error {
 }
 
 func (s *DiskStore) save(ctx context.Context, next storedState) error {
+	if err := s.prepare(ctx, next); err != nil {
+		return err
+	}
+	return s.finish(ctx, true)
+}
+
+// prepare writes only the existing atomic staging file. It cannot replace the
+// durable projection until the shared consumer grants publication authority.
+func (s *DiskStore) prepare(ctx context.Context, next storedState) (prepareErr error) {
 	if s.reason != "" || ctx.Err() != nil {
 		return errStorage
 	}
 	for key, row := range next.Sessions {
 		if row.Recorded != nil && !s.now().Before(row.Recorded.ObservedAt.Add(7*24*time.Hour)) {
 			row.Recorded = nil
-			if row.Manifest.Revision == 0 {
+			if row.Manifest.Revision == 0 && row.ClaudeInline == nil {
 				delete(next.Sessions, key)
 			} else {
 				next.Sessions[key] = row
@@ -289,13 +308,52 @@ func (s *DiskStore) save(ctx context.Context, next storedState) error {
 	if err != nil {
 		return s.fail("storage_write_failed")
 	}
-	defer func() { _ = f.Close() }()
-	defer func() { _ = s.remove(s.dir, "state.next") }()
+	prepared := false
+	defer func() {
+		_ = f.Close()
+		if !prepared {
+			if err := s.remove(s.dir, "state.next"); err != nil && !os.IsNotExist(err) {
+				prepareErr = s.fail("storage_write_failed")
+			}
+		}
+	}()
 	written, err := s.write(f, data)
 	if err != nil || written != len(data) {
 		return s.fail("storage_write_failed")
 	}
-	if s.flush(f) != nil || f.Close() != nil || s.replace(s.dir, "state.next", "state.json") != nil {
+	if s.flush(f) != nil {
+		return s.fail("storage_write_failed")
+	}
+	s.staged, err = f.Stat()
+	if err != nil || f.Close() != nil {
+		s.staged = nil
+		return s.fail("storage_write_failed")
+	}
+	prepared = true
+	return nil
+}
+func (s *DiskStore) finish(ctx context.Context, accepted bool) (finishErr error) {
+	if s.staged == nil {
+		return nil
+	}
+	staged := s.staged
+	s.staged = nil
+	defer func() {
+		if err := s.remove(s.dir, "state.next"); err != nil && !os.IsNotExist(err) {
+			finishErr = s.fail("storage_write_failed")
+		}
+	}()
+	if !accepted || ctx.Err() != nil {
+		return nil
+	}
+	info, err := s.dir.Lstat("state.next")
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(staged, info) {
+		return s.fail("storage_identity_changed")
+	}
+	if _, err := s.directory(); err != nil {
+		return err
+	}
+	if s.replace(s.dir, "state.next", "state.json") != nil {
 		return s.fail("storage_write_failed")
 	}
 	dir, err := s.dir.Open(".")
@@ -313,7 +371,9 @@ func (s *DiskStore) save(ctx context.Context, next storedState) error {
 func (s *DiskStore) Resume(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reasonMu.Lock()
 	s.reason = ""
+	s.reasonMu.Unlock()
 	if err := s.admission(storageMetadataBytes); err != nil {
 		return err
 	}
@@ -391,6 +451,31 @@ func (s *DiskStore) LoadSnapshot(ctx context.Context, project domain.ProjectID, 
 	return *row.Recorded, true, err
 }
 
+// StageSnapshot prepares a candidate without changing state.json.
+func (s *DiskStore) StageSnapshot(ctx context.Context, value domain.RCARecordedState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.read(ctx, false)
+	if err != nil {
+		return err
+	}
+	k := rcapolicy.Key{ProjectID: string(value.ProjectID), SessionID: string(value.SessionID)}
+	row := state.Sessions[keyString(k)]
+	row.ProjectID, row.SessionID, row.Recorded = value.ProjectID, value.SessionID, &value
+	if !safeStoredSession(row) {
+		return s.fail("storage_write_failed")
+	}
+	state.Sessions[keyString(k)] = row
+	return s.prepare(ctx, state)
+}
+
+// FinishSnapshot finalizes only a staged candidate approved by the common fence.
+func (s *DiskStore) FinishSnapshot(ctx context.Context, accepted bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.finish(ctx, accepted)
+}
+
 // SaveSnapshot admits a replacement numeric projection.
 func (s *DiskStore) SaveSnapshot(ctx context.Context, value domain.RCARecordedState) error {
 	s.mu.Lock()
@@ -409,20 +494,63 @@ func (s *DiskStore) SaveSnapshot(ctx context.Context, value domain.RCARecordedSt
 	return s.save(ctx, state)
 }
 
-// Purge removes numeric scope while retaining policy overrides.
-func (s *DiskStore) Purge(ctx context.Context, project domain.ProjectID, id domain.SessionID) error {
+// PurgeNumbers removes numeric scope while retaining policy overrides.
+func (s *DiskStore) PurgeNumbers(ctx context.Context, key rcapolicy.Key) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, err := s.read(ctx, false)
 	if err != nil {
 		return err
 	}
-	k := keyString(rcapolicy.Key{ProjectID: string(project), SessionID: string(id)})
+	k := keyString(key)
 	row, ok := state.Sessions[k]
 	if !ok {
 		return nil
 	}
-	row.Recorded = nil
+	row.Recorded, row.ClaudeInline = nil, nil
 	state.Sessions[k] = row
 	return s.save(ctx, state)
+}
+
+// LoadClaudeInline returns validated, unexpired numeric history. Restart never
+// reconstructs a live source from this row; the service must supply fresh scope.
+func (s *DiskStore) LoadClaudeInline(ctx context.Context, project domain.ProjectID, id domain.SessionID) (domain.RCAClaudeInline, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.read(ctx, true)
+	if err != nil {
+		return domain.RCAClaudeInline{}, false, err
+	}
+	row := state.Sessions[keyString(rcapolicy.Key{ProjectID: string(project), SessionID: string(id)})]
+	if row.ClaudeInline == nil || !s.now().Before(row.ClaudeInline.ObservedAt.Add(7*24*time.Hour)) {
+		return domain.RCAClaudeInline{}, false, nil
+	}
+	value := *row.ClaudeInline
+	value.Active = false
+	value.Reason = "source_stopped"
+	return value, true, nil
+}
+
+// StageClaudeInline uses the same v1 document, staging peak, quota and writer as
+// recorded Codex snapshots. It never replaces a recorded or manifest field.
+func (s *DiskStore) StageClaudeInline(ctx context.Context, value domain.RCAClaudeInline) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.read(ctx, false)
+	if err != nil {
+		return err
+	}
+	k := rcapolicy.Key{ProjectID: string(value.ProjectID), SessionID: string(value.SessionID)}
+	row := state.Sessions[keyString(k)]
+	if row.ClaudeInline != nil && row.ClaudeInline.CaptureID == value.CaptureID {
+		previous := row.ClaudeInline
+		value.Attempts = append(append([]domain.RCAClaudeAttempt{}, previous.Attempts...), value.Attempts...)
+	}
+	value.Active = false
+	row.ProjectID, row.SessionID, row.ClaudeInline = value.ProjectID, value.SessionID, &value
+	if !safeStoredSession(row) {
+		return s.fail("storage_write_failed")
+	}
+	state.Sessions[keyString(k)] = row
+	return s.prepare(ctx, state)
 }

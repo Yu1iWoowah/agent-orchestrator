@@ -96,7 +96,7 @@ func TestRCAControllerOriginLANValidationAndErrors(t *testing.T) {
 }
 
 func TestRCARouteMatcherIsExact(t *testing.T) {
-	for _, path := range []string{"/api/v1/usage/sessions/s/composition", "/api/v1/sessions/s/rca/override", "/api/v1/rca/emergency-stop"} {
+	for _, path := range []string{"/api/v1/usage/sessions/s/composition", "/api/v1/sessions/s/rca/override", "/api/v1/rca/emergency-stop", "/api/v1/rca/otlp/v1/logs"} {
 		if !isRCAPath(path) || !isLANControlBlockedPath(path) {
 			t.Fatalf("missing RCA boundary: %s", path)
 		}
@@ -124,9 +124,16 @@ func TestRCARealMiddlewareSuppressesSinksAndCaptures(t *testing.T) {
 				w.WriteHeader(status)
 			}))
 			router.Get("/api/v1/rca/emergency-stop", func(http.ResponseWriter, *http.Request) { panic(canary) })
+			router.Handle(rcaRawPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if status == 500 {
+					envelope.WriteError(w, r, errors.New(canary))
+					return
+				}
+				w.WriteHeader(status)
+			}))
 			router.Get("/control", func(w http.ResponseWriter, r *http.Request) { envelope.WriteError(w, r, errors.New("control failure")) })
 			router.Get("/panic-control", func(http.ResponseWriter, *http.Request) { panic("control panic") })
-			for _, path := range []string{"/api/v1/usage/sessions/s/composition", "/api/v1/rca/emergency-stop"} {
+			for _, path := range []string{"/api/v1/usage/sessions/s/composition", "/api/v1/rca/emergency-stop", rcaRawPath} {
 				response := httptest.NewRecorder()
 				router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 				if bytes.Contains(response.Body.Bytes(), []byte(canary)) {
