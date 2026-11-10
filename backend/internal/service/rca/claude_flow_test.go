@@ -5,12 +5,54 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+func TestClaudeNullAndObservedEmptyValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		category   int
+		known      bool
+	}{
+		{"content-null", `{"messages":[{"role":"user","content":null}]}`, 2, false},
+		{"content-empty-string", `{"messages":[{"role":"user","content":""}]}`, 2, true},
+		{"tools-null", `{"tools":null}`, 1, false},
+		{"tools-empty-array", `{"tools":[]}`, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, marker := claudeFlow(t, domain.KindWorker)
+			if why := sendClaude(t, svc, marker, map[string]string{"event.name": "api_request_body", "request_body_id": "b1", "request_id": "r1", "body": tc.body}); why != "" {
+				t.Fatal(why)
+			}
+			out := awaitClaude(t, svc)
+			if out.ClaudeInline == nil || len(out.ClaudeInline.Attempts) != 1 {
+				t.Fatal("missing inline attempt")
+			}
+			attempt := out.ClaudeInline.Attempts[0]
+			bucket := attempt.Buckets[tc.category]
+			if tc.known {
+				if bucket.Bytes == nil || *bucket.Bytes != 0 || bucket.EstimatedTokens == nil || *bucket.EstimatedTokens != 0 {
+					t.Fatal("observed empty value did not remain known zero")
+				}
+			} else if bucket.Bytes != nil || bucket.EstimatedTokens != nil {
+				t.Fatal("JSON null became known numeric content")
+			}
+			if slices.Contains(attempt.Reasons, "unknown_schema") == tc.known {
+				t.Fatal("schema quality did not distinguish null from observed empty")
+			}
+			if tc.category == 1 {
+				if tc.known && (attempt.MCPBytes == nil || *attempt.MCPBytes != 0) || !tc.known && attempt.MCPBytes != nil {
+					t.Fatal("MCP did not preserve unknown versus an empty catalog")
+				}
+			}
+		})
+	}
+}
 
 func claudeFlow(t *testing.T, kind domain.SessionKind) (*Service, *scopeFixture, *DiskStore, string) {
 	t.Helper()

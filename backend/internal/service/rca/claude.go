@@ -320,7 +320,8 @@ func classifyClaudeBody(body []byte, truncated bool) (recording, int64, string) 
 	var tools []json.RawMessage
 	var mcp int64
 	if raw, ok := request["tools"]; ok {
-		if json.Unmarshal(raw, &tools) != nil {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &tools) != nil {
 			out.gap("unknown_schema")
 		} else {
 			if len(tools) == 0 {
@@ -363,13 +364,18 @@ func classifyClaudeBody(body []byte, truncated bool) (recording, int64, string) 
 					out.gap("unknown_schema")
 					continue
 				}
+				content := bytes.TrimSpace(message.Content)
+				if len(content) == 0 || content[0] != '"' && content[0] != '[' {
+					out.gap("unknown_schema")
+					continue
+				}
 				var scalar string
-				if json.Unmarshal(message.Content, &scalar) == nil {
+				if json.Unmarshal(content, &scalar) == nil {
 					out.add(category, int64(len(scalar)), -1)
 					continue
 				}
 				var blocks []map[string]json.RawMessage
-				if json.Unmarshal(message.Content, &blocks) != nil {
+				if json.Unmarshal(content, &blocks) != nil {
 					out.gap("unknown_schema")
 					continue
 				}
