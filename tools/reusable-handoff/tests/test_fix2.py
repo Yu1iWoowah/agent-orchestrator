@@ -446,6 +446,34 @@ class OldProducerTests(unittest.TestCase):
             self.assertEqual(receipt['evidence_turn_id'], controls[0]['turnId'])
             self.assertEqual(fake.run.state['old_control_sequence'], controls[0]['sequence'])
 
+    def test_saved_claude_pending_input_produces_old_result_without_self_proof(self):
+        # Q29 pending/revision3 structure is a direct RH consumer input here.
+        # The canonical command and success are counterfactual, not live Q29.
+        # No Go producer output/status/flags are rewritten after production.
+        def consumer_input(snapshot, command, stdout, code, actor, turn, identifier, sequence):
+            if code is not None:
+                return activity(snapshot, command, stdout, code, actor, turn, identifier, sequence)
+            value = copy.deepcopy(snapshot)
+            value['transcript']['entries'].append(dict(id=identifier, sequence=sequence, revision=3,
+                kind='activity', activityKind='command', status='pending', turnId=turn,
+                detail=dict(protocol='acp', providerToolName='Bash', toolKind='execute', rawCommand=command)))
+            value['transcript']['latestSequence'] = sequence
+            value['transcript']['incomplete'] = [dict(type='turn', id=turn, state='running')]
+            return value
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FlowFixture(Path(temp), 'claude-code', 'codex')
+            fake.run.state['stage'] = 'workers'
+            self.assertTrue(fake.run.workers())
+            fake.run.state['stage'] = '2a'
+            with patch('producer_transport.activity', side_effect=consumer_input):
+                receipt = h.phase_2a(fake.run)
+            observed = h.decode(h.hash_reference(receipt['producer_observation']))
+            tool = next(e for e in observed['transcript']['entries'] if e.get('id') == 'old-receipt-tool')
+            self.assertEqual((tool['status'], tool['revision']), ('pending', 3))
+            self.assertNotIn('self_activity', observed)
+            self.assertFalse((fake.run.root / 'old/observations/producer.json').exists())
+            self.assertEqual(fake.helper_events[-1]['exit'], 0)
+
     def test_old_helper_success_reentry_reads_original_and_changed_statement_stops(self):
         with tempfile.TemporaryDirectory() as temp:
             fake = self.prepare(Path(temp))

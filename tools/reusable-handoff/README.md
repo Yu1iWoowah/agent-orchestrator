@@ -254,6 +254,8 @@ umask 077; export TMPDIR=U/bootstrap/new/draft; python3 -I -B U/handoff.py inspe
 ```
 
 允許的 shell 包裝只有規格化的單一 sh／bash／zsh `-c`／`-lc`。附加 writer、背景命令、任意 Python、inspect 的展開／glob／額外 operator 都停止。
+statement、managed write 等準備先在另一個 tool activity 完成；再獨立原樣執行 payload.command，stdout 直接回原 tool。
+helper activity 不得加 heredoc、stdout/stderr 重導、前後 hash／ls／echo／exit、pipeline 或背景符號。需要另查 hash 時另開命令。
 目錄 0700、檔案 0600；不要自行寫 stop、snapshot、preservation、phase-2a 或完成時刻。
 
 worker 填固定 `workers/<sid>/draft/statement.json`，schema=`rh-worker-statement/1`：
@@ -274,12 +276,26 @@ old 先自己以正常 managed write／expected-hash 更新 A–F，原 `--json`
 old statement 的 `classification[].path` 只以 old workspace 為基準，必為乾淨相對路徑；填 disposition／basis，必要檔逐檔 copy，可重建／可丟棄目錄才用 scope=directory。
 不接受 actor 自選 copy 目的地、絕對路徑、漏分類／重疊、缺保護 ref 或 lease 不符。
 old-receipt 核當下真 turn／managed 原回應／正文／lease／worker index，先固定必要副本與 preservation/2，最後才發布 phase-2a 作信號。
+old 只保存原控制、dispatch turn 與原 CLI snapshot，不在執行中找自身 running activity，也不產 self exclusion proof；worker 的既有 proof 不變。
 無最後信號只 WAIT；有信號但引用缺失即 STOP。成功重呼叫僅相同 intent／輸入／原件 hash 可讀原結果，部分發布或 managed 效果不明不自動補寫。
+
+2a 必須等原 dispatch turn 真 completed，才核同 turn 唯一精確 old-receipt command 的實際結果：
+exitCode=0、完整 stdout JSON 等於 phase-2a.json、producer-result 的原 output hash 一致，並核 managed／preservation 與所有既有後驗。
+檔案存在、outer exit0、CLI 觀測 rc0 或 outputMayBePartial 都不能代替實際結果；缺 exit／stdout、JSON 不符或必要截斷仍拒絕。
+只有該已核 command 的 pending 投影及對應 incomplete entry 可在 2a、quiescent、匯出判斷中略過；原 status／revision／raw 不改寫，也不要求曾觀測 running。
+其他未結活動、其他 turn、未知 incomplete 或外部 job 仍阻擋；原 turn 尚 running 時不得通過。這不是執行中 self 識別或全域 pending 正常化。
 
 普通 helper／inspect JSON 的 lease.session_id、prepared_by.session_id 或讀檔文字不是背景工作。
 同一共用解碼器先核 AO status／turn／incomplete，再核精確 helper 與原檔，最後才從其他工具結果外層的明確 async envelope／傳輸 running handle 取 reference。
 outputMayBePartial 本身不代表 job；必要結果截斷、未知 handle、錯終態 reference 仍 WAIT／STOP。
 測試含真 bootstrap stdout 超過 64×1024 的反例，producer 真截斷旗標原封不動進 consumer，不能拿短 golden 替換。
+
+### RH-SELF-ACTIVITY 的驗證與後續演練
+
+pending 專項使用保存的 Claude 投影結構直接測 RH consumer，固定命令與成功產物明標為合成，沒有 running 中間更新；不冒稱原 Q29 或 Go fixture 是 live pending 成功。
+原 ACP／Codex producer→normalizer→CLI→Python gate 照跑，不改 backend 測試入口或後改 producer 輸出／旗標。
+merge 後須另具名 D，才用合併版本建乾淨新 lab、新 O1/W1/W2 與 workspace／managed 文件，再做新資格、新授權、新 A/B／UUID 及完整 R1。
+舊 lab／run 不讀取、退役、修補或搬入；舊 human／權限／回條不套用新 lab。記錄耗時，任一 STOP 回報，不 retry／continue、不進 R2。
 
 ## gitlink 的有限保全
 
@@ -421,6 +437,4 @@ pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manife
 CLI 內部 HTTP／60 的 UTC 仍未捕獲；33 原最後 running 與後來 retirement completed 分開，W2 ACK 仍 D-1／next D-3。
 206 筆不包含 D48 額外失敗前驗；歷史核收另列其來源與限制。沒有任何一次完整成功真 R1 的主張，後段仍是 synthetic proof。
 
-本 PR 不操作 lab、任何 run、資格或 actor。merge 後另具名 D：必要 P0／原件核收 → 通用 retire 指定舊 run → 完整 receipt → 新 qualification/2 → 新 A completed/settled → 新 B／新 UUID／start --run 一次 → 完整 R1／07。
-原 human／T0 只在原授權仍適用且無取消增限時沿用；不足交主控，不要求重送來重設 T0。
-R1 任一 STOP 不 retry／continue，R1 成功後在 R2 前等真人具名確認。不合併 B-RH-A-FACTCHECK，也不恢復已撤回的 RH-FIX4。
+以上是歷史核收機制與測試來源，不是本輪操作授權。RH-SELF-ACTIVITY 的後續驗證依上節「RH-SELF-ACTIVITY 的驗證與後續演練」：另具名 D 後建立乾淨新 lab，不做舊 run 收尾、不沿用舊 human／T0、不進 R2。

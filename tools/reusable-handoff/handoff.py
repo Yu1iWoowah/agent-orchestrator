@@ -367,6 +367,13 @@ def helper_result(run, action, sid, arguments):
         validate_stop(result, run.run_id, sid, helper_directory(run.root, action, sid))
     elif action == "old-receipt":
         require(result.get("old_id") == sid and sid == run.old, "old helper identity mismatch")
+        directory = helper_directory(run.root, action, sid)
+        committed = decode(private_read(directory / "producer-result.json"))
+        require(committed.get("output_sha256") == digest(private_read(directory / name)), "old helper result hash mismatch")
+        intent = decode(private_read(directory / "producer-intent.json"))
+        require(intent.get("run_id") == run.run_id and intent.get("actor_id") == sid and
+                intent.get("action") == action and intent.get("command") == helper_command(run.root, action, sid),
+                "old producer intent mismatch")
         plan = decode(private_read(run.root / "old/preservation.json"))
         require(plan.get("schema") == "rh-old-preservation/2" and plan.get("evidence_turn_id") == result.get("evidence_turn_id"),
                 "old helper plan mismatch")
@@ -393,6 +400,10 @@ def known_helper(run, sid, entry):
     require(detail.get("exitCode") == 0 and not detail.get("outputTruncated"), "helper output not positively complete")
     expected = helper_result(run, identity[0], sid, identity[1])
     output = detail.get("output", "")
+    if identity[0] == "old-receipt":
+        require(entry.get("turnId") == expected["evidence_turn_id"], "old helper belongs to another turn")
+        require(decode(output) == expected, "old helper stdout differs from fixed artifact")
+        return True
     try:
         actual = decode(output)
     except Stop:
@@ -400,6 +411,46 @@ def known_helper(run, sid, entry):
     else:
         require(actual == expected, "helper stdout differs from fixed artifact")
     return True
+
+
+def completed_old_helper(run, snapshot):
+    """Validate actual 2a results after the original turn, without changing its projection."""
+    if snapshot["session"].get("id") != run.old or not (run.root / "old/phase-2a.json").exists():
+        return None
+    session = snapshot["session"]
+    require(session.get("projectId") == PROJECT and session.get("kind") == "orchestrator" and
+            session.get("mode") == "chat" and not session.get("isTerminated"), "old result actor mismatch")
+    control, _ = producer_control(run, run.old, "2a", snapshot)
+    receipt = decode(private_read(run.root / "old/phase-2a.json"))
+    turn = control["dispatch_turn_id"]
+    require(receipt.get("evidence_turn_id") == turn, "old result differs from original directive turn")
+    if not completed(snapshot, turn):
+        return None
+    matches = [entry for entry in entries(snapshot) if entry.get("turnId") == turn and
+               entry.get("kind") == "activity" and entry.get("activityKind") == "command" and
+               helper_identity((entry.get("detail") or {}).get("rawCommand") or (entry.get("detail") or {}).get("command", ""),
+                               run.root, run.old) == ("old-receipt", {})]
+    require(len(matches) == 1, "old helper activity missing/ambiguous")
+    entry = matches[0]
+    require(isinstance(entry.get("id"), str) and entry["id"] and type(entry.get("sequence")) is int,
+            "old helper entry identity missing")
+    require(entry.get("status") in ("pending", "completed") and known_helper(run, run.old, entry),
+            "old helper actual result not complete")
+    return entry
+
+
+def projection_settled(snapshot, run=None):
+    transcript = snapshot["transcript"]
+    if transcript.get("truncatedFields"):
+        return False
+    if not transcript.get("incomplete"):
+        return True
+    helper = completed_old_helper(run, snapshot) if run else None
+    return helper is not None and all(
+        item.get("type") == "entry" and item.get("sequence") == helper.get("sequence") and
+        item.get("id", helper["id"]) == helper["id"] and
+        [entry for entry in entries(snapshot) if entry.get("sequence") == item.get("sequence")] == [helper]
+        for item in transcript["incomplete"])
 
 
 def operation_handles(entry):
@@ -448,11 +499,13 @@ def quiescent(snapshot, settled_receipts=(), run=None):
     session, transcript = snapshot["session"], snapshot["transcript"]
     if session.get("activity", {}).get("state") not in ("idle", "exited"):
         return False
-    if transcript.get("incomplete") or transcript.get("truncatedFields"):
+    if not projection_settled(snapshot, run):
         return False
     if any(t.get("state") in ("queued", "running") for t in transcript.get("turns", [])):
         return False
-    return all(activity_quiescent(entry, settled_receipts, run, session.get("id")) for entry in transcript.get("entries", []))
+    helper = completed_old_helper(run, snapshot) if run else None
+    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"))
+               for entry in transcript.get("entries", []))
 
 
 def activity_quiescent(entry, receipts=(), run=None, sid=None):
@@ -2059,7 +2112,7 @@ def producer_description(run, action, sid):
             "permissions": "目錄0700／檔0600／拒symlink；只填語意statement，不自行產snapshot/stop/phase或完成時刻。",
             "evidence_root": str(directory),
             "source_rule": "必要原件只限本actor已綁workspace或自己的AO artifact；每筆preservation_sources填path/kind/basis；helper固定copy並保留原物/mode/hash/相對關係。in_flight填reference/activity_id/state/receipt_path，必須原terminal來源，不自造終態。",
-            "completion": "先用固定helper生成本輪證據；helper可辨識自己的觀測活動，不要另寫排除turn的assert。成功後短回覆並completed/hold，runner獨立全後驗；不要輪詢等自身完成。任何STOP不重試或改回條。"}
+            "completion": "先完成statement/managed等準備，再另開獨立tool command activity原樣執行command，stdout直接回原tool；不加heredoc、重導、前後hash/ls/echo/exit、pipeline或背景符號。只接受原固定命令或原支援的一層可逆shell wrapper。成功後短回覆並completed/hold，runner在原turn結束後核實際結果；不要輪詢等自身完成。任何STOP不重試或改回條。"}
 
 
 def old_receipt(run):
@@ -2094,12 +2147,21 @@ def old_receipt(run):
     intent, cached = begin_producer(run, "old-receipt", sid, directory, inputs, directory / "phase-2a.json")
     if cached is not None:
         return cached
-    snap, proof, observation, control = producer_observation(run, sid, "old-receipt", directory)
-    require(snap["session"]["kind"] == "orchestrator" and control["instruction"]["worker_index_sha256"] == run.state["stop_index_sha256"],
+    snap = run.snapshot(sid)
+    session = snap["session"]
+    control_entry, control = producer_control(run, sid, "2a", snap)
+    turn = control_entry["dispatch_turn_id"]
+    require(session.get("id") == sid and session.get("projectId") == PROJECT and session.get("mode") == "chat" and
+            not session.get("isTerminated") and session.get("kind") == "orchestrator" and
+            [t["id"] for t in snap["transcript"].get("turns", []) if t.get("state") == "running"] == [turn] and
+            control["instruction"]["worker_index_sha256"] == run.state["stop_index_sha256"],
             "old helper directive/index mismatch")
+    observation_path = mkdir(directory / "observations") / "session.raw"
+    publish(observation_path, getattr(run.cli, "last_raw", canonical(snap)))
+    observation = file_reference(observation_path)
     documents = run.cli.documents()
     handoff = no_symlinks(Path(documents["sharedDir"]) / documents["documentPath"])
-    receipt = {"schema": "rh-old-2a/1", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": proof["evidence_turn_id"],
+    receipt = {"schema": "rh-old-2a/1", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": turn,
                "created_at": intent["created_at"], "managed_reply": file_reference(directory / "managed.json"),
                "handoff": {"path": str(handoff), "sha256": digest(read_regular(handoff))}, "lease": lease_view(documents),
                "worker_index_sha256": run.state["stop_index_sha256"], "pending_question_refs": statement["pending_question_refs"],
@@ -2115,7 +2177,7 @@ def old_receipt(run):
     common = no_symlinks(old_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], workspace=workspace).decode().strip())
     metadata = no_symlinks(old_git(["rev-parse", "--absolute-git-dir"], workspace=workspace).decode().strip())
     publish(directory / "provenance.json", canonical(provenance))
-    plan = {"schema": "rh-old-preservation/2", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": proof["evidence_turn_id"],
+    plan = {"schema": "rh-old-preservation/2", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": turn,
             "original_ref": statement["original_ref"], "classification": rules,
             "gitlinks": gitlink_facts(workspace, "old", common, metadata), "provenance": file_reference(directory / "provenance.json")}
     publish(directory / "preservation.json", canonical(plan))
@@ -2259,10 +2321,10 @@ def phase_2a(run):
                 receipt.get("user_status_instruction") == status_command(run.root, run.run_id) and
                 isinstance(receipt.get("pending_question_refs"), list) and isinstance(receipt.get("created_at"), str), "2a receipt fields")
         snap = run.snapshot(run.old)
-        finished_turn = phase_completed(run, run.old, "2a", receipt["evidence_turn_id"], snap)
-        if not finished_turn:
-            continue_phase(run, run.old, "2a", receipt["evidence_turn_id"], snap)
+        helper = completed_old_helper(run, snap)
+        if helper is None:
             return False
+        finished_turn = helper["turnId"]
         if not quiescent(snap, run=run):
             return False
         replies = [e.get("text", "") for e in entries(snap) if e.get("role") == "assistant" and e.get("turnId") == finished_turn]
@@ -2328,17 +2390,17 @@ def phase_completed(run, sid, phase, original, snapshot):
 def export_material(run, delta=False):
     snap = run.snapshot(run.old)
     transcript = snap["transcript"]
-    if transcript.get("incomplete"):
+    if not projection_settled(snap, run):
         return False
     conversation, branch = transcript["conversationId"], transcript["activeBranchId"]
     pages, cursor = [], None
     directory = mkdir(run.root / ("delta" if delta else "cut") / uuid.uuid4().hex)
     while True:
-        if snap["transcript"].get("incomplete"):
+        if not projection_settled(snap, run):
             return False
         require(snap["transcript"]["conversationId"] == conversation and snap["transcript"]["activeBranchId"] == branch,
                 "projection branch/scope changed")
-        require(not snap["transcript"].get("truncatedFields") and not snap["transcript"].get("incomplete") and
+        require(projection_settled(snap, run) and
                 snap["transcript"]["latestSequence"] == transcript["latestSequence"], "projection changed/truncated")
         page_raw = getattr(run.cli, "last_raw", canonical(snap))
         path = directory / ("page-" + str(len(pages)) + ".json")
@@ -2354,10 +2416,10 @@ def export_material(run, delta=False):
     latest_visible = max((entry["sequence"] for entry in transcript["entries"] if type(entry.get("sequence")) is int), default=None)
     require(latest_visible is not None and any(row["sequence"] == latest_visible for table in
             ("conversation_messages", "conversation_activities") for row in raw[table]), "latest CLI entry missing from DB cut")
-    after = run.snapshot(run.old)["transcript"]
-    require(after["conversationId"] == conversation and after["activeBranchId"] == branch and
-            after["latestSequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
-    if after.get("incomplete"):
+    after = run.snapshot(run.old)
+    require(after["transcript"]["conversationId"] == conversation and after["transcript"]["activeBranchId"] == branch and
+            after["transcript"]["latestSequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
+    if not projection_settled(after, run):
         return False
     publish(directory / "conversation.json", canonical(raw))
     handoff = run.state["handoff"]
