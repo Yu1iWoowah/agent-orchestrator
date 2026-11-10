@@ -351,10 +351,23 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 	out.Recorded = value.recorded
 	out.Status, out.Reason = value.status, value.reason
 	if value.blocked {
-		fresh, _ := s.core.CachedView(ctx, key, inputs)
+		fresh, freshnessReason := s.core.CachedView(ctx, key, inputs)
 		out.Policy = policyView(fresh)
 		if !fresh.EffectiveEnabled && out.Status == "running" {
-			out.Status = "unavailable"
+			// A failure or withdrawal can follow the numeric worker's running
+			// snapshot. Its reason must describe the current unavailable state.
+			out.Status, out.Reason = "unavailable", "disabled"
+			if freshnessReason != "" {
+				out.Reason = freshnessReason
+			}
+			if freshnessReason == "storage_unavailable" {
+				out.Reason = s.storageReason()
+			}
+			s.mu.Lock()
+			if s.failed {
+				out.Reason = "analysis_failed"
+			}
+			s.mu.Unlock()
 		}
 		return out, nil
 	}
