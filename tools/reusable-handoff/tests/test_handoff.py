@@ -921,6 +921,9 @@ class ProtocolTests(unittest.TestCase):
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         raw = h.canonical(req)
         h.publish(slot / "request.json", raw)
+        h.publish(slot / "capabilities.json", h.canonical(dict(run_id=req["request_id"], start_sha256=h.digest(raw),
+                  scope="daemon-account-catalog-global", source_refs=["human"],
+                  original_authority_covers_global_refresh=True)))
         repository = self.root / "repository"
         repository.mkdir()
         subprocess.run(["git", "init", "-b", "main", str(repository)], check=True, capture_output=True)
