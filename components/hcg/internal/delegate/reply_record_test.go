@@ -386,3 +386,85 @@ func TestReplyRecordBridgeTerminalStates(t *testing.T) {
 		}
 	})
 }
+
+// New directory entries are synced before admission returns, so a sent
+// attempt's intent cannot vanish on power loss; a sync failure refuses the send.
+func TestReplyRecordAdmissionSyncsNewDirectoryEntries(t *testing.T) {
+	s := newReplyFixture(t)
+	delegation := filepath.Dir(s.dir)
+	base := filepath.Dir(filepath.Dir(delegation))
+	var synced []string
+	s.syncDir = func(path string) error { synced = append(synced, path); return syncBudgetDirectory(path) }
+	if _, err := s.admit(t.Context(), replyIdentityFixture("a")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{base, filepath.Dir(delegation), delegation, s.dir}
+	if strings.Join(synced, "|") != strings.Join(want, "|") {
+		t.Fatalf("synced %v want %v", synced, want)
+	}
+	for _, failing := range []string{base, s.dir} {
+		s := newReplyFixture(t)
+		if failing != s.dir {
+			failing = filepath.Dir(filepath.Dir(filepath.Dir(s.dir)))
+		}
+		s.syncDir = func(path string) error {
+			if path == failing {
+				return errors.New("synthetic fsync failure")
+			}
+			return syncBudgetDirectory(path)
+		}
+		if _, err := s.admit(t.Context(), replyIdentityFixture("b")); !errors.Is(err, ErrReplyRecord) {
+			t.Fatalf("sync failure at %s did not refuse admission: %v", failing, err)
+		}
+		if _, err := os.Lstat(filepath.Join(s.dir, "b")); !errors.Is(err, os.ErrNotExist) || len(s.live) != 0 {
+			t.Fatalf("refused admission left an intent at %s", failing)
+		}
+		s.syncDir = syncBudgetDirectory
+		if _, err := s.admit(t.Context(), replyIdentityFixture("b")); err != nil {
+			t.Fatalf("admission after sync recovery: %v", err)
+		}
+	}
+}
+
+// An ancestor symlink under the owner root must never redirect private bodies
+// outside it; the bridge then refuses before any send.
+func TestReplyRecordRefusesAncestorSymlinkBeforeSend(t *testing.T) {
+	for _, level := range []string{"hcg", "delegation"} {
+		t.Run(level, func(t *testing.T) {
+			root, outside := t.TempDir(), t.TempDir()
+			if err := os.MkdirAll(filepath.Join(outside, "delegation", "replies"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			target := outside
+			if level == "delegation" {
+				if err := os.Mkdir(filepath.Join(root, "hcg"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				target = filepath.Join(outside, "delegation")
+			}
+			link := filepath.Join(root, "hcg")
+			if level == "delegation" {
+				link = filepath.Join(root, "hcg", "delegation")
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			bridge, _, sink, request := bridgeFixture(t, transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
+				calls++
+				return providerFixtureReply("fixture-model", "answer"), nil
+			}), func(context.Context) bool { return true })
+			bridge.replies = newReplyStore(filepath.Join(root, "hcg", "delegation", "replies"))
+			if _, err := bridge.Do(t.Context(), request); !errors.Is(err, ErrReplyRecord) || calls != 0 || len(sink.receipts) != 0 {
+				t.Fatalf("ancestor symlink admitted a send: %v calls=%d", err, calls)
+			}
+			if state := readBudget(t, bridge.budget).Attempts[bridge.key].State; state != "released" {
+				t.Fatalf("refused send kept its hold: %s", state)
+			}
+			entries, err := os.ReadDir(filepath.Join(outside, "delegation", "replies"))
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("record written outside the owner root: %v %v", entries, err)
+			}
+		})
+	}
+}

@@ -32,13 +32,14 @@ type replyStore struct {
 	bodyLimit, metadataLimit, ceiling int64
 	now                               func() time.Time
 	write                             func(dir, name string, data []byte) error
+	syncDir                           func(string) error
 	mu                                sync.Mutex
 	live                              map[string]bool
 	frozen                            bool
 }
 
 func newReplyStore(dir string) *replyStore {
-	return &replyStore{dir: dir, bodyLimit: replyBodyLimit, metadataLimit: replyMetadataLimit, ceiling: replyOwnerLimit, now: func() time.Time { return time.Now().UTC() }, write: writeReplyFile, live: map[string]bool{}}
+	return &replyStore{dir: dir, bodyLimit: replyBodyLimit, metadataLimit: replyMetadataLimit, ceiling: replyOwnerLimit, now: func() time.Time { return time.Now().UTC() }, write: writeReplyFile, syncDir: syncBudgetDirectory, live: map[string]bool{}}
 }
 
 // replyIdentity is limited to trusted owner facts; native/launch/generation
@@ -120,10 +121,7 @@ func (s *replyStore) admit(ctx context.Context, id replyIdentity) (*replyAttempt
 	if frozen {
 		return nil, ErrReplyRecord
 	}
-	if err := ensureReplyDir(filepath.Dir(s.dir), true); err != nil {
-		return nil, err
-	}
-	if err := ensureReplyDir(s.dir, false); err != nil {
+	if err := s.ensureReplyPath(); err != nil {
 		return nil, err
 	}
 	lock, err := os.OpenFile(filepath.Join(s.dir, ".lock"), budgetLockFlags, 0600)
@@ -155,7 +153,7 @@ func (s *replyStore) admit(ctx context.Context, id replyIdentity) (*replyAttempt
 	}
 	now := s.now()
 	a := &replyAttempt{store: s, dir: dir, record: replyRecord{Schema: replyRecordSchema, State: "in_flight", ReservedBytes: s.worst(), CreatedAt: now, Identity: id}}
-	if err := os.Chmod(dir, 0700); err != nil {
+	if os.Chmod(dir, 0700) != nil || s.syncDir(s.dir) != nil {
 		_ = os.Remove(dir)
 		return nil, ErrReplyRecord
 	}
@@ -392,20 +390,36 @@ func (a *replyAttempt) commit(v replyValidation) error {
 	return nil
 }
 
-func ensureReplyDir(path string, parents bool) error {
-	var err error
-	if parents {
-		err = os.MkdirAll(path, 0700)
-	} else {
-		err = os.Mkdir(path, 0700)
-		if errors.Is(err, os.ErrExist) {
-			err = nil
-		}
-	}
-	if err != nil {
+// ensureReplyPath walks hcg, delegation and replies one level at a time from
+// the trusted owner root. A missing level is created and its parent synced, so
+// every entry the intent depends on is durable before any send. Any symlink or
+// foreign-owned level (and a shared delegation/replies) is refused, so bodies
+// can never be written outside the canonical owner root.
+func (s *replyStore) ensureReplyPath() error {
+	root := filepath.Dir(filepath.Dir(filepath.Dir(s.dir)))
+	if filepath.Join(root, "hcg", "delegation", "replies") != s.dir {
 		return ErrReplyRecord
 	}
-	return checkReplyDir(path)
+	path := root
+	for level, name := range []string{"hcg", "delegation", "replies"} {
+		parent := path
+		path = filepath.Join(parent, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+				return ErrReplyRecord
+			}
+			// Also covers a concurrent creator that has not synced yet.
+			if s.syncDir(parent) != nil {
+				return ErrReplyRecord
+			}
+			info, err = os.Lstat(path)
+		}
+		if err != nil || !info.IsDir() || !ownedByProcess(info) || (level > 0 && info.Mode().Perm()&0077 != 0) {
+			return ErrReplyRecord
+		}
+	}
+	return nil
 }
 
 // checkReplyDir rejects symlinks, shared modes and other owners.
