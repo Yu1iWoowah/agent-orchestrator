@@ -23,14 +23,24 @@ var ErrUsagePending = errors.New("canonical delegation usage pending")
 
 // Prices are an immutable reviewed deployment snapshot. Unknown coverage or
 // model ceilings cannot be made safe by observing the answer's text length.
+type LongContextPrices struct {
+	ThresholdInputTokens  int64 `json:"thresholdInputTokens"`
+	InputPerMillion       int64 `json:"inputNanoUSDPerMillion"`
+	CachedInputPerMillion int64 `json:"cachedInputNanoUSDPerMillion"`
+	CacheWritePerMillion  int64 `json:"cacheWriteNanoUSDPerMillion"`
+	OutputPerMillion      int64 `json:"outputNanoUSDPerMillion"`
+}
+
 type Prices struct {
-	Version               string `json:"version"`
-	Period                string `json:"period"`
-	InputPerMillion       int64  `json:"inputNanoUSDPerMillion"`
-	CachedInputPerMillion int64  `json:"cachedInputNanoUSDPerMillion"`
-	OutputPerMillion      int64  `json:"outputNanoUSDPerMillion"`
-	LimitsCertified       bool   `json:"limitsCertified"`
-	BillableUsageCovered  bool   `json:"billableUsageCovered"`
+	CacheWritePerMillion  *int64             `json:"cacheWriteNanoUSDPerMillion,omitempty"`
+	LongContext           *LongContextPrices `json:"longContext,omitempty"`
+	Version               string             `json:"version"`
+	Period                string             `json:"period"`
+	InputPerMillion       int64              `json:"inputNanoUSDPerMillion"`
+	CachedInputPerMillion int64              `json:"cachedInputNanoUSDPerMillion"`
+	OutputPerMillion      int64              `json:"outputNanoUSDPerMillion"`
+	LimitsCertified       bool               `json:"limitsCertified"`
+	BillableUsageCovered  bool               `json:"billableUsageCovered"`
 }
 type Charges struct {
 	Input, CachedInput, Output, Total *int64
@@ -311,17 +321,26 @@ func worstCharge(p Profile) (int64, error) {
 	if !p.valid() || (!profileToken.MatchString(price.Version) || !safeText(price.Version)) || !price.LimitsCertified || !price.BillableUsageCovered || price.CachedInputPerMillion < 0 || price.CachedInputPerMillion > price.InputPerMillion {
 		return 0, ErrBudgetBlocked
 	}
-	input, err := priceTokens(p.ContextTokens, price.InputPerMillion)
+	inputRate, outputRate := price.InputPerMillion, price.OutputPerMillion
+	if p.luna() {
+		inputRate = max(inputRate, price.CachedInputPerMillion, *price.CacheWritePerMillion, price.LongContext.InputPerMillion, price.LongContext.CachedInputPerMillion, price.LongContext.CacheWritePerMillion)
+		outputRate = max(outputRate, price.LongContext.OutputPerMillion)
+	}
+	input, err := priceTokens(p.ContextTokens, inputRate)
 	if err != nil {
 		return 0, err
 	}
-	output, err := priceTokens(p.OutputTokens, price.OutputPerMillion)
+	output, err := priceTokens(p.OutputTokens, outputRate)
 	if err != nil {
 		return 0, err
 	}
 	total, err := addMoney(input, output)
 	if err != nil {
 		return 0, err
+	}
+	// Three input subsets can each round up independently.
+	if p.luna() {
+		return addMoney(total, 2)
 	}
 	// Splitting OpenAI input into two separately rounded charge components
 	// can cost one additional nano-USD over rounding their combined ceiling.
@@ -394,6 +413,16 @@ func (b *Budget) releaseUnsent(ctx context.Context, key string) error {
 func receiptCharges(a budgetAttempt, r Receipt) (Charges, error) {
 	p := a.Profile
 	price := p.Prices
+	if p.luna() {
+		if !p.valid() || r.RequestedServiceTier != "default" || r.ObservedServiceTier != "default" || r.ServiceTierStatus != "verified_default" || r.Usage.Input == nil || *r.Usage.Input > 922000 || r.Usage.CacheWriteInput == nil || r.Usage.CachedInput == nil {
+			return Charges{}, ErrBudgetBlocked
+		}
+		if *r.Usage.Input > price.LongContext.ThresholdInputTokens {
+			l := price.LongContext
+			price.InputPerMillion, price.CachedInputPerMillion, price.OutputPerMillion = l.InputPerMillion, l.CachedInputPerMillion, l.OutputPerMillion
+			price.CacheWritePerMillion = &l.CacheWritePerMillion
+		}
+	}
 	if r.UnknownReason != "" || r.Usage.Input == nil || r.Usage.Output == nil || !price.BillableUsageCovered {
 		return Charges{}, ErrBudgetBlocked
 	}
@@ -410,7 +439,25 @@ func receiptCharges(a budgetAttempt, r Receipt) (Charges, error) {
 		if cached < 0 || cached > *r.Usage.Input {
 			return Charges{}, ErrBudgetBlocked
 		}
-		fresh, err := priceTokens(*r.Usage.Input-cached, price.InputPerMillion)
+		ordinary := *r.Usage.Input - cached
+		writeCost := int64(0)
+		if p.luna() {
+			w := *r.Usage.CacheWriteInput
+			if w < 0 || w > ordinary {
+				return Charges{}, ErrBudgetBlocked
+			}
+			ordinary -= w
+			var err error
+			writeCost, err = priceTokens(w, *price.CacheWritePerMillion)
+			if err != nil {
+				return Charges{}, err
+			}
+		}
+		fresh, err := priceTokens(ordinary, price.InputPerMillion)
+		if err != nil {
+			return Charges{}, err
+		}
+		fresh, err = addMoney(fresh, writeCost)
 		if err != nil {
 			return Charges{}, err
 		}
@@ -468,15 +515,26 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		return WireResponse{}, ErrBudgetBlocked
 	}
 	var body struct {
-		Model    string                           `json:"model"`
-		Max      int64                            `json:"max_completion_tokens"`
-		Messages []struct{ Role, Content string } `json:"messages"`
+		ReasoningEffort json.RawMessage                  `json:"reasoning_effort"`
+		ServiceTier     json.RawMessage                  `json:"service_tier"`
+		Model           string                           `json:"model"`
+		Max             int64                            `json:"max_completion_tokens"`
+		Messages        []struct{ Role, Content string } `json:"messages"`
 	}
 	d := json.NewDecoder(bytes.NewReader(r.Payload))
 	d.DisallowUnknownFields()
 	if d.Decode(&body) != nil || d.Decode(new(any)) != io.EOF || body.Model != b.profile.Model || body.Max != b.profile.OutputTokens || len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" {
 		return WireResponse{}, ErrBudgetBlocked
 	}
+	if b.profile.luna() {
+		var effort, tier string
+		if json.Unmarshal(body.ReasoningEffort, &effort) != nil || json.Unmarshal(body.ServiceTier, &tier) != nil || effort != b.profile.ReasoningEffort || effort != "medium" || tier != "default" || tier != b.profile.ServiceTier {
+			return WireResponse{}, ErrBudgetBlocked
+		}
+	} else if len(body.ReasoningEffort) > 0 || len(body.ServiceTier) > 0 {
+		return WireResponse{}, ErrBudgetBlocked
+	}
+
 	key, err := b.budget.reserve(ctx, b.execution, b.profile, r.Payload, r.ScopeDigest)
 	if err != nil {
 		return WireResponse{}, err

@@ -65,7 +65,15 @@ func gatePayload(profile Profile, question, prompt, system string, scope prepare
 		return nil, audit, scopeFailure("blocked", "", "followup_template_changed")
 	}
 
-	payload, err := json.Marshal(map[string]any{"model": profile.Model, "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": prompt}}, "max_completion_tokens": profile.OutputTokens})
+	body := map[string]any{"model": profile.Model, "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": prompt}}, "max_completion_tokens": profile.OutputTokens}
+	if profile.luna() {
+		if !profile.valid() {
+			return nil, audit, ErrBudgetBlocked
+		}
+		body["reasoning_effort"] = profile.ReasoningEffort
+		body["service_tier"] = "default"
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, audit, err
 	}

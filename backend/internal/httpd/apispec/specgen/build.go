@@ -195,6 +195,7 @@ var schemaNames = map[string]string{
 	"ReportingDelegationRegistration":                      "DelegationRegistration",
 	"ReportingDelegationResolvedProfile":                   "DelegationResolvedProfile",
 	"ReportingDelegationView":                              "DelegationView",
+	"ReportingDelegationLongContextPrices":                 "DelegationLongContextPrices",
 	"ReportingDelegationPrices":                            "DelegationPrices",
 	"ReportingDelegationExternalSpend":                     "DelegationExternalSpend",
 	"ReportingDelegationProfile":                           "DelegationProfile",

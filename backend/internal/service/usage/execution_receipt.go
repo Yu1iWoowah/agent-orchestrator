@@ -39,13 +39,13 @@ func (r *ExecutionRecorder) RecordExecutionUsage(ctx context.Context, v domain.E
 	if len(v.RequestID) > 256 || len(v.ResponseID) > 256 || len(v.UnknownReason) > 128 || len(v.FinishReason) > 128 {
 		return fmt.Errorf("invalid execution projection")
 	}
-	for _, n := range []*int64{v.Tokens.InputTokens, v.Tokens.CachedInputTokens, v.Tokens.UncachedInputTokens, v.Tokens.OutputTokens, v.TotalTokens, v.ReasoningOutputTokens, v.Costs.InputCostNanos, v.Costs.CachedInputCostNanos, v.Costs.OutputCostNanos, v.Costs.EstimatedCostNanos} {
+	for _, n := range []*int64{v.CacheWriteInputTokens, v.Tokens.InputTokens, v.Tokens.CachedInputTokens, v.Tokens.UncachedInputTokens, v.Tokens.OutputTokens, v.TotalTokens, v.ReasoningOutputTokens, v.Costs.InputCostNanos, v.Costs.CachedInputCostNanos, v.Costs.OutputCostNanos, v.Costs.EstimatedCostNanos} {
 		if n != nil && *n < 0 {
 			return fmt.Errorf("negative execution counter")
 		}
 	}
 	if v.UnknownReason != "" {
-		if v.Tokens.InputTokens != nil || v.Tokens.OutputTokens != nil || v.Tokens.CachedInputTokens != nil || v.Tokens.UncachedInputTokens != nil || v.TotalTokens != nil || v.ReasoningOutputTokens != nil || v.Costs.EstimatedCostNanos != nil || v.Costs.InputCostNanos != nil || v.Costs.CachedInputCostNanos != nil || v.Costs.OutputCostNanos != nil {
+		if v.CacheWriteInputTokens != nil || v.Tokens.InputTokens != nil || v.Tokens.OutputTokens != nil || v.Tokens.CachedInputTokens != nil || v.Tokens.UncachedInputTokens != nil || v.TotalTokens != nil || v.ReasoningOutputTokens != nil || v.Costs.EstimatedCostNanos != nil || v.Costs.InputCostNanos != nil || v.Costs.CachedInputCostNanos != nil || v.Costs.OutputCostNanos != nil {
 			return fmt.Errorf("unknown execution usage must not invent counters")
 		}
 	} else if v.RequestID == "" || v.Tokens.InputTokens == nil || v.Tokens.OutputTokens == nil {
@@ -63,6 +63,32 @@ func (r *ExecutionRecorder) RecordExecutionUsage(ctx context.Context, v domain.E
 	if n, o := v.ReasoningOutputTokens, v.Tokens.OutputTokens; n != nil && (o == nil || *n > *o) {
 		return fmt.Errorf("invalid reasoning output")
 	}
+	if w := v.CacheWriteInputTokens; w != nil {
+		if v.BillingProvider != "openai" || v.ModelID != "gpt-6-luna" || v.Tokens.InputTokens == nil || v.Tokens.CachedInputTokens == nil || *w > *v.Tokens.InputTokens || *v.Tokens.CachedInputTokens > *v.Tokens.InputTokens-*w {
+			return fmt.Errorf("invalid execution cache write")
+		}
+	}
+	if v.RequestedServiceTier != "" || v.ObservedServiceTier != "" || v.ServiceTierStatus != "" {
+		if v.BillingProvider != "openai" || v.ModelID != "gpt-6-luna" || v.RequestedServiceTier != "default" {
+			return fmt.Errorf("invalid execution tier")
+		}
+		switch v.ServiceTierStatus {
+		case "verified_default":
+			if v.ObservedServiceTier != "default" {
+				return fmt.Errorf("invalid observed tier")
+			}
+		case "missing", "non_default", "invalid":
+			if v.ObservedServiceTier != "" || v.UnknownReason == "" {
+				return fmt.Errorf("unverified execution tier")
+			}
+		default:
+			return fmt.Errorf("invalid execution tier status")
+		}
+	}
+	if v.ModelID == "gpt-6-luna" && v.UnknownReason == "" && (v.ServiceTierStatus != "verified_default" || v.CacheWriteInputTokens == nil) {
+		return fmt.Errorf("luna execution evidence required")
+	}
+
 	if v.Costs.EstimatedCostNanos != nil && strings.TrimSpace(v.Costs.PricingVersion) == "" {
 		return fmt.Errorf("execution price revision required")
 	}

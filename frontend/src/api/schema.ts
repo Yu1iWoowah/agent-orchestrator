@@ -7839,17 +7839,31 @@ export interface components {
             projectId: string;
             sessionId: string;
         };
+        DelegationLongContextPrices: {
+            /** Format: int64 */
+            cacheWriteNanoUSDPerMillion: number;
+            /** Format: int64 */
+            cachedInputNanoUSDPerMillion: number;
+            /** Format: int64 */
+            inputNanoUSDPerMillion: number;
+            /** Format: int64 */
+            outputNanoUSDPerMillion: number;
+            /** Format: int64 */
+            thresholdInputTokens: number;
+        };
         DelegationOmission: {
             reason: string;
             sourceId?: string;
         };
         DelegationPrices: {
             billableUsageCovered: boolean;
+            cacheWriteNanoUSDPerMillion?: null | number;
             /** Format: int64 */
             cachedInputNanoUSDPerMillion: number;
             /** Format: int64 */
             inputNanoUSDPerMillion: number;
             limitsCertified: boolean;
+            longContext?: components["schemas"]["DelegationLongContextPrices"];
             /** Format: int64 */
             outputNanoUSDPerMillion: number;
             period: string;
@@ -7866,7 +7880,9 @@ export interface components {
             /** Format: int64 */
             outputTokens: number;
             prices: components["schemas"]["DelegationPrices"];
+            reasoningEffort?: string;
             revision: string;
+            serviceTier?: string;
         };
         DelegationProfileRef: {
             id: string;
@@ -8063,13 +8079,16 @@ export interface components {
             finishReason?: string;
             /** Format: int64 */
             id: number;
+            observedServiceTier?: string;
             profileDigest: string;
             profileId: string;
             profileRevision: string;
             projectId: string;
             projectPolicyRevision: string;
             requestId: string;
+            requestedServiceTier?: string;
             responseId?: string;
+            serviceTierStatus?: string;
             sessionId: string;
             unknownReason?: string;
         };
