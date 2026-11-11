@@ -220,6 +220,20 @@ plan settle 可使 latestSequence 高於原文列最大序號；只要求列序�
 到限保存部分證據、停止新動作並 needs-input，不 interrupt 正在工作的 actor。
 runner 死亡無法自行通知，依 old ready 提示由人查原 run status；不另建監督。
 
+## Export 位置與必要材料（RH-EXPORT-LOCATION）
+
+A–F 或必要 Markdown 可引用已綁定的精確目錄位置：old／worker worktree、
+Git common／per-worktree metadata、data／managed worktree root、project／shared、
+固定 HOME/.ao、本 run UUID 目錄及其固定容器。export 重核既有 binding，
+只在實際遇到引用時記入 `directory_references`，不列舉或複製其內容。
+這些位置不是新的檔案保存根，也不授權未綁定的子目錄、sibling 或其他 run。
+缺失、漂移、symlink 或未知位置仍 STOP。
+
+必要檔案須明列在原有允許根內，按原 bytes／hash 保存；相對 Markdown 依賴照舊。
+目錄 metadata 不能代替必要副本、worker snapshot 或 old Git 保護 ref。
+即使父目錄是已知位置，根外檔案與敏感材料仍拒絕；位置變成 regular file
+也不能免除原檔案守門。cut／delta 共用規則，維持 `rh-manifest/1` 格式。
+
 ## 本機驗證
 
 Linux 需要 Go 與 python3。在私有 HOME／TMPDIR、清除 AO／provider 環境後，唯一 focused 入口：
