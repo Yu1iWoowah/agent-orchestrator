@@ -103,3 +103,56 @@ requested/observed tier/status、完整 external spent/hold（含舊 r2 三筆�
 同 native resume 新資格；每次真 dispatch 占新額度，之後完整矩陣為 24 題。
 Anthropic r2 資格 FAIL 的停點仍獨立有效，換 OpenAI 不解除雙家停止；重跑另核。
 這份文件與離線 fake provider PASS 都不證明真 Luna 可用性、品質或付費資格。
+
+## HCG-REPLY-RECORD：provider 原文與拒絕原因私有紀錄
+
+**此原文區可能含秘密與真key，同UID可讀；不得複製到artifact／報告／對話。**
+owner-only 權限不能隔離同 UID 程式。公開回覆、MCP、HTTP、CLI 與 log 絕不含原文；
+parent 仍拒交 unsafe 內容給 PAL／主模型。已核准的私存例外不等於允許外傳、渲染、
+回灌模型或上傳雲端，也不授權讀 key store 或追蹤其他 credential。
+
+所有 AO 受控 HCG provider attempt 都會記錄，沿 Coordinator constructor 唯一接線；
+沒有模型、請求或設定可關閉的開關。啟用前的歷史 attempt 不補記；r2 已清空的原文
+不能由本功能恢復，也不得以重新呼叫 provider 或付費 probe 補造。
+
+### 查找
+
+1. 從原回覆取 `usage_ref.attempt_id`（公開欄位不變，沒有新增 diagnostic 欄位）。
+   caller 失聯時，改由同一 owner 的 budget journal attempt 或私有 intent 找回。
+2. 只在另行授權的本機診斷範圍，到**同一 canonical owner** 的
+   `<AO data root>/hcg/delegation/replies/<attempt_id>/` 讀：
+   - `body.bin`：HTTP client 取得的 response entity body 原始 bytes（≤1MiB），
+     含非 200、非 JSON、parent 因 credential echo 拒交的內容；不重編、不 trim、不遮蔽。
+   - `record.json`：只有安全 metadata，見下表。
+3. 回報主控只能寫不含原文的安全 code、數值、是否完整與 digest 是否相符等事實。
+
+| 欄位 | 意義 |
+| --- | --- |
+| `state` | `in_flight`、`not_sent`（附 `not_sent_reason`）、`sent_validation_done`、`sent_validation_not_run`、`record_failed`（附 `record_failure`） |
+| `identity` | run／project／session／delegation／attempt、budget attempt key、provider／model／profile id／revision／digest；不記 native／launch／generation |
+| `capture` | `outcome`（response／read_failed／no_response）、HTTP status、安全 request id、`complete`、`body_bytes`、`observed_at_least`；完整時 `body_sha256`，partial 時只有 `prefix_sha256`；`parent_refusal` 是 parent 的 stage／code |
+| `receipt` | `receipt_sha256` 等於 budget journal 同 attempt 的 `ReceiptDigest`；`canonical` 為 recorded／usage_pending／blocked。用量與金額只在 SQLite canonical receipt |
+| `validation` | `accepted`／`not_found`／`rejected`／`not_run`；`failure` 是第一個實際命中的 stage／code 與可靠的 field、index、offset、count、length、limit，未知 offset 為 null |
+
+provider 邊界（http_status、outer_json、response_id、model、choices、request_id、
+usage、finish_reason、content、service_tier）、transport、receipt、pal_done、cancel 與
+record_write 的失敗都記成 `not_run` 原因，不混成 verifier 的 unverified。digest 與
+body 同樣只留私有區，不當匿名資料分享。
+
+### 狀態、凍結與容量
+
+- 同 owner 專用鎖下，dispatch 前原子預留：已存檔案＋殘留原子 temp＋各在途最壞量
+  ＋本筆最壞量（2×1MiB＋2×64KiB）不得超過 64MiB；額滿拒新外送，不自動刪舊、不加額度。
+  這是診斷資料的邏輯 byte 配額，不保證磁碟永不滿，也不是金錢／token 帳本。
+- 正常在途不凍結其他 attempt。可證未送（授權撤回、取消、transport ErrNotSent）
+  寫 `not_sent` 並釋放未用預留；已送但取消或 PAL 失敗寫 `sent_validation_not_run`。
+- 任何 write、sync、close、rename 失敗：答案不交付（公開仍是 `integration_unavailable`），
+  同 owner 後續 admission 凍結；已送 attempt 的有限 capture 與 canonical 帳務照常完成，
+  原 hold／名額不變。重啟後看到沒有活躍 owner 的 `in_flight` 一律視為狀態不明而停送，
+  不依時間或檔案猜成未送。本 PR 沒有解除凍結的產品指令；處置需另核本機對帳與恢復。
+
+### 保留與刪除
+
+至少保留 30 日，且對帳、獨立 audit／主控核收、hold 與記錄缺口處置完成後，另經使用者
+批准才可刪除；產品不做 GC、備份或搬移。搬 owner／刪 root 前，原文、record 與
+canonical 資料要一併依上節保全規程處理。
