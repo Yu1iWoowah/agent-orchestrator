@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -636,5 +637,193 @@ func TestCompletedSourceFailureSurvivesWriterReleaseWindow(t *testing.T) {
 	out, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200})
 	if err != nil || out.Recorded != nil || out.Reason != "scope_root_mismatch" {
 		t.Fatalf("completed failure hidden: %s", out.Reason)
+	}
+}
+
+// compositionTailContext yields only at Get's final caller-context check, after
+// the numeric worker has finished. The caller stays live unless a case cancels it.
+type compositionTailContext struct {
+	context.Context
+	once   sync.Once
+	atTail func()
+}
+
+func (c *compositionTailContext) Err() error {
+	pc, _, _, _ := runtime.Caller(1)
+	if f := runtime.FuncForPC(pc); f != nil && strings.HasSuffix(f.Name(), ".(*Service).Get") {
+		c.once.Do(c.atTail)
+	}
+	return c.Context.Err()
+}
+
+type compositionStageGate struct {
+	ProjectionStore
+	entered, release chan struct{}
+}
+
+func (g *compositionStageGate) StageSnapshot(ctx context.Context, row domain.RCARecordedState) error {
+	close(g.entered)
+	<-g.release
+	return g.ProjectionStore.StageSnapshot(ctx, row)
+}
+
+func TestCompositionTailFailureClassification(t *testing.T) {
+	for _, mode := range []string{"before_finish", "ready", "storage", "storage_unpublished", "storage_off", "panic", "close", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			svc, _, disk, _ := flowSetup(t)
+			storage := strings.HasPrefix(mode, "storage")
+			if storage {
+				if err := disk.base.MkdirAll("rca/state.next", 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "panic" {
+				disk.flush = func(*os.File) error { panic("synthetic failure") }
+			}
+			gate := &compositionStageGate{ProjectionStore: disk, entered: make(chan struct{}), release: make(chan struct{})}
+			svc.projection = gate
+			var release sync.Once
+			unblock := func() { release.Do(func() { close(gate.release) }) }
+			t.Cleanup(unblock)
+			wait := func(ch <-chan struct{}) {
+				t.Helper()
+				select {
+				case <-ch:
+				case <-time.After(3 * time.Second):
+					t.Fatal("background barrier not reached")
+				}
+			}
+			finished := make(chan struct{})
+			parent, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			receipt := svc.core.Revision(sessionKey("selected"))
+			reached := false
+			ctx := &compositionTailContext{Context: parent}
+			ctx.atTail = func() {
+				reached = true
+				wait(gate.entered)
+				if mode == "before_finish" {
+					return
+				}
+				if mode == "storage_off" {
+					off := false
+					if _, err := svc.SetOverride(t.Context(), "selected", &off); err == nil || !strings.Contains(err.Error(), "revocation_persistence_pending") {
+						t.Fatal("off did not revoke the held writer")
+					}
+				}
+				go func() { svc.wg.Wait(); close(finished) }()
+				if mode == "storage_unpublished" {
+					// Hold the job-publication lock while the real storage failure invalidates
+					// readiness, proving that classification cannot rely on a terminal job yet.
+					func() {
+						svc.mu.Lock()
+						defer svc.mu.Unlock()
+						unblock()
+						deadline := time.Now().Add(3 * time.Second)
+						for svc.core.Current(receipt) && time.Now().Before(deadline) {
+							runtime.Gosched()
+						}
+						if svc.core.Current(receipt) || svc.jobs["selected"].status != "running" {
+							t.Fatal("missing readiness-before-job-publication window")
+						}
+					}()
+				} else {
+					unblock()
+					wait(finished)
+				}
+				if mode == "close" {
+					svc.Close()
+				}
+				if mode == "cancel" {
+					cancel()
+				}
+			}
+			out, err := svc.Get(ctx, "selected", domain.RCAQuery{Analyze: true, Limit: 200})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reached {
+				t.Fatal("Get tail not reached")
+			}
+			wantStatus, wantReason := "unavailable", "policy_changed"
+			switch mode {
+			case "before_finish", "ready":
+				wantStatus, wantReason = "running", "analysis_running"
+			case "storage", "storage_unpublished":
+				wantReason = "storage_write_failed"
+			case "panic":
+				wantReason = "analysis_failed"
+			}
+			if out.Status != wantStatus || out.Reason != wantReason || out.Recorded != nil {
+				t.Fatalf("tail result: %s / %s, recorded=%t; want %s / %s", out.Status, out.Reason, out.Recorded != nil, wantStatus, wantReason)
+			}
+			if storage && (receipt == svc.core.Revision(sessionKey("selected"))) != (mode != "storage_off") {
+				t.Fatal("storage/off revision control changed")
+			}
+			unblock()
+			if mode == "before_finish" {
+				go func() { svc.wg.Wait(); close(finished) }()
+			}
+			wait(finished)
+			if mode == "before_finish" || mode == "ready" {
+				next, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Limit: 200})
+				if err != nil || next.Status != "ready" || next.Recorded == nil {
+					t.Fatal("normal completion lost its snapshot")
+				}
+			}
+		})
+	}
+}
+
+func TestCompositionTailFenceClearsCachedSnapshot(t *testing.T) {
+	for _, tc := range []struct{ name, cachedReason, wantReason string }{
+		{"healthy", "", ""},
+		{"write_failure", "storage_write_failed", "storage_write_failed"},
+		{"low_space", "storage_low_space", "storage_low_space"},
+		{"no_storage_reason", "", "policy_changed"},
+		{"non_storage_reason", "analysis_failed", "policy_changed"},
+		{"unknown_storage_reason", "storage_synthetic_private_error", "policy_changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, disk, _ := flowSetup(t)
+			if _, err := svc.Get(t.Context(), "selected", domain.RCAQuery{Analyze: true, Limit: 200}); err != nil {
+				t.Fatal(err)
+			}
+			if out := completedFlow(t, svc); out.Recorded == nil {
+				t.Fatal("missing cached snapshot")
+			}
+			svc.wg.Wait()
+			// No source can be reopened; the numeric cache alone must serve the query.
+			files, err := os.ReadDir(svc.scope.roots[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range files {
+				if err := os.Remove(filepath.Join(svc.scope.roots[0], f.Name())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			receipt := svc.core.Revision(sessionKey("selected"))
+			ctx := &compositionTailContext{Context: t.Context(), atTail: func() {
+				if tc.name != "healthy" {
+					_ = disk.fail(tc.cachedReason)
+					svc.core.Unavailable()
+				}
+			}}
+			out, err := svc.Get(ctx, "selected", domain.RCAQuery{Limit: 200})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "healthy" {
+				if out.Status != "ready" || out.Recorded == nil {
+					t.Fatal("cached query needed missing raw source")
+				}
+			} else if out.Status != "unavailable" || out.Recorded != nil || out.Reason != tc.wantReason {
+				t.Fatalf("fence result: %s / %s, recorded=%t", out.Status, out.Reason, out.Recorded != nil)
+			}
+			if receipt != svc.core.Revision(sessionKey("selected")) {
+				t.Fatal("availability-only control changed revision")
+			}
+		})
 	}
 }
