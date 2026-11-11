@@ -10,6 +10,10 @@ import (
 // DelegationUsageReceipt is the fixed executor's safe daemon projection. It is
 // not a self-report/import request and carries no prompt/source/credential body.
 type DelegationUsageReceipt struct {
+	CacheWriteInputTokens                                                            *int64 `json:"cacheWriteInputTokens,omitempty"`
+	RequestedServiceTier                                                             string `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier                                                              string `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus                                                                string `json:"serviceTierStatus,omitempty"`
 	ProjectID, SessionID, DelegationID, AttemptID                                    string
 	ProjectPolicyRevision                                                            string
 	BillingProvider, ProfileID, ProfileRevision, ProfileDigest                       string
@@ -33,6 +37,7 @@ func (a delegationReceiptAdapter) Record(ctx context.Context, r delegate.Receipt
 		return delegate.ErrUnavailable
 	}
 	return a.sink.RecordDelegationUsage(ctx, DelegationUsageReceipt{
+		RequestedServiceTier: r.RequestedServiceTier, ObservedServiceTier: r.ObservedServiceTier, ServiceTierStatus: r.ServiceTierStatus, CacheWriteInputTokens: r.Usage.CacheWriteInput,
 		ProjectID: r.Execution.ProjectID, SessionID: r.Execution.SessionID, DelegationID: r.Execution.DelegationID, AttemptID: r.Execution.AttemptID, ProjectPolicyRevision: r.Execution.ProjectPolicyRevision,
 		BillingProvider: r.Provider, ProfileID: r.ProfileID, ProfileRevision: r.ProfileRevision, ProfileDigest: r.ProfileDigest, Model: r.Model, RequestID: r.RequestID, ResponseID: r.ResponseID, UnknownReason: r.UnknownReason, FinishReason: r.FinishReason, ObservedAt: r.ObservedAt,
 		InputTokens: r.Usage.Input, CachedInputTokens: r.Usage.CachedInput, OutputTokens: r.Usage.Output, TotalTokens: r.Usage.Total, ReasoningOutputTokens: r.Usage.ReasoningOutput,

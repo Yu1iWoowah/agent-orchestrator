@@ -104,14 +104,24 @@ type DelegationView struct {
 	ManifestRevision           uint64                     `json:"manifestRevision"`
 }
 
+type DelegationLongContextPrices struct {
+	ThresholdInputTokens  int64 `json:"thresholdInputTokens"`
+	InputPerMillion       int64 `json:"inputNanoUSDPerMillion"`
+	CachedInputPerMillion int64 `json:"cachedInputNanoUSDPerMillion"`
+	CacheWritePerMillion  int64 `json:"cacheWriteNanoUSDPerMillion"`
+	OutputPerMillion      int64 `json:"outputNanoUSDPerMillion"`
+}
+
 type DelegationPrices struct {
-	Version               string `json:"version"`
-	Period                string `json:"period"`
-	InputPerMillion       int64  `json:"inputNanoUSDPerMillion"`
-	CachedInputPerMillion int64  `json:"cachedInputNanoUSDPerMillion"`
-	OutputPerMillion      int64  `json:"outputNanoUSDPerMillion"`
-	LimitsCertified       bool   `json:"limitsCertified"`
-	BillableUsageCovered  bool   `json:"billableUsageCovered"`
+	CacheWritePerMillion  *int64                       `json:"cacheWriteNanoUSDPerMillion,omitempty"`
+	LongContext           *DelegationLongContextPrices `json:"longContext,omitempty"`
+	Version               string                       `json:"version"`
+	Period                string                       `json:"period"`
+	InputPerMillion       int64                        `json:"inputNanoUSDPerMillion"`
+	CachedInputPerMillion int64                        `json:"cachedInputNanoUSDPerMillion"`
+	OutputPerMillion      int64                        `json:"outputNanoUSDPerMillion"`
+	LimitsCertified       bool                         `json:"limitsCertified"`
+	BillableUsageCovered  bool                         `json:"billableUsageCovered"`
 }
 
 type DelegationExternalSpend struct {
@@ -121,6 +131,8 @@ type DelegationExternalSpend struct {
 }
 
 type DelegationProfile struct {
+	ReasoningEffort string           `json:"reasoningEffort,omitempty"`
+	ServiceTier     string           `json:"serviceTier,omitempty"`
 	Prices          DelegationPrices `json:"prices"`
 	ID              string           `json:"id"`
 	Revision        string           `json:"revision"`

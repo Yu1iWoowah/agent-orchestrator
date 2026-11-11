@@ -35,7 +35,7 @@ func (s *Store) InsertExecutionUsage(ctx context.Context, v domain.ExecutionUsag
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	identity := domain.ExecutionUsageIdentity{ProjectID: v.ProjectID, SessionID: v.SessionID, DelegationID: v.DelegationID, AttemptID: v.AttemptID, BillingProvider: v.BillingProvider, ProfileID: v.ProfileID, ProfileRevision: v.ProfileRevision, ProfileDigest: v.ProfileDigest, ProjectPolicyRevision: v.ProjectPolicyRevision, RequestID: v.RequestID, ResponseID: v.ResponseID, UnknownReason: v.UnknownReason, FinishReason: v.FinishReason}
+	identity := domain.ExecutionUsageIdentity{RequestedServiceTier: v.RequestedServiceTier, ObservedServiceTier: v.ObservedServiceTier, ServiceTierStatus: v.ServiceTierStatus, ProjectID: v.ProjectID, SessionID: v.SessionID, DelegationID: v.DelegationID, AttemptID: v.AttemptID, BillingProvider: v.BillingProvider, ProfileID: v.ProfileID, ProfileRevision: v.ProfileRevision, ProfileDigest: v.ProfileDigest, ProjectPolicyRevision: v.ProjectPolicyRevision, RequestID: v.RequestID, ResponseID: v.ResponseID, UnknownReason: v.UnknownReason, FinishReason: v.FinishReason}
 	b, err := json.Marshal(identity)
 	if err != nil {
 		return err
@@ -46,7 +46,7 @@ func (s *Store) InsertExecutionUsage(ctx context.Context, v domain.ExecutionUsag
 	}
 	// Only numeric fields pass through the existing provider-usage projection.
 	usage := map[string]int64{}
-	for name, value := range map[string]*int64{"input_tokens": v.Tokens.InputTokens, "cached_input_tokens": v.Tokens.CachedInputTokens, "output_tokens": v.Tokens.OutputTokens, "total_tokens": v.TotalTokens, "reasoning_output_tokens": v.ReasoningOutputTokens} {
+	for name, value := range map[string]*int64{"cache_write_input_tokens": v.CacheWriteInputTokens, "input_tokens": v.Tokens.InputTokens, "cached_input_tokens": v.Tokens.CachedInputTokens, "output_tokens": v.Tokens.OutputTokens, "total_tokens": v.TotalTokens, "reasoning_output_tokens": v.ReasoningOutputTokens} {
 		if value != nil {
 			usage[name] = *value
 		}

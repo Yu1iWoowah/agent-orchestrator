@@ -62,3 +62,44 @@ corpus 與逐字 question/truth 依計畫附錄，不讓 truth 進來源 root。
 後續實跑 brief 必須列每個已知 daemon 的目前 build/instance/root、核對時間與公開唯讀來源。對其他 daemon（含 stable）只用其**已授權**公開 `GET /api/v1/hcg-delegation/profiles` 或現有 capability/version view；成功、完整的空 history 才支持無 deployment/ref，非空／404／timeout/未知都不能當無付費能力。再以實際運行 build 的原件／公開 view 證付費 factory 未啟用，不以 repo main 或舊 merge 代證；缺證據即零付費，不改 stable 來湊證據。
 
 本 PR 未執行這些 live 核對。真正 key 放置、原生登入、帳務ID／價格／費項、外部spent/hold、網路與安裝、F4批准及真人UI操作清單，仍由主控在後續實跑前核准；不藉離線 fixture 或 merge 宣稱已取得。
+
+## HCG-LAB-LUNA：新 profile 與 r3 停點
+
+使用者已核准 `gpt-6-luna`、`reasoningEffort=medium` 與 new-r3 獨立額度。
+這次程式交付仍不授權建立或啟動 r3、不修改 r1/r2、不呼叫付費 API。
+OpenAI profile 必須使用新 revision／priceVersion／digest，不能覆寫 r2 profile。
+建議 priceVersion 為 `lab-luna-20261111-standard-30m-r1`，period 取新 run 實際 UTC 月。
+
+| profile 欄位 | 固定值與核對 |
+| --- | --- |
+| model | `gpt-6-luna`（精確匹配，不接受 prefix 或未核 snapshot） |
+| reasoningEffort／serviceTier | `medium`／`default`，HTTP 註冊到 immutable snapshot 不可遺失 |
+| contextTokens／maxOutputTokens／outputTokens | 1,050,000／128,000／2,048；最大 input 是 922,000，不是 context ceiling |
+| prices 短級 ordinary/read/write/output | 100,000,000／10,000,000／125,000,000／500,000,000 nanoUSD per million |
+| prices.longContext | thresholdInputTokens=272000；長級 200,000,000／20,000,000／250,000,000／750,000,000 |
+| cache write | 一般區域、Standard、預設 30m；只在已核 Luna schema 下省略 write 葉等於 0 |
+
+request 必須明送 `reasoning_effort=medium`、`service_tier=default`。
+只在實回 `service_tier=default` 時使用 Standard 價目；缺失、null、非字串、auto 或其他
+模式一律 unknown／保留原 hold、名額並停止，不補 default、不 retry。
+canonical identity 保留 requested/observed/status 的安全分類，數值投影保留 write；
+InputCost 含 ordinary＋write，UncachedInput=I−R 仍含 write，output 已含 reasoning。
+272,000 以上整筆使用長級；最壞 reserve 是 264,036,002 nanoUSD（含分項取整餘量）。
+這不證明非 Standard 未知實付受到該 reserve 涵蓋；未證模式仍須凍結、對帳。
+
+r2 OpenAI 已用 2 次／US$0.00549、Anthropic 1 次／US$0.0054，合計 US$0.01089，
+全部留原 root／DB／journal／receipt，不退名額、不重算、不搬成空 journal。
+new-r3 另給每家 US$10／26 次、總 US$20；r2+r3 潛在累計 OpenAI 28 次／US$10.00549、
+Anthropic 27 次／US$10.0054，總 US$20.01089。r2 僅保留已花部分，不再外送。
+本 PR 不做同帳本 profile/grant 續接或跨 root cap；手動少跑不能代替產品硬限。
+
+後續 run sheet 必須記：新 root／DB／canonical owner、run/profile/price revision 與 digest、
+requested/observed tier/status、完整 external spent/hold（含舊 r2 三筆但不能重複加帳），
+新 binary/head/hash、唯一 writer、UTC start/expiry（≤24h、不跨月）、stop 與 mount 證據。
+主控具名 D 及獨立對帳通過後才可設定付費窗；任何未知支出無保守上界就停。
+月 300／400／630 上限仍適用，不能作為跨 root 累計 US$20 的保證。
+
+原 Mini fresh/resume PASS 只屬原模型。Luna 必須先過離線 gate，再各做一次 fresh／
+同 native resume 新資格；每次真 dispatch 占新額度，之後完整矩陣為 24 題。
+Anthropic r2 資格 FAIL 的停點仍獨立有效，換 OpenAI 不解除雙家停止；重跑另核。
+這份文件與離線 fake provider PASS 都不證明真 Luna 可用性、品質或付費資格。

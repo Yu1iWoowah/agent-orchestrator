@@ -24217,6 +24217,30 @@ components:
       - projectId
       - sessionId
       type: object
+    DelegationLongContextPrices:
+      properties:
+        cacheWriteNanoUSDPerMillion:
+          format: int64
+          type: integer
+        cachedInputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        inputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        outputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        thresholdInputTokens:
+          format: int64
+          type: integer
+      required:
+      - thresholdInputTokens
+      - inputNanoUSDPerMillion
+      - cachedInputNanoUSDPerMillion
+      - cacheWriteNanoUSDPerMillion
+      - outputNanoUSDPerMillion
+      type: object
     DelegationOmission:
       properties:
         reason:
@@ -24230,6 +24254,10 @@ components:
       properties:
         billableUsageCovered:
           type: boolean
+        cacheWriteNanoUSDPerMillion:
+          type:
+          - "null"
+          - integer
         cachedInputNanoUSDPerMillion:
           format: int64
           type: integer
@@ -24238,6 +24266,8 @@ components:
           type: integer
         limitsCertified:
           type: boolean
+        longContext:
+          $ref: '#/components/schemas/DelegationLongContextPrices'
         outputNanoUSDPerMillion:
           format: int64
           type: integer
@@ -24273,7 +24303,11 @@ components:
           type: integer
         prices:
           $ref: '#/components/schemas/DelegationPrices'
+        reasoningEffort:
+          type: string
         revision:
+          type: string
+        serviceTier:
           type: string
       required:
       - prices
@@ -24793,6 +24827,8 @@ components:
         id:
           format: int64
           type: integer
+        observedServiceTier:
+          type: string
         profileDigest:
           type: string
         profileId:
@@ -24805,7 +24841,11 @@ components:
           type: string
         requestId:
           type: string
+        requestedServiceTier:
+          type: string
         responseId:
+          type: string
+        serviceTierStatus:
           type: string
         sessionId:
           type: string

@@ -22,6 +22,7 @@ func (r delegationReceiptRecorder) RecordDelegationUsage(ctx context.Context, v 
 		tokens.UncachedInputTokens = &uncached
 	}
 	return r.canonical.RecordExecutionUsage(ctx, domain.ExecutionUsageReceipt{
+		RequestedServiceTier: v.RequestedServiceTier, ObservedServiceTier: v.ObservedServiceTier, ServiceTierStatus: v.ServiceTierStatus, CacheWriteInputTokens: v.CacheWriteInputTokens,
 		ProjectID: v.ProjectID, SessionID: domain.SessionID(v.SessionID), DelegationID: v.DelegationID, AttemptID: v.AttemptID, ProjectPolicyRevision: v.ProjectPolicyRevision,
 		BillingProvider: v.BillingProvider, ProfileID: v.ProfileID, ProfileRevision: v.ProfileRevision, ProfileDigest: v.ProfileDigest, ModelID: v.Model, RequestID: v.RequestID, ResponseID: v.ResponseID, UnknownReason: v.UnknownReason, FinishReason: v.FinishReason, ObservedAt: v.ObservedAt, Tokens: tokens, TotalTokens: v.TotalTokens, ReasoningOutputTokens: v.ReasoningOutputTokens,
 		Costs: domain.UsageEventCosts{InputCostNanos: v.Costs.InputNanos, CachedInputCostNanos: v.Costs.CachedInputNanos, OutputCostNanos: v.Costs.OutputNanos, EstimatedCostNanos: v.Costs.TotalNanos, PricingVersion: v.Costs.PriceVersion}})

@@ -21,6 +21,7 @@ type Transport interface {
 	Do(context.Context, WireRequest) (WireResponse, error)
 }
 type Usage struct {
+	CacheWriteInput      *int64 `json:"cacheWriteInput,omitempty"`
 	Input, Output, Total *int64
 	CachedInput          *int64
 	ReasoningOutput      *int64
@@ -30,6 +31,9 @@ type Recorder interface {
 }
 
 type Receipt struct {
+	RequestedServiceTier       string `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier        string `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus          string `json:"serviceTierStatus,omitempty"`
 	Charges                    Charges
 	ObservedAt                 time.Time
 	Execution                  Execution
@@ -51,9 +55,14 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 		requestID = ""
 	}
 	out := Result{Receipt: Receipt{Provider: profile.BillingProvider, Model: profile.Model, RequestID: requestID, UnknownReason: "response_invalid"}}
+	if profile.luna() {
+		out.Receipt.RequestedServiceTier = "default"
+		out.Receipt.ServiceTierStatus = "missing"
+	}
 	var raw struct {
-		ID, Model string
-		Choices   []struct {
+		ServiceTier json.RawMessage `json:"service_tier"`
+		ID, Model   string
+		Choices     []struct {
 			Message      struct{ Content string }
 			FinishReason string `json:"finish_reason"`
 		}
@@ -62,7 +71,8 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 			Output  *int64 `json:"completion_tokens"`
 			Total   *int64 `json:"total_tokens"`
 			Details *struct {
-				Cached *int64 `json:"cached_tokens"`
+				Cached *int64          `json:"cached_tokens"`
+				Write  json.RawMessage `json:"cache_write_tokens"`
 			} `json:"prompt_tokens_details"`
 			OutputDetails *struct {
 				Reasoning *int64 `json:"reasoning_tokens"`
@@ -71,6 +81,27 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 	}
 	if response.Status != 200 || json.Unmarshal(response.Body, &raw) != nil {
 		return out, ErrUnavailable
+	}
+	if profile.luna() {
+		status := "invalid"
+		var tier string
+		switch {
+		case len(raw.ServiceTier) == 0:
+			status = "missing"
+		case string(raw.ServiceTier) == "null":
+			status = "invalid"
+		case json.Unmarshal(raw.ServiceTier, &tier) == nil:
+			status = "non_default"
+			if tier == "default" {
+				status = "verified_default"
+				out.Receipt.ObservedServiceTier = "default"
+			}
+		}
+		out.Receipt.ServiceTierStatus = status
+		if status != "verified_default" {
+			out.Receipt.UnknownReason = "service_tier_unverified"
+			return out, ErrUnavailable
+		}
 	}
 	if raw.ID != "" && !safeReceiptID(raw.ID) {
 		return out, ErrUnavailable
@@ -92,7 +123,51 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 		out.Receipt.UnknownReason = "usage_invalid"
 		return out, ErrUnavailable
 	}
-	var cached, reasoning *int64
+	var cached, reasoning, write *int64
+	if profile.luna() {
+		// Only this reviewed schema defines an omitted write leaf as zero.
+		n := int64(0)
+		if u.Details == nil || u.Details.Cached == nil || (len(u.Details.Write) > 0 && (string(u.Details.Write) == "null" || json.Unmarshal(u.Details.Write, &n) != nil)) || n < 0 || n > *u.Input || *u.Input > 922000 || *u.Details.Cached < 0 || *u.Details.Cached > *u.Input-n {
+			out.Receipt.UnknownReason = "usage_invalid"
+			return out, ErrUnavailable
+		}
+		// Unknown fee/mode leaves cannot be silently priced as ordinary input.
+		var envelope map[string]json.RawMessage
+		_ = json.Unmarshal(response.Body, &envelope)
+		var usage map[string]json.RawMessage
+		_ = json.Unmarshal(envelope["usage"], &usage)
+		for key := range usage {
+			if key != "prompt_tokens" && key != "completion_tokens" && key != "total_tokens" && key != "prompt_tokens_details" && key != "completion_tokens_details" {
+				out.Receipt.UnknownReason = "usage_invalid"
+				return out, ErrUnavailable
+			}
+		}
+		var details map[string]json.RawMessage
+		_ = json.Unmarshal(usage["prompt_tokens_details"], &details)
+		for key := range details {
+			if key == "audio_tokens" && string(details[key]) == "0" {
+				continue
+			}
+			if key != "cached_tokens" && key != "cache_write_tokens" {
+				out.Receipt.UnknownReason = "usage_invalid"
+				return out, ErrUnavailable
+			}
+		}
+		// Unknown completion fee categories are outside the approved output model.
+		var outputDetails map[string]json.RawMessage
+		_ = json.Unmarshal(usage["completion_tokens_details"], &outputDetails)
+		for key := range outputDetails {
+			if (key == "audio_tokens" || key == "accepted_prediction_tokens" || key == "rejected_prediction_tokens") && string(outputDetails[key]) == "0" {
+				continue
+			}
+			if key != "reasoning_tokens" {
+				out.Receipt.UnknownReason = "usage_invalid"
+				return out, ErrUnavailable
+			}
+		}
+
+		write = &n
+	}
 	if profile.BillingProvider == "openai" {
 		if u.Details != nil {
 			cached = u.Details.Cached
@@ -106,7 +181,7 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 		return out, ErrUnavailable
 	}
 	out.Receipt.UnknownReason = ""
-	out.Receipt.Usage = Usage{Input: u.Input, Output: u.Output, Total: u.Total, CachedInput: cached, ReasoningOutput: reasoning}
+	out.Receipt.Usage = Usage{Input: u.Input, Output: u.Output, Total: u.Total, CachedInput: cached, CacheWriteInput: write, ReasoningOutput: reasoning}
 	if out.Receipt.FinishReason != "stop" || raw.Choices[0].Message.Content == "" {
 		return out, ErrUnavailable
 	}

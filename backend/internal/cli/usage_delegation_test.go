@@ -170,6 +170,18 @@ func TestHCGDelegationSameCallerOffline(t *testing.T) {
 					return reporting.DelegationProviderResponse{}, ctx.Err()
 				}
 				response := fixtureDelegationResponse(body)
+				if family == "openai" {
+					var payload map[string]any
+					if json.Unmarshal(r.Payload, &payload) != nil || payload["model"] != "gpt-6-luna" || payload["reasoning_effort"] != "medium" || payload["service_tier"] != "default" || payload["max_completion_tokens"] != float64(2048) {
+						t.Error("Luna payload lost immutable mode")
+					}
+					var envelope map[string]any
+					_ = json.Unmarshal(response.Body, &envelope)
+					envelope["model"] = "gpt-6-luna"
+					envelope["service_tier"] = "default"
+					envelope["usage"].(map[string]any)["prompt_tokens_details"] = map[string]int64{"cached_tokens": 2, "cache_write_tokens": 3}
+					response.Body, _ = json.Marshal(envelope)
+				}
 				if mode.Load() == 1 {
 					response.Body = []byte(`{"id":"fixture-response","model":"fixture-model","choices":[{"message":{"content":"not-json"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`)
 				}
@@ -190,6 +202,22 @@ func TestHCGDelegationSameCallerOffline(t *testing.T) {
 				return out
 			}
 			approved := fixedDelegationRegistration(t, family, project.ID, body, cfg.dataDir, []reporting.DelegationLabSession{{ProjectID: project.ID, SessionID: string(rec.ID)}})
+			if family == "openai" {
+				p := &approved.Deployment.Profile
+				p.Model = "gpt-6-luna"
+				p.ContextTokens = 1050000
+				p.MaxOutputTokens = 128000
+				p.OutputTokens = 2048
+				p.ReasoningEffort = "medium"
+				p.ServiceTier = "default"
+				w := int64(125000000)
+				p.Prices.InputPerMillion = 100000000
+				p.Prices.CachedInputPerMillion = 10000000
+				p.Prices.OutputPerMillion = 500000000
+				p.Prices.CacheWritePerMillion = &w
+				p.Prices.LongContext = &reporting.DelegationLongContextPrices{ThresholdInputTokens: 272000, InputPerMillion: 200000000, CachedInputPerMillion: 20000000, CacheWritePerMillion: 250000000, OutputPerMillion: 750000000}
+			}
+
 			wrongFamily := approved
 			wrongFamily.Deployment.CredentialRef.Provider = map[string]string{"openai": "anthropic", "anthropic": "openai"}[family]
 			rejected, _ := json.Marshal(wrongFamily)
@@ -241,9 +269,56 @@ func TestHCGDelegationSameCallerOffline(t *testing.T) {
 				t.Fatalf("canonical ledger=%+v", ledger)
 			}
 			event := ledger.Events[0]
-			if event.Execution == nil || event.Execution.ProjectID != project.ID || event.Execution.ProfileID != ref.ID || event.Execution.RequestID != "same-request" || event.InputTokens == nil || *event.InputTokens != 10 || event.CachedInputTokens != nil || event.OutputTokens == nil || *event.OutputTokens != 2 {
+			if event.Execution == nil || event.Execution.ProjectID != project.ID || event.Execution.ProfileID != ref.ID || event.Execution.RequestID != "same-request" || event.InputTokens == nil || *event.InputTokens != 10 || (family != "openai" && event.CachedInputTokens != nil) || event.OutputTokens == nil || *event.OutputTokens != 2 {
 				t.Fatalf("receipt attribution=%+v", event)
 			}
+			if family == "openai" {
+				registryBytes, err := os.ReadFile(filepath.Join(cfg.dataDir, "hcg", "delegation", "registry.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var registry struct {
+					History map[string]struct {
+						Profile json.RawMessage `json:"profile"`
+					}
+				}
+				if err := json.Unmarshal(registryBytes, &registry); err != nil {
+					t.Fatal(err)
+				}
+				snapshot, ok := registry.History[event.Execution.ProfileDigest]
+				if !ok || fixtureDigest(snapshot.Profile) != event.Execution.ProfileDigest {
+					t.Fatal("canonical profile digest differs from dispatched snapshot")
+				}
+				var registered reporting.DelegationProfile
+				if err := json.Unmarshal(snapshot.Profile, &registered); err != nil {
+					t.Fatal(err)
+				}
+				wantProfile, _ := json.Marshal(approved.Deployment.Profile)
+				gotProfile, _ := json.Marshal(registered)
+				if string(wantProfile) != string(gotProfile) {
+					t.Fatal("HTTP registration dropped profile fields")
+				}
+				usageProjection, _ := json.Marshal(event.ProviderUsage)
+				db, err := sql.Open("sqlite", filepath.Join(cfg.dataDir, "ao.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				var inputCost, cachedCost, outputCost int64
+				if err := db.QueryRowContext(ctx, "SELECT input_cost_nanos,cached_input_cost_nanos,output_cost_nanos FROM model_usage_events WHERE execution_source_id = ?", event.Execution.ID).Scan(&inputCost, &cachedCost, &outputCost); err != nil {
+					t.Fatal(err)
+				}
+				if inputCost != 875 || cachedCost != 20 || outputCost != 1000 {
+					t.Fatalf("canonical costs %d/%d/%d", inputCost, cachedCost, outputCost)
+				}
+				if event.Execution.RequestedServiceTier != "default" || event.Execution.ObservedServiceTier != "default" || event.Execution.ServiceTierStatus != "verified_default" || event.CachedInputTokens == nil || *event.CachedInputTokens != 2 || event.UncachedInputTokens == nil || *event.UncachedInputTokens != 8 || !strings.Contains(string(usageProjection), `"cache_write_input_tokens":3`) {
+					t.Fatalf("Luna canonical evidence=%+v", event)
+				}
+				// This representative Luna chain dispatches exactly once. Other negative
+				// cases live at the parser/payload/canonical boundaries.
+				return
+			}
+
 			current, _, err := store.GetSession(ctx, rec.ID)
 			if err != nil {
 				t.Fatal(err)

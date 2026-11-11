@@ -564,6 +564,9 @@ type UsageEventsPage struct {
 // ExecutionUsageIdentity is provenance from the trusted execution recorder.
 // It names an auxiliary source, never a fabricated native artifact/binding.
 type ExecutionUsageIdentity struct {
+	RequestedServiceTier  string    `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier   string    `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus     string    `json:"serviceTierStatus,omitempty"`
 	ID                    int64     `json:"id"`
 	ProjectID             string    `json:"projectId"`
 	SessionID             SessionID `json:"sessionId"`
@@ -583,6 +586,10 @@ type ExecutionUsageIdentity struct {
 // ExecutionUsageReceipt carries only trusted, bounded provider projections.
 // Descriptor and prices refer to dispatch time, not the current registration.
 type ExecutionUsageReceipt struct {
+	CacheWriteInputTokens                                                              *int64 `json:"cacheWriteInputTokens,omitempty"`
+	RequestedServiceTier                                                               string `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier                                                                string `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus                                                                  string `json:"serviceTierStatus,omitempty"`
 	ProjectID                                                                          string
 	SessionID                                                                          SessionID
 	DelegationID, AttemptID                                                            string
