@@ -166,6 +166,19 @@ class RefreshProofStartTests(unittest.TestCase):
                 self.assertEqual(self.invoke()[0], 1)
                 self.assertEqual(self.refreshes, 0)
 
+    def test_existing_human_outside_original_authority_never_refreshes(self):
+        self.fixture()
+        self.request["sources"].append(dict(self.request["sources"][0], ref="other-human"))
+        self.raw = json.dumps(self.request, indent=2).encode() + b"\n"
+        (self.slot / "request.json").write_bytes(self.raw)
+        self.proof.update(start_sha256=h.digest(self.raw), source_refs=["other-human"])
+        self.proof_raw = json.dumps(self.proof, indent=2).encode() + b"\n"
+        (self.slot / "capabilities.json").write_bytes(self.proof_raw)
+        code, _, launches = self.invoke()
+        self.assertEqual(self.refreshes, 0)
+        self.assertEqual(code, 1)
+        self.assertEqual(launches, 0)
+
     def test_live_human_identity_is_checked_before_proof_and_refresh(self):
         self.fixture()
         self.snap["transcript"]["entries"][0]["origin"] = "automation"
