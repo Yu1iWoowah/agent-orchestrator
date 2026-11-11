@@ -2434,9 +2434,24 @@ def export_material(run, delta=False):
         if content:
             for attachment in attachment_paths(decode(content)):
                 seeds.append(Path(old_workspace) / attachment if not Path(attachment).is_absolute() else Path(attachment))
+    # Exact, already-bound locations are metadata, never additional file roots.
+    location = run.state["location"]  # Run.workspace above rechecked location_info.
+    ao_home = no_symlinks(Path.home() / ".ao")
+    # locate already confined fixed data/run-file paths beneath this HOME/.ao.
+    container = no_symlinks(Path(location["shared_dir"]).parent / ".private-handoff-runs")
+    require(no_symlinks(run.root) == container / run.run_id, "bound run container mismatch")
+    directory_locations = {ao_home, container, no_symlinks(run.root)}
+    directory_locations.update(no_symlinks(location[key]) for key in
+                               ("data_dir", "managed_root", "project_path", "shared_dir"))
+    for row in run.request["workspace_index"]:
+        sid = row["session_id"]
+        require(sid in run.state.get("workspace_bindings", {}), "export workspace binding missing")
+        bound_workspace(run, sid)
+        directory_locations.update(no_symlinks(run.state["workspace_bindings"][sid][key])
+                                   for key in ("path", "common", "git_dir"))
     directory_refs = []
     dependencies = preserve_dependencies(seeds, directory / "materials", [shared, artifact_root, old_workspace, run.root],
-                                         directory_refs, {s["workspace"]["path"] for s in run.state["stops"]})
+                                         directory_refs, {str(path) for path in directory_locations})
     run.state["preservation_paths"] = sorted({x["path"] for x in dependencies})
     old_preservation = capture_old(run)
     parent = run.state.get("manifest")

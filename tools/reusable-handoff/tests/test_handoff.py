@@ -544,6 +544,81 @@ class ProtocolTests(unittest.TestCase):
             raw = h.decode(h.private_read(manifest["raw"]["path"]))
             self.assertLessEqual(max(x["sequence"] for table in ("conversation_messages", "conversation_activities") for x in raw[table]), manifest["cut_sequence"])
 
+    def test_export_bound_directory_locations_cut_delta_and_file_boundaries(self):
+        fake = FlowFixture(self.root, "codex", "claude-code", worker=True)
+        self.addCleanup(fake.transport.close)
+        run = fake.run
+        fake.snapshots["old"]["transcript"]["entries"] = [dict(id="exported", sequence=10, kind="message", role="assistant", text="synthetic context")]
+        with sqlite3.connect(fake.data_dir / "ao.db") as db:
+            db.execute("INSERT INTO conversation_messages(id,conversation_id,sequence,role,text) VALUES('exported','conv',10,'assistant','synthetic context')")
+        run.workspace("worker")
+        run.state.update(stops=[{"workspace": {"path": str(fake.worker_path)}}], stop_index_sha256="0" * 64)
+        h.publish(run.root / "workers/index.json", b"[]")
+        context = fake.shared / "context.md"
+        handoff = fake.shared / "handoff.md"
+        ordinary = fake.shared / "needed.txt"
+        ordinary.write_bytes(b"necessary original")
+        locations = {Path(v) for binding in run.state["workspace_bindings"].values()
+                     for k, v in binding.items() if k in ("path", "common", "git_dir")}
+        locations.update(Path(run.state["location"][key]) for key in
+                         ("data_dir", "managed_root", "project_path", "shared_dir"))
+        locations.update((fake.home / ".ao", run.root, run.root.parent))
+        child = fake.repo / ".git/unreferenced-child"
+        child.write_bytes(b"directory contents must not be copied")
+        def prepare(text):
+            context.write_text(text)
+            handoff.write_text("[necessary context](context.md)\n[ordinary](needed.txt)")
+            run.state["handoff"] = dict(path=str(handoff), sha256=h.digest(handoff.read_bytes()))
+        prepare("\n".join("`" + str(path) + "`" for path in sorted(locations)) +
+                "\n`" + str(fake.repo / ".git") + "`")
+        # Git bindings, SQLite export, dependency traversal and manifests are real;
+        # old Git preservation has its own protocol tests and is outside this gate.
+        with patch.object(h.Path, "home", return_value=fake.home), patch.object(h, "capture_old", return_value={"path": "old-proof", "sha256": "0" * 64}):
+            for delta in (False, True):
+                ref = h.export_material(run, delta=delta)
+                manifest = h.decode(h.private_read(ref["path"]))
+                self.assertEqual(manifest["schema"], "rh-manifest/1")
+                self.assertEqual({row["source"] for row in manifest["directory_references"]}, {str(p) for p in locations})
+                self.assertEqual(len(manifest["directory_references"]), len(locations))
+                self.assertTrue(all(row["kind"] == "directory-reference" for row in manifest["directory_references"]))
+                self.assertEqual({row["source"] for row in manifest["dependencies"]}, {str(handoff), str(context), str(ordinary)})
+                for row in manifest["dependencies"]:
+                    self.assertEqual(h.digest(h.private_read(row["path"])), row["sha256"])
+                    self.assertEqual(h.read_regular(row["source"]), h.private_read(row["path"]))
+                self.assertEqual(run.state["preservation_paths"], sorted(row["path"] for row in manifest["dependencies"]))
+                self.assertNotIn(str(child), h.canonical(manifest).decode())
+                self.assertFalse(any(p.name == child.name for p in Path(ref["path"]).parent.rglob("*")))
+                if delta:
+                    self.assertEqual(manifest["parent_sha256"], run.state["manifest"]["sha256"])
+            unknown = h.mkdir(fake.home / "unknown")
+            sibling = h.mkdir(fake.repo.parent / "repository-sibling")
+            other_run = h.mkdir(run.root.parent / str(uuid.uuid4()))
+            outside_child = h.mkdir(fake.repo / ".git/unknown-child")
+            alias = fake.shared / "alias"
+            alias.symlink_to(fake.repo / ".git", target_is_directory=True)
+            for path in (unknown, sibling, other_run, outside_child, fake.home, fake.home.parent, alias):
+                with self.subTest(directory=str(path)):
+                    prepare("`" + str(path) + "`")
+                    with self.assertRaises(h.Stop):
+                        h.export_material(run)
+            for path in (child, fake.data_dir / "outside.txt", fake.data_dir / "agent-accounts/fixture.txt"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic outside material")
+                prepare("[necessary file](" + str(path) + ")")
+                with self.subTest(file=str(path)), self.assertRaises(h.Stop):
+                    h.export_material(run)
+            # A metadata name is never a file grant, even after a type swap.
+            swapped = h.mkdir(self.root / "metadata-location")
+            metadata = {str(swapped)}
+            swapped.rmdir()
+            swapped.write_bytes(b"not directory metadata")
+            with self.assertRaisesRegex(h.Stop, "dependency outside allowed roots"):
+                h.preserve_dependencies([swapped], self.root / "rejected", [fake.shared], [], metadata)
+            prepare("`" + str(fake.repo / ".git") + "`")
+            del run.state["workspace_bindings"]["worker"]
+            with self.assertRaisesRegex(h.Stop, "export workspace binding missing"):
+                h.export_material(run)
+
     def test_T03_dependency_closure_hashes_and_relative_relationships(self):
         source = self.root / "source"
         source.mkdir()
