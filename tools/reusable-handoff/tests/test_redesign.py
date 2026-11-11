@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -16,6 +17,206 @@ from unittest.mock import patch
 SPEC = importlib.util.spec_from_file_location("redesign_handoff", Path(__file__).parents[1] / "handoff.py")
 h = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(h)
+
+
+class RefreshProofStartTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.real_run = subprocess.run
+
+    def fixture(self, name="case"):
+        from test_handoff import ProtocolTests
+        self.home = h.mkdir(Path(self.tmp.name) / name)
+        self.data = h.mkdir(self.home / ".ao/data")
+        self.request = ProtocolTests.request(SimpleNamespace(root=self.data))
+        self.run_id = self.request["request_id"]
+        self.root = h.mkdir(self.data / "projects" / h.PROJECT / "orchestrator/.private-handoff-runs")
+        self.slot = h.mkdir(self.root / ".start/old")
+        self.journal_path = self.root.parent / ".handoff-journal" / self.run_id
+        self.snap = h.decode(h.private_read(self.data / "evidence/human.json"))
+        self.snap["transcript"]["turns"].append(dict(id="preparing", state="completed"))
+        source = h.canonical(self.snap)
+        h.publish(self.slot / "evidence/human.json", source)
+        for ref in self.request["sources"]:
+            ref["raw_sha256"] = h.digest(source)
+        # Deliberately noncanonical: proof must bind the original bytes.
+        self.raw = json.dumps(self.request, indent=2).encode() + b"\n"
+        h.publish(self.slot / "request.json", self.raw)
+        self.proof = dict(run_id=self.run_id, start_sha256=h.digest(self.raw),
+                          scope="daemon-account-catalog-global", source_refs=["human"],
+                          original_authority_covers_global_refresh=True)
+        self.proof_raw = json.dumps(self.proof, indent=2).encode() + b"\n"
+        h.publish(self.slot / "capabilities.json", self.proof_raw)
+        self.repo = h.mkdir(self.home / "repo")
+        for args in (["init", "-b", "main"], ["-c", "user.name=fixture", "-c", "user.email=x@example.invalid",
+                     "commit", "--allow-empty", "-m", "fixture"]):
+            self.real_run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
+        workspace = Path(self.request["workspace_index"][0]["path"])
+        workspace.parent.mkdir(parents=True)
+        self.real_run(["git", "-C", str(self.repo), "worktree", "add", "-b", "original", str(workspace)],
+                      check=True, capture_output=True)
+        self.cli = h.mkdir(self.home / "bin") / "ao"
+        self.cli.write_bytes(b"synthetic CLI bytes")
+        self.cli.chmod(0o700)
+        h.publish(self.root / ".qualified/ao", self.cli.read_bytes())
+        (self.root / ".qualified/ao").chmod(0o700)
+        h.publish(self.root / ".qualified/qualification.json", h.canonical(dict(schema="rh-cli-qualification/2",
+            call_protocol=h.CALL_PROTOCOL, cli_sha256=h.digest(self.cli.read_bytes()),
+            script_sha256=h.digest(Path(h.__file__).read_bytes()))))
+        self.run_file = self.home / ".ao/running.json"
+        h.publish(self.run_file, b'{"port":1}')
+        with sqlite3.connect(self.data / "ao.db") as db:
+            db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")
+            db.execute("INSERT INTO sessions VALUES('old',?,'codex','native-old')", (h.PROJECT,))
+        self.refreshes, self.source_reads = 0, 0
+
+    def cli_transport(self, argv, **kwargs):
+        if Path(argv[0]) not in (self.cli, self.root / ".qualified/ao"):
+            return self.real_run(argv, **kwargs)
+        args = argv[1:]
+        if args[:3] == ["project", "documents", "info"]:
+            result = dict(documents=dict(sharedDir=str(self.root.parent / "shared")))
+        elif args[:2] == ["session", "get"]:
+            self.source_reads += 1
+            result = self.snap
+        elif args == ["spawn", "--help"]:
+            return SimpleNamespace(stdout=b"--approval-mode", stderr=b"", returncode=0)
+        elif args[:2] == ["account", "ls"]:
+            self.refreshes += 1
+            self.assertGreater(self.source_reads, 0)
+            self.assertEqual(h.private_read(self.journal_path / "capabilities.json"), self.proof_raw)
+            admission = h.decode(h.private_read(self.journal_path / "admission.json"))
+            self.assertEqual(admission["status"], "open")
+            intents = [h.decode(h.private_read(x)) for x in self.journal_path.glob("executions/*/calls/*/intent.json")]
+            refresh = next(x for x in intents if x["kind"] == "metadata-refresh")
+            self.assertEqual(refresh["refresh_authority"], h.file_reference(self.journal_path / "capabilities.json"))
+            self.assertEqual(refresh["target"]["scope"], "all-eligible-daemon-accounts")
+            result = dict(accounts=[dict(id="acct", provider="codex", email="fixture@example.invalid", signedIn=True)])
+        elif args[:2] == ["session", "ls"]:
+            result = dict(data=[], meta=dict(hiddenTerminatedCount=0, hiddenOrchestratorCount=0))
+        else:
+            raise AssertionError(args)
+        return SimpleNamespace(stdout=h.canonical(result), stderr=b"", returncode=0)
+
+    def http_transport(self, url, **kwargs):
+        path = url.split("/api/v1/", 1)[1]
+        if path == "projects/" + h.PROJECT:
+            result = dict(project=dict(id=h.PROJECT, path=str(self.repo)))
+        elif path == "sessions/old":
+            result = dict(session=self.snap["session"])
+        elif path.startswith("agents/codex/models?"):
+            result = dict(accountBinding=dict(accountId="acct"), models=[dict(id="model", efforts=["high"])])
+        else:
+            raise AssertionError(path)
+        return io.BytesIO(h.canonical(result))
+
+    def invoke(self):
+        with patch.dict(os.environ, dict(HOME=str(self.home), AO_DATA_DIR=str(self.data),
+                AO_RUN_FILE=str(self.run_file), PATH=str(self.cli.parent) + os.pathsep + os.environ["PATH"])), \
+                patch.object(h.subprocess, "run", side_effect=self.cli_transport), \
+                patch.object(h.urllib.request.OpenerDirector, "open", side_effect=self.http_transport), \
+                patch.object(h, "launch") as launch, patch("sys.stdout", new_callable=io.StringIO), \
+                patch("sys.stderr", new_callable=io.StringIO) as errors:
+            code = h.main(["start", "--run", self.run_id, "--old", "old", "--harness", "codex",
+                           "--account", "acct", "--model", "model", "--effort", "high",
+                           "--approval-mode", "bypass-permissions"])
+        return code, errors.getvalue(), launch.call_count
+
+    def test_first_main_start_binds_slot_bytes_before_refresh_and_later_uses_only_J(self):
+        self.fixture()
+        self.assertFalse(self.journal_path.exists())
+        self.assertEqual(self.invoke(), (0, "", 1))
+        self.assertEqual(self.refreshes, 1)
+        # Cached start does not re-import a mutable slot proof or refresh again.
+        (self.slot / "capabilities.json").write_bytes(b"changed slot")
+        self.assertEqual(self.invoke(), (0, "", 0))
+        self.assertEqual(self.refreshes, 1)
+        journal = h.Journal(self.data, self.run_id)
+        execution = journal.register("_run", "old")
+        cli = h.CLI(self.root / ".qualified/ao", "old", self.data, self.run_file, self.data)
+        run = h.load_run(self.root, self.run_id, cli, execution)
+        self.assertEqual(run.cli.execution.refresh_authority, h.file_reference(journal.root / "capabilities.json"))
+        execution.close()
+        facts = journal.facts()
+        self.assertEqual(sum(x["kind"] == "metadata-refresh" for x in facts), 1)
+
+    def test_missing_or_mismatched_slot_proof_never_refreshes(self):
+        cases = ["missing", "run_id", "start_sha256", "scope", "empty_refs", "foreign_refs", "control_ref", "false",
+                 "symlink", "public_mode"]
+        for case in cases:
+            with self.subTest(case=case):
+                self.fixture(case)
+                proof = dict(self.proof)
+                if case == "missing":
+                    (self.slot / "capabilities.json").unlink()
+                elif case == "symlink":
+                    (self.slot / "capabilities.json").rename(self.slot / "other.json")
+                    (self.slot / "capabilities.json").symlink_to(self.slot / "other.json")
+                elif case == "public_mode":
+                    (self.slot / "capabilities.json").chmod(0o644)
+                else:
+                    values = dict(run_id=str(uuid.uuid4()), start_sha256=h.digest(h.canonical(self.request)),
+                                  scope="target-only", empty_refs=[], foreign_refs=["other"],
+                                  control_ref=["workspace"], false=False)
+                    key = "source_refs" if case.endswith("refs") or case == "control_ref" else \
+                          "original_authority_covers_global_refresh" if case == "false" else case
+                    proof[key] = values[case]
+                    (self.slot / "capabilities.json").write_bytes(h.canonical(proof))
+                self.assertEqual(self.invoke()[0], 1)
+                self.assertEqual(self.refreshes, 0)
+
+    def test_existing_human_outside_original_authority_never_refreshes(self):
+        self.fixture()
+        self.request["sources"].append(dict(self.request["sources"][0], ref="other-human"))
+        self.raw = json.dumps(self.request, indent=2).encode() + b"\n"
+        (self.slot / "request.json").write_bytes(self.raw)
+        self.proof.update(start_sha256=h.digest(self.raw), source_refs=["other-human"])
+        self.proof_raw = json.dumps(self.proof, indent=2).encode() + b"\n"
+        (self.slot / "capabilities.json").write_bytes(self.proof_raw)
+        code, _, launches = self.invoke()
+        self.assertEqual(self.refreshes, 0)
+        self.assertEqual(code, 1)
+        self.assertEqual(launches, 0)
+
+    def test_live_human_identity_is_checked_before_proof_and_refresh(self):
+        self.fixture()
+        self.snap["transcript"]["entries"][0]["origin"] = "automation"
+        self.assertEqual(self.invoke()[0], 1)
+        self.assertEqual(self.refreshes, 0)
+        self.assertFalse((self.journal_path / "capabilities.json").exists())
+
+    def test_valid_slot_does_not_repair_incomplete_or_fenced_J(self):
+        for case in ("missing_lock", "missing_state", "retiring", "retired"):
+            with self.subTest(case=case):
+                self.fixture(case)
+                journal = h.Journal(self.data, self.run_id)
+                if case.startswith("missing"):
+                    (journal.root / ("admission.lock" if case == "missing_lock" else "admission.json")).unlink()
+                else:
+                    state = journal.freeze("operator", "D-100", "a" * 64)
+                    if case == "retired":
+                        h.replace_private(journal.root / "admission.json", dict(state, status="retired"))
+                self.assertEqual(self.invoke()[0], 1)
+                self.assertEqual(self.refreshes, 0)
+
+    def test_conflicting_J_proof_is_not_overwritten(self):
+        self.fixture()
+        journal = h.Journal(self.data, self.run_id)
+        original = h.canonical(dict(self.proof, scope="different"))
+        h.publish(journal.root / "capabilities.json", original)
+        self.assertEqual(self.invoke()[0], 1)
+        self.assertEqual(self.refreshes, 0)
+        self.assertEqual(h.private_read(journal.root / "capabilities.json"), original)
+
+    def test_prebuilt_J_is_not_an_alternate_first_proof_input(self):
+        self.fixture()
+        journal = h.Journal(self.data, self.run_id)
+        h.publish(journal.root / "capabilities.json", self.proof_raw)
+        (self.slot / "capabilities.json").unlink()
+        self.assertEqual(self.invoke()[0], 1)
+        self.assertEqual(self.refreshes, 0)
+        self.assertEqual(h.private_read(journal.root / "capabilities.json"), self.proof_raw)
 
 
 class JournalTests(unittest.TestCase):

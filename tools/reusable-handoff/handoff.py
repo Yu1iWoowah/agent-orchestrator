@@ -182,6 +182,19 @@ def source_message(source, raw):
     return message
 
 
+def validate_refresh_proof(raw, request, run_id, start_sha256):
+    proof = decode(raw)
+    require(isinstance(proof, dict), "global refresh authority proof must be an object")
+    refs = proof.get("source_refs")
+    human_refs = {source["ref"] for source in request.get("sources", [])
+                  if source["kind"] in ("human-message", "structured-answer")}
+    require(proof.get("run_id") == run_id and proof.get("start_sha256") == start_sha256 and
+            proof.get("scope") == "daemon-account-catalog-global" and isinstance(refs, list) and refs and
+            all(isinstance(ref, str) and ref in request["authority"]["source_refs"] and ref in human_refs for ref in refs) and
+            proof.get("original_authority_covers_global_refresh") is True,
+            "global refresh authority proof mismatch")
+
+
 def validate_request(req, slot, old, target):
     require(stat.S_IMODE(no_symlinks(slot).stat().st_mode) == 0o700, "start slot must be 0700")
     require(req.get("schema") == "rh-start-request/1" and req.get("project_id") == PROJECT and req.get("old_id") == old,
@@ -773,21 +786,20 @@ class Execution:
         self._transport_claimed = False
         self.last_call_id = None
 
-    def configure(self, request, start_sha256=None):
+    def configure(self, request, start_sha256=None, *, load_refresh=True):
         self.bindings = {request["old_id"], *(w["worker_id"] for w in request["workers"])}
         self.authority_refs = request["authority"]["source_refs"]
         self.request_target = request["target"]
         self.old_id = request["old_id"]
+        if not load_refresh:
+            self.refresh_authority = None
+            return
         # A capability proof references the original human authority. It never
         # creates or broadens that authority and is separate from request bytes.
         path = self.journal.root / "capabilities.json"
         if path.exists():
-            proof = decode(private_read(path))
             expected_start = start_sha256 or decode(private_read(self.journal.root / "binding.json"))["start_sha256"]
-            require(proof.get("run_id") == self.journal.run_id and proof.get("start_sha256") == expected_start and
-                    proof.get("scope") == "daemon-account-catalog-global" and proof.get("source_refs") and
-                    set(proof["source_refs"]) <= set(self.authority_refs) and proof.get("original_authority_covers_global_refresh") is True,
-                    "global refresh authority proof mismatch")
+            validate_refresh_proof(private_read(path), request, self.journal.run_id, expected_start)
             self.refresh_authority = file_reference(path)
 
     def descriptor(self, cli, transport, parameters, read=False, effect_id=None, verifying=False):
@@ -3716,11 +3728,18 @@ def start(root, initial, old, target, selector=None):
             require(state["old_id"] != old or state["outcome"] == "complete", "old already has unresolved run")
         cli = qualified(root, old, initial, slot)
         prior_journal_guard(cli.execution.journal, old)
-        cli.execution.configure(req, digest(raw))
+        cli.execution.configure(req, digest(raw), load_refresh=False)
         cli.execution.phase = "preflight"
         cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw),
             qualification_sha256=digest(private_read(root / ".qualified/qualification.json"))), source_root=slot)
         old_snap = validate_sources_live(req, cli)
+        proof_raw = private_read(slot / "capabilities.json")
+        journal = cli.execution.journal
+        validate_refresh_proof(proof_raw, req, journal.run_id, digest(raw))
+        with journal.mutex():
+            require(journal.state()["status"] == "open", "journal not open for refresh proof publication")
+            publish(journal.root / "capabilities.json", proof_raw)
+        cli.execution.configure(req, digest(raw))
         preflight = target_preflight(cli, target)
         mkdir(destination)
         publish(destination / "start.json", raw)

@@ -60,6 +60,7 @@ old 在呼叫 start 前，自己核對原人類指令、structured answer、後�
 ```text
 R/.start/<old-id>/request.json
 R/.start/<old-id>/evidence/<necessary-original-response>.json
+R/.start/<old-id>/capabilities.json
 ```
 
 `request.json` 使用 `rh-start-request/1`，包含以下欄位：
@@ -104,6 +105,8 @@ idle 單獨、failed／recovered／interrupted 都不算 A 完成；不能讓 A 
 有 worker、D／hold／原題或路徑漂移、來源不足即停，不以 B 的新決定補 A，不自動重做 A。
 B 保存正常 CLI 回應原 bytes，從中取實際 revision、正文 hash 及 raw hash；不合成原件、不硬填 revision、不正規化正文。
 B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同 B 輪呼叫 start --run <該 UUID>，回真 run-id／status 後結束。
+在 request 原 bytes 與 evidence 發布後、start 之前，B 依下方「全域 account catalog 權限」在同一固定槽位發布 proof。
+不要預建 J、手寫 admission 檔、import Journal，或先失敗一次再補 proof。
 原 human／T0／精度不變，不請人類重送授權；任何 STOP 不改包救過、不重試或擅自 continue。
 後續仍完整走 worker、2a、匯出／保全與 native 核驗，A completed 不等於 old 可 kill。
 
@@ -378,7 +381,7 @@ retired 的 status 只核本機 binding／原件／receipt，不開 execution �
 能力包括不同 provider 的 identity／limits 與 contained-profile Prepare；不宣稱只是讀 cache，也不假設修改 credential。
 指定 target account 不是全域 refresh 授權。原範圍不足或不能正面核清，script 在 I/O 前 STOP，交主控裁定；不改 daemon、不擴權。
 
-已核執行者在 J 的 `capabilities.json` 保留這項核對，引用原 human authority，不產生新的同意：
+同一 old 在 B 完成語意核對後，在 `R/.start/<old-id>/capabilities.json` 發布這項核對，引用原 human authority，不產生新的同意：
 
 ```json
 {
@@ -390,8 +393,14 @@ retired 的 status 只核本機 binding／原件／receipt，不開 execution �
 }
 ```
 
-這是原授權語意核對的持久記錄；boolean、hash 或欄位本身不是人類同意的密碼學證明，不能自行填 true 來放行。
-缺檔、scope／start／source_refs 不符都拒絕。request 的原來源、T0、兩輪 A/B 與 target 格式不變。
+`start_sha256` 綁 request **原 bytes**，不是重序列化的 JSON；`source_refs` 非空且只准本 request.authority 的原人類授權引用，不能用 old-control-record 或 operator automation 代替。
+正常 start 自己建立 J／register，在 qualification、同 request 與 live 原來源身分／revision／hash 核驗後，才讀取 slot proof 的固定原 bytes。
+核對成立後，start 在 open admission mutex 內不可變保存為 `J/capabilities.json`，再核 J 原件並將其 file reference 綁入第一次 refresh intent；之後才發 metadata refresh。
+一般定位與原來源觀測可先發生；這不是「完全沒有 I/O」。缺 proof、綁定不符、false、非私有／symlink 或 J 衝突，都在 refresh I/O 前 STOP，不修補 admission 或覆寫原件。
+後續 Run／Execution 只讀 J 原件；slot proof 之後改變或消失不更換已綁授權，原成功 start 的冪等回應也不重新載入 slot proof。
+
+這是原授權語意核對的持久記錄；boolean、hash 或欄位本身不是人類同意的密碼學證明，不能自行填 true 來放行。缺原授權仍交主控裁定。
+request 的原來源、T0、兩輪 A/B、target 格式與真正全域 refresh scope 不變，不從 target account 推定全域授權。
 
 ## 通用 retire 與歷史核收
 
