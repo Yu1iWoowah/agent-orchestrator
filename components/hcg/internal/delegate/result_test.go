@@ -19,7 +19,8 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 	receipt := Receipt{RequestID: "request", ProfileDigest: strings.Repeat("a", 64)}
 	raw := validProposal(source)
 	verify := func(raw string, limit int) (ReadReply, error) {
-		return verifyReply(time.Unix(0, 0), raw, testExecution, p, receipt, audit, scope, limit)
+		out, _, err := verifyReply(time.Unix(0, 0), raw, testExecution, p, receipt, audit, scope, limit)
+		return out, err
 	}
 	out, err := verify(raw, 0)
 	if err != nil || out.Status != "ok" || out.Answer != "[fact] fixture-answer" || out.Evidence[0].Path != "prompt.txt" || out.Evidence[0].Verification != "machine_checked" || out.ProjectID != testExecution.ProjectID || out.Coverage.Status != "complete" || out.Coverage.RequestedScopeDigest != out.Coverage.InjectedScopeDigest {

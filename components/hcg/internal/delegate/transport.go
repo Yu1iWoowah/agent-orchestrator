@@ -79,8 +79,17 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 			} `json:"completion_tokens_details"`
 		}
 	}
-	if response.Status != 200 || json.Unmarshal(response.Body, &raw) != nil {
+	// fail keeps the provider boundary's first refusal private to the attempt.
+	fail := func(stage, code string) (Result, error) {
+		out.failure = &replyFailure{Stage: stage, Code: code}
 		return out, ErrUnavailable
+	}
+	if response.Status != 200 {
+		out.failure = &replyFailure{Stage: "http_status", Code: "http_status_not_ok", HTTPStatus: response.Status}
+		return out, ErrUnavailable
+	}
+	if json.Unmarshal(response.Body, &raw) != nil {
+		return fail("outer_json", "outer_json_invalid")
 	}
 	if profile.luna() {
 		status := "invalid"
@@ -100,15 +109,20 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 		out.Receipt.ServiceTierStatus = status
 		if status != "verified_default" {
 			out.Receipt.UnknownReason = "service_tier_unverified"
-			return out, ErrUnavailable
+			return fail("service_tier", "service_tier_"+status)
 		}
 	}
 	if raw.ID != "" && !safeReceiptID(raw.ID) {
-		return out, ErrUnavailable
+		return fail("response_id", "response_id_invalid")
 	}
 	out.Receipt.ResponseID = raw.ID
-	if raw.Model != profile.Model || len(raw.Choices) != 1 || out.Receipt.RequestID == "" {
-		return out, ErrUnavailable
+	switch {
+	case raw.Model != profile.Model:
+		return fail("model", "model_mismatch")
+	case len(raw.Choices) != 1:
+		return fail("choices", "choices_count_invalid")
+	case out.Receipt.RequestID == "":
+		return fail("request_id", "request_id_missing")
 	}
 	switch raw.Choices[0].FinishReason {
 	case "stop", "length", "content_filter", "tool_calls", "function_call":
@@ -116,12 +130,12 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 	}
 	if raw.Usage == nil {
 		out.Receipt.UnknownReason = "usage_missing"
-		return out, ErrUnavailable
+		return fail("usage", "usage_missing")
 	}
 	u := raw.Usage
 	if u.Input == nil || u.Output == nil || u.Total == nil || *u.Input < 0 || *u.Input > profile.ContextTokens || *u.Output < 0 || *u.Output > profile.OutputTokens || *u.Input > math.MaxInt64-*u.Output || *u.Total != *u.Input+*u.Output {
 		out.Receipt.UnknownReason = "usage_invalid"
-		return out, ErrUnavailable
+		return fail("usage", "usage_invalid")
 	}
 	var cached, reasoning, write *int64
 	if profile.luna() {
@@ -129,7 +143,7 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 		n := int64(0)
 		if u.Details == nil || u.Details.Cached == nil || (len(u.Details.Write) > 0 && (string(u.Details.Write) == "null" || json.Unmarshal(u.Details.Write, &n) != nil)) || n < 0 || n > *u.Input || *u.Input > 922000 || *u.Details.Cached < 0 || *u.Details.Cached > *u.Input-n {
 			out.Receipt.UnknownReason = "usage_invalid"
-			return out, ErrUnavailable
+			return fail("usage", "usage_invalid")
 		}
 		// Unknown fee/mode leaves cannot be silently priced as ordinary input.
 		var envelope map[string]json.RawMessage
@@ -139,7 +153,7 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 		for key := range usage {
 			if key != "prompt_tokens" && key != "completion_tokens" && key != "total_tokens" && key != "prompt_tokens_details" && key != "completion_tokens_details" {
 				out.Receipt.UnknownReason = "usage_invalid"
-				return out, ErrUnavailable
+				return fail("usage", "usage_invalid")
 			}
 		}
 		var details map[string]json.RawMessage
@@ -150,7 +164,7 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 			}
 			if key != "cached_tokens" && key != "cache_write_tokens" {
 				out.Receipt.UnknownReason = "usage_invalid"
-				return out, ErrUnavailable
+				return fail("usage", "usage_invalid")
 			}
 		}
 		// Unknown completion fee categories are outside the approved output model.
@@ -162,7 +176,7 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 			}
 			if key != "reasoning_tokens" {
 				out.Receipt.UnknownReason = "usage_invalid"
-				return out, ErrUnavailable
+				return fail("usage", "usage_invalid")
 			}
 		}
 
@@ -178,12 +192,15 @@ func projectResponse(profile Profile, response WireResponse) (Result, error) {
 	}
 	if cached != nil && (*cached < 0 || *cached > *u.Input) || reasoning != nil && (*reasoning < 0 || *reasoning > *u.Output) {
 		out.Receipt.UnknownReason = "usage_invalid"
-		return out, ErrUnavailable
+		return fail("usage", "usage_invalid")
 	}
 	out.Receipt.UnknownReason = ""
 	out.Receipt.Usage = Usage{Input: u.Input, Output: u.Output, Total: u.Total, CachedInput: cached, CacheWriteInput: write, ReasoningOutput: reasoning}
-	if out.Receipt.FinishReason != "stop" || raw.Choices[0].Message.Content == "" {
-		return out, ErrUnavailable
+	if out.Receipt.FinishReason != "stop" {
+		return fail("finish_reason", "finish_reason_not_stop")
+	}
+	if raw.Choices[0].Message.Content == "" {
+		return fail("content", "content_empty")
 	}
 	out.text = raw.Choices[0].Message.Content
 	return out, nil

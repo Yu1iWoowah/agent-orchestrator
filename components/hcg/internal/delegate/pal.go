@@ -46,6 +46,7 @@ type Result struct {
 	sources preparedScope
 	text    string
 	Receipt Receipt
+	failure *replyFailure
 }
 
 //go:embed pal_bridge.py
@@ -193,7 +194,7 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			if err := ctx.Err(); err != nil {
 				return Result{Receipt: result.Receipt}, err
 			}
-			reply, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
+			reply, _, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
 			result.text = ""
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return Result{Receipt: result.Receipt}, cancelErr

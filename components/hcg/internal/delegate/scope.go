@@ -69,16 +69,22 @@ type preparedScope struct {
 // Named approval remains mandatory even when this scanner finds nothing.
 var suspiciousContent = regexp.MustCompile(`(?i)(HCG_CANARY_DO_NOT_SEND|-----BEGIN [A-Z ]*PRIVATE KEY|\bsk-[a-z0-9_-]{16,}|\bAKIA[A-Z0-9]{16}\b|\bbearer\s+[a-z0-9._-]{12,}|\b(?:api[_ -]?key|password|secret|access[_ -]?token)\s*[:=]\s*["']?[^\s"']+)`)
 
-func safeText(s string) bool {
-	if !utf8.ValidString(s) || suspiciousContent.MatchString(s) {
-		return false
+func safeText(s string) bool { return textIssue(s) == "" }
+
+// textIssue names safeText's first failing check; it never returns the match.
+func textIssue(s string) string {
+	if !utf8.ValidString(s) {
+		return "invalid_utf8"
+	}
+	if suspiciousContent.MatchString(s) {
+		return "sensitive_pattern"
 	}
 	for _, r := range s {
 		if r < 32 && r != '\n' && r != '\r' && r != '\t' {
-			return false
+			return "control_character"
 		}
 	}
-	return true
+	return ""
 }
 func safeSourcePath(path string) bool {
 	if !safeText(path) {
