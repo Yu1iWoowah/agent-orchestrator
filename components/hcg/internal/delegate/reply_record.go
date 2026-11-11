@@ -391,10 +391,11 @@ func (a *replyAttempt) commit(v replyValidation) error {
 }
 
 // ensureReplyPath walks hcg, delegation and replies one level at a time from
-// the trusted owner root. A missing level is created and its parent synced, so
-// every entry the intent depends on is durable before any send. Any symlink or
-// foreign-owned level (and a shared delegation/replies) is refused, so bodies
-// can never be written outside the canonical owner root.
+// the trusted owner root, creating a missing level. Every admission syncs each
+// level's parent itself after the entry exists, so a concurrent creator's or an
+// earlier failed sync can never be skipped: all entries the intent depends on
+// are durable before any send. Any symlink or foreign-owned level (and a shared
+// delegation/replies) is refused, so bodies stay inside the owner root.
 func (s *replyStore) ensureReplyPath() error {
 	root := filepath.Dir(filepath.Dir(filepath.Dir(s.dir)))
 	if filepath.Join(root, "hcg", "delegation", "replies") != s.dir {
@@ -409,13 +410,12 @@ func (s *replyStore) ensureReplyPath() error {
 			if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 				return ErrReplyRecord
 			}
-			// Also covers a concurrent creator that has not synced yet.
-			if s.syncDir(parent) != nil {
-				return ErrReplyRecord
-			}
 			info, err = os.Lstat(path)
 		}
 		if err != nil || !info.IsDir() || !ownedByProcess(info) || (level > 0 && info.Mode().Perm()&0077 != 0) {
+			return ErrReplyRecord
+		}
+		if s.syncDir(parent) != nil {
 			return ErrReplyRecord
 		}
 	}

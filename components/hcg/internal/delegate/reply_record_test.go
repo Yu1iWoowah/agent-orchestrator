@@ -387,43 +387,101 @@ func TestReplyRecordBridgeTerminalStates(t *testing.T) {
 	})
 }
 
-// New directory entries are synced before admission returns, so a sent
-// attempt's intent cannot vanish on power loss; a sync failure refuses the send.
-func TestReplyRecordAdmissionSyncsNewDirectoryEntries(t *testing.T) {
-	s := newReplyFixture(t)
-	delegation := filepath.Dir(s.dir)
-	base := filepath.Dir(filepath.Dir(delegation))
-	var synced []string
-	s.syncDir = func(path string) error { synced = append(synced, path); return syncBudgetDirectory(path) }
-	if _, err := s.admit(t.Context(), replyIdentityFixture("a")); err != nil {
-		t.Fatal(err)
+// Every admission syncs each path level's parent itself before the intent
+// counts, so a sent attempt's intent cannot vanish on power loss even when
+// another creator's sync is unfinished or an earlier sync failed.
+func TestReplyRecordAdmissionSyncsWholePathEveryTime(t *testing.T) {
+	recorder := func(s *replyStore) *[]string {
+		synced := &[]string{}
+		s.syncDir = func(path string) error { *synced = append(*synced, path); return syncBudgetDirectory(path) }
+		return synced
 	}
-	want := []string{base, filepath.Dir(delegation), delegation, s.dir}
-	if strings.Join(synced, "|") != strings.Join(want, "|") {
-		t.Fatalf("synced %v want %v", synced, want)
+	chain := func(s *replyStore) []string {
+		delegation := filepath.Dir(s.dir)
+		return []string{filepath.Dir(filepath.Dir(delegation)), filepath.Dir(delegation), delegation, s.dir}
 	}
-	for _, failing := range []string{base, s.dir} {
+	t.Run("existing_path", func(t *testing.T) {
 		s := newReplyFixture(t)
-		if failing != s.dir {
-			failing = filepath.Dir(filepath.Dir(filepath.Dir(s.dir)))
+		synced := recorder(s)
+		for _, attempt := range []string{"a", "b"} {
+			*synced = nil
+			if _, err := s.admit(t.Context(), replyIdentityFixture(attempt)); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(*synced, "|") != strings.Join(chain(s), "|") {
+				t.Fatalf("%s synced %v want %v", attempt, *synced, chain(s))
+			}
 		}
+	})
+	t.Run("concurrent_creator_sync_unfinished", func(t *testing.T) {
+		s := newReplyFixture(t)
+		delegation := filepath.Dir(s.dir)
+		entered, release := make(chan struct{}), make(chan struct{})
+		blocked := false
+		var synced []string // only B runs while A is blocked
 		s.syncDir = func(path string) error {
-			if path == failing {
+			if path == delegation && !blocked {
+				blocked = true
+				close(entered)
+				<-release // A created replies but has not synced delegation yet
+			} else if blocked {
+				synced = append(synced, path)
+			}
+			return syncBudgetDirectory(path)
+		}
+		done := make(chan error, 1)
+		go func() { _, err := s.admit(context.Background(), replyIdentityFixture("a")); done <- err }()
+		<-entered
+		if _, err := s.admit(t.Context(), replyIdentityFixture("b")); err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Join(synced, "|")
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if got != strings.Join(chain(s), "|") {
+			t.Fatalf("B relied on A's unfinished sync: %s", got)
+		}
+	})
+	t.Run("retry_after_failed_sync", func(t *testing.T) {
+		s := newReplyFixture(t)
+		delegation := filepath.Dir(s.dir)
+		s.syncDir = func(path string) error {
+			if path == delegation {
+				return errors.New("synthetic fsync failure")
+			}
+			return syncBudgetDirectory(path)
+		}
+		if _, err := s.admit(t.Context(), replyIdentityFixture("a")); !errors.Is(err, ErrReplyRecord) {
+			t.Fatalf("sync failure did not refuse admission: %v", err)
+		}
+		if _, err := os.Lstat(s.dir); err != nil {
+			t.Fatal("fixture should leave the created replies directory behind")
+		}
+		synced := recorder(s)
+		if _, err := s.admit(t.Context(), replyIdentityFixture("a")); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(*synced, "|") != strings.Join(chain(s), "|") {
+			t.Fatalf("retry skipped the failed sync: %v", *synced)
+		}
+	})
+	t.Run("attempt_entry_sync_failure", func(t *testing.T) {
+		s := newReplyFixture(t)
+		s.syncDir = func(path string) error {
+			if path == s.dir {
 				return errors.New("synthetic fsync failure")
 			}
 			return syncBudgetDirectory(path)
 		}
 		if _, err := s.admit(t.Context(), replyIdentityFixture("b")); !errors.Is(err, ErrReplyRecord) {
-			t.Fatalf("sync failure at %s did not refuse admission: %v", failing, err)
+			t.Fatalf("attempt entry sync failure did not refuse admission: %v", err)
 		}
 		if _, err := os.Lstat(filepath.Join(s.dir, "b")); !errors.Is(err, os.ErrNotExist) || len(s.live) != 0 {
-			t.Fatalf("refused admission left an intent at %s", failing)
+			t.Fatal("refused admission left an intent")
 		}
-		s.syncDir = syncBudgetDirectory
-		if _, err := s.admit(t.Context(), replyIdentityFixture("b")); err != nil {
-			t.Fatalf("admission after sync recovery: %v", err)
-		}
-	}
+	})
 }
 
 // An ancestor symlink under the owner root must never redirect private bodies
