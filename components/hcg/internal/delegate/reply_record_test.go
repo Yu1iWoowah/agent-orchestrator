@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func replyIdentityFixture(attempt string) replyIdentity {
@@ -444,29 +445,50 @@ func TestReplyRecordAdmissionSyncsWholePathEveryTime(t *testing.T) {
 			t.Fatalf("B relied on A's unfinished sync: %s", got)
 		}
 	})
-	t.Run("retry_after_failed_sync", func(t *testing.T) {
+	t.Run("budget_precreated_path", func(t *testing.T) {
+		// Production order: the budget journal's MkdirAll creates hcg/delegation
+		// first, without syncing; admission must still sync root and hcg.
 		s := newReplyFixture(t)
-		delegation := filepath.Dir(s.dir)
-		s.syncDir = func(path string) error {
-			if path == delegation {
-				return errors.New("synthetic fsync failure")
-			}
-			return syncBudgetDirectory(path)
-		}
-		if _, err := s.admit(t.Context(), replyIdentityFixture("a")); !errors.Is(err, ErrReplyRecord) {
-			t.Fatalf("sync failure did not refuse admission: %v", err)
-		}
-		if _, err := os.Lstat(s.dir); err != nil {
-			t.Fatal("fixture should leave the created replies directory behind")
+		b := &Budget{Dir: filepath.Join(filepath.Dir(s.dir), "budget"), Now: func() time.Time { return budgetNow }}
+		if err := b.ApprovePeriod(t.Context(), "2026-11", map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}); err != nil {
+			t.Fatal(err)
 		}
 		synced := recorder(s)
 		if _, err := s.admit(t.Context(), replyIdentityFixture("a")); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Join(*synced, "|") != strings.Join(chain(s), "|") {
-			t.Fatalf("retry skipped the failed sync: %v", *synced)
+			t.Fatalf("pre-created levels left unsynced: %v", *synced)
 		}
 	})
+	for _, level := range []string{"root", "delegation"} {
+		t.Run("retry_after_failed_"+level+"_sync", func(t *testing.T) {
+			store := newReplyFixture(t)
+			failing := filepath.Dir(store.dir)
+			if level == "root" {
+				failing = chain(store)[0]
+			}
+			store.syncDir = func(path string) error {
+				if path == failing {
+					return errors.New("synthetic fsync failure")
+				}
+				return syncBudgetDirectory(path)
+			}
+			if _, err := store.admit(t.Context(), replyIdentityFixture("a")); !errors.Is(err, ErrReplyRecord) {
+				t.Fatalf("sync failure did not refuse admission: %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(store.dir, "a")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("refused admission left an intent")
+			}
+			synced := recorder(store)
+			if _, err := store.admit(t.Context(), replyIdentityFixture("a")); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(*synced, "|") != strings.Join(chain(store), "|") {
+				t.Fatalf("retry skipped the failed %s sync: %v", level, *synced)
+			}
+		})
+	}
 	t.Run("attempt_entry_sync_failure", func(t *testing.T) {
 		s := newReplyFixture(t)
 		s.syncDir = func(path string) error {
