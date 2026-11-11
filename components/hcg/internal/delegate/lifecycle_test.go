@@ -377,9 +377,11 @@ func TestReadRecordsProviderReplyAtSameCaller(t *testing.T) {
 			}, nil)
 			defer c.Close()
 			if tc.failWrite {
+				// Fail only the terminal record written after verification, so a
+				// swallowed finalize error would deliver a normal ok answer.
 				writer := c.replies.write
 				c.replies.write = func(dir, name string, data []byte) error {
-					if name == "body.bin" {
+					if name == "record.json" && bytes.Contains(data, []byte(`"state":"sent_validation_done"`)) {
 						return errors.New("synthetic disk full")
 					}
 					return writer(dir, name, data)
@@ -407,7 +409,7 @@ func TestReadRecordsProviderReplyAtSameCaller(t *testing.T) {
 				t.Fatalf("record not bound to the original attempt: %+v", record)
 			}
 			if tc.failWrite {
-				if record.RecordFailure != "body_write_failed" || len(sink.receipts) != 1 {
+				if record.RecordFailure != "terminal_write_failed" || len(sink.receipts) != 1 {
 					t.Fatalf("record failure/accounting: %+v receipts=%d", record, len(sink.receipts))
 				}
 				again := c.Read(t.Context(), id, policy, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{"prompt.txt"}}, c.PolicyRevision(id))
