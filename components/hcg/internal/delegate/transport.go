@@ -16,6 +16,19 @@ type WireResponse struct {
 	Status  int
 	Headers map[string]string
 	Body    []byte
+	// Capture is the parent's verbatim copy for the attempt owner's private
+	// record only. The budget bridge removes it before any projection or PAL.
+	Capture *WireCapture
+}
+
+// WireCapture is the bounded received entity body, including bytes the parent
+// refused to forward. Stage/Code name the parent's own refusal point, if any.
+type WireCapture struct {
+	Body            []byte
+	Outcome         string // response, read_failed or no_response
+	Complete        bool
+	ObservedAtLeast int64
+	Stage, Code     string
 }
 type Transport interface {
 	Do(context.Context, WireRequest) (WireResponse, error)
