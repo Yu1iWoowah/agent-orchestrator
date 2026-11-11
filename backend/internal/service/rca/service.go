@@ -412,8 +412,21 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID, q domain.RCAQuer
 	if failed || closed || ctx.Err() != nil || !s.core.Current(receipt) {
 		out.Recorded = nil
 		out.Status, out.Reason = "unavailable", "policy_changed"
+		// Current also fences unavailable storage. Refresh failure flags after
+		// that fence, then classify without admitting any recorded content.
+		s.mu.Lock()
+		failed, closed = s.failed, s.closed
+		s.mu.Unlock()
 		if failed {
 			out.Reason = "analysis_failed"
+		} else if !closed && ctx.Err() == nil && s.ctx.Err() == nil && s.projection != nil {
+			reason := s.projection.Reason() // cached; no storage I/O or job wait
+			if receipt == s.core.Revision(key) {
+				switch reason {
+				case "storage_unavailable", "storage_low_space", "storage_space_unknown", "storage_identity_changed", "storage_read_failed", "storage_write_failed":
+					out.Reason = reason
+				}
+			}
 		}
 	}
 	return out, nil
