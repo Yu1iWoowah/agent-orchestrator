@@ -506,7 +506,11 @@ type budgetBridge struct {
 	authorize    func(context.Context) bool
 	commitGuard  func(context.Context, func() error) error
 	afterReserve func(context.Context)
+	replies      *replyStore
+	runID        string
 	key          string
+	mu           sync.Mutex
+	reply        *replyAttempt
 	started      bool
 }
 
@@ -540,13 +544,32 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		return WireResponse{}, err
 	}
 	b.key = key
+	// unsent ends a provably unsent attempt: the original hold release plus a
+	// terminal not_sent record that frees the unused diagnosis reservation.
+	unsent := func(reason string) {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = b.budget.releaseUnsent(releaseCtx, key)
+		if a := b.attempt(); a != nil {
+			_ = a.notSent(reason)
+		}
+	}
+	if b.replies != nil {
+		e, p := b.execution, b.profile
+		a, err := b.replies.admit(ctx, replyIdentity{RunID: b.runID, ProjectID: e.ProjectID, SessionID: e.SessionID, DelegationID: e.DelegationID, AttemptID: e.AttemptID, BudgetAttemptKey: key, Provider: p.BillingProvider, Model: p.Model, ProfileID: p.ID, ProfileRevision: p.Revision, ProfileDigest: p.digest()})
+		if err != nil {
+			unsent("")
+			return WireResponse{}, err
+		}
+		b.mu.Lock()
+		b.reply = a
+		b.mu.Unlock()
+	}
 	if b.afterReserve != nil {
 		b.afterReserve(ctx)
 	}
 	if (b.authorize != nil && !b.authorize(ctx)) || ctx.Err() != nil {
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = b.budget.releaseUnsent(releaseCtx, key)
+		unsent("authorization_withdrawn")
 		return WireResponse{}, ErrBudgetBlocked
 	}
 	dispatch := func() error { return b.budget.transition(ctx, key, "reserved", "dispatched") }
@@ -568,32 +591,67 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		}
 	}
 	if err := dispatch(); err != nil {
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = b.budget.releaseUnsent(releaseCtx, key)
+		unsent("dispatch_refused")
 		return WireResponse{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = b.budget.releaseUnsent(releaseCtx, key)
+		unsent("cancelled_before_send")
 		return WireResponse{}, err
 	}
+	b.mu.Lock()
 	b.started = true
+	b.mu.Unlock()
 	response, err := b.actual.Do(ctx, r)
 	if errors.Is(err, ErrNotSent) {
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = b.budget.releaseUnsent(releaseCtx, key)
+		unsent("transport_not_sent")
+		b.mu.Lock()
 		b.started = false
+		b.mu.Unlock()
+		return response, err
+	}
+	captured := response.Capture
+	response.Capture = nil // the verbatim copy never reaches projection or PAL
+	if a := b.attempt(); a != nil {
+		if captured == nil {
+			captured = &WireCapture{Outcome: "response", Body: response.Body, Complete: err == nil, ObservedAtLeast: int64(len(response.Body))}
+			if err != nil && response.Status == 0 && len(response.Body) == 0 {
+				captured.Outcome = "no_response"
+			}
+		}
+		if captureErr := a.capture(response, *captured); captureErr != nil {
+			err = errors.Join(err, captureErr)
+		}
 	}
 	return response, err
 }
+func (b *budgetBridge) attempt() *replyAttempt {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reply
+}
 func (b *budgetBridge) Record(ctx context.Context, r Receipt) error {
-	if !b.started {
+	b.mu.Lock()
+	started := b.started
+	b.mu.Unlock()
+	if !started {
 		return nil
 	} // no provider attempt; no invented usage source
-	return b.budget.record(ctx, b.key, r, b.canonical)
+	err := b.budget.record(ctx, b.key, r, b.canonical)
+	if a := b.attempt(); a != nil {
+		if replyErr := a.receipt(r, err); replyErr != nil && err == nil {
+			err = replyErr
+		}
+	}
+	return err
+}
+
+// finishReply records the verifier outcome, or why it did not run, for the
+// attempt this bridge sent. Provably unsent attempts are already terminal.
+func (b *budgetBridge) finishReply(v replyValidation) error {
+	if a := b.attempt(); a != nil {
+		return a.finish(v)
+	}
+	return nil
 }
 func (b *Budget) record(ctx context.Context, key string, r Receipt, canonical Recorder) error {
 	var attempt budgetAttempt

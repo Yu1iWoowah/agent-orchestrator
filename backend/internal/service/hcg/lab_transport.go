@@ -102,11 +102,13 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	if response != nil && response.Body != nil {
 		defer func() { _ = response.Body.Close() }()
 	}
-	if err != nil {
+	if response == nil {
+		out := reporting.DelegationProviderResponse{Capture: &reporting.DelegationProviderCapture{Outcome: "no_response", Stage: "network", Code: "request_failed"}}
 		if ctx.Err() != nil {
-			return reporting.DelegationProviderResponse{}, ctx.Err()
+			out.Capture.Code = "cancelled"
+			return out, ctx.Err()
 		}
-		return reporting.DelegationProviderResponse{}, errLabTransport
+		return out, errLabTransport
 	}
 	safeID := func(id string) string {
 		if !labRequestID.MatchString(id) || strings.Contains(id, credential.Secret) || strings.Contains(id, "HCG_CANARY_DO_NOT_SEND") {
@@ -115,16 +117,43 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 		return id
 	}
 	out := reporting.DelegationProviderResponse{Status: response.StatusCode, RequestID: safeID(response.Header.Get("x-request-id")), AlternateRequestID: safeID(response.Header.Get("request-id"))}
-	if response.StatusCode != http.StatusOK {
-		return out, nil // Never forward a provider error body or arbitrary headers.
+	// Every received entity body, ≤1MiB, is kept verbatim for the attempt
+	// owner's private record, including non-200 bodies and credential echoes.
+	// Only a fully checked 200 body is ever forwarded in out.Body.
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	capture := &reporting.DelegationProviderCapture{Outcome: "response", Body: body, Complete: readErr == nil && len(body) <= 1<<20, ObservedAtLeast: int64(len(body))}
+	if len(body) > 1<<20 {
+		capture.Body = body[:1<<20]
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
-	if err != nil || len(body) > 1<<20 || bytes.Contains(body, []byte(credential.Secret)) {
-		return out, errLabTransport
+	if readErr != nil {
+		capture.Outcome = "read_failed"
+	}
+	out.Capture = capture
+	refuse := func(stage, code string, err error) (reporting.DelegationProviderResponse, error) {
+		capture.Stage, capture.Code = stage, code
+		return out, err
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return refuse("network", "cancelled", ctx.Err())
+		}
+		return refuse("network", "request_failed", errLabTransport)
+	}
+	if response.StatusCode != http.StatusOK {
+		return refuse("http_status", "http_status_not_ok", nil) // Never forward a provider error body or arbitrary headers.
+	}
+	if readErr != nil {
+		return refuse("body_read", "read_failed", errLabTransport)
+	}
+	if len(body) > 1<<20 {
+		return refuse("body_size", "body_too_large", errLabTransport)
+	}
+	if bytes.Contains(body, []byte(credential.Secret)) {
+		return refuse("credential_scan", "credential_echo", errLabTransport)
 	}
 	var decoded any
 	if json.Unmarshal(body, &decoded) == nil && labEchoesCredential(decoded, credential.Secret) {
-		return out, errLabTransport
+		return refuse("credential_scan", "credential_echo", errLabTransport)
 	}
 	// The completion is JSON encoded inside the provider's JSON envelope.
 	// Scan its decoded strings here, before any text reaches the PAL child.
@@ -137,7 +166,7 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 		for _, choice := range completion.Choices {
 			var reply any
 			if json.Unmarshal([]byte(choice.Message.Content), &reply) == nil && labEchoesCredential(reply, credential.Secret) {
-				return out, errLabTransport
+				return refuse("credential_scan", "completion_credential_echo", errLabTransport)
 			}
 		}
 	}

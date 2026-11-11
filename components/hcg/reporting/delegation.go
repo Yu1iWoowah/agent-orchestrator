@@ -27,7 +27,13 @@ type DelegationProviderResponse struct {
 	Status                        int
 	RequestID, AlternateRequestID string
 	Body                          []byte
+	// Capture is the parent's verbatim bounded entity body for the attempt
+	// owner's private record. Only Body may ever be forwarded toward PAL.
+	Capture *DelegationProviderCapture
 }
+
+// DelegationProviderCapture is passed through unchanged to the attempt owner.
+type DelegationProviderCapture = delegate.WireCapture
 type DelegationConsumer struct{ core *delegate.Coordinator }
 type DelegationRevision struct{ value delegate.PolicyRevision }
 type PreparedDelegationLaunch struct {
@@ -42,7 +48,7 @@ type fixedDelegationProvider struct {
 func (p fixedDelegationProvider) Do(ctx context.Context, r delegate.WireRequest) (delegate.WireResponse, error) {
 	d := p.deployment
 	response, err := p.provider.Call(ctx, DelegationProviderRequest{BillingProvider: r.Provider, ProfileID: d.Profile.ID, ProfileRevision: d.Profile.Revision, Model: r.Model, Endpoint: r.Endpoint, Workspace: d.Workspace, CredentialRef: DelegationCredentialReference(d.CredentialRef), Payload: append([]byte(nil), r.Payload...)})
-	return delegate.WireResponse{Status: response.Status, Headers: map[string]string{"x-request-id": response.RequestID, "request-id": response.AlternateRequestID}, Body: response.Body}, err
+	return delegate.WireResponse{Status: response.Status, Headers: map[string]string{"x-request-id": response.RequestID, "request-id": response.AlternateRequestID}, Body: response.Body, Capture: response.Capture}, err
 }
 
 // NewDelegation has no arbitrary executable/environment hooks. Its provider and
