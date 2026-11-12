@@ -286,3 +286,44 @@ func TestReceiptIdentifiersNeverPersistSuspiciousProviderText(t *testing.T) {
 		t.Fatalf("unsafe response ID projected: %s %v", encoded, err)
 	}
 }
+
+// Provider-boundary refusals keep their own private stage, separate from the
+// verifier, and the receipt projection is unchanged.
+func TestProviderProjectionNamesPrivateStage(t *testing.T) {
+	p := budgetProfile("openai")
+	reply := func(change func(map[string]any)) WireResponse {
+		r := providerFixtureReply(p.Model, "answer")
+		var v map[string]any
+		_ = json.Unmarshal(r.Body, &v)
+		change(v)
+		r.Body, _ = json.Marshal(v)
+		return r
+	}
+	choice := func(v map[string]any) map[string]any { return v["choices"].([]any)[0].(map[string]any) }
+	for code, response := range map[string]WireResponse{
+		"http_status_not_ok":     {Status: 503, Headers: map[string]string{"x-request-id": "r"}, Body: []byte("{}")},
+		"outer_json_invalid":     {Status: 200, Headers: map[string]string{"x-request-id": "r"}, Body: []byte("not json")},
+		"response_id_invalid":    reply(func(v map[string]any) { v["id"] = "HCG_CANARY_DO_NOT_SEND" }),
+		"model_mismatch":         reply(func(v map[string]any) { v["model"] = "other" }),
+		"choices_count_invalid":  reply(func(v map[string]any) { v["choices"] = []any{} }),
+		"usage_missing":          reply(func(v map[string]any) { delete(v, "usage") }),
+		"usage_invalid":          reply(func(v map[string]any) { v["usage"].(map[string]any)["total_tokens"] = 99 }),
+		"finish_reason_not_stop": reply(func(v map[string]any) { choice(v)["finish_reason"] = "length" }),
+		"content_empty":          reply(func(v map[string]any) { choice(v)["message"] = map[string]any{"content": ""} }),
+		"request_id_missing": func() WireResponse {
+			r := providerFixtureReply(p.Model, "answer")
+			r.Headers = map[string]string{}
+			return r
+		}(),
+	} {
+		out, err := projectResponse(p, response)
+		if err == nil || out.text != "" || out.failure == nil || out.failure.Code != code || !strings.HasPrefix(code, out.failure.Stage) {
+			t.Fatalf("%s: %+v %v", code, out.failure, err)
+		}
+	}
+	luna := lunaProfile()
+	out, err := projectResponse(luna, providerFixtureReply(luna.Model, "answer"))
+	if err == nil || out.failure == nil || out.failure.Code != "service_tier_missing" || out.Receipt.UnknownReason != "service_tier_unverified" {
+		t.Fatalf("luna tier stage: %+v %v", out.failure, err)
+	}
+}

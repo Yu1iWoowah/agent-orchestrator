@@ -189,3 +189,44 @@ func TestLabHTTPInFlightCancellation(t *testing.T) {
 		t.Fatal("transport did not stop after caller cancellation")
 	}
 }
+
+// The parent keeps every received body (≤1MiB) verbatim for the attempt
+// owner's private record, yet still forwards only a fully checked 200 body.
+func TestLabParentCapturesEveryBodyPrivately(t *testing.T) {
+	okBody := `{"model":"fixture-model","usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`
+	echoBody := `{"echo":"` + labFixtureMarker + `"}` + "\r\n"
+	big := strings.Repeat("b", (1<<20)+5)
+	for name, tc := range map[string]struct {
+		status                       int
+		body                         string
+		dialErr                      error
+		outcome, stage, code, stored string
+		complete                     bool
+		observed                     int64
+	}{
+		"ok":              {200, okBody, nil, "response", "", "", okBody, true, int64(len(okBody))},
+		"non_200":         {429, `{"error":"synthetic rate limit"}`, nil, "response", "http_status", "http_status_not_ok", `{"error":"synthetic rate limit"}`, true, 32},
+		"credential_echo": {200, echoBody, nil, "response", "credential_scan", "credential_echo", echoBody, true, int64(len(echoBody))},
+		"too_large":       {200, big, nil, "response", "body_size", "body_too_large", big[:1<<20], false, (1 << 20) + 1},
+		"no_response":     {0, "", errors.New("synthetic dial failure"), "no_response", "network", "request_failed", "", false, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, _ := labCredentialFixture(t, "openai")
+			p := NewLabHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if tc.dialErr != nil {
+					return nil, tc.dialErr
+				}
+				return &http.Response{StatusCode: tc.status, Header: http.Header{"X-Request-Id": {"synthetic-request"}}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+			}))
+			out, err := p.Call(t.Context(), labRequest("openai"))
+			c := out.Capture
+			if c == nil || c.Outcome != tc.outcome || c.Stage != tc.stage || c.Code != tc.code || string(c.Body) != tc.stored || c.Complete != tc.complete || c.ObservedAtLeast != tc.observed {
+				t.Fatalf("private capture: %+v", c)
+			}
+			forwarded := name == "ok"
+			if forwarded != (err == nil && len(out.Body) > 0) || (forwarded && string(out.Body) != okBody) || (err != nil && strings.Contains(err.Error(), labFixtureMarker)) {
+				t.Fatalf("forwarding boundary changed: body=%d err=%v", len(out.Body), err)
+			}
+		})
+	}
+}

@@ -1,13 +1,16 @@
 package delegate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -321,6 +324,108 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 				if attempt.State != "settled" {
 					t.Fatalf("successful recovery lost settlement: %+v", attempt)
 				}
+			}
+		})
+	}
+}
+
+// Five representatives on the one production caller: the attempt's verbatim
+// body, private refusal point and canonical association are recorded, while
+// the public reply keeps its original shape and never carries raw text.
+func TestReadRecordsProviderReplyAtSameCaller(t *testing.T) {
+	source := "SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n"
+	marker := "SYNTHETIC_TRANSPORT_MARKER" // synthetic credential-echo stand-in
+	rejected := strings.Replace(validProposal(source), `"source_id":"s0000"`, `"source_id":"s9999"`, 1)
+	echo := []byte(`{"choices":[{"message":{"content":"` + marker + `"}}]}` + "\r\n")
+	for _, tc := range []struct {
+		name, status, reason, state, validation, code string
+		respond                                       func(model string) (WireResponse, error)
+		failWrite                                     bool
+	}{
+		{"accepted", "ok", "machine_checked_locations_only", "sent_validation_done", "accepted", "", func(m string) (WireResponse, error) {
+			return providerFixtureReply(m, validProposal(source)), nil
+		}, false},
+		{"not_found", "not_found", "not_found_in_injected_scope", "sent_validation_done", "not_found", "", func(m string) (WireResponse, error) {
+			return providerFixtureReply(m, `{"schema":"hcg.delegate-read/1","status":"not_found","findings":[],"evidence":[]}`), nil
+		}, false},
+		{"verifier_rejected", "blocked", "unverified", "sent_validation_done", "rejected", "evidence_source_unknown", func(m string) (WireResponse, error) {
+			return providerFixtureReply(m, rejected), nil
+		}, false},
+		{"parent_rejected", "unavailable", "integration_unavailable", "sent_validation_not_run", "not_run", "transport_failed", func(string) (WireResponse, error) {
+			return WireResponse{Status: 200, Headers: map[string]string{"x-request-id": "fixture-request"}, Capture: &WireCapture{Outcome: "response", Body: echo, Complete: true, ObservedAtLeast: int64(len(echo)), Stage: "credential_scan", Code: "credential_echo"}}, errors.New("synthetic parent refusal")
+		}, false},
+		{"record_failed", "unavailable", "integration_unavailable", "record_failed", "", "", func(m string) (WireResponse, error) {
+			return providerFixtureReply(m, validProposal(source)), nil
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, worktree := t.TempDir(), t.TempDir()
+			if err := os.WriteFile(filepath.Join(worktree, "prompt.txt"), []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			d := deploymentFixture(t, "openai", "p", source)
+			sink := &receiptSink{}
+			calls := 0
+			var sent WireResponse
+			c := NewCoordinator(root, sink, func(d Deployment) Transport {
+				return transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
+					calls++
+					response, err := tc.respond(d.Profile.Model)
+					sent = response
+					return response, err
+				})
+			}, nil)
+			defer c.Close()
+			if tc.failWrite {
+				// Fail only the terminal record written after verification, so a
+				// swallowed finalize error would deliver a normal ok answer.
+				writer := c.replies.write
+				c.replies.write = func(dir, name string, data []byte) error {
+					if name == "record.json" && bytes.Contains(data, []byte(`"state":"sent_validation_done"`)) {
+						return errors.New("synthetic disk full")
+					}
+					return writer(dir, name, data)
+				}
+			}
+			approveFixture(t, c, d)
+			policy := delegationPolicy(d.Profile)
+			c.ProjectPolicyChanged("p", policy)
+			id := integration.Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree, LaunchID: "launch", NativeID: "native", ControllerGeneration: "generation"}
+			launchFixture(t, c, id)
+			out := c.Read(t.Context(), id, policy, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{"prompt.txt"}}, c.PolicyRevision(id))
+			public, _ := json.Marshal(out)
+			if out.Status != tc.status || out.Reason != tc.reason || calls != 1 || strings.Contains(string(public), marker) || (tc.code != "" && strings.Contains(string(public), tc.code)) {
+				t.Fatalf("public reply changed or leaked: %s calls=%d", public, calls)
+			}
+			record, body, _ := readReply(t, c.replies, out.UsageRef.AttemptID)
+			wantBody := sent.Body
+			if sent.Capture != nil {
+				wantBody = sent.Capture.Body
+			}
+			budget := readBudget(t, c.budget)
+			attempt, known := budget.Attempts[record.Identity.BudgetAttemptKey]
+			i := record.Identity
+			if record.State != tc.state || !known || i.ProjectID != "p" || i.SessionID != "s" || i.AttemptID != out.UsageRef.AttemptID || i.DelegationID != out.DelegationID || i.RunID != "synthetic-run" || i.ProfileID != d.Profile.ID || i.ProfileDigest != out.UsageRef.ProfileDigest || attempt.Execution.AttemptID != i.AttemptID {
+				t.Fatalf("record not bound to the original attempt: %+v", record)
+			}
+			if tc.failWrite {
+				if record.RecordFailure != "terminal_write_failed" || len(sink.receipts) != 1 {
+					t.Fatalf("record failure/accounting: %+v receipts=%d", record, len(sink.receipts))
+				}
+				again := c.Read(t.Context(), id, policy, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{"prompt.txt"}}, c.PolicyRevision(id))
+				if again.Status != "unavailable" || calls != 1 {
+					t.Fatalf("frozen owner sent again: %+v calls=%d", again, calls)
+				}
+				return
+			}
+			if !bytes.Equal(body, wantBody) || record.Capture == nil || !record.Capture.Complete || record.Receipt == nil || record.Receipt.ReceiptSHA256 != attempt.ReceiptDigest || record.Validation == nil || record.Validation.Result != tc.validation {
+				t.Fatalf("verbatim body/receipt/validation lost: %+v", record)
+			}
+			if tc.code != "" && (record.Validation.Failure == nil || record.Validation.Failure.Code != tc.code) {
+				t.Fatalf("private first failure: %+v", record.Validation.Failure)
+			}
+			if tc.name == "parent_rejected" && (record.Capture.ParentRefusal == nil || record.Capture.ParentRefusal.Code != "credential_echo" || !bytes.Contains(body, []byte(marker))) {
+				t.Fatalf("parent refusal body not kept verbatim: %+v", record.Capture)
 			}
 		})
 	}

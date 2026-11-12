@@ -35,6 +35,7 @@ type PAL struct {
 }
 type Consumer struct {
 	checkpoint    func(context.Context, string)
+	validation    func(replyValidation) error // constructor-only private record sink
 	ApprovedScope ApprovedScope
 	PAL           PAL
 	Transport     Transport
@@ -46,6 +47,7 @@ type Result struct {
 	sources preparedScope
 	text    string
 	Receipt Receipt
+	failure *replyFailure
 }
 
 //go:embed pal_bridge.py
@@ -146,6 +148,29 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	var result Result
 	calls := 0
+	// Every exit after dispatch finalizes the private record: the verifier's
+	// result, or why it did not run. Unsent attempts are already terminal.
+	dispatched, finished := false, false
+	var notRun *replyFailure
+	finish := func(v replyValidation) error {
+		finished = true
+		if c.validation == nil {
+			return nil
+		}
+		return c.validation(v)
+	}
+	defer func() {
+		if !dispatched || finished {
+			return
+		}
+		failure := notRun
+		if err := ctx.Err(); err != nil {
+			failure = &replyFailure{Stage: "cancel", Code: contextReason(err)}
+		} else if failure == nil {
+			failure = &replyFailure{Stage: "pal_done", Code: "pal_failed"}
+		}
+		_ = finish(replyValidation{Result: "not_run", Failure: failure})
+	}()
 	for scanner.Scan() {
 		var message struct {
 			Kind, Prompt, System, Model string
@@ -167,9 +192,11 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			if err != nil {
 				return Result{Audit: audit}, err
 			}
+			dispatched = true
 			result, err = c.dispatch(ctx, execution, profile, WireRequest{Provider: profile.BillingProvider, Endpoint: endpoint, Model: profile.Model, Payload: payload, ScopeDigest: audit.ScopeDigest})
 			result.Audit, result.sources = audit, scope
 			if err != nil {
+				notRun = dispatchFailure(result.failure, err)
 				return Result{Receipt: result.Receipt, Audit: result.Audit}, err
 			}
 			if err := json.NewEncoder(stdin).Encode(map[string]any{"text": result.text, "usage": map[string]int64{"input_tokens": *result.Receipt.Usage.Input, "output_tokens": *result.Receipt.Usage.Output, "total_tokens": *result.Receipt.Usage.Total}}); err != nil {
@@ -193,8 +220,17 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 			if err := ctx.Err(); err != nil {
 				return Result{Receipt: result.Receipt}, err
 			}
-			reply, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
+			reply, failure, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
 			result.text = ""
+			validation := replyValidation{Result: "accepted"}
+			if err != nil {
+				validation = replyValidation{Result: "rejected", Failure: failure}
+			} else if reply.Status == "not_found" {
+				validation.Result = "not_found"
+			}
+			if recordErr := finish(validation); recordErr != nil {
+				return Result{Receipt: result.Receipt}, recordErr
+			}
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return Result{Receipt: result.Receipt}, cancelErr
 			}
@@ -224,6 +260,9 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 	go func() {
 		response, transportErr := c.Transport.Do(ctx, request)
 		result, err := projectResponse(profile, response)
+		if transportErr != nil {
+			result.failure = &replyFailure{Stage: "transport", Code: "transport_failed"}
+		}
 		result.Receipt.Execution = execution
 		result.Receipt.ObservedAt = time.Now().UTC()
 		result.Receipt.ProfileID, result.Receipt.ProfileRevision = profile.ID, profile.Revision
@@ -253,6 +292,22 @@ func (c *Consumer) dispatch(ctx context.Context, execution Execution, profile Pr
 	case <-ctx.Done():
 		return Result{}, ctx.Err()
 	}
+}
+
+// dispatchFailure names why validation did not run after a send. The parent's
+// own refusal point, if any, is kept separately in the capture metadata.
+func dispatchFailure(f *replyFailure, err error) *replyFailure {
+	switch {
+	case errors.Is(err, ErrReplyRecord):
+		return &replyFailure{Stage: "record_write", Code: "record_failed"}
+	case f != nil:
+		return f
+	case errors.Is(err, ErrUsagePending):
+		return &replyFailure{Stage: "receipt", Code: "usage_pending"}
+	case errors.Is(err, ErrBudgetBlocked):
+		return &replyFailure{Stage: "receipt", Code: "receipt_blocked"}
+	}
+	return &replyFailure{Stage: "transport", Code: "transport_failed"}
 }
 
 // Fixed constructor-only fault points share the caller's cancellation bound.

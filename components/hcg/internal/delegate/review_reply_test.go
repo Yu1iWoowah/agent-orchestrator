@@ -27,7 +27,7 @@ func TestReadReplyDecodedStringsCannotEscapeSafetyScan(t *testing.T) {
 			if !safeText(raw) {
 				t.Fatal("fixture was blocked before JSON decoding")
 			}
-			out, err := verifyReply(time.Unix(0, 0), raw, testExecution, profile, Receipt{}, audit, scope, 0)
+			out, _, err := verifyReply(time.Unix(0, 0), raw, testExecution, profile, Receipt{}, audit, scope, 0)
 			if err == nil || out.Status != "blocked" || out.Answer != "" || len(out.Findings) != 0 || len(out.Evidence) != 0 {
 				t.Fatal("decoded unsafe output was returned or partial text retained")
 			}
@@ -35,7 +35,7 @@ func TestReadReplyDecodedStringsCannotEscapeSafetyScan(t *testing.T) {
 	}
 	execution := testExecution
 	execution.SessionID = "HCG_CANARY_DO_NOT_SEND"
-	out, err := verifyReply(time.Unix(0, 0), validProposal(source), execution, profile, Receipt{}, audit, scope, 0)
+	out, _, err := verifyReply(time.Unix(0, 0), validProposal(source), execution, profile, Receipt{}, audit, scope, 0)
 	if err == nil || out.Status != "blocked" || out.SessionID != "" {
 		t.Fatal("final reply metadata bypassed safety scan")
 	}

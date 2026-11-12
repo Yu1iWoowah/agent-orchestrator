@@ -155,6 +155,7 @@ type Coordinator struct {
 	jobs                             map[string]delegationJob
 	loadErr                          error
 	budget                           *Budget
+	replies                          *replyStore
 	canonical                        Recorder
 	provider                         func(Deployment) Transport
 	checkpoint                       func(context.Context, string)
@@ -164,6 +165,9 @@ func NewCoordinator(root string, canonical Recorder, provider func(Deployment) T
 	c := &Coordinator{root: root, dir: filepath.Join(root, "hcg", "delegation"), epoch: rand.Text(), policies: map[string]PolicySnapshot{}, projectVersions: map[string]uint64{}, sessionVersions: map[string]uint64{}, jobs: map[string]delegationJob{}, canonical: canonical, provider: provider, checkpoint: checkpoint}
 	c.state = deploymentState{Version: 1, Current: map[string]string{}, History: map[string]Deployment{}, Sessions: map[string]sessionMount{}}
 	c.budget = &Budget{OwnerRoot: root, Dir: filepath.Join(c.dir, "budget")}
+	// Every controlled provider attempt of this owner is recorded; there is no
+	// model-, request- or config-controlled switch.
+	c.replies = newReplyStore(filepath.Join(c.dir, "replies"))
 	raw, err := os.ReadFile(filepath.Join(c.dir, "registry.json"))
 	if err == nil {
 		if len(raw) > 4<<20 || json.Unmarshal(raw, &c.state) != nil || c.state.Version != 1 || c.state.Current == nil || c.state.History == nil || c.state.Sessions == nil {
@@ -531,7 +535,9 @@ func (c *Coordinator) Read(ctx context.Context, id integration.Identity, p Polic
 		c.mu.Unlock()
 		return failureReply(execution, d.Profile, "unavailable", view.Reason)
 	}
+	runID := ""
 	if c.state.Grant != nil {
+		runID = c.state.Grant.RunID
 		bounded, end := context.WithDeadline(ctx, c.state.Grant.ExpiresAt)
 		defer end()
 		ctx = bounded
@@ -567,7 +573,7 @@ func (c *Coordinator) Read(ctx context.Context, id integration.Identity, p Polic
 			scope = ApprovedScope{Name: input.Name, Revision: input.Revision, Root: id.Worktree, Files: input.Files}
 		}
 	}
-	bridge := &budgetBridge{budget: c.budget, execution: execution, profile: d.Profile, canonical: c.canonical, actual: c.provider(d), afterReserve: func(ctx context.Context) {
+	bridge := &budgetBridge{budget: c.budget, replies: c.replies, runID: runID, execution: execution, profile: d.Profile, canonical: c.canonical, actual: c.provider(d), afterReserve: func(ctx context.Context) {
 		if c.checkpoint != nil {
 			c.checkpoint(ctx, "reserved")
 		}
@@ -581,7 +587,7 @@ func (c *Coordinator) Read(ctx context.Context, id integration.Identity, p Polic
 			}
 			return persist()
 		}}
-	result, err := (&Consumer{ApprovedScope: scope, PAL: pal, Transport: bridge, Recorder: bridge, checkpoint: c.checkpoint}).DelegateRead(ctx, execution, d.Profile, r)
+	result, err := (&Consumer{ApprovedScope: scope, PAL: pal, Transport: bridge, Recorder: bridge, checkpoint: c.checkpoint, validation: bridge.finishReply}).DelegateRead(ctx, execution, d.Profile, r)
 	c.mu.Lock()
 	valid := c.token(id) == revision
 	c.mu.Unlock()
