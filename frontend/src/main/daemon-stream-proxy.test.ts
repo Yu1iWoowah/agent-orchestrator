@@ -122,10 +122,11 @@ describe("daemon stream proxy", () => {
 		expect(calls[2].signal.aborted).toBe(true);
 	});
 
-	it("aborts an open still waiting for headers when the page reloads or its renderer exits", async () => {
+	it("aborts an open still waiting for headers when the page reloads, its renderer exits or the window closes", async () => {
 		for (const [event, details] of [
 			["did-start-navigation", { isMainFrame: true, isSameDocument: false }],
 			["render-process-gone", undefined],
+			["destroyed", undefined],
 		] as const) {
 			const signals: AbortSignal[] = [];
 			let respond!: () => void;
