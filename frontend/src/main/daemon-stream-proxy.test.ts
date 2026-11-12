@@ -5,26 +5,28 @@ vi.mock("./cloud-auth", () => ({ getCloudAccessToken: vi.fn(async () => "cloud-t
 
 import { createCloudCpProxy, cloudCpStreamChannel } from "./cloud-cp-proxy";
 import { createDaemonStreamProxy, daemonStreamChannel, MAX_DAEMON_STREAMS_PER_WEBCONTENTS } from "./daemon-stream-proxy";
-import type { SseRelayEvent } from "./sse-stream-relay";
+import type { SseRelayEvent, SseRelaySender } from "./sse-stream-relay";
 
 function fakeSender(id = 1) {
 	const handlers = new Map<string, Array<(details?: unknown) => void>>();
 	const add = (event: string, listener: (details?: unknown) => void) => {
 		handlers.set(event, [...(handlers.get(event) ?? []), listener]);
 	};
-	return {
+	const sent: Array<{ channel: string; event: SseRelayEvent }> = [];
+	const sender = {
 		id,
-		sent: [] as Array<{ channel: string; event: SseRelayEvent }>,
+		sent,
 		isDestroyed: () => false,
-		send(channel: string, event: SseRelayEvent) {
-			this.sent.push({ channel, event });
+		send: (channel: string, event: SseRelayEvent) => {
+			sent.push({ channel, event });
 		},
 		once: add,
 		on: add,
-		fire(event: string, details?: unknown) {
+		fire: (event: string, details?: unknown) => {
 			for (const listener of handlers.get(event) ?? []) listener(details);
 		},
 	};
+	return sender as unknown as SseRelaySender & Pick<typeof sender, "sent" | "fire">;
 }
 
 /** A fetch whose responses stay open until the test pushes or the signal aborts. */
