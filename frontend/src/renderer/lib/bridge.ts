@@ -415,4 +415,13 @@ export const aoBridge: AoBridge =
 			onStreamEvent: () => () => undefined,
 			agentBrowserUrl: async () => "",
 		},
+		// Never used: without the preload, local streams stay closed and the UI
+		// relies on polling (see daemon-event-source.ts).
+		daemonStream: {
+			openStream: async () => {
+				throw new Error("Daemon event streams require the desktop app.");
+			},
+			closeStream: () => undefined,
+			onStreamEvent: () => () => undefined,
+		},
 	} satisfies AoBridge);

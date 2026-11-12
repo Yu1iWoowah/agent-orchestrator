@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, vi } from "vitest";
 import { appI18n } from "../i18n";
 import { appCatalogs } from "../i18n/all-messages";
 import { coerceUiSettings, DEFAULT_UI_SETTINGS } from "../../shared/ui-locale";
+import type { AoBridge } from "../../preload";
 
 // The app loads non-English catalogs on demand. Component tests read other
 // locales synchronously (getFixedT, t after changeLanguage), so give the shared
@@ -495,5 +496,8 @@ if (typeof window !== "undefined") {
 			onStreamEvent: () => () => undefined,
 			agentBrowserUrl: async () => "",
 		},
+		// Local daemon streams stay closed by default, as they did when jsdom had
+		// no EventSource; tests that exercise a stream install their own bridge.
+		daemonStream: undefined as unknown as AoBridge["daemonStream"],
 	};
 } // end if (typeof window !== "undefined")

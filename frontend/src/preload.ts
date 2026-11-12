@@ -58,6 +58,8 @@ import type {
 	CloudCpProxyResponse,
 	CloudCpStreamEvent,
 } from "./main/cloud-cp-proxy";
+import type { DaemonStreamInit } from "./main/daemon-stream-proxy";
+import type { SseRelayEvent } from "./main/sse-stream-relay";
 import type { UpdateOutcome } from "./shared/update-telemetry";
 import type { UiSettings } from "./main/ui-settings";
 import type { UpdateCheckOptions } from "./main/auto-updater";
@@ -934,6 +936,24 @@ const api = {
 		onStreamEvent: (streamId: string, listener: (event: CloudCpStreamEvent) => void) => {
 			const channel = `cloudCp:stream:${streamId}`;
 			const wrapped = (_event: Electron.IpcRendererEvent, event: CloudCpStreamEvent) => listener(event);
+			ipcRenderer.on(channel, wrapped);
+			return () => {
+				ipcRenderer.off(channel, wrapped);
+			};
+		},
+	},
+	// Local daemon SSE streams, held by main (main/daemon-stream-proxy.ts) so
+	// they do not occupy the renderer's connections to the daemon host. Main
+	// picks the daemon origin; the renderer names only the stream path.
+	daemonStream: {
+		openStream: (init: DaemonStreamInit) =>
+			ipcRenderer.invoke("daemonStream:open", init) as Promise<{ streamId: string }>,
+		closeStream: (streamId: string) => {
+			ipcRenderer.send("daemonStream:close", streamId);
+		},
+		onStreamEvent: (streamId: string, listener: (event: SseRelayEvent) => void) => {
+			const channel = `daemonStream:stream:${streamId}`;
+			const wrapped = (_event: Electron.IpcRendererEvent, event: SseRelayEvent) => listener(event);
 			ipcRenderer.on(channel, wrapped);
 			return () => {
 				ipcRenderer.off(channel, wrapped);
