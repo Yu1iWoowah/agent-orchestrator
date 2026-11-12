@@ -4,6 +4,7 @@ import { baseUrlForHost, subscribeConnectedHosts } from "./host-clients";
 import { sessionUiKey } from "./hosts";
 import { probeRemoteSse } from "./remote-sse-probe";
 import { computeSseRetryDelayMs } from "./sse-backoff";
+import { hasDaemonEventStreams, openDaemonEventSource, type DaemonEventSource } from "./daemon-event-source";
 
 const INVALIDATE_DEBOUNCE_MS = 150;
 const EVENTSOURCE_CLOSED = 2;
@@ -29,7 +30,7 @@ type WorkspaceStream = {
 	 */
 	retries: number;
 	lastVersion?: string;
-	source?: EventSource;
+	source?: DaemonEventSource;
 	poll?: ReturnType<typeof setInterval>;
 	stopRemote?: () => void;
 	sourceBaseUrl?: string;
@@ -213,7 +214,9 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 			);
 			return;
 		}
-		if (typeof EventSource === "undefined") {
+		// Without the desktop preload (browser preview, dev:web) no stream opens;
+		// "degraded" keeps the file queries polling.
+		if (!hasDaemonEventStreams()) {
 			setWorkspaceFileConnectionState(key, "degraded");
 			return;
 		}
@@ -223,9 +226,7 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 		stream.phase = "connecting";
 		const generation = ++stream.generation;
 		try {
-			const source = new EventSource(
-				`${baseUrl.replace(/\/+$/, "")}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/events`,
-			);
+			const source = openDaemonEventSource(`/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/events`)!;
 			stream.source = source;
 			source.onopen = () => {
 				if (stream.disposed || generation !== stream.generation || stream.source !== source) return;
