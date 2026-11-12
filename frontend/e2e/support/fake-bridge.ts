@@ -421,9 +421,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onStreamEvent: unsubscribe,
 					agentBrowserUrl: async () => "",
 				},
-				// Local streams open and stay quiet.
+				// Nothing serves SSE on the fake daemon port: every open fails as a
+				// network error and the app keeps retrying, as it would in the app.
 				daemonStream: {
-					openStream: async () => ({ streamId: "daemon_stream_test" }),
+					openStream: async () => {
+						throw new Error("fetch failed");
+					},
 					closeStream: () => undefined,
 					onStreamEvent: unsubscribe,
 				},
