@@ -40,8 +40,9 @@ export interface DaemonStreamProxy {
 	closeStream(sender: Pick<SseRelaySender, "id">, streamId: unknown): void;
 }
 
+// Tagged like an HTTP 400 so the renderer fails the stream instead of retrying.
 function invalid(detail: string): Error {
-	return new Error(`Invalid daemon stream request: ${detail}`);
+	return sseRelayError(DAEMON_STREAM_ERROR_MARKER, 400, `Invalid daemon stream request: ${detail}`);
 }
 
 function validateInit(init: unknown): DaemonStreamInit {

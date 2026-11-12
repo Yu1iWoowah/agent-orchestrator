@@ -92,6 +92,21 @@ describe("DaemonEventSource", () => {
 		expect(bridge.openStream).toHaveBeenCalledTimes(3);
 	});
 
+	it("fails for good when main rejects the request as invalid", async () => {
+		const bridge = fakeBridge();
+		bridge.openStream.mockRejectedValueOnce(
+			new Error("Error invoking remote method 'daemonStream:open': Error: DAEMON_STREAM_ERROR 400 Invalid daemon stream request: \"/api/v1/x\" is not a daemon event stream."),
+		);
+		const source = new DaemonEventSource("/api/v1/x", bridge);
+		const onerror = vi.fn();
+		source.onerror = onerror;
+		await settle();
+		await vi.advanceTimersByTimeAsync(DAEMON_EVENT_SOURCE_RECONNECT_MS * 3);
+		expect(source.readyState).toBe(source.CLOSED);
+		expect(onerror).toHaveBeenCalledTimes(1);
+		expect(bridge.openStream).toHaveBeenCalledTimes(1);
+	});
+
 	it("closes the stream, including one still opening", async () => {
 		const bridge = fakeBridge();
 		const open = new DaemonEventSource("/api/v1/events", bridge);

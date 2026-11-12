@@ -92,7 +92,7 @@ describe("daemon stream proxy", () => {
 			{ path: "/api/v1/events", baseUrl: "http://evil.test" },
 			{ path: "/api/v1/events", lastEventId: "1\r\nX-Injected: 1" },
 		]) {
-			await expect(proxy.openStream(sender, init)).rejects.toThrow(/Invalid daemon stream request/);
+			await expect(proxy.openStream(sender, init)).rejects.toThrow("DAEMON_STREAM_ERROR 400 Invalid daemon stream request");
 		}
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
@@ -151,6 +151,23 @@ describe("daemon stream proxy", () => {
 				await proxy.openStream(sender, { path: "/api/v1/events" });
 			}
 		}
+	});
+
+	it("counts opens still in flight against the per-window cap", async () => {
+		let respond!: () => void;
+		const headers = new Promise<void>((resolve) => { respond = resolve; });
+		const fetchImpl = vi.fn(async () => {
+			await headers;
+			return new Response(new ReadableStream<Uint8Array>(), { status: 200 });
+		});
+		const proxy = createDaemonStreamProxy(() => "http://127.0.0.1:4100", { fetchImpl: fetchImpl as unknown as typeof fetch });
+		const sender = fakeSender();
+		const opening = Array.from({ length: MAX_DAEMON_STREAMS_PER_WEBCONTENTS + 1 }, () => proxy.openStream(sender, { path: "/api/v1/events" }));
+		await expect(opening.at(-1)).rejects.toThrow("DAEMON_STREAM_ERROR 429");
+		respond();
+		await Promise.all(opening.slice(0, -1));
+		expect(fetchImpl).toHaveBeenCalledTimes(MAX_DAEMON_STREAMS_PER_WEBCONTENTS);
+		await expect(proxy.openStream(sender, { path: "/api/v1/events" })).rejects.toThrow("DAEMON_STREAM_ERROR 429");
 	});
 
 	it("counts local streams apart from cloud streams, which keep their bearer", async () => {

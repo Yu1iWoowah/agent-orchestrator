@@ -150,7 +150,13 @@ export function createSseRelay(options: SseRelayOptions): SseRelay {
 		connect: (signal: AbortSignal) => Promise<Response>,
 	): Promise<{ streamId: string }> {
 		const ids = trackSender(sender);
-		if (ids.size >= options.maxStreamsPerSender) {
+		let opening = openingBySender.get(sender.id);
+		if (opening === undefined) {
+			opening = new Set();
+			openingBySender.set(sender.id, opening);
+		}
+		// Opens in flight hold their slot, so concurrent opens cannot pass the cap.
+		if (ids.size + opening.size >= options.maxStreamsPerSender) {
 			throw sseRelayError(
 				options.errorMarker,
 				429,
@@ -158,11 +164,6 @@ export function createSseRelay(options: SseRelayOptions): SseRelay {
 			);
 		}
 		const controller = new AbortController();
-		let opening = openingBySender.get(sender.id);
-		if (opening === undefined) {
-			opening = new Set();
-			openingBySender.set(sender.id, opening);
-		}
 		opening.add(controller);
 		let response: Response;
 		try {
