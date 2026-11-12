@@ -12,7 +12,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from test_wire_contract import wire, wire_bytes, list_row
+from test_wire_contract import wire, wire_bytes, list_row, true_cli
 from producer_transport import ActorTransport, activity as produced_activity, directive as persisted_directive
 
 SPEC = importlib.util.spec_from_file_location("handoff", Path(__file__).parents[1] / "handoff.py")
@@ -178,7 +178,7 @@ class ProtocolTests(unittest.TestCase):
     def test_audit_dispatch_deadline_checks_before_starting_subprocess(self):
         run_file = self.root / "fake-running.json"
         h.publish(run_file, b'{"port":1}')
-        cli = h.CLI(Path("/usr/bin/true"), "old", self.root, run_file, self.root)
+        cli = h.CLI(true_cli(self.root), "old", self.root, run_file, self.root)
         cli.execution = h.Journal(self.root, str(uuid.uuid4())).register("start", "old")
         self.addCleanup(cli.execution.close)
         marked, clock = [], [0]

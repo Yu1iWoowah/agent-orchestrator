@@ -14,6 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from test_wire_contract import true_cli
+
 SPEC = importlib.util.spec_from_file_location("redesign_handoff", Path(__file__).parents[1] / "handoff.py")
 h = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(h)
@@ -231,7 +233,7 @@ class JournalTests(unittest.TestCase):
     def cli(self):
         journal = h.Journal(self.data, self.run_id)
         execution = journal.register("start", "old")
-        cli = h.CLI(Path("/usr/bin/true"), "old", self.data, self.data / "running.json", self.data)
+        cli = h.CLI(true_cli(self.data), "old", self.data, self.data / "running.json", self.data)
         cli.execution = execution
         execution.bindings = {"old"}
         return cli
@@ -254,7 +256,7 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(facts[0]["expected_effect"], "none")
 
     def test_no_context_no_transport_and_write_cannot_impersonate_read(self):
-        cli = h.CLI(Path("/usr/bin/true"), "old", self.data, self.data / "running.json", self.data)
+        cli = h.CLI(true_cli(self.data), "old", self.data, self.data / "running.json", self.data)
         with patch.object(h.subprocess, "run") as transport:
             with self.assertRaises(h.Stop):
                 cli.read(["session", "get", "old"])
@@ -418,7 +420,7 @@ class JournalTests(unittest.TestCase):
             journal.facts(require_ended=True)
         fence = journal.state()
         maintenance = journal.register("retire", "operator", maintenance=fence["token"])
-        maint_cli = h.CLI(Path("/usr/bin/true"), "operator", self.data, self.data / "running.json", self.data)
+        maint_cli = h.CLI(true_cli(self.data), "operator", self.data, self.data / "running.json", self.data)
         maint_cli.execution = maintenance
         maintenance.bindings = {"old"}
         with patch.object(h.subprocess, "run") as invoke:
@@ -500,7 +502,7 @@ h.Journal(pathlib.Path(sys.argv[2]),sys.argv[3]).register('start','old')
                 h.publish(root / "start.json", h.canonical(request))
                 state = dict(start_sha256=h.digest(h.canonical(request)), stage="spawn", outcome="running")
                 h.publish(root / "state.json", h.canonical(state))
-                cli = h.CLI(Path("/usr/bin/true"), "old", data, data / "running.json", data)
+                cli = h.CLI(true_cli(data), "old", data, data / "running.json", data)
                 cli.execution = h.Journal(data, run_id).register("bootstrap", "new")
                 run = h.Run(root, cli)
                 self.assertNotIn("new", cli.execution.bindings)
@@ -554,7 +556,7 @@ class HistoricalDatasetTests(unittest.TestCase):
             data.chmod(0o700)
             h.publish(data / "running.json", b'{"port":1}')
             journal = h.Journal(data, str(uuid.uuid4()))
-            cli = h.CLI(Path("/usr/bin/true"), "agent-orchestrator-1", data, data / "running.json", data)
+            cli = h.CLI(true_cli(data), "agent-orchestrator-1", data, data / "running.json", data)
             produced = []
             for row in rows:
                 kind = row["expected_kind"]
@@ -596,7 +598,7 @@ class HistoricalDatasetTests(unittest.TestCase):
         h.publish(current / "handoff.py", b"# frozen pre-protocol fixture; never execute\n")
         request = dict(old_id="old", workers=[], target={}, authority=dict(source_refs=["original-human"]))
         h.publish(current / "start.json", h.canonical(request))
-        executable = Path("/usr/bin/true")
+        executable = true_cli(data)
         state = dict(run_id=run_id, script_sha256=h.digest(h.private_read(current / "handoff.py")),
                      cli_sha256=h.digest(executable.read_bytes()), data_dir=str(data))
         h.publish(current / "state.json", h.canonical(state))
@@ -925,7 +927,7 @@ class RetirementTests(unittest.TestCase):
         h.publish(self.run / "handoff.py", Path(h.__file__).read_bytes())
         h.publish(self.run / "runner.lock", b"")
         h.publish(self.data / "running.json", b'{"port":1}')
-        executable = Path("/usr/bin/true")
+        executable = true_cli(self.data)
         qualification = dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL,
                              script_sha256=h.digest(Path(h.__file__).read_bytes()), cli_sha256=h.digest(executable.read_bytes()))
         qraw = h.canonical(qualification)
@@ -943,10 +945,11 @@ class RetirementTests(unittest.TestCase):
         code = """import importlib.util,pathlib,sys
 s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
 j=h.Journal(pathlib.Path(sys.argv[2]),sys.argv[3]);e=j.register('start','old')
-c=h.CLI(pathlib.Path('/usr/bin/true'),'old',pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[2])/'running.json',pathlib.Path(sys.argv[2]));c.execution=e
+c=h.CLI(pathlib.Path(sys.argv[4]),'old',pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[2])/'running.json',pathlib.Path(sys.argv[2]));c.execution=e
 c.call(['spawn','--help']);e.close()
 """
-        subprocess.run([sys.executable, "-I", "-B", "-c", code, h.__file__, str(self.data), self.run_id], check=True, capture_output=True)
+        subprocess.run([sys.executable, "-I", "-B", "-c", code, h.__file__, str(self.data), self.run_id, str(executable)],
+                       check=True, capture_output=True)
         self.snaps = {"old": snapshot()}
         holds = {}
         for worker in workers:
@@ -1057,7 +1060,7 @@ c.call(['spawn','--help']);e.close()
         self.assertFalse((self.directory / "receipt.json").exists())
 
     def test_canonical_success_before_business_receipt_reenters_without_dispatch(self):
-        cli = h.CLI(Path("/usr/bin/true"), "old", self.data, self.data / "running.json", self.data)
+        cli = h.CLI(true_cli(self.data), "old", self.data, self.data / "running.json", self.data)
         cli.execution = self.journal.register("_run", "old")
         self.addCleanup(cli.execution.close)
         run = h.Run(self.run, cli)

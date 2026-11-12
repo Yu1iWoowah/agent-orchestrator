@@ -27,6 +27,14 @@ def wire(name):
     return json.loads(wire_bytes(name))
 
 
+def true_cli(directory):
+    """Private no-op CLI; a host /usr/bin/true may be a symlink, which CLI() must reject."""
+    path = Path(directory) / "true-cli"
+    path.write_bytes(b"#!/bin/sh\nexit 0\n")
+    path.chmod(0o700)
+    return path
+
+
 def list_row(session):
     """Change scenario values on a real CLI list row, never copy detail keys."""
     row = copy.deepcopy(next(row for row in wire("list")["data"] if row["id"] == "new"))
@@ -50,7 +58,7 @@ class WireContractTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
         h.publish(self.root / "run.json", b'{"port":1}')
-        self.cli = h.CLI(Path("/usr/bin/true"), "old", self.root, self.root / "run.json", self.root)
+        self.cli = h.CLI(true_cli(self.root), "old", self.root, self.root / "run.json", self.root)
         self.cli.execution = h.Journal(self.root, str(uuid.uuid4())).register("_run", "old")
         self.cli.execution.bindings = {"old", "worker", "new"}
         self.cli.execution.request_target = dict(harness="codex", account="acct", model="model", effort="high", approval_mode="bypass-permissions")
