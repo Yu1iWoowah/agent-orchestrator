@@ -13,6 +13,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 import uuid
+from contextlib import closing
 from unittest.mock import patch
 
 
@@ -157,7 +158,7 @@ class WireContractTests(unittest.TestCase):
                 with patch.object(h.subprocess, "run", side_effect=command), self.http_transport(catalog), self.assertRaises(h.Stop):
                     h.target_preflight(self.cli, target)
             database = self.root / (provider + ".db")
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")
                 db.execute("INSERT INTO sessions VALUES('old',?,?, 'native')", (h.PROJECT, harness))
             snapshot = wire("claude-snapshot" if provider == "claude" else "snapshot")

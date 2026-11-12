@@ -1,4 +1,5 @@
 """RH-REDESIGN call-before-I/O and retirement boundary proofs."""
+from contextlib import closing
 import importlib.util
 import io
 import json
@@ -68,7 +69,7 @@ class RefreshProofStartTests(unittest.TestCase):
             script_sha256=h.digest(Path(h.__file__).read_bytes()))))
         self.run_file = self.home / ".ao/running.json"
         h.publish(self.run_file, b'{"port":1}')
-        with sqlite3.connect(self.data / "ao.db") as db:
+        with closing(sqlite3.connect(self.data / "ao.db")) as db, db:
             db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")
             db.execute("INSERT INTO sessions VALUES('old',?,'codex','native-old')", (h.PROJECT,))
         self.refreshes, self.source_reads = 0, 0
