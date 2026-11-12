@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -749,6 +750,75 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(fake.run.state["old_preservation_result"]["workspace"], "clean-reclaim-allowed")
         self.assertEqual(h.private_read(Path(proof["classification"]["ignored.cache"]["copy"]["path"])), b"unique original")
 
+    def test_launch_survives_clean_old_reclaim_for_normal_and_continuation(self):
+        for continuation in (False, True):
+            with self.subTest(continuation=continuation), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                data = h.mkdir(base / "h/.ao/data")
+                old = data / "worktrees" / h.PROJECT / "orchestrator/old"
+                FlowFixture.prepare_git(data / "repository", old)
+                root = h.mkdir(data / "projects" / h.PROJECT / "orchestrator/.private-handoff-runs" / str(uuid.uuid4()))
+                for directory in (data, old.parent, root.parent):
+                    for parent in [directory, *directory.parents]:
+                        if parent == base:
+                            break
+                        parent.chmod(0o700)
+                config = dict(base=str(base), root=str(root), tests=str(Path(__file__).parent),
+                              env={k: os.environ[k] for k in ("RH_WIRE_FIXTURES", "RH_ACTIVITY_PRODUCER", "TMPDIR", "TMUX_TMPDIR") if k in os.environ})
+                child = '''import os,sys,json,traceback
+from pathlib import Path
+config=CONFIG
+os.umask(0o022)
+os.environ.update({k:v for k,v in config['env'].items() if k.startswith('RH_') or sys.argv[1]=='_run'})
+sys.path.insert(0,config['tests'])
+from test_handoff import h,FlowFixture
+h.__file__=__file__
+if sys.argv[1]!='_run': raise SystemExit(h.main())
+result={'cwd':str(Path.cwd())};fake=None
+try:
+ fake=FlowFixture(Path(config['base']),'codex','claude-code',run_id=Path(config['root']).name,git_prepared=True)
+ h.run_protocol(fake.run)
+ proof=h.decode(h.private_read(fake.run.root/'old/preservation-evidence.json'))
+ head=h.old_git(['rev-parse','refs/heads/original'],common=fake.repo/'.git').decode().strip()
+ h.old_git(['cat-file','-e',head+'^{commit}'],common=fake.repo/'.git')
+ result.update(outcome=fake.run.state['outcome'],old_exists=fake.workspace.exists(),
+  mutations=fake.mutations,protected_head=head,
+  copy_preserved=h.private_read(Path(proof['classification']['ignored.cache']['copy']['path']))==b'unique original')
+except Exception:
+ result['error']=traceback.format_exc()
+finally:
+ if fake is not None: fake.transport.close()
+ h.publish(Path(config['root'],'test-result.json'),h.canonical(result))
+'''.replace("CONFIG", repr(config))
+                h.publish(root / "handoff.py", child.encode())
+                parent = ("import importlib.util\nfrom pathlib import Path\n"
+                    "spec=importlib.util.spec_from_file_location('h'," + repr(h.__file__) + ")\n"
+                    "h=importlib.util.module_from_spec(spec);spec.loader.exec_module(h)\n"
+                    "h.launch(Path(" + repr(str(root)) + "),continuation=" + repr(continuation) + ")\n")
+                invoked = subprocess.run([h.sys.executable, "-I", "-B", "-c", parent], cwd=old, capture_output=True, timeout=10)
+                self.assertEqual(invoked.returncode, 0, invoked.stderr.decode())
+                runner_file = next(root.glob("runner-continuations/*/runner.json")) if continuation else root / "runner.json"
+                runner = h.decode(h.private_read(runner_file))
+                marker = root / "test-result.json"
+                try:
+                    deadline = time.monotonic() + 90
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(marker.exists(), (root / "runner.log").read_text() if not continuation else "continuation runner did not finish")
+                    result = json.loads(marker.read_text())
+                    self.assertNotIn("error", result, result.get("error"))
+                    self.assertEqual(result["cwd"], str(root))
+                    self.assertEqual(result["outcome"], "complete")
+                    self.assertFalse(result["old_exists"])
+                    self.assertTrue(result["copy_preserved"])
+                    self.assertTrue(result["protected_head"])
+                    self.assertEqual(result["mutations"].count("kill"), 1)
+                    self.assertEqual(result["mutations"].count("spawn"), 1)
+                    self.assertLess(result["mutations"].index("kill"), result["mutations"].index("spawn"))
+                finally:
+                    if not marker.exists() and not h.process_ended(runner["process"]):
+                        os.killpg(runner["pid"], signal.SIGTERM)
+
     def test_Q3_dirty_old_retains_original_path_and_contents(self):
         fake = FlowFixture(self.root, "codex", "codex")
         (fake.workspace / "tracked").write_text("dirty original")
@@ -1070,7 +1140,7 @@ class ProtocolTests(unittest.TestCase):
 
 class FlowFixture:
     """A persisted fake daemon: actual exporter/receipt checks, zero live I/O."""
-    def __init__(self, root, old_harness, new_harness, worker=False):
+    def __init__(self, root, old_harness, new_harness, worker=False, *, run_id=None, git_prepared=False):
         self.home = root / "h"
         root = h.mkdir(self.home / ".ao/data")
         self.data_dir = root
@@ -1080,15 +1150,10 @@ class FlowFixture:
         self.workspace = root / "worktrees" / h.PROJECT / "orchestrator/old"
         h.mkdir(self.workspace.parent)
         self.repo = root / "repository"
-        self.repo.mkdir()
+        if not git_prepared:
+            self.prepare_git(self.repo, self.workspace)
         def git(*args):
             return subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True).stdout
-        git("init", "-b", "main")
-        (self.repo / "tracked").write_text("committed")
-        (self.repo / ".gitignore").write_text("ignored.cache\n")
-        git("add", ".")
-        git("-c", "user.email=x@example.invalid", "-c", "user.name=x", "commit", "-m", "fixture")
-        git("worktree", "add", "-b", "original", str(self.workspace))
         (self.workspace / "ignored.cache").write_bytes(b"unique original")
         self.preservation_problem, self.kill_outcome = None, None
         self.run_file = root / "run.json"
@@ -1111,7 +1176,7 @@ class FlowFixture:
             workspace_index.append({"session_id": "worker", "kind": "worker", "path": str(self.worker_path), "source_refs": ["workspace"]})
             workers = [{"worker_id": "worker", "reserved_stop_d": None, "pending_question_refs": []}]
         self.owner = "old"
-        self.run_id = str(uuid.uuid4())
+        self.run_id = run_id or str(uuid.uuid4())
         directory = h.mkdir(root / "projects" / h.PROJECT / "orchestrator/.private-handoff-runs" / self.run_id)
         h.publish(directory / "handoff.py", Path(h.__file__).read_bytes())
         req = {"request_id": self.run_id, "old_id": "old", "target": self.target,
@@ -1151,6 +1216,19 @@ class FlowFixture:
             db.execute("INSERT INTO sessions VALUES('old',?,?,'native-old')", (h.PROJECT, old_harness))
             for table, columns in h.EXPORT_COLUMNS.items():
                 db.execute("CREATE TABLE " + table + "(" + ",".join(columns) + ")")
+
+    @staticmethod
+    def prepare_git(repo, workspace):
+        h.mkdir(workspace.parent)
+        repo.mkdir()
+        def git(*args):
+            subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+        git("init", "-b", "main")
+        (repo / "tracked").write_text("committed")
+        (repo / ".gitignore").write_text("ignored.cache\n")
+        git("add", ".")
+        git("-c", "user.email=x@example.invalid", "-c", "user.name=x", "commit", "-m", "fixture")
+        git("worktree", "add", "-b", "original", str(workspace))
 
     def dispatch_actor(self, _):
         if self.pending_actor is None:

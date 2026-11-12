@@ -3086,7 +3086,7 @@ def launch(root, continuation=False):
     log = os.fdopen(os.open(no_symlinks(directory / "runner.log"), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600), "ab")
     env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "LC_ALL", "USER", "AO_DATA_DIR", "AO_RUN_FILE") if k in os.environ}
     child = subprocess.Popen([sys.executable, "-I", str(root / "handoff.py"), "_run", "--run", root.name],
-                             env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                              start_new_session=True, close_fds=True)
     log.close()
     publish(directory / "runner.json", canonical({"pid": child.pid, "sid": child.pid, "launched_at": now(), "process": process_identity(child.pid)}))
