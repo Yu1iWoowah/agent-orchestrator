@@ -21,6 +21,7 @@ const {
 	subscribeConnectedHostsMock,
 	unsubscribeConnectedHostsMock,
 	remoteGetMock,
+	desktopBridge,
 } = vi.hoisted(() => ({
 	onStatusMock: vi.fn(),
 	removeStatusMock: vi.fn(),
@@ -33,12 +34,20 @@ const {
 	subscribeConnectedHostsMock: vi.fn(),
 	unsubscribeConnectedHostsMock: vi.fn(),
 	remoteGetMock: vi.fn(),
+	desktopBridge: { available: true },
 }));
 
 vi.mock("./bridge", () => ({
 	aoBridge: {
 		daemon: { onStatus: onStatusMock },
 	},
+}));
+
+// Local streams come from the preload bridge; route them to the stubbed
+// EventSource so each test drives local and remote streams the same way.
+vi.mock("./daemon-event-source", () => ({
+	hasDaemonEventStreams: () => desktopBridge.available,
+	openDaemonEventSource: (path: string) => new (globalThis as unknown as { EventSource: new (url: string) => unknown }).EventSource(path),
 }));
 
 vi.mock("./api-client", () => ({
@@ -94,8 +103,8 @@ function fakeQueryClient() {
 }
 
 function cdcSources() {
-	// The local stream has no path prefix; remote hosts are mounted under /<host>/.
-	return EventSourceStub.instances.filter((source) => /^http:\/\/127\.0\.0\.1:\d+\/api\/v1\/events\?after=latest$/.test(source.url));
+	// The local stream is opened by path; remote hosts carry their own origin.
+	return EventSourceStub.instances.filter((source) => source.url === "/api/v1/events?after=latest");
 }
 
 function accountSources() {
@@ -104,6 +113,7 @@ function accountSources() {
 
 beforeEach(() => {
 	EventSourceStub.instances = [];
+	desktopBridge.available = true;
 	onStatusMock.mockReset().mockReturnValue(removeStatusMock);
 	removeStatusMock.mockReset();
 	getApiBaseUrlMock.mockReset().mockReturnValue("http://127.0.0.1:3001");
@@ -383,8 +393,8 @@ describe("createEventTransport", () => {
 		expect(EventSourceStub.instances).toHaveLength(2);
 		expect(cdcSources()).toHaveLength(1);
 		expect(accountSources()).toHaveLength(1);
-		expect(cdcSources()[0].url).toBe("http://127.0.0.1:3001/api/v1/events?after=latest");
-		expect(accountSources()[0].url).toBe("http://127.0.0.1:3001/api/v1/agents/codex/accounts/events");
+		expect(cdcSources()[0].url).toBe("/api/v1/events?after=latest");
+		expect(accountSources()[0].url).toBe("/api/v1/agents/codex/accounts/events");
 		// All CDC event types plus onmessage are wired up.
 		expect(cdcSources()[0].listeners).toContain("session_updated");
 		expect(cdcSources()[0].listeners).toContain("review_run_created");
@@ -431,7 +441,6 @@ describe("createEventTransport", () => {
 		expect(firstAccount.closed).toBe(true);
 		expect(cdcSources()).toHaveLength(2);
 		expect(accountSources()).toHaveLength(2);
-		expect(cdcSources()[1].url).toBe("http://127.0.0.1:3099/api/v1/events?after=latest");
 	});
 
 	it("does not make a new daemon port serve the dead port's backoff delay", () => {
@@ -841,11 +850,12 @@ describe("createEventTransport", () => {
 		expect(removeStatusMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("is a no-op when EventSource is unavailable", () => {
-		delete (globalThis as unknown as { EventSource?: unknown }).EventSource;
+	it("opens no local stream without the desktop bridge", () => {
+		desktopBridge.available = false;
 
 		expect(() => createEventTransport(fakeQueryClient()).connect()).not.toThrow();
 		expect(EventSourceStub.instances).toHaveLength(0);
+		expect(getEventsConnectionState()).toBe("idle");
 	});
 
 	it("marks the stream connected on open and disconnected on error", () => {
@@ -907,7 +917,7 @@ describe("createEventTransport", () => {
 			expect(cdcSources()).toHaveLength(1);
 			vi.advanceTimersByTime(5_000);
 			expect(cdcSources()).toHaveLength(2);
-			expect(cdcSources()[1].url).toBe("http://127.0.0.1:3001/api/v1/events?after=latest");
+			expect(cdcSources()[1].url).toBe("/api/v1/events?after=latest");
 		} finally {
 			vi.useRealTimers();
 			vi.unstubAllGlobals();
@@ -929,7 +939,7 @@ describe("createEventTransport", () => {
 
 			await vi.advanceTimersByTimeAsync(5_000);
 			const latest = EventSourceStub.instances.filter((s) => s.url.includes("/api/v1/events")).at(-1);
-			expect(latest?.url).toBe("http://127.0.0.1:3001/api/v1/events");
+			expect(latest?.url).toBe("/api/v1/events");
 		} finally {
 			vi.useRealTimers();
 			vi.unstubAllGlobals();
@@ -967,7 +977,6 @@ describe("createEventTransport", () => {
 		expect(firstAccount.closed).toBe(true);
 		expect(cdcSources()).toHaveLength(2);
 		expect(accountSources()).toHaveLength(2);
-		expect(cdcSources()[1].url).toBe("http://127.0.0.1:4555/api/v1/events?after=latest");
 	});
 
 	it("resets the connection state and unsubscribes on disconnect", () => {

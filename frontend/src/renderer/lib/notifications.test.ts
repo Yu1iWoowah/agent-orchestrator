@@ -30,6 +30,14 @@ vi.mock("./api-client", () => ({
 	subscribeApiBaseUrl: subscribeApiBaseUrlMock,
 }));
 
+const desktopBridge = vi.hoisted(() => ({ available: true }));
+// Local streams come from the preload bridge; route them to the stubbed
+// EventSource below.
+vi.mock("./daemon-event-source", () => ({
+	hasDaemonEventStreams: () => desktopBridge.available,
+	openDaemonEventSource: (path: string) => new (globalThis as unknown as { EventSource: new (url: string) => unknown }).EventSource(path),
+}));
+
 vi.mock("./bridge", () => ({
 	aoBridge: {
 		daemon: { onStatus: onStatusMock },
@@ -118,6 +126,7 @@ beforeEach(() => {
 	apiDeleteMock.mockReset();
 	apiGetMock.mockReset();
 	EventSourceStub.instances = [];
+	desktopBridge.available = true;
 	getApiBaseUrlMock.mockReset().mockReturnValue("http://127.0.0.1:3001");
 	onStatusMock.mockReset().mockReturnValue(removeStatusMock);
 	removeStatusMock.mockReset();
@@ -592,7 +601,7 @@ describe("createNotificationsTransport", () => {
 		EventSourceStub.instances[0].onopen?.();
 
 		expect(EventSourceStub.instances).toHaveLength(1);
-		expect(EventSourceStub.instances[0].url).toBe("http://127.0.0.1:3001/api/v1/notifications/stream");
+		expect(EventSourceStub.instances[0].url).toBe("/api/v1/notifications/stream");
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: unreadNotificationsQueryKey });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: recentNotificationsQueryKey });
 	});
@@ -946,6 +955,6 @@ describe("createNotificationsTransport", () => {
 
 		expect(first.closed).toBe(true);
 		expect(EventSourceStub.instances).toHaveLength(2);
-		expect(EventSourceStub.instances[1].url).toBe("http://127.0.0.1:4555/api/v1/notifications/stream");
+		expect(EventSourceStub.instances[1].url).toBe("/api/v1/notifications/stream");
 	});
 });

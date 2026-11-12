@@ -14,6 +14,13 @@ const { baseUrlForHostMock, subscribeConnectedHostsMock } = vi.hoisted(() => ({
 	subscribeConnectedHostsMock: vi.fn(),
 }));
 
+const desktopBridge = vi.hoisted(() => ({ available: true }));
+// Local streams come from the preload bridge; route them to the stubbed
+// EventSource below.
+vi.mock("./daemon-event-source", () => ({
+	hasDaemonEventStreams: () => desktopBridge.available,
+	openDaemonEventSource: (path: string) => new (globalThis as unknown as { EventSource: new (url: string) => unknown }).EventSource(path),
+}));
 vi.mock("./api-client", () => ({
 	getApiBaseUrl: getApiBaseUrlMock,
 	hasTrustedApiBaseUrl: hasTrustedApiBaseUrlMock,
@@ -72,6 +79,7 @@ function fakeQueryClient() {
 beforeEach(() => {
 	EventSourceStub.instances = [];
 	EventSourceStub.throwNext = false;
+	desktopBridge.available = true;
 	baseUrlListener = undefined;
 	hostListeners = [];
 	getApiBaseUrlMock.mockReset().mockReturnValue("http://127.0.0.1:3001");
@@ -212,7 +220,7 @@ describe("subscribeWorkspaceFileChanges", () => {
 
 		expect(EventSourceStub.instances).toHaveLength(1);
 		expect(EventSourceStub.instances[0].url).toBe(
-			"http://127.0.0.1:3001/api/v1/sessions/session%2Fa/workspace/events",
+			"/api/v1/sessions/session%2Fa/workspace/events",
 		);
 
 		unsubscribeRail();
@@ -448,8 +456,8 @@ describe("subscribeWorkspaceFileChanges", () => {
 		unsubscribe();
 	});
 
-	it("uses degraded polling when EventSource is unavailable", () => {
-		delete (globalThis as unknown as { EventSource?: unknown }).EventSource;
+	it("uses degraded polling without the desktop bridge", () => {
+		desktopBridge.available = false;
 
 		const unsubscribe = subscribeWorkspaceFileChanges("sess-no-eventsource", fakeQueryClient());
 
