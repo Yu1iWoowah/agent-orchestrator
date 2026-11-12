@@ -70,6 +70,10 @@ async function envelopeMessage(response: Response): Promise<string> {
 export function createSseRelay(options: SseRelayOptions): SseRelay {
 	const streams = new Map<string, ActiveStream>();
 	const streamIdsBySender = new Map<number, Set<string>>();
+	// Opens still waiting for response headers, per sender. A release aborts
+	// them too: otherwise one that resolves after the page is gone would be
+	// registered for nobody and hold a slot until the window closes.
+	const openingBySender = new Map<number, Set<AbortController>>();
 
 	function teardown(streamId: string, stream: ActiveStream): void {
 		stream.closed = true;
@@ -87,6 +91,7 @@ export function createSseRelay(options: SseRelayOptions): SseRelay {
 	// close the old page's streams. The error tells a page that survives (a
 	// navigation that never committed) to reconnect.
 	function releaseSender(senderId: number, message: string): void {
+		for (const controller of openingBySender.get(senderId) ?? []) controller.abort();
 		for (const streamId of [...(streamIdsBySender.get(senderId) ?? [])]) {
 			const stream = streams.get(streamId);
 			if (stream === undefined) continue;
@@ -104,6 +109,7 @@ export function createSseRelay(options: SseRelayOptions): SseRelay {
 			sender.once("destroyed", () => {
 				releaseSender(senderId, "The window was closed.");
 				streamIdsBySender.delete(senderId);
+				openingBySender.delete(senderId);
 			});
 			sender.on("render-process-gone", () => releaseSender(senderId, "The renderer process exited."));
 			sender.on("did-start-navigation", (details) => {
@@ -152,7 +158,25 @@ export function createSseRelay(options: SseRelayOptions): SseRelay {
 			);
 		}
 		const controller = new AbortController();
-		const response = await connect(controller.signal);
+		let opening = openingBySender.get(sender.id);
+		if (opening === undefined) {
+			opening = new Set();
+			openingBySender.set(sender.id, opening);
+		}
+		opening.add(controller);
+		let response: Response;
+		try {
+			response = await connect(controller.signal);
+		} finally {
+			opening.delete(controller);
+		}
+		// Released while connecting: drop the response instead of registering a
+		// stream nobody will read. A plain error, so a surviving page reconnects.
+		if (controller.signal.aborted || sender.isDestroyed()) {
+			controller.abort();
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error("The event stream was released while it was opening.");
+		}
 		if (!response.ok) {
 			throw sseRelayError(options.errorMarker, response.status, await envelopeMessage(response));
 		}

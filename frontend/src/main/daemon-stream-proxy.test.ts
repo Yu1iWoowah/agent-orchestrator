@@ -122,6 +122,37 @@ describe("daemon stream proxy", () => {
 		expect(calls[2].signal.aborted).toBe(true);
 	});
 
+	it("aborts an open still waiting for headers when the page reloads or its renderer exits", async () => {
+		for (const [event, details] of [
+			["did-start-navigation", { isMainFrame: true, isSameDocument: false }],
+			["render-process-gone", undefined],
+		] as const) {
+			const signals: AbortSignal[] = [];
+			let respond!: () => void;
+			const headers = new Promise<void>((resolve) => { respond = resolve; });
+			// Ignores the signal, as a server that answers late would.
+			const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				signals.push(init!.signal!);
+				await headers;
+				return new Response(new ReadableStream<Uint8Array>(), { status: 200 });
+			});
+			const proxy = createDaemonStreamProxy(() => "http://127.0.0.1:4100", { fetchImpl: fetchImpl as unknown as typeof fetch });
+			const sender = fakeSender();
+			const opening = Array.from({ length: MAX_DAEMON_STREAMS_PER_WEBCONTENTS }, () => proxy.openStream(sender, { path: "/api/v1/events" }));
+			await vi.waitFor(() => expect(signals).toHaveLength(MAX_DAEMON_STREAMS_PER_WEBCONTENTS));
+
+			sender.fire(event, details);
+			expect(signals.every((signal) => signal.aborted)).toBe(true);
+			respond();
+			for (const open of opening) await expect(open).rejects.toThrow("released while it was opening");
+
+			// None of them holds a slot: the new page can open a full set.
+			for (let index = 0; index < MAX_DAEMON_STREAMS_PER_WEBCONTENTS; index += 1) {
+				await proxy.openStream(sender, { path: "/api/v1/events" });
+			}
+		}
+	});
+
 	it("counts local streams apart from cloud streams, which keep their bearer", async () => {
 		const local = localProxy();
 		const cloudFetch = fakeFetch();
