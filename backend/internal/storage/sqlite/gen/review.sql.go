@@ -702,7 +702,10 @@ func (q *Queries) ListLiveReviewerHandles(ctx context.Context) ([]ListLiveReview
 
 const listRecoverableChatReviews = `-- name: ListRecoverableChatReviews :many
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, is_archived, created_at, updated_at
-FROM review WHERE interface_mode = 'chat' AND is_archived = FALSE AND provider_conversation_id != '' ORDER BY updated_at, id
+FROM review WHERE interface_mode = 'chat' AND is_archived = FALSE AND provider_conversation_id != ''
+  AND (reviewer_activity_state != 'exited'
+       OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id = review.id AND pass.status = 'running'))
+ORDER BY updated_at, id
 `
 
 type ListRecoverableChatReviewsRow struct {
@@ -724,6 +727,7 @@ type ListRecoverableChatReviewsRow struct {
 	UpdatedAt              time.Time
 }
 
+// An exited Chat reviewer with no running pass is not restarted or kept.
 func (q *Queries) ListRecoverableChatReviews(ctx context.Context) ([]ListRecoverableChatReviewsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listRecoverableChatReviews)
 	if err != nil {
