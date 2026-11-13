@@ -67,6 +67,9 @@ func (s *Service) queueWithoutController(
 		case err != nil:
 			return domain.ConversationTurn{}, err
 		case s.controllerStarting(record.ID):
+			if err := s.awaitStoppedControllerCleanup(ctx, record.ID); err != nil {
+				return domain.ConversationTurn{}, err
+			}
 			// Mark before appending: the start may finish meanwhile, and must
 			// then keep and drain this message rather than settle it as orphaned.
 			// Holding startIntakeMu until the append lands keeps a start from
@@ -156,6 +159,25 @@ func (s *Service) queueWithoutController(
 		_ = controller.drainOne(ctx) // The message is already accepted; drain logs failures.
 	}
 	return turn, nil
+}
+
+// awaitStoppedControllerCleanup waits for a stopped controller of id to finish
+// its exit cleanup. That cleanup settles every queued turn its generation still
+// owns, so input accepted for the controller that is starting must land after
+// it. The registry drops a controller only once its cleanup has finished.
+func (s *Service) awaitStoppedControllerCleanup(ctx context.Context, id domain.SessionID) error {
+	s.mu.RLock()
+	previous := s.controllers[id]
+	s.mu.RUnlock()
+	if previous == nil || previous.State() != ports.ChatControllerStopped {
+		return nil
+	}
+	select {
+	case <-previous.stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // queuedDeliveryContent preserves structured payloads and bounded references.

@@ -28,10 +28,14 @@ type heldResume struct {
 // newHeldService builds a daemon's chat service whose fresh starts use first
 // and whose resumes can be held at the provider.
 func newHeldService(st *sqlite.Store, first ports.ChatConversation, idPrefix string) (*chatsvc.Service, *heldResume) {
+	return newHeldServiceWithStore(st, st, first, idPrefix)
+}
+
+func newHeldServiceWithStore(st *sqlite.Store, store chatsvc.Store, first ports.ChatConversation, idPrefix string) (*chatsvc.Service, *heldResume) {
 	held := &heldResume{entered: make(chan struct{}, 4), release: make(chan error, 1), conv: newFakeConversation()}
 	var ids atomic.Int32
 	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Sessions: st, Reader: fullSnapshotReader(st),
+		Store: store, Sessions: st, Reader: fullSnapshotReader(st),
 		Drivers: fakeRegistry{driver: fakeDriver{
 			start: func(ports.ChatStartConfig) (ports.ChatConversation, error) { return first, nil },
 			resume: func(ports.ChatResumeConfig) (ports.ChatConversation, error) {
@@ -381,5 +385,114 @@ func TestSteerRetriedWhileStartingReplaysItsReceipt(t *testing.T) {
 				t.Fatalf("resumed controller was sent %q; the steer must not go again", sent)
 			}
 		})
+	}
+}
+
+// heldCleanupStore holds a stopped controller's exit cleanup until released.
+type heldCleanupStore struct {
+	*sqlite.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldCleanupStore) CleanupOwnedControllerWork(ctx context.Context, session domain.SessionID, conversationID, generation string, now time.Time) (bool, error) {
+	s.entered <- struct{}{}
+	<-s.release
+	return s.Store.CleanupOwnedControllerWork(ctx, session, conversationID, generation, now)
+}
+
+func TestInputQueuedWhileTheOldControllerCleansUpIsDelivered(t *testing.T) {
+	st := openStore(t)
+	store := &heldCleanupStore{Store: st, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	first := newFakeConversation()
+	svc, held := newHeldServiceWithStore(st, store, first, "exit")
+	ctx := context.Background()
+	workspace := t.TempDir()
+	ctrl, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, WorkspacePath: workspace})
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	rec, found, err := st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("read session: %v", err)
+	}
+	rec.Metadata.ProviderConversationID = first.ProviderConversationID()
+	rec.Metadata.ControllerGeneration = ctrl.Generation()
+	if err := st.UpdateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(store.release)
+		}
+	}
+	t.Cleanup(func() {
+		release()
+		select {
+		case held.release <- errors.New("test ended"):
+		default:
+		}
+		_ = svc.Stop(context.Background(), testSession)
+	})
+
+	// The provider exits on its own; the old controller is stopped but still
+	// settling what its generation owns.
+	_ = first.Close()
+	select {
+	case <-store.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopped controller did not start its cleanup")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+			SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator,
+			Harness: domain.HarnessCodex, WorkspacePath: workspace, ProviderConversationID: "thread-1",
+		})
+		done <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snapshot, err := svc.Snapshot(ctx, testSession)
+		if err == nil && snapshot.Controller == ports.ChatControllerConnecting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resume never read as starting: %q, %v", snapshot.Controller, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	var typed domain.ConversationTurn
+	var typedErr error
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		typed, typedErr = svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "typed during cleanup", ClientMessageID: "msg-cleanup", Origin: domain.MessageOriginHuman})
+	}()
+	// Give the send time to land before the cleanup, if it can.
+	select {
+	case <-sent:
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resume did not reach the provider")
+	}
+	held.release <- nil
+	if err := <-done; err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	<-sent
+	if typedErr != nil || typed.State != domain.TurnStateQueued {
+		t.Fatalf("send during the old controller's cleanup = %+v, %v; want a queued turn", typed, typedErr)
+	}
+	awaitSent(t, held.conv, []string{"typed during cleanup"})
+	if turn, err := st.TurnByID(ctx, typed.ID); err != nil || turn.State == domain.TurnStateFailed {
+		t.Fatalf("turn queued during the cleanup = %q, %v; want it kept", turn.State, err)
 	}
 }
