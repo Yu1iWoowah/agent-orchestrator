@@ -691,6 +691,23 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(h.Stop):
             h.report_interruption(snap, "original")
 
+    def test_bootstrap_and_its_continuation_require_single_fixed_calls(self):
+        run = self.run_fixture()
+        run.state.update(handoff={"path": "handoff", "sha256": "0" * 64}, manifest={"path": "manifest", "sha256": "1" * 64})
+        requirements = h.decode(h.bootstrap_prompt(run))["requirements"]
+        for phrase in ("逐字等於read_command或helper_command", "換行", "2>&1", "不呼叫任何工具", "bootstrap-continue", "exit非0"):
+            self.assertIn(phrase, requirements)
+        interrupted = {"id": "original", "state": "interrupted", "startedAt": "2026-11-08T01:00:00Z", "completedAt": "2026-11-08T01:00:01Z"}
+        report = dict(kind="message", role="user", origin="automation", clientMessageId="report-batch:123",
+                      text="Reports [worker](ao://sessions/agent-orchestrator/worker)", createdAt="2026-11-08T01:00:02Z")
+        h.continue_phase(run, "new", "bootstrap", "original", snapshot(turns=[interrupted], entries=[report]))
+        message = run.cli.calls[0][-1]
+        sent = h.decode(message)["instruction"]["requirements"]
+        self.assertIn(h.BOOTSTRAP_CALLS, sent)
+        self.assertIn("不另行計算hash", sent)
+        self.assertNotIn("managed hash", sent)
+        self.assertLessEqual(len(message.encode()), 4096)
+
     def test_T04_T05_four_harness_pairs_complete_fake_protocol(self):
         for old_harness in ("claude-code", "codex"):
             for new_harness in ("claude-code", "codex"):

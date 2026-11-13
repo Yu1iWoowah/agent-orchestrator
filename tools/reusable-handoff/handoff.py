@@ -2363,6 +2363,10 @@ def lease_view(documents):
     return {"session_id": lease.get("sessionId"), "epoch": lease.get("epoch"), "frozen": lease.get("frozen")}
 
 
+# Shared by the bootstrap prompt and its continuation: audit_bootstrap stops on any other call.
+BOOTSTRAP_CALLS = "每個工具呼叫都只能是一個shell指令，且必須逐字等於read_command或helper_command（固定指令已含umask077與TMPDIR）；read_command只可把--path與--offset換成本次要讀的字面值（--path用manifest等原件中的絕對路徑去掉本run根目錄前綴後的相對路徑），每讀一頁就是一個獨立的shell指令。不得設shell變數、不得用迴圈、不得用;、&&、||、|、&或換行把多個呼叫串在一起、不得另加引號、重導（含2>&1）、heredoc、前後hash/ls/echo/exit或任何其他指令；除這兩種shell指令外不呼叫任何工具（含ToolSearch、Task／to-do類、Read、Grep、Glob、Skill、Web），系統或專案規則要求的ao status等查詢在這段期間也不做。違反時、或任一固定呼叫exit非0時，runner會停止本次交接，事後無法補救。"
+
+
 def continue_phase(run, sid, phase, turn, snapshot):
     if not report_interruption(snapshot, turn):
         return
@@ -2375,9 +2379,12 @@ def continue_phase(run, sid, phase, turn, snapshot):
         return
     if not quiescent(snapshot, run=run):
         return
+    requirements = ("本續接回合仍在bootstrap稽核範圍內，read_command與helper_command見原bootstrap prompt。" + BOOTSTRAP_CALLS
+                    + "核對既有結果時只重跑helper_command（已有receipt會原樣回傳）或用read_command讀bootstrap/new/receipt.json，不另行計算hash；只補未完成回報，不重寫已提交效果。人類取消／UNKNOWN或真失敗即停。"
+                    if phase == "bootstrap" else "核原已成功檔與managed hash；只補未完成回報，不重寫已提交效果，不重發nonce。人類取消／UNKNOWN或真失敗即停。")
     run.send(sid, phase + "-continue", {"original_turn": turn, "original_phase": phase,
              "receipt": str(run.root / ("old/phase-2a.json" if phase == "2a" else "bootstrap/new/receipt.json")),
-             "nonce": run.state.get("nonce"), "requirements": "核原已成功檔與managed hash；只補未完成回報，不重寫已提交效果，不重發nonce。人類取消／UNKNOWN或真失敗即停。"})
+             "nonce": run.state.get("nonce"), "requirements": requirements})
     recovered[key] = {"interrupted_turn": turn, "sent_at": now()}
     run.save()
 
@@ -2645,7 +2652,8 @@ def bootstrap_prompt(run):
             "receipt_path": str(run.root / "bootstrap/new/receipt.json"), "helper_command": command,
             "read_command": command.replace(" bootstrap --run", " inspect --run") + " --path start.json --offset 0",
             "read_instructions": "inspect每頁最多4000字元，依next_offset續讀，path限本run相對路徑；按manifest的dependencies.path映射找到已保存的A–F與必要原件。先讀start、manifest、delta、A–F及必要原件，再bootstrap。",
-            "requirements": "先讀A–F、start、manifest、delta與必要原件；核原題owner/取消/hold。每個shell先設umask077及指定TMPDIR。只執行固定inspect讀取與helper_command做正常帳號/native/target查驗及自己的managed receipt，不跑任意shell/Python，不直接寫shared或其他路徑。向使用者正式回報接手old、來源與待決後completed。不得自行exit/resume/spawn/改設定/提前復工。report中斷只補未完回報，不重寫成功managed效果。"}).decode()
+            "requirements": "先讀A–F、start、manifest、delta與必要原件；核原題owner/取消/hold。從本則起到runner確認bootstrap完成前（含report送達與bootstrap-continue續接回合），" + BOOTSTRAP_CALLS
+            + "續接回合要核對既有結果時，只重跑helper_command（已有receipt會原樣回傳）或用read_command讀bootstrap/new/receipt.json。只用這兩種固定指令做讀取、正常帳號/native/target查驗及自己的managed receipt，不跑任意shell/Python，不直接寫shared或其他路徑。向使用者正式回報接手old、來源與待決後completed。不得自行exit/resume/spawn/改設定/提前復工。report中斷只補未完回報，不重寫成功managed效果。"}).decode()
 
 
 def audit_bootstrap(snapshot, root, turn_ids=None):
