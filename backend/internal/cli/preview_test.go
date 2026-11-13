@@ -25,7 +25,7 @@ type previewCapture struct {
 func previewServer(t *testing.T, status int, respBody string) (*httptest.Server, *previewCapture) {
 	t.Helper()
 	capture := &previewCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 			http.NotFound(w, r)
 			return
@@ -54,7 +54,7 @@ func previewLifecycleServer(t *testing.T, status int, respBody string) (*httptes
 	t.Helper()
 	t.Setenv("AO_BROWSER_CAPABILITY", "preview-capability")
 	capture := &previewCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/sessions/aa-47/preview/server" {
 			http.NotFound(w, r)
 			return

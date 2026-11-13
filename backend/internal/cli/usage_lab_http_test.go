@@ -125,7 +125,7 @@ func (f *labCallerFixture) mcpRead(t *testing.T) string {
 	reader, output := io.Pipe()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	root := NewRootCommand(Deps{In: input, Out: output, Err: io.Discard, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{In: input, Out: output, Err: io.Discard, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"usage", "delegation", "mcp"})
 	go func() { done <- root.ExecuteContext(ctx); output.Close() }()
 	defer func() {
@@ -234,7 +234,7 @@ func TestHCGLabHTTPCallerFaultsPreserveNativeFacts(t *testing.T) {
 					done := make(chan result, 1)
 					go func() {
 						var out bytes.Buffer
-						root := NewRootCommand(Deps{Out: &out, Err: io.Discard, ProcessAlive: func(int) bool { return true }})
+						root := newTestRootCommand(t, Deps{Out: &out, Err: io.Discard, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 						root.SetArgs(append([]string{"usage", "delegation"}, f.readArgs()...))
 						err := root.ExecuteContext(ctx)
 						done <- result{out.String(), err}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,11 +26,11 @@ func TestWaitForStoppedKeepsRunFileFromConcurrentStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		ProcessAlive: func(pid int) bool { return pid == newPID }, // stoppedPID is dead
 		Now:          func() time.Time { return time.Unix(200, 0).UTC() },
 		Sleep:        func(time.Duration) {},
-	}.withDefaults()}
+	}.withDefaults())
 
 	st, err := c.waitForStopped(context.Background(), stoppedPID, runFile, dir, time.Second)
 	if err != nil {
@@ -65,11 +64,11 @@ func TestWaitForStoppedRemovesOwnRunFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		ProcessAlive: func(int) bool { return false },
 		Now:          func() time.Time { return time.Unix(200, 0).UTC() },
 		Sleep:        func(time.Duration) {},
-	}.withDefaults()}
+	}.withDefaults())
 
 	st, err := c.waitForStopped(context.Background(), stoppedPID, runFile, dir, time.Second)
 	if err != nil {
@@ -95,7 +94,7 @@ func TestWaitForStoppedWaitsAfterRunFileRemovedUntilProcessExits(t *testing.T) {
 	now := time.Unix(200, 0).UTC()
 	aliveChecks := 0
 	sleeps := 0
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		ProcessAlive: func(int) bool {
 			aliveChecks++
 			return aliveChecks < 3
@@ -107,7 +106,7 @@ func TestWaitForStoppedWaitsAfterRunFileRemovedUntilProcessExits(t *testing.T) {
 			sleeps++
 			now = now.Add(d)
 		},
-	}.withDefaults()}
+	}.withDefaults())
 
 	st, err := c.waitForStopped(context.Background(), stoppedPID, runFile, dir, time.Second)
 	if err != nil {
@@ -134,11 +133,11 @@ func TestWaitForStoppedReportsStoppedWhenRunFileGoneButProcessLingers(t *testing
 
 	const stoppedPID = 1111
 	now := time.Unix(200, 0).UTC()
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		ProcessAlive: func(int) bool { return true }, // process never exits
 		Now:          func() time.Time { return now },
 		Sleep:        func(d time.Duration) { now = now.Add(d) },
-	}.withDefaults()}
+	}.withDefaults())
 
 	st, err := c.waitForStopped(context.Background(), stoppedPID, runFile, dir, time.Second)
 	if err != nil {
@@ -150,7 +149,7 @@ func TestWaitForStoppedReportsStoppedWhenRunFileGoneButProcessLingers(t *testing
 }
 
 func TestShutdownWaitsForPreflightAndReportsNotSettled(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2100 * time.Millisecond)
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"status":"shutdown_not_settled"}`))
@@ -158,7 +157,7 @@ func TestShutdownWaitsForPreflightAndReportsNotSettled(t *testing.T) {
 	defer server.Close()
 	client := server.Client()
 	client.Timeout = 50 * time.Millisecond
-	c := &commandContext{deps: Deps{HTTPClient: client}.withDefaults()}
+	c := newTestCommandContext(t, Deps{HTTPClient: client}.withDefaults())
 	err := c.requestShutdown(t.Context(), server.Listener.Addr().(*net.TCPAddr).Port)
 	if err == nil || !strings.Contains(err.Error(), "shutdown_not_settled") || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("preflight refusal lost: %v", err)

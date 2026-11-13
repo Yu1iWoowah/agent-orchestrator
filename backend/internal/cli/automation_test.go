@@ -18,7 +18,7 @@ func TestAutomationListFollowsAllPages(t *testing.T) {
 			t.Run(fmt.Sprintf("enabled=%s/json=%t", enabled, jsonOutput), func(t *testing.T) {
 				cfg := setConfigEnv(t)
 				requests := 0
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/internal/telemetry/cli-invoked" {
 						w.WriteHeader(http.StatusNoContent)
 						return
@@ -114,7 +114,7 @@ func TestAutomationListPaginationFailures(t *testing.T) {
 			t.Run(tc.name+"/json="+strconv.FormatBool(jsonOutput), func(t *testing.T) {
 				cfg := setConfigEnv(t)
 				requests := 0
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/internal/telemetry/cli-invoked" {
 						w.WriteHeader(http.StatusNoContent)
 						return
@@ -159,7 +159,7 @@ type automationCapture struct {
 func automationServer(t *testing.T, status int, response string) (*httptest.Server, *automationCapture) {
 	t.Helper()
 	capture := &automationCapture{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.method, capture.path = r.Method, r.URL.Path
 		capture.body, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")

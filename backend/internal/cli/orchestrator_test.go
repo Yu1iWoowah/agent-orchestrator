@@ -13,7 +13,7 @@ import (
 func orchestratorCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 	t.Helper()
 	log := &sessionRequestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.append(r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {

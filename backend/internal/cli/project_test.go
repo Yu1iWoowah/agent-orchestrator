@@ -18,7 +18,7 @@ type projectCapture struct {
 func projectServer(t *testing.T, status int, respBody string) (*httptest.Server, *projectCapture) {
 	t.Helper()
 	capture := &projectCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.method = r.Method
 		capture.path = r.URL.Path
 		data, err := io.ReadAll(r.Body)

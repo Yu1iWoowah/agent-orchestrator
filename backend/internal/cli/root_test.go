@@ -3,11 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -102,23 +102,21 @@ func TestVersionEmitsCLIInvocationBestEffort(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	called := make(chan map[string]string, 1)
-	if err := runfile.Write(cfg.runFile, runfile.Info{PID: os.Getpid(), Port: 3001, StartedAt: time.Unix(100, 0).UTC()}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := executeCLI(t, Deps{
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path == "/internal/telemetry/cli-invoked" {
-				defer req.Body.Close()
-				var body map[string]string
-				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-					t.Fatalf("decode telemetry body: %v", err)
-				}
-				called <- body
-				return jsonResponse(http.StatusAccepted, ""), nil
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/internal/telemetry/cli-invoked" {
+			var body map[string]string
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode telemetry body: %v", err)
 			}
-			return jsonResponse(http.StatusNotFound, ""), nil
-		})},
+			called <- body
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+	if _, _, err := executeCLI(t, Deps{
 		ProcessAlive: func(pid int) bool { return pid == os.Getpid() },
 	}, "version"); err != nil {
 		t.Fatal(err)
@@ -236,21 +234,21 @@ func TestUsageErrorCommandDropsUserArgs(t *testing.T) {
 func TestUsageErrorEmitsCLIUsageTelemetryBestEffort(t *testing.T) {
 	cfg := setConfigEnv(t)
 	called := make(chan string, 1)
-	if err := runfile.Write(cfg.runFile, runfile.Info{PID: os.Getpid(), Port: 3001, StartedAt: time.Unix(100, 0).UTC()}); err != nil {
-		t.Fatal(err)
-	}
-
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/internal/telemetry/cli-usage-error" {
+			called <- req.URL.Path
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
 	deps := Deps{
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path == "/internal/telemetry/cli-usage-error" {
-				called <- req.URL.Path
-				return jsonResponse(http.StatusAccepted, ""), nil
-			}
-			return jsonResponse(http.StatusNotFound, ""), nil
-		})},
+		HTTPClient:   apiFixtureClient(t, srv.Client()),
 		ProcessAlive: func(pid int) bool { return pid == os.Getpid() },
 	}
-	err := executeWithDeps(deps, []string{"status", "extra"})
+	err := executeWithTestDeps(t, deps, []string{"status", "extra"})
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
@@ -304,7 +302,7 @@ func TestStopRemovesStaleRunFile(t *testing.T) {
 func TestStopDoesNotShutdownUnverifiedReusedPID(t *testing.T) {
 	cfg := setConfigEnv(t)
 	shutdownCalled := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/healthz":
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -350,7 +348,7 @@ func TestStopUsesShutdownEndpoint(t *testing.T) {
 	cfg := setConfigEnv(t)
 	shutdownCalled := make(chan struct{}, 1)
 	var shutdownSeen atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/healthz":
 			_, _ = fmt.Fprintf(w, `{"status":"ok","service":%q,"pid":%d}`, daemonmeta.ServiceName, os.Getpid())
@@ -396,11 +394,12 @@ func TestStopUsesShutdownEndpoint(t *testing.T) {
 
 func TestStatusKeepsLiveProbeFailureUnhealthy(t *testing.T) {
 	cfg := setConfigEnv(t)
-	if err := runfile.Write(cfg.runFile, runfile.Info{PID: 4242, Port: closedPort(t), StartedAt: time.Unix(100, 0).UTC()}); err != nil {
+	if err := runfile.Write(cfg.runFile, runfile.Info{PID: 4242, Port: 3001, StartedAt: time.Unix(100, 0).UTC()}); err != nil {
 		t.Fatal(err)
 	}
 
 	out, _, err := executeCLI(t, Deps{
+		HTTPClient:   terminalErrorClient(errors.New("fixture daemon endpoint is unreachable")),
 		ProcessAlive: func(pid int) bool { return pid == 4242 },
 	}, "status", "--json")
 	if err != nil {
@@ -420,11 +419,12 @@ func TestStatusKeepsLiveProbeFailureUnhealthy(t *testing.T) {
 
 func TestStopRefusesUnverifiedLivePID(t *testing.T) {
 	cfg := setConfigEnv(t)
-	if err := runfile.Write(cfg.runFile, runfile.Info{PID: 4242, Port: closedPort(t), StartedAt: time.Unix(100, 0).UTC()}); err != nil {
+	if err := runfile.Write(cfg.runFile, runfile.Info{PID: 4242, Port: 3001, StartedAt: time.Unix(100, 0).UTC()}); err != nil {
 		t.Fatal(err)
 	}
 
 	_, _, err := executeCLI(t, Deps{
+		HTTPClient:   terminalErrorClient(errors.New("fixture daemon endpoint is unreachable")),
 		ProcessAlive: func(pid int) bool { return pid == 4242 },
 	}, "stop", "--json")
 	if err == nil {
@@ -466,16 +466,37 @@ func setConfigEnv(t *testing.T) testConfig {
 
 func executeCLI(t *testing.T, deps Deps, args ...string) (string, string, error) {
 	t.Helper()
+	if len(args) > 0 && args[0] != "status" && args[0] != "stop" && args[0] != "doctor" {
+		deps.HTTPClient = apiFixtureClient(t, deps.HTTPClient)
+	} else {
+		deps.HTTPClient = rawFixtureClient(t, deps.HTTPClient)
+	}
 	var out, errOut bytes.Buffer
 	deps.Out = &out
 	deps.Err = &errOut
 	if deps.Sleep == nil {
 		deps.Sleep = func(time.Duration) {}
 	}
-	cmd := NewRootCommand(deps)
+	cmd := newTestRootCommand(t, deps)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), errOut.String(), err
+}
+
+func TestAPIFixtureRejectsUnknownDaemonEndpoint(t *testing.T) {
+	cfg := setConfigEnv(t)
+	if err := runfile.Write(cfg.runFile, runfile.Info{PID: os.Getpid(), Port: 3001}); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	client := terminalFixtureClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return jsonResponse(http.StatusOK, `{}`), nil
+	}))
+	c := newTestCommandContext(t, Deps{HTTPClient: client}.withDefaults())
+	if err := c.postJSON(t.Context(), "sessions/fixture/activity", struct{}{}, nil); err == nil || attempts != 0 {
+		t.Fatalf("unknown fixture endpoint must not reach transport: attempts=%d err=%v", attempts, err)
+	}
 }
 
 func serverPort(t *testing.T, raw string) int {
@@ -485,25 +506,6 @@ func serverPort(t *testing.T, raw string) int {
 		t.Fatal(err)
 	}
 	_, portRaw, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(portRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return port
-}
-
-func closedPort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	_, portRaw, err := net.SplitHostPort(ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

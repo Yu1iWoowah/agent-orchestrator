@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -18,7 +17,7 @@ func TestReviewTriggerFastIsReviewerOwned(t *testing.T) {
 			FastMode string `json:"fastMode"`
 		} `json:"agentConfig"`
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/reviews/trigger") {
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Error(err)
@@ -41,7 +40,7 @@ func TestReviewSetUsesStableOwnerAndDoesNotRetryConflict(t *testing.T) {
 		t.Run(map[bool]string{false: "pinned", true: "conflict"}[conflict], func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			patches := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPatch {
 					w.WriteHeader(http.StatusNoContent)
 					return

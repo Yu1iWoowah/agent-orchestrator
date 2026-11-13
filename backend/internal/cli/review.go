@@ -16,11 +16,6 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const (
-	reviewSubmitRetryWindow   = 30 * time.Second
-	reviewSubmitRetryInterval = 250 * time.Millisecond
-)
-
 // reviewRun mirrors the daemon's domain.ReviewRun for the CLI client.
 type reviewRun struct {
 	ID             string     `json:"id"`
@@ -260,7 +255,7 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 	// structurally valid but half-populated result is a broken contract, not
 	// a success to print.
 	if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
-		return fmt.Errorf("daemon returned empty review result for %s", session)
+		return unconfirmedReviewResult(fmt.Errorf("daemon returned empty review result for %s", session))
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "recorded %s review for %s\n", res.Review.Verdict, session)
 	return err
@@ -286,11 +281,11 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	if len(res.Reviews) > 0 {
 		for _, run := range res.Reviews {
 			if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.Verdict) == "" {
-				return fmt.Errorf("daemon returned empty review result for %s", session)
+				return unconfirmedReviewResult(fmt.Errorf("daemon returned empty review result for %s", session))
 			}
 		}
 	} else if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
-		return fmt.Errorf("daemon returned empty review result for %s", session)
+		return unconfirmedReviewResult(fmt.Errorf("daemon returned empty review result for %s", session))
 	}
 	count := len(res.Reviews)
 	if count == 0 {
@@ -300,41 +295,23 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	return err
 }
 
-// postReviewJSON retries only transport-level daemon unavailability. The
-// service accepts an identical completed result idempotently, so replay is safe
-// even when a connection drops after the daemon committed the first request.
-// Validation/API errors still return immediately and are never retried.
+// postReviewJSON makes one business API attempt. A failed probe is a preflight
+// failure; after an attempt, a missing or invalid result is unconfirmed.
 func (c *commandContext) postReviewJSON(ctx context.Context, path string, body submitReviewRequest, out *reviewRunResponse) error {
-	retryCtx, cancel := context.WithTimeout(ctx, reviewSubmitRetryWindow)
-	defer cancel()
-
-	var lastErr error
-	for {
-		err := c.postJSON(retryCtx, path, body, out)
-		if err == nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if !errors.Is(err, errDaemonUnavailable) {
-			return err
-		}
-		lastErr = err
-		if retryCtx.Err() != nil {
-			return fmt.Errorf("%w; could not confirm the review result after retrying for %s. It may already be recorded; retry with the same review results", lastErr, reviewSubmitRetryWindow)
-		}
-
-		// Deps.Sleep keeps this loop deterministic in unit tests. The short
-		// interval bounds cancellation latency without adding a retry goroutine.
-		c.deps.Sleep(reviewSubmitRetryInterval)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if retryCtx.Err() != nil {
-			return fmt.Errorf("%w; could not confirm the review result after retrying for %s. It may already be recorded; retry with the same review results", lastErr, reviewSubmitRetryWindow)
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	err := c.postJSON(ctx, path, body, out)
+	var attempted daemonRequestError
+	var rejected apiResponseError
+	if errors.As(err, &attempted) && !errors.As(err, &rejected) {
+		return unconfirmedReviewResult(err)
+	}
+	return err
+}
+
+func unconfirmedReviewResult(err error) error {
+	return fmt.Errorf("%w; review result is unconfirmed; inspect the original run/result before deciding whether to explicitly resubmit the same review results", err)
 }
 
 func newReviewCancelCommand(ctx *commandContext) *cobra.Command {

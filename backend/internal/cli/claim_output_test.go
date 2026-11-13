@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -29,7 +28,7 @@ func TestClaimCommandsCheckoutOutput(t *testing.T) {
 			if tc.emptyPRs {
 				prs = `[]`
 			}
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.Method + " " + r.URL.Path {
 				case "GET /api/v1/projects/demo":

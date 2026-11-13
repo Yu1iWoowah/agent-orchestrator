@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -15,7 +14,7 @@ func TestCueCreateUsesProjectContextAndPostsOneDefinition(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	var posts int
 	var body cueCreateDTO
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/internal/telemetry/cli-invoked":
@@ -50,7 +49,7 @@ func TestCueCreateCommandKeepsDaemonErrorEnvelope(t *testing.T) {
 	t.Setenv("AO_PROJECT_ID", "")
 	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/internal/telemetry/cli-invoked":
@@ -77,7 +76,7 @@ func TestCueCreateCommandKeepsDaemonErrorEnvelope(t *testing.T) {
 func TestCueCreateCommandPostsExactShellCommand(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var body cueCreateDTO
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/internal/telemetry/cli-invoked":
@@ -119,14 +118,14 @@ func TestCueCreateRejectsIncompleteOrAmbiguousDefinition(t *testing.T) {
 }
 
 func TestCueCommandExposesCreateAndReadOnlyList(t *testing.T) {
-	cmd := newCueCommand(&commandContext{})
+	cmd := newCueCommand(newTestCommandContext(t, Deps{}))
 	if len(cmd.Commands()) != 2 || cmd.Commands()[0].Name() != "create" || cmd.Commands()[1].Name() != "list" {
 		t.Fatalf("unexpected cue commands: %v", cmd.Commands())
 	}
 }
 
 func TestCueCreateHasNoDescriptionFlag(t *testing.T) {
-	cmd := newCueCreateCommand(&commandContext{})
+	cmd := newCueCreateCommand(newTestCommandContext(t, Deps{}))
 	if cmd.Flags().Lookup("description") != nil {
 		t.Fatal("description flag is still available")
 	}
@@ -135,7 +134,7 @@ func TestCueCreateHasNoDescriptionFlag(t *testing.T) {
 func TestCueListReadsProjectDefinitions(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var listed bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/internal/telemetry/cli-invoked":

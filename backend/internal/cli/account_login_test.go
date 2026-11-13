@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,7 +33,7 @@ func TestLoginWaitsForNativeExitBeforeVerifyAndRetriesTransientFailure(t *testin
 			defer finish()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -87,7 +87,7 @@ func TestLoginWaitsForNativeExitBeforeVerifyAndRetriesTransientFailure(t *testin
 			defer srv.Close()
 			writeRunFileFor(t, cfg, srv)
 			var out, stderr bytes.Buffer
-			cmd := NewRootCommand(Deps{Out: &out, Err: &stderr, ProcessAlive: func(int) bool { return true }})
+			cmd := newTestRootCommand(t, Deps{Out: &out, Err: &stderr, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 			args := []string{"account", "add", "--provider", "codex", "--no-attach", "--json"}
 			if reconnect {
 				args = []string{"account", "login", "--operation", "op", "--no-attach", "--json"}
@@ -148,7 +148,7 @@ func TestAccountWaitStopsImmediatelyForUnconfirmedTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	result := accountTransitionResponse{Transition: &accountTransition{ID: "t", Phase: "target_starting", ErrorCode: "TARGET_STOP_UNCONFIRMED"}}
-	err := (&commandContext{}).waitAccountTransition(ctx, "s", &result)
+	err := (newTestCommandContext(t, Deps{})).waitAccountTransition(ctx, "s", &result)
 	if err == nil || !strings.Contains(err.Error(), "Stop and retry") || ctx.Err() != nil {
 		t.Fatalf("unconfirmed target was not actionable immediately: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestLoginAfterExitEndsUnsuccessfulVerificationWithReconnectInstructions(t *
 			var verifies, cancellations atomic.Int32
 			var alive atomic.Bool
 			alive.Store(true)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -302,6 +302,9 @@ func TestLoginAfterExitEndsUnsuccessfulVerificationWithReconnectInstructions(t *
 				case "/mux":
 					if tc.daemonStopped {
 						alive.Store(false)
+						if err := os.Remove(cfg.runFile); err != nil {
+							t.Error(err)
+						}
 					}
 					serveExitedAccountLogin(t, w, r)
 				case "/api/v1/agents/accounts/login/op/verify":
@@ -325,7 +328,7 @@ func TestLoginAfterExitEndsUnsuccessfulVerificationWithReconnectInstructions(t *
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			var out, stderr bytes.Buffer
-			cmd := NewRootCommand(Deps{Out: &out, Err: &stderr, ProcessAlive: func(int) bool { return alive.Load() }})
+			cmd := newTestRootCommand(t, Deps{Out: &out, Err: &stderr, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return alive.Load() }})
 			cmd.SetArgs([]string{"account", "login", "--operation", "op", "--no-attach"})
 			err := cmd.ExecuteContext(ctx)
 			if err == nil || ctx.Err() != nil || verifies.Load() != int32(tc.calls) || cancellations.Load() != 0 {
@@ -358,7 +361,7 @@ func TestLoginWaitingCancelsBeforeStartingAnotherAttempt(t *testing.T) {
 				args = []string{"account", "login", "account-A", "--no-attach"}
 				startPath = "/api/v1/agents/accounts/account-A/login"
 			}
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.Contains(r.URL.Path, "/telemetry/"):
 					w.WriteHeader(http.StatusNoContent)
@@ -421,7 +424,7 @@ func TestLoginWaitingHonorsCleanupFailureAndAcceptedRace(t *testing.T) {
 		t.Run(fmt.Sprint("accepted=", accepted), func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var cancelled atomic.Bool
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.Contains(r.URL.Path, "/telemetry/"):
 					w.WriteHeader(http.StatusNoContent)
@@ -468,7 +471,7 @@ func TestLoginWaitingHonorsCleanupFailureAndAcceptedRace(t *testing.T) {
 func TestLoginLegacyConflictDoesNotClaimOperationRetained(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var verified atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/telemetry/"):
 			w.WriteHeader(http.StatusNoContent)

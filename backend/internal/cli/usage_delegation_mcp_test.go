@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,7 +17,7 @@ func TestHCGDelegationMCPFixedToolAndCancellation(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "synthetic-session")
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/telemetry/cli-invoked" {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -35,7 +34,7 @@ func TestHCGDelegationMCPFixedToolAndCancellation(t *testing.T) {
 	writeRunFileFor(t, cfg, server)
 	input, writeInput := io.Pipe()
 	readOutput, output := io.Pipe()
-	root := NewRootCommand(Deps{In: input, Out: output, Err: io.Discard, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{In: input, Out: output, Err: io.Discard, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"usage", "delegation", "mcp"})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -121,7 +120,7 @@ func TestHCGDelegationCLIValidationAndEnvelope(t *testing.T) {
 		}
 	}
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/telemetry/cli-invoked" {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -160,10 +159,10 @@ func (delegationTimeoutTransport) RoundTrip(r *http.Request) (*http.Response, er
 }
 func TestHCGDelegationHTTPClientTimeoutReturnsSafeJSON(t *testing.T) {
 	cfg := setConfigEnv(t)
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("injected transport should handle request") }))
+	server := newFixtureServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("injected transport should handle request") }))
 	defer server.Close()
 	writeRunFileFor(t, cfg, server)
-	out, _, err := executeCLI(t, Deps{HTTPClient: &http.Client{Transport: delegationTimeoutTransport{}}, ProcessAlive: func(int) bool { return true }}, "usage", "delegation", "read", "--session", "s", "--question", "synthetic question", "--path", "prompt.txt", "--json")
+	out, _, err := executeCLI(t, Deps{HTTPClient: terminalFixtureClient(t, delegationTimeoutTransport{}.RoundTrip), ProcessAlive: func(int) bool { return true }}, "usage", "delegation", "read", "--session", "s", "--question", "synthetic question", "--path", "prompt.txt", "--json")
 	var reply struct {
 		Schema, Status, Reason, Answer string
 		Findings, Evidence             []any
@@ -221,7 +220,7 @@ func TestHCGDelegationMCPMetadataEnvelope(t *testing.T) {
 			cfg := setConfigEnv(t)
 			t.Setenv("AO_SESSION_ID", "synthetic-session")
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/internal/telemetry/cli-invoked" {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -250,7 +249,7 @@ func TestHCGDelegationMCPMetadataEnvelope(t *testing.T) {
 			defer reader.Close()
 			writeRunFileFor(t, cfg, server)
 			var stderr bytes.Buffer
-			root := NewRootCommand(Deps{In: input, Out: output, Err: &stderr, ProcessAlive: func(int) bool { return true }})
+			root := newTestRootCommand(t, Deps{In: input, Out: output, Err: &stderr, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 			root.SetArgs([]string{"usage", "delegation", "mcp"})
 			done := make(chan error, 1)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

@@ -262,7 +262,7 @@ func TestDoctorChecksGitHubTokenFromEnv(t *testing.T) {
 		return []byte("git version 2.43.0\n"), nil
 	})
 	t.Setenv("AO_GITHUB_TOKEN", "env-token")
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitHubRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "github-token")
@@ -283,7 +283,7 @@ func TestDoctorChecksGitHubTokenFromGHCLI(t *testing.T) {
 		}
 		return []byte("git version 2.43.0\n"), nil
 	})
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitHubRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "github-token")
@@ -311,7 +311,7 @@ func TestDoctorFailsExpiredGitHubToken(t *testing.T) {
 		return []byte("git version 2.43.0\n"), nil
 	})
 	t.Setenv("GITHUB_TOKEN", "expired-token")
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitHubRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "github-token")
@@ -327,7 +327,7 @@ func TestDoctorChecksGitLabTokenFromEnv(t *testing.T) {
 		return []byte("git version 2.43.0\n"), nil
 	})
 	t.Setenv("AO_GITLAB_TOKEN", "env-token")
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitLabRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
@@ -343,7 +343,7 @@ func TestDoctorChecksGitLabTokenFromEnvGitLabToken(t *testing.T) {
 		return []byte("git version 2.43.0\n"), nil
 	})
 	t.Setenv("GITLAB_TOKEN", "env-token-2")
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitLabRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
@@ -364,7 +364,7 @@ func TestDoctorChecksGitLabTokenFromGLab(t *testing.T) {
 		}
 		return []byte("git version 2.43.0\n"), nil
 	})
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitLabRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
@@ -392,7 +392,7 @@ func TestDoctorFailsExpiredGitLabToken(t *testing.T) {
 		return []byte("git version 2.43.0\n"), nil
 	})
 	t.Setenv("GITLAB_TOKEN", "expired-token")
-	c.deps.HTTPClient = srv.Client()
+	c.deps.HTTPClient = rawFixtureClient(t, srv.Client())
 	c.deps.DoctorGitLabRESTBase = srv.URL
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "gitlab-token")
@@ -403,7 +403,7 @@ func TestDoctorFailsExpiredGitLabToken(t *testing.T) {
 
 func gitlabDoctorServer(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/user" {
 			t.Fatalf("unexpected gitlab probe: %s %s", r.Method, r.URL.Path)
 		}
@@ -646,7 +646,7 @@ func TestDoctorChecksAOBinaryIdentity(t *testing.T) {
 				},
 				ProcessAlive: func(int) bool { return false },
 			}
-			c := &commandContext{deps: deps.withDefaults()}
+			c := newTestCommandContext(t, deps.withDefaults())
 			check := c.checkAOBinary(tc.daemonExe)
 			if check.Level != tc.wantLevel || !strings.Contains(check.Message, tc.wantIn) {
 				t.Fatalf("ao-binary check = %+v, want level %s with %q", check, tc.wantLevel, tc.wantIn)
@@ -688,12 +688,12 @@ func doctorContext(t *testing.T, paths map[string]string, commandOutput func(con
 	if commandOutput != nil {
 		deps.CommandOutput = commandOutput
 	}
-	return &commandContext{deps: deps.withDefaults()}
+	return newTestCommandContext(t, deps.withDefaults())
 }
 
 func githubDoctorServer(t *testing.T, status int, body, scopes string) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/user" {
 			t.Fatalf("unexpected github probe: %s %s", r.Method, r.URL.Path)
 		}

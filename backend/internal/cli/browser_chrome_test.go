@@ -3,7 +3,6 @@ package cli
 import (
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -12,7 +11,7 @@ func TestBrowserTargetCommand(t *testing.T) {
 	setBrowserIdentity(t)
 	cfg := setConfigEnv(t)
 	capture := &browserRequestCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/api/v1/browser/commands" {
 			http.NotFound(w, r)
@@ -56,7 +55,7 @@ func TestBrowserTargetCommand(t *testing.T) {
 func TestBrowserChromeSetupAndStatus(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var methods []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/browser/chrome" {
 			http.NotFound(w, r)
 			return

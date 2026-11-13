@@ -2,7 +2,6 @@ package cli
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,7 +12,7 @@ func TestSessionHistory_PrintsTurnsForTheCurrentSession(t *testing.T) {
 	cfg := setConfigEnv(t)
 	t.Setenv("AO_SESSION_ID", "demo-1")
 	var requested string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requested = r.Method + " " + r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"turns":[

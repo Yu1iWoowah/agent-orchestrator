@@ -24,7 +24,7 @@ type browserRequestCapture struct {
 
 func browserCLIServer(t *testing.T, capture *browserRequestCapture) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.path = r.URL.RequestURI()
 		capture.capability = r.Header.Get(browserCapabilityHeader)
 		w.Header().Set("Content-Type", "application/json")
@@ -461,7 +461,7 @@ func TestBrowserExpandedWaitArguments(t *testing.T) {
 	capture := &browserRequestCapture{}
 	srv := browserCLIServer(t, capture)
 	writeRunFileFor(t, cfg, srv)
-	deps := Deps{ProcessAlive: func(int) bool { return true }}
+	deps := Deps{HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }}
 
 	tests := []struct {
 		name string
@@ -492,7 +492,7 @@ func TestBrowserCoreInteractionArguments(t *testing.T) {
 	capture := &browserRequestCapture{}
 	srv := browserCLIServer(t, capture)
 	writeRunFileFor(t, cfg, srv)
-	deps := Deps{ProcessAlive: func(int) bool { return true }}
+	deps := Deps{HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }}
 
 	tests := []struct {
 		name   string
@@ -805,7 +805,7 @@ func TestBrowserRequiresSessionAndValidWait(t *testing.T) {
 func TestBrowserPreservesDaemonErrorEnvelopeAndRequestID(t *testing.T) {
 	setBrowserIdentity(t)
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_, _ = io.WriteString(w, `{"error":"conflict","code":"SESSION_TERMINATED","message":"Session is terminated","requestId":"req-browser-1"}`)

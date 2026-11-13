@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -14,7 +13,7 @@ const replacementTestID = "11111111-1111-4111-8111-111111111111"
 func TestReplacementGetPreservesUnavailableNotificationReceipts(t *testing.T) {
 	cfg := setConfigEnv(t)
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}
@@ -36,7 +35,7 @@ func TestReplacementGetPreservesUnavailableNotificationReceipts(t *testing.T) {
 func TestReplacementRepairCLIRequiresExplicitCAS(t *testing.T) {
 	cfg := setConfigEnv(t)
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}
@@ -69,7 +68,7 @@ func TestOrchestratorReplacementHTTPCommands(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/internal/") {
 					return
 				}
@@ -123,7 +122,7 @@ func TestOrchestratorReplacementHTTPCommands(t *testing.T) {
 
 func TestOrchestratorReplacementKeepsDaemonError(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}
@@ -147,7 +146,7 @@ func TestOrchestratorReplacementFailurePreservesRecoveryIdentities(t *testing.T)
 		t.Run(code, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var key string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/internal/") {
 					return
 				}
@@ -193,7 +192,7 @@ func TestOrchestratorReplacementUsage(t *testing.T) {
 func TestOrchestratorReplacementAcceptanceReceipt(t *testing.T) {
 	cfg := setConfigEnv(t)
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}
@@ -222,7 +221,7 @@ func TestOrchestratorPreparedSubmitsOnlyAuthenticatedReceipt(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "source")
 	t.Setenv("AO_BROWSER_CAPABILITY", "private-source-capability")
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}
@@ -265,7 +264,7 @@ func TestOrchestratorPreparedRejectsInvalidReceiptLocally(t *testing.T) {
 			t.Setenv("AO_SESSION_ID", "source")
 			t.Setenv("AO_BROWSER_CAPABILITY", "private-source-capability")
 			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasPrefix(r.URL.Path, "/internal/") {
 					calls++
 				}
@@ -296,7 +295,7 @@ func TestOrchestratorPreparedRejectsInvalidReceiptLocally(t *testing.T) {
 func TestOrchestratorReplacementIntakeReadsOnceWithoutSending(t *testing.T) {
 	cfg := setConfigEnv(t)
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}

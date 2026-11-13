@@ -132,8 +132,8 @@ func TestE2E_ClaimPRMetadataOnlyContract(t *testing.T) {
 			}
 
 			var responseBody []byte
-			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				resp, err := http.DefaultTransport.RoundTrip(req)
+			client := observingFixtureClient(t, nil, false, func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
+				resp, err := next.RoundTrip(req)
 				if err != nil || req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/pr/claim") {
 					return resp, err
 				}
@@ -147,10 +147,10 @@ func TestE2E_ClaimPRMetadataOnlyContract(t *testing.T) {
 				return resp, nil
 			})
 			var out bytes.Buffer
-			root := NewRootCommand(Deps{
+			root := newTestRootCommand(t, Deps{
 				Out:          &out,
 				Err:          &out,
-				HTTPClient:   &http.Client{Transport: transport},
+				HTTPClient:   client,
 				ProcessAlive: func(int) bool { return true },
 			})
 			args := []string{"session", "claim-pr", string(session.ID), "https://github.com/acme/repo/pull/7"}
