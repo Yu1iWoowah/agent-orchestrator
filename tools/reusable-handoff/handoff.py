@@ -2210,7 +2210,7 @@ EXPORT_COLUMNS = {
 def export_conversation(database, old, conversation, harness, latest_sequence):
     path = no_symlinks(database)
     uri = path.as_uri() + "?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=30) as db:
+    with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN")
@@ -2232,7 +2232,7 @@ def export_conversation(database, old, conversation, harness, latest_sequence):
 
 
 def native_identity(database, sid, harness):
-    with sqlite3.connect(no_symlinks(database).as_uri() + "?mode=ro", uri=True, timeout=30) as db:
+    with contextlib.closing(sqlite3.connect(no_symlinks(database).as_uri() + "?mode=ro", uri=True, timeout=30)) as db:
         db.execute("PRAGMA query_only=ON")
         row = db.execute("SELECT id,project_id,harness,provider_conversation_id FROM sessions WHERE id=?", (sid,)).fetchone()
         require(row and row[:3] == (sid, PROJECT, harness), "native identity mismatch")

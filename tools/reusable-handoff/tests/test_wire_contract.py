@@ -13,6 +13,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 import uuid
+from contextlib import closing
 from unittest.mock import patch
 
 
@@ -25,6 +26,14 @@ def wire_bytes(name):
 
 def wire(name):
     return json.loads(wire_bytes(name))
+
+
+def true_cli(directory):
+    """Private no-op CLI; a host /usr/bin/true may be a symlink, which CLI() must reject."""
+    path = Path(directory) / "true-cli"
+    path.write_bytes(b"#!/bin/sh\nexit 0\n")
+    path.chmod(0o700)
+    return path
 
 
 def list_row(session):
@@ -50,7 +59,7 @@ class WireContractTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
         h.publish(self.root / "run.json", b'{"port":1}')
-        self.cli = h.CLI(Path("/usr/bin/true"), "old", self.root, self.root / "run.json", self.root)
+        self.cli = h.CLI(true_cli(self.root), "old", self.root, self.root / "run.json", self.root)
         self.cli.execution = h.Journal(self.root, str(uuid.uuid4())).register("_run", "old")
         self.cli.execution.bindings = {"old", "worker", "new"}
         self.cli.execution.request_target = dict(harness="codex", account="acct", model="model", effort="high", approval_mode="bypass-permissions")
@@ -149,7 +158,7 @@ class WireContractTests(unittest.TestCase):
                 with patch.object(h.subprocess, "run", side_effect=command), self.http_transport(catalog), self.assertRaises(h.Stop):
                     h.target_preflight(self.cli, target)
             database = self.root / (provider + ".db")
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")
                 db.execute("INSERT INTO sessions VALUES('old',?,?, 'native')", (h.PROJECT, harness))
             snapshot = wire("claude-snapshot" if provider == "claude" else "snapshot")

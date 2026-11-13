@@ -1,4 +1,5 @@
 """RH-SCRIPT1 protocol proofs; never connects to an installed AO daemon."""
+from contextlib import closing
 import copy
 import importlib.util
 import json
@@ -13,7 +14,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from test_wire_contract import wire, wire_bytes, list_row
+from test_wire_contract import wire, wire_bytes, list_row, true_cli
 from producer_transport import ActorTransport, activity as produced_activity, directive as persisted_directive
 
 SPEC = importlib.util.spec_from_file_location("handoff", Path(__file__).parents[1] / "handoff.py")
@@ -179,7 +180,7 @@ class ProtocolTests(unittest.TestCase):
     def test_audit_dispatch_deadline_checks_before_starting_subprocess(self):
         run_file = self.root / "fake-running.json"
         h.publish(run_file, b'{"port":1}')
-        cli = h.CLI(Path("/usr/bin/true"), "old", self.root, run_file, self.root)
+        cli = h.CLI(true_cli(self.root), "old", self.root, run_file, self.root)
         cli.execution = h.Journal(self.root, str(uuid.uuid4())).register("start", "old")
         self.addCleanup(cli.execution.close)
         marked, clock = [], [0]
@@ -501,7 +502,7 @@ class ProtocolTests(unittest.TestCase):
 
     def database(self):
         path = self.root / "fixture.db"
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id,secret)")
             db.execute("INSERT INTO sessions VALUES('old',?,'codex','native-old','NEVER_READ')", (h.PROJECT,))
             for table, columns in h.EXPORT_COLUMNS.items():
@@ -535,7 +536,7 @@ class ProtocolTests(unittest.TestCase):
         fake.snapshots["old"]["transcript"]["latestSequence"] = 11
         fake.snapshots["old"]["transcript"]["entries"].append({"id": "plan", "kind": "activity", "activityKind": "plan",
             "status": "completed", "sequence": 9, "turnId": "turn", "detail": {}})
-        with sqlite3.connect(fake.data_dir / "ao.db") as db:
+        with closing(sqlite3.connect(fake.data_dir / "ao.db")) as db, db:
             db.execute("INSERT INTO conversation_activities(id,conversation_id,sequence,kind,status) VALUES('plan','conv',9,'plan','completed')")
         h.run_protocol(fake.run)
         self.assertEqual(fake.run.state["outcome"], "complete")
@@ -550,7 +551,7 @@ class ProtocolTests(unittest.TestCase):
         self.addCleanup(fake.transport.close)
         run = fake.run
         fake.snapshots["old"]["transcript"]["entries"] = [dict(id="exported", sequence=10, kind="message", role="assistant", text="synthetic context")]
-        with sqlite3.connect(fake.data_dir / "ao.db") as db:
+        with closing(sqlite3.connect(fake.data_dir / "ao.db")) as db, db:
             db.execute("INSERT INTO conversation_messages(id,conversation_id,sequence,role,text) VALUES('exported','conv',10,'assistant','synthetic context')")
         run.workspace("worker")
         run.state.update(stops=[{"workspace": {"path": str(fake.worker_path)}}], stop_index_sha256="0" * 64)
@@ -1211,7 +1212,7 @@ class FlowFixture:
                               cli_path=str(self.executable), cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
         self.run.workspace("old")
         self.run.save()
-        with sqlite3.connect(root / "ao.db") as db:
+        with closing(sqlite3.connect(root / "ao.db")) as db, db:
             db.execute("CREATE TABLE sessions(id,project_id,harness,provider_conversation_id)")
             db.execute("INSERT INTO sessions VALUES('old',?,?,'native-old')", (h.PROJECT, old_harness))
             for table, columns in h.EXPORT_COLUMNS.items():
@@ -1248,7 +1249,7 @@ class FlowFixture:
             snap["transcript"]["latestSequence"] = sequence
             snap["transcript"]["entries"].append({"id": "old-ready", "sequence": sequence, "kind": "message", "role": "assistant", "turnId": snap["transcript"]["turns"][-1]["id"],
                 "text": h.status_command(self.run.root, self.run_id) + "；10分鐘未見new首報就查原run。"})
-            with sqlite3.connect(self.data_dir / "ao.db") as db:
+            with closing(sqlite3.connect(self.data_dir / "ao.db")) as db, db:
                 for entry in snap["transcript"]["entries"]:
                     if entry["kind"] == "message":
                         db.execute("INSERT INTO conversation_messages(id,conversation_id,turn_id,sequence,role,text,branch_id) VALUES(?,?,?,?,?,?,?)",
@@ -1362,7 +1363,7 @@ class FlowFixture:
             self.snapshots["new"] = snap
             self.session_list.append(snap["session"])
             self.owner = "new"
-            with sqlite3.connect(self.data_dir / "ao.db") as db:
+            with closing(sqlite3.connect(self.data_dir / "ao.db")) as db, db:
                 db.execute("INSERT INTO sessions VALUES('new',?,?,'native-new')", (h.PROJECT, self.target["harness"]))
             self.pending_actor = ("new", "bootstrap")
             return b"spawned session new"
