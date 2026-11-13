@@ -80,3 +80,7 @@ func (s *Service) WaitBackgroundWakeForTest(id domain.SessionID) bool {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// SetAfterSettleCutoffForTest runs hook after a start reads its settlement
+// cutoff and before it settles what an earlier controller left behind.
+func (s *Service) SetAfterSettleCutoffForTest(hook func()) { s.afterSettleCutoff = hook }
