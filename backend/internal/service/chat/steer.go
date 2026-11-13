@@ -186,6 +186,19 @@ func (s *Service) SteerOrSend(
 	if msg.SenderSessionID != "" {
 		msg.Origin = domain.MessageOriginAutomation
 	}
+	if !recoverOnly && s.controllerStarting(id) {
+		// No turn can be running yet: queue it for the controller that is
+		// starting, as a send would, instead of waiting for the start.
+		record, err := s.requireChatSession(ctx, id)
+		if err != nil {
+			return SteerOrSendResult{}, err
+		}
+		turn, err := s.queueWithoutController(ctx, record, msg)
+		if !errors.Is(err, ErrNotProvisioning) {
+			return SteerOrSendResult{Turn: turn, Duplicate: err == nil && turn.ID == ""}, err
+		}
+		// The controller came up meanwhile: steer or send through it.
+	}
 	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return SteerOrSendResult{}, err

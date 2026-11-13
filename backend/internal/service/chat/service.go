@@ -131,6 +131,14 @@ type Service struct {
 	ownerControllers map[domain.ConversationOwner]*Controller
 	startConfigs     map[domain.ConversationOwner]StartConfig
 	awakeInterrupted map[domain.ConversationOwner]domain.AwakeAgentTarget
+	// starting counts Start calls in progress per owner. Requests for a session
+	// whose controller is still starting answer at once instead of waiting on
+	// its gate. Memory only: a daemon restart has no start in progress.
+	starting map[domain.ConversationOwner]int
+	// startIntake marks sessions that queued input while their controller was
+	// starting. The next successful start keeps that queue and drains it; a
+	// failed start leaves it for the one after.
+	startIntake map[domain.SessionID]bool
 	// handoffInterrupted is the provider turn each session's pending handoff
 	// stopped, kept until the account move that stopped it commits.
 	handoffInterrupted      map[domain.SessionID]string
@@ -258,6 +266,8 @@ func New(opts Options) *Service {
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		awakeInterrupted:       make(map[domain.ConversationOwner]domain.AwakeAgentTarget),
+		starting:               make(map[domain.ConversationOwner]int),
+		startIntake:            make(map[domain.SessionID]bool),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 		waking:                 make(map[domain.SessionID]int),
@@ -430,14 +440,72 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 // A resume that fails is reported as a failure rather than quietly becoming a new
 // conversation: presenting unrelated history as continuous is worse than an error
 // the user can act on.
+//
+// Resume, wake and asynchronous spawn all start here, so the session reads as
+// starting for the whole call, including the wait for its gate.
 func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, error) {
 	owner := conversationOwner(cfg)
-	gate := s.controllerGate(owner)
-	if err := gate.lock(ctx); err != nil {
-		return nil, err
+	s.mu.Lock()
+	s.starting[owner]++
+	s.mu.Unlock()
+	controller, err := func() (*Controller, error) {
+		defer func() {
+			s.mu.Lock()
+			if s.starting[owner]--; s.starting[owner] == 0 {
+				delete(s.starting, owner)
+			}
+			s.mu.Unlock()
+		}()
+		gate := s.controllerGate(owner)
+		if err := gate.lock(ctx); err != nil {
+			return nil, err
+		}
+		defer gate.unlock()
+		return s.startLocked(ctx, cfg)
+	}()
+	if err == nil && owner.Kind == domain.ConversationOwnerSession {
+		s.drainStartIntake(ctx, cfg.SessionID, controller)
 	}
-	defer gate.unlock()
-	return s.startLocked(ctx, cfg)
+	return controller, err
+}
+
+// controllerStarting reports a session whose controller is being started and
+// has no live controller yet.
+func (s *Service) controllerStarting(id domain.SessionID) bool {
+	s.mu.RLock()
+	starting := s.starting[domain.SessionConversationOwner(id)] > 0
+	s.mu.RUnlock()
+	return starting && !s.HasLiveChatController(id)
+}
+
+func (s *Service) markStartIntake(id domain.SessionID) {
+	s.mu.Lock()
+	s.startIntake[id] = true
+	s.mu.Unlock()
+}
+
+func (s *Service) hasStartIntake(id domain.SessionID) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.startIntake[id]
+}
+
+// drainStartIntake sends what was queued while the controller started. Input
+// queued after this point reaches the live controller through
+// queueWithoutController's own drain.
+func (s *Service) drainStartIntake(ctx context.Context, id domain.SessionID, controller *Controller) {
+	s.mu.Lock()
+	queued := s.startIntake[id]
+	delete(s.startIntake, id)
+	s.mu.Unlock()
+	if !queued || controller == nil {
+		return
+	}
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if err := controller.drainOne(drainCtx); err != nil {
+		s.log.Warn("chat start: drain input queued while starting", "session", id, "error", err)
+	}
 }
 
 // startLocked is the launch implementation shared by ordinary starts and the
@@ -751,7 +819,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// survive a failed first drain.
 	queuedBeforeFirstController := false
 	preserveUndispatchedQueue := false
-	waking := s.isWaking(cfg.SessionID)
+	// Input queued during an earlier, failed start waits for this one, as a
+	// wake's queue does.
+	waking := s.isWaking(cfg.SessionID) || s.hasStartIntake(cfg.SessionID)
 	// A session whose move to a new harness release failed kept its queued
 	// messages for this start, the way a wake does (see versionSwitchFailed).
 	if sessionFound && sessionRecord.StaleBinary != nil && sessionRecord.StaleBinary.SwitchFailedAt != nil {
@@ -1123,9 +1193,17 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// no orphaned work — only the intake an asynchronous spawn queued ahead of
 	// it. Settling that would fail the user's opening prompt the moment the agent
 	// it was waiting for finally arrived.
+	//
+	// Input queued while this start was connecting is not orphaned either: the
+	// start that follows it delivers it (drainStartIntake).
+	keepStartIntake := false
+	if !preserveUndispatchedQueue && s.hasStartIntake(cfg.SessionID) {
+		running, listErr := s.store.ListVisibleRunningTurnProviderIDs(ctx, conversation.ID)
+		keepStartIntake = listErr == nil && len(running) == 0
+	}
 	if !liveReconnect && cfg.ProviderHandoff == nil &&
 		owner.Kind != domain.ConversationOwnerReview &&
-		!queuedBeforeFirstController && !preserveUndispatchedQueue {
+		!queuedBeforeFirstController && !preserveUndispatchedQueue && !keepStartIntake {
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
 	// A fresh generation per launch, so events from the controller this one
@@ -1531,9 +1609,10 @@ func (s *Service) Send(
 		msg.Text = reports.AppendToUserMessage(msg.Text)
 	}
 	var turn domain.ConversationTurn
-	if record.ProvisionState.IsProvisioning() || record.HibernatedAt != nil {
+	if record.ProvisionState.IsProvisioning() || record.HibernatedAt != nil || s.controllerStarting(id) {
 		// Keep messages on the durable queue until provisioning finishes so a
-		// new message cannot overtake the opening prompt during handoff.
+		// new message cannot overtake the opening prompt during handoff. A
+		// controller that is starting takes them once it is up.
 		turn, err = s.queueWithoutController(ctx, record, msg)
 		if errors.Is(err, ErrNotProvisioning) {
 			// Startup may have become ready after the first read. The store
@@ -2238,6 +2317,11 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 			return Snapshot{}, err
 		}
 	}
+	// A controller that is starting is connecting, not stopped: the UI shows
+	// its progress instead of offering Resume.
+	if state == ports.ChatControllerStopped && !record.IsTerminated && s.controllerStarting(id) {
+		state = ports.ChatControllerConnecting
+	}
 
 	return Snapshot{
 		Conversation:                     rows.Conversation,
@@ -2345,6 +2429,11 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		if err != nil {
 			return Snapshot{}, err
 		}
+	}
+	// A controller that is starting is connecting, not stopped: the UI shows
+	// its progress instead of offering Resume.
+	if state == ports.ChatControllerStopped && !record.IsTerminated && s.controllerStarting(id) {
+		state = ports.ChatControllerConnecting
 	}
 	return Snapshot{
 		Conversation:                     rows.Conversation,
@@ -3125,10 +3214,10 @@ func (s *Service) relayChatTurn(
 			turn, err := s.QueueReplacementIntake(ctx, id, msg)
 			return turn.ID, err
 		}
-		if record.HibernatedAt != nil {
+		if record.HibernatedAt != nil || s.controllerStarting(id) {
 			turn, err := s.queueWithoutController(ctx, record, msg)
 			if err == nil {
-				if turn.ID != "" {
+				if turn.ID != "" && record.HibernatedAt != nil {
 					s.startBackgroundWake(id)
 				}
 				return turn.ID, nil

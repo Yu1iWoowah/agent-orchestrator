@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -13,6 +14,12 @@ import (
 
 // ErrNotProvisioning refuses intake when no controller is starting.
 var ErrNotProvisioning = domain.ErrSessionNotProvisioning
+
+// startingIntakeStore accepts input for a session whose controller is being
+// started, which the store cannot tell from a session that needs no queue.
+type startingIntakeStore interface {
+	AppendStartingUserMessage(ctx context.Context, conversationID string, session domain.SessionID, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error)
+}
 
 // QueueUserMessage records a turn for a session whose controller does not exist
 // yet. It is the opening prompt's delivery path for an asynchronous spawn, and
@@ -45,15 +52,22 @@ func (s *Service) queueWithoutController(
 		}
 	}
 	heldByReplacement := false
+	startingIntake := false
 	if !record.ProvisionState.IsProvisioning() && record.HibernatedAt == nil {
 		err := s.replacementWakeFence(ctx, record.ID)
-		if !errors.Is(err, domain.ErrReplacementIntakeFenced) {
-			if err != nil {
-				return domain.ConversationTurn{}, err
-			}
+		switch {
+		case errors.Is(err, domain.ErrReplacementIntakeFenced):
+			heldByReplacement = true
+		case err != nil:
+			return domain.ConversationTurn{}, err
+		case s.controllerStarting(record.ID):
+			// Mark before appending: the start may finish meanwhile, and must
+			// then keep and drain this message rather than settle it as orphaned.
+			s.markStartIntake(record.ID)
+			startingIntake = true
+		default:
 			return domain.ConversationTurn{}, ErrNotProvisioning
 		}
-		heldByReplacement = true
 	}
 	conversation, err := s.ensureConversation(ctx, record)
 	if err != nil {
@@ -88,7 +102,13 @@ func (s *Service) queueWithoutController(
 		Continuation:        msg.Continuation,
 		InteractionAt:       msg.InteractionAt,
 	}
-	created, err := s.store.AppendUserMessage(ctx, conversation.ID, record.ID, "", message, turnID, now)
+	appendQueued := func(conversationID string) (bool, error) {
+		if starting, ok := s.store.(startingIntakeStore); ok && startingIntake {
+			return starting.AppendStartingUserMessage(ctx, conversationID, record.ID, message, turnID, now)
+		}
+		return s.store.AppendUserMessage(ctx, conversationID, record.ID, "", message, turnID, now)
+	}
+	created, err := appendQueued(conversation.ID)
 	if errors.Is(err, domain.ErrConversationRebound) {
 		// An orchestrator's first controller moved its queue to the project
 		// conversation after ensureConversation returned the provisioning row
@@ -98,7 +118,7 @@ func (s *Service) queueWithoutController(
 			err = validateExcerptReferences(msg.Excerpts, conversation.ID)
 		}
 		if err == nil {
-			created, err = s.store.AppendUserMessage(ctx, conversation.ID, record.ID, "", message, turnID, now)
+			created, err = appendQueued(conversation.ID)
 		}
 	}
 	if err != nil {
