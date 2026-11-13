@@ -2587,19 +2587,18 @@ func withHandoffNote(systemPrompt, note string) string {
 func (s *Service) branchUnanswered(ctx context.Context, session domain.SessionID, conversationID string, branch domain.ConversationBranch) bool {
 	switchBranch := branch.Strategy == domain.ConversationBranchStrategyApproximateContext && branch.HandoffNote != ""
 	ownBoundary := branch.ParentBranchID != "" && branch.SessionID == session
-	if s.reader == nil || !switchBranch && !ownBoundary {
+	turns, ok := s.sessions.(branchTurnReader)
+	if !ok || !switchBranch && !ownBoundary {
 		return false
 	}
-	rows, err := s.reader.LoadConversationSnapshot(ctx, conversationID)
-	if err != nil {
-		return false
-	}
-	for _, turn := range rows.Turns {
-		if turn.BranchID == branch.ID {
-			return false
-		}
-	}
-	return true
+	visible, err := turns.ConversationBranchHasVisibleTurn(ctx, conversationID, branch.ID)
+	return err == nil && !visible
+}
+
+// branchTurnReader answers branchUnanswered with one point query instead of
+// loading the whole conversation snapshot on every resume.
+type branchTurnReader interface {
+	ConversationBranchHasVisibleTurn(ctx context.Context, conversationID, branchID string) (bool, error)
 }
 
 // PrewarmChat runs PreflightChat's capability probe in the background so a

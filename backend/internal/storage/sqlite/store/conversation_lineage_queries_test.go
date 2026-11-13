@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // Four statements keep a turn only when the active lineage holds one of its
@@ -314,6 +316,34 @@ func TestLineageTurnQueriesAreBoundByConversation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, visible) {
 		t.Fatalf("visible turns = %v, want %v", got, visible)
+	}
+}
+
+// ConversationBranchHasVisibleTurn answers per branch what the snapshot's
+// Turns show, and tells a missing conversation from a branch with no turn.
+func TestBranchVisibleTurnMatchesSnapshotTurns(t *testing.T) {
+	ctx := context.Background()
+	s := sqlitetest.MustOpenAt(t, t.TempDir())
+	conversationID, _ := seedForkedConversation(t, s)
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversationID)
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	want := map[string]bool{"branch-without-turns": false}
+	for _, turn := range snapshot.Turns {
+		want[turn.BranchID] = true
+	}
+	if len(want) != 4 {
+		t.Fatalf("fixture branches with visible turns = %v, want root, child and nested", want)
+	}
+	for branch, visible := range want {
+		got, err := s.ConversationBranchHasVisibleTurn(ctx, conversationID, branch)
+		if err != nil || got != visible {
+			t.Errorf("branch %s visible = %v, %v; want %v", branch, got, err, visible)
+		}
+	}
+	if _, err := s.ConversationBranchHasVisibleTurn(ctx, "missing-conversation", "branch-child"); !errors.Is(err, store.ErrConversationNotFound) {
+		t.Fatalf("missing conversation error = %v, want ErrConversationNotFound", err)
 	}
 }
 
