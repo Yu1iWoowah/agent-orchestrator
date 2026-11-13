@@ -53,6 +53,12 @@ func (s *Service) queueWithoutController(
 	}
 	heldByReplacement := false
 	startingIntake := false
+	intakeLocked := false
+	defer func() {
+		if intakeLocked {
+			s.startIntakeMu.Unlock()
+		}
+	}()
 	if !record.ProvisionState.IsProvisioning() && record.HibernatedAt == nil {
 		err := s.replacementWakeFence(ctx, record.ID)
 		switch {
@@ -63,6 +69,10 @@ func (s *Service) queueWithoutController(
 		case s.controllerStarting(record.ID):
 			// Mark before appending: the start may finish meanwhile, and must
 			// then keep and drain this message rather than settle it as orphaned.
+			// Holding startIntakeMu until the append lands keeps a start from
+			// reading its cutoff before this mark and settling after the append.
+			s.startIntakeMu.Lock()
+			intakeLocked = true
 			s.markStartIntake(record.ID)
 			startingIntake = true
 		default:
@@ -120,6 +130,10 @@ func (s *Service) queueWithoutController(
 		if err == nil {
 			created, err = appendQueued(conversation.ID)
 		}
+	}
+	if intakeLocked {
+		s.startIntakeMu.Unlock()
+		intakeLocked = false
 	}
 	if err != nil {
 		return domain.ConversationTurn{}, fmt.Errorf("queue message for %s: %w", record.ID, err)

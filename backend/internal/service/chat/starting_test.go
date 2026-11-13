@@ -303,19 +303,29 @@ func TestStartAfterCrashDeliversInputQueuedWhileStarting(t *testing.T) {
 func TestInputQueuedAsAStartSettlesIsDelivered(t *testing.T) {
 	svc, st, held, workspace := startingService(t)
 	ctx := context.Background()
-	// Nothing was queued before the start read its cutoff; a send lands
+	// Nothing was queued before the start read its cutoff; a send arrives
 	// before it settles.
 	var typed domain.ConversationTurn
 	var typedErr error
+	sent := make(chan struct{})
 	svc.SetAfterSettleCutoffForTest(func() {
 		svc.SetAfterSettleCutoffForTest(nil)
-		typed, typedErr = svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "typed as it settles", ClientMessageID: "msg-settle", Origin: domain.MessageOriginHuman})
+		go func() {
+			defer close(sent)
+			typed, typedErr = svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "typed as it settles", ClientMessageID: "msg-settle", Origin: domain.MessageOriginHuman})
+		}()
+		// Give the send time to land before the settlement, if it can.
+		select {
+		case <-sent:
+		case <-time.After(200 * time.Millisecond):
+		}
 	})
 	done := resume(t, svc, held, workspace)
 	held.release <- nil
 	if err := <-done; err != nil {
 		t.Fatalf("resume: %v", err)
 	}
+	<-sent
 	if typedErr != nil || typed.State != domain.TurnStateQueued {
 		t.Fatalf("send as the start settles = %+v, %v; want a queued turn", typed, typedErr)
 	}

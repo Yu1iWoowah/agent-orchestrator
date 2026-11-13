@@ -135,9 +135,10 @@ type Service struct {
 	// whose controller is still starting answer at once instead of waiting on
 	// its gate. Memory only: a daemon restart has no start in progress.
 	starting map[domain.ConversationOwner]int
-	// startingSince is when an owner's current run of starts began. Input can
-	// queue as starting intake only after it, so it bounds what a start keeps.
-	startingSince map[domain.ConversationOwner]time.Time
+	// startIntakeMu orders starting intake against a start's settlement: input
+	// is marked and appended under it, and a start reads its cutoff and settles
+	// under it, so a start either keeps that input or settles before it lands.
+	startIntakeMu sync.Mutex
 	// afterSettleCutoff, when set by a test, runs after a start reads its
 	// settlement cutoff and before it settles.
 	afterSettleCutoff func()
@@ -273,7 +274,6 @@ func New(opts Options) *Service {
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		awakeInterrupted:       make(map[domain.ConversationOwner]domain.AwakeAgentTarget),
 		starting:               make(map[domain.ConversationOwner]int),
-		startingSince:          make(map[domain.ConversationOwner]time.Time),
 		startIntake:            make(map[domain.SessionID]time.Time),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
@@ -470,9 +470,6 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, error) {
 	owner := conversationOwner(cfg)
 	s.mu.Lock()
-	if s.starting[owner] == 0 {
-		s.startingSince[owner] = s.now()
-	}
 	s.starting[owner]++
 	s.mu.Unlock()
 	controller, err := func() (*Controller, error) {
@@ -481,7 +478,6 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			s.starting[owner]--
 			if s.starting[owner] == 0 {
 				delete(s.starting, owner)
-				delete(s.startingSince, owner)
 			}
 			s.mu.Unlock()
 		}()
@@ -517,18 +513,10 @@ func (s *Service) markStartIntake(id domain.SessionID) {
 	s.mu.Unlock()
 }
 
-// startSettleCutoff is the time from which queued input belongs to this start:
-// the first input queued during an earlier, failed start, else when the
-// current run of starts began. Input accepted while starting is queued after
-// that run began, so input queued between reading the cutoff and settling is
-// kept too.
-func (s *Service) startSettleCutoff(owner domain.ConversationOwner, id domain.SessionID) time.Time {
+func (s *Service) startIntakeSince(id domain.SessionID) time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if since, marked := s.startIntake[id]; marked {
-		return since
-	}
-	return s.startingSince[owner]
+	return s.startIntake[id]
 }
 
 // drainStartIntake sends what was queued while the controller started. Input
@@ -1238,7 +1226,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	if !liveReconnect && cfg.ProviderHandoff == nil &&
 		owner.Kind != domain.ConversationOwnerReview &&
 		!queuedBeforeFirstController && !preserveUndispatchedQueue {
-		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID, s.startSettleCutoff(owner, cfg.SessionID))
+		s.startIntakeMu.Lock()
+		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID, s.startIntakeSince(cfg.SessionID))
+		s.startIntakeMu.Unlock()
 	}
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
