@@ -4252,6 +4252,15 @@ type fakeReviewerTerminator struct {
 	teardownErr   error
 	restoreErr    error
 	sharedLog     *[]string
+	// reconcile runs for each worker the account owner check reconciles.
+	reconcile func(domain.SessionID) error
+}
+
+func (f *fakeReviewerTerminator) ReconcileReviewers(_ context.Context, id domain.SessionID) error {
+	if f.reconcile == nil {
+		return nil
+	}
+	return f.reconcile(id)
 }
 
 func (f *fakeReviewerTerminator) TerminateReviewer(_ context.Context, id domain.SessionID, body string) error {
