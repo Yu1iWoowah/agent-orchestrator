@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -3385,6 +3387,112 @@ func TestFailedReviewLaunchKeepsArchivedReviewerHidden(t *testing.T) {
 			saved, _, err := store.GetReviewByID(ctx, old.ID)
 			if err != nil || !saved.IsArchived || reviewerSurface(saved).ReviewID != "" || saved.ControllerGeneration != "" {
 				t.Fatalf("failed trigger reopened archive: %+v, %v", saved, err)
+			}
+		})
+	}
+}
+
+// chatGoneLauncher answers the chat reviewer process check with gone.
+type chatGoneLauncher struct {
+	*fakeLauncher
+	gone bool
+}
+
+func (l chatGoneLauncher) ReviewChatGone(string) bool { return l.gone }
+
+// A reviewer that would still hold its account is written exited only when it
+// has no process left; an unknown probe or a launch in progress changes nothing.
+func TestReconcileReviewersOnlyExitsReviewersWithNoProcess(t *testing.T) {
+	running := domain.ReviewRun{ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning}
+	tui := func(handle string, state domain.ActivityState) domain.Review {
+		return domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: handle, ReviewerActivityState: state}
+	}
+	chat := func(handle string) domain.Review {
+		return domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, InterfaceMode: domain.ReviewerInterfaceChat, ReviewerHandleID: handle, ReviewerActivityState: domain.ActivityActive}
+	}
+	terminated := liveWorker()
+	terminated.IsTerminated = true
+	for _, tt := range []struct {
+		name       string
+		review     domain.Review
+		runs       []domain.ReviewRun
+		worker     domain.SessionRecord
+		launcher   Launcher
+		wantExited bool
+	}{
+		{name: "terminal no handle, worker terminated", review: tui("", domain.ActivityActive), worker: terminated, launcher: &fakeLauncher{}, wantExited: true},
+		{name: "terminal no handle, worker alive", review: tui("", domain.ActivityIdle), worker: liveWorker(), launcher: &fakeLauncher{}, wantExited: true},
+		{name: "chat no handle, no controller or host", review: chat(""), worker: liveWorker(), launcher: chatGoneLauncher{fakeLauncher: &fakeLauncher{}, gone: true}, wantExited: true},
+		{name: "terminal exited with a running pass, process gone", review: tui("review-mer-1", domain.ActivityExited), runs: []domain.ReviewRun{running}, worker: liveWorker(), launcher: &fakeLauncher{alive: false}, wantExited: true},
+		{name: "terminal process alive", review: tui("review-mer-1", domain.ActivityActive), runs: []domain.ReviewRun{running}, worker: liveWorker(), launcher: &fakeLauncher{alive: true}},
+		{name: "terminal probe error", review: tui("review-mer-1", domain.ActivityActive), runs: []domain.ReviewRun{running}, worker: liveWorker(), launcher: &fakeLauncher{aliveErr: errors.New("runtime probe unavailable")}},
+		{name: "terminal probe inconclusive", review: tui("review-mer-1", domain.ActivityExited), runs: []domain.ReviewRun{running}, worker: liveWorker(), launcher: &fakeLauncher{aliveErr: ports.ErrRuntimeProbeInconclusive}},
+		{name: "no handle with a running pass", review: tui("", domain.ActivityActive), runs: []domain.ReviewRun{running}, worker: liveWorker(), launcher: &fakeLauncher{}},
+		{name: "chat handle, no controller, host running", review: chat(reviewerChatHandlePrefix + "rev-1"), runs: []domain.ReviewRun{running}, worker: liveWorker(), launcher: chatGoneLauncher{fakeLauncher: &fakeLauncher{}, gone: false}},
+		{name: "chat no handle, no controller, host running", review: chat(""), worker: liveWorker(), launcher: chatGoneLauncher{fakeLauncher: &fakeLauncher{}, gone: false}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			review := tt.review
+			store := &fakeStore{review: &review, runs: append([]domain.ReviewRun(nil), tt.runs...)}
+			eng := newEngineForTest(store, fakeSessions{rec: tt.worker, ok: true}, prAt("sha1"), fakeProjects{}, tt.launcher)
+			if err := eng.ReconcileReviewers(context.Background(), "mer-1"); err != nil {
+				t.Fatal(err)
+			}
+			exited := store.upsertCalls > 0 && store.review.ReviewerActivityState == domain.ActivityExited
+			if exited != tt.wantExited {
+				t.Fatalf("written exited = %t, want %t: %+v", exited, tt.wantExited, store.review)
+			}
+			for _, run := range store.runs {
+				failed := run.Status == domain.ReviewRunFailed && run.Body == reviewerExitedBeforeSubmission
+				if failed != tt.wantExited || !tt.wantExited && run.Status != domain.ReviewRunRunning {
+					t.Fatalf("run = %+v, want failed=%t", run, tt.wantExited)
+				}
+			}
+		})
+	}
+}
+
+// aliveReviewChat reports whether the review's chat controller is live.
+type aliveReviewChat struct {
+	sqliteReviewChatController
+	alive bool
+}
+
+func (c aliveReviewChat) ReviewChatAlive(string) bool { return c.alive }
+
+// A chat reviewer is gone only with no controller and no provider host; an
+// unreadable host record is unknown.
+func TestReviewChatGoneNeedsNoControllerAndNoHost(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		controller bool
+		descriptor string // "" writes none
+		want       bool
+	}{
+		{name: "controller live", controller: true, want: false},
+		{name: "no controller, no host record", want: true},
+		{name: "no controller, host running", descriptor: fmt.Sprintf(`{"version":1,"sessionId":"review-rev-1","address":"a","token":"t","pid":%d}`, os.Getpid()), want: false},
+		{name: "no controller, host exited", descriptor: `{"version":1,"sessionId":"review-rev-1","address":"a","token":"t","pid":1073741823}`, want: true},
+		{name: "no controller, host record unreadable", descriptor: `{"version":`, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			if tt.descriptor != "" {
+				dir := filepath.Join(dataDir, "chat-hosts", "review-rev-1")
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "host.json"), []byte(tt.descriptor), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			launcher := NewLauncher(nil, nil, dataDir, WithReviewerChat(aliveReviewChat{alive: tt.controller}))
+			probe, ok := launcher.(reviewChatProbe)
+			if !ok {
+				t.Fatal("launcher has no chat reviewer process check")
+			}
+			if got := probe.ReviewChatGone("rev-1"); got != tt.want {
+				t.Fatalf("gone = %t, want %t", got, tt.want)
 			}
 		})
 	}
