@@ -276,6 +276,95 @@ func TestSignInAgainKeepsTheAccountAndItsLogin(t *testing.T) {
 	}
 }
 
+// signedOutAccountInUse saves b@example.com, signs it out and leaves owner
+// holding it. The session "s1" stays bound to it.
+func signedOutAccountInUse(t *testing.T, owner domain.AgentAccountUsageOwner) (*Service, *fakeClaude, *memStore, string, *bool) {
+	t.Helper()
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "accounts")
+	claude := &fakeClaude{signedInAs: map[string]string{}}
+	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
+	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
+	start, err := svc.StartLogin(ctx, domain.AgentAccountProviderClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude.signedInAs[filepath.Join(root, "claude", start.OperationID)] = "b@example.com"
+	if status, _, err := svc.VerifyLogin(ctx, start.OperationID); err != nil || status != LoginComplete {
+		t.Fatalf("sign-in = %q, %v", status, err)
+	}
+	if err := svc.BindSession(ctx, "s1", domain.HarnessClaudeCode, start.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	delete(claude.signedInAs, filepath.Join(root, "claude", start.OperationID))
+	svc.SetUsageOwners(func(context.Context, string) ([]domain.AgentAccountUsageOwner, error) {
+		return []domain.AgentAccountUsageOwner{owner}, nil
+	})
+	stopped := false
+	svc.SetAgentStopper(func(context.Context, string) error { stopped = true; return nil })
+	return svc, claude, store, filepath.Join(root, "claude", start.OperationID), &stopped
+}
+
+// A signed-out account signs in again while anything still holds it: its
+// login is gone, so there is nothing to replace, and nothing is stopped.
+func TestSignInAgainToASignedOutAccountInUse(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
+	for _, owner := range []domain.AgentAccountUsageOwner{
+		{Kind: "session", SessionID: "same-provider", Harness: domain.HarnessClaudeCode, Blocking: true},
+		{Kind: "session", SessionID: "cross-provider", Harness: domain.HarnessCodex, Blocking: true},
+		{Kind: "reviewer", ReviewID: "review-1", Harness: domain.HarnessClaudeCode, Blocking: true},
+		{Kind: "transition", TransitionID: "transition-1", Harness: domain.HarnessClaudeCode, Blocking: true},
+	} {
+		t.Run(owner.Kind+"/"+string(owner.Harness), func(t *testing.T) {
+			ctx := context.Background()
+			svc, claude, store, home, stopped := signedOutAccountInUse(t, owner)
+			accountID := filepath.Base(home)
+			again, err := svc.StartSignInAgain(ctx, accountID)
+			if err != nil || again.Terminal.HandleID == "" {
+				t.Fatalf("sign in again = %+v, %v", again, err)
+			}
+			if o := store.operations[again.OperationID]; o.Action != "login-again" || o.AccountID != accountID {
+				t.Fatalf("operation = %+v", o)
+			}
+			claude.signedInAs[home] = "B@example.com"
+			status, view, err := svc.VerifyLogin(ctx, again.OperationID)
+			if err != nil || status != LoginComplete || view == nil || view.Account.ID != accountID || !view.SignedIn {
+				t.Fatalf("same login = %q view=%+v err=%v", status, view, err)
+			}
+			if store.bindings["s1"] != accountID || *stopped {
+				t.Fatalf("binding = %q stopped=%t", store.bindings["s1"], *stopped)
+			}
+		})
+	}
+}
+
+// Signing a signed-out account in to someone else is refused: the account
+// keeps its email and its folder is signed out again.
+func TestSignInAgainToASignedOutAccountInUseRefusesAnotherLogin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
+	ctx := context.Background()
+	svc, claude, _, home, stopped := signedOutAccountInUse(t, domain.AgentAccountUsageOwner{Kind: "session", SessionID: "fake-1", Harness: domain.HarnessCodex, Blocking: true})
+	accountID := filepath.Base(home)
+	again, err := svc.StartSignInAgain(ctx, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude.signedInAs[home] = "c@example.com"
+	if status, _, err := svc.VerifyLogin(ctx, again.OperationID); err != nil || status != LoginMismatch {
+		t.Fatalf("other login = %q, %v", status, err)
+	}
+	if a, err := svc.find(ctx, accountID); err != nil || a.Email != "b@example.com" {
+		t.Fatalf("account = %+v, %v", a, err)
+	}
+	if _, signedIn := claude.signedInAs[home]; signedIn || *stopped {
+		t.Fatalf("the other login stayed in the folder or agents stopped: stopped=%t", *stopped)
+	}
+}
+
 // Removing an account stops its agents first; one that cannot be stopped keeps
 // the account, signed in.
 func TestRemoveStopsTheAccountsAgentsFirst(t *testing.T) {
