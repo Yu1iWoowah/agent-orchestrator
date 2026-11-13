@@ -1856,6 +1856,30 @@ func (s *Store) SettleOrphanedTurns(ctx context.Context, session domain.SessionI
 	return nil
 }
 
+// SettleOrphanedTurnsBefore is SettleOrphanedTurns for a start that accepted
+// input while it was starting: queued turns requested at or after queuedBefore
+// are kept for that start to deliver.
+func (s *Store) SettleOrphanedTurnsBefore(ctx context.Context, session domain.SessionID, queuedBefore, now time.Time) error {
+	q, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	if err := q.FailOrphanedConversationActivities(ctx,
+		gen.FailOrphanedConversationActivitiesParams{
+			UpdatedAt:          now,
+			HandledBySessionID: session,
+		}); err != nil {
+		return fmt.Errorf("settle orphaned activities for %s: %w", session, err)
+	}
+	if err := q.SettleOrphanedConversationTurnsBefore(ctx,
+		gen.SettleOrphanedConversationTurnsBeforeParams{
+			CompletedAt:        sql.NullTime{Time: now, Valid: true},
+			HandledBySessionID: session,
+			QueuedBefore:       queuedBefore,
+		}); err != nil {
+		return fmt.Errorf("settle orphaned turns for %s: %w", session, err)
+	}
+	return nil
+}
+
 // SettleUnboundRunningTurn closes an ambiguous dispatch after live reconnect.
 // Recheck under the writer lock so a bound or queued turn is never settled.
 func (s *Store) SettleUnboundRunningTurn(ctx context.Context, conversationID string, session domain.SessionID, turnID string, now time.Time) error {

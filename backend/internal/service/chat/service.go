@@ -135,10 +135,10 @@ type Service struct {
 	// whose controller is still starting answer at once instead of waiting on
 	// its gate. Memory only: a daemon restart has no start in progress.
 	starting map[domain.ConversationOwner]int
-	// startIntake marks sessions that queued input while their controller was
-	// starting. The next successful start keeps that queue and drains it; a
-	// failed start leaves it for the one after.
-	startIntake map[domain.SessionID]bool
+	// startIntake records when a session first queued input while its
+	// controller was starting. The next successful start keeps what was queued
+	// since then and drains it; a failed start leaves it for the one after.
+	startIntake map[domain.SessionID]time.Time
 	// handoffInterrupted is the provider turn each session's pending handoff
 	// stopped, kept until the account move that stopped it commits.
 	handoffInterrupted      map[domain.SessionID]string
@@ -267,7 +267,7 @@ func New(opts Options) *Service {
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		awakeInterrupted:       make(map[domain.ConversationOwner]domain.AwakeAgentTarget),
 		starting:               make(map[domain.ConversationOwner]int),
-		startIntake:            make(map[domain.SessionID]bool),
+		startIntake:            make(map[domain.SessionID]time.Time),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 		waking:                 make(map[domain.SessionID]int),
@@ -420,9 +420,23 @@ func cloneStartConfig(cfg StartConfig) StartConfig {
 // Best-effort by design: a failure here must not stop a session from coming back,
 // because a session the user cannot reopen is worse than a stale row. Both
 // failures are logged rather than swallowed.
-func (s *Service) settleOrphanedWork(ctx context.Context, session domain.SessionID, conversationID string) {
+// orphanedTurnsBeforeSettler keeps input queued since a start began.
+type orphanedTurnsBeforeSettler interface {
+	SettleOrphanedTurnsBefore(ctx context.Context, session domain.SessionID, queuedBefore, now time.Time) error
+}
+
+// settleOrphanedWork settles what a previous controller left behind. A
+// non-zero queuedBefore keeps turns queued at or after it: input accepted while
+// this start was connecting, which the start delivers (drainStartIntake).
+func (s *Service) settleOrphanedWork(ctx context.Context, session domain.SessionID, conversationID string, queuedBefore time.Time) {
 	now := s.now()
-	if err := s.store.SettleOrphanedTurns(ctx, session, now); err != nil {
+	var err error
+	if settler, ok := s.store.(orphanedTurnsBeforeSettler); ok && !queuedBefore.IsZero() {
+		err = settler.SettleOrphanedTurnsBefore(ctx, session, queuedBefore, now)
+	} else {
+		err = s.store.SettleOrphanedTurns(ctx, session, now)
+	}
+	if err != nil {
 		s.log.Error("chat start: settle orphaned turns", "session", session, "error", err)
 	}
 	// An approval left pending can never be answered: the provider call it was
@@ -479,13 +493,17 @@ func (s *Service) controllerStarting(id domain.SessionID) bool {
 	return starting && !s.HasLiveChatController(id)
 }
 
+// markStartIntake keeps the first time: input queued during an earlier,
+// failed start still waits for the start that succeeds.
 func (s *Service) markStartIntake(id domain.SessionID) {
 	s.mu.Lock()
-	s.startIntake[id] = true
+	if _, marked := s.startIntake[id]; !marked {
+		s.startIntake[id] = s.now()
+	}
 	s.mu.Unlock()
 }
 
-func (s *Service) hasStartIntake(id domain.SessionID) bool {
+func (s *Service) startIntakeSince(id domain.SessionID) time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.startIntake[id]
@@ -496,7 +514,7 @@ func (s *Service) hasStartIntake(id domain.SessionID) bool {
 // queueWithoutController's own drain.
 func (s *Service) drainStartIntake(ctx context.Context, id domain.SessionID, controller *Controller) {
 	s.mu.Lock()
-	queued := s.startIntake[id]
+	_, queued := s.startIntake[id]
 	delete(s.startIntake, id)
 	s.mu.Unlock()
 	if !queued || controller == nil {
@@ -820,9 +838,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// survive a failed first drain.
 	queuedBeforeFirstController := false
 	preserveUndispatchedQueue := false
-	// Input queued during an earlier, failed start waits for this one, as a
-	// wake's queue does.
-	waking := s.isWaking(cfg.SessionID) || s.hasStartIntake(cfg.SessionID)
+	waking := s.isWaking(cfg.SessionID)
 	// A session whose move to a new harness release failed kept its queued
 	// messages for this start, the way a wake does (see versionSwitchFailed).
 	if sessionFound && sessionRecord.StaleBinary != nil && sessionRecord.StaleBinary.SwitchFailedAt != nil {
@@ -1195,17 +1211,12 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// it. Settling that would fail the user's opening prompt the moment the agent
 	// it was waiting for finally arrived.
 	//
-	// Input queued while this start was connecting is not orphaned either: the
-	// start that follows it delivers it (drainStartIntake).
-	keepStartIntake := false
-	if !preserveUndispatchedQueue && s.hasStartIntake(cfg.SessionID) {
-		running, listErr := s.store.ListVisibleRunningTurnProviderIDs(ctx, conversation.ID)
-		keepStartIntake = listErr == nil && len(running) == 0
-	}
+	// Input queued while this start, or an earlier failed one, was connecting
+	// is not orphaned either: it stays queued for this start to deliver.
 	if !liveReconnect && cfg.ProviderHandoff == nil &&
 		owner.Kind != domain.ConversationOwnerReview &&
-		!queuedBeforeFirstController && !preserveUndispatchedQueue && !keepStartIntake {
-		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
+		!queuedBeforeFirstController && !preserveUndispatchedQueue {
+		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID, s.startIntakeSince(cfg.SessionID))
 	}
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
