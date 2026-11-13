@@ -1240,6 +1240,22 @@ func (s *Store) LatestVisibleUserTurnSettled(ctx context.Context, conversationID
 	return settled, nil
 }
 
+// ConversationBranchHasVisibleTurn reports whether LoadConversationSnapshot's
+// Turns would include one on branchID, without loading the conversation.
+func (s *Store) ConversationBranchHasVisibleTurn(ctx context.Context, conversationID, branchID string) (bool, error) {
+	row, err := s.qr.ConversationBranchHasVisibleTurn(ctx, gen.ConversationBranchHasVisibleTurnParams{
+		ConversationID: conversationID,
+		BranchID:       branchID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("check branch %s turns for %s: %w", branchID, conversationID, err)
+	}
+	if !row.ConversationFound {
+		return false, ErrConversationNotFound
+	}
+	return row.BranchHasTurn, nil
+}
+
 // AppendUserMessage records an inbound message and the turn it opens.
 //
 // Idempotent on clientMessageID: a retried send returns the message and turn that
