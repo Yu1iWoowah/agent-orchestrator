@@ -123,8 +123,6 @@ var _ interface {
 	sessionmanager.TerminalInputFencer
 } = (*terminal.Manager)(nil)
 
-// Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
-// graceful shutdown through the HTTP server and background workers.
 type accountReviewerReconciler interface {
 	ReconcileAccountReviewers(context.Context, string) error
 }
@@ -155,6 +153,8 @@ func accountAgentStopper(store openReviewerAccountUses, reviewers accountReviewe
 	}
 }
 
+// Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
+// graceful shutdown through the HTTP server and background workers.
 func Run(buildVersion string) error {
 	var operatorOwner *operatornative.Owner
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
