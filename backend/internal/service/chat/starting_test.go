@@ -25,12 +25,9 @@ type heldResume struct {
 	conv    *fakeConversation
 }
 
-// startingService runs a session's first controller, stops it, and returns a
-// service whose next resume can be held at the provider.
-func startingService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume, string) {
-	t.Helper()
-	st := openStore(t)
-	first := newFakeConversation()
+// newHeldService builds a daemon's chat service whose fresh starts use first
+// and whose resumes can be held at the provider.
+func newHeldService(st *sqlite.Store, first *fakeConversation, idPrefix string) (*chatsvc.Service, *heldResume) {
 	held := &heldResume{entered: make(chan struct{}, 4), release: make(chan error, 1), conv: newFakeConversation()}
 	var ids atomic.Int32
 	svc := chatsvc.New(chatsvc.Options{
@@ -46,8 +43,18 @@ func startingService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume
 			},
 		}},
 		Log:   slog.New(slog.DiscardHandler),
-		NewID: func() string { return fmt.Sprintf("starting-%d", ids.Add(1)) },
+		NewID: func() string { return fmt.Sprintf("%s-%d", idPrefix, ids.Add(1)) },
 	})
+	return svc, held
+}
+
+// startedService runs a session's first controller and records its provider
+// thread, so a later start resumes it.
+func startedService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume, *fakeConversation, string) {
+	t.Helper()
+	st := openStore(t)
+	first := newFakeConversation()
+	svc, held := newHeldService(st, first, "starting")
 	ctx := context.Background()
 	workspace := t.TempDir()
 	ctrl, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, WorkspacePath: workspace})
@@ -63,10 +70,18 @@ func startingService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume
 	if err := st.UpdateSession(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Stop(ctx, testSession); err != nil {
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	return svc, st, held, first, workspace
+}
+
+// startingService stops the first controller and returns the service whose
+// next resume can be held at the provider.
+func startingService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume, string) {
+	t.Helper()
+	svc, st, held, _, workspace := startedService(t)
+	if err := svc.Stop(context.Background(), testSession); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 	return svc, st, held, workspace
 }
 
@@ -228,4 +243,52 @@ func TestFailedStartKeepsQueuedInputForTheNextStart(t *testing.T) {
 		t.Fatalf("second resume: %v", err)
 	}
 	awaitSent(t, held.conv, []string{"kept"})
+}
+
+func awaitTurnState(t *testing.T, st *sqlite.Store, turnID string, want domain.TurnState) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		turn, err := st.TurnByID(context.Background(), turnID)
+		if err == nil && turn.State == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("turn %s = %q, %v; want %q", turnID, turn.State, err, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestStartAfterCrashDeliversInputQueuedWhileStarting(t *testing.T) {
+	crashed, st, _, first, workspace := startedService(t)
+	ctx := context.Background()
+	// The daemon dies with one turn running and one queued behind it.
+	running, err := crashed.Send(ctx, testSession, ports.ChatUserMessage{Text: "running at the crash", ClientMessageID: "msg-running", Origin: domain.MessageOriginHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1", ProviderConversationID: first.ProviderConversationID()})
+	awaitTurnState(t, st, running.ID, domain.TurnStateRunning)
+	queuedBefore, err := crashed.Send(ctx, testSession, ports.ChatUserMessage{Text: "queued before the crash", ClientMessageID: "msg-before", Origin: domain.MessageOriginHuman})
+	if err != nil || queuedBefore.State != domain.TurnStateQueued {
+		t.Fatalf("queue behind the running turn = %+v, %v", queuedBefore, err)
+	}
+
+	// The next daemon resumes the session while the user types.
+	svc, held := newHeldService(st, first, "restarted")
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	done := resume(t, svc, held, workspace)
+	intake, err := svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "typed while starting", ClientMessageID: "msg-intake", Origin: domain.MessageOriginHuman})
+	if err != nil || intake.State != domain.TurnStateQueued {
+		t.Fatalf("send while starting = %+v, %v", intake, err)
+	}
+	held.release <- nil
+	if err := <-done; err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	awaitSent(t, held.conv, []string{"typed while starting"})
+	// What the crash left behind is settled as before.
+	awaitTurnState(t, st, running.ID, domain.TurnStateFailed)
+	awaitTurnState(t, st, queuedBefore.ID, domain.TurnStateFailed)
 }
