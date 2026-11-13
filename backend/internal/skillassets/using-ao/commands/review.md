@@ -76,9 +76,12 @@ ao review submit [worker-session-id] [flags]
 Each `ao review submit` sends the result at most once. The CLI first checks the
 loopback daemon's identity and readiness; if that check fails, nothing is sent
 and the error says why. If the request was sent but no valid result came back,
-the command reports the result as unconfirmed and does not retry. Check the run
-with `ao review ls` before deciding to submit the same results again; repeating
-identical results for a run that already recorded them is safe.
+or the daemon answered with a server error or rejected a batch of several
+results, some results may already be recorded: the command reports the result
+as unconfirmed, keeps the daemon's error code and request ID, and does not
+retry. Check the runs with `ao review ls` before deciding to submit the same
+results again; repeating identical results for a run that already recorded them
+is safe.
 
 **Examples:**
 

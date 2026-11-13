@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -296,18 +297,31 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 }
 
 // postReviewJSON makes one business API attempt. A failed probe is a preflight
-// failure; after an attempt, a missing or invalid result is unconfirmed.
+// failure; after an attempt, a missing or invalid result is unconfirmed, and so
+// is an API error that cannot prove nothing was recorded.
 func (c *commandContext) postReviewJSON(ctx context.Context, path string, body submitReviewRequest, out *reviewRunResponse) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	err := c.postJSON(ctx, path, body, out)
 	var attempted daemonRequestError
-	var rejected apiResponseError
-	if errors.As(err, &attempted) && !errors.As(err, &rejected) {
-		return unconfirmedReviewResult(err)
+	if !errors.As(err, &attempted) {
+		return err
 	}
-	return err
+	var rejected apiResponseError
+	if errors.As(err, &rejected) && !reviewRejectionMayHaveRecorded(rejected, body) {
+		return err
+	}
+	return unconfirmedReviewResult(err)
+}
+
+// reviewRejectionMayHaveRecorded reports whether an API error leaves the
+// submission's outcome open. The daemon records a batch run by run without one
+// transaction, so a failure after the first result may leave earlier results
+// recorded; a server error may also follow a write. Only a client rejection of
+// a single result proves that nothing was recorded.
+func reviewRejectionMayHaveRecorded(rejected apiResponseError, body submitReviewRequest) bool {
+	return rejected.StatusCode >= http.StatusInternalServerError || len(body.Reviews) > 1
 }
 
 func unconfirmedReviewResult(err error) error {

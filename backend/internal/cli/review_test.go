@@ -281,11 +281,83 @@ func TestReviewSubmitDoesNotRetryDaemonAPIRejection(t *testing.T) {
 	waits := 0
 	deps.Sleep = func(time.Duration) { waits++ }
 	_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved")
-	if err == nil || !strings.Contains(err.Error(), "REVIEW_INVALID") {
-		t.Fatalf("err = %v, want daemon rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "REVIEW_INVALID") || strings.Contains(err.Error(), "unconfirmed") {
+		t.Fatalf("err = %v, want a confirmed daemon rejection", err)
 	}
 	if waits != 0 {
 		t.Fatalf("retry waits = %d, want 0", waits)
+	}
+}
+
+// The daemon records a batch run by run. When a later result fails, earlier
+// results stay recorded, so the CLI must not present the error as a clean
+// rejection.
+func TestReviewSubmitPartialBatchFailureIsUnconfirmed(t *testing.T) {
+	cfg := setReviewEnv(t)
+	var submits int
+	var recorded []string
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		submits++
+		var req submitReviewRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Reviews) != 2 {
+			t.Errorf("batch request = %+v, err = %v", req, err)
+		}
+		recorded = append(recorded, req.Reviews[0].RunID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"message":"Review operation failed","code":"REVIEW_OPERATION_FAILED","requestId":"req-partial"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved"},{"runId":"run-2","verdict":"approved"}]}`)
+	_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
+	if err == nil {
+		t.Fatal("partial batch failure reported success")
+	}
+	for _, want := range []string{"REVIEW_OPERATION_FAILED", "req-partial", "unconfirmed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	}
+	if submits != 1 || len(recorded) != 1 || recorded[0] != "run-1" {
+		t.Fatalf("submits = %d, recorded = %v; want one request that recorded run-1", submits, recorded)
+	}
+}
+
+func TestReviewSubmitAPIErrorUnconfirmedBoundary(t *testing.T) {
+	single := submitReviewRequest{RunID: "run-1", Verdict: "approved"}
+	batch := submitReviewRequest{Reviews: []submitReviewItem{{RunID: "run-1", Verdict: "approved"}, {RunID: "run-2", Verdict: "approved"}}}
+	for _, tc := range []struct {
+		name        string
+		status      int
+		body        submitReviewRequest
+		unconfirmed bool
+	}{
+		{"single client rejection", http.StatusConflict, single, false},
+		{"single server error", http.StatusInternalServerError, single, true},
+		{"batch client rejection", http.StatusBadRequest, batch, true},
+		{"batch server error", http.StatusInternalServerError, batch, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setReviewEnv(t)
+			srv, _ := reviewServer(t, tc.status, `{"message":"rejected","code":"REVIEW_X","requestId":"req-x"}`)
+			writeRunFileFor(t, cfg, srv)
+			c := newTestCommandContext(t, Deps{HTTPClient: apiFixtureClient(t, srv.Client()), ProcessAlive: func(int) bool { return false }})
+			err := c.postReviewJSON(context.Background(), "sessions/mer-1/reviews/submit", tc.body, &reviewRunResponse{})
+			var rejected apiResponseError
+			if !errors.As(err, &rejected) || rejected.StatusCode != tc.status || !strings.Contains(err.Error(), "req-x") {
+				t.Fatalf("err = %v, want the API envelope preserved", err)
+			}
+			if got := strings.Contains(err.Error(), "unconfirmed"); got != tc.unconfirmed {
+				t.Fatalf("unconfirmed = %v, want %v: %v", got, tc.unconfirmed, err)
+			}
+		})
 	}
 }
 
