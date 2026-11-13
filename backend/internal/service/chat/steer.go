@@ -193,6 +193,9 @@ func (s *Service) SteerOrSend(
 		if err != nil {
 			return SteerOrSendResult{}, err
 		}
+		if replayed, done, err := s.replayStartingSteer(ctx, record, msg); done {
+			return replayed, err
+		}
 		turn, err := s.queueWithoutController(ctx, record, msg)
 		if !errors.Is(err, ErrNotProvisioning) {
 			return SteerOrSendResult{Turn: turn, Duplicate: err == nil && turn.ID == ""}, err
@@ -205,6 +208,40 @@ func (s *Service) SteerOrSend(
 	}
 	defer release()
 	return controller.SteerOrSend(ctx, msg, recoverOnly)
+}
+
+// replayStartingSteer answers a retried steer-or-send from the receipt an
+// earlier controller stored, as Controller.SteerOrSend does, so a request that
+// already steered, or may have, is not queued and sent again. done is false
+// when there is no receipt or its steer found no turn and became a send.
+func (s *Service) replayStartingSteer(
+	ctx context.Context,
+	record domain.SessionRecord,
+	msg ports.ChatUserMessage,
+) (result SteerOrSendResult, done bool, err error) {
+	conversation, err := s.ensureConversation(ctx, record)
+	if err != nil {
+		return SteerOrSendResult{}, true, err
+	}
+	requestJSON, err := encodeSteerDeliveryRequest(msg)
+	if err != nil {
+		return SteerOrSendResult{}, true, err
+	}
+	delivery, found, err := s.store.SteerDelivery(ctx, conversation.ID, msg.ClientMessageID)
+	if err != nil {
+		return SteerOrSendResult{}, true, fmt.Errorf("%w: load prior result: %w", ErrSteerDeliveryUncertain, err)
+	}
+	if !found {
+		return SteerOrSendResult{}, false, nil
+	}
+	steered, err := replaySteerDelivery(delivery, requestJSON)
+	if errors.Is(err, ErrNoActiveTurn) {
+		return SteerOrSendResult{}, false, nil
+	}
+	if err != nil {
+		return SteerOrSendResult{}, true, err
+	}
+	return SteerOrSendResult{Steered: true, Duplicate: true, Steer: steered}, true, nil
 }
 
 // PromoteQueuedTurn delivers one already queued turn into the active turn. The

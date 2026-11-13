@@ -27,7 +27,7 @@ type heldResume struct {
 
 // newHeldService builds a daemon's chat service whose fresh starts use first
 // and whose resumes can be held at the provider.
-func newHeldService(st *sqlite.Store, first *fakeConversation, idPrefix string) (*chatsvc.Service, *heldResume) {
+func newHeldService(st *sqlite.Store, first ports.ChatConversation, idPrefix string) (*chatsvc.Service, *heldResume) {
 	held := &heldResume{entered: make(chan struct{}, 4), release: make(chan error, 1), conv: newFakeConversation()}
 	var ids atomic.Int32
 	svc := chatsvc.New(chatsvc.Options{
@@ -52,8 +52,15 @@ func newHeldService(st *sqlite.Store, first *fakeConversation, idPrefix string) 
 // thread, so a later start resumes it.
 func startedService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume, *fakeConversation, string) {
 	t.Helper()
-	st := openStore(t)
 	first := newFakeConversation()
+	svc, st, held, workspace := startedServiceWith(t, first)
+	return svc, st, held, first, workspace
+}
+
+// startedServiceWith runs a session's first controller on first.
+func startedServiceWith(t *testing.T, first ports.ChatConversation) (*chatsvc.Service, *sqlite.Store, *heldResume, string) {
+	t.Helper()
+	st := openStore(t)
 	svc, held := newHeldService(st, first, "starting")
 	ctx := context.Background()
 	workspace := t.TempDir()
@@ -71,7 +78,7 @@ func startedService(t *testing.T) (*chatsvc.Service, *sqlite.Store, *heldResume,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
-	return svc, st, held, first, workspace
+	return svc, st, held, workspace
 }
 
 // startingService stops the first controller and returns the service whose
@@ -315,5 +322,54 @@ func TestInputQueuedAsAStartSettlesIsDelivered(t *testing.T) {
 	awaitSent(t, held.conv, []string{"typed as it settles"})
 	if turn, err := st.TurnByID(ctx, typed.ID); err != nil || turn.State == domain.TurnStateFailed {
 		t.Fatalf("turn queued as the start settled = %q, %v; want it kept", turn.State, err)
+	}
+}
+
+func TestSteerRetriedWhileStartingReplaysItsReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		steer   error
+		wantErr error
+	}{
+		{name: "accepted"},
+		{name: "uncertain", steer: errors.New("transport outcome unknown"), wantErr: chatsvc.ErrSteerDeliveryUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newSteerRecorder()
+			svc, _, held, workspace := startedServiceWith(t, provider)
+			ctx := context.Background()
+			if _, err := svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "long", ClientMessageID: "msg-long", Origin: domain.MessageOriginHuman}); err != nil {
+				t.Fatal(err)
+			}
+			provider.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+			provider.failWith(tc.steer)
+			steer := ports.ChatUserMessage{Text: "guidance", ClientMessageID: "msg-steer", Origin: domain.MessageOriginHuman}
+			// The previous controller took the steer, but its answer was lost.
+			if _, err := svc.SteerOrSend(ctx, testSession, steer, false); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("steer = %v, want %v", err, tc.wantErr)
+			}
+			if err := svc.Stop(ctx, testSession); err != nil {
+				t.Fatalf("stop: %v", err)
+			}
+
+			done := resume(t, svc, held, workspace)
+			retried, err := promptly(t, "steer-or-send retry", func() (chatsvc.SteerOrSendResult, error) {
+				return svc.SteerOrSend(ctx, testSession, steer, false)
+			})
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("retry = %+v, %v; want %v", retried, err, tc.wantErr)
+				}
+			} else if err != nil || !retried.Steered || !retried.Duplicate || retried.Turn.ID != "" {
+				t.Fatalf("retry = %+v, %v; want the stored steer", retried, err)
+			}
+			held.release <- nil
+			if err := <-done; err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			if sent := held.conv.sentTexts(); len(sent) != 0 {
+				t.Fatalf("resumed controller was sent %q; the steer must not go again", sent)
+			}
+		})
 	}
 }
