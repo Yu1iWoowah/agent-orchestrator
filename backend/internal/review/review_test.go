@@ -2989,7 +2989,7 @@ func TestListReturnsHandleAndRuns(t *testing.T) {
 		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode, ReviewerHandleID: "review-mer-1", ReviewerActivityState: domain.ActivityIdle},
 		runs:   []domain.ReviewRun{{ID: "run-1", SessionID: "mer-1", PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1"}},
 	}
-	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{})
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{alive: true})
 	got, err := eng.List(context.Background(), "mer-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -918,6 +919,15 @@ func (l *agentLauncher) Alive(ctx context.Context, handleID, launchID string) (b
 		return l.runtime.IsExactSupervisedProcessAlive(ctx, handle, ref)
 	}
 	return l.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: handleID})
+}
+
+// ReviewChatGone reports a chat reviewer with no live controller and no
+// provider host left. An unreadable host record is unknown, never gone.
+func (l *agentLauncher) ReviewChatGone(reviewID string) bool {
+	if l.chat == nil || l.chat.ReviewChatAlive(reviewID) {
+		return false
+	}
+	return persistenthost.ProbeHost(l.dataDir, "review-"+reviewID) == persistenthost.HostAbsent
 }
 
 func (l *agentLauncher) Reusable(harness domain.ReviewerHarness) bool {

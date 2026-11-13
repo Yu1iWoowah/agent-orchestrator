@@ -532,6 +532,34 @@ func HostPID(dataDir, sessionID string) (int, bool) {
 	return d.PID, true
 }
 
+// HostState is what the recorded provider host for a session proves.
+type HostState int
+
+const (
+	// HostUnknown is an unreadable, undecodable or invalid record.
+	HostUnknown HostState = iota
+	// HostAbsent is no record, or a record whose pid has exited.
+	HostAbsent
+	// HostRunning is a record whose pid is alive.
+	HostRunning
+)
+
+// ProbeHost reads the host record for sessionID. Only a missing descriptor or
+// an exited pid is absent; nothing is ever started or stopped here.
+func ProbeHost(dataDir, sessionID string) HostState {
+	d, err := readDescriptor(dataDir, sessionID)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return HostAbsent
+	case err != nil || d.PID <= 0:
+		return HostUnknown
+	case processalive.Alive(d.PID):
+		return HostRunning
+	default:
+		return HostAbsent
+	}
+}
+
 // Shutdown terminates current session ownership and waits for it to end.
 // Missing/dead hosts are harmless; unknown live owners fail closed.
 // The protocol acknowledgement only confirms that shutdown was requested.
