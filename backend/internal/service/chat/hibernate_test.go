@@ -420,22 +420,26 @@ func TestChatViewRenewalDoesNotRetryFailedWake(t *testing.T) {
 		calls.Add(1)
 		return wakeErr
 	})
-	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); !errors.Is(err, wakeErr) {
-		t.Fatalf("initial wake = %v, want %v", err, wakeErr)
+	// The view answers at once; the wake runs, and fails, in the background.
+	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+		t.Fatalf("initial view = %v, want nil", err)
+	}
+	if !h.svc.WaitBackgroundWakeForTest(testSession) || calls.Load() != 1 {
+		t.Fatalf("initial wake calls = %d, want 1", calls.Load())
 	}
 	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
 		t.Fatalf("view renewal = %v, want nil", err)
 	}
-	if calls.Load() != 1 {
+	if !h.svc.WaitBackgroundWakeForTest(testSession) || calls.Load() != 1 {
 		t.Fatalf("wake calls after renewal = %d, want 1", calls.Load())
 	}
 	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", false); err != nil {
 		t.Fatalf("close view = %v", err)
 	}
-	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); !errors.Is(err, wakeErr) {
-		t.Fatalf("reopened view wake = %v, want %v", err, wakeErr)
+	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+		t.Fatalf("reopened view = %v, want nil", err)
 	}
-	if calls.Load() != 2 {
+	if !h.svc.WaitBackgroundWakeForTest(testSession) || calls.Load() != 2 {
 		t.Fatalf("wake calls after reopen = %d, want 2", calls.Load())
 	}
 }
@@ -475,9 +479,12 @@ func TestConcurrentFailedWakeSharesAttemptWithoutReadingStaleMarker(t *testing.T
 	reads := conv.sessionReads.Load()
 	close(release)
 	for range 2 {
-		if err := <-results; !errors.Is(err, wakeErr) {
-			t.Fatalf("shared wake = %v", err)
+		if err := <-results; err != nil {
+			t.Fatalf("view during shared wake = %v", err)
 		}
+	}
+	if !h.svc.WaitBackgroundWakeForTest(testSession) {
+		t.Fatal("background wake did not finish")
 	}
 	if reads != 1 || calls.Load() != 1 {
 		t.Fatalf("joined wake reads=%d attempts=%d; want one view read and one shared attempt", reads, calls.Load())
@@ -565,6 +572,9 @@ func TestOpeningViewWakesNativeConversation(t *testing.T) {
 	if err := wakeService.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
 		t.Fatal(err)
 	}
+	if !wakeService.WaitBackgroundWakeForTest(testSession) {
+		t.Fatal("background wake did not finish")
+	}
 	if resumeConfig.ProviderConversationID != old.ProviderConversationID() || !wakeService.HasLiveChatController(testSession) {
 		t.Fatalf("native wake = %q, live=%v", resumeConfig.ProviderConversationID, wakeService.HasLiveChatController(testSession))
 	}
@@ -594,12 +604,12 @@ func TestOpeningViewDoesNotReportStoppedDuringNativeWake(t *testing.T) {
 		<-release
 		return errors.New("provider unavailable")
 	})
-	result := make(chan error, 1)
-	go func() { result <- wakeService.SetChatView(ctx, testSession, "viewer-1", true) }()
+	// The view answers without waiting for the native wake.
+	if err := wakeService.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+		t.Fatalf("view during native wake = %v", err)
+	}
 	select {
 	case <-started:
-	case err := <-result:
-		t.Fatalf("wake returned before native startup: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("native wake did not start")
 	}
@@ -608,8 +618,8 @@ func TestOpeningViewDoesNotReportStoppedDuringNativeWake(t *testing.T) {
 	if err != nil || snapshot.Controller != ports.ChatControllerHibernated {
 		t.Fatalf("snapshot during native wake = %q, %v", snapshot.Controller, err)
 	}
-	if err := <-result; err == nil {
-		t.Fatal("wake unexpectedly succeeded")
+	if !wakeService.WaitBackgroundWakeForTest(testSession) {
+		t.Fatal("background wake did not finish")
 	}
 }
 
@@ -652,12 +662,12 @@ func TestOpeningViewWaitsForHibernationThenWakes(t *testing.T) {
 	if err := <-hibernated; err != nil {
 		t.Fatal(err)
 	}
-	if err := <-viewResult; err == nil {
-		t.Fatal("opening view did not invoke native wake")
+	if err := <-viewResult; err != nil {
+		t.Fatalf("opening view after hibernation = %v", err)
 	}
 	select {
 	case <-wakeCalled:
-	default:
+	case <-time.After(5 * time.Second):
 		t.Fatal("native wake did not observe durable hibernation marker")
 	}
 }

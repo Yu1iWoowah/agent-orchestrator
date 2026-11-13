@@ -3,6 +3,8 @@ package chat
 import (
 	"context"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 // SetNativeHistoryLoadAttemptLimit shortens the per-attempt provider load bound
@@ -59,4 +61,22 @@ func (c *Controller) AdvanceDeliveryClockForTest(advance func()) {
 func DetachIncompleteForTest(ctx context.Context, c *Controller) error {
 	c.setOutboundQuiescing(true)
 	return c.closeAfterPreflight(ctx)
+}
+
+// WaitBackgroundWakeForTest waits up to five seconds for the background wake
+// of id to finish and reports whether it did.
+func (s *Service) WaitBackgroundWakeForTest(id domain.SessionID) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.wakeMu.Lock()
+		running := s.backgroundWakes[id]
+		s.wakeMu.Unlock()
+		if !running {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
