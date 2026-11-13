@@ -451,7 +451,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	controller, err := func() (*Controller, error) {
 		defer func() {
 			s.mu.Lock()
-			if s.starting[owner]--; s.starting[owner] == 0 {
+			s.starting[owner]--
+			if s.starting[owner] == 0 {
 				delete(s.starting, owner)
 			}
 			s.mu.Unlock()
