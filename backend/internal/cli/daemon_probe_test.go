@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -115,7 +116,7 @@ func TestDaemonHTTPClientIgnoresProxyAndKeepsSharedClient(t *testing.T) {
 	if !ok || transport == shared || transport.Proxy != nil {
 		t.Fatalf("daemon client transport = %#v, want a proxy-free clone", client.Transport)
 	}
-	if client.Timeout != time.Second || client.CheckRedirect == nil || client.CheckRedirect(nil, nil) != http.ErrUseLastResponse {
+	if client.Timeout != time.Second || client.CheckRedirect == nil || !errors.Is(client.CheckRedirect(nil, nil), http.ErrUseLastResponse) {
 		t.Fatal("daemon client must use its own timeout and never follow redirects")
 	}
 	if c.deps.HTTPClient.Transport != shared || shared.Proxy == nil || c.deps.HTTPClient.Timeout != time.Minute || c.deps.HTTPClient.CheckRedirect != nil {
