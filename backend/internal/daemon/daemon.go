@@ -125,6 +125,36 @@ var _ interface {
 
 // Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
 // graceful shutdown through the HTTP server and background workers.
+type accountReviewerReconciler interface {
+	ReconcileAccountReviewers(context.Context, string) error
+}
+
+type openReviewerAccountUses interface {
+	GetOpenReviewerAccountUse(context.Context, string) (*ports.AgentAccountReviewerInUseError, error)
+}
+
+// accountAgentStopper stops an account's agents before logout or removal.
+// Reviewer bindings are independent of worker sessions: the profile is kept
+// until its reviewer is stopped or archived. A reviewer with no process left
+// is reconciled first and no longer holds it.
+func accountAgentStopper(store openReviewerAccountUses, reviewers accountReviewerReconciler, stop func(context.Context, string) error) func(context.Context, string) error {
+	return func(ctx context.Context, id string) error {
+		if reviewers != nil {
+			if err := reviewers.ReconcileAccountReviewers(ctx, id); err != nil {
+				return ports.ErrAgentAccountStorageUnavailable
+			}
+		}
+		use, err := store.GetOpenReviewerAccountUse(ctx, id)
+		if err != nil {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+		if use != nil {
+			return use
+		}
+		return stop(ctx, id)
+	}
+}
+
 func Run(buildVersion string) error {
 	var operatorOwner *operatornative.Owner
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
@@ -673,27 +703,8 @@ func Run(buildVersion string) error {
 	if stopper, ok := sessMgr.(interface {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {
-		agentAccountSvc.SetAgentStopper(func(ctx context.Context, id string) error {
-			// Reviewer bindings are independent of worker sessions. Keep the
-			// profile until its reviewer is explicitly stopped/archived; PR 4
-			// adds the complete usage-owner and handoff workflow. A reviewer
-			// with no process left no longer holds it.
-			if reconciler, ok := sessMgr.(interface {
-				ReconcileAccountReviewers(context.Context, string) error
-			}); ok {
-				if err := reconciler.ReconcileAccountReviewers(ctx, id); err != nil {
-					return ports.ErrAgentAccountStorageUnavailable
-				}
-			}
-			use, err := store.GetOpenReviewerAccountUse(ctx, id)
-			if err != nil {
-				return ports.ErrAgentAccountStorageUnavailable
-			}
-			if use != nil {
-				return use
-			}
-			return stopper.ExitAgentsOnAccount(ctx, id)
-		})
+		reviewers, _ := sessMgr.(accountReviewerReconciler)
+		agentAccountSvc.SetAgentStopper(accountAgentStopper(store, reviewers, stopper.ExitAgentsOnAccount))
 	}
 	sessionSvc.SetAccountResolver(agentAccountSvc)
 	sessionSvc.SetComputerLoginCheck(agentAccountSvc.RunsOnComputerLogin)
