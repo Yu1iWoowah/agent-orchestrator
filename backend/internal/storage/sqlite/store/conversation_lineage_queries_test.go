@@ -18,15 +18,25 @@ import (
 
 // Four statements keep a turn only when the active lineage holds one of its
 // messages or activities at or before the fork point. That EXISTS is
-// correlated on turn_id, which no index covers. Without a conversation_id
-// bound it scans the whole message and activity tables, and once
-// sqlite_stat1 exists the planner skip-scans (branch_id, sequence) across
-// every branch in the database instead. Bound by conversation_id, it
-// range-seeks the (conversation_id, sequence) index.
+// correlated on turn_id. Without a conversation_id bound it scans the whole
+// message and activity tables, and once sqlite_stat1 exists the planner
+// skip-scans (branch_id, sequence) across every branch in the database
+// instead. Bound by conversation_id it seeks the (conversation_id, turn_id,
+// sequence) index. Without statistics the planner otherwise prefers the
+// (conversation_id, sequence) range over the input-custody (conversation_id,
+// turn_id, id) index, which reads every earlier row once per turn and makes
+// resume quadratic in history.
 const (
 	lineageMessageBound  = "lineage_message.conversation_id = conversation_turns.conversation_id"
 	lineageActivityBound = "lineage_activity.conversation_id = conversation_turns.conversation_id"
 )
+
+// The resume-path statements whose lineage lookups must seek by turn.
+var lineageTurnIndex = map[string]bool{
+	"SelectConversationTurns":                true,
+	"SelectLatestConversationTurn":           true,
+	"ListVisibleRunningTurnsForConversation": true,
+}
 
 // lineageProbe is a gen.DBTX that runs on its own read-only connection to the
 // store's file and remembers the last statement the generated code issued, so
@@ -261,6 +271,10 @@ func TestLineageTurnQueriesAreBoundByConversation(t *testing.T) {
 						found = true
 						if !strings.Contains(line, "conversation_id=?") || strings.Contains(line, "ANY(") || strings.HasPrefix(strings.TrimSpace(line), "SCAN") {
 							t.Errorf("%s does not seek by conversation_id: %q\nfull plan:\n%s", table, line, plan)
+						}
+						index := map[string]string{"lineage_message": "idx_conversation_messages_turn", "lineage_activity": "idx_conversation_activities_turn"}[table]
+						if lineageTurnIndex[name] && !strings.Contains(line, index+" (conversation_id=? AND turn_id=? AND sequence<?)") {
+							t.Errorf("%s does not seek %s by turn: %q\nfull plan:\n%s", table, index, line, plan)
 						}
 					}
 					if !found {
