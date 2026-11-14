@@ -149,6 +149,23 @@ it("restores the routed question row's focus after closing without losing its dr
 	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
 });
 
+it.each([{ path: "worker" }, { path: "handover" }, { path: "no-main" }])("restores focus on the current screen after the source scope leaves it, $path", async ({ path }) => {
+	const app = show(`/projects/project/sessions/${path === "handover" ? "main" : "worker"}`, path === "no-main" ? { workspaces: [workspace([session("worker", "worker")])] } : {});
+	await userEvent.click(await screen.findByRole("button", { name: /Open decision: worker decision/ }));
+	const main = path === "worker" ? "main" : "new";
+	if (path === "handover") app.update({ workspaces: [workspace([session("main", "orchestrator", true), session("new"), session("worker", "worker")])] });
+	await waitFor(() => expect(app.router.state.location.pathname).toBe(path === "no-main" ? "/projects/project" : `/projects/project/sessions/${main}`));
+	await screen.findByRole("radio", { name: /Staging/ });
+	await userEvent.keyboard("{Escape}");
+	await waitFor(() => expect(screen.queryByRole("dialog", { name: "Decision" })).not.toBeInTheDocument());
+	if (path === "no-main") await waitFor(() => expect(screen.getByRole("button", { name: "Open project attention" })).toHaveFocus());
+	else {
+		await waitFor(() => expect(document.activeElement).toHaveAttribute("data-decision-scope", JSON.stringify([null, main, "root"])));
+		expect(document.activeElement).toHaveAccessibleName(/Open decision: worker decision/);
+	}
+	expect(post.mock.calls.filter(([, call]) => call.endsWith("/answer"))).toHaveLength(0);
+});
+
 it("keeps the Sheet closed after a routed dialog falls below its size floor", async () => {
 	frameRect = { left: 16, top: 48, width: 278, height: 188 };
 	surface.getBoundingClientRect = () => new DOMRect(0, 0, 310, 380);

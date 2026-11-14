@@ -197,6 +197,7 @@ export function ProjectAttention({
 						<TopbarButton
 							variant="secondary"
 							aria-label={t("projectAttention.open")}
+							data-project-attention-entry
 						>
 							<MessageCircleQuestion className="size-4" />
 							<span>

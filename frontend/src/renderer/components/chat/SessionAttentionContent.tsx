@@ -132,10 +132,15 @@ function AttentionRow({ source, sessionId, hostId, projectId, scopeBranch, onOpe
 					if (resumeSheet) resume?.();
 					requestAnimationFrame(() => {
 						const visible = (node: HTMLElement) => node.isConnected && !node.closest("[hidden]") && !node.closest('[data-slot="sheet-content"][data-state="closed"]');
-						const row = visible(trigger) && trigger.dataset.decisionScope === scope ? trigger : Array.from(document.querySelectorAll<HTMLButtonElement>("[data-decision-target]")).find((node) => node.dataset.decisionTarget === targetKey && node.dataset.decisionScope === scope && visible(node));
+						const rows = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-decision-target]")).filter((node) => node.dataset.decisionTarget === targetKey && visible(node));
+						const row = visible(trigger) && trigger.dataset.decisionScope === scope ? trigger : rows.find((node) => node.dataset.decisionScope === scope);
 						const frameKey = conversationFrameSessionKey(sessionId, hostId);
-						const entry = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-conversation-frame-entry="attention"]')).find((node) => node.dataset.conversationFrameScope === frameKey && visible(node));
-						(row ?? entry)?.focus({ preventScroll: true });
+						const entries = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-conversation-frame-entry="attention"]')).filter(visible);
+						const entry = entries.find((node) => node.dataset.conversationFrameScope === frameKey);
+						// Routing to the current main, a successor or the project page unmounts the source scope. Restore
+						// runs only while the same host/project is on screen, so fall back to what that screen shows.
+						const projectEntry = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-project-attention-entry]")).find(visible);
+						(row ?? entry ?? rows[0] ?? entries[0] ?? projectEntry)?.focus({ preventScroll: true });
 					});
 				});
 			} else onOpen({ target, sessionId: originSessionId, projectId: originProjectId }, event.currentTarget, beginDialog?.());
