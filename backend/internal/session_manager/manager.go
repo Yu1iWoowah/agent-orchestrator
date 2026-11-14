@@ -3480,9 +3480,37 @@ func (m *Manager) StartResumeAgent(ctx context.Context, id domain.SessionID, don
 		return domain.SessionRecord{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
 	m.runInBackground(func() {
-		done(m.ResumeAgentWithMode(m.backgroundContext, id))
+		result, err := m.ResumeAgentWithMode(m.backgroundContext, id)
+		if err == nil && result.Session.ProvisionState.IsProvisioning() {
+			result, err = m.awaitRetriedChatSpawn(m.backgroundContext, id, result)
+		}
+		done(result, err)
 	})
 	return rec, nil
+}
+
+// awaitRetriedChatSpawn follows a failed chat start that resume handed to a new
+// background start, so the resume reports that start's outcome, not its
+// admission.
+func (m *Manager) awaitRetriedChatSpawn(ctx context.Context, id domain.SessionID, admitted RestoreResult) (RestoreResult, error) {
+	m.asyncChatSpawnsMu.Lock()
+	run := m.asyncChatSpawns[id]
+	m.asyncChatSpawnsMu.Unlock()
+	if run != nil {
+		select {
+		case <-run.done:
+		case <-ctx.Done():
+			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ctx.Err())
+		}
+	}
+	rec, err := m.getRecord(ctx, id)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if rec.ProvisionState == domain.SessionProvisionFailed {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, relaunchFailed("start", errors.New(rec.ProvisionError)))
+	}
+	return RestoreResult{Session: rec, Mode: admitted.Mode}, nil
 }
 
 // checkResumeAgent mirrors resumeAgentWithMode's refusals that are answerable

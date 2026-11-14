@@ -1,11 +1,14 @@
 package sessionmanager
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 )
 
 type resumeOutcome struct {
@@ -118,5 +121,61 @@ func TestStartResumeAgent_AnswersRefusalsWithoutBackgroundWork(t *testing.T) {
 	m, _, _ := newExitedResumeManager(t, &fakeRuntime{}, supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex"}}})
 	if _, err := startResume(t, m, "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown session = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStartResumeAgent_ReportsTheRetriedChatStartsOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		retryErr  error
+		wantStart bool
+	}{
+		{name: "retry fails", retryErr: errors.New("temporary git failure")},
+		{name: "retry succeeds", wantStart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launcher := &recordingLauncher{}
+			m, st, _ := newChatManager(launcher)
+			m.dataDir = t.TempDir()
+			m.browserCapabilities = browsersvc.NewAuthority()
+			works := make(chan func(), 4)
+			m.runBackground = func(work func()) { works <- work }
+			ws := m.workspace.(*fakeWorkspace)
+			ws.createErr = errors.New("temporary git failure")
+			rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			(<-works)()
+			if st.sessions[rec.ID].ProvisionState != domain.SessionProvisionFailed {
+				t.Fatalf("first start = %q, want failed", st.sessions[rec.ID].ProvisionState)
+			}
+
+			done, err := startResume(t, m, rec.ID)
+			if err != nil {
+				t.Fatalf("start resume: %v", err)
+			}
+			go (<-works)()
+			retry := <-works
+			// Resume handed the start to a new background start; it has not settled.
+			select {
+			case got := <-done:
+				t.Fatalf("resume settled before the retried start ran: %+v", got)
+			case <-time.After(50 * time.Millisecond):
+			}
+			ws.createErr = tc.retryErr
+			retry()
+			got := <-done
+			if tc.wantStart {
+				if got.err != nil || got.result.Mode != RestoreModeSavedPrompt || got.result.Session.ProvisionState != domain.SessionProvisionReady {
+					t.Fatalf("resume = %+v, want the retried start ready", got)
+				}
+				return
+			}
+			var relaunch *RelaunchError
+			if !errors.As(got.err, &relaunch) || relaunch.Step != "start" || !strings.Contains(got.err.Error(), "temporary git failure") {
+				t.Fatalf("resume error = %v, want the retried start's failure", got.err)
+			}
+		})
 	}
 }
