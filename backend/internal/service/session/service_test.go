@@ -2701,6 +2701,7 @@ func (f *fakeCommander) RestoreWithMode(context.Context, domain.SessionID) (sess
 	}
 	return f.restoreResult, nil
 }
+
 // StartResumeAgent refuses with resumeCheckErr, otherwise settles at once, or
 // once resumeHold closes when it is set.
 func (f *fakeCommander) StartResumeAgent(_ context.Context, id domain.SessionID, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error) {

@@ -161,6 +161,7 @@ type RestoreOutcome struct {
 // ResumeAgentState is the progress of a session's latest resume-agent request.
 type ResumeAgentState string
 
+// The states a resume-agent request moves through.
 const (
 	ResumeAgentRunning   ResumeAgentState = "running"
 	ResumeAgentSucceeded ResumeAgentState = "succeeded"
