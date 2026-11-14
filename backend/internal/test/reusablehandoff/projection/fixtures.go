@@ -167,8 +167,11 @@ func Fixtures(t *checks, bin, dir string) {
 				snap.Messages, snap.HasMoreBefore = nil, true
 			}
 			body = snap
+		case strings.HasSuffix(r.URL.Path, "/resume-agent") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			body = controllers.ResumeAgentResponse{OK: true, SessionID: "old", Session: old}
 		case strings.HasSuffix(r.URL.Path, "/resume-agent"):
-			body = controllers.ResumeAgentResponse{OK: true, SessionID: "old", ResumeMode: "native", Session: old}
+			body = controllers.ResumeAgentStatusResponse{SessionID: "old", State: "succeeded", ResumeMode: "native", Session: old}
 		case strings.HasSuffix(r.URL.Path, "/exit-agent"):
 			body = controllers.ExitAgentResponse{OK: true, SessionID: "old", Session: old}
 		case strings.HasSuffix(r.URL.Path, "/kill"):

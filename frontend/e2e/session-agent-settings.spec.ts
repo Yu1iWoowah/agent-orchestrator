@@ -106,7 +106,8 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 			await route.fulfill({ json: { ...body, model: target.model, reasoningEffort: target.effort, fastMode: target.fastMode === "on" } });
 			await emit(); return;
 		}
-		if (routePath.endsWith("/resume-agent")) { resumedFast = snapshot.settings.fastMode; stopped = false; await route.fulfill({ json: { sessionId, mode: "native" } }); return; }
+		if (routePath.endsWith("/resume-agent") && request.method() === "POST") { resumedFast = snapshot.settings.fastMode; stopped = false; await route.fulfill({ status: 202, json: { ok: true, sessionId } }); return; }
+		if (routePath.endsWith("/resume-agent")) { await route.fulfill({ json: { sessionId, state: resumedFast === undefined ? "running" : "succeeded", resumeMode: "native" } }); return; }
 		if (routePath.endsWith("/conversation/models")) { await route.fulfill({ json: { models: snapshot.capabilities.models.map((model) => ({ id: model.model, displayName: model.model, default: model.isDefault, efforts: model.efforts, supportsFast: true })), selected: { model: snapshot.settings.model } } }); return; }
 		if (routePath.endsWith("/conversation/config-options")) { await route.fulfill({ json: { options: [] } }); return; }
 		if (routePath.endsWith("/conversation/skills")) { await route.fulfill({ json: { skills: [] } }); return; }

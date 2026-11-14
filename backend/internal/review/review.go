@@ -1196,7 +1196,22 @@ func (e *Engine) restoreRecoverableChatReviewer(ctx stdctx.Context, review domai
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	return e.restorePersistedChatReviewerLocked(ctx, worker, review, reviewRunsForReview(runs, review.ID))
+	reviewRuns := reviewRunsForReview(runs, review.ID)
+	// The recovery snapshot predates this lock: an account owner check may
+	// have since confirmed this reviewer gone. Re-apply the recoverable rule.
+	if review.ReviewerActivityState == domain.ActivityExited && !hasRunningReviewRun(reviewRuns) {
+		return RestoreReviewerResult{}, nil
+	}
+	return e.restorePersistedChatReviewerLocked(ctx, worker, review, reviewRuns)
+}
+
+func hasRunningReviewRun(runs []domain.ReviewRun) bool {
+	for _, run := range runs {
+		if run.Status == domain.ReviewRunRunning {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker domain.SessionRecord, review domain.Review, previousRuns []domain.ReviewRun) (RestoreReviewerResult, error) {
@@ -1683,7 +1698,7 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 		reviewRow = review
 		reviewerHarness = review.Harness
 	}
-	if changed, err := e.reconcileExitedReviewer(ctx, &reviewRow, runs); err != nil {
+	if changed, err := e.reconcileReviewerRuntime(ctx, &reviewRow, runs); err != nil {
 		return SessionReviews{}, err
 	} else if changed {
 		runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
@@ -1706,7 +1721,7 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 		}
 		// Other reviewers can be running alongside the selected one; a pane that
 		// died mid-pass must fail its runs the same way the selected one does.
-		if changed, err := e.reconcileExitedReviewer(ctx, &other, runs); err != nil {
+		if changed, err := e.reconcileReviewerRuntime(ctx, &other, runs); err != nil {
 			return SessionReviews{}, err
 		} else if changed {
 			runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
@@ -1752,11 +1767,43 @@ func reviewerRowActive(review domain.Review, runs []domain.ReviewRun) bool {
 
 const reviewerExitedBeforeSubmission = "reviewer process exited before submitting a result"
 
-// reconcileExitedReviewer converts a definitively dead active reviewer into
-// durable failed-run facts. Probe errors are intentionally ignored: an unknown
-// runtime state is not proof that the reviewer exited.
-func (e *Engine) reconcileExitedReviewer(ctx stdctx.Context, review *domain.Review, runs []domain.ReviewRun) (bool, error) {
-	if review.ID == "" || review.ReviewerHandleID == "" || review.ReviewerActivityState != domain.ActivityActive {
+// reviewChatProbe is the launcher's process-level check for a chat reviewer.
+type reviewChatProbe interface {
+	ReviewChatGone(reviewID string) bool
+}
+
+// ReconcileReviewers applies reconcileReviewerRuntime to every reviewer of a
+// worker so account owner checks see only reviewers that still have a process.
+// It never waits for chat recovery: a recovering chat keeps its host.
+func (e *Engine) ReconcileReviewers(ctx stdctx.Context, workerID domain.SessionID) error {
+	unlock := e.lockWorker(workerID)
+	defer unlock()
+	runs, err := e.store.ListReviewRunsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	for i := range reviews {
+		if changed, err := e.reconcileReviewerRuntime(ctx, &reviews[i], runs); err != nil {
+			return err
+		} else if changed {
+			if runs, err = e.store.ListReviewRunsBySession(ctx, workerID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// reconcileReviewerRuntime turns a reviewer that would still count as using
+// its account, but has no process left, into durable exited facts. Callers
+// hold the worker lock, so a reviewer being launched already has its handle
+// or a running pass. An unknown probe is never treated as an exit.
+func (e *Engine) reconcileReviewerRuntime(ctx stdctx.Context, review *domain.Review, runs []domain.ReviewRun) (bool, error) {
+	if review.ID == "" || review.IsArchived {
 		return false, nil
 	}
 	hasRunning := false
@@ -1766,15 +1813,15 @@ func (e *Engine) reconcileExitedReviewer(ctx stdctx.Context, review *domain.Revi
 			break
 		}
 	}
-	if !hasRunning {
+	if review.ReviewerActivityState == domain.ActivityExited && !hasRunning {
 		return false, nil
 	}
-	alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
-	if err != nil {
-		// An unavailable probe is unknown, not evidence that the reviewer died.
-		alive = true
+	// No handle with a running pass is a launch before its handle is committed,
+	// or a chat reviewer waiting for recovery.
+	if review.ReviewerHandleID == "" && hasRunning {
+		return false, nil
 	}
-	if alive {
+	if !e.reviewerGone(ctx, *review) {
 		return false, nil
 	}
 	for _, run := range runs {
@@ -1791,6 +1838,21 @@ func (e *Engine) reconcileExitedReviewer(ctx stdctx.Context, review *domain.Revi
 		return false, err
 	}
 	return true, nil
+}
+
+// reviewerGone reports a reviewer with definitely no process. AO clears a
+// terminal handle only after destroying its pane. A chat reviewer needs both
+// no controller and no provider host.
+func (e *Engine) reviewerGone(ctx stdctx.Context, review domain.Review) bool {
+	if review.InterfaceMode == domain.ReviewerInterfaceChat {
+		probe, ok := e.launcher.(reviewChatProbe)
+		return ok && probe.ReviewChatGone(review.ID)
+	}
+	if review.ReviewerHandleID == "" {
+		return true
+	}
+	alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
+	return err == nil && !alive
 }
 
 func reviewerSurface(review domain.Review) domain.ReviewerSurface {

@@ -23,6 +23,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { followResume, noteResumeFailure, useResumeWatch } from "../lib/resume-watch";
 import { agentSettingsErrorMessage } from "../lib/agent-settings";
 import { appI18n } from "../i18n";
 import { clientForSessionHost } from "../lib/host-clients";
@@ -797,7 +798,13 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		onError: (_error, variables) => refreshSessionInBackground(variables.targetSessionId),
 	});
 
-	const resumingAgent = useIsMutating({ mutationKey: ["resume-agent", hostId ?? "local", sessionId] }) > 0;
+	const resumeWatch = useResumeWatch(sessionId, hostId);
+	const refreshAfterResume = () => {
+		invalidate();
+		return queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
+	};
+	const resumingAgent = useIsMutating({ mutationKey: ["resume-agent", hostId ?? "local", sessionId] }) > 0 ||
+		resumeWatch?.state === "running";
 	const resume = useMutation({
 		mutationKey: ["resume-agent", hostId ?? "local", sessionId],
 		mutationFn: async () => {
@@ -807,14 +814,15 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 					params: { path: { sessionId: sessionId as string } },
 				},
 			);
-			if (error)
+			if (error) {
+				noteResumeFailure(sessionId as string, error, hostId);
 				throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
-			return data;
+			}
+			// The daemon finishes the resume in the background; the watch shows
+			// a failure as resumeError and refreshes once it settles.
+			followResume(sessionId as string, hostId, response, data, refreshAfterResume);
 		},
-		onSuccess: () => {
-			invalidate();
-			void queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
-		},
+		onSuccess: refreshAfterResume,
 	});
 
 	/**
@@ -1222,7 +1230,7 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		interrupt: () => interrupt.mutate({ targetSessionId: sessionId as string }),
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent,
-		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
+		resumeError: resume.error ? apiErrorMessage(resume.error) : resumeWatch?.state === "failed" ? resumeWatch.message : undefined,
 		compact: () => compact.mutateAsync(),
 		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
 		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate(settingsInput(settings)),

@@ -1220,9 +1220,35 @@ export async function restoreSession(cfg: ServerConfig, id: string): Promise<voi
 	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/restore`, { method: "POST" });
 }
 
-/** Restart a stopped agent/controller without restoring a terminated AO session. */
+/** How long resume waits for the daemon's background resume, as the CLI does. */
+export const RESUME_WAIT_LIMIT_MS = 150_000;
+const RESUME_POLL_INTERVAL_MS = 1_000;
+
+/**
+ * Restart a stopped agent/controller without restoring a terminated AO session.
+ * The daemon answers 202 once the resume starts and reports its outcome by GET;
+ * this resolves when it succeeds and throws the daemon's error when it fails.
+ */
 export async function resumeSessionAgent(cfg: ServerConfig, id: string): Promise<void> {
-	await req(cfg, `${API}/sessions/${encodeURIComponent(id)}/resume-agent`, { method: "POST" }, RESUME_REQUEST_TIMEOUT_MS);
+	const path = `${API}/sessions/${encodeURIComponent(id)}/resume-agent`;
+	const started = await req(cfg, path, { method: "POST" }, RESUME_REQUEST_TIMEOUT_MS);
+	// An older daemon resumed inline and answered 200.
+	if (started.status !== 202) return;
+	const deadline = Date.now() + RESUME_WAIT_LIMIT_MS;
+	for (;;) {
+		await new Promise((resolve) => setTimeout(resolve, RESUME_POLL_INTERVAL_MS));
+		const res = await req(cfg, path, undefined, Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now())));
+		const status = (await res.json()) as { state?: string; error?: { status?: number; code?: string; message?: string } };
+		if (status.state === "succeeded") return;
+		if (status.state === "failed") {
+			const code = status.error?.status ?? 500;
+			const detail = status.error?.message ?? "";
+			throw new ApiError(code, `${code}${detail ? ` - ${detail}` : ""}`, status.error?.code, undefined, detail || undefined);
+		}
+		if (Date.now() >= deadline) {
+			throw new Error("The agent did not finish resuming within 150 seconds. AO keeps resuming it in the background.");
+		}
+	}
 }
 
 export async function sendMessage(cfg: ServerConfig, id: string, message: string): Promise<void> {

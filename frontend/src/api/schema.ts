@@ -4600,9 +4600,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Report the session's latest resume-agent request since the daemon started */
+        get: operations["getResumeAgentStatus"];
         put?: never;
-        /** Resume an exited agent in its existing session */
+        /** Start resuming an exited agent in its existing session; GET reports the outcome */
         post: operations["resumeAgent"];
         delete?: never;
         options?: never;
@@ -9859,12 +9860,29 @@ export interface components {
             session: components["schemas"]["ControllersSessionView"];
             sessionId: string;
         };
+        ResumeAgentFailure: {
+            code: string;
+            details?: {
+                [key: string]: unknown;
+            };
+            message: string;
+            status: number;
+        };
         ResumeAgentResponse: {
             ok: boolean;
-            /** @enum {string} */
-            resumeMode: "native" | "saved_prompt" | "fresh";
             session: components["schemas"]["ControllersSessionView"];
             sessionId: string;
+        };
+        ResumeAgentStatusResponse: {
+            error?: components["schemas"]["ResumeAgentFailure"];
+            /** Format: date-time */
+            finishedAt?: null | string;
+            /** @enum {string} */
+            resumeMode?: "native" | "saved_prompt" | "fresh";
+            session: components["schemas"]["ControllersSessionView"];
+            sessionId: string;
+            /** @enum {string} */
+            state: "running" | "succeeded" | "failed";
         };
         RetryAccountRecoveryResponse: {
             confirmed: boolean;
@@ -30243,7 +30261,7 @@ export interface operations {
             };
         };
     };
-    resumeAgent: {
+    getResumeAgentStatus: {
         parameters: {
             query?: never;
             header?: never;
@@ -30257,6 +30275,56 @@ export interface operations {
         responses: {
             /** @description OK */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResumeAgentStatusResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resumeAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

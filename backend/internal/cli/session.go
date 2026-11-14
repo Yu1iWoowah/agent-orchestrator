@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -127,6 +128,28 @@ type resumeAgentResponse struct {
 	ResumeMode string     `json:"resumeMode"`
 	Session    sessionDTO `json:"session"`
 }
+
+// resumeAgentStatusResponse is the daemon's report of a background resume.
+type resumeAgentStatusResponse struct {
+	SessionID  string     `json:"sessionId"`
+	State      string     `json:"state"`
+	ResumeMode string     `json:"resumeMode"`
+	Session    sessionDTO `json:"session"`
+	Error      *struct {
+		Status  int             `json:"status"`
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Details json.RawMessage `json:"details"`
+	} `json:"error"`
+}
+
+// resumeAgentWaitLimit bounds how long resume-agent waits for the daemon's
+// background resume. It stays under the 180 seconds reusable handoff allows the
+// command, so the command reports its own error before an outer kill.
+var resumeAgentWaitLimit = 150 * time.Second
+
+// resumeAgentPollInterval spaces the status reads while a resume runs.
+var resumeAgentPollInterval = 500 * time.Millisecond
 
 type renameSessionResponse struct {
 	SessionID   string `json:"sessionId"`
@@ -741,8 +764,12 @@ func (c *commandContext) resumeSessionAgent(ctx context.Context, cmd *cobra.Comm
 			return err
 		}
 	}
-	var res resumeAgentResponse
-	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/resume-agent", struct{}{}, &res); err != nil {
+	path := "sessions/" + url.PathEscape(id) + "/resume-agent"
+	if err := c.postJSON(ctx, path, struct{}{}, &resumeAgentResponse{}); err != nil {
+		return err
+	}
+	res, err := c.waitResumeAgent(ctx, id, path)
+	if err != nil {
 		return err
 	}
 	if opts.json {
@@ -756,6 +783,47 @@ func (c *commandContext) resumeSessionAgent(ctx context.Context, cmd *cobra.Comm
 		return err
 	}
 	return nil
+}
+
+// waitResumeAgent reads the daemon's background resume until it settles. A
+// failed resume returns the error the request used to answer; an unknown
+// resume, an unreachable daemon, or the wait limit also end the command with an
+// error. Leaving the wait does not cancel the resume on the daemon.
+func (c *commandContext) waitResumeAgent(ctx context.Context, id, path string) (resumeAgentResponse, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, resumeAgentWaitLimit)
+	defer cancel()
+	timedOut := func() error {
+		return fmt.Errorf("agent resume for session %s did not finish within %s; AO keeps resuming it in the background", id, resumeAgentWaitLimit)
+	}
+	for {
+		var status resumeAgentStatusResponse
+		if err := c.getJSON(waitCtx, path, &status); err != nil {
+			if waitCtx.Err() != nil && ctx.Err() == nil {
+				return resumeAgentResponse{}, timedOut()
+			}
+			return resumeAgentResponse{}, err
+		}
+		switch status.State {
+		case "succeeded":
+			return resumeAgentResponse{OK: true, SessionID: status.SessionID, ResumeMode: status.ResumeMode, Session: status.Session}, nil
+		case "failed":
+			body := apiError{}
+			code := http.StatusInternalServerError
+			if status.Error != nil {
+				body = apiError{Message: status.Error.Message, Code: status.Error.Code, Details: status.Error.Details}
+				code = status.Error.Status
+			}
+			return resumeAgentResponse{}, daemonRequestError{cause: apiResponseError{StatusCode: code, ErrorBody: body}}
+		}
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return resumeAgentResponse{}, ctx.Err()
+			}
+			return resumeAgentResponse{}, timedOut()
+		case <-time.After(resumeAgentPollInterval):
+		}
+	}
 }
 
 func (c *commandContext) renameSession(ctx context.Context, cmd *cobra.Command, id, displayName string, opts sessionOptions) error {

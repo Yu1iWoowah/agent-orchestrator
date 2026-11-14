@@ -4,22 +4,33 @@ import {
 	useSessionInterfaceTransitionStatus,
 } from "./useSessionInterfaceTransition";
 import { sessionAgentExited, type WorkspaceSession } from "../types/workspace";
-import { apiErrorMessage } from "../lib/api-client";
+import { apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
+import { followResume, noteResumeFailure, watchResume } from "../lib/resume-watch";
 
 const resumesInFlight = new Map<string, Promise<void>>();
 
 /**
- * Resume a local session's stopped agent, sharing one request per session.
- * Hovering a session starts it early; opening the session then joins the same
- * request instead of being refused as a second resume.
+ * Ask the daemon to resume a local session's stopped agent, sharing one
+ * request per session. The daemon answers once the resume starts; the resume
+ * watch follows it from there and runs refresh when it settles. A resume
+ * already in progress is followed the same way, not reported as a failure.
  */
-export function resumeAgentOnOpen(sessionId: string): Promise<void> {
+export function resumeAgentOnOpen(sessionId: string, refresh: () => unknown): Promise<void> {
 	return resumeOnce(sessionId, async () => {
-		const { error, response } = await clientForSessionHost().POST("/api/v1/sessions/{sessionId}/resume-agent", {
+		const { data, error, response } = await clientForSessionHost().POST("/api/v1/sessions/{sessionId}/resume-agent", {
 			params: { path: { sessionId } },
 		});
-		if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
+		if (!error) {
+			followResume(sessionId, undefined, response, data, refresh);
+			return;
+		}
+		if (apiErrorCode(error) === "AGENT_RESUME_IN_PROGRESS") {
+			watchResume(sessionId, undefined, refresh);
+			return;
+		}
+		noteResumeFailure(sessionId, error);
+		throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
 	});
 }
 

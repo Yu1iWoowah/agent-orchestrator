@@ -150,6 +150,7 @@ runner 列出整個 old worktree 的檔案／目錄範圍，閉合 untracked、i
 assume-unchanged、skip-worktree 或其他未核清 index flags 在 kill 前停止，不清旗標或重設內容。
 未推 commit 仍受此規則保護。腳本不建立 ref；無保護 ref 的 detached HEAD 停止。
 gitlink 採下節的有限規則；巢狀 repo 或未知 per-worktree metadata 仍切前停止，不提供通用備份。
+分類只列 untracked／ignored 的實際路徑，以及不含 tracked 內容的空目錄；tracked 檔（以 git ls-files 為準，含已 add 的新檔）與 gitlink（含未初始化、顯示為空目錄的 submodule）不得列入：tracked 內容由 helper 以 HEAD、index 與 patch 保全，gitlink 依下節規則處理。列入 tracked 檔、gitlink 或其底下路徑時，helper 走訪不會命中，old-receipt 以 classification contains nonexistent/unmatched paths 停止；不存在的路徑則在填寫檢查時以 old classification incomplete 停止。
 
 run、shared、old artifact、common repository 與材料副本不得和回收範圍重疊。
 正常 project metadata 必須正面可讀；目前只接受適用 `preRemove` 為空的情況。
@@ -316,7 +317,7 @@ merge 後須另具名 D，才用合併版本建乾淨新 lab、新 O1/W1/W2 與 
 
 ## gitlink 的有限保全
 
-真 index mode 160000、stage 0／OID 是資料來源。缺目錄或空目錄明記 uninitialized，不假稱子 repo 物件已保存。
+真 index mode 160000、stage 0／OID 是資料來源。helper 對缺目錄或空目錄的 gitlink 記 state=uninitialized（old 不列入分類），不假稱子 repo 物件已保存。
 clean initialized worker 必須 HEAD=OID、無 dirty／untracked／ignored／nested、無 shallow／alternates／grafts、無隱藏 index flags，原工作目錄保留。
 old 還要求 child common 位於 parent common 內、在 old workspace 與會回收的 per-worktree metadata 外，同 filesystem，且既存 branch ref 保護 child HEAD 與完整物件。
 不新增 ref；切前漂移、切後 common/ref/object hash 不符均 STOP。非空假目錄、symlink、stage 衝突與不明狀態均不會降成 uninitialized。

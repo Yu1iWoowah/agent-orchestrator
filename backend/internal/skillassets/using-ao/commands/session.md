@@ -262,6 +262,12 @@ ao session exit-agent <id> [flags]
 
 Resume an exited agent in its existing AO session.
 
+The command waits until the resume finishes, for up to 150 seconds, and then prints the result (with `--json`: `ok`, `sessionId`, `resumeMode`, `session`). A failed resume, an unknown resume, an unreachable daemon, or the time limit ends it with an error and a non-zero exit.
+
+Over HTTP, `POST /api/v1/sessions/{id}/resume-agent` answers `202` once the resume starts, without `resumeMode`. Read `GET /api/v1/sessions/{id}/resume-agent` for its `state` (`running`, `succeeded`, `failed`), `resumeMode` once it succeeded, `error` once it failed, and `finishedAt` once it settled.
+
+Stopping the command, for example with an outer timeout, does not cancel the resume. It can still finish later.
+
 **Syntax:**
 ```
 ao session resume-agent <id> [flags]

@@ -15100,8 +15100,8 @@ paths:
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/resume-agent:
-    post:
-      operationId: resumeAgent
+    get:
+      operationId: getResumeAgentStatus
       parameters:
       - description: Session identifier, e.g. project-1.
         in: path
@@ -15115,8 +15115,46 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResumeAgentResponse'
+                $ref: '#/components/schemas/ResumeAgentStatusResponse'
           description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Report the session's latest resume-agent request since the daemon started
+      tags:
+      - sessions
+    post:
+      operationId: resumeAgent
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeAgentResponse'
+          description: Accepted
         "404":
           content:
             application/json:
@@ -15141,7 +15179,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Resume an exited agent in its existing session
+      summary: Start resuming an exited agent in its existing session; GET reports
+        the outcome
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/reviewer:
@@ -29525,10 +29564,44 @@ components:
       - restoreMode
       - session
       type: object
+    ResumeAgentFailure:
+      properties:
+        code:
+          type: string
+        details:
+          additionalProperties: {}
+          type: object
+        message:
+          type: string
+        status:
+          type: integer
+      required:
+      - status
+      - code
+      - message
+      type: object
     ResumeAgentResponse:
       properties:
         ok:
           type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        sessionId:
+          type: string
+      required:
+      - ok
+      - sessionId
+      - session
+      type: object
+    ResumeAgentStatusResponse:
+      properties:
+        error:
+          $ref: '#/components/schemas/ResumeAgentFailure'
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         resumeMode:
           enum:
           - native
@@ -29539,10 +29612,15 @@ components:
           $ref: '#/components/schemas/ControllersSessionView'
         sessionId:
           type: string
+        state:
+          enum:
+          - running
+          - succeeded
+          - failed
+          type: string
       required:
-      - ok
       - sessionId
-      - resumeMode
+      - state
       - session
       type: object
     RetryAccountRecoveryResponse:
