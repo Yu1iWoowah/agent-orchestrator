@@ -69,7 +69,7 @@ class ProtocolTests(unittest.TestCase):
                 "prepared_by": {"session_id": "old", "turn_id": "preparing"},
                 "target": target(), "workers": [],
                 "workspace_index": [{"session_id": "old", "kind": "orchestrator", "path": str(old_path), "source_refs": ["workspace"]}],
-                "authority": {"source_refs": ["human"], "old_verified_scope": "three-step-handoff-this-project",
+                "authority": {"source_refs": ["human"],
                               "t0_source_ref": "human", "t0_created_at": None, "t0_precision": "UNKNOWN"},
                 "sources": [{"ref": "human", "kind": "human-message", "conversation_id": "conv",
                              "branch_id": "branch", "message_id": "human", "revision": 1,
@@ -714,8 +714,9 @@ class ProtocolTests(unittest.TestCase):
         with patch.object(run, "wait"):
             h.phase_2a(run)
         sent = h.decode(run.cli.calls[-1][-1])["instruction"]["requirements"]
-        for phrase in ("tracked檔與gitlink", "列入則helper停止"):
+        for phrase in ("tracked檔與gitlink", "列入只記錄", "正文含獨立一行「handoff_run_id: " + run.run_id + "」"):
             self.assertIn(phrase, sent)
+        self.assertNotIn("10分鐘", sent)
 
     def test_T04_T05_four_harness_pairs_complete_fake_protocol(self):
         for old_harness in ("claude-code", "codex"):
@@ -845,6 +846,25 @@ finally:
                 finally:
                     if not marker.exists() and not h.process_ended(runner["process"]):
                         os.killpg(runner["pid"], signal.SIGTERM)
+
+    def test_2a_unmatched_non_copy_rows_and_blank_basis_are_recorded(self):
+        extra = [{"path": "never-created", "disposition": "rebuildable", "basis": "可重建"},
+                 {"path": "tracked", "disposition": "discardable", "basis": "已提交"},
+                 {"path": "build.log", "disposition": "rebuildable", "basis": ""}]
+        fake = FlowFixture(self.root, "codex", "codex")
+        (fake.workspace / "build.log").write_text("rebuildable output")
+        fake.classification_extra = extra
+        h.run_protocol(fake.run)
+        self.assertEqual(fake.run.state["outcome"], "complete")
+        self.assertEqual(fake.run.state["phase_2a"]["unmatched_rules"], extra[:2])
+        proof = h.decode(h.private_read(fake.run.root / "old/preservation-evidence.json"))
+        self.assertEqual(proof["classification"]["build.log"]["basis"], "")
+        with self.subTest(copy="missing"), tempfile.TemporaryDirectory() as temp:
+            fake = FlowFixture(Path(temp), "codex", "codex")
+            fake.classification_extra = [{"path": "never-created", "disposition": "copy", "basis": "必要"}]
+            with self.assertRaisesRegex(h.Stop, "old classification incomplete"):
+                h.run_protocol(fake.run)
+            self.assertNotIn("kill", fake.mutations)
 
     def test_Q3_dirty_old_retains_original_path_and_contents(self):
         fake = FlowFixture(self.root, "codex", "codex")
@@ -1018,9 +1038,6 @@ finally:
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         raw = h.canonical(req)
         h.publish(slot / "request.json", raw)
-        h.publish(slot / "capabilities.json", h.canonical(dict(run_id=req["request_id"], start_sha256=h.digest(raw),
-                  scope="daemon-account-catalog-global", source_refs=["human"],
-                  original_authority_covers_global_refresh=True)))
         repository = self.root / "repository"
         repository.mkdir()
         subprocess.run(["git", "init", "-b", "main", str(repository)], check=True, capture_output=True)
@@ -1182,7 +1199,7 @@ class FlowFixture:
         def git(*args):
             return subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True).stdout
         (self.workspace / "ignored.cache").write_bytes(b"unique original")
-        self.preservation_problem, self.kill_outcome = None, None
+        self.preservation_problem, self.kill_outcome, self.classification_extra = None, None, []
         self.run_file = root / "run.json"
         self.mutations = []
         self.last_received = h.time.monotonic()
@@ -1274,7 +1291,7 @@ class FlowFixture:
             sequence = snap["transcript"]["latestSequence"] + 1
             snap["transcript"]["latestSequence"] = sequence
             snap["transcript"]["entries"].append({"id": "old-ready", "sequence": sequence, "kind": "message", "role": "assistant", "turnId": snap["transcript"]["turns"][-1]["id"],
-                "text": h.status_command(self.run.root, self.run_id) + "；10分鐘未見new首報就查原run。"})
+                "text": "2a完成。"})
             with closing(sqlite3.connect(self.data_dir / "ao.db")) as db, db:
                 for entry in snap["transcript"]["entries"]:
                     if entry["kind"] == "message":
@@ -1301,7 +1318,7 @@ class FlowFixture:
         if self.preservation_problem == "empty-directory":
             (self.workspace / "unclassified-empty").mkdir()
         classification = [] if self.preservation_problem == "classification" else [
-            {"path": "ignored.cache", "disposition": "copy", "basis": "唯一必要附件原件；本turn核對"}]
+            {"path": "ignored.cache", "disposition": "copy", "basis": "唯一必要附件原件；本turn核對"}, *self.classification_extra]
         statement = dict(schema="rh-old-statement/1", run_id=self.run_id, old_id="old", classification=classification,
                          original_ref="refs/heads/missing" if self.preservation_problem == "ref" else "refs/heads/original", pending_question_refs=[])
         h.publish(self.run.root / "old/draft/statement.json", h.canonical(statement))

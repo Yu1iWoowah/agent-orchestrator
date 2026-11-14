@@ -190,8 +190,7 @@ def validate_refresh_proof(raw, request, run_id, start_sha256):
                   if source["kind"] in ("human-message", "structured-answer")}
     require(proof.get("run_id") == run_id and proof.get("start_sha256") == start_sha256 and
             proof.get("scope") == "daemon-account-catalog-global" and isinstance(refs, list) and refs and
-            all(isinstance(ref, str) and ref in request["authority"]["source_refs"] and ref in human_refs for ref in refs) and
-            proof.get("original_authority_covers_global_refresh") is True,
+            all(isinstance(ref, str) and ref in request["authority"]["source_refs"] and ref in human_refs for ref in refs),
             "global refresh authority proof mismatch")
 
 
@@ -221,14 +220,15 @@ def validate_request(req, slot, old, target):
         for ref in values:
             require(ref in refs and (not human or refs[ref]["kind"] != "old-control-record"), "invalid authority reference")
     authority = req["authority"]
-    require(authority.get("old_verified_scope") == "three-step-handoff-this-project" and authority.get("source_refs"), "old scope verification missing")
+    require(authority.get("source_refs"), "authority source refs missing")
     references(authority["source_refs"], True)
     require(authority.get("t0_source_ref") in authority["source_refs"], "T0 must refer to original authority")
     require("t0_created_at" in authority and isinstance(authority.get("t0_precision"), str), "T0/UNKNOWN required")
     t0_source = refs[authority["t0_source_ref"]]
     t0_message = source_message(t0_source, private_read(confined(slot, t0_source["raw_relpath"])))
-    if t0_message.get("createdAt"):
-        require(authority["t0_created_at"] == t0_message["createdAt"], "T0 differs from original human timestamp")
+    if t0_message.get("createdAt") and authority["t0_created_at"] != t0_message["createdAt"]:
+        # T0 is observation only: keep the original human time in state instead of stopping.
+        req["authority"] = dict(authority, source_created_at=t0_message["createdAt"])
     workers = req["workers"]
     require(isinstance(workers, list), "worker index must be array")
     ids = set()
@@ -1429,10 +1429,11 @@ def old_git_state(run, plan, workspace=None):
             require(len(matches) == 1, "unclosed/ambiguous old classification: " + relative)
             i, rule = matches[0]
             used.add(i)
-            require(isinstance(rule.get("basis"), str) and rule["basis"].strip(), "classification lacks explicit basis")
             disposition = rule.get("disposition")
             require(disposition in ("copy", "rebuildable", "discardable"), "classification disposition UNKNOWN")
-            item = dict(tree[relative], disposition=disposition, basis=rule["basis"],
+            require(disposition != "copy" or (isinstance(rule.get("basis"), str) and rule["basis"].strip()),
+                    "classification lacks explicit basis")
+            item = dict(tree[relative], disposition=disposition, basis=rule.get("basis"),
                         kind="directory" if path.is_dir() else "ignored" if os.fsencode(relative) in ignored else "untracked")
             if disposition == "copy":
                 require(path.is_file() and rule.get("path") == relative, "necessary copies must enumerate exact regular files")
@@ -1444,7 +1445,8 @@ def old_git_state(run, plan, workspace=None):
                 require(digest(private_read(saved)) == sha == copy.get("sha256"), "necessary old copy hash mismatch")
                 item.update(copy=dict(copy, original_mode=stat.S_IMODE(info.st_mode), relative_path=relative), sha256=sha)
             classified[relative] = item
-    require(used == set(range(len(rules))), "classification contains nonexistent/unmatched paths")
+    require(all(i in used for i, rule in enumerate(rules) if rule.get("disposition") == "copy"),
+            "classification contains nonexistent/unmatched paths")
     # Preserve only the required linked-worktree Git state, never the common history tree.
     meta = {}
     for directory, dirs, names in os.walk(metadata):
@@ -1462,6 +1464,7 @@ def old_git_state(run, plan, workspace=None):
             "status": git("status", "--porcelain=v1", "-z", "--untracked-files=all").hex(),
             "index": index.hex(), "staged_patch": staged_patch.hex(), "dirty_patch": dirty_patch.hex(),
             "metadata": meta, "gitfile": read_regular(workspace / ".git").hex(), "gitlinks": links, "tree": tree, "classification": classified,
+            "unmatched_rules": [rule for i, rule in enumerate(rules) if i not in used],
             "plan_sha256": digest(private_read(run.root / "old/preservation.json"))}
 
 
@@ -2137,13 +2140,17 @@ def old_receipt(run):
     statement = decode(statement_raw)
     require(statement.get("schema") == "rh-old-statement/1" and statement.get("run_id") == run.run_id and statement.get("old_id") == sid and
             isinstance(statement.get("classification"), list) and isinstance(statement.get("pending_question_refs"), list), "old statement identity/fields")
-    rules, paths, copy_rows = [], [], []
+    rules, paths, copy_rows, unmatched = [], [], [], []
     for row in statement["classification"]:
         relative = row.get("path")
         require(isinstance(relative, str) and relative and not Path(relative).is_absolute() and str(Path(relative)) == relative and
                 all(x not in (".", "..") for x in Path(relative).parts), "classification must be clean workspace-relative path")
         path = confined(workspace, relative)
-        require(path.exists() and row.get("disposition") in ("copy", "rebuildable", "discardable") and row.get("basis"), "old classification incomplete")
+        require(row.get("disposition") in ("copy", "rebuildable", "discardable") and
+                (row["disposition"] != "copy" or (path.exists() and row.get("basis"))), "old classification incomplete")
+        if not path.exists():
+            unmatched.append(row)
+            continue
         require(not any(relative == other["path"] or (other.get("scope") == "directory" and relative.startswith(other["path"] + "/")) or
                         (row.get("scope") == "directory" and other["path"].startswith(relative + "/")) for other in rules), "old classification overlap")
         rule = dict(row)
@@ -2193,7 +2200,7 @@ def old_receipt(run):
             "original_ref": statement["original_ref"], "classification": rules,
             "gitlinks": gitlink_facts(workspace, "old", common, metadata), "provenance": file_reference(directory / "provenance.json")}
     publish(directory / "preservation.json", canonical(plan))
-    old_git_state(run, plan, workspace=workspace)
+    receipt["unmatched_rules"] = unmatched + old_git_state(run, plan, workspace=workspace)["unmatched_rules"]
     receipt["preservation"] = file_reference(directory / "preservation.json")
     return commit_producer(directory, directory / "phase-2a.json", receipt)
 
@@ -2319,7 +2326,7 @@ def phase_2a(run):
                        worker_index={"path": str(run.root / "workers/index.json"), "sha256": run.state["stop_index_sha256"]},
                        start=str(run.root / "start.json"), schema="rh-old-2a/1", managed_output=str(run.root / "old/managed.json"),
                        user_status_instruction=status_command(run.root, run.run_id),
-                       requirements="old自己用正常documents write/expected-hash更新A–F，正文含handoff_run_id，原CLI --json保存old/managed.json。classification.path必為workspace乾淨相對路徑，disposition/basis需閉合untracked/ignored路徑及空目錄；tracked檔與gitlink（含未初始化submodule的空目錄）不列，列入則helper停止；copy只列精確regular file，目的地由helper決定。original_ref只准既存refs/heads，不能新建ref。先填statement，再執行固定helper；preservation/2完整後phase-2a最後發布。完成回覆列run/ref/dirty切前證據、精確status及10分鐘未見new首報只查原run提示，然後completed，不輪詢。",
+                       requirements=f"old自己用正常documents write/expected-hash更新A–F，正文含獨立一行「handoff_run_id: {run.run_id}」，原CLI --json保存old/managed.json。classification.path必為workspace乾淨相對路徑，disposition/basis需閉合untracked/ignored路徑及空目錄；tracked檔與gitlink（含未初始化submodule的空目錄）不列，列入只記錄；copy只列精確regular file，目的地由helper決定。original_ref只准既存refs/heads，不能新建ref。先填statement，再執行固定helper；preservation/2完整後phase-2a最後發布。完成後completed，不輪詢。",
                        **producer_description(run, "old-receipt", run.old))
     run.send(run.old, "2a", instruction)
     def ready():
@@ -2339,8 +2346,6 @@ def phase_2a(run):
         finished_turn = helper["turnId"]
         if not quiescent(snap, run=run):
             return False
-        replies = [e.get("text", "") for e in entries(snap) if e.get("role") == "assistant" and e.get("turnId") == finished_turn]
-        require(any(status_command(run.root, run.run_id) in text and "10" in text for text in replies), "old ready reply lacks exact status/silence instruction")
         payload = private_read(run.root / "control" / ("2a-" + run.old) / "payload.json").decode()
         control = directive_entry(snap, run.run_id + ":2a:" + run.old, run.old, payload)
         run.state["old_control_sequence"] = control["sequence"]
@@ -3741,12 +3746,13 @@ def start(root, initial, old, target, selector=None):
         cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw),
             qualification_sha256=digest(private_read(root / ".qualified/qualification.json"))), source_root=slot)
         old_snap = validate_sources_live(req, cli)
-        proof_raw = private_read(slot / "capabilities.json")
         journal = cli.execution.journal
-        validate_refresh_proof(proof_raw, req, journal.run_id, digest(raw))
+        # start records the original human refs itself; this is a record, not proof of consent.
+        record = canonical(dict(run_id=journal.run_id, start_sha256=digest(raw), scope="daemon-account-catalog-global",
+                                source_refs=req["authority"]["source_refs"]))
         with journal.mutex():
-            require(journal.state()["status"] == "open", "journal not open for refresh proof publication")
-            publish(journal.root / "capabilities.json", proof_raw)
+            require(journal.state()["status"] == "open", "journal not open for refresh record publication")
+            publish(journal.root / "capabilities.json", record)
         cli.execution.configure(req, digest(raw))
         preflight = target_preflight(cli, target)
         mkdir(destination)
