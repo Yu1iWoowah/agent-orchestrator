@@ -66,14 +66,15 @@ export function SessionContextMenuItems({
 	const isCloud = Boolean(session.cloud);
 
 	const resume = () => {
-		void resumeAgentOnOpen(session.id)
+		const refresh = () => Promise.all([
+			queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(session.hostId) }),
+			queryClient.invalidateQueries({ queryKey: conversationQueryKey(session.id) }),
+		]);
+		void resumeAgentOnOpen(session.id, refresh)
 			.catch((error: unknown) => {
 				showGlobalToast(t("inspector.resumeAgent"), error instanceof Error ? error.message : undefined, "error");
 			})
-			.finally(() => {
-				void queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(session.hostId) });
-				void queryClient.invalidateQueries({ queryKey: conversationQueryKey(session.id) });
-			});
+			.finally(refresh);
 	};
 	const hasManageItems = !isCloud || canResume;
 	const hasLinkItems = Boolean(pr) || showBranch;

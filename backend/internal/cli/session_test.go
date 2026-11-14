@@ -92,7 +92,10 @@ func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/exit-agent":
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","session":`+sessionJSON("demo-1", "demo", "worker", "exited", false)+`}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/resume-agent":
-			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","resumeMode":"native","session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","session":`+sessionJSON("demo-1", "demo", "worker", "exited", false)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/resume-agent":
+			_, _ = io.WriteString(w, `{"sessionId":"demo-1","state":"succeeded","resumeMode":"native","session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sessions/demo-1":
 			var req sessionRenameRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -542,7 +545,10 @@ func TestSessionRestore_ExitedOrchestratorResumesAgentInPlace(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-orch":
 			_, _ = io.WriteString(w, `{"session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","harness":"codex","activity":{"state":"exited","lastActivityAt":"2026-06-02T12:00:00Z"},"isTerminated":false,"status":"exited"}}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-orch/resume-agent":
-			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-orch","resumeMode":"native","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"idle"},"isTerminated":false,"status":"idle"}}`)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-orch","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"exited"},"isTerminated":false,"status":"exited"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-orch/resume-agent":
+			_, _ = io.WriteString(w, `{"sessionId":"demo-orch","state":"succeeded","resumeMode":"native","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"idle"},"isTerminated":false,"status":"idle"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -562,6 +568,7 @@ func TestSessionRestore_ExitedOrchestratorResumesAgentInPlace(t *testing.T) {
 	want := []string{
 		"GET /api/v1/sessions/demo-orch",
 		"POST /api/v1/sessions/demo-orch/resume-agent",
+		"GET /api/v1/sessions/demo-orch/resume-agent",
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
@@ -594,6 +601,7 @@ func TestSessionExitAndResumeAgentUseProcessOnlyRoutes(t *testing.T) {
 		"GET /api/v1/sessions/demo-1",
 		"POST /api/v1/sessions/demo-1/exit-agent",
 		"POST /api/v1/sessions/demo-1/resume-agent",
+		"GET /api/v1/sessions/demo-1/resume-agent",
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)

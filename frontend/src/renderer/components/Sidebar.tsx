@@ -84,7 +84,7 @@ import { SessionContextMenuItems, useCopyToClipboard } from "./SessionContextMen
 import { aoBridge } from "../lib/bridge";
 import { hasTrustedApiBaseUrl } from "../lib/api-client";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
-import { canResumeAgent, resumeAgentOnOpen, useCanResumeAgent } from "../hooks/useCanResumeAgent";
+import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { cloudSessionsQueryKey, workspaceQueryKey, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { useCloudOffering } from "../hooks/useCloudOffering";
 import { conversationQueryKey, conversationQueryOptions } from "../hooks/useConversation";
@@ -168,8 +168,6 @@ const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperti
 // painted: `.sidebar-icon-action` also opts out of the sidebar focus fill in
 // styles.css. Hover/reveal stays instant (no transitions here).
 const ROW_ACTIONS_CLASS = "absolute inset-y-0 right-1 flex items-center gap-0.5";
-/** Long enough that sweeping the pointer across the list starts no agents. */
-const AGENT_WARM_UP_HOVER_MS = 300;
 const ROW_ACTION_BUTTON_CLASS =
 	"sidebar-icon-action grid size-6 shrink-0 place-items-center rounded-md !bg-transparent text-passive hover:!bg-interactive-hover focus:!bg-transparent focus-visible:!bg-interactive-hover active:!bg-interactive-hover data-[state=open]:!bg-interactive-hover hover:text-foreground focus-visible:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:text-foreground [&_svg]:size-icon-md";
 const HOVER_ACTION_CLASS = ROW_ACTION_BUTTON_CLASS;
@@ -2515,22 +2513,9 @@ const SessionRow = memo(function SessionRow({
 	const hoverTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const canPrefetch = session.mode === "chat" && !session.cloud && !session.hostId && !active && !listIsDragging && !reorder?.isDragging;
 	useEffect(() => () => clearTimeout(hoverTimerRef.current), [canPrefetch]);
-	const resumeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-	useEffect(() => () => clearTimeout(resumeTimerRef.current), [canPrefetch]);
 	const prefetchConversation = () => {
 		if (!canPrefetch || !hasTrustedApiBaseUrl() || queryClient.getQueryData(conversationQueryKey(session.id))) return;
 		void queryClient.prefetchInfiniteQuery(conversationQueryOptions(session.id));
-	};
-	// A stopped agent takes seconds to come back. Start it while the pointer rests
-	// on the row so the chat is ready when it opens; opening joins this request.
-	const warmUpAgent = () => {
-		if (!canPrefetch || !hasTrustedApiBaseUrl() || !canResumeAgent(session)) return;
-		void resumeAgentOnOpen(session.id)
-			.catch(() => {})
-			.finally(() => {
-				void refreshWorkspaces();
-				void queryClient.invalidateQueries({ queryKey: conversationQueryKey(session.id) });
-			});
 	};
 	const beginRename = useCallback(() => {
 		rename.begin();
@@ -2621,11 +2606,9 @@ const SessionRow = memo(function SessionRow({
 							onMouseEnter={() => {
 								if (!canPrefetch) return;
 								hoverTimerRef.current = setTimeout(prefetchConversation, 100);
-								resumeTimerRef.current = setTimeout(warmUpAgent, AGENT_WARM_UP_HOVER_MS);
 							}}
 							onMouseLeave={() => {
 								clearTimeout(hoverTimerRef.current);
-								clearTimeout(resumeTimerRef.current);
 							}}
 							onFocus={prefetchConversation}
 							onClick={(event) => {

@@ -54,6 +54,7 @@ type fakeSessionService struct {
 	artifactsDeleted           []domain.SessionID
 	deleteArtifactsErr         error
 	sessions                   map[domain.SessionID]domain.Session
+	resumeStatus               map[domain.SessionID]sessionsvc.ResumeAgentStatus
 	sent                       string
 	sentAttachment             *ports.SpawnAttachment
 	sentDeliveryOptions        ports.MessageDeliveryOptions
@@ -425,12 +426,22 @@ func (f *fakeSessionService) ExitAgent(_ context.Context, id domain.SessionID) (
 	return sessionsvc.ExitAgentOutcome{Session: s}, nil
 }
 
-func (f *fakeSessionService) ResumeAgent(_ context.Context, id domain.SessionID) (sessionsvc.ResumeAgentOutcome, error) {
+func (f *fakeSessionService) StartResumeAgent(_ context.Context, id domain.SessionID) (domain.Session, error) {
 	s := f.sessions[id]
-	s.Activity.State = domain.ActivityIdle
-	s.Status = domain.StatusIdle
-	f.sessions[id] = s
-	return sessionsvc.ResumeAgentOutcome{Session: s, Mode: sessionsvc.RestoreModeViewNative}, nil
+	if f.resumeStatus == nil {
+		f.resumeStatus = map[domain.SessionID]sessionsvc.ResumeAgentStatus{}
+	}
+	f.resumeStatus[id] = sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}
+	return s, nil
+}
+
+func (f *fakeSessionService) ResumeAgentStatus(_ context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error) {
+	status, ok := f.resumeStatus[id]
+	if !ok {
+		return sessionsvc.ResumeAgentStatus{}, apierr.NotFound("AGENT_RESUME_NOT_FOUND", "No resume of this agent is recorded since the daemon started")
+	}
+	status.Session = f.sessions[id]
+	return status, nil
 }
 
 func (f *fakeSessionService) Kill(_ context.Context, id domain.SessionID) (bool, error) {
@@ -1261,17 +1272,34 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 		t.Fatalf("exit response = %#v", exited)
 	}
 
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent", "")
+	assertErrorCode(t, body, status, http.StatusNotFound, "AGENT_RESUME_NOT_FOUND")
 	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-2/resume-agent", "")
-	if status != http.StatusOK {
-		t.Fatalf("resume agent = %d, want 200; body=%s", status, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("resume agent = %d, want 202; body=%s", status, body)
 	}
-	var resumed struct {
-		SessionID  string `json:"sessionId"`
-		ResumeMode string `json:"resumeMode"`
-	}
+	var resumed map[string]any
 	mustJSON(t, body, &resumed)
-	if resumed.SessionID != "ao-2" || resumed.ResumeMode != "native" {
+	if resumed["ok"] != true || resumed["sessionId"] != "ao-2" || resumed["session"] == nil || resumed["resumeMode"] != nil {
 		t.Fatalf("resume response = %#v", resumed)
+	}
+	resumeFinished := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		status sessionsvc.ResumeAgentStatus
+		want   string
+	}{
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}, `"state":"running"`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentSucceeded, Mode: sessionsvc.RestoreModeViewNative, FinishedAt: &resumeFinished}, `"resumeMode":"native","finishedAt":"2026-11-14T12:00:00Z"`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: apierr.Conflict("AGENT_RESUME_FAILED", "AO could not restart the agent", map[string]any{"step": "runtime"})},
+			`"error":{"status":409,"code":"AGENT_RESUME_FAILED","message":"AO could not restart the agent","details":{"step":"runtime"}}`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: context.DeadlineExceeded},
+			`"error":{"status":503,"code":"SERVICE_UNAVAILABLE"`},
+	} {
+		svc.resumeStatus["ao-2"] = tc.status
+		body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent", "")
+		if status != http.StatusOK || !strings.Contains(string(body), tc.want) || !strings.Contains(string(body), `"sessionId":"ao-2"`) {
+			t.Fatalf("resume status = %d %s, want %s", status, body, tc.want)
+		}
 	}
 
 	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-2", `{"displayName":"Renamed"}`)

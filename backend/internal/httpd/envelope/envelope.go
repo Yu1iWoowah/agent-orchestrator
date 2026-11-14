@@ -114,21 +114,28 @@ func writeAPIError(w http.ResponseWriter, r *http.Request, status int, kind, cod
 // only place an apierr.Kind is translated into an HTTP status and wire word.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	captureError(r, err)
-	reportingOwner := ownership.OwnerOf(err)
+	status, body := Describe(err)
+	body.RequestID = middleware.GetReqID(r.Context())
+	body.ReportingOwner = ownership.OwnerOf(err)
+	WriteJSON(w, status, body)
+}
+
+// Describe renders err as the status and envelope WriteError would answer,
+// without a request: a background operation reports its failure in the same
+// shape a request that ran it inline would have.
+func Describe(err error) (int, APIError) {
 	var e *apierr.Error
 	if errors.As(err, &e) {
 		status, kind := httpStatus(e.Kind)
-		writeAPIError(w, r, status, kind, e.Code, e.Message, e.Details, reportingOwner)
-		return
+		return status, APIError{Error: kind, Code: e.Code, Message: e.Message, Details: e.Details}
 	}
 	// A transient failure (the database was momentarily busy/locked, or a
 	// server-side deadline elapsed) is retryable, not a server fault. Map it to
 	// 503 with a stable code so it is not counted or alerted as an
 	// INTERNAL_ERROR 500 and so clients can back off and retry.
 	if isTransient(err) {
-		writeAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SERVICE_UNAVAILABLE",
-			"The service is momentarily unavailable, please retry.", nil, reportingOwner)
-		return
+		return http.StatusServiceUnavailable, APIError{Error: "unavailable", Code: "SERVICE_UNAVAILABLE",
+			Message: "The service is momentarily unavailable, please retry."}
 	}
 	// A project whose source repository has been deleted from disk turns any
 	// subsequent filesystem/git operation that reaches it into a raw,
@@ -138,15 +145,13 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	// the same sentinel (ports.ErrWorkspaceRepoUnavailable) with %w, so
 	// errors.Is matches it through any wrapping.
 	if errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
-		writeAPIError(w, r, http.StatusNotFound, "not_found", "PROJECT_FOLDER_MISSING",
-			"Project repository is missing from disk", nil, reportingOwner)
-		return
+		return http.StatusNotFound, APIError{Error: "not_found", Code: "PROJECT_FOLDER_MISSING",
+			Message: "Project repository is missing from disk"}
 	}
 	if errors.Is(err, ports.ErrAgentSettingsConflict) {
-		writeAPIError(w, r, http.StatusConflict, "conflict", "AGENT_SETTINGS_CONFLICT", "Settings changed or another session operation is active", nil, reportingOwner)
-		return
+		return http.StatusConflict, APIError{Error: "conflict", Code: "AGENT_SETTINGS_CONFLICT", Message: "Settings changed or another session operation is active"}
 	}
-	writeAPIError(w, r, http.StatusInternalServerError, "internal", "INTERNAL_ERROR", "Internal server error", nil, reportingOwner)
+	return http.StatusInternalServerError, APIError{Error: "internal", Code: "INTERNAL_ERROR", Message: "Internal server error"}
 }
 
 // SQLite primary result codes for a busy/locked database. Extended codes (e.g.

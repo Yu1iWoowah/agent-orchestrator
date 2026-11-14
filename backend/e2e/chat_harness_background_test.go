@@ -249,8 +249,20 @@ func TestHarnessBackgroundNativeLoadDoesNotRetainHistory(t *testing.T) {
 	f.awaitEmptyJournals(t)
 	for range 2 {
 		f.daemon.mustCall("POST", "/sessions/"+f.session+"/exit-agent", http.StatusOK, nil, nil)
-		f.daemon.mustCall("POST", "/sessions/"+f.session+"/resume-agent", http.StatusOK, nil, nil)
+		f.daemon.mustCall("POST", "/sessions/"+f.session+"/resume-agent", http.StatusAccepted, nil, nil)
 		s := f.daemon.awaitConversation(f.session, 15*time.Second, "native history resume", func(s snapshot) bool { return s.Controller == "ready" })
+		for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			var resume struct {
+				State string `json:"state"`
+			}
+			f.daemon.mustCall("GET", "/sessions/"+f.session+"/resume-agent", http.StatusOK, nil, &resume)
+			if resume.State == "succeeded" {
+				break
+			}
+			if resume.State != "running" || time.Now().After(deadline) {
+				t.Fatalf("background resume = %q, want succeeded", resume.State)
+			}
+		}
 		if len(s.Turns) != 1 || len(s.Messages) != 2 || strings.Count(s.assistantText(), "AO-PROMPT-COMPLETED") != 1 {
 			t.Fatalf("native history reload duplicated or changed the original turn: %s", describe(s))
 		}
