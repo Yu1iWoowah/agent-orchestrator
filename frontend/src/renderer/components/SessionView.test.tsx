@@ -1219,6 +1219,44 @@ describe("SessionView", () => {
 		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(2));
 	});
 
+	it("resumes again after the agent ran since the failure the daemon still reports", async () => {
+		const session = exitedSession("chat");
+		// The daemon keeps its latest resume request; a later wake does not update it.
+		resumeStatusMock.mockResolvedValue({
+			data: { sessionId: "sess-1", state: "failed", error: { status: 409, code: "AGENT_RESUME_FAILED", message: "AO could not restart the agent" } },
+			response: { status: 200 },
+		});
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeFailed("sess-1")).toBe(true));
+		expect(resumeAgentPostMock).not.toHaveBeenCalled();
+		session.status = "working";
+		session.activity = { state: "idle", lastActivityAt: "" };
+		view.rerender(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeFailed("sess-1")).toBe(false));
+		session.status = "exited";
+		session.activity = { state: "exited", lastActivityAt: "" };
+		view.unmount();
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
+	});
+
+	it("does not resume again on reopening after the resume request itself failed", async () => {
+		exitedSession("chat");
+		resumeAgentPostMock.mockResolvedValue({
+			data: undefined, error: { code: "SERVICE_UNAVAILABLE", message: "The service is momentarily unavailable, please retry." }, response: { status: 503 },
+		});
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(view.client.isMutating()).toBe(0));
+		view.unmount();
+		render(<SessionView sessionId="sess-1" />);
+		// Time for an open-time status read and resume, had one started.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		});
+		expect(resumeAgentPostMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("does not record a background resume that met another resume in progress", async () => {
 		exitedSession("chat");
 		render(<SessionView sessionId="sess-1" />);
