@@ -169,20 +169,23 @@ const (
 )
 
 // ResumeAgentStatus reports a session's latest resume-agent request. Err is
-// the API error the request would have answered had it run inline.
+// the API error the request would have answered had it run inline; FinishedAt
+// is set once it settled.
 type ResumeAgentStatus struct {
-	State   ResumeAgentState
-	Mode    RestoreModeView
-	Err     error
-	Session domain.Session
+	State      ResumeAgentState
+	Mode       RestoreModeView
+	Err        error
+	FinishedAt *time.Time
+	Session    domain.Session
 }
 
 // resumeAgentOperation is the in-memory record of one resume-agent request;
 // a daemon restart forgets it.
 type resumeAgentOperation struct {
-	state ResumeAgentState
-	mode  RestoreModeView
-	err   error
+	state    ResumeAgentState
+	mode     RestoreModeView
+	err      error
+	finished *time.Time
 }
 
 // ExitAgentOutcome reports the still-live AO session after only its agent
@@ -1027,8 +1030,9 @@ func (s *Service) finishResumeAgent(id domain.SessionID, op *resumeAgentOperatio
 		state, mode, mapped = ResumeAgentFailed, "", toAPIError(err)
 		s.emitRelaunchFailed(ctx, "resume_agent", id, err, mapped)
 	}
+	finished := s.now()
 	s.resumeAgentsMu.Lock()
-	op.state, op.mode, op.err = state, mode, mapped
+	op.state, op.mode, op.err, op.finished = state, mode, mapped, &finished
 	s.resumeAgentsMu.Unlock()
 }
 
@@ -1039,7 +1043,7 @@ func (s *Service) ResumeAgentStatus(ctx context.Context, id domain.SessionID) (R
 	op := s.resumeAgents[id]
 	var status ResumeAgentStatus
 	if op != nil {
-		status = ResumeAgentStatus{State: op.state, Mode: op.mode, Err: op.err}
+		status = ResumeAgentStatus{State: op.state, Mode: op.mode, Err: op.err, FinishedAt: op.finished}
 	}
 	s.resumeAgentsMu.Unlock()
 	if op == nil {

@@ -1223,7 +1223,7 @@ describe("SessionView", () => {
 		const session = exitedSession("chat");
 		// The daemon keeps its latest resume request; a later wake does not update it.
 		resumeStatusMock.mockResolvedValue({
-			data: { sessionId: "sess-1", state: "failed", error: { status: 409, code: "AGENT_RESUME_FAILED", message: "AO could not restart the agent" } },
+			data: { sessionId: "sess-1", state: "failed", finishedAt: new Date(Date.now() - 60_000).toISOString(), error: { status: 409, code: "AGENT_RESUME_FAILED", message: "AO could not restart the agent" } },
 			response: { status: 200 },
 		});
 		const view = render(<SessionView sessionId="sess-1" />);
@@ -1238,6 +1238,26 @@ describe("SessionView", () => {
 		view.unmount();
 		render(<SessionView sessionId="sess-1" />);
 		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
+	});
+
+	it("keeps a failure that finished after the agent was last seen running", async () => {
+		const session = workerSession("sess-1");
+		session.mode = "chat";
+		session.activity = { state: "idle", lastActivityAt: "" };
+		const view = render(<SessionView sessionId="sess-1" />);
+		await act(async () => {});
+		view.unmount();
+		// The agent exits and a resume from the CLI or another window fails.
+		session.status = "exited";
+		session.activity = { state: "exited", lastActivityAt: "" };
+		resumeStatusMock.mockResolvedValue({
+			data: { sessionId: "sess-1", state: "failed", finishedAt: new Date(Date.now() + 1_000).toISOString(), error: { status: 409, code: "AGENT_ACCOUNT_IN_USE", message: "The account is being used by another operation. Wait for it to finish, then retry." } },
+			response: { status: 200 },
+		});
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeFailed("sess-1")).toBe(true));
+		await act(async () => {});
+		expect(resumeAgentPostMock).not.toHaveBeenCalled();
 	});
 
 	it("does not resume again on reopening after the resume request itself failed", async () => {

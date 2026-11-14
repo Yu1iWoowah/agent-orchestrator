@@ -29595,6 +29595,11 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ResumeAgentFailure'
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         resumeMode:
           enum:
           - native

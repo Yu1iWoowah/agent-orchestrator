@@ -1283,12 +1283,13 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	if resumed["ok"] != true || resumed["sessionId"] != "ao-2" || resumed["session"] == nil || resumed["resumeMode"] != nil {
 		t.Fatalf("resume response = %#v", resumed)
 	}
+	resumeFinished := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		status sessionsvc.ResumeAgentStatus
 		want   string
 	}{
 		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}, `"state":"running"`},
-		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentSucceeded, Mode: sessionsvc.RestoreModeViewNative}, `"resumeMode":"native"`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentSucceeded, Mode: sessionsvc.RestoreModeViewNative, FinishedAt: &resumeFinished}, `"resumeMode":"native","finishedAt":"2026-11-14T12:00:00Z"`},
 		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: apierr.Conflict("AGENT_RESUME_FAILED", "AO could not restart the agent", map[string]any{"step": "runtime"})},
 			`"error":{"status":409,"code":"AGENT_RESUME_FAILED","message":"AO could not restart the agent","details":{"step":"runtime"}}`},
 		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: context.DeadlineExceeded},

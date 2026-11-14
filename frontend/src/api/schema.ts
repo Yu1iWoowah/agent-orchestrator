@@ -9875,6 +9875,8 @@ export interface components {
         };
         ResumeAgentStatusResponse: {
             error?: components["schemas"]["ResumeAgentFailure"];
+            /** Format: date-time */
+            finishedAt?: null | string;
             /** @enum {string} */
             resumeMode?: "native" | "saved_prompt" | "fresh";
             session: components["schemas"]["ControllersSessionView"];

@@ -4131,7 +4131,8 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex}
 	fc := &fakeCommander{restoreResult: sessionmanager.RestoreResult{Mode: sessionmanager.RestoreModeSavedPrompt}, resumeHold: make(chan struct{})}
-	svc := &Service{manager: fc, store: st}
+	finished := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	svc := &Service{manager: fc, store: st, clock: func() time.Time { return finished }}
 	ctx := context.Background()
 	var apiErr *apierr.Error
 
@@ -4151,7 +4152,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	if _, err := svc.StartResumeAgent(ctx, "mer-1"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentRunning || got.Mode != "" {
+	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentRunning || got.Mode != "" || got.FinishedAt != nil {
 		t.Fatalf("running status = %+v, %v", got, err)
 	}
 	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "AGENT_RESUME_IN_PROGRESS" {
@@ -4167,7 +4168,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got.State == ResumeAgentSucceeded {
-			if got.Mode != RestoreModeViewSavedPrompt || got.Session.ID != "mer-1" {
+			if got.Mode != RestoreModeViewSavedPrompt || got.Session.ID != "mer-1" || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
 				t.Fatalf("succeeded status = %+v", got)
 			}
 			break

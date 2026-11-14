@@ -1257,12 +1257,14 @@ type ResumeAgentResponse struct {
 
 // ResumeAgentStatusResponse is the body of GET
 // /api/v1/sessions/{sessionId}/resume-agent: the session's latest resume since
-// the daemon started. resumeMode is set once it succeeded, error once it failed.
+// the daemon started. resumeMode is set once it succeeded, error once it failed,
+// finishedAt once it settled either way.
 type ResumeAgentStatusResponse struct {
 	SessionID  domain.SessionID           `json:"sessionId"`
 	State      string                     `json:"state" enum:"running,succeeded,failed"`
 	ResumeMode sessionsvc.RestoreModeView `json:"resumeMode,omitempty" enum:"native,saved_prompt,fresh"`
 	Error      *ResumeAgentFailure        `json:"error,omitempty"`
+	FinishedAt *time.Time                 `json:"finishedAt,omitempty"`
 	Session    SessionView                `json:"session"`
 }
 

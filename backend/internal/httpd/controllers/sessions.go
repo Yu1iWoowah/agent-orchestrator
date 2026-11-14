@@ -2119,6 +2119,7 @@ func (c *SessionsController) resumeAgentStatus(w http.ResponseWriter, r *http.Re
 		SessionID:  sessionID(r),
 		State:      string(status.State),
 		ResumeMode: status.Mode,
+		FinishedAt: status.FinishedAt,
 		Session:    sessionView(r, status.Session),
 	}
 	if status.Err != nil {

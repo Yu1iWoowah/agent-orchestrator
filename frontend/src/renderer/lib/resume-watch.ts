@@ -24,11 +24,12 @@ export const RESUME_CHECK_LIMIT_MS = 10_000;
 const watches = new Map<string, ResumeWatch>();
 const listeners = new Set<() => void>();
 /**
- * Sessions seen running since this renderer last started or recorded a
- * resume. The daemon keeps only the latest resume-agent request, so an agent
- * started another way (a wake, a version move) leaves its old failure there.
+ * When this renderer last saw each session running. The daemon keeps only the
+ * latest resume-agent request, so an agent started another way (a wake, a
+ * version move) leaves its old failure there; a failure that finished before
+ * the agent was seen running no longer applies, a later one does.
  */
-const seenRunning = new Set<string>();
+const seenRunning = new Map<string, number>();
 
 function watchKey(sessionId: string, hostId?: string): string {
 	return `${hostId ?? "local"}\u0000${sessionId}`;
@@ -69,7 +70,7 @@ export function noteResumeFailure(sessionId: string, error: unknown, hostId?: st
  */
 export function clearResumeFailure(sessionId: string, hostId?: string): void {
 	const key = watchKey(sessionId, hostId);
-	seenRunning.add(key);
+	seenRunning.set(key, Date.now());
 	if (watches.get(key)?.state === "failed") update(key, undefined);
 }
 
@@ -155,7 +156,7 @@ async function follow(key: string, running: ResumeWatch, sessionId: string, host
 	}
 }
 
-type ResumeStatus = { state: string; resumeMode?: string; error?: { code: string; message: string } };
+type ResumeStatus = { state: string; resumeMode?: string; finishedAt?: string | null; error?: { code: string; message: string } };
 
 /**
  * One status read, abandoned after limitMs: "gone" when the host has no
@@ -178,11 +179,18 @@ async function readResume(sessionId: string, hostId: string | undefined, limitMs
 	}
 }
 
+/** Whether this failure finished before the agent was last seen running. */
+function failedBeforeSeenRunning(sessionId: string, status: ResumeStatus): boolean {
+	const seen = seenRunning.get(watchKey(sessionId));
+	const finished = status.finishedAt ? Date.parse(status.finishedAt) : Number.NaN;
+	return seen !== undefined && !Number.isNaN(finished) && finished <= seen;
+}
+
 /**
  * Before opening resumes a local session, check the resume the daemon already
- * knows: a recorded failure is kept without resuming again, unless the agent
- * was seen running since; a running one is followed instead of being started
- * twice. Returns whether to resume.
+ * knows: a recorded failure is kept without resuming again, unless it finished
+ * before the agent was seen running; a running one is followed instead of being
+ * started twice. Returns whether to resume.
  */
 export async function shouldResumeOnOpen(sessionId: string, refresh: () => unknown): Promise<boolean> {
 	const status = await readResume(sessionId, undefined, RESUME_CHECK_LIMIT_MS);
@@ -191,7 +199,7 @@ export async function shouldResumeOnOpen(sessionId: string, refresh: () => unkno
 		watchResume(sessionId, undefined, refresh);
 		return false;
 	}
-	if (status.state === "failed" && apiErrorCode(status.error) !== "AGENT_RESUME_IN_PROGRESS" && !seenRunning.has(watchKey(sessionId))) {
+	if (status.state === "failed" && apiErrorCode(status.error) !== "AGENT_RESUME_IN_PROGRESS" && !failedBeforeSeenRunning(sessionId, status)) {
 		update(watchKey(sessionId), { state: "failed", message: status.error?.message || "Failed to resume agent" });
 		return false;
 	}
