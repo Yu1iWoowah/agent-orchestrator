@@ -28,7 +28,7 @@ class RefreshProofStartTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.real_run = subprocess.run
 
-    def fixture(self, name="case"):
+    def fixture(self, name="case", created_at=None, t0=None):
         from test_handoff import ProtocolTests
         self.home = h.mkdir(Path(self.tmp.name) / name)
         self.data = h.mkdir(self.home / ".ao/data")
@@ -39,18 +39,18 @@ class RefreshProofStartTests(unittest.TestCase):
         self.journal_path = self.root.parent / ".handoff-journal" / self.run_id
         self.snap = h.decode(h.private_read(self.data / "evidence/human.json"))
         self.snap["transcript"]["turns"].append(dict(id="preparing", state="completed"))
+        if created_at:
+            self.snap["transcript"]["entries"][0]["createdAt"] = created_at
+            self.request["authority"]["t0_created_at"] = t0
         source = h.canonical(self.snap)
         h.publish(self.slot / "evidence/human.json", source)
         for ref in self.request["sources"]:
             ref["raw_sha256"] = h.digest(source)
-        # Deliberately noncanonical: proof must bind the original bytes.
+        # Deliberately noncanonical: the J record must bind the original bytes.
         self.raw = json.dumps(self.request, indent=2).encode() + b"\n"
         h.publish(self.slot / "request.json", self.raw)
-        self.proof = dict(run_id=self.run_id, start_sha256=h.digest(self.raw),
-                          scope="daemon-account-catalog-global", source_refs=["human"],
-                          original_authority_covers_global_refresh=True)
-        self.proof_raw = json.dumps(self.proof, indent=2).encode() + b"\n"
-        h.publish(self.slot / "capabilities.json", self.proof_raw)
+        self.record = dict(run_id=self.run_id, start_sha256=h.digest(self.raw),
+                           scope="daemon-account-catalog-global", source_refs=["human"])
         self.repo = h.mkdir(self.home / "repo")
         for args in (["init", "-b", "main"], ["-c", "user.name=fixture", "-c", "user.email=x@example.invalid",
                      "commit", "--allow-empty", "-m", "fixture"]):
@@ -88,7 +88,7 @@ class RefreshProofStartTests(unittest.TestCase):
         elif args[:2] == ["account", "ls"]:
             self.refreshes += 1
             self.assertGreater(self.source_reads, 0)
-            self.assertEqual(h.private_read(self.journal_path / "capabilities.json"), self.proof_raw)
+            self.assertEqual(h.private_read(self.journal_path / "capabilities.json"), h.canonical(self.record))
             admission = h.decode(h.private_read(self.journal_path / "admission.json"))
             self.assertEqual(admission["status"], "open")
             intents = [h.decode(h.private_read(x)) for x in self.journal_path.glob("executions/*/calls/*/intent.json")]
@@ -126,13 +126,14 @@ class RefreshProofStartTests(unittest.TestCase):
                            "--approval-mode", "bypass-permissions"])
         return code, errors.getvalue(), launch.call_count
 
-    def test_first_main_start_binds_slot_bytes_before_refresh_and_later_uses_only_J(self):
+    def test_first_main_start_records_J_from_request_before_refresh_and_later_uses_only_J(self):
         self.fixture()
         self.assertFalse(self.journal_path.exists())
+        self.assertFalse((self.slot / "capabilities.json").exists())
         self.assertEqual(self.invoke(), (0, "", 1))
         self.assertEqual(self.refreshes, 1)
-        # Cached start does not re-import a mutable slot proof or refresh again.
-        (self.slot / "capabilities.json").write_bytes(b"changed slot")
+        self.assertEqual(h.decode(h.private_read(self.journal_path / "capabilities.json")), self.record)
+        # Cached start does not refresh again.
         self.assertEqual(self.invoke(), (0, "", 0))
         self.assertEqual(self.refreshes, 1)
         journal = h.Journal(self.data, self.run_id)
@@ -144,43 +145,14 @@ class RefreshProofStartTests(unittest.TestCase):
         facts = journal.facts()
         self.assertEqual(sum(x["kind"] == "metadata-refresh" for x in facts), 1)
 
-    def test_missing_or_mismatched_slot_proof_never_refreshes(self):
-        cases = ["missing", "run_id", "start_sha256", "scope", "empty_refs", "foreign_refs", "control_ref", "false",
-                 "symlink", "public_mode"]
-        for case in cases:
+    def test_t0_differing_from_original_human_is_recorded_not_stopped(self):
+        for case, t0, recorded in (("differs", "2026-11-08 01:00", "2026-11-08T01:00:00Z"), ("equal", "2026-11-08T01:00:00Z", None)):
             with self.subTest(case=case):
-                self.fixture(case)
-                proof = dict(self.proof)
-                if case == "missing":
-                    (self.slot / "capabilities.json").unlink()
-                elif case == "symlink":
-                    (self.slot / "capabilities.json").rename(self.slot / "other.json")
-                    (self.slot / "capabilities.json").symlink_to(self.slot / "other.json")
-                elif case == "public_mode":
-                    (self.slot / "capabilities.json").chmod(0o644)
-                else:
-                    values = dict(run_id=str(uuid.uuid4()), start_sha256=h.digest(h.canonical(self.request)),
-                                  scope="target-only", empty_refs=[], foreign_refs=["other"],
-                                  control_ref=["workspace"], false=False)
-                    key = "source_refs" if case.endswith("refs") or case == "control_ref" else \
-                          "original_authority_covers_global_refresh" if case == "false" else case
-                    proof[key] = values[case]
-                    (self.slot / "capabilities.json").write_bytes(h.canonical(proof))
-                self.assertEqual(self.invoke()[0], 1)
-                self.assertEqual(self.refreshes, 0)
-
-    def test_existing_human_outside_original_authority_never_refreshes(self):
-        self.fixture()
-        self.request["sources"].append(dict(self.request["sources"][0], ref="other-human"))
-        self.raw = json.dumps(self.request, indent=2).encode() + b"\n"
-        (self.slot / "request.json").write_bytes(self.raw)
-        self.proof.update(start_sha256=h.digest(self.raw), source_refs=["other-human"])
-        self.proof_raw = json.dumps(self.proof, indent=2).encode() + b"\n"
-        (self.slot / "capabilities.json").write_bytes(self.proof_raw)
-        code, _, launches = self.invoke()
-        self.assertEqual(self.refreshes, 0)
-        self.assertEqual(code, 1)
-        self.assertEqual(launches, 0)
+                self.fixture(case, created_at="2026-11-08T01:00:00Z", t0=t0)
+                self.assertEqual(self.invoke(), (0, "", 1))
+                state = h.decode(h.private_read(self.root / self.run_id / "state.json"))
+                self.assertEqual(state["original_t0"]["t0_created_at"], t0)
+                self.assertEqual(state["original_t0"].get("source_created_at"), recorded)
 
     def test_live_human_identity_is_checked_before_proof_and_refresh(self):
         self.fixture()
@@ -206,20 +178,11 @@ class RefreshProofStartTests(unittest.TestCase):
     def test_conflicting_J_proof_is_not_overwritten(self):
         self.fixture()
         journal = h.Journal(self.data, self.run_id)
-        original = h.canonical(dict(self.proof, scope="different"))
+        original = h.canonical(dict(self.record, scope="different"))
         h.publish(journal.root / "capabilities.json", original)
         self.assertEqual(self.invoke()[0], 1)
         self.assertEqual(self.refreshes, 0)
         self.assertEqual(h.private_read(journal.root / "capabilities.json"), original)
-
-    def test_prebuilt_J_is_not_an_alternate_first_proof_input(self):
-        self.fixture()
-        journal = h.Journal(self.data, self.run_id)
-        h.publish(journal.root / "capabilities.json", self.proof_raw)
-        (self.slot / "capabilities.json").unlink()
-        self.assertEqual(self.invoke()[0], 1)
-        self.assertEqual(self.refreshes, 0)
-        self.assertEqual(h.private_read(journal.root / "capabilities.json"), self.proof_raw)
 
 
 class JournalTests(unittest.TestCase):
