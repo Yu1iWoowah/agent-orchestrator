@@ -38,6 +38,7 @@ var (
 	ErrAgentAccountUnknown            = errors.New("agent account not found")
 	ErrAgentAccountProviderMismatch   = errors.New("the account belongs to another provider")
 	ErrAgentAccountSignedOut          = errors.New("the account's config folder is not signed in")
+	ErrAgentAccountLoginRevoked       = errors.New("the saved login was revoked by the provider")
 	ErrAgentAccountDuplicate          = errors.New("that login is already an account")
 	ErrAgentAccountLoginUnknown       = errors.New("agent account sign-in not found")
 	ErrAgentAccountDeviceFixed        = errors.New("the computer's own login cannot be removed here")

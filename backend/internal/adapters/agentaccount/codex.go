@@ -115,6 +115,9 @@ func (c *Codex) Identity(ctx context.Context, home string) (domain.AgentAccountI
 	}
 	defer func() { _ = client.Close() }()
 	account, err := client.Read(ctx, false)
+	if errors.Is(err, ports.ErrCodexOAuthTokenRevoked) {
+		return domain.AgentAccountIdentityCheck{}, ports.ErrAgentAccountLoginRevoked
+	}
 	if err != nil {
 		return domain.AgentAccountIdentityCheck{}, err
 	}
