@@ -23,7 +23,7 @@ func TestInvalidRunFileStopsBeforeRequest(t *testing.T) {
 		fixturePort, missing bool
 		raw, want            string
 	}{
-		{name: "missing", missing: true, want: "no run-file"},
+		{name: "missing", missing: true, want: "no run-file — start it with `ao start`"},
 		{name: "malformed JSON", raw: "{", want: "parse run-file"},
 		{name: "noninteger PID", raw: "{\"pid\":1.5,\"port\":1}", want: "parse run-file"},
 		{name: "zero PID", fixturePort: true, want: "invalid daemon run-file"},

@@ -183,7 +183,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		return err
 	}
 	if st.State == stateStopped {
-		return daemonUnavailableError{message: "AO daemon is not running: no run-file", cause: errDaemonNotRunning}
+		return daemonUnavailableError{message: "AO daemon is not running: no run-file — start it with `ao start`", cause: errDaemonNotRunning}
 	}
 	if st.State != stateReady {
 		return daemonUnavailableError{message: fmt.Sprintf("AO daemon endpoint is %s: %s", st.State, st.Error), cause: st.probeErr}
