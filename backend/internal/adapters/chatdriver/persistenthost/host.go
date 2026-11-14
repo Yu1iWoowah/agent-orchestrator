@@ -544,9 +544,24 @@ const (
 	HostRunning
 )
 
-// ProbeHost reads the host record for sessionID. Only a missing descriptor or
-// an exited pid is absent; nothing is ever started or stopped here.
+// ProbeHost reads the host records for sessionID; nothing is ever started or
+// stopped here. A host holds its launch lock before it publishes host.json and
+// until after it removes it, so the host is absent only when neither the
+// descriptor nor the lock names a live owner, and both could be read.
 func ProbeHost(dataDir, sessionID string) HostState {
+	descriptor := descriptorHostState(dataDir, sessionID)
+	lock := lockHostState(dataDir, sessionID)
+	switch {
+	case descriptor == HostRunning || lock == HostRunning:
+		return HostRunning
+	case descriptor == HostUnknown || lock == HostUnknown:
+		return HostUnknown
+	default:
+		return HostAbsent
+	}
+}
+
+func descriptorHostState(dataDir, sessionID string) HostState {
 	d, err := readDescriptor(dataDir, sessionID)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -554,6 +569,28 @@ func ProbeHost(dataDir, sessionID string) HostState {
 	case err != nil || d.PID <= 0:
 		return HostUnknown
 	case processalive.Alive(d.PID):
+		return HostRunning
+	default:
+		return HostAbsent
+	}
+}
+
+// lockHostState reads the launch lock's owner pid. An empty or unreadable lock
+// may be a host that has not written its pid yet, so it is unknown.
+func lockHostState(dataDir, sessionID string) HostState {
+	path, err := lockPath(dataDir, sessionID)
+	if err != nil {
+		return HostUnknown
+	}
+	owner, err := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
+	if errors.Is(err, os.ErrNotExist) {
+		return HostAbsent
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(owner)))
+	switch {
+	case err != nil || parseErr != nil || pid <= 0:
+		return HostUnknown
+	case processalive.Alive(pid):
 		return HostRunning
 	default:
 		return HostAbsent

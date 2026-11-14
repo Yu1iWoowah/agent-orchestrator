@@ -1196,7 +1196,22 @@ func (e *Engine) restoreRecoverableChatReviewer(ctx stdctx.Context, review domai
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	return e.restorePersistedChatReviewerLocked(ctx, worker, review, reviewRunsForReview(runs, review.ID))
+	reviewRuns := reviewRunsForReview(runs, review.ID)
+	// The recovery snapshot predates this lock: an account owner check may
+	// have since confirmed this reviewer gone. Re-apply the recoverable rule.
+	if review.ReviewerActivityState == domain.ActivityExited && !hasRunningReviewRun(reviewRuns) {
+		return RestoreReviewerResult{}, nil
+	}
+	return e.restorePersistedChatReviewerLocked(ctx, worker, review, reviewRuns)
+}
+
+func hasRunningReviewRun(runs []domain.ReviewRun) bool {
+	for _, run := range runs {
+		if run.Status == domain.ReviewRunRunning {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker domain.SessionRecord, review domain.Review, previousRuns []domain.ReviewRun) (RestoreReviewerResult, error) {

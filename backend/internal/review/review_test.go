@@ -3460,13 +3460,16 @@ type aliveReviewChat struct {
 
 func (c aliveReviewChat) ReviewChatAlive(string) bool { return c.alive }
 
-// A chat reviewer is gone only with no controller and no provider host; an
-// unreadable host record is unknown.
+// A chat reviewer is gone only with no controller and no provider host, either
+// published or still starting under its launch lock; an unreadable record is
+// unknown.
 func TestReviewChatGoneNeedsNoControllerAndNoHost(t *testing.T) {
+	ptr := func(s string) *string { return &s }
 	for _, tt := range []struct {
 		name       string
 		controller bool
-		descriptor string // "" writes none
+		descriptor string  // "" writes none
+		lock       *string // nil writes none
 		want       bool
 	}{
 		{name: "controller live", controller: true, want: false},
@@ -3474,15 +3477,22 @@ func TestReviewChatGoneNeedsNoControllerAndNoHost(t *testing.T) {
 		{name: "no controller, host running", descriptor: fmt.Sprintf(`{"version":1,"sessionId":"review-rev-1","address":"a","token":"t","pid":%d}`, os.Getpid()), want: false},
 		{name: "no controller, host exited", descriptor: `{"version":1,"sessionId":"review-rev-1","address":"a","token":"t","pid":1073741823}`, want: true},
 		{name: "no controller, host record unreadable", descriptor: `{"version":`, want: false},
+		{name: "no controller, host starting before its descriptor", lock: ptr(fmt.Sprintf("%d\n", os.Getpid())), want: false},
+		{name: "no controller, starting host behind a dead descriptor", descriptor: `{"version":1,"sessionId":"review-rev-1","address":"a","token":"t","pid":1073741823}`, lock: ptr(fmt.Sprintf("%d\n", os.Getpid())), want: false},
+		{name: "no controller, launch lock without its pid yet", lock: ptr(""), want: false},
+		{name: "no controller, launch lock of an exited host", lock: ptr("1073741823\n"), want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dataDir := t.TempDir()
-			if tt.descriptor != "" {
-				dir := filepath.Join(dataDir, "chat-hosts", "review-rev-1")
+			dir := filepath.Join(dataDir, "chat-hosts", "review-rev-1")
+			for name, content := range map[string]*string{"host.json": &tt.descriptor, "host.lock": tt.lock} {
+				if content == nil || name == "host.json" && *content == "" {
+					continue
+				}
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(dir, "host.json"), []byte(tt.descriptor), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(*content), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -3495,5 +3505,33 @@ func TestReviewChatGoneNeedsNoControllerAndNoHost(t *testing.T) {
 				t.Fatalf("gone = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+// Chat recovery lists its reviewers before taking each worker's lock. An
+// owner check that confirms one gone in between must keep recovery from
+// restarting it.
+func TestChatRecoverySkipsReviewerReconciledAfterItsSnapshot(t *testing.T) {
+	for _, reconciled := range []bool{false, true} {
+		review := domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, InterfaceMode: domain.ReviewerInterfaceChat,
+			ProviderConversationID: "provider-1", ReviewerActivityState: domain.ActivityActive}
+		stored := review
+		store := &fakeStore{review: &stored, recoverableReviews: []domain.Review{review}}
+		fake := &fakeLauncher{interfaceMode: domain.ReviewerInterfaceChat, handle: reviewerChatHandlePrefix + review.ID}
+		eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, chatGoneLauncher{fakeLauncher: fake, gone: true})
+		if reconciled {
+			if err := eng.ReconcileReviewers(context.Background(), review.SessionID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := eng.RecoverChatReviewers(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if fake.restored == reconciled {
+			t.Fatalf("reconciled=%t: restored=%t", reconciled, fake.restored)
+		}
+		if reconciled && store.review.ReviewerActivityState != domain.ActivityExited {
+			t.Fatalf("reconciled reviewer = %+v, want it to stay exited", store.review)
+		}
 	}
 }
