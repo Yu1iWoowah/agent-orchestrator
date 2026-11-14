@@ -180,9 +180,10 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 }
 
 // signedOutForLoginAgain re-probes a saved profile within verify's limit. Only
-// a confirmed sign-out with no login of any kind counts: signing in there
-// cannot replace or revoke a login a live owner still uses. A failed or timed
-// out probe is unknown and keeps the owner refusal.
+// a confirmed sign-out with no login of any kind, or a saved login the
+// provider says it revoked, counts: signing in there cannot replace or revoke
+// a login a live owner can still use. Any other failed or timed out probe is
+// unknown and keeps the owner refusal.
 func (s *Service) signedOutForLoginAgain(ctx context.Context, provider ports.AgentAccountProviderCLI, account domain.AgentAccount) bool {
 	if provider == nil || account.RetiredAt != nil {
 		return false
@@ -193,6 +194,9 @@ func (s *Service) signedOutForLoginAgain(ctx context.Context, provider ports.Age
 		return false
 	}
 	identity, err := provider.Identity(ctx, account.Home)
+	if errors.Is(err, ports.ErrAgentAccountLoginRevoked) {
+		return true
+	}
 	return err == nil && !identity.LoggedIn
 }
 
