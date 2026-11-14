@@ -1289,12 +1289,22 @@ class FlowFixture:
         req = {"request_id": self.run_id, "old_id": "old", "target": self.target,
                "authority": {"source_refs": ["human"], "t0_precision": "UNKNOWN", "t0_created_at": None}, "workers": workers,
                "prepared_by": {"session_id": "old", "turn_id": "preparing"}, "workspace_index": workspace_index}
-        mapping = dict(id="workspace", role="assistant", turnId="preparing", revision=1, text=json.dumps(workspace_index))
-        source_raw = h.canonical(snapshot(entries=[mapping]))
-        h.publish(directory / "evidence/workspace.json", source_raw)
-        req["sources"] = [{"ref": "workspace", "kind": "old-control-record", "conversation_id": "conv", "branch_id": "branch",
-                           "message_id": "workspace", "revision": 1, "raw_relpath": "evidence/workspace.json",
-                           "raw_sha256": h.digest(source_raw), "message_text_sha256": h.digest(mapping["text"].encode())}]
+        block = {"schema": "rh-control-record/1", "stop": "無具名停"}
+        mapping = dict(id="workspace", kind="message", role="assistant", turnId="preparing", revision=1, sequence=2, streaming=False,
+                       text=json.dumps(workspace_index) + "\n```rh-control\n" + json.dumps(block, ensure_ascii=False) + "\n```")
+        human = dict(id="human", kind="message", role="user", origin="human", turnId="preparing", revision=0, sequence=1,
+                     text="交接指令", createdAt="2026-11-08T00:00:00Z")
+        # RH-SPEED: one preparing turn handles the human instruction and holds the control record.
+        self.snapshots["old"]["transcript"]["entries"] = [human, dict(mapping)]
+        self.snapshots["old"]["transcript"]["turns"].append({"id": "preparing", "state": "completed", "completedAt": "2026-11-07T23:59:59Z"})
+        req["authority"]["t0_source_ref"] = "human"
+        req["sources"] = []
+        for ref, kind, entry in (("human", "human-message", human), ("workspace", "old-control-record", mapping)):
+            source_raw = h.canonical(snapshot(entries=[entry]))
+            h.publish(directory / ("evidence/" + ref + ".json"), source_raw)
+            req["sources"].append({"ref": ref, "kind": kind, "conversation_id": "conv", "branch_id": "branch",
+                                   "message_id": entry["id"], "revision": entry["revision"], "raw_relpath": "evidence/" + ref + ".json",
+                                   "raw_sha256": h.digest(source_raw), "message_text_sha256": h.digest(entry["text"].encode())})
         h.publish(directory / "start.json", h.canonical(req))
         h.publish(directory / "state.json", h.canonical({"start_sha256": h.digest(h.canonical(req)), "effects": {},
                   "original_t0": req["authority"], "old_settings": h.old_settings(self.snapshots["old"]), "old_native": "native-old"}))
@@ -1525,6 +1535,146 @@ class FlowFixture:
                     self.pending_actor = ("new", "finalize")
             return b"accepted"
         raise AssertionError(args)
+
+
+class SpeedPreparationTests(unittest.TestCase):
+    """RH-SPEED 3-1 and 3-2: one preparing old turn, fixed packaging and the runner's pre-worker check."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.root.chmod(0o700)
+
+    def test_2a_instruction_carries_classification_row_not_worker_rule(self):
+        run = type("Run", (), {"root": h.mkdir(self.root / "run"), "run_id": str(uuid.uuid4())})()
+        old = h.producer_description(run, "old-receipt", "old")
+        self.assertEqual(set(old["classification_row"]), {"path", "disposition", "basis", "scope"})
+        self.assertEqual(old["template"]["classification"], [])
+        self.assertNotIn("source_rule", old)
+        worker = h.producer_description(run, "worker-receipt", "worker")
+        self.assertIn("source_rule", worker)
+        self.assertNotIn("classification_row", worker)
+
+    def packaging_fixture(self, text=None, control_turn="preparing", stop="無具名停"):
+        old_path = self.root / "worktrees" / h.PROJECT / "orchestrator/old"
+        block = {"schema": "rh-control-record/1", "stop": stop, "target": {k: v for k, v in target().items() if k != "mode"},
+                 "workers": [], "workspace_index": [{"session_id": "old", "kind": "orchestrator", "path": str(old_path)}]}
+        control_text = text if text is not None else "準備完成\n```rh-control\n" + json.dumps(block, ensure_ascii=False) + "\n```"
+        page = snapshot(entries=[
+            dict(id="human", kind="message", role="user", origin="human", turnId="preparing", revision=0, sequence=1,
+                 text="請交接", createdAt="2026-11-15T00:00:00Z"),
+            dict(id="control", kind="message", role="assistant", turnId=control_turn, revision=3, sequence=2, text=control_text)])
+        page["transcript"]["turns"].append({"id": "preparing", "state": "running"})
+        raw = json.dumps(page).encode()
+        cli = type("PackagingCLI", (), {})()
+        cli.execution = type("Execution", (), {"bindings": set()})()
+        cli.last_raw = raw
+        cli.session = lambda sid: copy.deepcopy(page)
+        root = h.mkdir(self.root / "runs")
+        return root, cli, raw
+
+    def package(self, root, cli, run_id=None):
+        with patch.object(h, "qualified", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
+            return h.prepare_request(root, None, "old", "human", "control", run_id or str(uuid.uuid4()))
+
+    def test_packaging_helper_builds_request_from_original_bytes(self):
+        root, cli, raw = self.packaging_fixture()
+        result = self.package(root, cli)
+        request = h.decode(h.private_read(Path(result["request"])))
+        self.assertEqual(request["prepared_by"], {"session_id": "old", "turn_id": "preparing"})
+        self.assertEqual([(s["ref"], s["revision"], s["raw_sha256"]) for s in request["sources"]],
+                         [("human", 0, h.digest(raw)), ("control", 3, h.digest(raw))])
+        self.assertEqual(h.private_read(root / ".start/old" / request["sources"][1]["raw_relpath"]), raw)
+        self.assertEqual(request["authority"]["t0_created_at"], "2026-11-15T00:00:00Z")
+        self.assertEqual(request["workspace_index"][0]["source_refs"], ["control"])
+        self.assertIn("start --run " + request["request_id"], result["start_command"])
+        self.assertEqual(cli.execution.bindings, {"old"})
+
+    def test_packaging_helper_refuses_missing_block_named_stop_foreign_turn_and_conflicts(self):
+        cases = {"missing block": dict(text="沒有區塊"), "named stop": dict(stop="②"), "foreign turn": dict(control_turn="earlier")}
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                root, cli, _ = self.packaging_fixture(**kwargs)
+                with self.assertRaises(h.Stop):
+                    self.package(root, cli)
+                self.assertFalse((root / ".start/old/request.json").exists())
+        root, cli, _ = self.packaging_fixture()
+        cli.session = lambda sid: snapshot(entries=[])
+        with self.assertRaisesRegex(h.Stop, "not in old transcript"):
+            self.package(root, cli)
+        root, cli, _ = self.packaging_fixture()
+        run_id = str(uuid.uuid4())
+        h.publish(root / ".start/old/evidence" / (run_id + "-human.json"), b"other bytes")
+        with self.assertRaisesRegex(h.Stop, "conflicting immutable file"):
+            self.package(root, cli, run_id)
+        root, cli, _ = self.packaging_fixture()
+        with self.assertRaisesRegex(h.Stop, "must run as old"), patch.object(h, "qualified", return_value=cli), \
+             patch.dict(os.environ, {"AO_SESSION_ID": "worker"}):
+            h.prepare_request(root, None, "old", "human", "control", str(uuid.uuid4()))
+
+    def test_start_accepts_settling_control_record_but_not_changed_human(self):
+        old_path = self.root / "worktrees" / h.PROJECT / "orchestrator/old"
+        live = snapshot(entries=[dict(id="human", role="user", origin="human", text="handoff", revision=1),
+                                 dict(id="workspace", role="assistant", turnId="preparing", text="old " + str(old_path), revision=2)])
+        live["transcript"]["turns"].append({"id": "preparing", "state": "running"})
+        request = ProtocolTests.request(self)
+        cli = type("SourceCLI", (), {})()
+        cli.session = lambda _: copy.deepcopy(live)
+        h.validate_sources_live(request, cli)
+        live["transcript"]["entries"][0]["revision"] = 2
+        with self.assertRaisesRegex(h.Stop, "authority changed/missing"):
+            h.validate_sources_live(request, cli)
+
+    def prepared(self, change=None):
+        fake = FlowFixture(self.root / ("flow-" + str(change)), "codex", "codex")
+        entries = fake.snapshots["old"]["transcript"]["entries"]
+        turn = fake.snapshots["old"]["transcript"]["turns"][-1]
+        if change == "running":
+            turn.update(state="running")
+            turn.pop("completedAt")
+        elif change in ("failed", "cancelled"):
+            turn["state"] = change
+        elif change == "text":
+            entries[1]["text"] += " edited"
+        elif change == "streaming":
+            entries[1]["streaming"] = True
+        elif change == "new-human":
+            entries.append(dict(id="later", kind="message", role="user", origin="human", sequence=3, text="先停"))
+        elif change in ("no-marker", "named-stop"):
+            entries[1]["text"] = "control" if change == "no-marker" else entries[1]["text"].replace("無具名停", "⑤")
+            source = next(s for s in fake.run.request["sources"] if s["ref"] == "workspace")
+            source["message_text_sha256"] = h.digest(entries[1]["text"].encode())
+        elif change == "revision":
+            entries[1]["revision"] = 4
+        return fake
+
+    def test_preparation_check_waits_records_settled_revision_and_stops_before_workers(self):
+        self.assertFalse(h.prepared_turn_ready(self.prepared("running").run))
+        fake = self.prepared("revision")
+        self.assertTrue(h.prepared_turn_ready(fake.run))
+        self.assertEqual(fake.run.state["preparation"]["settled_revisions"], {"workspace": 4})
+        stops = {"failed": "preparing turn ended", "cancelled": "preparing turn ended", "text": "changed or not settled",
+                 "streaming": "changed or not settled", "new-human": "new human input", "no-marker": "rh-control",
+                 "named-stop": "names a stop"}
+        for change, reason in stops.items():
+            with self.subTest(change=change):
+                fake = self.prepared(change)
+                with self.assertRaisesRegex(h.Stop, reason):
+                    h.run_protocol(fake.run)
+                self.assertEqual(fake.mutations, [])
+                self.assertNotIn("workers", fake.run.state.get("completed_stages", []))
+                self.assertEqual(fake.run.state["stage"], "prepare")
+
+    def test_preparation_check_deadline_stops_without_lifecycle(self):
+        fake = self.prepared("running")
+        elapsed = [0]
+        fake.run.clock = lambda: elapsed[0]
+        def sleep(_):
+            elapsed[0] += h.LIMITS["prepare"]
+        fake.run.sleep = sleep
+        with self.assertRaisesRegex(h.Stop, "wait deadline reached: prepare"):
+            h.run_protocol(fake.run)
+        self.assertEqual(fake.mutations, [])
 
 
 if __name__ == "__main__":
