@@ -25,6 +25,7 @@ import {
 	useNotificationsQuery,
 } from "../hooks/useNotificationsQuery";
 import { useRestoreSession } from "../hooks/useRestoreSession";
+import { useProjectQuestionRouting } from "./ProjectQuestionRouting";
 import { useSwipeToDismiss } from "../hooks/useSwipeToDismiss";
 import { useRemoteWorkspaces, useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import type { WorkspaceSummary } from "../types/workspace";
@@ -66,15 +67,23 @@ const notificationKey = (hostId: HostId, id: string) => refKey({ host: hostId, i
 
 function useNotificationTargetNavigation() {
 	const navigateToSession = useNavigateToSession();
+	const routing = useProjectQuestionRouting();
+	const { t } = useTranslation();
 	const openSession = useCallback(
 		(notification: NotificationDTO, hostId: HostId = LOCAL_HOST) => {
+			if (notification.target.kind === "agent_question") {
+				if (routing && notification.projectId && notification.target.sessionId && notification.target.questionId)
+					routing.openQuestion({ hostId, projectId: notification.projectId, originSessionId: notification.target.sessionId, questionId: notification.target.questionId });
+				else useUiStore.getState().showGlobalToast(t("decision.unavailable"));
+				return;
+			}
 			const sessionId = notification.target.sessionId || notification.sessionId;
 			if (!sessionId) return;
 			recordManualWorkerOpen(sessionId);
 			void captureRendererEvent("ao.renderer.notification_opened", { target: "session" });
 			navigateToSession(notification.projectId, sessionId, hostId);
 		},
-		[navigateToSession],
+		[navigateToSession, routing, t],
 	);
 
 	const openPrimary = useCallback(
@@ -836,7 +845,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 							// describe work that already finished — there is nothing to resume, so
 							// a terminated session behind one of these should stay viewable, not
 							// gated behind a restore action.
-							const offerRestore = sessionReady && terminated && notification.type === "needs_input";
+							const offerRestore = sessionReady && terminated && notification.type === "needs_input" && notification.target.kind !== "agent_question";
 							return (
 								<NotificationItem
 									highlighted={highlightedIds.has(key) || notification.status === "unread"}
@@ -965,7 +974,7 @@ const NotificationItem = memo(function NotificationItem({
 	const { t } = useTranslation();
 	const Icon = notificationIcon(notification.type);
 	const sessionId = notification.target.sessionId || notification.sessionId;
-	const canOpenSession = Boolean(sessionId) && sessionsReady && (!terminated || !offerRestore);
+	const canOpenSession = notification.target.kind === "agent_question" || (Boolean(sessionId) && sessionsReady && (!terminated || !offerRestore));
 	const copy = notificationCopy(notification, sessionName);
 	const titleLink = notificationPRTitleLink(notification, copy.title);
 	const showSessionMeta = Boolean(sessionName) && !notificationMentions(copy, sessionName ?? "");

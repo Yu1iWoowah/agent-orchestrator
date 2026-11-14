@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { type QueryClient, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { cloudSessionsQueryKey, workspaceQueryKeyForHost } from "./useWorkspaceQuery";
@@ -111,6 +111,13 @@ function summarizeBySession(mutations: TerminateSessionMutationState[]) {
 		if (mutation.submittedAt >= current.latest.submittedAt) current.latest = mutation;
 	}
 	return [...summaries.values()];
+}
+
+/** Host-qualified keys of sessions whose kill has not settled; their cached rows are optimistic, not daemon facts. */
+export function usePendingTerminateSessionKeys(): ReadonlySet<string> {
+	const mutations = useTerminateSessionMutations();
+	return useMemo(() => new Set(summarizeBySession(mutations).filter(({ isPending }) => isPending)
+		.map(({ session }) => refKey({ host: session.hostId ?? LOCAL_HOST, id: session.id }))), [mutations]);
 }
 
 export function useTerminateSession(options: TerminateSessionOptions = {}) {

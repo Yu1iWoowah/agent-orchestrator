@@ -21,6 +21,7 @@ const {
 	fetchNextPageMock,
 	markAllMock,
 	navigateMock,
+	openQuestionMock,
 	notificationQueryMock,
 	paramsMock,
 	restoreSessionMock,
@@ -33,6 +34,7 @@ const {
 	fetchNextPageMock: vi.fn(),
 	markAllMock: vi.fn(),
 	navigateMock: vi.fn(),
+	openQuestionMock: vi.fn(),
 	notificationQueryMock: vi.fn(),
 	paramsMock: vi.fn(),
 	restoreSessionMock: vi.fn(),
@@ -159,6 +161,10 @@ vi.mock("../hooks/useRestoreSession", () => ({
 	useRestoreSession: () => restoreSessionMock,
 }));
 
+vi.mock("./ProjectQuestionRouting", () => ({
+	useProjectQuestionRouting: () => ({ openQuestion: openQuestionMock }),
+}));
+
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	useWorkspaceQuery: () => workspaceQueryMock(),
 	useRemoteWorkspaces: () => ({ data: [], failedHostIds: [], loadedProjectHostIds: [], loadedSessionHostIds: [], refetch: vi.fn() }),
@@ -253,6 +259,8 @@ beforeEach(() => {
 	fetchNextPageMock.mockReset().mockResolvedValue(undefined);
 	markAllMock.mockReset().mockResolvedValue(0);
 	navigateMock.mockReset();
+	openQuestionMock.mockReset();
+	useUiStore.getState().clearGlobalToast();
 	restoreSessionMock.mockReset().mockResolvedValue({ status: "success" });
 	workspaceQueryMock.mockReset().mockReturnValue({
 		data: [
@@ -843,6 +851,28 @@ describe("NotificationCenter", () => {
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "sess-dead" },
 		});
+	});
+
+	it.each(["ask-worker", undefined])("routes a question notification by its original reference (%s) without restoring its source", async (questionId) => {
+		const notification: NotificationDTO = {
+			...allNotifications[3], id: "ntf_question", status: "unread", body: "Worker question needs an answer.",
+			target: { kind: "agent_question", sessionId: "sess-dead", questionId },
+		};
+		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
+			...notificationQueryResult(status),
+			data: { pageParams: [""], pages: [{ notifications: [notification], unreadCount: 1, unresolvedCount: 1 }] },
+		}));
+		renderNotificationCenter();
+		await clickOpen();
+		await userEvent.click(screen.getByText(notification.body));
+		if (questionId) expect(openQuestionMock).toHaveBeenCalledWith({ hostId: "local", projectId: "proj-1", originSessionId: "sess-dead", questionId });
+		else {
+			expect(openQuestionMock).not.toHaveBeenCalled();
+			expect(useUiStore.getState().globalToast?.title).toBe("This request is no longer available.");
+		}
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(restoreSessionMock).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "This session was archived. Restore it?" })).not.toBeInTheDocument();
 	});
 
 	// A PR outcome describes work that already finished — there's no paused

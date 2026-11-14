@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { appI18n } from "../i18n";
 import type { WorkspaceSummary } from "../types/workspace";
+import { questionHost } from "../lib/decision-target";
 
 const { captureRendererEventMock, cloudState, getMock, getSessionMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, remoteGetMock } = vi.hoisted(
 	() => ({
@@ -75,6 +76,71 @@ beforeEach(() => {
 });
 
 describe("useWorkspaceQuery", () => {
+	const routingSession = { id: "worker", projectId: "p", kind: "worker", isTerminated: false, createdAt: "2026-11-07T12:00:00Z", updatedAt: "2026-11-07T12:00:00Z", status: "working", activity: { state: "idle", lastActivityAt: "2026-11-07T12:00:00Z" } };
+	it.each([
+		{ label: "missing list", data: {} },
+		{ label: "null list", data: { sessions: null } },
+		{ label: "partial page", data: { sessions: [], nextCursor: "remaining" } },
+		{ label: "missing kind", data: { sessions: [{ ...routingSession, kind: undefined }] } },
+		{ label: "unknown kind", data: { sessions: [{ ...routingSession, kind: "future" }] } },
+		{ label: "missing termination fact", data: { sessions: [{ ...routingSession, isTerminated: undefined }] } },
+		{ label: "missing ordering facts", data: { sessions: [{ ...routingSession, kind: "orchestrator", createdAt: undefined }] } },
+		{ label: "invalid identity", data: { sessions: [{ ...routingSession, id: "" }] } },
+		{ label: "invalid project scope", data: { sessions: [{ ...routingSession, projectId: 1 }] } },
+	])("keeps question routing unknown for a successful sessions response with $label", async ({ data }) => {
+		respondWith({ projects: { data: { projects: [{ id: "p", name: "Project", path: "/fixture" }] } }, sessions: { data } });
+		const { result } = renderHook(() => {
+			const query = useWorkspaceQuery();
+			return { query, host: questionHost({ workspace: query.data?.find((entry) => entry.id === "p"), ready: query.isSuccess && !query.isError, projectId: "p" }) };
+		}, { wrapper });
+		await waitFor(() => expect(result.current.query.isFetched).toBe(true));
+		expect(result.current.host).toEqual({ kind: "unknown" });
+	});
+
+	it("permits question routing's no-main exception after a complete empty sessions list", async () => {
+		respondWith({ projects: { data: { projects: [{ id: "p", name: "Project", path: "/fixture" }] } }, sessions: { data: { sessions: [] } } });
+		const { result } = renderHook(() => {
+			const query = useWorkspaceQuery();
+			return questionHost({ workspace: query.data?.find((entry) => entry.id === "p"), ready: query.isSuccess && !query.isError, projectId: "p" });
+		}, { wrapper });
+		await waitFor(() => expect(result.current).toEqual({ kind: "none" }));
+	});
+
+	it("does not keep question routing's no-main exception after a malformed refetch", async () => {
+		const queryClient = new QueryClient();
+		respondWith({ projects: { data: { projects: [{ id: "p", name: "Project", path: "/fixture" }] } }, sessions: { data: { sessions: [] } } });
+		const { result } = renderHook(() => {
+			const query = useWorkspaceQuery();
+			return questionHost({ workspace: query.data?.find((entry) => entry.id === "p"), ready: query.isSuccess && !query.isError, projectId: "p" });
+		}, { wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider> });
+		await waitFor(() => expect(result.current).toEqual({ kind: "none" }));
+		respondWith({ projects: { data: { projects: [{ id: "p", name: "Project", path: "/fixture" }] } }, sessions: { data: {} } });
+		await act(async () => { await queryClient.invalidateQueries({ queryKey: workspaceQueryKey }); });
+		await waitFor(() => expect(result.current).toEqual({ kind: "unknown" }));
+		expect(queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey)?.[0].sessions).toEqual([]);
+		queryClient.clear();
+	});
+
+	it("keeps question routing unknown for a different project while the original snapshot arrives late", async () => {
+		let finish = () => {};
+		const response = new Promise((resolve) => { finish = () => resolve({ data: { sessions: [{ ...routingSession, kind: "orchestrator" }] } }); });
+		getMock.mockImplementation((path: string) => path === "/api/v1/projects"
+			? Promise.resolve({ data: { projects: [{ id: "p", name: "Project", path: "/fixture" }] } }) : response);
+		const queryClient = new QueryClient();
+		const { result, rerender } = renderHook(({ projectId }) => {
+			const query = useWorkspaceQuery();
+			return { query, host: questionHost({ workspace: query.data?.find((entry) => entry.id === projectId), ready: query.isSuccess && !query.isError, projectId }) };
+		}, { initialProps: { projectId: "p" }, wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider> });
+		expect(result.current.host).toEqual({ kind: "unknown" });
+		rerender({ projectId: "other" });
+		await act(async () => finish());
+		await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+		expect(result.current.host).toEqual({ kind: "unknown" });
+		rerender({ projectId: "p" });
+		expect(result.current.host).toEqual({ kind: "orchestrator", sessionId: "worker" });
+		queryClient.clear();
+	});
+
 	it.each(["pending", "failed", "removed"])("keeps local workspace cleanup state %s", async (workspaceCleanup) => {
 		respondWith({
 			projects: { data: { projects: [{ id: "p1", name: "Project", path: "/tmp/project" }] } },

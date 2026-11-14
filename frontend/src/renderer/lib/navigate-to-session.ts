@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { LOCAL_HOST, type HostId } from "./hosts";
 import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
+import type { QuestionRef } from "./decision-target";
 
 export type SessionNavigateTarget =
 	| { to: "/sessions/$sessionId"; params: { sessionId: string } }
@@ -36,6 +37,12 @@ export function orchestratorNavigateTarget(projectId: string, sessionId: string,
 	return host === LOCAL_HOST
 		? { to: "/projects/$projectId/sessions/$sessionId" as const, params: { projectId, sessionId }, search: { followOrchestrator: true as const } }
 		: { to: "/host/$hostId/project/$projectId/session/$sessionId" as const, params: { hostId: host, projectId, sessionId }, search: { followOrchestrator: true as const } };
+}
+
+export function questionNavigateTarget(ref: QuestionRef, orchestratorId?: string) {
+	return orchestratorId
+		? { ...orchestratorNavigateTarget(ref.projectId, orchestratorId, ref.hostId), search: { followOrchestrator: true as const, question: ref } }
+		: { ...projectNavigateTarget(ref.projectId, ref.hostId), search: { question: ref } };
 }
 
 export function useNavigateToSession(): (projectId: string | undefined, sessionId: string, host?: HostId) => void {

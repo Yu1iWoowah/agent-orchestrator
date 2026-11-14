@@ -102,6 +102,7 @@ import { inspectorIsOpen, sidebarOccupiesLayout, useUiStore } from "../../stores
 import type { TerminalTarget } from "../../types/terminal";
 import {
 	isOrchestratorSession,
+	STANDALONE_WORKSPACE_ID,
 	type SessionKind,
 	type WorkspaceSession,
 	type SessionProvisionStep,
@@ -1826,6 +1827,8 @@ function ChatWorkspaceContent({
 							sessionId={snapshot.sessionId}
 							hostId={activeRemoteHostId}
 							sourceAgent={snapshot.harness}
+							projectId={session?.workspaceId !== STANDALONE_WORKSPACE_ID ? session?.workspaceId : undefined}
+							isOrchestrator={sessionRole === "orchestrator"}
 							activeBranchId={snapshot.activeBranchId}
 							onAttentionSourceChange={setAttentionSource}
 							onAttentionSourceFocus={focusAttentionSource}

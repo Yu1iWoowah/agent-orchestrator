@@ -981,3 +981,15 @@ it("mounts project attention in the framed shell's project board actions", () =>
 	expect(entry).toHaveAttribute("data-project-scope", "proj-1");
 	expect(screen.getByTestId("workspace-topbar-actions")).toContainElement(entry);
 });
+
+it.each(["tui", "chat"] as const)("offers the current %s orchestrator a project entry when its conversation frame is unavailable", (mode) => {
+	renderTopbar({ ...orchestrator, mode });
+	const entry = screen.queryByRole("button", { name: "Open project attention" });
+	if (mode === "tui") expect(entry).toHaveAttribute("data-project-scope", "proj-1");
+	else expect(entry).not.toBeInTheDocument();
+});
+
+it("keeps the project entry off a former TUI orchestrator", () => {
+	renderTopbarSessions([orchestrator, { ...orchestrator, id: "old-main", mode: "tui" }], "old-main");
+	expect(screen.queryByRole("button", { name: "Open project attention" })).not.toBeInTheDocument();
+});

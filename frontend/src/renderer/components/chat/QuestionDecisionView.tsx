@@ -27,8 +27,9 @@ function receiptFields(question: SessionQuestion) {
 	return fields;
 }
 
-export function QuestionDecisionView({ question, hostId, submitAllowed, onClose, onReload, compact = false }: {
+export function QuestionDecisionView({ question, hostId, submitAllowed, readOnly = false, onClose, onReload, compact = false }: {
 	question: SessionQuestion; hostId?: string; submitAllowed: boolean; onClose: () => void; onReload?: () => void; compact?: boolean;
+	readOnly?: boolean;
 }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
@@ -45,9 +46,11 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 	const previousVersion = useRef(question.version);
 	const initialized = useRef<string | undefined>(undefined);
 	useEffect(() => {
-		if (question.state === "open" && !hasEntry && (submitAllowed || initialized.current !== key)) useQuestionDraftStore.getState().ensure(question, hostId);
+		if (readOnly || question.state !== "open") return;
+		// A saved draft can disappear before the source observer receives its receipt.
+		if (!hasEntry && initialized.current !== key) useQuestionDraftStore.getState().ensure(question, hostId);
 		initialized.current = key;
-	}, [key, question.id, question.version, question.state, hostId, hasEntry, submitAllowed]);
+	}, [key, question.id, question.version, question.state, hostId, hasEntry, readOnly]);
 	useEffect(() => {
 		if (entry && previousVersion.current !== question.version) {
 			previousVersion.current = question.version;
@@ -62,7 +65,7 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 	const notes = (question.state === "open" ? entry?.notes : question.answer?.notes) ?? "";
 	const built = questionAnswers(question.payload, fields, notes);
 	const notesInput = useRef<HTMLTextAreaElement>(null);
-	const locked = question.state !== "open" || !entry || entry.phase.state !== "editing";
+	const locked = readOnly || question.state !== "open" || !entry || entry.phase.state !== "editing";
 	const pending = entry?.phase.state === "submitting" || entry?.phase.state === "unknown";
 	const references = Object.values(entries).filter((draft) =>
 		(draft.scope.hostId ?? null) === (hostId ?? null) && draft.scope.sessionId === question.originSessionId && draft.scope.questionId === question.id &&
@@ -111,7 +114,7 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 					className="text-sm font-medium">{t(question.answer.deliveryState === "queued" ? "decision.savedQueued" : question.answer.deliveryState === "delivered" ? "decision.savedDelivered" : question.answer.deliveryState === "recorded" ? "decision.savedRecorded" : "decision.savedFailed")}</p> :
 					question.state === "cancelled" || question.state === "expired" ? <p role="status" className="text-sm font-medium">{t(question.state === "cancelled" ? "decision.cancelled" : "decision.expired")}</p> : null}
 				{question.answer?.lastError ? <details className="text-sm"><summary className="cursor-pointer">{t("decision.deliveryDetails")}</summary><p className="mt-2 whitespace-pre-wrap">{question.answer.lastError}</p></details> : null}
-				{!submitAllowed && question.state === "open" ? <div
+				{!submitAllowed && !readOnly && question.state === "open" ? <div
 					className="space-y-2">
 					<p role="alert"
 					className="text-sm text-muted-foreground">{t("decision.sourceOffline")}</p>{compact && onReload ? <Button type="button" variant="outline" size="sm"
@@ -124,7 +127,7 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 					className="space-y-1 text-sm text-destructive">
 					<p>{t("decision.rejected")}</p>{Object.entries(entry.phase.fieldErrors ?? {}).map(([field, message]) => <p key={field}>{message}</p>)}</div> : null}
 			</div>
-			{question.state === "open" && !entry ? <p role="status">{t("decision.loading")}</p> : question.payload.questions.map((prompt) => {
+			{question.state === "open" && !entry && !readOnly ? <p role="status">{t("decision.loading")}</p> : question.payload.questions.map((prompt) => {
 				const field = fields[prompt.key];
 				const error = showErrors ? built.errors[prompt.key] : undefined;
 				const groupId = `${prefix}-${prompt.key}`;
@@ -187,7 +190,7 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 			{question.state === "open" && !compact ? <p
 				className="text-xs text-muted-foreground">{t("decision.progress", { done: question.payload.questions.filter((prompt) => !built.errors[prompt.key]).length, total: question.payload.questions.length })}</p> : null}
 			<div className="flex flex-wrap justify-end gap-2">
-				{onReload && ((!submitAllowed && !compact) || entry?.phase.state === "conflict" || entry?.phase.state === "unknown") ? <Button type="button" variant="outline" onClick={onReload}>{t("decision.reload")}</Button> : null}
+				{onReload && ((!submitAllowed && !readOnly && !compact) || entry?.phase.state === "conflict" || entry?.phase.state === "unknown") ? <Button type="button" variant="outline" onClick={onReload}>{t("decision.reload")}</Button> : null}
 				<Button type="button" variant="ghost" onClick={onClose}>{t(question.state === "open" ? "decision.later" : "common.close")}</Button>
 				{question.state === "open" && !(compact && (entry?.phase.state === "unknown" || entry?.phase.state === "conflict")) ? <Button type="submit"
 					disabled={locked || !submitAllowed}>{pending ? <LoaderCircle aria-hidden="true"

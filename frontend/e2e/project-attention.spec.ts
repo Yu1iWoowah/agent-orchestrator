@@ -109,3 +109,47 @@ test("zh-TW project dialog works in a narrow light window with keyboard focus re
 	await page.keyboard.press("Escape");
 	await expect(trigger).toBeFocused();
 });
+
+test("the current orchestrator opens the project question and saves once at its worker source @T0", async ({ page }) => {
+	await page.goto("/e2e/project-attention/harness.html?hosting=main&theme=light");
+	const frame = page.getByRole("region", { name: "Awaiting you", exact: true });
+	await expect(frame.getByText("2", { exact: true })).toBeVisible();
+	await frame.getByRole("button", { name: /Choose a deployment target/ }).click();
+	const dialog = page.getByRole("dialog", { name: "Decision", exact: true });
+	await expect(dialog.getByText(/report-worker/)).toBeVisible();
+	await dialog.getByRole("radio", { name: "Staging Recommended", exact: true }).check();
+	await dialog.getByRole("checkbox", { name: "Tests", exact: true }).check();
+	await dialog.getByRole("button", { name: "Submit all answers" }).click();
+	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await expect(dialog).toHaveCount(0);
+	await expect(frame.getByText("1", { exact: true })).toBeVisible();
+	await expect(page.locator("html")).toHaveAttribute("data-answer-source", "/api/v1/sessions/worker/questions/ask-1/answer");
+	await expect(page.locator("html")).toHaveAttribute("data-answer-delivery-state", "queued");
+	await expect(frame.getByRole("button", { name: /Choose a deployment target/ })).toHaveCount(0);
+});
+
+test("unknown and both host transitions preserve the same draft and permit only one answer @T0", async ({ page }) => {
+	await page.goto("/e2e/project-attention/harness.html?hosting=unknown&theme=light");
+	await page.getByRole("button", { name: "Open project attention" }).click();
+	await page.getByRole("button", { name: /Choose a deployment target/ }).click();
+	const dialog = page.getByRole("dialog", { name: "Decision", exact: true });
+	const stage = dialog.getByRole("radio", { name: "Staging Recommended", exact: true });
+	await expect(stage).toBeDisabled();
+	const host = (value: string) => page.evaluate((detail) => window.dispatchEvent(new CustomEvent("question-host-fixture", { detail })), value);
+	await host("none");
+	await stage.check();
+	await dialog.getByRole("checkbox", { name: "Tests", exact: true }).check();
+	await host("main");
+	await expect(page.getByText("Current orchestrator · main")).toBeVisible();
+	await expect(dialog).toHaveCount(1);
+	await expect(stage).toBeChecked();
+	await host("unknown");
+	await expect(stage).toBeDisabled();
+	await host("none");
+	await expect(page.getByText("Project attention fixture")).toBeVisible();
+	await expect(stage).toBeChecked();
+	await expect(stage).toBeEnabled();
+	await dialog.getByRole("button", { name: "Submit all answers" }).click();
+	await expect(page.locator("html")).toHaveAttribute("data-answer-posts", "1");
+	await expect(dialog).toHaveCount(0);
+});
