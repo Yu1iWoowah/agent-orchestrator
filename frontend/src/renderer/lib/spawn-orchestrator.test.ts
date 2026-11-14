@@ -228,7 +228,7 @@ describe("resumeOrchestrator", () => {
 			vi.useRealTimers();
 		}
 
-		expect(apiClient.GET).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", { params: { path: { sessionId: "proj-1-orch" } } });
+		expect(apiClient.GET).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", expect.objectContaining({ params: { path: { sessionId: "proj-1-orch" } } }));
 		expect(notificationShowMock).toHaveBeenCalledWith({
 			id: expect.stringMatching(/^resume-agent-fallback:local:proj-1-orch:/),
 			title: "Started from saved prompt",

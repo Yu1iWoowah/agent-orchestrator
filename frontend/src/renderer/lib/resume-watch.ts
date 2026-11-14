@@ -18,6 +18,8 @@ export type ResumeWatch = { state: "running" } | { state: "failed"; message: str
 export const RESUME_WATCH_INTERVAL_MS = 1_000;
 /** The watch gives up after this long, like the CLI. */
 export const RESUME_WATCH_LIMIT_MS = 150_000;
+/** Opening a session waits this long for the status before resuming anyway. */
+export const RESUME_CHECK_LIMIT_MS = 10_000;
 
 const watches = new Map<string, ResumeWatch>();
 const listeners = new Set<() => void>();
@@ -112,8 +114,16 @@ async function follow(key: string, running: ResumeWatch, sessionId: string, host
 			finish(undefined);
 			return;
 		}
-		const status = await readResume(sessionId, hostId);
-		if (status === "retry") continue;
+		// A read still pending at the deadline is abandoned with the watch.
+		const status = await readResume(sessionId, hostId, deadline - Date.now());
+		if (watches.get(key) !== running) return;
+		if (status === "retry") {
+			if (Date.now() >= deadline) {
+				finish(undefined);
+				return;
+			}
+			continue;
+		}
 		if (status === "gone") {
 			finish(undefined);
 			return;
@@ -134,16 +144,24 @@ async function follow(key: string, running: ResumeWatch, sessionId: string, host
 
 type ResumeStatus = { state: string; resumeMode?: string; error?: { code: string; message: string } };
 
-/** One status read: "gone" when the host has no record, "retry" on a passing failure. */
-async function readResume(sessionId: string, hostId?: string): Promise<ResumeStatus | "gone" | "retry"> {
+/**
+ * One status read, abandoned after limitMs: "gone" when the host has no
+ * record, "retry" on a passing failure or when it took too long.
+ */
+async function readResume(sessionId: string, hostId: string | undefined, limitMs: number): Promise<ResumeStatus | "gone" | "retry"> {
+	const abort = new AbortController();
+	const timer = setTimeout(() => abort.abort(), Math.max(0, limitMs));
 	try {
 		const { data, response } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/resume-agent", {
 			params: { path: { sessionId } },
+			signal: abort.signal,
 		});
 		if (response.status === 404 || response.status === 405) return "gone";
 		return data ?? "retry";
 	} catch {
 		return "retry";
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
@@ -153,7 +171,7 @@ async function readResume(sessionId: string, hostId?: string): Promise<ResumeSta
  * followed instead of being started twice. Returns whether to resume.
  */
 export async function shouldResumeOnOpen(sessionId: string, refresh: () => unknown): Promise<boolean> {
-	const status = await readResume(sessionId);
+	const status = await readResume(sessionId, undefined, RESUME_CHECK_LIMIT_MS);
 	if (status === "gone" || status === "retry") return true;
 	if (status.state === "running") {
 		watchResume(sessionId, undefined, refresh);

@@ -3,6 +3,7 @@ import {
 	clearResumeFailure,
 	followResume,
 	noteResumeFailure,
+	RESUME_CHECK_LIMIT_MS,
 	RESUME_WATCH_INTERVAL_MS,
 	RESUME_WATCH_LIMIT_MS,
 	resetResumeWatches,
@@ -100,6 +101,34 @@ describe("watchResume", () => {
 		expect(mocks.get).toHaveBeenCalledTimes(reads);
 		expect(resumeFailed("s-1")).toBe(false);
 		expect(refresh).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("watchResume with a read that never answers", () => {
+	it("abandons the pending read and ends the watch at the limit", async () => {
+		const refresh = vi.fn();
+		const signals: AbortSignal[] = [];
+		mocks.get.mockImplementation((_path: string, init: { signal: AbortSignal }) => {
+			signals.push(init.signal);
+			return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+		});
+		watchResume("s-1", undefined, refresh);
+		await tick();
+		expect(mocks.get).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(RESUME_WATCH_LIMIT_MS);
+		expect(signals[0].aborted).toBe(true);
+		expect(refresh).toHaveBeenCalledTimes(1);
+		watchResume("s-1", undefined, refresh);
+		await tick();
+		expect(mocks.get).toHaveBeenCalledTimes(2);
+	});
+
+	it("resumes on open when the status read does not answer in time", async () => {
+		mocks.get.mockImplementation((_path: string, init: { signal: AbortSignal }) =>
+			new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted")))));
+		const decision = shouldResumeOnOpen("s-1", vi.fn());
+		await vi.advanceTimersByTimeAsync(RESUME_CHECK_LIMIT_MS);
+		await expect(decision).resolves.toBe(true);
 	});
 });
 
