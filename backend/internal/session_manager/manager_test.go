@@ -12224,3 +12224,176 @@ func TestReplyLanguageReadAtEachPromptBuild(t *testing.T) {
 		}
 	}
 }
+
+// retireStopLauncher records each StopChat in the shared call log, notes whether
+// the session was already terminated at that moment, and can fail or hang the
+// stop.
+type retireStopLauncher struct {
+	*recordingLauncher
+	store            *fakeStore
+	log              *[]string
+	stopErr          error
+	hang             bool
+	terminatedAtStop []bool
+}
+
+func (l *retireStopLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
+	l.terminatedAtStop = append(l.terminatedAtStop, l.store.sessions[id].IsTerminated)
+	if l.log != nil {
+		*l.log = append(*l.log, "StopChat:"+string(id))
+	}
+	l.stopped = append(l.stopped, id)
+	if l.hang {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return l.stopErr
+}
+
+func newRetireChatManager() (*Manager, *fakeStore, *fakeRuntime, *fakeWorkspace, *retireStopLauncher, *[]string) {
+	m, st, rt, ws := newLifecycleManager()
+	var log []string
+	st.sharedLog, ws.sharedLog = &log, &log
+	launcher := &retireStopLauncher{recordingLauncher: &recordingLauncher{}, store: st, log: &log}
+	m.chat = launcher
+	return m, st, rt, ws, launcher, &log
+}
+
+func callIndex(log []string, call string) int {
+	for i, entry := range log {
+		if entry == call {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestRetireForReplacement_StopsChatOrchestratorBeforeTermination(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(*fakeStore) domain.SessionRecord
+		// before lists calls that must come after StopChat.
+		before []string
+	}{
+		{
+			name: "worktree",
+			seed: func(st *fakeStore) domain.SessionRecord {
+				rec := domain.SessionRecord{
+					ID: "mer-orch", ProjectID: "mer", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat,
+					Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-orch", Branch: "ao/mer-orchestrator"},
+					Activity: domain.Activity{State: domain.ActivityActive},
+				}
+				st.sessions[rec.ID] = rec
+				return rec
+			},
+			before: []string{"StashUncommitted:mer-orch", "DeleteSessionWorktrees:mer-orch", "ForceDestroy:mer-orch"},
+		},
+		{
+			name: "workspace project",
+			seed: func(st *fakeStore) domain.SessionRecord {
+				rec := seedNativeWorkspaceProject(st, "mer-orch", domain.KindOrchestrator)
+				rec.Mode = domain.SessionModeChat
+				rec.Metadata.RuntimeHandleID, rec.Metadata.AgentSessionID = "", ""
+				st.sessions[rec.ID] = rec
+				return rec
+			},
+			before: []string{"StashUncommitted:__root__", "StashUncommitted:api", "DeleteSessionWorktrees:mer-orch"},
+		},
+		{
+			name: "no workspace path",
+			seed: func(st *fakeStore) domain.SessionRecord {
+				rec := domain.SessionRecord{
+					ID: "mer-orch", ProjectID: "mer", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat,
+					Activity: domain.Activity{State: domain.ActivityActive},
+				}
+				st.sessions[rec.ID] = rec
+				return rec
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _, ws, launcher, log := newRetireChatManager()
+			ws.stashRef = "refs/ao/preserved/mer-orch"
+			rec := tc.seed(st)
+
+			if err := m.RetireForReplacement(ctx, rec.ID); err != nil {
+				t.Fatalf("RetireForReplacement err = %v", err)
+			}
+			if len(launcher.stopped) != 1 || launcher.stopped[0] != rec.ID {
+				t.Fatalf("StopChat calls = %v, want exactly one for %s", launcher.stopped, rec.ID)
+			}
+			if launcher.terminatedAtStop[0] {
+				t.Fatal("StopChat ran after the session was already marked terminated")
+			}
+			if !st.sessions[rec.ID].IsTerminated {
+				t.Fatal("retired orchestrator must be marked terminated")
+			}
+			stop := callIndex(*log, "StopChat:"+string(rec.ID))
+			for _, call := range tc.before {
+				if at := callIndex(*log, call); at == -1 || at < stop {
+					t.Fatalf("%s must run after StopChat; log=%v", call, *log)
+				}
+			}
+		})
+	}
+}
+
+func TestRetireForReplacement_TUIOrchestratorDoesNotStopChat(t *testing.T) {
+	m, st, rt, ws, launcher, _ := newRetireChatManager()
+	ws.stashRef = "refs/ao/preserved/mer-orch"
+	st.sessions["mer-orch"] = domain.SessionRecord{
+		ID: "mer-orch", ProjectID: "mer", Kind: domain.KindOrchestrator, Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-orch", Branch: "ao/mer-orchestrator", RuntimeHandleID: "orch-handle"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	if err := m.RetireForReplacement(ctx, "mer-orch"); err != nil {
+		t.Fatalf("RetireForReplacement err = %v", err)
+	}
+	if len(launcher.stopped) != 0 {
+		t.Fatalf("StopChat calls = %v, want none for a TUI orchestrator", launcher.stopped)
+	}
+	if rt.destroyed != 1 || rt.destroyedIDs[0] != "orch-handle" {
+		t.Fatalf("runtime destroyed = %d ids=%v, want orch-handle", rt.destroyed, rt.destroyedIDs)
+	}
+}
+
+func TestRetireForReplacement_ChatStopFailureStillRetires(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stopErr error
+		hang    bool
+	}{
+		{name: "error", stopErr: errors.New("provider stuck")},
+		{name: "timeout", hang: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _, ws, launcher, _ := newRetireChatManager()
+			m.killTeardown = 20 * time.Millisecond
+			launcher.stopErr, launcher.hang = tc.stopErr, tc.hang
+			ws.stashRef = "refs/ao/preserved/mer-orch"
+			st.sessions["mer-orch"] = domain.SessionRecord{
+				ID: "mer-orch", ProjectID: "mer", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat,
+				Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-orch", Branch: "ao/mer-orchestrator"},
+				Activity: domain.Activity{State: domain.ActivityActive},
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- m.RetireForReplacement(ctx, "mer-orch") }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("RetireForReplacement err = %v, want best-effort success", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("RetireForReplacement did not bound the chat stop")
+			}
+			if len(launcher.stopped) != 1 {
+				t.Fatalf("StopChat calls = %v, want one attempt", launcher.stopped)
+			}
+			if !st.sessions["mer-orch"].IsTerminated {
+				t.Fatal("retirement must still complete after a failed chat stop")
+			}
+		})
+	}
+}

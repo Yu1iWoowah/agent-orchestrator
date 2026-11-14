@@ -9,13 +9,17 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/commandcode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 type recordingBrowserAuthority struct {
@@ -2015,5 +2019,58 @@ func TestRunPromptSuggestionTaskPassesForkSourceWithScratchPolicy(t *testing.T) 
 	}
 	if _, err := os.Stat(cfg.WorkspacePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("scratch workspace survived suggestion")
+	}
+}
+
+// Retiring a live Chat orchestrator for replacement stops its controller in the
+// real Chat service, so a later StopAll no longer sees it.
+func TestRetireForReplacement_RealChatServiceDropsController(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st := sqlitetest.MustOpenAt(t, dataDir)
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{
+		ID: string(chatTestProject), Path: dataDir, Config: testRoleAgents(), RegisteredAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var nextID atomic.Int64
+	chat := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: integrationChatRegistry{domain.HarnessCodex: integrationChatDriver{
+			harness: domain.HarnessCodex,
+			start:   func() ports.ChatConversation { return newIntegrationChatConversation("provider-thread") },
+		}},
+		NewID: func() string { return fmt.Sprintf("retire-%d", nextID.Add(1)) },
+	})
+	t.Cleanup(func() { _ = chat.StopAll(context.Background()) })
+	m := New(Deps{
+		Runtime: &fakeRuntime{}, Agents: fakeAgents{}, Workspace: &fakeWorkspace{path: t.TempDir()},
+		Store: st, Messenger: &fakeMessenger{}, Chat: integrationChatLauncher{service: chat},
+		Lifecycle: lifecycle.New(st, nil), DataDir: dataDir,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	cfg := asyncChatSpawnConfig("")
+	cfg.Kind = domain.KindOrchestrator
+	rec, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, work := range *deferred {
+		work()
+	}
+	if !chat.HasLiveChatController(rec.ID) {
+		t.Fatal("setup did not start the orchestrator's chat controller")
+	}
+
+	if err := m.RetireForReplacement(ctx, rec.ID); err != nil {
+		t.Fatalf("RetireForReplacement err = %v", err)
+	}
+	if chat.HasLiveChatController(rec.ID) {
+		t.Fatal("the retired orchestrator's chat controller is still live")
+	}
+	if err := chat.StopAll(ctx); err != nil {
+		t.Fatalf("StopAll after retirement: %v", err)
 	}
 }
