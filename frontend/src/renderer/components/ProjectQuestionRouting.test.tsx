@@ -11,6 +11,7 @@ import { TooltipProvider } from "./ui/tooltip";
 import { QuestionAnswerRuntime } from "../hooks/useQuestionAnswerRecovery";
 import { questionSourceQueryOptions } from "../hooks/useSessionQuestions";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { useTerminateSession } from "../hooks/useTerminateSession";
 import { parseQuestionRef, type QuestionRef } from "../lib/decision-target";
 import { sessionQuestionFixture } from "../test/fixtures/session-question";
 import { useQuestionDraftStore } from "../stores/question-draft-store";
@@ -20,7 +21,7 @@ import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("../lib/api-client", async (importOriginal) => ({
 	...await importOriginal<typeof import("../lib/api-client")>(),
-	apiClient: { GET: (path: string, request: unknown) => get(undefined, path, request) }, hasTrustedApiBaseUrl: () => true,
+	apiClient: { GET: (path: string, request: unknown) => get(undefined, path, request), POST: (path: string, request: unknown) => post(undefined, path, request) }, hasTrustedApiBaseUrl: () => true,
 }));
 vi.mock("../hooks/useCloudCp", () => ({ useCloudCp: () => ({ ready: false, client: {}, baseUrl: "" }) }));
 vi.mock("../hooks/useCloudOrg", () => ({ useCloudOrg: () => ({ ready: false }) }));
@@ -46,8 +47,12 @@ function Page() {
 	return <><h1>{sessionId ? `Session ${sessionId}` : `Project ${projectId}`}</h1>
 		{sessionId ? <SessionConversationFrames sessionId={sessionId} projectId={projectId} hostId={hostId} isOrchestrator={sessionId !== "worker"} activeBranchId="root" surfaceRef={{ current: surface }} composerRef={{ current: null }} /> : <ProjectAttention projectId={projectId ?? ""} hostId={hostId} />}</>;
 }
+let killMain: (() => void) | undefined;
 function WorkspaceRoot() {
 	const query = useWorkspaceQuery({ includeCloud: false });
+	const terminate = useTerminateSession();
+	const main = query.data?.flatMap((entry) => entry.sessions).find((entry) => entry.id === "main");
+	killMain = main ? () => terminate.mutate(main) : undefined;
 	return <ProjectQuestionRouting workspaces={query.data ?? []} localReady={query.isSuccess && !query.isError} remoteWorkspaces={[]}
 		loadedProjectHostIds={[]} loadedSessionHostIds={[]} failedHostIds={[]} onRetry={() => { void query.refetch(); }}>
 		<output data-testid="workspace-query">{query.status}:{query.fetchStatus}</output><Outlet />
@@ -229,6 +234,43 @@ it("keeps unknown paused, permits the confirmed no-main fallback and preserves o
 	await waitFor(() => expect(app.router.state.location.pathname).toBe("/projects/project"));
 	expect(screen.getByRole("radio", { name: /Staging/ })).toBeChecked();
 	expect(screen.getByRole("button", { name: "Submit all answers" })).toBeEnabled();
+	expect(app.router.state.location.search.question).toEqual(ref);
+	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
+});
+
+it.each([{ outcome: "delayed success" }, { outcome: "failed rollback" }])("keeps a pending main kill unknown until the daemon settles it, $outcome", async ({ outcome }) => {
+	const facts = (terminated: boolean) => ({ data: { sessions: [
+		{ id: "main", projectId: "project", kind: "orchestrator", isTerminated: terminated, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-31T00:00:00Z", status: terminated ? "terminated" : "idle", activity: { state: "idle", lastActivityAt: "2026-10-31T00:00:00Z" } },
+		{ id: "worker", projectId: "project", kind: "worker", isTerminated: false, createdAt: "2026-10-31T00:00:00Z", updatedAt: "2026-10-31T00:00:00Z", status: "working", activity: { state: "idle", lastActivityAt: "2026-10-31T00:00:00Z" } },
+	] }, response: { status: 200 } });
+	let sessions = facts(false);
+	const original = get.getMockImplementation();
+	get.mockImplementation((host, path, request) => {
+		if (path === "/api/v1/projects") return Promise.resolve({ data: { projects: [{ id: "project", name: "Project", path: "/fixture" }] }, response: { status: 200 } });
+		if (path === "/api/v1/sessions") return Promise.resolve(sessions);
+		return original?.(host, path, request);
+	});
+	let settle: (result: unknown) => void = () => {};
+	const answer = post.getMockImplementation();
+	post.mockImplementation((host, path, request) => path.endsWith("/kill")
+		? new Promise((resolve) => { settle = resolve; }) : answer?.(host, path, request));
+	const app = show(questionURL("/projects/project/sessions/main"), {}, true);
+	await waitFor(() => expect(screen.getByRole("radio", { name: /Staging/ })).toBeEnabled());
+	act(() => killMain?.());
+	await waitFor(() => expect(post.mock.calls.some(([, path]) => path.endsWith("/kill"))).toBe(true));
+	await waitFor(() => expect(screen.getByRole("radio", { name: /Staging/ })).toBeDisabled());
+	expect(screen.getByText(/Loading the current orchestrator/)).toBeVisible();
+	expect(app.router.state.location.pathname).toBe("/projects/project/sessions/main");
+	if (outcome === "delayed success") {
+		sessions = facts(true);
+		await act(async () => settle({ data: {}, response: { status: 200 } }));
+		await waitFor(() => expect(app.router.state.location.pathname).toBe("/projects/project"));
+	} else {
+		await act(async () => settle({ error: { message: "kill failed" }, response: { status: 500 } }));
+		await waitFor(() => expect(screen.queryByText(/Loading the current orchestrator/)).toBeNull());
+		expect(app.router.state.location.pathname).toBe("/projects/project/sessions/main");
+	}
+	await waitFor(() => expect(screen.getByRole("radio", { name: /Staging/ })).toBeEnabled());
 	expect(app.router.state.location.search.question).toEqual(ref);
 	expect(post.mock.calls.filter(([, path]) => path.endsWith("/answer"))).toHaveLength(0);
 });

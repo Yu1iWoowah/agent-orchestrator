@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { questionHost, type DecisionTarget, type QuestionHost, type QuestionRef } from "../lib/decision-target";
 import { LOCAL_HOST } from "../lib/hosts";
+import { usePendingTerminateSessionKeys } from "../hooks/useTerminateSession";
 import { orchestratorNavigateTarget, projectNavigateTarget, questionNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
 import type { WorkspaceSummary } from "../types/workspace";
 import type { FrameRect } from "../lib/conversation-frames";
@@ -27,12 +28,13 @@ export function ProjectQuestionRouting({ children, workspaces, remoteWorkspaces,
 	const returnTo = useRef<{ scope: string; restore?: (resumeSheet?: boolean) => void } | undefined>(undefined);
 	const currentScope = useRef(""); currentScope.current = JSON.stringify([params.hostId ?? LOCAL_HOST, params.projectId]);
 	const [bounds, setBounds] = useState<{ surface: HTMLElement; rect: FrameRect }>();
+	const pendingKills = usePendingTerminateSessionKeys();
 	const hostFor = useCallback((projectId: string, hostId = LOCAL_HOST) => {
 		const local = hostId === LOCAL_HOST;
 		const workspace = (local ? workspaces : remoteWorkspaces).find((entry) => entry.id === projectId && (entry.hostId ?? LOCAL_HOST) === hostId);
 		const ready = local ? localReady : loadedProjectHostIds.includes(hostId) && loadedSessionHostIds.includes(hostId) && !failedHostIds.includes(hostId);
-		return questionHost({ workspace, ready, projectId, hostId });
-	}, [workspaces, remoteWorkspaces, localReady, loadedProjectHostIds, loadedSessionHostIds, failedHostIds]);
+		return questionHost({ workspace, ready, projectId, hostId, pendingKills });
+	}, [workspaces, remoteWorkspaces, localReady, loadedProjectHostIds, loadedSessionHostIds, failedHostIds, pendingKills]);
 	const openQuestion = useCallback((ref: QuestionRef, restore?: (resumeSheet?: boolean) => void) => {
 		returnTo.current = { scope: JSON.stringify([ref.hostId, ref.projectId]), restore };
 		const host = hostFor(ref.projectId, ref.hostId);

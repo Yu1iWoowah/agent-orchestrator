@@ -1,5 +1,5 @@
 import type { ProjectAttentionItem } from "../hooks/useProjectAttention";
-import { LOCAL_HOST } from "./hosts";
+import { LOCAL_HOST, refKey } from "./hosts";
 import { newestActiveOrchestrator, type WorkspaceSummary } from "../types/workspace";
 
 export type QuestionRef = { hostId: string; projectId: string; originSessionId: string; questionId: string };
@@ -14,13 +14,16 @@ export function parseQuestionRef(value: unknown): QuestionRef | undefined {
 	return { hostId: value.hostId, projectId: value.projectId, originSessionId: value.originSessionId, questionId: value.questionId };
 }
 
-export function questionHost({ workspace, ready, projectId, hostId = LOCAL_HOST }: {
-	workspace?: WorkspaceSummary; ready: boolean; projectId: string; hostId?: string;
+export function questionHost({ workspace, ready, projectId, hostId = LOCAL_HOST, pendingKills }: {
+	workspace?: WorkspaceSummary; ready: boolean; projectId: string; hostId?: string; pendingKills?: ReadonlySet<string>;
 }): QuestionHost {
 	if (!ready || !workspace || workspace.id !== projectId || (workspace.hostId ?? LOCAL_HOST) !== hostId) return { kind: "unknown" };
 	if (workspace.sessions.some((session) => typeof session.id !== "string" || !session.id || (session.kind !== "worker" && session.kind !== "orchestrator") ||
 		typeof session.isTerminated !== "boolean" || typeof session.createdAt !== "string" || !Number.isFinite(Date.parse(session.createdAt)) ||
 		typeof session.updatedAt !== "string" || !Number.isFinite(Date.parse(session.updatedAt))))
+		return { kind: "unknown" };
+	// An unsettled kill already shows its orchestrator as terminated; that is not a confirmed no-main fact.
+	if (workspace.sessions.some((session) => session.kind === "orchestrator" && pendingKills?.has(refKey({ host: hostId, id: session.id }))))
 		return { kind: "unknown" };
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
 	return orchestrator ? { kind: "orchestrator", sessionId: orchestrator.id } : { kind: "none" };
