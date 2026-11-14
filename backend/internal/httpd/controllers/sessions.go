@@ -93,7 +93,8 @@ type SessionService interface {
 	GetRecord(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
 	Restore(ctx context.Context, id domain.SessionID) (sessionsvc.RestoreOutcome, error)
 	ExitAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ExitAgentOutcome, error)
-	ResumeAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentOutcome, error)
+	StartResumeAgent(ctx context.Context, id domain.SessionID) (domain.Session, error)
+	ResumeAgentStatus(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error)
 	RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error)
 	DeleteArtifacts(ctx context.Context, id domain.SessionID) error
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (sessionsvc.RollbackOutcome, error)
@@ -264,6 +265,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/restore", c.restore)
 	r.Post("/sessions/{sessionId}/exit-agent", c.exitAgent)
 	r.Post("/sessions/{sessionId}/resume-agent", c.resumeAgent)
+	r.Get("/sessions/{sessionId}/resume-agent", c.resumeAgentStatus)
 	r.Post("/sessions/{sessionId}/account-recovery", c.retryAccountRecovery)
 	r.Get("/sessions/{sessionId}/interface-transition", c.interfaceTransitionStatus)
 	r.Post("/sessions/{sessionId}/interface-transition", c.startInterfaceTransition)
@@ -2091,17 +2093,39 @@ func (c *SessionsController) resumeAgent(w http.ResponseWriter, r *http.Request)
 		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/resume-agent")
 		return
 	}
-	out, err := c.Svc.ResumeAgent(r.Context(), sessionID(r))
+	sess, err := c.Svc.StartResumeAgent(r.Context(), sessionID(r))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ResumeAgentResponse{
-		OK:         true,
-		SessionID:  sessionID(r),
-		ResumeMode: out.Mode,
-		Session:    sessionView(r, out.Session),
+	envelope.WriteJSON(w, http.StatusAccepted, ResumeAgentResponse{
+		OK:        true,
+		SessionID: sessionID(r),
+		Session:   sessionView(r, sess),
 	})
+}
+
+func (c *SessionsController) resumeAgentStatus(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/resume-agent")
+		return
+	}
+	status, err := c.Svc.ResumeAgentStatus(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	res := ResumeAgentStatusResponse{
+		SessionID:  sessionID(r),
+		State:      string(status.State),
+		ResumeMode: status.Mode,
+		Session:    sessionView(r, status.Session),
+	}
+	if status.Err != nil {
+		code, body := envelope.Describe(status.Err)
+		res.Error = &ResumeAgentFailure{Status: code, Code: body.Code, Message: body.Message, Details: body.Details}
+	}
+	envelope.WriteJSON(w, http.StatusOK, res)
 }
 
 func (c *SessionsController) exitAgent(w http.ResponseWriter, r *http.Request) {

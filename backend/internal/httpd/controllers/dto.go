@@ -1246,12 +1246,33 @@ type ExitAgentResponse struct {
 	Session   SessionView      `json:"session"`
 }
 
-// ResumeAgentResponse is the body of POST /api/v1/sessions/{sessionId}/resume-agent.
+// ResumeAgentResponse is the 202 body of POST
+// /api/v1/sessions/{sessionId}/resume-agent: the resume was admitted and runs
+// in the background. GET on the same path reports its outcome.
 type ResumeAgentResponse struct {
-	OK         bool                       `json:"ok"`
+	OK        bool             `json:"ok"`
+	SessionID domain.SessionID `json:"sessionId"`
+	Session   SessionView      `json:"session"`
+}
+
+// ResumeAgentStatusResponse is the body of GET
+// /api/v1/sessions/{sessionId}/resume-agent: the session's latest resume since
+// the daemon started. resumeMode is set once it succeeded, error once it failed.
+type ResumeAgentStatusResponse struct {
 	SessionID  domain.SessionID           `json:"sessionId"`
-	ResumeMode sessionsvc.RestoreModeView `json:"resumeMode" enum:"native,saved_prompt,fresh"`
+	State      string                     `json:"state" enum:"running,succeeded,failed"`
+	ResumeMode sessionsvc.RestoreModeView `json:"resumeMode,omitempty" enum:"native,saved_prompt,fresh"`
+	Error      *ResumeAgentFailure        `json:"error,omitempty"`
 	Session    SessionView                `json:"session"`
+}
+
+// ResumeAgentFailure is the error a failed background resume reports: the
+// HTTP status and envelope fields the request would have answered inline.
+type ResumeAgentFailure struct {
+	Status  int            `json:"status"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // StartSessionInterfaceTransitionRequest is the body of POST

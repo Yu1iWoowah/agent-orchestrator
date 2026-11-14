@@ -3467,6 +3467,74 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	return m.resumeAgentWithMode(context.WithValue(ctx, explicitTUISettingsRecoveryKey{}, true), id, false)
 }
 
+// StartResumeAgent answers only the resume preconditions that need no waiting,
+// then resumes the agent on the daemon's lifetime context. Every branch that
+// waits or writes (status recovery, persistent host reconciliation, TUI
+// settings recovery, a failed spawn's retry, clearing hibernation, the launch)
+// runs in the background, so the request is not bound by the REST deadline.
+// done receives the outcome once; ResumeAgentWithMode re-checks every
+// precondition, so a change between the two reports there.
+func (m *Manager) StartResumeAgent(ctx context.Context, id domain.SessionID, done func(RestoreResult, error)) (domain.SessionRecord, error) {
+	rec, err := m.checkResumeAgent(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("resume agent %s: %w", id, err)
+	}
+	m.runInBackground(func() {
+		done(m.ResumeAgentWithMode(m.backgroundContext, id))
+	})
+	return rec, nil
+}
+
+// checkResumeAgent mirrors resumeAgentWithMode's refusals that are answerable
+// from the record and in-memory operation state alone.
+func (m *Manager) checkResumeAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	if !ok {
+		return domain.SessionRecord{}, ErrNotFound
+	}
+	if rec.IsTerminated {
+		return domain.SessionRecord{}, ErrTerminated
+	}
+	m.agentOpMu.Lock()
+	current := m.agentOperations[id]
+	recoveringTUI := m.tuiSettingsFences[id] != "" && current == ""
+	busy := m.agentOperationActiveLocked(id) && !recoveringTUI && current != agentOperationHibernate
+	m.agentOpMu.Unlock()
+	m.asyncChatSpawnsMu.Lock()
+	_, starting := m.asyncChatSpawns[id]
+	m.asyncChatSpawnsMu.Unlock()
+	if busy || starting || rec.ProvisionState.IsProvisioning() {
+		return domain.SessionRecord{}, ErrResumeInProgress
+	}
+	if store, ok := m.store.(interfaceTransitionStore); ok {
+		tr, active, err := store.GetActiveSessionInterfaceTransition(ctx, id)
+		if err != nil {
+			return domain.SessionRecord{}, fmt.Errorf("interface transition: %w", err)
+		}
+		if active && (tr.SettingsOperationID == "" || tr.Phase != domain.SessionInterfaceTransitionRecovery) {
+			return domain.SessionRecord{}, ErrInterfaceTransitionInProgress
+		}
+		if active {
+			return rec, nil
+		}
+	}
+	if rec.ProvisionState == domain.SessionProvisionFailed ||
+		(rec.HibernatedAt == nil && m.SessionStatusReadiness(rec) == "unavailable") {
+		return rec, nil
+	}
+	mode := domain.NormalizeSessionMode(rec.Mode)
+	if mode == domain.SessionModeChat && m.chat != nil && m.chat.HasLiveChatController(id) {
+		return domain.SessionRecord{}, ErrAgentNotExited
+	}
+	if rec.Activity.State != domain.ActivityExited && (mode != domain.SessionModeChat || m.chat == nil) {
+		return domain.SessionRecord{}, ErrAgentNotExited
+	}
+	return rec, nil
+}
+
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
 func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
