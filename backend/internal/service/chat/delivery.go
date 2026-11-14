@@ -209,19 +209,25 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 				}
 			}
 		}
-		resumed := false
-		c.mu.Lock()
-		if c.pendingDeliveryID == a.ID && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
-			resumed = true
-			c.pendingDeliveryID = ""
+		if saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent {
+			c.releasePendingDelivery(a.ID)
 		}
-		c.mu.Unlock()
 		c.wakeDeliveryMonitor(false)
-		if resumed && !c.outboundQuiescing() {
-			c.queueSettingsRecheck()
-		}
 	}
 	return saved, err
+}
+
+// releasePendingDelivery resumes queued work held behind a now-settled original.
+func (c *Controller) releasePendingDelivery(id string) {
+	c.mu.Lock()
+	resumed := c.pendingDeliveryID == id
+	if resumed {
+		c.pendingDeliveryID = ""
+	}
+	c.mu.Unlock()
+	if resumed && !c.outboundQuiescing() {
+		c.queueSettingsRecheck()
+	}
 }
 
 // ACK only follows a durable terminal receipt. Failure retains a bounded retry
@@ -438,6 +444,7 @@ func (c *Controller) settleLegacyDelivery(ctx context.Context, a domain.ChatDeli
 	if _, err := journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current)); err != nil {
 		return false, err
 	}
+	c.releasePendingDelivery(a.ID)
 	return true, nil
 }
 

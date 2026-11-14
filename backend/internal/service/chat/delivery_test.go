@@ -44,6 +44,9 @@ func (f *fakeConversation) QueryDeliveryAttempt(_ context.Context, key ports.Cha
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, ok := f.deliveryReceipts[key.AttemptID]
+	if !ok && f.deliveryDenied {
+		return r, ports.ErrChatDeliveryDenied
+	}
 	if !ok {
 		return r, ports.ErrChatDeliveryUnverified
 	}
@@ -567,5 +570,59 @@ func TestHostCannotSettleUnknownDelivery(t *testing.T) {
 	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
 	if err != nil || saved.ExecutionSettled {
 		t.Fatalf("host settled an unknown outcome: %+v %v", saved, err)
+	}
+}
+
+func TestLegacySettlementReleasesHeldDispatchAndHibernation(t *testing.T) {
+	h, conv := settledHibernationHarness(t, "")
+	ctx := t.Context()
+	conv.mu.Lock()
+	conv.deliveryDenied = true
+	conv.sendErr = errors.New("provider connection lost after write")
+	conv.mu.Unlock()
+	// An uncertain send holds the controller on the original attempt.
+	_, _ = h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "uncertain original", ClientMessageID: "uncertain-original"})
+	pending, err := h.st.PendingChatDeliveries(ctx, testSession)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("uncertain original attempt = %+v %v", pending, err)
+	}
+	original := pending[0]
+	conv.mu.Lock()
+	conv.sendErr = nil
+	conv.mu.Unlock()
+	// The original execution later completed every member.
+	if err := h.st.SettleTurnByID(ctx, original.TurnIDs[0], domain.TurnStateCompleted, "", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
+		return e == nil && a.ExecutionSettled && a.ErrorCode == "CHAT_DELIVERY_LEGACY_SETTLED"
+	})
+	next, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "after legacy settlement", ClientMessageID: "after-legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent := conv.sentTexts(); len(sent) != 1 || sent[0] != "after legacy settlement" {
+		t.Fatalf("settled legacy attempt still holds dispatch: sent=%v turn=%+v", sent, next)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: next.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, next.ID)
+		return e == nil && a.ExecutionSettled
+	})
+	if err := h.svc.DrainQueued(ctx, testSession); err != nil {
+		t.Fatal(err)
+	}
+	rec, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("get session = %v, %v", found, err)
+	}
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-chatsvc.IdleBeforeHibernate)}
+	if err := h.st.UpdateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if slept, err := h.svc.HibernateChat(ctx, testSession); err != nil || !slept {
+		t.Fatalf("settled legacy attempt blocks hibernation: slept=%v err=%v", slept, err)
 	}
 }
