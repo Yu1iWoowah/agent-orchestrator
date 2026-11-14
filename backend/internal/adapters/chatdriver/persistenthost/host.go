@@ -202,6 +202,89 @@ func lockPath(dataDir, sessionID string) (string, error) {
 	return filepath.Join(dir, "host.lock"), nil
 }
 
+// Each detached host gets its own spawn record, named by its pid, so no host's
+// cleanup can remove another's record.
+const spawnRecordPrefix = "host.spawn-"
+
+func spawnPath(dataDir, sessionID string, pid int) (string, error) {
+	dir, err := hostDir(dataDir, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, spawnRecordPrefix+strconv.Itoa(pid)), nil
+}
+
+// recordSpawn names a detached host process before it can take its launch
+// lock. A caller that stops waiting still leaves the starting host visible.
+func recordSpawn(dataDir, sessionID string, pid int) error {
+	path, err := spawnPath(dataDir, sessionID, pid)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, nil, 0o600)
+}
+
+// clearSpawnRecord removes the spawn record of the host with pid.
+func clearSpawnRecord(dataDir, sessionID string, pid int) {
+	if path, err := spawnPath(dataDir, sessionID, pid); err == nil {
+		_ = os.Remove(path)
+	}
+}
+
+// spawnRecords lists the pids named by spawn records. A record whose name is
+// not a pid makes the result unknown.
+func spawnRecords(dataDir, sessionID string) ([]int, HostState) {
+	dir, err := hostDir(dataDir, sessionID)
+	if err != nil {
+		return nil, HostUnknown
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, HostAbsent
+	}
+	if err != nil {
+		return nil, HostUnknown
+	}
+	state := HostAbsent
+	var pids []int
+	for _, entry := range entries {
+		name, ok := strings.CutPrefix(entry.Name(), spawnRecordPrefix)
+		if !ok {
+			continue
+		}
+		pid, err := strconv.Atoi(name)
+		if err != nil || pid <= 0 {
+			state = HostUnknown
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids, state
+}
+
+func spawnHostState(dataDir, sessionID string) HostState {
+	pids, state := spawnRecords(dataDir, sessionID)
+	for _, pid := range pids {
+		if processalive.Alive(pid) {
+			return HostRunning
+		}
+	}
+	return state
+}
+
+// clearDeadSpawnRecords removes spawn records whose host has exited.
+func clearDeadSpawnRecords(dataDir, sessionID string) {
+	pids, _ := spawnRecords(dataDir, sessionID)
+	for _, pid := range pids {
+		if !processalive.Alive(pid) {
+			clearSpawnRecord(dataDir, sessionID, pid)
+		}
+	}
+}
+
 func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	dir, err := hostDir(dataDir, sessionID)
 	if err != nil {
@@ -432,6 +515,7 @@ func Reconcile(ctx context.Context, dataDir string, keep map[string]struct{}) er
 		if _, ok := keep[sessionID]; ok {
 			continue
 		}
+		clearDeadSpawnRecords(dataDir, sessionID)
 		d, readErr := readDescriptor(dataDir, sessionID)
 		if readErr != nil {
 			continue
@@ -530,6 +614,71 @@ func HostPID(dataDir, sessionID string) (int, bool) {
 		return 0, false
 	}
 	return d.PID, true
+}
+
+// HostState is what the recorded provider host for a session proves.
+type HostState int
+
+const (
+	// HostUnknown is an unreadable, undecodable or invalid record.
+	HostUnknown HostState = iota
+	// HostAbsent is no record, or a record whose pid has exited.
+	HostAbsent
+	// HostRunning is a record whose pid is alive.
+	HostRunning
+)
+
+// ProbeHost reads the host records for sessionID; nothing is ever started or
+// stopped here. The spawn record names a detached host before it takes its
+// launch lock, and the lock covers it until after host.json is removed, so the
+// host is absent only when no record names a live owner and all could be read.
+func ProbeHost(dataDir, sessionID string) HostState {
+	states := []HostState{descriptorHostState(dataDir, sessionID), pidFileHostState(lockPath(dataDir, sessionID)), spawnHostState(dataDir, sessionID)}
+	state := HostAbsent
+	for _, s := range states {
+		if s == HostRunning {
+			return HostRunning
+		}
+		if s == HostUnknown {
+			state = HostUnknown
+		}
+	}
+	return state
+}
+
+func descriptorHostState(dataDir, sessionID string) HostState {
+	d, err := readDescriptor(dataDir, sessionID)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return HostAbsent
+	case err != nil || d.PID <= 0:
+		return HostUnknown
+	case processalive.Alive(d.PID):
+		return HostRunning
+	default:
+		return HostAbsent
+	}
+}
+
+// pidFileHostState reads the launch lock's owner pid. An empty or unreadable
+// lock may be one whose pid is not written yet, so it is unknown.
+func pidFileHostState(path string, pathErr error) HostState {
+	if pathErr != nil {
+		return HostUnknown
+	}
+	owner, err := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
+	if errors.Is(err, os.ErrNotExist) {
+		return HostAbsent
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(owner)))
+	switch {
+	case err != nil || parseErr != nil || pid <= 0:
+		return HostUnknown
+	case processalive.Alive(pid):
+		return HostRunning
+	default:
+		return HostAbsent
+	}
 }
 
 // Shutdown terminates current session ownership and waits for it to end.
@@ -689,6 +838,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer releaseLock()
+	defer clearSpawnRecord(cfg.DataDir, cfg.SessionID, os.Getpid())
 	token, err := randomToken()
 	if err != nil {
 		return err

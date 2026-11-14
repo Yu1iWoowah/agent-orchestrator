@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 func TestPersistentChatHostKeepSetUsesDurableOwnership(t *testing.T) {
@@ -47,5 +49,41 @@ func TestSideHostsSurviveOnlyTheirDesktopLaunch(t *testing.T) {
 	}
 	if _, ok := keep["btw-previous-one"]; ok {
 		t.Fatal("kept a previous desktop launch")
+	}
+}
+
+// The keep set comes from the recoverable query, so the host of an exited chat
+// reviewer with no running pass is no longer kept.
+func TestPersistentChatHostKeepSetSkipsExitedChatReviewers(t *testing.T) {
+	ctx := context.Background()
+	store := sqlitetest.MustOpen(t)
+	now := time.Now().UTC()
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: "/repo/p", RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, review := range []domain.Review{
+		{ID: "exited-done", ReviewerActivityState: domain.ActivityExited},
+		{ID: "active", ReviewerActivityState: domain.ActivityActive},
+	} {
+		rec, err := store.CreateSession(ctx, domain.SessionRecord{ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		review.SessionID, review.ProjectID, review.Harness = rec.ID, "p", domain.ReviewerCodex
+		review.InterfaceMode, review.ProviderConversationID, review.CreatedAt, review.UpdatedAt = domain.ReviewerInterfaceChat, "provider-"+review.ID, now, now
+		if err := store.UpsertReview(ctx, review); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviews, err := store.ListRecoverableChatReviews(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := persistentChatHostKeepSet(nil, reviews)
+	if _, ok := keep["review-exited-done"]; ok {
+		t.Fatalf("keep = %v, holds the exited reviewer's host", keep)
+	}
+	if _, ok := keep["review-active"]; !ok || len(keep) != 1 {
+		t.Fatalf("keep = %v, want only the active reviewer's host", keep)
 	}
 }

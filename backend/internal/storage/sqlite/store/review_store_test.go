@@ -874,3 +874,40 @@ func TestInsertReviewRunAllowsRerunAfterApproval(t *testing.T) {
 		t.Fatalf("approval history = %+v, %v", runs, err)
 	}
 }
+
+// An exited chat reviewer with no running pass is not recovered; one with a
+// running pass, or not exited, still is.
+func TestRecoverableChatReviewsSkipExitedReviewersWithNoRunningPass(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "recoverable")
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tt := range []struct {
+		id      string
+		state   domain.ActivityState
+		running bool
+	}{
+		{id: "exited-done", state: domain.ActivityExited},
+		{id: "exited-running", state: domain.ActivityExited, running: true},
+		{id: "active", state: domain.ActivityActive},
+	} {
+		session, err := s.CreateSession(ctx, sampleRecord("recoverable"))
+		mustNoError(t, err)
+		mustNoError(t, s.UpsertReview(ctx, domain.Review{ID: tt.id, SessionID: session.ID, ProjectID: session.ProjectID,
+			Harness: domain.ReviewerCodex, InterfaceMode: domain.ReviewerInterfaceChat, ProviderConversationID: "provider-" + tt.id,
+			ReviewerActivityState: tt.state, CreatedAt: now, UpdatedAt: now}))
+		if tt.running {
+			mustNoError(t, s.InsertReviewRun(ctx, domain.ReviewRun{ID: "pass-" + tt.id, ReviewID: tt.id, SessionID: session.ID, Harness: domain.ReviewerCodex,
+				PRURL: "https://github.com/fake/repo/pull/1", TargetSHA: "fake-head", Status: domain.ReviewRunRunning, CreatedAt: now}))
+		}
+	}
+	recoverable, err := s.ListRecoverableChatReviews(ctx)
+	mustNoError(t, err)
+	got := map[string]bool{}
+	for _, review := range recoverable {
+		got[review.ID] = true
+	}
+	if len(got) != 2 || !got["exited-running"] || !got["active"] {
+		t.Fatalf("recoverable chats = %v, want exited-running and active", got)
+	}
+}

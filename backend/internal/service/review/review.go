@@ -935,6 +935,12 @@ func (s *Service) List(ctx context.Context, workerID domain.SessionID) (reviewco
 	return s.engine.List(ctx, workerID)
 }
 
+// ReconcileReviewers records which of a worker's reviewers no longer have a
+// process, before an account owner check reads them.
+func (s *Service) ReconcileReviewers(ctx context.Context, workerID domain.SessionID) error {
+	return s.engine.ReconcileReviewers(ctx, workerID)
+}
+
 // ArchiveReviewer retires the reviewer surface while preserving its history.
 func (s *Service) ArchiveReviewer(ctx context.Context, workerID domain.SessionID) error {
 	return s.engine.ArchiveReviewer(ctx, workerID)

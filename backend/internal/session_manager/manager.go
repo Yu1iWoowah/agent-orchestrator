@@ -303,6 +303,9 @@ type ReviewerTerminator interface {
 	TerminateReviewer(ctx context.Context, workerID domain.SessionID, body string) error
 	TeardownReviewerTerminal(ctx context.Context, workerID domain.SessionID) error
 	RestoreReviewer(ctx context.Context, workerID domain.SessionID) error
+	// ReconcileReviewers records which of the worker's reviewers have no
+	// process left. Never call it while holding that worker's review lock.
+	ReconcileReviewers(ctx context.Context, workerID domain.SessionID) error
 }
 
 type runtimeController interface {
