@@ -500,6 +500,69 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotEqual(a["sha256"], b["sha256"])
         self.assertEqual(h.decode(h.private_read(a["path"]))["status"], h.decode(h.private_read(b["path"]))["status"])
 
+    def test_RH_SPEED_snapshot_hashes_every_file_and_stores_only_unrebuildable_bytes(self):
+        workspace = self.root / "repo"
+        workspace.mkdir()
+        def git(*args):
+            subprocess.run(["git", "-C", str(workspace), *args], check=True, capture_output=True)
+        git("init", "-b", "fixture")
+        for name in ("clean", "dirty", "assumed"):
+            (workspace / name).write_text("committed " + name)
+        git("add", ".")
+        git("-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-m", "fixture")
+        (workspace / "dirty").write_text("changed dirty")
+        (workspace / "staged").write_text("new staged")
+        git("add", "staged")
+        (workspace / "untracked").write_text("new untracked")
+        git("update-index", "--assume-unchanged", "assumed")
+        result = h.git_snapshot(workspace, self.root / "snapshot")
+        files = h.decode(h.private_read(result["path"]))["files"]
+        stored = {path.name for path in (self.root / "snapshot/objects").iterdir()}
+        for name in ("dirty", "staged", "untracked", "assumed"):
+            self.assertIn(files[name]["sha256"], stored, name)
+        self.assertEqual(files["clean"]["sha256"], h.digest(b"committed clean"))
+        self.assertNotIn(files["clean"]["sha256"], stored)
+        computed = h.git_snapshot(workspace, None, write=False)
+        self.assertEqual(computed["sha256"], result["sha256"])
+        for change in ("clean", "new"):
+            with self.subTest(change=change):
+                path = workspace / ("clean" if change == "clean" else "added")
+                original = path.read_bytes() if path.exists() else None
+                path.write_text("rewritten")
+                self.assertNotEqual(h.git_snapshot(workspace, None, write=False)["sha256"], result["sha256"])
+                path.write_bytes(original) if original is not None else path.unlink()
+
+    def test_RH_SPEED_recheck_writes_nothing_and_still_detects_clean_file_drift(self):
+        for change in ("none", "tracked", "untracked", "same-size-mtime"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
+                fake = FlowFixture(Path(temp), "codex", "codex", worker=True)
+                fake.run.sleep = lambda _: None
+                tracked = fake.worker_path / "tracked"
+                if change == "same-size-mtime":
+                    subprocess.run(["git", "-C", str(fake.worker_path), "config", "core.trustctime", "false"], check=True)
+                    os.utime(tracked, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+                    subprocess.run(["git", "-C", str(fake.worker_path), "update-index", "--refresh"], check=True, capture_output=True)
+                self.assertTrue(fake.run.worker_stop({"id": "worker"}))
+                directory = fake.run.root / "workers" / "worker"
+                if change == "none":
+                    self.assertTrue(fake.run.worker_stop({"id": "worker"}))
+                    self.assertEqual(list(directory.glob("verify-*")), [])
+                    continue
+                if change == "tracked":
+                    tracked.write_text("rewritten committed file")
+                elif change == "untracked":
+                    (fake.worker_path / "new-file").write_text("new")
+                else:
+                    stat_before = tracked.stat()
+                    tracked.write_bytes(b"X" * stat_before.st_size)
+                    os.utime(tracked, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+                    status = subprocess.run(["git", "-C", str(fake.worker_path), "status", "--porcelain"], check=True, capture_output=True).stdout
+                    self.assertEqual(status, b"", "fixture must reproduce the status-clean rewrite")
+                with self.assertRaisesRegex(h.Stop, "worker content drift"):
+                    fake.run.worker_stop({"id": "worker"})
+                evidence = list(directory.glob("verify-*"))
+                self.assertEqual([sorted(p.name for p in x.iterdir()) for x in evidence], [["snapshot.json"]])
+
     def database(self):
         path = self.root / "fixture.db"
         with closing(sqlite3.connect(path)) as db, db:

@@ -1270,7 +1270,7 @@ def workspace_git_inputs(workspace):
         templates[relative] = dict(raw=raw, mode=stat.S_IMODE(info.st_mode),
                                    identity=(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
     return dict(head=head, tree=tree_raw, index=index_raw, staged_names=staged_names, others=others, ignored=ignored,
-                files=files, templates=templates,
+                files=files, templates=templates, tree_entries=tree, index_entries=index,
                 patch_paths=sorted(os.fsdecode(n) for n in set(tree) | files if not SENSITIVE_SOURCE.search(os.fsdecode(n))))
 
 
@@ -1292,8 +1292,19 @@ def workspace_patch(workspace, inputs, cached=False):
     return patch
 
 
-def git_snapshot(workspace, destination):
-    """Read-only Git plus preserved bytes, including staged and dirty content."""
+def committed_unchanged(inputs, name, raw, mode):
+    """True only when the bytes, index and HEAD prove the same committed blob."""
+    entry = inputs["tree_entries"].get(name)
+    if not entry or entry[1] != "blob" or entry[0] not in ("100644", "100755") or inputs["index_entries"].get(name) != [("H", entry[0], entry[2], "0")]:
+        return False
+    if bool(mode & 0o111) != (entry[0] == "100755"):
+        return False
+    algorithm = hashlib.sha1 if len(entry[2]) == 40 else hashlib.sha256
+    return algorithm(b"blob %d\0" % len(raw) + raw).hexdigest() == entry[2]
+
+
+def git_snapshot(workspace, destination, write=True):
+    """Hash every file; preserve bytes HEAD cannot reproduce. write=False only computes the same snapshot."""
     path = no_symlinks(workspace)
     require(path.is_dir(), "registered workspace missing")
     def git(*args):
@@ -1303,7 +1314,8 @@ def git_snapshot(workspace, destination):
         require(result.returncode == 0, "workspace snapshot unavailable: " + result.stderr.decode(errors="replace"))
         return result.stdout
     inputs = workspace_git_inputs(path)
-    mkdir(destination)
+    if write:
+        mkdir(destination)
     branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
     links = gitlink_facts(path)
     values = {"schema": "rh-workspace-snapshot/2", "gitlinks": links, "head": git("rev-parse", "HEAD").decode().strip(),
@@ -1312,7 +1324,8 @@ def git_snapshot(workspace, destination):
               "index": git("ls-files", "--stage", "-z").hex(), "files": {}}
     for name, cached in (("index.patch", True), ("worktree.patch", False)):
         raw = workspace_patch(path, inputs, cached)
-        publish(Path(destination) / name, raw)
+        if write:
+            publish(Path(destination) / name, raw)
         values[name] = digest(raw)
     files = inputs["files"]
     for raw_name in sorted(files):
@@ -1328,10 +1341,14 @@ def git_snapshot(workspace, destination):
         template = inputs["templates"].get(name)
         raw = template["raw"] if template else source.read_bytes()
         sha = digest(raw)
-        publish(Path(destination) / "objects" / sha, raw)
-        values["files"][name] = {"sha256": sha, "mode": template["mode"] if template else stat.S_IMODE(source.stat().st_mode)}
+        mode = template["mode"] if template else stat.S_IMODE(source.stat().st_mode)
+        if write and not committed_unchanged(inputs, raw_name, raw, mode):
+            publish(Path(destination) / "objects" / sha, raw)
+        values["files"][name] = {"sha256": sha, "mode": mode}
     require(workspace_git_inputs(path) == inputs, "workspace source drift during snapshot")
     raw = canonical(values)
+    if not write:
+        return {"sha256": digest(raw), "raw": raw}
     publish(Path(destination) / "snapshot.json", raw)
     return {"path": str(Path(destination) / "snapshot.json"), "sha256": digest(raw),
             "branch": values["branch"], "head": values["head"]}
@@ -1766,8 +1783,11 @@ class Run:
             if not quiescent(snap, stop["settled"]["in_flight"], self):
                 return False
             require(stop["workspace"]["path"] == self.workspace(sid), "stop workspace differs from registered workspace")
-            actual = git_snapshot(stop["workspace"]["path"], directory / ("verify-" + uuid.uuid4().hex))
-            require(actual["sha256"] == stop["workspace"]["after_snapshot"]["sha256"], "worker content drift: " + sid)
+            # Recheck computes the same snapshot without writing objects; only a drift keeps evidence.
+            actual = git_snapshot(stop["workspace"]["path"], None, write=False)
+            if actual["sha256"] != stop["workspace"]["after_snapshot"]["sha256"]:
+                publish(directory / ("verify-" + uuid.uuid4().hex) / "snapshot.json", actual["raw"])
+                raise Stop("worker content drift: " + sid)
             return stop
         if quiescent(snap, run=self):
             workspace = self.workspace(sid)
