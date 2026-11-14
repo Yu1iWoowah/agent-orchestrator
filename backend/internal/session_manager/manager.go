@@ -2948,6 +2948,19 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		return err
 	}
 	defer releaseReplacement()
+	// Like Kill, cancel a background chat start first so its controller cannot
+	// come up after retirement, and bound that wait and every chat stop below
+	// with Kill's teardown budget.
+	budget := m.killTeardown
+	if budget <= 0 {
+		budget = killTeardownBudget
+	}
+	cancelCtx, cancelProvisioning := context.WithTimeout(ctx, budget)
+	err = m.cancelAsyncChatSpawn(cancelCtx, id)
+	cancelProvisioning()
+	if err != nil {
+		return fmt.Errorf("retire replacement %s: cancel provisioning: %w", id, err)
+	}
 	if err := m.beginAgentOperation(ctx, id, agentOperationRetire); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrOperationInProgress
@@ -2963,6 +2976,16 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	if !ok || rec.IsTerminated {
 		return nil
 	}
+	// A chat session has no runtime handle; its controller and provider stop
+	// only through the chat service. A failed stop is logged, as in Kill.
+	stopChat := func() {
+		if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
+			return
+		}
+		stopCtx, cancelStop := context.WithTimeout(ctx, budget)
+		defer cancelStop()
+		m.stopChatBestEffort(stopCtx, id)
+	}
 	rows, workspaceProject, rowErr := m.workspaceProjectRows(ctx, rec)
 	if rowErr != nil {
 		return fmt.Errorf("retire replacement %s: workspace rows: %w", id, rowErr)
@@ -2975,7 +2998,7 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 			return fmt.Errorf("retire replacement %s: native session: %w", id, err)
 		}
 		if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-			m.stopChatBestEffort(ctx, id)
+			stopChat()
 		} else if handle := runtimeHandle(rec.Metadata); handle.ID != "" {
 			if err := m.runtime.Destroy(ctx, handle); err != nil {
 				return fmt.Errorf("retire replacement %s: runtime: %w", id, err)
@@ -2991,6 +3014,7 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		if err := m.terminateNativeSession(ctx, rec); err != nil {
 			return fmt.Errorf("retire replacement %s: native session: %w", id, err)
 		}
+		stopChat()
 		if handle.ID != "" {
 			if err := m.runtime.Destroy(ctx, handle); err != nil {
 				return fmt.Errorf("retire replacement %s: runtime: %w", id, err)
@@ -3020,6 +3044,9 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	if err := m.importAttachments(ctx, rec); err != nil {
 		return fmt.Errorf("retire replacement %s: preserve attachments: %w", id, err)
 	}
+	// Stop the controller before stash and worktree removal so the provider
+	// cannot keep writing into the workspace being preserved.
+	stopChat()
 
 	if workspaceProject {
 		return m.retireWorkspaceProjectForReplacement(ctx, rec, rows)
