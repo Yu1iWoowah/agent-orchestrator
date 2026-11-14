@@ -708,6 +708,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("managed hash", sent)
         self.assertLessEqual(len(message.encode()), 4096)
 
+    def test_2a_requirements_keep_tracked_and_gitlink_out_of_classification(self):
+        run = self.run_fixture()
+        run.state["stop_index_sha256"], run.cli.documents = "0" * 64, dict
+        with patch.object(run, "wait"):
+            h.phase_2a(run)
+        sent = h.decode(run.cli.calls[-1][-1])["instruction"]["requirements"]
+        for phrase in ("tracked檔與gitlink", "列入則helper停止"):
+            self.assertIn(phrase, sent)
+
     def test_T04_T05_four_harness_pairs_complete_fake_protocol(self):
         for old_harness in ("claude-code", "codex"):
             for new_harness in ("claude-code", "codex"):
