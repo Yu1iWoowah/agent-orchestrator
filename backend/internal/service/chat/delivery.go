@@ -145,6 +145,11 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	if !a.Accepts(r) {
 		return a, ports.ErrChatDeliveryUnverified
 	}
+	// A legacy settlement is final unless the host proves acceptance; a later
+	// incomplete receipt must not rewrite it or drop its daemon marker.
+	if a.ExecutionSettled && a.Disposition == domain.ChatDeliveryUnknown && r.Disposition != domain.ChatDeliveryAccepted {
+		return a, nil
+	}
 	if a.ExecutionSettled && r.ExecutionSettled && r.Disposition == domain.ChatDeliveryAccepted && a.AttentionID == "" && a.BlockedSince == nil && a.ErrorCode == "" {
 		return a, nil
 	}

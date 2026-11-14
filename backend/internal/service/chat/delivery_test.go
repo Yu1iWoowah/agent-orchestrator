@@ -531,6 +531,15 @@ func TestLegacyDeliverySettlesOnlyWithoutCorrelationAfterCompletedMembers(t *tes
 				if pending, err := h.st.PendingChatDeliveries(t.Context(), testSession); err != nil || len(pending) != 0 {
 					t.Fatalf("settled legacy attempt still pending: %+v %v", pending, err)
 				}
+				// A later host receipt short of acceptance cannot rewrite the settlement.
+				late := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, ProviderEpoch: "host-epoch", ProviderRequestID: "rpc-1", Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ObservedAt: clock.Now()}
+				if _, err := h.ctrl.RecordDeliveryReceiptForTest(t.Context(), late); err != nil {
+					t.Fatal(err)
+				}
+				kept, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if err != nil || kept.Version != saved.Version || kept.ErrorCode != "CHAT_DELIVERY_LEGACY_SETTLED" || kept.Receipt.ProviderEpoch != "" {
+					t.Fatalf("host receipt rewrote legacy settlement: %+v %v", kept, err)
+				}
 				if err := h.svc.StopAll(t.Context()); err != nil {
 					t.Fatalf("shutdown preflight still blocked: %v", err)
 				}

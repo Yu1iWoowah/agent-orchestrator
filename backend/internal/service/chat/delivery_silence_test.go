@@ -54,16 +54,19 @@ func TestSilenceBudgetUsesNativeProgressTime(t *testing.T) {
 	}
 	clock.awaitTimer(t, time.Second)
 	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
-	for range 2 {
+	// Acceptance A4 observes two minutes of silence, checked at every recheck.
+	for silence := 30 * time.Second; silence <= 2*time.Minute; silence += 30 * time.Second {
 		if key := <-conv.queryCount; key != a.ID {
 			t.Fatal(key)
 		}
 		clock.awaitTimer(t, 30*time.Second)
 		silent, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
-		if err != nil || silent.AttentionID != "" || silent.BlockedSince != nil || !silent.LastProgressAt.Equal(eventAt) {
-			t.Fatalf("silent started execution opened a question or refreshed progress: %+v %v", silent, err)
+		if err != nil || silent.AttentionID != "" || silent.BlockedSince != nil || !silent.LastProgressAt.Equal(eventAt) || clock.Now().Sub(eventAt) != silence {
+			t.Fatalf("after %s silence a started execution opened a question or refreshed progress: %+v %v", clock.Now().Sub(eventAt), silent, err)
 		}
-		h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+		if silence < 2*time.Minute {
+			h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+		}
 	}
 	if saved.Disposition != domain.ChatDeliveryAccepted {
 		t.Fatal("accepted changed")
