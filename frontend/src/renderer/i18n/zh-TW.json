@@ -3895,6 +3895,7 @@
 	"decision.savedQueued": "已保存 · 待投遞",
 	"decision.savedDelivered": "已保存 · 已投遞",
 	"decision.savedFailed": "已保存 · 投遞失敗",
+	"decision.savedRecorded": "已記錄 · 不會送給 agent",
 	"decision.cancelled": "已撤銷",
 	"decision.expired": "已過期",
 	"decision.source": "來源：{{session}} · {{agent}}",

@@ -84,3 +84,8 @@ func (s *Service) WaitBackgroundWakeForTest(id domain.SessionID) bool {
 // SetAfterSettleCutoffForTest runs hook after a start reads its settlement
 // cutoff and before it settles what an earlier controller left behind.
 func (s *Service) SetAfterSettleCutoffForTest(hook func()) { s.afterSettleCutoff = hook }
+
+// RecordDeliveryReceiptForTest feeds a host receipt through the native path.
+func (c *Controller) RecordDeliveryReceiptForTest(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
+	return c.recordDeliveryReceipt(ctx, r)
+}

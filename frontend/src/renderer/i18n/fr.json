@@ -3983,6 +3983,7 @@
 	"decision.savedQueued": "Saved · Pending delivery",
 	"decision.savedDelivered": "Saved · Delivered",
 	"decision.savedFailed": "Saved · Delivery failed",
+	"decision.savedRecorded": "Recorded · Not sent to the agent",
 	"decision.cancelled": "Cancelled",
 	"decision.expired": "Expired",
 	"decision.source": "Source: {{session}} · {{agent}}",

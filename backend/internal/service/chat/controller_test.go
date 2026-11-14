@@ -88,6 +88,7 @@ func boundedSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {
 type fakeConversation struct {
 	deliveryNow      func() time.Time
 	deliveryPrepared bool
+	deliveryDenied   bool // a missing receipt answers like a host without a record
 	deliveryReceipts map[string]domain.ChatDeliveryReceipt
 
 	// noNetwork makes SandboxAllowsNetwork report a sandbox with no network.

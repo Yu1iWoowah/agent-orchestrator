@@ -130,7 +130,8 @@ func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDel
 
 func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
 	journal, ok := c.store.(chatDeliveryJournal)
-	if !ok || r.Validate() != nil {
+	// Only the daemon may settle an unknown outcome (settleLegacyDelivery).
+	if !ok || r.Validate() != nil || r.Disposition == domain.ChatDeliveryUnknown && r.ExecutionSettled {
 		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
 	}
 	current, err := c.deliveryOwner(ctx, journal)
@@ -143,6 +144,11 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	}
 	if !a.Accepts(r) {
 		return a, ports.ErrChatDeliveryUnverified
+	}
+	// A legacy settlement is final unless the host proves acceptance; a later
+	// incomplete receipt must not rewrite it or drop its daemon marker.
+	if a.ExecutionSettled && a.Disposition == domain.ChatDeliveryUnknown && r.Disposition != domain.ChatDeliveryAccepted {
+		return a, nil
 	}
 	if a.ExecutionSettled && r.ExecutionSettled && r.Disposition == domain.ChatDeliveryAccepted && a.AttentionID == "" && a.BlockedSince == nil && a.ErrorCode == "" {
 		return a, nil
@@ -178,9 +184,10 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	}
 	if !r.ExecutionSettled {
 		nextCheck := a.LastProgressAt.Add(30 * time.Second)
-		if nativeWaiting {
-			// The host still owns this exact native approval/tool. Recheck that
-			// named wait without changing when its last event actually happened.
+		if nativeWaiting || nativeProgress && a.BlockedSince == nil && !nextCheck.After(c.now()) {
+			// The host still owns this exact native approval/tool, or a started
+			// execution whose silence alone is no evidence. Recheck it without
+			// changing when its last event actually happened.
 			nextCheck = c.now().Add(30 * time.Second)
 		}
 		a.NextCheckAt = &nextCheck
@@ -207,19 +214,25 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 				}
 			}
 		}
-		resumed := false
-		c.mu.Lock()
-		if c.pendingDeliveryID == a.ID && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
-			resumed = true
-			c.pendingDeliveryID = ""
+		if saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent {
+			c.releasePendingDelivery(a.ID)
 		}
-		c.mu.Unlock()
 		c.wakeDeliveryMonitor(false)
-		if resumed && !c.outboundQuiescing() {
-			c.queueSettingsRecheck()
-		}
 	}
 	return saved, err
+}
+
+// releasePendingDelivery resumes queued work held behind a now-settled original.
+func (c *Controller) releasePendingDelivery(id string) {
+	c.mu.Lock()
+	resumed := c.pendingDeliveryID == id
+	if resumed {
+		c.pendingDeliveryID = ""
+	}
+	c.mu.Unlock()
+	if resumed && !c.outboundQuiescing() {
+		c.queueSettingsRecheck()
+	}
 }
 
 // ACK only follows a durable terminal receipt. Failure retains a bounded retry
@@ -317,12 +330,19 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 		if errors.Is(context.Cause(queryCtx), context.DeadlineExceeded) {
 			return a, errors.Join(ports.ErrChatDeliveryUnverified, context.DeadlineExceeded)
 		}
+		if errors.Is(err, ports.ErrChatDeliveryDenied) {
+			return a, ports.ErrChatDeliveryDenied
+		}
 		return a, ports.ErrChatDeliveryUnverified
 	}
 	if receipt.AttemptID != a.ID {
 		return a, ports.ErrChatDeliveryUnverified
 	}
 	return c.recordDeliveryReceipt(ctx, receipt)
+}
+
+type deliveryAttentionBlocker interface {
+	BlockChatDeliveryWithAttention(context.Context, domain.ChatDeliveryAttempt, int64, domain.AgentSettingsOwner, domain.AttentionQuestionCreate, time.Time) (domain.ChatDeliveryAttempt, error)
 }
 
 type deliveryAttentionWriter interface {
@@ -362,13 +382,10 @@ func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	}
 	a.Version++
 	a.UpdatedAt = c.now()
-	a, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
-	if err != nil {
-		return err
-	}
-	attention, ok := c.store.(deliveryAttentionWriter)
+	blocker, ok := c.store.(deliveryAttentionBlocker)
 	if !ok || a.AttentionID != "" {
-		return nil
+		_, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
+		return err
 	}
 	payload, err := json.Marshal(domain.AttentionQuestionPayload{SchemaVersion: 1,
 		Title: "訊息執行狀態待確認", Explanation: "輸入與原執行紀錄已保留。尚未取得足夠證據，AO 不會自動重送；請檢查原執行或等待連線恢復。",
@@ -380,14 +397,58 @@ func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	if err != nil {
 		return err
 	}
-	q, _, err := attention.CreateAttentionQuestion(ctx, domain.AttentionQuestionCreate{ID: uuid.NewString(), OriginSessionID: c.sessionID, ClientKey: "delivery-" + a.ID + "-" + strconv.FormatInt(a.BlockedSince.UnixNano(), 36), Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: payload}, c.now())
-	if err != nil {
-		return err
-	}
-	a.AttentionID, a.UpdatedAt = q.ID, c.now()
-	a.Version++
-	_, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
+	// The prompt and its attempt link commit together: an answer can never
+	// reach an unlinked delivery prompt and be sent to the agent.
+	prompt := domain.AttentionQuestionCreate{ID: uuid.NewString(), OriginSessionID: c.sessionID, ClientKey: "delivery-" + a.ID + "-" + strconv.FormatInt(a.BlockedSince.UnixNano(), 36), Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: payload}
+	_, err = blocker.BlockChatDeliveryWithAttention(ctx, a, a.Version-1, ownerForSettings(current), prompt, c.now())
 	return err
+}
+
+// settleLegacyDelivery ends an attempt left by a host without delivery
+// receipts (user decision u1-delivery-unknown-1 v2, dlv-d6-write-1). It needs
+// all three facts: no epoch or request ID, the host answered without a record,
+// and every member turn completed. The outcome stays unknown and is never
+// replayed; only a daemon-written incomplete receipt may carry the settlement.
+func (c *Controller) settleLegacyDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (bool, error) {
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
+	journal, ok := c.store.(chatDeliveryJournal)
+	if !ok {
+		return false, ports.ErrChatDeliveryUnverified
+	}
+	current, err := c.deliveryOwner(ctx, journal)
+	if err != nil {
+		return false, err
+	}
+	a, err = journal.ChatDeliveryAttempt(ctx, c.sessionID, a.ID)
+	if err != nil || a.ExecutionSettled || a.Disposition != domain.ChatDeliveryUnknown && a.Disposition != domain.ChatDeliveryReserved {
+		return false, err
+	}
+	r := domain.ChatDeliveryReceipt{AttemptID: a.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: c.now()}
+	if a.Receipt != nil {
+		if a.Receipt.ProviderEpoch != "" || a.Receipt.ProviderRequestID != "" {
+			return false, nil
+		}
+		r.ProviderTurnID = a.Receipt.ProviderTurnID
+	}
+	for _, id := range a.TurnIDs {
+		turn, err := c.store.TurnByID(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if turn.State != domain.TurnStateCompleted {
+			return false, nil
+		}
+	}
+	a.Version++
+	a.UpdatedAt = laterChatTime(c.now(), a.UpdatedAt)
+	a.Disposition, a.Receipt, a.ExecutionSettled, a.EvidenceLevel = domain.ChatDeliveryUnknown, &r, true, 0
+	a.NextCheckAt, a.BlockedSince, a.ErrorCode = nil, nil, "CHAT_DELIVERY_LEGACY_SETTLED"
+	if _, err := journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current)); err != nil {
+		return false, err
+	}
+	c.releasePendingDelivery(a.ID)
+	return true, nil
 }
 
 func (c *Controller) startDeliveryMonitor() {
@@ -473,6 +534,14 @@ func (c *Controller) monitorDeliveries() {
 						}
 						if queryErr == nil && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
 							continue
+						}
+						if errors.Is(queryErr, ports.ErrChatDeliveryDenied) {
+							settleCtx, settleCancel := c.deadlineContext(context.Background(), 5*time.Second)
+							settled, settleErr := c.settleLegacyDelivery(settleCtx, a)
+							settleCancel()
+							if settled && settleErr == nil {
+								continue
+							}
 						}
 						if queryErr == nil && saved.NextCheckAt != nil && saved.NextCheckAt.After(c.now()) {
 							due = *saved.NextCheckAt

@@ -108,7 +108,7 @@ export function QuestionDecisionView({ question, hostId, submitAllowed, onClose,
 			<div ref={notice} tabIndex={-1} className="space-y-3 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
 				{references.map((draft) => <PreviousQuestionDraft key={questionDraftKey(draft.scope)} draft={draft} />)}
 				{question.answer ? <p role="status"
-					className="text-sm font-medium">{t(question.answer.deliveryState === "queued" ? "decision.savedQueued" : question.answer.deliveryState === "delivered" ? "decision.savedDelivered" : "decision.savedFailed")}</p> :
+					className="text-sm font-medium">{t(question.answer.deliveryState === "queued" ? "decision.savedQueued" : question.answer.deliveryState === "delivered" ? "decision.savedDelivered" : question.answer.deliveryState === "recorded" ? "decision.savedRecorded" : "decision.savedFailed")}</p> :
 					question.state === "cancelled" || question.state === "expired" ? <p role="status" className="text-sm font-medium">{t(question.state === "cancelled" ? "decision.cancelled" : "decision.expired")}</p> : null}
 				{question.answer?.lastError ? <details className="text-sm"><summary className="cursor-pointer">{t("decision.deliveryDetails")}</summary><p className="mt-2 whitespace-pre-wrap">{question.answer.lastError}</p></details> : null}
 				{!submitAllowed && question.state === "open" ? <div
