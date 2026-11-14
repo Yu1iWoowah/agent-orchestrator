@@ -18,7 +18,9 @@ func replacementQueueError(err error) error {
 	return err
 }
 
-func (s *Store) validateUndispatchedConversation(ctx context.Context, q *gen.Queries, id domain.SessionID, conversationID string) error {
+// starting accepts a session whose controller the caller is starting: that
+// start delivers the input, so it need not be provisioning or hibernated.
+func (s *Store) validateUndispatchedConversation(ctx context.Context, q *gen.Queries, id domain.SessionID, conversationID string, starting bool) error {
 	row, err := q.GetSession(ctx, id)
 	if err != nil {
 		return fmt.Errorf("check queued session %s: %w", id, err)
@@ -26,7 +28,7 @@ func (s *Store) validateUndispatchedConversation(ctx context.Context, q *gen.Que
 	if row.IsTerminated {
 		return domain.ErrSessionNotProvisioning
 	}
-	if !row.ProvisionState.IsProvisioning() && !row.HibernatedAt.Valid {
+	if !row.ProvisionState.IsProvisioning() && !row.HibernatedAt.Valid && !starting {
 		rec := rowToRecord(row)
 		if rec.Kind != domain.KindOrchestrator {
 			return domain.ErrSessionNotProvisioning

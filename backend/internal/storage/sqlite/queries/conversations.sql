@@ -841,6 +841,17 @@ SET state = 'failed',
 WHERE handled_by_session_id = ? AND state IN ('queued', 'running')
   AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id);
 
+-- Same settlement for a start that accepted input while it was starting: input
+-- queued since that start began is not orphaned and stays for its drain.
+-- name: SettleOrphanedConversationTurnsBefore :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = sqlc.arg(completed_at)
+WHERE handled_by_session_id = sqlc.arg(handled_by_session_id)
+  AND (state = 'running' OR (state = 'queued' AND requested_at < sqlc.arg(queued_before)))
+  AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id);
+
 -- Reviewer Chat has its own controller generation on review, separate from
 -- the worker session. Settle only turns owned by that review conversation.
 -- name: FailOrphanedReviewActivities :exec

@@ -5254,6 +5254,29 @@ func (q *Queries) SettleOrphanedConversationTurns(ctx context.Context, arg Settl
 	return err
 }
 
+const settleOrphanedConversationTurnsBefore = `-- name: SettleOrphanedConversationTurnsBefore :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = ?1
+WHERE handled_by_session_id = ?2
+  AND (state = 'running' OR (state = 'queued' AND requested_at < ?3))
+  AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
+`
+
+type SettleOrphanedConversationTurnsBeforeParams struct {
+	CompletedAt        sql.NullTime
+	HandledBySessionID domain.SessionID
+	QueuedBefore       time.Time
+}
+
+// Same settlement for a start that accepted input while it was starting: input
+// queued since that start began is not orphaned and stays for its drain.
+func (q *Queries) SettleOrphanedConversationTurnsBefore(ctx context.Context, arg SettleOrphanedConversationTurnsBeforeParams) error {
+	_, err := q.db.ExecContext(ctx, settleOrphanedConversationTurnsBefore, arg.CompletedAt, arg.HandledBySessionID, arg.QueuedBefore)
+	return err
+}
+
 const settleOrphanedReviewTurns = `-- name: SettleOrphanedReviewTurns :exec
 UPDATE conversation_turns
 SET state = 'failed',
