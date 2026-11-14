@@ -3166,7 +3166,7 @@ def prepare_request(root, initial, old, human_id, control_id, run_id):
         target = dict(block.get("target") or {}, mode="chat")
         request = {"schema": "rh-start-request/1", "request_id": run_id, "project_id": PROJECT, "old_id": old,
                    "prepared_by": {"session_id": old, "turn_id": control["turnId"]}, "target": target,
-                   "authority": {"source_refs": ["human"], "old_verified_scope": "three-step-handoff-this-project", "t0_source_ref": "human",
+                   "authority": {"source_refs": ["human"], "t0_source_ref": "human",
                                  "t0_created_at": created, "t0_precision": "sub-second" if "." in created else "second"},
                    "workers": block.get("workers"),
                    "workspace_index": [dict(row, source_refs=["control"]) for row in block.get("workspace_index") or []],

@@ -1651,6 +1651,10 @@ class SpeedPreparationTests(unittest.TestCase):
             entries[1]["streaming"] = True
         elif change == "new-human":
             entries.append(dict(id="later", kind="message", role="user", origin="human", sequence=3, text="先停"))
+        elif change == "steer-before-control":
+            # A steer sent while the preparing turn runs lands between the original human and the control record.
+            entries[1]["sequence"] = 3
+            entries.insert(1, dict(id="steer", kind="message", role="user", origin="human", sequence=2, text="改向"))
         elif change in ("no-marker", "named-stop"):
             entries[1]["text"] = "control" if change == "no-marker" else entries[1]["text"].replace("無具名停", "⑤")
             source = next(s for s in fake.run.request["sources"] if s["ref"] == "workspace")
@@ -1665,7 +1669,8 @@ class SpeedPreparationTests(unittest.TestCase):
         self.assertTrue(h.prepared_turn_ready(fake.run))
         self.assertEqual(fake.run.state["preparation"]["settled_revisions"], {"workspace": 4})
         stops = {"failed": "preparing turn ended", "cancelled": "preparing turn ended", "text": "changed or not settled",
-                 "streaming": "changed or not settled", "new-human": "new human input", "no-marker": "rh-control",
+                 "streaming": "changed or not settled", "new-human": "new human input", "steer-before-control": "new human input",
+                 "no-marker": "rh-control",
                  "named-stop": "names a stop"}
         for change, reason in stops.items():
             with self.subTest(change=change):
