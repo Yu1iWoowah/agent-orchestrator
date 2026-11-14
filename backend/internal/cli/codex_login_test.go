@@ -51,7 +51,7 @@ func TestCodexLoginRunsSelectedNativeLoginMethod(t *testing.T) {
 				},
 			}
 
-			cmd := newCodexLoginCommand(&commandContext{deps: deps.withDefaults()})
+			cmd := newCodexLoginCommand(newTestCommandContext(t, deps.withDefaults()))
 			cmd.SetIn(deps.In)
 			cmd.SetOut(deps.Out)
 			cmd.SetErr(deps.Err)
@@ -97,7 +97,7 @@ func TestCodexLoginUsesExplicitResolvedExecutable(t *testing.T) {
 		},
 	}
 
-	cmd := newCodexLoginCommand(&commandContext{deps: deps.withDefaults()})
+	cmd := newCodexLoginCommand(newTestCommandContext(t, deps.withDefaults()))
 	cmd.SetArgs([]string{"--executable", "/managed/bin/codex", "--use-default-credential-store"})
 	cmd.SetIn(deps.In)
 	cmd.SetOut(deps.Out)
@@ -154,7 +154,7 @@ func TestCodexLoginReportsMissingBinaryAndNativeFailure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := newCodexLoginCommand(&commandContext{deps: tt.deps.withDefaults()})
+			cmd := newCodexLoginCommand(newTestCommandContext(t, tt.deps.withDefaults()))
 			if tt.deps.In == nil {
 				cmd.SetIn(strings.NewReader("1\n"))
 			} else {

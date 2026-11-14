@@ -71,7 +71,7 @@ func project(t *checks, bin string, input rh.Input, event ports.ChatEvent) []byt
 	}
 	conversation.LatestSequence = max(conversation.LatestSequence, input.Sequence)
 	conversation.SessionID = input.Actor
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(daemonIdentity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/conversation") {
 			_ = json.NewEncoder(w).Encode(conversation)
@@ -80,7 +80,7 @@ func project(t *checks, bin string, input rh.Input, event ports.ChatEvent) []byt
 		} else {
 			_ = json.NewEncoder(w).Encode(controllers.SessionResponse{Session: session})
 		}
-	}))
+	})))
 	defer server.Close()
 	dir, err := os.MkdirTemp(os.Getenv("TMPDIR"), "rh-proj-")
 	if err != nil {

@@ -47,6 +47,7 @@ type daemonStatus struct {
 	Ready          string     `json:"ready,omitempty"`
 	Error          string     `json:"error,omitempty"`
 	owned          bool
+	probeErr       error
 }
 
 type probeResult struct {
@@ -64,9 +65,12 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 		Short: "Show AO daemon status",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := ctx.inspectDaemon(cmd.Context())
+			st, err := ctx.inspectDaemonConnection(cmd.Context())
 			if err != nil {
 				return err
+			}
+			if st.StartedAt != nil {
+				st.Uptime = formatUptime(ctx.deps.Now().Sub(*st.StartedAt))
 			}
 			if opts.json {
 				return writeJSON(cmd.OutOrStdout(), st)

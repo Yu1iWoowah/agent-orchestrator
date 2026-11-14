@@ -7,8 +7,12 @@ directly or call runtime, workspace, tracker, or agent adapters in-process.
 
 When using the CLI directly from a shell, make sure the daemon is running first
 by opening the desktop app or running `ao daemon` under a service manager. Product commands such as
-`ao agent ls` and `ao spawn` call the loopback daemon and will fail with a
-"daemon is not running" error if no `running.json` points at a live process. From
+`ao agent ls` and `ao spawn` call the loopback daemon. They fail with a
+"daemon is not running" error when there is no `running.json`, and they send
+nothing when the daemon at that port does not answer `/healthz` and `/readyz`
+with the AO service name and the run-file PID. The host PID itself does not need
+to be visible, so a sandbox that hides host processes but allows loopback still
+reaches the daemon. From
 a source checkout, build and run the local binary explicitly, for example:
 
 ```bash
@@ -28,7 +32,7 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `ao start`                    | Open the desktop application, downloading a release if necessary; the app supervises its daemon.                                                                        |
 | `ao stop`                     | Gracefully stop the daemon via loopback `POST /shutdown` after verifying daemon identity.                                         |
-| `ao status` / `--json`        | Report daemon state from `running.json`, process liveness, `/healthz`, and `/readyz`.                                             |
+| `ao status` / `--json`        | Report daemon state from `running.json` and the identity in `/healthz` and `/readyz`; host PID visibility is not required.        |
 | `ao doctor` / `--json`        | Check config, data directory, DB-file presence, daemon state, `git`, and (on Darwin/Linux) `tmux`; on Windows conpty is built in. |
 | `ao completion <shell>`       | Generate completions for `bash`, `zsh`, `fish`, or `powershell`.                                                                  |
 | `ao version` / `ao --version` | Print build metadata.                                                                                                             |

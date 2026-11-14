@@ -34,8 +34,16 @@ type mcpReply struct {
 // runMCP feeds lines to `ao mcp` on stdin and returns its replies.
 func runMCP(t *testing.T, lines ...string) []mcpReply {
 	t.Helper()
+	return runMCPWithClient(t, nil, lines...)
+}
+
+// runMCPWithClient lets a subtest reuse the guarded client of the parent test
+// that owns the fixture daemon.
+func runMCPWithClient(t *testing.T, client *http.Client, lines ...string) []mcpReply {
+	t.Helper()
 	stdout, stderr, err := executeCLI(t, Deps{
 		In:           strings.NewReader(strings.Join(lines, "\n") + "\n"),
+		HTTPClient:   client,
 		ProcessAlive: func(int) bool { return true },
 	}, "mcp")
 	if err != nil || stderr != "" {
@@ -224,6 +232,7 @@ func TestMCPToolFailuresAreToolResults(t *testing.T) {
 		`{"message":"invalid render: a title is required","code":"RENDER_INVALID","requestId":"q1"}`)
 	writeRunFileFor(t, cfg, srv)
 	gone := filepath.Join(t.TempDir(), "gone.png")
+	client := apiFixtureClient(t, nil)
 
 	cases := []struct {
 		name string
@@ -240,7 +249,7 @@ func TestMCPToolFailuresAreToolResults(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			capture.called = false
-			reply := runMCP(t, tc.call)[0]
+			reply := runMCPWithClient(t, client, tc.call)[0]
 			if reply.Error != nil || !reply.Result.IsError || len(reply.Result.Content) != 1 || reply.Result.Content[0].Text != tc.want {
 				t.Fatalf("reply = %+v, want tool error %q", reply, tc.want)
 			}

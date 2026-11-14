@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -190,7 +189,7 @@ func TestHCGDelegationSameCallerOffline(t *testing.T) {
 			svc := hcgsvc.NewWithDelegationProvider(ctx, cfg.dataDir, store, provider, nil)
 			defer svc.Close()
 			router := httpd.NewRouterWithControl(config.Config{DataDir: cfg.dataDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{HCGDelegation: svc}, httpd.ControlDeps{})
-			server := httptest.NewServer(router)
+			server := newFixtureServer(t, router)
 			defer server.Close()
 			writeRunFileFor(t, cfg, server)
 			call := func(exit int, args ...string) string {
@@ -442,7 +441,7 @@ func TestHCGDelegationSharedHostRevisionBoundary(t *testing.T) {
 	defer svc.Close()
 	projectService := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, DelegationPolicyChanged: svc.DelegationProjectPolicyChanged})
 	router := httpd.NewRouterWithControl(config.Config{DataDir: cfg.dataDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{HCGDelegation: svc}, httpd.ControlDeps{})
-	server := httptest.NewServer(router)
+	server := newFixtureServer(t, router)
 	defer server.Close()
 	writeRunFileFor(t, cfg, server)
 	type outcome struct {

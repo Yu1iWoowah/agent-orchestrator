@@ -3,7 +3,6 @@ package cli
 import (
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -12,7 +11,7 @@ func TestRemoteHostCLIUsesLocalControlAPI(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	enabled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/mobile/") {
 			requests = append(requests, r.Method+" "+r.URL.Path)
 		}
@@ -36,6 +35,7 @@ func TestRemoteHostCLIUsesLocalControlAPI(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	writeRunFileFor(t, cfg, srv)
+	client := apiFixtureClient(t, nil)
 
 	for _, tc := range []struct {
 		name, verb string
@@ -49,7 +49,7 @@ func TestRemoteHostCLIUsesLocalControlAPI(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests = nil
-			out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "remote-host", tc.verb)
+			out, _, err := executeCLI(t, Deps{HTTPClient: client, ProcessAlive: func(int) bool { return true }}, "remote-host", tc.verb)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,7 +72,7 @@ func TestRemoteHostCLITunnelFromDisabledAndStatus(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	enabled, ready, failed := false, false, false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/mobile/") {
 			requests = append(requests, r.Method+" "+r.URL.Path)
 		}
@@ -131,7 +131,7 @@ func TestRemoteHostCLITunnelFromDisabledAndStatus(t *testing.T) {
 func TestRemoteHostCLITunnelOnlyUsesLoopbackRoute(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/mobile/") {
 			requests = append(requests, r.Method+" "+r.URL.Path)
 		}
@@ -155,7 +155,7 @@ func TestRemoteHostCLITunnelOnlyUsesLoopbackRoute(t *testing.T) {
 func TestRemoteHostCLITunnelRefusesLoopbackOnlyListener(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/mobile/") {
 			requests = append(requests, r.Method+" "+r.URL.Path)
 		}
@@ -176,7 +176,7 @@ func TestRemoteHostCLITunnelRefusesLoopbackOnlyListener(t *testing.T) {
 func TestRemoteHostCLITunnelExistingListenerKeepsPassword(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/mobile/") {
 			requests = append(requests, r.Method+" "+r.URL.Path)
 		}
@@ -203,7 +203,7 @@ func TestRemoteHostCLIRejectsArgsAndPreservesDaemonError(t *testing.T) {
 	var requests []string
 	statusError := false
 	tunnelError := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/mobile/") {
 			requests = append(requests, r.Method+" "+r.URL.Path)
 		}

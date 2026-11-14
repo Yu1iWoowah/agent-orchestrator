@@ -26,6 +26,7 @@ type sendCapture struct {
 // server. It mirrors the run-file convention the other CLI tests use.
 func writeRunFileFor(t *testing.T, cfg testConfig, srv *httptest.Server) {
 	t.Helper()
+	bindTestHTTPFixture(t, srv, os.Getpid())
 	if err := runfile.Write(cfg.runFile, runfile.Info{
 		PID: os.Getpid(), Port: serverPort(t, srv.URL), StartedAt: time.Unix(100, 0).UTC(),
 	}); err != nil {
@@ -36,7 +37,7 @@ func writeRunFileFor(t *testing.T, cfg testConfig, srv *httptest.Server) {
 func sendServer(t *testing.T, status int, respBody string) (*httptest.Server, *sendCapture) {
 	t.Helper()
 	capture := &sendCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
@@ -90,7 +91,7 @@ func TestSend_SteerActiveTurnUsesProviderSteeringWithoutQueueing(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "source-2")
 	cfg := setConfigEnv(t)
 	var paths, bodies []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -129,7 +130,7 @@ func TestSend_SteerIdleStartsOneNormalChatTurn(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	var paths, ids []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -171,7 +172,7 @@ func TestSend_SteerStateChangeRaceUsesOneAtomicRequest(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	var paths []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -214,7 +215,7 @@ func TestSend_SteerFailureDoesNotSilentlyQueue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var calls int
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/internal/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -242,7 +243,7 @@ func TestSend_SteerFailureDoesNotSilentlyQueue(t *testing.T) {
 func TestSend_SteerUncertainExposesHandleForRecovery(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req conversationMessageAPIRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -272,7 +273,7 @@ func TestSend_SteerUncertainExposesHandleForRecovery(t *testing.T) {
 func TestSend_SteerTransportFailureExposesRetryHandle(t *testing.T) {
 	cfg := setConfigEnv(t)
 	captured := make(chan conversationMessageAPIRequest, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -314,7 +315,7 @@ func TestSend_SteerMalformedSuccessExposesRetryHandle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var req conversationMessageAPIRequest
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/internal/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -343,7 +344,7 @@ func TestSend_SteerMalformedSuccessExposesRetryHandle(t *testing.T) {
 func TestSend_SteerServerFailureExposesRetryHandle(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req conversationMessageAPIRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -370,7 +371,7 @@ func TestSend_SteerServerFailureExposesRetryHandle(t *testing.T) {
 func TestSend_SteerRecoverOnlyReusesHandleWithoutMessage(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req conversationMessageAPIRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -408,7 +409,7 @@ func TestSend_SteerRecoverOnlyRequiresHandle(t *testing.T) {
 func TestSend_SteerRecoverOnlyNeverFallsBackToNewMessage(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var calls int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			w.WriteHeader(http.StatusNoContent)
 			return

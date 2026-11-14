@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,7 +13,7 @@ func TestOrchestratorReplaceAcceptsWithoutRunningLifecycle(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	const key = "6f94c7ce-9e73-4ec1-8c27-4602ef1126b5"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}

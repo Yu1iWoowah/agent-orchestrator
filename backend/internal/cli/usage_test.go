@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -107,7 +106,7 @@ func TestUsageReportingSameCaller(t *testing.T) {
 	svc := hcgsvc.New(t.Context(), cfg.dataDir, store)
 	t.Cleanup(svc.Close)
 	router := httpd.NewRouterWithControl(config.Config{DataDir: cfg.dataDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{HCGReporting: svc, UsageEvents: usagesvc.NewEventsReader(store)}, httpd.ControlDeps{})
-	srv := httptest.NewServer(router)
+	srv := newFixtureServer(t, router)
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	call := func(wantExit int, args ...string) string {
@@ -193,7 +192,7 @@ func TestUsageReportingSameCaller(t *testing.T) {
 	if got, err := restarted.Get(t.Context(), "s"); err != nil || !got.Available || !got.Active {
 		t.Fatalf("startup probe: %+v %v", got, err)
 	}
-	resp, err := http.Get(srv.URL + "/api/v1/usage/sessions/s/events")
+	resp, err := rawFixtureClient(t, srv.Client()).Get(srv.URL + "/api/v1/usage/sessions/s/events")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +212,7 @@ func TestUsageReportingSameCaller(t *testing.T) {
 	}
 	for _, body := range []string{`{}`, `{"enabled":null}`, `{"enabled":true,"path":"private"}`, `{"enabled":true} {}`} {
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/sessions/s/hcg-reporting/override", strings.NewReader(body))
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := rawFixtureClient(t, srv.Client()).Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}

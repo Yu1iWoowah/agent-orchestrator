@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +81,7 @@ func TestReusableHandoffAccountRefreshIsGlobalBeforeCLIFilter(t *testing.T) {
 	service := agentaccounts.New(store, adapters, root, nil, nil)
 	router := chi.NewRouter()
 	router.Route("/api/v1", func(r chi.Router) { (&controllers.AgentAccountsController{Svc: service}).Register(r) })
-	server := httptest.NewServer(router)
+	server := newFixtureServer(t, router)
 	defer server.Close()
 	writeRunFileFor(t, cfg, server)
 	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "ls", "--provider", "codex", "--refresh", "--json")
@@ -143,7 +142,7 @@ func TestAccountCommandsUseOnlyDaemonRoutes(t *testing.T) {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -176,7 +175,7 @@ func TestAccountCommandsUseOnlyDaemonRoutes(t *testing.T) {
 
 func TestAccountDaemonFailurePreservesRequestID(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -195,7 +194,7 @@ func TestAccountDaemonFailurePreservesRequestID(t *testing.T) {
 func TestSpawnExplicitAccountReachesDaemonWithoutGlobalReadiness(t *testing.T) {
 	cfg := setConfigEnv(t)
 	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -225,7 +224,7 @@ func TestAccountLoginReconnectDoesNotStartAnotherProfileOrPrintProviderFields(t 
 	cfg := setConfigEnv(t)
 	verifies := 0
 	gets := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -268,7 +267,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -297,7 +296,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	var out, stderr bytes.Buffer
-	root := NewRootCommand(Deps{Out: &out, Err: &stderr, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{Out: &out, Err: &stderr, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"account", "add", "--provider", "codex", "--no-attach"})
 	err := root.ExecuteContext(ctx)
 	if !cancelled || !errors.Is(err, context.Canceled) || !strings.Contains(stderr.String(), "cleanup confirmed") {
@@ -309,7 +308,7 @@ func TestAccountUseWaitRequiresDurableCompleted(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			gets := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -337,7 +336,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -358,7 +357,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	var stderr bytes.Buffer
-	root := NewRootCommand(Deps{Err: &stderr, Out: io.Discard, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{Err: &stderr, Out: io.Discard, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"account", "add", "--provider", "codex", "--no-attach"})
 	err := root.ExecuteContext(ctx)
 	if !cancelled || !errors.Is(err, context.Canceled) || !strings.Contains(stderr.String(), "cleanup confirmed") {
@@ -368,7 +367,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 
 func TestAccountRemoveShowsOnlyBlockingOwnersWithoutStoppingThem(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return

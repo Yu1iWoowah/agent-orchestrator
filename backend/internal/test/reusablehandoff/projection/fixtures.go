@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -31,6 +32,20 @@ func invoke(bin string, env []string, args ...string) (string, string, error) {
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return out.String(), stderr.String(), err
+}
+
+// daemonIdentity answers the CLI's loopback identity probes for this fixture
+// process, matching the PID that cliEnvironment writes to the run-file.
+func daemonIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		status := map[string]string{"/healthz": "ok", "/readyz": "ready"}[r.URL.Path]
+		if status == "" || r.Method != http.MethodGet {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "service": daemonmeta.ServiceName, "pid": os.Getpid()})
+	})
 }
 
 func cliEnvironment(t *checks, dir string, srv *httptest.Server) []string {
@@ -128,7 +143,7 @@ func Fixtures(t *checks, bin, dir string) {
 		return raw
 	}
 	// Routes are immutable: parallel HTTP requests never race fixture selection.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(daemonIdentity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body any
 		switch {
@@ -182,7 +197,7 @@ func Fixtures(t *checks, bin, dir string) {
 			return
 		}
 		_, _ = w.Write(marshal(body))
-	}))
+	})))
 	defer srv.Close()
 	env := cliEnvironment(t, dir, srv)
 	executeCLI := func(args ...string) (string, string, error) { return invoke(bin, env, args...) }

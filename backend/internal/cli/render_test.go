@@ -14,7 +14,7 @@ import (
 func renderServer(t *testing.T, status int, respBody string) (*httptest.Server, *previewCapture) {
 	t.Helper()
 	capture := &previewCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The root command pings /internal/telemetry/cli-invoked before every
 		// run; only the render routes count as the CLI calling the daemon.
 		if !strings.HasSuffix(r.URL.Path, "/renders") && !strings.HasSuffix(r.URL.Path, "/renders/check") {

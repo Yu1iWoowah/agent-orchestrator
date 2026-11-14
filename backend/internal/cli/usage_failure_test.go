@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -59,7 +58,7 @@ func TestUsageReportingSameCallerFailures(t *testing.T) {
 			svc := hcgsvc.New(t.Context(), cfg.dataDir, store)
 			t.Cleanup(svc.Close)
 			router := httpd.NewRouterWithControl(config.Config{DataDir: cfg.dataDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{HCGReporting: svc}, httpd.ControlDeps{})
-			srv := httptest.NewServer(router)
+			srv := newFixtureServer(t, router)
 			defer srv.Close()
 			writeRunFileFor(t, cfg, srv)
 			integration := func(args ...string) string {

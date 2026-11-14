@@ -134,7 +134,7 @@ func TestClaudeSubmissionRetryReusesContextNonce(t *testing.T) {
 	t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-1")
 	cfg := setConfigEnv(t)
 	var requests []setActivityAPIRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request setActivityAPIRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
@@ -202,7 +202,7 @@ func TestHookConversationFactsNativeTurnIdentity(t *testing.T) {
 func activityServer(t *testing.T, status int, respBody string) (*httptest.Server, *activityCapture) {
 	t.Helper()
 	capture := &activityCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/activity") {
 			http.NotFound(w, r)
 			return
@@ -1974,7 +1974,7 @@ func TestHooks_RetryOnlyUncommittedActivityProjection(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var calls atomic.Int32
 			payloads := make(chan string, 10)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Error(err)
@@ -2313,14 +2313,16 @@ func TestHooks_CursorTerminalFailureReportsCorrelatedCompletion(t *testing.T) {
 	}
 }
 
-func TestHooks_DaemonNotRunningStaysOutOfStderr(t *testing.T) {
+func TestHooksDistinguishesMissingDaemonFromUnreachableEndpoint(t *testing.T) {
 	cases := []struct {
 		name  string
 		setup func(t *testing.T, cfg testConfig)
 		alive func(int) bool
+		quiet bool
+		want  string
 	}{
 		{
-			name: "stale run-file",
+			name: "unreachable endpoint",
 			setup: func(t *testing.T, cfg testConfig) {
 				if err := runfile.Write(cfg.runFile, runfile.Info{
 					PID: 999999, Port: 3001, StartedAt: time.Unix(100, 0).UTC(),
@@ -2329,11 +2331,14 @@ func TestHooks_DaemonNotRunningStaysOutOfStderr(t *testing.T) {
 				}
 			},
 			alive: func(int) bool { return false },
+			want:  "endpoint is unhealthy",
 		},
 		{
 			name:  "no run-file",
 			setup: func(t *testing.T, cfg testConfig) {},
 			alive: func(int) bool { return true },
+			quiet: true,
+			want:  "daemon is not running",
 		},
 	}
 
@@ -2345,20 +2350,21 @@ func TestHooks_DaemonNotRunningStaysOutOfStderr(t *testing.T) {
 
 			_, errOut, err := executeCLI(t, Deps{
 				In:           strings.NewReader(`{"reason":"logout"}`),
+				HTTPClient:   terminalErrorClient(errors.New("fixture daemon endpoint is unreachable")),
 				ProcessAlive: tc.alive,
 			}, "hooks", "claude-code", "session-end")
 			if err != nil {
 				t.Fatalf("hooks must exit 0 when the daemon is down, got: %v", err)
 			}
-			if errOut != "" {
-				t.Errorf("daemon-down must not reach the agent's stderr, got %q", errOut)
+			if tc.quiet && errOut != "" || !tc.quiet && !strings.Contains(errOut, tc.want) {
+				t.Errorf("unexpected daemon diagnostic: %q", errOut)
 			}
 
 			logged, err := os.ReadFile(filepath.Join(cfg.dataDir, hooksLogName))
 			if err != nil {
 				t.Fatalf("daemon-down must still be recorded in hooks.log: %v", err)
 			}
-			if !strings.Contains(string(logged), "daemon is not running") {
+			if !strings.Contains(string(logged), tc.want) {
 				t.Errorf("hooks.log missing the daemon-down notice, got %q", logged)
 			}
 		})

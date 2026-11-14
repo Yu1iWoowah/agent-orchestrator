@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -62,7 +61,7 @@ func TestResolveApp_MarkerHit(t *testing.T) {
 	// not the real /Applications on a macOS dev box.
 	t.Cleanup(swapPreferredAppPath(func() string { return "" }))
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	got := c.resolveApp()
 	if got != bundle {
 		t.Fatalf("resolveApp = %q, want marker path %q", got, bundle)
@@ -80,7 +79,7 @@ func TestResolveApp_PreferredOutranksMarker(t *testing.T) {
 	t.Cleanup(swapPreferredAppPath(func() string { return installed }))
 	t.Cleanup(swapScanLocations(func() []string { return nil }))
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	got := c.resolveApp()
 	if got != installed {
 		t.Fatalf("resolveApp = %q, want installed path %q", got, installed)
@@ -97,7 +96,7 @@ func TestResolveApp_PreferredMissingFallsBackToMarker(t *testing.T) {
 	}))
 	t.Cleanup(swapScanLocations(func() []string { return nil }))
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	got := c.resolveApp()
 	if got != bundle {
 		t.Fatalf("resolveApp = %q, want marker path %q", got, bundle)
@@ -112,7 +111,7 @@ func TestResolveApp_MarkerMissThenScanHit(t *testing.T) {
 	t.Cleanup(swapScanLocations(func() []string { return []string{scanBundle} }))
 	t.Cleanup(swapPreferredAppPath(func() string { return "" }))
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	got := c.resolveApp()
 	if got != scanBundle {
 		t.Fatalf("resolveApp = %q, want scan path %q", got, scanBundle)
@@ -126,7 +125,7 @@ func TestResolveApp_ScanMissReturnsEmpty(t *testing.T) {
 	}))
 	t.Cleanup(swapPreferredAppPath(func() string { return "" }))
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	got := c.resolveApp()
 	if got != "" {
 		t.Fatalf("resolveApp = %q, want empty", got)
@@ -270,7 +269,7 @@ func TestRegisterLinuxProtocolHandler(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
 	var commands [][]string
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		CommandOutput: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			commands = append(commands, append([]string{name}, args...))
 			if len(args) > 0 && args[0] == "query" {
@@ -278,7 +277,7 @@ func TestRegisterLinuxProtocolHandler(t *testing.T) {
 			}
 			return nil, nil
 		},
-	}.withDefaults()}
+	}.withDefaults())
 
 	appPath := "/tmp/Agent Orchestrator 100%.AppImage"
 	if err := c.registerLinuxProtocolHandler(context.Background(), appPath); err != nil {
@@ -311,13 +310,13 @@ func TestOpenApp_ArgConstruction(t *testing.T) {
 	}
 	var gotName string
 	var gotArgs []string
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		CommandOutput: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			gotName = name
 			gotArgs = args
 			return nil, nil
 		},
-	}.withDefaults()}
+	}.withDefaults())
 
 	opened, err := c.openApp(context.Background(), "/Applications/Agent Orchestrator.app")
 	if err != nil {
@@ -340,12 +339,12 @@ func TestOpenApp_DetachedSpawnOnWinLinux(t *testing.T) {
 		t.Skip("openApp spawns detached only on windows/linux")
 	}
 	var gotCfg processStartConfig
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		StartProcess: func(cfg processStartConfig) error {
 			gotCfg = cfg
 			return nil
 		},
-	}.withDefaults()}
+	}.withDefaults())
 
 	appPath := "/some/agent-orchestrator.AppImage"
 	opened, err := c.openApp(context.Background(), appPath)
@@ -368,9 +367,9 @@ func TestOpenApp_SpawnFailureFallsBackToManual(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
 		t.Skip("detached-spawn fallback only on windows/linux")
 	}
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		StartProcess: func(processStartConfig) error { return os.ErrNotExist },
-	}.withDefaults()}
+	}.withDefaults())
 
 	opened, err := c.openApp(context.Background(), "/some/app")
 	if err != nil {
@@ -387,16 +386,16 @@ func TestOpenApp_SpawnFailureFallsBackToManual(t *testing.T) {
 // exceeds the injected client's tiny timeout; download must still succeed.
 func TestDownload_IgnoresShortClientTimeout(t *testing.T) {
 	const body = "release-zip-bytes"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
 
-	c := &commandContext{deps: Deps{
+	c := newTestCommandContext(t, Deps{
 		// 50ms timeout: if download honored this, the 150ms server would fail it.
 		HTTPClient: &http.Client{Timeout: 50 * time.Millisecond},
-	}.withDefaults()}
+	}.withDefaults())
 
 	dst := filepath.Join(t.TempDir(), "out.zip")
 	if err := c.download(context.Background(), io.Discard, srv.URL, "out.zip", dst); err != nil {
@@ -416,7 +415,7 @@ func TestDownload_IgnoresShortClientTimeout(t *testing.T) {
 // line and NO carriage returns, while the bytes still land on disk correctly.
 func TestDownload_NonTTYProgress(t *testing.T) {
 	const body = "release-zip-bytes-payload"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(body)) // net/http sets Content-Length for a known body
 	}))
 	t.Cleanup(srv.Close)
@@ -425,7 +424,7 @@ func TestDownload_NonTTYProgress(t *testing.T) {
 	releaseRepo = "owner/repo"
 	t.Cleanup(func() { releaseRepo = orig })
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	dst := filepath.Join(t.TempDir(), "out.zip")
 
 	var buf bytes.Buffer
@@ -464,7 +463,7 @@ func TestDownload_NonTTYProgress(t *testing.T) {
 // bytes on the done line.
 func TestDownload_NoContentLengthOmitsSize(t *testing.T) {
 	const body = "streamed-bytes"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Chunked transfer (no Content-Length): flush so the header omits length.
 		w.Header().Set("Transfer-Encoding", "chunked")
 		_, _ = w.Write([]byte(body))
@@ -474,7 +473,7 @@ func TestDownload_NoContentLengthOmitsSize(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := &commandContext{deps: Deps{}.withDefaults()}
+	c := newTestCommandContext(t, Deps{}.withDefaults())
 	dst := filepath.Join(t.TempDir(), "out.bin")
 
 	var buf bytes.Buffer

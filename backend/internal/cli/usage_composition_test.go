@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -40,7 +39,7 @@ func (s *rcaCLIFixture) Purge(context.Context, domain.SessionID) error {
 func TestCompositionCLICallerAndValidation(t *testing.T) {
 	cfg := setConfigEnv(t)
 	svc := &rcaCLIFixture{}
-	server := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, nil, nil, httpd.APIDeps{RCA: svc}, httpd.ControlDeps{}))
+	server := newFixtureServer(t, httpd.NewRouterWithControl(config.Config{}, nil, nil, httpd.APIDeps{RCA: svc}, httpd.ControlDeps{}))
 	defer server.Close()
 	writeRunFileFor(t, cfg, server)
 	call := func(expected int, args ...string) {

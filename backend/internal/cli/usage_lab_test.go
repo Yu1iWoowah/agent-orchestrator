@@ -104,7 +104,7 @@ func (f *labCallerFixture) start(t *testing.T, p reporting.DelegationProvider) {
 	t.Helper()
 	f.service = hcgsvc.NewWithDelegationProvider(t.Context(), f.cfg.dataDir, f.store, p, nil)
 	router := httpd.NewRouterWithControl(config.Config{DataDir: f.cfg.dataDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{HCGDelegation: f.service}, httpd.ControlDeps{})
-	f.server = httptest.NewServer(router)
+	f.server = newFixtureServer(t, router)
 	writeRunFileFor(t, f.cfg, f.server)
 }
 func (f *labCallerFixture) close() {

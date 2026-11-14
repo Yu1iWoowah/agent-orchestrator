@@ -355,7 +355,9 @@ func TestE2E_SecondDaemonOnSameDataDir(t *testing.T) {
 
 func TestE2E_StaleRunFile(t *testing.T) {
 	e := newEnv(t)
-	// PID 2147483647 is never alive -> the CLI must classify this as stale.
+	// PID 2147483647 is never alive, but status judges the daemon only over
+	// loopback: nothing answers on the port, so it reports unhealthy, not stale.
+	// stop keeps its process check and still removes the stale run-file.
 	content := fmt.Sprintf(`{"pid":2147483647,"port":%d,"startedAt":"2020-01-01T00:00:00Z"}`, e.port)
 	if err := os.MkdirAll(filepath.Dir(e.runFile), 0o755); err != nil {
 		t.Fatal(err)
@@ -365,7 +367,7 @@ func TestE2E_StaleRunFile(t *testing.T) {
 	}
 
 	out, _ := e.run(t, "status", "--json")
-	mustContain(t, out, `"state": "stale"`)
+	mustContain(t, out, `"state": "unhealthy"`)
 
 	if out, code := e.run(t, "stop"); code != 0 || !strings.Contains(out, "stopped") {
 		t.Fatalf("stop stale: exit %d, out %s", code, out)
