@@ -261,6 +261,21 @@ class DaemonNotReadyError extends Error {
 	}
 }
 
+class IncompleteWorkspaceResponse extends Error {}
+
+function workspaceProjects(data: components["schemas"]["ListProjectsResponse"] | undefined) {
+	if (!Array.isArray(data?.projects) || data.projects.some((project) => !project || typeof project.id !== "string" || !project.id))
+		throw new IncompleteWorkspaceResponse("Projects list is incomplete.");
+	return data.projects;
+}
+
+function workspaceSessions(data: components["schemas"]["ListSessionsResponse"] | undefined) {
+	if (!Array.isArray(data?.sessions) || (data.nextCursor !== undefined && data.nextCursor !== "") ||
+		data.sessions.some((session) => !session || typeof session.id !== "string" || !session.id || (session.projectId !== undefined && typeof session.projectId !== "string")))
+		throw new IncompleteWorkspaceResponse("Sessions list is incomplete.");
+	return data.sessions;
+}
+
 async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	if (usesPreviewWorkspaceData) {
 		const fake =
@@ -281,9 +296,9 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 		throw projectsError ?? sessionsError;
 	}
 
-	const sessions = sessionsData?.sessions ?? [];
+	const sessions = workspaceSessions(sessionsData);
 	const standaloneName = standaloneWorkspaceName();
-	const projects = (projectsData?.projects ?? []).map((project) => {
+	const projects = workspaceProjects(projectsData).map((project) => {
 		const kind = toProjectKind(project.kind);
 		return {
 			id: project.id,
@@ -318,7 +333,7 @@ async function fetchRemoteProjects(hostId: string) {
 		recheckRemoteHost(hostId, response.status);
 		throw error;
 	}
-	return data?.projects ?? [];
+	return workspaceProjects(data);
 }
 
 async function fetchRemoteSessions(hostId: string) {
@@ -327,7 +342,7 @@ async function fetchRemoteSessions(hostId: string) {
 		recheckRemoteHost(hostId, response.status);
 		throw error;
 	}
-	return Promise.all((data?.sessions ?? []).map(async (session) => ({
+	return Promise.all(workspaceSessions(data).map(async (session) => ({
 		...session,
 		artifactFiles: await Promise.all((session.artifactFiles ?? []).map(async (artifact) => ({
 			...artifact,
@@ -391,7 +406,7 @@ export const workspaceQueryOptions = {
 	// fetch) join that backoff instead of running, which held the first
 	// /projects + /sessions about 0.75s past "daemon listening" on cold launch.
 	// Fail fast instead; the daemon status change refetches.
-	retry: (failureCount: number, error: Error) => !(error instanceof DaemonNotReadyError) && failureCount < 1,
+	retry: (failureCount: number, error: Error) => !(error instanceof DaemonNotReadyError || error instanceof IncompleteWorkspaceResponse) && failureCount < 1,
 	staleTime: 10_000,
 };
 
@@ -706,7 +721,7 @@ export function useRemoteWorkspaces(options: WorkspaceSubscriptionOptions = {}) 
 		queries: connected.map((hostId) => ({
 			queryKey: remoteProjectsQueryKey(hostId),
 			queryFn: () => fetchRemoteProjects(hostId),
-			retry: 1,
+			retry: workspaceQueryOptions.retry,
 			refetchInterval: 15_000,
 			subscribed: options.subscribed,
 		})),
@@ -715,7 +730,7 @@ export function useRemoteWorkspaces(options: WorkspaceSubscriptionOptions = {}) 
 		queries: connected.map((hostId) => ({
 			queryKey: remoteSessionsQueryKey(hostId),
 			queryFn: () => fetchRemoteSessions(hostId),
-			retry: 1,
+			retry: workspaceQueryOptions.retry,
 			refetchInterval: 15_000,
 			subscribed: options.subscribed,
 		})),

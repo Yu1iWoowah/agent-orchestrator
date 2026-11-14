@@ -5,11 +5,19 @@ import { apiErrorMessage } from "../lib/api-client";
 import { parseQuestionReceipt, type QuestionReceipt, type SessionQuestion } from "../lib/session-questions";
 import { useQuestionDraftStore, type QuestionDraft } from "../stores/question-draft-store";
 import { QuestionNotFound, questionSourceQueryOptions, sessionQuestionQueryKey } from "./useSessionQuestions";
+import { projectAttentionQueryKey } from "./useProjectAttention";
 
 const sending = new Set<string>();
 const settling = new Set<string>();
 const isPending = (entry: QuestionDraft | undefined) =>
 	entry?.phase.state === "submitting" || entry?.phase.state === "unknown";
+
+async function invalidateQuestionViews(client: QueryClient, entry: QuestionDraft) {
+	await Promise.all([
+		client.invalidateQueries({ queryKey: sessionQuestionQueryKey(entry.scope.sessionId, entry.scope.hostId) }, { cancelRefetch: false }),
+		...(entry.question.projectId ? [client.invalidateQueries({ queryKey: projectAttentionQueryKey(entry.question.projectId, entry.scope.hostId) }, { cancelRefetch: false })] : []),
+	]);
+}
 
 function responseFieldErrors(value: unknown): Record<string, string> | undefined {
 	if (typeof value !== "object" || value === null || !("fieldErrors" in value) ||
@@ -41,7 +49,7 @@ async function savedAnswer(client: QueryClient, key: string, receipt: QuestionRe
 			} satisfies SessionQuestion;
 		});
 		useQuestionDraftStore.getState().clearSaved(key, expected.clientAnswerId);
-		await client.invalidateQueries({ queryKey: sessionQuestionQueryKey(entry.scope.sessionId, entry.scope.hostId) }, { cancelRefetch: false });
+		await invalidateQuestionViews(client, entry);
 	} finally { settling.delete(ticket); }
 }
 
@@ -62,7 +70,7 @@ export async function sendQuestionAnswer(client: QueryClient, key: string): Prom
 		});
 		if (response.status === 409 || response.status === 404) {
 			useQuestionDraftStore.getState().conflict(key, answer.clientAnswerId, apiErrorMessage(error, "Question changed or is unavailable."));
-			await client.invalidateQueries({ queryKey: sessionQuestionQueryKey(entry.scope.sessionId, entry.scope.hostId) }, { cancelRefetch: false });
+			await invalidateQuestionViews(client, entry);
 			return;
 		}
 		if (response.status === 400 && error?.code === "QUESTION_INVALID") {

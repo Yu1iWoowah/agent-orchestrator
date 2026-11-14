@@ -80,6 +80,7 @@ import { useCloudSession } from "../lib/cloud-session";
 import { useCloudAccountSwitchReset } from "../hooks/useCloudAccountSwitchReset";
 import { openRemoteOrchestrator } from "../lib/remote-orchestrator";
 import { useFollowProjectOrchestrator } from "../hooks/useFollowProjectOrchestrator";
+import { ProjectQuestionRouting } from "../components/ProjectQuestionRouting";
 import { orchestratorNavigateTarget, projectNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
 import { sessionUiKey } from "../lib/hosts";
 import { buildSidebarSessionOrder, sessionWantsAttention, stepSessionNav, type SidebarNavSession } from "../lib/sidebar-order";
@@ -326,7 +327,8 @@ function ShellLayout() {
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
 	const { hosts: remoteHosts, refresh: refreshRemoteHosts } = useRemoteHosts();
-	const { data: remoteWorkspaces, failedHostIds: remoteFailedHostIds } = useRemoteWorkspaces();
+	const remoteWorkspaceQuery = useRemoteWorkspaces();
+	const { data: remoteWorkspaces, failedHostIds: remoteFailedHostIds } = remoteWorkspaceQuery;
 	useFollowProjectOrchestrator(workspaces, remoteWorkspaces);
 	const failedRemoteHostKey = remoteFailedHostIds.join("\0");
 	useEffect(() => {
@@ -1453,6 +1455,9 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 			value={shellContextValue}
 		>
 			<AppBrowserLinkContext.Provider value={canOpenBrowserLink ? openBrowserLink : undefined}>
+			<ProjectQuestionRouting workspaces={workspaces} remoteWorkspaces={remoteWorkspaces} localReady={workspaceQuery.isSuccess && !workspaceQuery.isError}
+				loadedProjectHostIds={remoteWorkspaceQuery.loadedProjectHostIds} loadedSessionHostIds={remoteWorkspaceQuery.loadedSessionHostIds} failedHostIds={remoteFailedHostIds}
+				onRetry={() => { void workspaceQuery.refetch(); void remoteWorkspaceQuery.refetch(); }}>
 			<SessionTopbarProvider>
 				<NotificationRuntime />
 				<HarnessUpdateNotice enabled={daemonStatus.state === "ready"} />
@@ -1652,6 +1657,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 				</div>
 				</TerminalCacheProvider>
 			</SessionTopbarProvider>
+			</ProjectQuestionRouting>
 			</AppBrowserLinkContext.Provider>
 		</ShellProvider>
 	);

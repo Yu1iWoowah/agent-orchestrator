@@ -207,7 +207,7 @@ it.each([
 	{ selected: 2, remaining: [0, 1], focus: 1 },
 	{ selected: 0, remaining: [], focus: undefined },
 ].flatMap((entry) => [false, true].map((afterClose) => ({ ...entry, afterClose }))))("restores list focus after row $selected disappears, after close: $afterClose", async ({ selected, remaining, focus, afterClose }) => {
-	const initial = [0, 1, 2].map((index) => ({ ...item, id: `question:ask-${index}`, questionId: `ask-${index}`, title: `Question ${index}` }));
+	const initial = [0, 1, 2].map((index) => ({ ...item, kind: "provider_input", id: `provider:request-${index}`, questionId: undefined, activityId: `request-${index}`, requestId: `rpc-${index}`, conversationId: "conversation", branchId: "root", sourceBranchId: "root", title: `Question ${index}` }));
 	let items = initial;
 	get.mockImplementation(() => Promise.resolve({ data: { items, open: items.length, unread: items.length }, response: { status: 200 } }));
 	show();

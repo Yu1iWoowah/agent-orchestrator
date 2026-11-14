@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import { questionHost } from "../lib/decision-target";
 
 const { localGet, remoteConnect, remotePreviewUrl } = vi.hoisted(() => ({ localGet: vi.fn(), remoteConnect: vi.fn(), remotePreviewUrl: vi.fn() }));
 vi.mock("../lib/api-client", () => ({ apiClient: { GET: localGet }, hasTrustedApiBaseUrl: () => true }));
@@ -41,6 +42,57 @@ async function prepareTwoHosts() {
 	}));
 	await connectHost("http://box-a:3001");
 }
+
+function useRemoteQuestion(hostId: string, projectId = "project-1") {
+	const query = useRemoteWorkspaces();
+	return { query, host: questionHost({ workspace: query.data.find((entry) => entry.id === projectId && entry.hostId === hostId),
+		ready: query.loadedProjectHostIds.includes(hostId) && query.loadedSessionHostIds.includes(hostId) && !query.failedHostIds.includes(hostId), projectId, hostId }) };
+}
+
+it.each([
+	{ label: "missing list", data: {}, expected: "unknown" },
+	{ label: "null list", data: { sessions: null }, expected: "unknown" },
+	{ label: "partial page", data: { sessions: [], nextCursor: "remaining" }, expected: "unknown" },
+	{ label: "missing role", data: { sessions: [{ id: "worker", projectId: "project-1", isTerminated: false, createdAt: "2026-11-07T12:00:00Z", updatedAt: "2026-11-07T12:00:00Z" }] }, expected: "unknown" },
+	{ label: "complete empty list", data: { sessions: [] }, expected: "none" },
+])("gates remote question routing for $label from the real query producer", async ({ data, expected }) => {
+	remoteConnect.mockResolvedValue({ hostId: "box-a", label: "Box A", url: "http://box-a:3001", base: "http://127.0.0.1:4000" });
+	vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json((input instanceof Request ? input.url : String(input)).endsWith("/projects")
+		? { projects: [{ id: "project-1", name: "Remote", path: "/fixture" }] } : data)));
+	await connectHost("http://box-a:3001");
+	const { result } = renderHook(() => useRemoteQuestion("box-a"), { wrapper });
+	await waitFor(() => expect([...result.current.query.loadedSessionHostIds, ...result.current.query.failedHostIds]).toContain("box-a"));
+	expect(result.current.host).toEqual({ kind: expected });
+});
+
+it("keeps remote question routing unknown when another host and project finish first", async () => {
+	remoteConnect.mockImplementation(async (url: string) => ({ hostId: url.includes("box-a") ? "box-a" : "box-b", label: url, url, base: url.includes("box-a") ? "http://127.0.0.1:4000" : "http://127.0.0.1:4001" }));
+	let finishA = () => {}; let finishB = () => {};
+	const a = new Promise<Response>((resolve) => { finishA = () => resolve(Response.json({ sessions: [{ id: "main-a", projectId: "project-1", kind: "orchestrator", isTerminated: false, createdAt: "2026-11-07T12:00:00Z", updatedAt: "2026-11-07T12:00:00Z" }] })); });
+	const b = new Promise<Response>((resolve) => { finishB = () => resolve(Response.json({ sessions: [] })); });
+	vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+		const url = input instanceof Request ? input.url : String(input);
+		return url.endsWith("/projects") ? Promise.resolve(Response.json({ projects: [{ id: "project-1", name: "Remote", path: "/fixture" }] })) : url.includes(":4000/") ? a : b;
+	}));
+	await connectHost("http://box-a:3001"); await connectHost("http://box-b:3001");
+	const queryClient = new QueryClient();
+	const { result, rerender } = renderHook(({ hostId, projectId }) => useRemoteQuestion(hostId, projectId), {
+		initialProps: { hostId: "box-a", projectId: "project-1" }, wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>,
+	});
+	await waitFor(() => expect(result.current.query.loadedProjectHostIds).toEqual(["box-a", "box-b"]));
+	expect(result.current.host).toEqual({ kind: "unknown" });
+	rerender({ hostId: "box-b", projectId: "other" });
+	await act(async () => finishA());
+	await waitFor(() => expect(result.current.query.loadedSessionHostIds).toContain("box-a"));
+	expect(result.current.host).toEqual({ kind: "unknown" });
+	rerender({ hostId: "box-b", projectId: "project-1" });
+	expect(result.current.host).toEqual({ kind: "unknown" });
+	await act(async () => finishB());
+	await waitFor(() => expect(result.current.host).toEqual({ kind: "none" }));
+	rerender({ hostId: "box-a", projectId: "project-1" });
+	expect(result.current.host).toEqual({ kind: "orchestrator", sessionId: "main-a" });
+	queryClient.clear();
+});
 
 it("lists remote projects separately so local actions cannot target a same-named remote session", async () => {
 	await prepareTwoHosts();

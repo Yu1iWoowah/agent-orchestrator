@@ -26858,8 +26858,11 @@ components:
           enum:
           - session
           - pr
+          - agent_question
           type: string
         prUrl:
+          type: string
+        questionId:
           type: string
         sessionId:
           type: string

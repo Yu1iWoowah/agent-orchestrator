@@ -131,6 +131,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 	// TerminalCacheProvider owns reviewer queries in production. This shell-only
 	// harness has no routed terminal children and intentionally omits a provider.
 	useQueries: () => [],
+	// ProjectQuestionRouting reads pending session kills; this harness starts none.
+	useMutationState: () => [],
 }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({

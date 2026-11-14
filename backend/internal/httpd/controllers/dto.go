@@ -2468,9 +2468,10 @@ type NotificationIDParam struct {
 
 // NotificationTarget is the dashboard navigation target for a notification.
 type NotificationTarget struct {
-	Kind      string `json:"kind" enum:"session,pr"`
-	SessionID string `json:"sessionId"`
-	PRURL     string `json:"prUrl,omitempty"`
+	Kind       string `json:"kind" enum:"session,pr,agent_question"`
+	SessionID  string `json:"sessionId"`
+	PRURL      string `json:"prUrl,omitempty"`
+	QuestionID string `json:"questionId,omitempty"`
 }
 
 // NotificationResponse is one stored notification returned by the API.
