@@ -60,7 +60,6 @@ old 在呼叫 start 前，自己核對原人類指令、structured answer、後�
 ```text
 R/.start/<old-id>/request.json
 R/.start/<old-id>/evidence/<necessary-original-response>.json
-R/.start/<old-id>/capabilities.json
 ```
 
 `request.json` 使用 `rh-start-request/1`，包含以下欄位：
@@ -71,7 +70,7 @@ R/.start/<old-id>/capabilities.json
 | `project_id`、`old_id` | 本專案及 old 的精確 id |
 | `prepared_by` | 同一 old 的語意準備 A 輪；A completed 且全部引用訊息 settled |
 | `target` | `harness/account/model/effort/approval_mode/mode`，與外部逐欄一致，mode 固定 chat |
-| `authority` | `source_refs`、`old_verified_scope=three-step-handoff-this-project`、`t0_source_ref/t0_created_at/t0_precision` |
+| `authority` | `source_refs`、`t0_source_ref/t0_created_at/t0_precision` |
 | `workers` | 各 worker 的保留 stop D、hold、原題 owner／引用、待決、放行權與保留 resume D |
 | `workspace_index` | old 與待處理 worker 各一筆 `session_id/kind/path/source_refs`；絕對實際路徑，不用 branch 推算 |
 | `sources` | 唯一 ref、kind、conversation／branch／message id、revision、ask ref、原回應相對路徑及 bytes／正文 hash |
@@ -96,19 +95,41 @@ old 自身與非標準 worker 路徑必須引用 Q1 的 old-control-record，原
 
 ### 同一 old 的兩輪準備
 
-A 核原 authority／target／T0、worker／D／hold／原題及實際 workspace，留下本輪具名 old-control-record，正常 completed。
+A 核原 authority／target／T0、worker／D／hold／原題及實際 workspace，留下本輪具名 old-control-record，正常 completed。A 只在範本列的五條情況具名停；其他讀不到、UNKNOWN 或不一致照實記錄。A 不查任何 actor 的 model／effort，不對任何 session 呼叫 ao session settings。
 A 不發布最終 request、不 start、不先改 A–F 或執行 worker 停點。
-既有 operator 用正常公開 transcript 核 A 真 completed、所有引用 assistant 訊息 streaming=false、工具已結束，才發一次非 human B 續行通知。
+既有 operator 用正常公開 transcript 核 A 真 completed、所有引用 assistant 訊息 streaming=false、工具已結束，且 A 沒有具名停，才發一次非 human B 續行通知。A 具名停時不送 B，交使用者裁定。
 idle 單獨、failed／recovered／interrupted 都不算 A 完成；不能讓 A 前景等待自己 completed。
 
-同一 old 在 B 自己讀 A 定稿原件，重核 conversation／branch／message／role／turn／正文、原授權版本與後續取消／改向，以及 A 準備的全部事實仍適用。
-有 worker、D／hold／原題或路徑漂移、來源不足即停，不以 B 的新決定補 A，不自動重做 A。
+同一 old 在 B 自己讀 A 定稿原件與原 human；結構欄位與 worktree 路徑只記錄（start 與 runner 會機械重核）。
+B 只在下列情況停：A 之後原授權取消或改向；A 之後 worker 的 D／hold／原題漂移；request 必填欄位無法從 A 原件取得（不以 B 補 A，不自動重做 A）；無法保存正常 CLI 原 bytes 取實際 revision／hash；A 原件記有任何具名停（含原 human 未授權全域 refresh、target 不一致）。
 B 保存正常 CLI 回應原 bytes，從中取實際 revision、正文 hash 及 raw hash；不合成原件、不硬填 revision、不正規化正文。
-B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同 B 輪呼叫 start --run <該 UUID>，回真 run-id／status 後結束。
-在 request 原 bytes 與 evidence 發布後、start 之前，B 依下方「全域 account catalog 權限」在同一固定槽位發布 proof。
-不要預建 J、手寫 admission 檔、import Journal，或先失敗一次再補 proof。
+B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同 B 輪呼叫 start --run <該 UUID>，回 run-id、status 指令與「10 分鐘未見 new 首報就只查原 run」提示後結束。
+不要預建 J 或手寫 admission 檔。
 原 human／T0／精度不變，不請人類重送授權；任何 STOP 不改包救過、不重試或擅自 continue。
 後續仍完整走 worker、2a、匯出／保全與 native 核驗，A completed 不等於 old 可 kill。
+
+### A／B 通知範本
+
+operator 送 A／B 時使用下列範本，`<…>` 由 operator 代入。`<worker-ids>` 只填 worker 的 session id 清單（以「、」分隔）；各 worker 的保留 stop D、hold、原題 owner、放行權由 A 自己從原件讀取並記入 control。`<accounts>` 填原 human 授權 refresh 的帳號 id 清單。
+
+A 範本：
+
+```text
+<D>／交接準備 A（非 human 通知，不產生新授權）。原 human <human-id>（revision <rev>，turn <human-turn>，<bytes> bytes，SHA256 <sha256>）；T0=<t0>（<precision>）。operator 已核原 turn completed、之後只有這一則 human。請用正常原回應親自重讀；spawn prompt 與 automation 訊息照實分類，不當授權。依固定 tools/reusable-handoff/README.md「同一 old 的兩輪準備」只做 A：在本輪 assistant 留完整具名 old-control-record 後自然 completed；不發布 request、不 start、不改 managed A–F、不送 worker 指令、不 lifecycle，不前景等待自己 completed。
+control 須記：原 human 的範圍與之後有無取消／改向；target <harness>/<account>/<model>/<effort>/<approval-mode>/chat 是否與原 human 一致；原 human 是否授權本 daemon 的全域 account catalog metadata refresh（<accounts>）；old 與每個 worker（<worker-ids>）的 session_id／kind／絕對實際註冊路徑（以 git top-level／common 與 worktree list 核；路徑原樣寫出，不縮寫、不換行）、保護 ref、必要材料；每個 worker 的保留 stop D、hold、原題 owner、放行權由你自原件讀取記入。
+只在下列情況具名停：① 原 human 找不到、不是 structural user/human、revision 或 hash 不符，或之後有取消／改向；② target 與原 human 不一致；③ 原 human 沒有授權全域 metadata refresh；④ 某 worker 的保留 D／hold／原題 owner／放行權與原件矛盾（缺 D 記 null、hold 不明記 unknown 並維持 held，這兩種不停）；⑤ old 或 worker 的實際註冊 worktree 找不到、不唯一或路徑不符。其他讀不到、UNKNOWN 或不一致（含 provider CLI 版本、任何 actor 的設定、AO CLI 對非必要讀取的報錯）照實記在 control，不停。不查任何 actor 的 model／effort，不對任何 session 呼叫 ao session settings。不補猜、不重做 A、不執行 RH。
+位置只讀 metadata：D=<data-dir>；R=<run-root>。不讀 credential、provider 私有內容、登入 PTY／OAuth／剪貼簿；暫存用 $TMPDIR。
+```
+
+B 範本：
+
+```text
+<D>／交接續行 B（非 human 通知，不產生新授權）。operator 已核 A turn <a-turn> completed、引用訊息都 settled、old idle、A 沒有具名停；A control <a-message> revision <a-rev>／正文 SHA256 <a-sha256>。依 README「同一 old 的兩輪準備」親自讀 A 定稿原件與原 human <human-id>。結構欄位、worktree 路徑、provider CLI 版本與任何 actor 的設定只記錄（start 與 runner 會機械重核）。
+只在下列情況停：① A 之後原授權被取消或改向；② A 之後某 worker 的 D／hold／原題漂移；③ request 必填欄位無法從 A 原件取得（不以 B 補 A）；④ 無法保存正常 CLI 原 bytes 並取得實際 revision／正文 hash／raw hash（不合成、不硬填）；⑤ A 原件記有任何具名停（含原 human 未授權全域 refresh、target 不一致）。
+否則以新 canonical UUID 在唯一 R/.start/<old-id>/ 原子發布 request 與 evidence：prepared_by.turn_id 只指 A，不引用本 B；workspace_index 與各 worker 的 D／hold／release 依 A 原件。同一輪呼叫一次 python3 tools/reusable-handoff/handoff.py start --run <UUID> --old <old-id> --harness <harness> --account <account> --model <model> --effort <effort> --approval-mode <approval-mode>，保留真 stdout／stderr，回覆 run-id、status 指令與「10 分鐘未見 new 首報就只查原 run」後自然結束。worker、2a、kill、spawn 由 runner 執行。STOP 或錯誤就停，不改包、不重試、不 continue。不改 managed，不對任何 session 呼叫 ao session settings；暫存用 $TMPDIR。
+```
+
+代入後以 UTF-8 bytes（不含結尾換行）量測，`ao send` 上限 4096 B，超過就不送。
 
 ### 資格切換
 
@@ -120,7 +141,7 @@ B 原子發布新 UUID request，prepared_by.turn_id=A，來源不引用 B；同
 
 1. **worker 停點**：核本專案未 terminated 的 worker 集合。active worker 收具名 stop D，收束操作、保全 ref／dirty／原題，填語意 statement 後由固定 helper 原子寫 `workers/<id>/stop.json`（`rh-worker-stop/2`），填真 turn-id，completed 後 hold。
    靜止代記須正常 idle/exited、無 queued/running／未結工具，兩份相隔至少兩秒的 Git 內容快照相同，再核正常狀態；明標「未經worker自述」。quota／沒回本身不算 safe。
-2. **old 文件與原文**：全 safe 後一次具名 2a 控制訊息，old 用自己的 managed write／expected-hash 更新 A–F，正文帶 `handoff_run_id`，原子寫 `old/phase-2a.json`（`rh-old-2a/1`）。runner 核原 managed JSON、正本 hash、lease、run-id、真 completed；ready 回覆須給精確 status 與「10分鐘未見new首報就只查原run」提示。
+2. **old 文件與原文**：全 safe 後一次具名 2a 控制訊息，old 用自己的 managed write／expected-hash 更新 A–F，正文含 2a 控制訊息給出的獨立一行 `handoff_run_id: <run-id>`（照抄），原子寫 `old/phase-2a.json`（`rh-old-2a/1`）。runner 核原 managed JSON、正本 hash、lease、run-id、真 completed。
    之後保存 cap0 active-lineage CLI 投影，以及 query_only transaction 中唯一 old conversation 的全分支白名單原文、必要附件／依賴。cut 不可變，delta 以父 hash 相連。
 3. **切換與續接**：再核停點與 old idle，正常 kill 一次且正面 terminated 後，唯一精確 `RH3[<run-id>]` token spawn。new 以自己的 managed capability 寫接手收據 `bootstrap/new/receipt.json`（`rh-new-receipt/1`），向使用者正式回報後 completed。
    runner 核 actual account／target／approval／native／lease、原件 hash 與工具目的地。再以同回應的 S1/S2 序號、last completed turn、idle 及一秒窗口，正常 exit/resume 各一次；resumeMode 必須 native，同 new/native/binding 不漂移。唯一 nonce 需真正 assistant／completed/providerTurnId 與 known settings。
@@ -139,7 +160,7 @@ session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、
 
 2a 的 old 自己核對並填 `old/draft/statement.json`（`rh-old-statement/1`）；
 固定 old-receipt helper 產 `old/preservation.json`（`rh-old-preservation/2`）及 phase-2a 回條。
-每筆分類含 `path`、`disposition=copy|rebuildable|discardable` 及具體 `basis`；
+每筆分類含 `path`、`disposition=copy|rebuildable|discardable`，copy 列需具體 `basis`；可重建／可丟棄列的 `basis` 空白只記錄；
 可重建／可丟棄的目錄可用 `scope=directory` 涵蓋子樹，不能只憑檔名或 Git clean 推斷。
 必要或唯一不可重建檔案逐一列 disposition=copy；helper 決定 `copy={path,sha256}` 並先保存於本 run 的 `old/saved/`，
 按原相對關係存放；證據另記原 mode／相對路徑，副本不冒稱原目錄。
@@ -150,7 +171,7 @@ runner 列出整個 old worktree 的檔案／目錄範圍，閉合 untracked、i
 assume-unchanged、skip-worktree 或其他未核清 index flags 在 kill 前停止，不清旗標或重設內容。
 未推 commit 仍受此規則保護。腳本不建立 ref；無保護 ref 的 detached HEAD 停止。
 gitlink 採下節的有限規則；巢狀 repo 或未知 per-worktree metadata 仍切前停止，不提供通用備份。
-分類只列 untracked／ignored 的實際路徑，以及不含 tracked 內容的空目錄；tracked 檔（以 git ls-files 為準，含已 add 的新檔）與 gitlink（含未初始化、顯示為空目錄的 submodule）不得列入：tracked 內容由 helper 以 HEAD、index 與 patch 保全，gitlink 依下節規則處理。列入 tracked 檔、gitlink 或其底下路徑時，helper 走訪不會命中，old-receipt 以 classification contains nonexistent/unmatched paths 停止；不存在的路徑則在填寫檢查時以 old classification incomplete 停止。
+分類只列 untracked／ignored 的實際路徑，以及不含 tracked 內容的空目錄；tracked 檔（以 git ls-files 為準，含已 add 的新檔）與 gitlink（含未初始化、顯示為空目錄的 submodule）不得列入：tracked 內容由 helper 以 HEAD、index 與 patch 保全，gitlink 依下節規則處理。列入 tracked 檔、gitlink 或其底下路徑時，helper 不採用這些規則，記在回條的 unmatched_rules，不停止；copy 列不存在或沒命中仍停止。
 
 run、shared、old artifact、common repository 與材料副本不得和回收範圍重疊。
 正常 project metadata 必須正面可讀；目前只接受適用 `preRemove` 為空的情況。
@@ -222,7 +243,7 @@ plan settle 可使 latestSequence 高於原文列最大序號；只要求列序�
 | nonce／最終回報 | 各 600 |
 
 到限保存部分證據、停止新動作並 needs-input，不 interrupt 正在工作的 actor。
-runner 死亡無法自行通知，依 old ready 提示由人查原 run status；不另建監督。
+runner 死亡無法自行通知，依 B 在 start 時回覆的 status 指令由人查原 run；不另建監督。
 
 ## Export 位置與必要材料（RH-EXPORT-LOCATION）
 
@@ -380,28 +401,9 @@ retired 的 status 只核本機 binding／原件／receipt，不開 execution �
 
 `ao account ls --provider … --refresh` 先要求 daemon refresh 全部符合條件的帳號，CLI 才篩 provider。
 能力包括不同 provider 的 identity／limits 與 contained-profile Prepare；不宣稱只是讀 cache，也不假設修改 credential。
-指定 target account 不是全域 refresh 授權。原範圍不足或不能正面核清，script 在 I/O 前 STOP，交主控裁定；不改 daemon、不擴權。
+原範圍不足由 A 停（A 範本 ③），script 不判斷；指定 target account 不是全域 refresh 授權；不改 daemon、不擴權。
 
-同一 old 在 B 完成語意核對後，在 `R/.start/<old-id>/capabilities.json` 發布這項核對，引用原 human authority，不產生新的同意：
-
-```json
-{
-  "run_id": "<published UUID>",
-  "start_sha256": "<request original bytes SHA256>",
-  "scope": "daemon-account-catalog-global",
-  "source_refs": ["<original human authority reference>"],
-  "original_authority_covers_global_refresh": true
-}
-```
-
-`start_sha256` 綁 request **原 bytes**，不是重序列化的 JSON；`source_refs` 非空且只准本 request.authority 的原人類授權引用，不能用 old-control-record 或 operator automation 代替。
-正常 start 自己建立 J／register，在 qualification、同 request 與 live 原來源身分／revision／hash 核驗後，才讀取 slot proof 的固定原 bytes。
-核對成立後，start 在 open admission mutex 內不可變保存為 `J/capabilities.json`，再核 J 原件並將其 file reference 綁入第一次 refresh intent；之後才發 metadata refresh。
-一般定位與原來源觀測可先發生；這不是「完全沒有 I/O」。缺 proof、綁定不符、false、非私有／symlink 或 J 衝突，都在 refresh I/O 前 STOP，不修補 admission 或覆寫原件。
-後續 Run／Execution 只讀 J 原件；slot proof 之後改變或消失不更換已綁授權，原成功 start 的冪等回應也不重新載入 slot proof。
-
-這是原授權語意核對的持久記錄；boolean、hash 或欄位本身不是人類同意的密碼學證明，不能自行填 true 來放行。缺原授權仍交主控裁定。
-request 的原來源、T0、兩輪 A/B、target 格式與真正全域 refresh scope 不變，不從 target account 推定全域授權。
+start 在 refresh 前以 request.authority 的原人類來源 refs 記錄 `J/capabilities.json`（run_id、start_sha256、scope、source_refs），綁入 refresh intent；這是紀錄，不是同意的證明。A 具名停時 operator 不送 B，B 讀到 A 具名停也停。
 
 ## 通用 retire 與歷史核收
 
