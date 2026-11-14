@@ -1064,8 +1064,8 @@ func TestCancelledStartLeavesTheStartingHostVisible(t *testing.T) {
 	}
 }
 
-// A spawn record names its host until the pid exits; an empty record is
-// unknown. Reconcile removes only records whose host has exited.
+// A spawn record names its host until the pid exits; a record whose name is not
+// a pid is unknown. Reconcile removes only records whose host has exited.
 func TestSpawnRecordNamesTheHostUntilItExits(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -1073,20 +1073,21 @@ func TestSpawnRecordNamesTheHostUntilItExits(t *testing.T) {
 		want   HostState
 		kept   bool
 	}{
-		{name: "live", record: strconv.Itoa(os.Getpid()) + "\n", want: HostRunning, kept: true},
-		{name: "exited", record: "1073741823\n", want: HostAbsent, kept: false},
-		{name: "pid not written yet", record: "", want: HostUnknown, kept: true},
+		{name: "live", record: spawnRecordPrefix + strconv.Itoa(os.Getpid()), want: HostRunning, kept: true},
+		{name: "exited", record: spawnRecordPrefix + "1073741823", want: HostAbsent, kept: false},
+		{name: "not a pid", record: spawnRecordPrefix + "x", want: HostUnknown, kept: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dataDir := t.TempDir()
-			path, err := spawnPath(dataDir, "review-1")
+			dir, err := hostDir(dataDir, "review-1")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte(tt.record), 0o600); err != nil {
+			path := filepath.Join(dir, tt.record)
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if got := ProbeHost(dataDir, "review-1"); got != tt.want {
@@ -1099,5 +1100,22 @@ func TestSpawnRecordNamesTheHostUntilItExits(t *testing.T) {
 				t.Fatalf("record kept = %t, want %t (%v)", err == nil, tt.kept, err)
 			}
 		})
+	}
+}
+
+// An exiting host that clears its spawn record after a new host has been
+// spawned for the same session leaves the new host's record in place.
+func TestExitingHostKeepsTheNextHostsSpawnRecord(t *testing.T) {
+	dataDir := t.TempDir()
+	const exiting = 1073741823
+	if err := recordSpawn(dataDir, "review-1", exiting); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordSpawn(dataDir, "review-1", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	clearSpawnRecord(dataDir, "review-1", exiting)
+	if got := ProbeHost(dataDir, "review-1"); got != HostRunning {
+		t.Fatalf("next host = %v, want running", got)
 	}
 }
