@@ -2319,7 +2319,7 @@ def phase_2a(run):
                        worker_index={"path": str(run.root / "workers/index.json"), "sha256": run.state["stop_index_sha256"]},
                        start=str(run.root / "start.json"), schema="rh-old-2a/1", managed_output=str(run.root / "old/managed.json"),
                        user_status_instruction=status_command(run.root, run.run_id),
-                       requirements="old自己用正常documents write/expected-hash更新A–F，正文含handoff_run_id，原CLI --json保存old/managed.json。classification.path必為workspace乾淨相對路徑，disposition/basis需閉合untracked/ignored及空目錄；copy只列精確regular file，目的地由helper決定。original_ref只准既存refs/heads，不能新建ref。先填statement，再執行固定helper；preservation/2完整後phase-2a最後發布。完成回覆列run/ref/dirty切前證據、精確status及10分鐘未見new首報只查原run提示，然後completed，不輪詢。",
+                       requirements="old自己用正常documents write/expected-hash更新A–F，正文含handoff_run_id，原CLI --json保存old/managed.json。classification.path必為workspace乾淨相對路徑，disposition/basis需閉合untracked/ignored路徑及空目錄；tracked檔與gitlink（含未初始化submodule的空目錄）不列，列入則helper停止；copy只列精確regular file，目的地由helper決定。original_ref只准既存refs/heads，不能新建ref。先填statement，再執行固定helper；preservation/2完整後phase-2a最後發布。完成回覆列run/ref/dirty切前證據、精確status及10分鐘未見new首報只查原run提示，然後completed，不輪詢。",
                        **producer_description(run, "old-receipt", run.old))
     run.send(run.old, "2a", instruction)
     def ready():
