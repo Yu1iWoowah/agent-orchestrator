@@ -178,9 +178,10 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	}
 	if !r.ExecutionSettled {
 		nextCheck := a.LastProgressAt.Add(30 * time.Second)
-		if nativeWaiting {
-			// The host still owns this exact native approval/tool. Recheck that
-			// named wait without changing when its last event actually happened.
+		if nativeWaiting || nativeProgress && a.BlockedSince == nil && !nextCheck.After(c.now()) {
+			// The host still owns this exact native approval/tool, or a started
+			// execution whose silence alone is no evidence. Recheck it without
+			// changing when its last event actually happened.
 			nextCheck = c.now().Add(30 * time.Second)
 		}
 		a.NextCheckAt = &nextCheck
