@@ -984,3 +984,44 @@ func TestOldAccountRecoveryNeverStopsASuccessorExecution(t *testing.T) {
 		t.Fatal("superseded legacy owner never converged")
 	}
 }
+
+type reviewerOwnerStore struct {
+	*fakeStore
+	owners []domain.AgentAccountUsageOwner
+}
+
+func (s *reviewerOwnerStore) ListAgentAccountUsageOwners(context.Context, string) ([]domain.AgentAccountUsageOwner, error) {
+	return append([]domain.AgentAccountUsageOwner(nil), s.owners...), nil
+}
+
+// The owner check reconciles every worker whose reviewer holds the account
+// first: one with no process left stops counting, one still running keeps it,
+// and a failed reconcile keeps the account in use.
+func TestAccountUsageOwnersReconcileReviewersFirst(t *testing.T) {
+	ctx := context.Background()
+	m, st, _, _ := newManager()
+	store := &reviewerOwnerStore{fakeStore: st, owners: []domain.AgentAccountUsageOwner{
+		{Kind: "reviewer", SessionID: "gone", ReviewID: "review-gone", Harness: domain.HarnessCodex, Blocking: true},
+		{Kind: "reviewer", SessionID: "live", ReviewID: "review-live", Harness: domain.HarnessCodex, Blocking: true},
+	}}
+	m.store = store
+	var reconciled []domain.SessionID
+	m.SetReviewerTerminator(&fakeReviewerTerminator{reconcile: func(id domain.SessionID) error {
+		reconciled = append(reconciled, id)
+		if id == "gone" {
+			store.owners[0].Blocking = false
+		}
+		return nil
+	}})
+	owners, err := m.AccountUsageOwners(ctx, "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled) != 2 || len(owners) != 2 || owners[0].Blocking || !owners[1].Blocking {
+		t.Fatalf("reconciled=%v owners=%+v", reconciled, owners)
+	}
+	m.SetReviewerTerminator(&fakeReviewerTerminator{reconcile: func(domain.SessionID) error { return errors.New("review store unavailable") }})
+	if _, err := m.AccountUsageOwners(ctx, "acct"); !errors.Is(err, ports.ErrAgentAccountStorageUnavailable) {
+		t.Fatalf("failed reconcile = %v, want storage unavailable", err)
+	}
+}

@@ -102,8 +102,10 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		}
 		account = &current
 		ctx = context.WithValue(ctx, profileMutationContextKey{}, account.ID)
-		if err := s.refuseLiveOwners(ctx, account.ID); err != nil {
-			return LoginStart{}, err
+		if !s.signedOutForLoginAgain(ctx, s.providers[p], current) {
+			if err := s.refuseLiveOwners(ctx, account.ID); err != nil {
+				return LoginStart{}, err
+			}
 		}
 	}
 	provider := s.providers[p]
@@ -175,6 +177,27 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		return fail(ports.ErrAgentAccountStorageUnavailable)
 	}
 	return LoginStart{OperationID: id, Provider: p, Terminal: terminal}, nil
+}
+
+// signedOutForLoginAgain re-probes a saved profile within verify's limit. Only
+// a confirmed sign-out with no login of any kind, or a saved login the
+// provider says it revoked, counts: signing in there cannot replace or revoke
+// a login a live owner can still use. Any other failed or timed out probe is
+// unknown and keeps the owner refusal.
+func (s *Service) signedOutForLoginAgain(ctx context.Context, provider ports.AgentAccountProviderCLI, account domain.AgentAccount) bool {
+	if provider == nil || account.RetiredAt != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if s.prepare(provider, account.Home, account.ProfileKind) != nil {
+		return false
+	}
+	identity, err := provider.Identity(ctx, account.Home)
+	if errors.Is(err, ports.ErrAgentAccountLoginRevoked) {
+		return true
+	}
+	return err == nil && !identity.LoggedIn
 }
 
 // VerifyLogin serializes native profile preparation/probes with cancellation.

@@ -58,6 +58,7 @@ type fakeClaude struct {
 	onIdentity func(home string) // runs as a folder's identity is read
 	apiKey     map[string]bool   // folders logged in with an API key
 	failing    map[string]bool   // folders whose check fails (a timeout)
+	errs       map[string]error  // folders whose check fails with this error
 	windows    []domain.AgentAccountLimitWindow
 }
 
@@ -69,6 +70,9 @@ func (f *fakeClaude) Identity(_ context.Context, home string) (domain.AgentAccou
 	}
 	if f.failing[home] {
 		return domain.AgentAccountIdentityCheck{}, errors.New("account/read: context deadline exceeded")
+	}
+	if err := f.errs[home]; err != nil {
+		return domain.AgentAccountIdentityCheck{}, err
 	}
 	email, ok := f.signedInAs[home]
 	if f.apiKey[home] {
@@ -273,6 +277,148 @@ func TestSignInAgainKeepsTheAccountAndItsLogin(t *testing.T) {
 	}
 	if _, err := os.Stat(b); err != nil {
 		t.Fatalf("the saved folder is gone: %v", err)
+	}
+}
+
+// signedOutAccountInUse saves b@example.com, signs it out and leaves owner
+// holding it. The session "s1" stays bound to it.
+func signedOutAccountInUse(t *testing.T, owner domain.AgentAccountUsageOwner) (*Service, *fakeClaude, *memStore, string, *bool) {
+	t.Helper()
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "accounts")
+	claude := &fakeClaude{signedInAs: map[string]string{}}
+	store := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
+	svc := New(store, []ports.AgentAccountProviderCLI{claude}, root, fakeTerminals{}, nil)
+	start, err := svc.StartLogin(ctx, domain.AgentAccountProviderClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude.signedInAs[filepath.Join(root, "claude", start.OperationID)] = "b@example.com"
+	if status, _, err := svc.VerifyLogin(ctx, start.OperationID); err != nil || status != LoginComplete {
+		t.Fatalf("sign-in = %q, %v", status, err)
+	}
+	if err := svc.BindSession(ctx, "s1", domain.HarnessClaudeCode, start.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	delete(claude.signedInAs, filepath.Join(root, "claude", start.OperationID))
+	svc.SetUsageOwners(func(context.Context, string) ([]domain.AgentAccountUsageOwner, error) {
+		return []domain.AgentAccountUsageOwner{owner}, nil
+	})
+	stopped := false
+	svc.SetAgentStopper(func(context.Context, string) error { stopped = true; return nil })
+	return svc, claude, store, filepath.Join(root, "claude", start.OperationID), &stopped
+}
+
+// A signed-out account signs in again while anything still holds it: its
+// login is gone, so there is nothing to replace, and nothing is stopped.
+func TestSignInAgainToASignedOutAccountInUse(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
+	for _, owner := range []domain.AgentAccountUsageOwner{
+		{Kind: "session", SessionID: "same-provider", Harness: domain.HarnessClaudeCode, Blocking: true},
+		{Kind: "session", SessionID: "cross-provider", Harness: domain.HarnessCodex, Blocking: true},
+		{Kind: "reviewer", ReviewID: "review-1", Harness: domain.HarnessClaudeCode, Blocking: true},
+		{Kind: "transition", TransitionID: "transition-1", Harness: domain.HarnessClaudeCode, Blocking: true},
+	} {
+		t.Run(owner.Kind+"/"+string(owner.Harness), func(t *testing.T) {
+			ctx := context.Background()
+			svc, claude, store, home, stopped := signedOutAccountInUse(t, owner)
+			accountID := filepath.Base(home)
+			again, err := svc.StartSignInAgain(ctx, accountID)
+			if err != nil || again.Terminal.HandleID == "" {
+				t.Fatalf("sign in again = %+v, %v", again, err)
+			}
+			if o := store.operations[again.OperationID]; o.Action != "login-again" || o.AccountID != accountID {
+				t.Fatalf("operation = %+v", o)
+			}
+			claude.signedInAs[home] = "B@example.com"
+			status, view, err := svc.VerifyLogin(ctx, again.OperationID)
+			if err != nil || status != LoginComplete || view == nil || view.Account.ID != accountID || !view.SignedIn {
+				t.Fatalf("same login = %q view=%+v err=%v", status, view, err)
+			}
+			if store.bindings["s1"] != accountID || *stopped {
+				t.Fatalf("binding = %q stopped=%t", store.bindings["s1"], *stopped)
+			}
+		})
+	}
+}
+
+// Signing a signed-out account in to someone else is refused: the account
+// keeps its email and its folder is signed out again.
+func TestSignInAgainToASignedOutAccountInUseRefusesAnotherLogin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
+	ctx := context.Background()
+	svc, claude, _, home, stopped := signedOutAccountInUse(t, domain.AgentAccountUsageOwner{Kind: "session", SessionID: "fake-1", Harness: domain.HarnessCodex, Blocking: true})
+	accountID := filepath.Base(home)
+	again, err := svc.StartSignInAgain(ctx, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude.signedInAs[home] = "c@example.com"
+	if status, _, err := svc.VerifyLogin(ctx, again.OperationID); err != nil || status != LoginMismatch {
+		t.Fatalf("other login = %q, %v", status, err)
+	}
+	if a, err := svc.find(ctx, accountID); err != nil || a.Email != "b@example.com" {
+		t.Fatalf("account = %+v, %v", a, err)
+	}
+	if _, signedIn := claude.signedInAs[home]; signedIn || *stopped {
+		t.Fatalf("the other login stayed in the folder or agents stopped: stopped=%t", *stopped)
+	}
+}
+
+// A login the provider revoked signs in again while anything still holds it,
+// like a signed-out one: no owner can use it, and nothing is stopped.
+func TestSignInAgainToARevokedAccountInUse(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
+	ctx := context.Background()
+	svc, claude, store, home, stopped := signedOutAccountInUse(t, domain.AgentAccountUsageOwner{Kind: "session", SessionID: "fake-1", Harness: domain.HarnessCodex, Blocking: true})
+	accountID := filepath.Base(home)
+	claude.errs = map[string]error{home: ports.ErrAgentAccountLoginRevoked}
+	again, err := svc.StartSignInAgain(ctx, accountID)
+	if err != nil || again.Terminal.HandleID == "" {
+		t.Fatalf("sign in again = %+v, %v", again, err)
+	}
+	delete(claude.errs, home)
+	claude.signedInAs[home] = "b@example.com"
+	status, view, err := svc.VerifyLogin(ctx, again.OperationID)
+	if err != nil || status != LoginComplete || view == nil || view.Account.ID != accountID || !view.SignedIn {
+		t.Fatalf("same login = %q view=%+v err=%v", status, view, err)
+	}
+	if store.bindings["s1"] != accountID || *stopped {
+		t.Fatalf("binding = %q stopped=%t", store.bindings["s1"], *stopped)
+	}
+}
+
+// Any other failed check says nothing about a login a live owner may still
+// use, so a held account still refuses to sign in again.
+func TestSignInAgainRefusesAHeldAccountWhoseCheckFails(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("new managed login is Linux-only")
+	}
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{"unauthorized", errors.New("app-server error -32603: unexpected status 401 Unauthorized")},
+		{"refresh failed", errors.New("app-server error -32603: Your access token could not be refreshed. Please try again")},
+		{"already used", errors.New("app-server error -32603: Your access token could not be refreshed because your refresh token was already used")},
+		{"start failed", errors.New("start codex app-server: executable file not found")},
+		{"timeout", context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			svc, claude, store, home, stopped := signedOutAccountInUse(t, domain.AgentAccountUsageOwner{Kind: "session", SessionID: "fake-1", Harness: domain.HarnessCodex, Blocking: true})
+			claude.errs = map[string]error{home: test.err}
+			_, err := svc.StartSignInAgain(context.Background(), filepath.Base(home))
+			var use *ports.AgentAccountInUseError
+			if !errors.As(err, &use) || len(store.operations) != 1 || *stopped {
+				t.Fatalf("held account was not refused before effects: %v operations=%d stopped=%t", err, len(store.operations), *stopped)
+			}
+		})
 	}
 }
 

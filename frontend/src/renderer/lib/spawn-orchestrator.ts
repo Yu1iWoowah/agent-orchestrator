@@ -1,7 +1,9 @@
 import { apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId } from "./api-client";
-import { appI18n } from "../i18n";
-import { aoBridge } from "./bridge";
 import { resumeOnce } from "../hooks/useCanResumeAgent";
+import { followResume, noteResumeFailure } from "./resume-watch";
+import { queryClient } from "./query-client";
+import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { conversationQueryKey } from "../hooks/useConversation";
 import type { OrchestratorSpawnSource } from "./orchestrator-spawn-sources";
 import { captureRendererEvent } from "./telemetry";
 import { clientForSessionHost } from "./host-clients";
@@ -114,15 +116,14 @@ async function requestOrchestratorResume(sessionId: string, hostId?: string): Pr
 		params: { path: { sessionId } },
 	});
 	if (error && apiErrorCode(error) !== "AGENT_NOT_EXITED") {
+		noteResumeFailure(sessionId, error, hostId);
 		throw new Error(apiErrorMessage(error, `Could not resume the orchestrator (${response.status})`));
 	}
-	if (data?.resumeMode === "saved_prompt") {
-		void aoBridge.notifications
-			.show({
-				id: `resume-agent-fallback:${sessionId}:${Date.now()}`,
-				title: appI18n.t("inspector.startedFromPrompt"),
-				body: appI18n.t("inspector.resumeFallbackBody"),
-			})
-			.catch((err) => console.warn("Unable to show resume fallback notification", err));
-	}
+	if (error) return;
+	// The daemon finishes the resume in the background; the watch records a
+	// failure and refreshes the session once it settles.
+	followResume(sessionId, hostId, response, data, () => Promise.all([
+		queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }),
+		queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) }),
+	]));
 }

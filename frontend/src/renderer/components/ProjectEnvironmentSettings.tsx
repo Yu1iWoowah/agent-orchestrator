@@ -1,16 +1,16 @@
+import { ProjectSettingsConflict, rebaseSettings, settingsExpected, settingsPatch, settingsSaveError } from "../lib/project-settings-patch";
+import { SettingsSaveFooter } from "./settings/SettingsSaveFooter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, FileCode2, Plus, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { components } from "../../api/schema";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage } from "../lib/api-client";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import type { ProjectSettingsSaveState } from "./ProjectSettingsForm";
 import { Button } from "./ui/button";
 import { ProjectSettingsSection } from "@aoagents/product-ui";
 
 type Row = { name: string; value: string; visible: boolean };
-type Project = components["schemas"]["Project"];
 
 const rowsFromEnv = (env?: Record<string, string>): Row[] =>
 	Object.entries(env ?? {}).map(([name, value]) => ({ name, value, visible: false }));
@@ -50,8 +50,8 @@ export function ProjectEnvironmentSettings({ projectId, onSaveState }: { project
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
 			if (error) throw new Error(apiErrorMessage(error));
-			if (data?.status !== "ok") throw new Error(t("settings.project.degraded"));
-			return data.project as Project;
+			if (data?.status !== "ok" || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
+			return data.project;
 		},
 	});
 	if (query.isLoading) return <div className="project-settings-form" aria-busy="true" aria-label={t("settings.project.loading")}><section><div className="settings-grouped-rows flex w-full flex-col"><div className="settings-row-bar" /></div></section></div>;
@@ -69,7 +69,9 @@ function VariablesEditor({ projectId, initial, onSaveState, onSaved }: {
 	onSaved: () => void;
 }) {
 	const { t } = useTranslation();
-	const attempted = useRef<string | null>(null);
+	const baseline = useRef(initial ?? {});
+	const queryClient = useQueryClient();
+	const [reloading, setReloading] = useState(false);
 	const [rows, setRows] = useState(() => rowsFromEnv(initial));
 	const [saved, setSaved] = useState(() => JSON.stringify(initial ?? {}));
 	const [error, setError] = useState<string | null>(null);
@@ -78,51 +80,92 @@ function VariablesEditor({ projectId, initial, onSaveState, onSaved }: {
 	const [pasteText, setPasteText] = useState("");
 	const [importedCount, setImportedCount] = useState<number | null>(null);
 	const filled = rows.filter(({ name, value }) => name !== "" || value !== "");
-	const dirty = JSON.stringify(Object.fromEntries(filled.map(({ name, value }) => [name, value]))) !== saved;
+	const dirty = JSON.stringify(Object.fromEntries(filled.map(({ name, value }) => [name, value]))) !== saved || pasteText.trim() !== "";
 	// The env map this draft would save, or null while a name is invalid or duplicated.
 	const envDraft = (() => {
-		const env: Record<string, string> = {};
+		const env = new Map<string, string>();
 		const names = new Set<string>();
 		for (const row of filled) {
 			const folded = row.name.toUpperCase();
 			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(row.name) || names.has(folded)) return null;
 			names.add(folded);
-			env[row.name] = row.value;
+			env.set(row.name, row.value);
 		}
-		return env;
+		return Object.fromEntries(env);
 	})();
-	const unsaveable = dirty && envDraft === null;
+	const unsaveable = dirty && (envDraft === null || pasteText.trim() !== "");
 	const mutation = useMutation({
 		mutationFn: async (env: Record<string, string>) => {
-			// Refresh before the whole-config PUT so this page cannot erase changes made elsewhere.
-			const current = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
-			if (current.error) throw new Error(apiErrorMessage(current.error));
-			if (current.data?.status !== "ok" || !current.data.project) throw new Error(t("settings.project.degraded"));
-			const project = current.data.project as Project;
-			const { error: updateError } = await apiClient.PUT("/api/v1/projects/{id}", {
+			const patch = settingsPatch({ config: { env: baseline.current } }, { config: { env } });
+			if (!Object.keys(patch).length) return baseline.current;
+			const { data, error } = await apiClient.PATCH("/api/v1/projects/{id}/settings", {
 				params: { path: { id: projectId } },
-				body: { displayName: project.name, config: { ...project.config, env } },
+				body: { ...patch, expected: settingsExpected(patch, { config: { env: baseline.current } }) },
 			});
-			if (updateError) throw new Error(apiErrorMessage(updateError));
-			return env;
+			if (error) throw settingsSaveError(apiErrorCode(error), apiErrorMessage(error), apiErrorDetails(error));
+			if (!data?.project) throw new Error(t("settings.project.degraded"));
+			queryClient.setQueryData(["project", projectId], data.project);
+			return data.project.config?.env ?? {};
 		},
 		onSuccess: (env) => {
+			baseline.current = env;
+			setRows((current) =>
+				rowsFromEnv(env).map((row) => ({ ...row, visible: current.find((old) => old.name === row.name)?.visible ?? false })),
+			);
 			setSaved(JSON.stringify(env));
 			setSavedAt(true);
 			onSaved();
 		},
 	});
+	const resetMutation = mutation.reset;
+	const loadLatest = useCallback(async () => {
+		if (reloading || !envDraft || !(mutation.error instanceof ProjectSettingsConflict)) return;
+		setReloading(true);
+		try {
+			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
+			if (error) throw new Error(apiErrorMessage(error));
+			if (data?.status !== "ok" || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
+			const latest = data.project.config?.env ?? {};
+			const rebased = rebaseSettings(
+				baseline.current,
+				envDraft,
+				latest,
+				mutation.error.paths.map((path) => path.replace(/^config\.env\.?/, "")),
+			);
+			baseline.current = latest;
+			setSaved(JSON.stringify(latest));
+			setRows(rowsFromEnv(rebased));
+			setError(null);
+			setSavedAt(false);
+			resetMutation();
+			queryClient.setQueryData(["project", projectId], data.project);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : t("settings.project.loadFailed"));
+		} finally {
+			setReloading(false);
+		}
+	}, [rows, mutation.error, projectId, queryClient, reloading, resetMutation, t]);
 	useEffect(() => {
+		const conflict = mutation.error instanceof ProjectSettingsConflict ? mutation.error : undefined;
 		onSaveState?.({
-			phase: mutation.isError ? "failed" : mutation.isPending ? "saving" : dirty ? "pending" : savedAt ? "saved" : "idle",
+			phase: mutation.isError ? "failed" : mutation.isPending ? "saving" : savedAt && !dirty ? "saved" : "idle",
 			dirty,
 			unsaveable,
 			requestPending: mutation.isPending,
-			error: mutation.error instanceof Error ? mutation.error.message : undefined,
+			error: !conflict && mutation.error instanceof Error ? mutation.error.message : undefined,
+			conflictPaths: conflict?.paths,
+			reload: conflict ? loadLatest : undefined,
+			reloading,
 		});
-	}, [dirty, mutation.error, mutation.isError, mutation.isPending, onSaveState, savedAt, unsaveable]);
+	}, [dirty, mutation.error, mutation.isError, mutation.isPending, onSaveState, savedAt, unsaveable, loadLatest, reloading]);
+
 	const showEmpty = rows.length === 0 && activeTab === "variables";
-	const update = (next: Row[]) => { attempted.current = null; setRows(next); setError(null); setSavedAt(false); setImportedCount(null); };
+	const update = (next: Row[]) => {
+		setRows(next);
+		setError(null);
+		setSavedAt(false);
+		setImportedCount(null);
+	};
 	const importPasted = () => {
 		const parsed = parsePastedEnv(pasteText);
 		if (parsed.invalidLine || parsed.rows.length === 0) {
@@ -146,11 +189,12 @@ function VariablesEditor({ projectId, initial, onSaveState, onSaved }: {
 		onSaveState?.({ phase: "failed", dirty, requestPending: false, error: message });
 	};
 	const save = () => {
+		if (mutation.isPending || !dirty) return;
 		if (activeTab === "paste" && pasteText.trim()) {
 			reject(t("settings.project.envPastePending"));
 			return;
 		}
-		const env: Record<string, string> = {};
+		const env = new Map<string, string>();
 		const names = new Set<string>();
 		for (const row of filled) {
 			const name = row.name;
@@ -160,20 +204,13 @@ function VariablesEditor({ projectId, initial, onSaveState, onSaved }: {
 				return;
 			}
 			names.add(folded);
-			env[name] = row.value;
+			env.set(name, row.value);
 		}
 		setError(null);
-		mutation.mutate(env);
+		mutation.mutate(Object.fromEntries(env));
 	};
-	// Autosave: a draft with valid, unique names saves shortly after the last edit.
-	useEffect(() => {
-		if (!dirty || mutation.isPending || activeTab !== "variables" || envDraft === null) return;
-		const key = JSON.stringify(envDraft);
-		if (attempted.current === key) return;
-		const timer = window.setTimeout(() => { attempted.current = key; mutation.mutate(envDraft); }, 700);
-		return () => window.clearTimeout(timer);
-	}, [activeTab, dirty, mutation, rows]); // eslint-disable-line react-hooks/exhaustive-deps
-	return <form id="project-settings-form" className="project-settings-form flex min-h-full flex-col gap-(--size-settings-section-inner-gap)" onSubmit={(event) => { event.preventDefault(); save(); }}>
+
+	return <form id="project-settings-form" className="project-settings-form flex min-h-full flex-col gap-(--size-settings-section-inner-gap)" onSubmit={(event) => { event.preventDefault(); save(); }}><fieldset className="contents" disabled={mutation.isPending || reloading}>
 		<p className="px-(--settings-row-inset) text-sm leading-5 text-settings-muted">{t("settings.project.environmentDescription")}</p>
 		{showEmpty ? <ProjectSettingsSection title={t("settings.project.environmentVariables")} titleHidden grouped>
 			<div className="settings-row-bar">
@@ -205,6 +242,7 @@ function VariablesEditor({ projectId, initial, onSaveState, onSaved }: {
 		</div></ProjectSettingsSection>}
 		{importedCount !== null && <p role="status" className="px-(--settings-row-inset) text-xs text-settings-muted">{t("settings.project.envImported", { count: importedCount })}</p>}
 		{error && <p role="alert" className="px-(--settings-row-inset) text-xs text-error">{error}</p>}
-		{mutation.isError && <p role="alert" className="px-(--settings-row-inset) text-xs text-error">{mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed")}</p>}
-	</form>;
+		{mutation.isError && !onSaveState && <p role="alert" className="px-(--settings-row-inset) text-xs text-error">{mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed")}</p>}
+        {!onSaveState && <SettingsSaveFooter dirty={dirty} disabled={mutation.isPending || unsaveable} />}
+    </fieldset></form>;
 }

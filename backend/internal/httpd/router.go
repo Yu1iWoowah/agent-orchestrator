@@ -56,9 +56,15 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	api := newAPIWithLogger(cfg, deps, log)
 
 	r.Use(middleware.RequestID)
+	var rejectRaw func(string, string)
+	if inline, ok := deps.RCA.(controllers.RCAInlineService); ok {
+		rejectRaw = inline.RejectClaude
+	}
+	r.Use(rcaRawTransportGuardWithReject(rejectRaw))
 	r.Use(settingsIdentityMiddleware)
 	r.Use(requestLogger(log, deps.Telemetry))
 	r.Use(recoverTelemetry(log, deps.Telemetry))
+	r.Use(rcaOriginMiddleware(cfg.AllowedOrigins))
 	// Credential routes retain their exact renderer-only boundary even for
 	// authenticated LAN callers. Check before CORS can answer a preflight.
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
@@ -414,6 +420,44 @@ func localControlRequest(r *http.Request) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+func mountHCGReporting(r chi.Router, svc controllers.HCGReportingService) {
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if !localControlRequest(req) {
+					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
+					return
+				}
+				if svc == nil {
+					envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "HCG_REPORTING_UNAVAILABLE", "Fixed reporting is unavailable.", nil)
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+		controllers.HCGReportingController{Svc: svc}.Register(r)
+	})
+}
+
+func mountHCGDelegation(r chi.Router, svc controllers.HCGDelegationService) {
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if !localControlRequest(req) {
+					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
+					return
+				}
+				if svc == nil {
+					envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "HCG_DELEGATION_UNAVAILABLE", "Fixed delegation is unavailable.", nil)
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+		controllers.HCGDelegationController{Svc: svc}.Register(r)
+	})
 }
 
 // daemonProbePayload is shared by /healthz and /readyz. Dependency

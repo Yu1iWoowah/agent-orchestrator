@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,16 +26,24 @@ type TranscriptEvent struct {
 	Discovery bool
 }
 
+// TranscriptWatcherConfig applies an optional boundary check to configured roots.
+type TranscriptWatcherConfig struct {
+	ValidateRoot func(context.Context, string) error
+	Logger       *slog.Logger
+}
+
 // TranscriptWatcher watches exact registered transcript files. Exact-file
 // watches keep descriptor use proportional to active durable sources even on
 // kqueue, where watching a large directory can open every file inside it.
 type TranscriptWatcher struct {
-	mu          sync.Mutex
-	watcher     *fsnotify.Watcher
-	roots       []string
-	sourcePaths []string
-	watched     map[string]struct{}
-	closed      bool
+	mu           sync.Mutex
+	watcher      *fsnotify.Watcher
+	roots        []string
+	validateRoot func(context.Context, string) error
+	logger       *slog.Logger
+	sourcePaths  []string
+	watched      map[string]struct{}
+	closed       bool
 
 	events chan TranscriptEvent
 	errors chan error
@@ -45,7 +54,7 @@ type TranscriptWatcher struct {
 
 // NewTranscriptWatcher creates an empty watcher. The coordinator supplies the
 // current durable source inventory through Rebuild before ingestion begins.
-func NewTranscriptWatcher(ctx context.Context, roots []string) (*TranscriptWatcher, error) {
+func NewTranscriptWatcher(ctx context.Context, roots []string, cfg TranscriptWatcherConfig) (*TranscriptWatcher, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -53,12 +62,25 @@ func NewTranscriptWatcher(ctx context.Context, roots []string) (*TranscriptWatch
 	if err != nil {
 		return nil, err
 	}
-	for index, root := range normalized {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var accepted []string
+	for _, root := range normalized {
+		if cfg.ValidateRoot != nil {
+			if err := cfg.ValidateRoot(ctx, root); err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				logger.Warn("usage transcript root rejected", "err", err)
+				continue
+			}
+		}
 		resolved, err := resolveTranscriptRoot(ctx, root)
 		if err != nil {
 			return nil, fmt.Errorf("resolve transcript root: %w", redactFilesystemError(err))
 		}
-		normalized[index] = resolved
 		info, err := os.Stat(resolved)
 		if err == nil && !info.IsDir() {
 			return nil, errors.New("transcript root is not a directory")
@@ -66,18 +88,21 @@ func NewTranscriptWatcher(ctx context.Context, roots []string) (*TranscriptWatch
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("inspect transcript root: %w", redactFilesystemError(err))
 		}
+		accepted = append(accepted, root)
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create transcript watcher: %w", err)
 	}
 	result := &TranscriptWatcher{
-		watcher: watcher,
-		roots:   normalized,
-		watched: make(map[string]struct{}),
-		events:  make(chan TranscriptEvent, transcriptEventBuffer),
-		errors:  make(chan error, watcherErrorBuffer),
-		done:    make(chan struct{}),
+		watcher:      watcher,
+		roots:        accepted,
+		validateRoot: cfg.ValidateRoot,
+		logger:       logger,
+		watched:      make(map[string]struct{}),
+		events:       make(chan TranscriptEvent, transcriptEventBuffer),
+		errors:       make(chan error, watcherErrorBuffer),
+		done:         make(chan struct{}),
 	}
 	return result, nil
 }
@@ -250,6 +275,9 @@ func (w *TranscriptWatcher) desiredWatchSetLocked(ctx context.Context) (map[stri
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if !w.withinDesiredRoot(ctx, path) {
+			continue
+		}
 		info, err := os.Stat(path)
 		switch {
 		case err == nil && info.Mode().IsRegular():
@@ -270,8 +298,13 @@ func (w *TranscriptWatcher) withinDesiredRoot(ctx context.Context, path string) 
 		if ctx.Err() != nil {
 			return false
 		}
-		if pathWithin(path, root) {
-			return true
+		if w.validateRoot != nil {
+			if err := w.validateRoot(ctx, root); err != nil {
+				if ctx.Err() == nil {
+					w.logger.Warn("usage transcript root rejected", "err", err)
+				}
+				continue
+			}
 		}
 		resolved, err := resolveTranscriptRoot(ctx, root)
 		if err == nil && pathWithin(path, resolved) {

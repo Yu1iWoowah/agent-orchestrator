@@ -38,6 +38,7 @@ type Launch struct {
 // construct its process. It intentionally contains no install mechanism: binary
 // ownership stays with the existing agent plugin.
 type LaunchConfig struct {
+	RCAEnvironment  ports.RCAClaudeEnvironment
 	ReconnectOnly   bool
 	SessionID       domain.SessionID
 	DataDir         string
@@ -303,7 +304,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	launchCfg := LaunchConfig{
 		SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
-		Env:   cfg.Env,
+		Env: cfg.Env, RCAEnvironment: cfg.RCAEnvironment,
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		DisableTools:    cfg.DisableTools,
 		ProviderScopeID: cfg.ProviderScopeID,
@@ -468,7 +469,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	}
 	launchCfg := LaunchConfig{
 		SessionID: cfg.SessionID, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath,
-		Env:   cfg.Env,
+		Env: cfg.Env, RCAEnvironment: cfg.RCAEnvironment,
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID: cfg.ProviderScopeID,
 		ReconnectOnly:   cfg.ReconnectOnly,

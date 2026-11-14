@@ -233,6 +233,82 @@ func TestProjectsAPI_UpdateSettings(t *testing.T) {
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 }
 
+func TestProjectsAPI_PatchSettings(t *testing.T) {
+	srv := newTestServer(t)
+	repo := gitRepo(t, "patch-project")
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/projects", `{"path":`+quote(repo)+`,"projectId":"patch-project"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create = %d: %s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPatch, "/api/v1/projects/patch-project/settings", `{"config":{"worker":{"agentConfig":{"model":"current"}}},"expected":{"config":{"worker":{"agentConfig":{"model":null}}}}}`)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", status, body)
+	}
+	var response struct {
+		Project projectsvc.Project `json:"project"`
+	}
+	mustJSON(t, body, &response)
+	if response.Project.Config.Worker.AgentConfig.Model != "current" {
+		t.Fatalf("response = %s", body)
+	}
+	for _, tc := range []struct {
+		body, code string
+		status     int
+	}{
+		{`{"config":{"worker":{"agentConfig":{"model":"new"}}},"expected":{"config":{"worker":{"agentConfig":{"model":"stale"}}}}}`, "PROJECT_SETTINGS_CONFLICT", http.StatusConflict},
+		{`{"config":{"worker":{"agentConfig":{"model":"new"}}},"expected":{}}`, "PROJECT_SETTINGS_EXPECTED_REQUIRED", http.StatusBadRequest},
+		{`{"config":{"symlinks":[]},"expected":{"config":{"symlinks":null}}}`, "INVALID_PROJECT_CONFIG", http.StatusBadRequest},
+		{`{"unexpected":true,"expected":{}}`, "INVALID_JSON", http.StatusBadRequest},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/v1/projects/patch-project/settings", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Request-ID", "pss-pr1-request")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := resp.StatusCode
+			assertErrorCode(t, body, status, tc.status, tc.code)
+			var failure struct {
+				RequestID string `json:"requestId"`
+				Details   struct {
+					Conflicts []struct {
+						Path    string `json:"path"`
+						Current string `json:"current"`
+					} `json:"conflicts"`
+				} `json:"details"`
+			}
+			mustJSON(t, body, &failure)
+			if failure.RequestID != "pss-pr1-request" {
+				t.Fatalf("request ID not preserved: %s", body)
+			}
+			if tc.status == http.StatusConflict {
+				conflicts := failure.Details.Conflicts
+				if len(conflicts) != 1 || conflicts[0].Path != "config.worker.agentConfig.model" || conflicts[0].Current != "current" {
+					t.Fatalf("conflicts = %s", body)
+				}
+			}
+		})
+	}
+	body, status, _ = doRequest(t, srv, http.MethodGet, "/api/v1/projects/patch-project", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET = %d: %s", status, body)
+	}
+	mustJSON(t, body, &response)
+	if response.Project.Config.Worker.AgentConfig.Model != "current" {
+		t.Fatalf("rejected writes changed config: %s", body)
+	}
+}
+
 func TestProjectsAPI_AddValidationAndConflicts(t *testing.T) {
 
 	srv := newTestServer(t)

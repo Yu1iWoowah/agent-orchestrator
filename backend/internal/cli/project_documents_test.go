@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +19,7 @@ func TestProjectDocumentsCommands(t *testing.T) {
 			t.Setenv("AO_SESSION_ID", "owner")
 			t.Setenv("AO_BROWSER_CAPABILITY", "secret")
 			var calls []string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/internal/") {
 					return
 				}
@@ -100,7 +99,7 @@ func TestProjectDocumentWriteRequiresExplicitPrecondition(t *testing.T) {
 }
 func TestProjectDocumentReadKeepsDaemonError(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/projects/demo" {
 			_, _ = io.WriteString(w, `{"project":{"id":"demo"}}`)
 			return
@@ -151,7 +150,7 @@ func TestProjectDocumentWriteRejectsInvalidUTF8BeforeDaemon(t *testing.T) {
 	original := "original document"
 	document := original
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/internal/") {
 			return
 		}

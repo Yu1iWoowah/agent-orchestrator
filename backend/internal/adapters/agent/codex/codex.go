@@ -8,6 +8,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -133,6 +134,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	appendReasoningEffortFlag(&providerArgs, cfg.Config.Effort)
 	appendFastTierFlag(&providerArgs, cfg.Config.Launch)
 	appendAccountCredentialStore(&providerArgs, cfg.Env)
+	appendDelegationMCP(&providerArgs, cfg.Env)
 	return agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
 		Harness:          agentruntime.HarnessCodex,
 		Binary:           binary,
@@ -177,6 +179,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendReasoningEffortFlag(&providerArgs, cfg.Config.Effort)
 	appendFastTierFlag(&providerArgs, cfg.Config.Launch)
 	appendAccountCredentialStore(&providerArgs, cfg.Env)
+	appendDelegationMCP(&providerArgs, cfg.Env)
 	return agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
 		Harness:          agentruntime.HarnessCodex,
 		Binary:           binary,
@@ -625,3 +628,25 @@ var fileExists = func(path string) bool {
 func (*Plugin) SupportsTerminalVersionRefresh() bool { return true }
 
 var _ ports.AgentTerminalVersionRefresher = (*Plugin)(nil)
+
+// appendDelegationMCP adds only the fixed AO-owned server, without approval flags.
+func appendDelegationMCP(args *[]string, env map[string]string) {
+	if env[ports.EnvHCGDelegationMCP] != "1" {
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil || !filepath.IsAbs(executable) {
+		return
+	}
+	add := func(key string, value any) {
+		raw, _ := json.Marshal(value)
+		*args = append(*args, "-c", "mcp_servers.hcg."+key+"="+string(raw))
+	}
+	add("command", executable)
+	add("args", []string{"usage", "delegation", "mcp"})
+	for _, key := range []string{"AO_SESSION_ID", "AO_DATA_DIR", "AO_RUN_FILE"} {
+		if value := env[key]; value != "" {
+			add("env."+key, value)
+		}
+	}
+}

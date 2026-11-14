@@ -25,7 +25,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -128,6 +127,10 @@ type fakeProjectManager struct {
 
 var _ projectsvc.Manager = (*fakeProjectManager)(nil)
 
+func (f *fakeProjectManager) PatchSettings(_ context.Context, id domain.ProjectID, _ projectsvc.PatchSettingsInput) (projectsvc.Project, error) {
+	return projectsvc.Project{ID: id}, nil
+}
+
 func (f *fakeProjectManager) List(context.Context) ([]projectsvc.Summary, error) {
 	return nil, nil
 }
@@ -193,7 +196,7 @@ func startDriftTestDaemon(t *testing.T, sessions controllers.SessionService, pro
 		Sessions: sessions,
 		Projects: projects,
 	}, httpd.ControlDeps{})
-	srv := httptest.NewServer(router)
+	srv := newFixtureServer(t, router)
 	t.Cleanup(srv.Close)
 
 	port := srv.Listener.Addr().(*net.TCPAddr).Port
@@ -211,7 +214,7 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		startDriftTestDaemon(t, sessions, &fakeProjectManager{})
 
 		var out bytes.Buffer
-		root := NewRootCommand(Deps{
+		root := newTestRootCommand(t, Deps{
 			Out:          &out,
 			Err:          &out,
 			HTTPClient:   &http.Client{},
@@ -267,7 +270,7 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		startDriftTestDaemon(t, &fakeSessionService{}, projects)
 
 		var out bytes.Buffer
-		root := NewRootCommand(Deps{
+		root := newTestRootCommand(t, Deps{
 			Out:          &out,
 			Err:          &out,
 			HTTPClient:   &http.Client{},

@@ -156,7 +156,7 @@ function RepositoriesForm({ project, readOnly, onSaveState }: LoadedProps) {
 	const reposInvalid = additionalReposProblem(project.repositoryUrl, extras) !== undefined || removedInUse.length > 0;
 	const workingDirectoryError = workingDirectoryProblem(workingDirectory, { standalone });
 	const workingDirectoryInvalid = workingDirectoryError !== undefined;
-	const { mutation, edited } = useSettingsPageSave(project, dirty, reposInvalid || workingDirectoryInvalid, onSaveState);
+	const { mutation, edited } = useSettingsPageSave(project, dirty, reposInvalid || workingDirectoryInvalid || readOnly, onSaveState);
 	const locked = readOnly || mutation.isPending;
 	const submit = () => {
 		if (reposInvalid || workingDirectoryInvalid) return;
@@ -238,8 +238,8 @@ function RepositoriesForm({ project, readOnly, onSaveState }: LoadedProps) {
 			</Field>
 		) : null}
 		<div className="flex-1" />
-		<SaveFooter dirty={dirty} disabled={locked || reposInvalid || workingDirectoryInvalid}
-			error={mutation.isError ? mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed") : undefined} />
+		{!onSaveState && <SaveFooter dirty={dirty} disabled={locked || reposInvalid || workingDirectoryInvalid}
+			error={mutation.isError ? mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed") : undefined} />}
 	</form>;
 }
 
@@ -258,7 +258,7 @@ function InstructionsForm({ project, readOnly, onSaveState }: LoadedProps) {
 	const [saved, setSaved] = useState(() => ({ agentRules: projectConfigText(project.config, "agentRules"), orchestratorRules: projectConfigText(project.config, "orchestratorRules") }));
 	const dirty = agentRules !== saved.agentRules || orchestratorRules !== saved.orchestratorRules;
 	const tooLong = utf8Bytes(agentRules) > MAX_PROJECT_RULES_BYTES || utf8Bytes(orchestratorRules) > MAX_PROJECT_RULES_BYTES;
-	const { mutation, edited } = useSettingsPageSave(project, dirty, tooLong, onSaveState);
+	const { mutation, edited } = useSettingsPageSave(project, dirty, tooLong || readOnly, onSaveState);
 	const locked = readOnly || mutation.isPending;
 	const submit = () => {
 		if (tooLong) return;
@@ -285,7 +285,7 @@ function InstructionsForm({ project, readOnly, onSaveState }: LoadedProps) {
 			t("settings.cloudProject.orchestratorInstructionsHint", { defaultValue: "Added to the orchestrator's prompt." }),
 			orchestratorRules, setOrchestratorRules)}
 		<div className="flex-1" />
-		<SaveFooter dirty={dirty} disabled={locked || tooLong}
-			error={mutation.isError ? mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed") : undefined} />
+		{!onSaveState && <SaveFooter dirty={dirty} disabled={locked || tooLong}
+			error={mutation.isError ? mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed") : undefined} />}
 	</form>;
 }

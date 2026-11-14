@@ -19,6 +19,7 @@ import type { components } from "../../api/schema";
 import { editorHandoffQueryKey, editorHandoffQueryRoot } from "../hooks/useEditorHandoff";
 import { baseUrlForHost, connectedHosts, subscribeConnectedHosts } from "./host-clients";
 import { probeRemoteSse } from "./remote-sse-probe";
+import { hasDaemonEventStreams, openDaemonEventSource, type DaemonEventSource } from "./daemon-event-source";
 import { agentSettingsQueryKey, agentSettingsQueryRoot, type AgentSettingsSnapshot } from "./agent-settings";
 import { reviewerAgentSettingsQueryKey } from "./reviewer-agent-settings";
 
@@ -104,7 +105,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let idOnlyWorkspaceTimer: ReturnType<typeof setTimeout> | undefined;
 			let lastWorkspaceRefreshAt = Number.NEGATIVE_INFINITY;
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
-			let source: EventSource | undefined;
+			let source: DaemonEventSource | undefined;
 			let sourceBaseUrl: string | undefined;
 			// Base URL of a daemon that rejected ?after=latest (built before the cursor
 			// existed). Its stream connects without one, replaying history as before.
@@ -119,7 +120,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// A supporting daemon answers with an open stream; do not keep it.
 					.finally(() => controller.abort());
 			};
-			let accountSource: EventSource | undefined;
+			let accountSource: DaemonEventSource | undefined;
 			let accountSourceBaseUrl: string | undefined;
 			let disposed = false;
 			const remoteSources = new Map<string, {
@@ -551,8 +552,9 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			};
 
 			const connectSource = () => {
-				// EventSource is unavailable in jsdom (tests) and some preview surfaces; guard it.
-				if (disposed || typeof EventSource === "undefined") return;
+				// Without the desktop preload (browser preview, dev:web) the local
+				// streams stay closed and the workspace poll keeps the UI current.
+				if (disposed || !hasDaemonEventStreams()) return;
 				if (!hasTrustedApiBaseUrl()) {
 					healthAttempt += 1;
 					source?.close();
@@ -568,16 +570,14 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				if (!accountSource || accountSourceBaseUrl !== baseUrl || accountSource.readyState === EVENTSOURCE_CLOSED) {
 					accountSource?.close();
 					accountSourceBaseUrl = baseUrl;
-					try {
-						accountSource = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/agents/codex/accounts/events`);
+					accountSource = openDaemonEventSource("/api/v1/agents/codex/accounts/events");
+					if (accountSource) {
 						accountSource.onopen = () => {
 							if (disposed) return;
 							void queryClient.invalidateQueries({ queryKey: codexAccountsQueryKey });
 						};
 						accountSource.onerror = () => { if (accountSource?.readyState === EVENTSOURCE_CLOSED) scheduleRetry(); };
 						accountSource.addEventListener("codex_account", applyAccountEvent);
-					} catch {
-						accountSource = undefined;
 					}
 				}
 				// Keep a still-usable source on the same base URL; replace one the
@@ -597,10 +597,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					// sends a cursor id, so the browser's own reconnect replays only the gap.
 					// A daemon from before the cursor existed answers 400; that base URL
 					// falls back to the cursorless stream (see probeCursorSupport).
-					const streamUrl = `${baseUrl.replace(/\/+$/, "")}/api/v1/events`;
+					const streamPath = "/api/v1/events";
 					const useCursor = cursorUnsupportedBaseUrl !== baseUrl;
-					source = new EventSource(useCursor ? `${streamUrl}?after=latest` : streamUrl);
-					const connectedSource = source;
+					const connectedSource = openDaemonEventSource(useCursor ? `${streamPath}?after=latest` : streamPath);
+					if (!connectedSource) return;
+					source = connectedSource;
 					let opened = false;
 					source.onopen = () => {
 						if (disposed || source !== connectedSource) return;
@@ -619,7 +620,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						setEventsConnectionState("disconnected");
 						if (source?.readyState === EVENTSOURCE_CLOSED) {
 							// Closed before it ever opened: maybe this daemon rejects the cursor.
-							if (!opened && useCursor) probeCursorSupport(baseUrl, `${streamUrl}?after=latest`);
+							if (!opened && useCursor) probeCursorSupport(baseUrl, `${baseUrl.replace(/\/+$/, "")}${streamPath}?after=latest`);
 							scheduleRetry();
 						}
 						const attempt = ++healthAttempt;
@@ -639,7 +640,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					for (const type of CDC_EVENT_TYPES) {
 						source.addEventListener(type, refreshWorkspaces);
 					}
-					// EventSource auto-reconnects and resumes via Last-Event-ID while
+					// The stream reconnects on its own and resumes via Last-Event-ID while
 					// CONNECTING; scheduleRetry only covers the terminal CLOSED state.
 				} catch {
 					source = undefined;

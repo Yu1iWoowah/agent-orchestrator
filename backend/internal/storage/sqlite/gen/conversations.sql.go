@@ -667,6 +667,69 @@ func (q *Queries) ConversationActivityExistsForProviderItem(ctx context.Context,
 	return exists, err
 }
 
+const conversationBranchHasVisibleTurn = `-- name: ConversationBranchHasVisibleTurn :one
+WITH RECURSIVE active_path(branch_id, max_sequence) AS (
+    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    FROM conversations
+    WHERE conversations.id = ?1
+    UNION ALL
+    SELECT branch.parent_branch_id,
+           CASE
+               WHEN path.max_sequence IS NULL THEN branch.fork_after_sequence
+               WHEN branch.fork_after_sequence < path.max_sequence THEN branch.fork_after_sequence
+               ELSE path.max_sequence
+           END
+    FROM active_path AS path
+    JOIN conversation_branches AS branch ON branch.id = path.branch_id
+    WHERE branch.parent_branch_id IS NOT NULL
+)
+SELECT
+    EXISTS (SELECT 1 FROM conversations WHERE conversations.id = ?1) AS conversation_found,
+    EXISTS (
+        SELECT 1 FROM conversation_turns
+        JOIN active_path AS path ON path.branch_id = conversation_turns.branch_id
+        WHERE conversation_turns.conversation_id = ?1
+          AND conversation_turns.branch_id = ?2
+          AND conversation_turns.promoted_to_turn_id IS NULL
+          AND (path.max_sequence IS NULL OR EXISTS (
+              SELECT 1 FROM conversation_messages AS lineage_message
+              WHERE lineage_message.turn_id = conversation_turns.id
+                AND lineage_message.conversation_id = conversation_turns.conversation_id
+                AND lineage_message.sequence <= path.max_sequence
+              UNION ALL
+              SELECT 1 FROM conversation_activities AS lineage_activity
+              WHERE lineage_activity.turn_id = conversation_turns.id
+                AND lineage_activity.conversation_id = conversation_turns.conversation_id
+                AND lineage_activity.sequence <= path.max_sequence
+          ))
+        LIMIT 1
+    ) AS branch_has_turn
+`
+
+type ConversationBranchHasVisibleTurnParams struct {
+	ConversationID string
+	BranchID       string
+}
+
+type ConversationBranchHasVisibleTurnRow struct {
+	ConversationFound bool
+	BranchHasTurn     bool
+}
+
+// Whether SelectConversationTurns would return a turn on the given branch,
+// answered without loading the conversation. It keeps the same active lineage
+// and promotion rules; rolled-back turns and every state still count, exactly as
+// they do in the snapshot. conversation_found lets the caller tell a missing
+// conversation from a branch with no turn.
+// NOTE: keep these comments ASCII. sqlc locates its star-expansion edits by byte
+// offset, so a multi-byte character here silently corrupts later queries.
+func (q *Queries) ConversationBranchHasVisibleTurn(ctx context.Context, arg ConversationBranchHasVisibleTurnParams) (ConversationBranchHasVisibleTurnRow, error) {
+	row := q.db.QueryRowContext(ctx, conversationBranchHasVisibleTurn, arg.ConversationID, arg.BranchID)
+	var i ConversationBranchHasVisibleTurnRow
+	err := row.Scan(&i.ConversationFound, &i.BranchHasTurn)
+	return i, err
+}
+
 const detachSessionConversation = `-- name: DetachSessionConversation :exec
 UPDATE conversations SET current_session_id = NULL, updated_at = ?
 WHERE id = ? AND scope = 'session' AND current_session_id = ?
@@ -5188,6 +5251,29 @@ type SettleOrphanedConversationTurnsParams struct {
 // completed.
 func (q *Queries) SettleOrphanedConversationTurns(ctx context.Context, arg SettleOrphanedConversationTurnsParams) error {
 	_, err := q.db.ExecContext(ctx, settleOrphanedConversationTurns, arg.CompletedAt, arg.HandledBySessionID)
+	return err
+}
+
+const settleOrphanedConversationTurnsBefore = `-- name: SettleOrphanedConversationTurnsBefore :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = ?1
+WHERE handled_by_session_id = ?2
+  AND (state = 'running' OR (state = 'queued' AND requested_at < ?3))
+  AND NOT EXISTS (SELECT 1 FROM orchestrator_replacement_held_turns h WHERE h.turn_id = conversation_turns.id)
+`
+
+type SettleOrphanedConversationTurnsBeforeParams struct {
+	CompletedAt        sql.NullTime
+	HandledBySessionID domain.SessionID
+	QueuedBefore       time.Time
+}
+
+// Same settlement for a start that accepted input while it was starting: input
+// queued since that start began is not orphaned and stays for its drain.
+func (q *Queries) SettleOrphanedConversationTurnsBefore(ctx context.Context, arg SettleOrphanedConversationTurnsBeforeParams) error {
+	_, err := q.db.ExecContext(ctx, settleOrphanedConversationTurnsBefore, arg.CompletedAt, arg.HandledBySessionID, arg.QueuedBefore)
 	return err
 }
 

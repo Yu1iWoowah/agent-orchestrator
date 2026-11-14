@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -28,6 +29,10 @@ func TestMain(m *testing.M) {
 		}
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
+		}
+		// Holds a detached host before it takes its launch lock.
+		if delay, err := time.ParseDuration(os.Getenv("AO_CHAT_HOST_START_DELAY")); err == nil {
+			time.Sleep(delay)
 		}
 		err := Run(context.Background(), Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
@@ -1008,5 +1013,203 @@ func TestReconnectOnlyNeverPreparesOrStartsMissingHost(t *testing.T) {
 	}
 	if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("health check wrote a descriptor: %v", err)
+	}
+}
+
+// A start whose caller stops waiting before the detached host takes its launch
+// lock still leaves that host visible, until it has shut down.
+func TestCancelledStartLeavesTheStartingHostVisible(t *testing.T) {
+	cfg := Config{SessionID: "cancelled-start", DataDir: t.TempDir(), Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1", "AO_CHAT_HOST_START_DELAY=1s"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	t.Cleanup(func() {
+		// Even on failure, wait for the delayed host to publish or exit first.
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); err == nil || ProbeHost(cfg.DataDir, cfg.SessionID) == HostAbsent {
+				break
+			}
+		}
+		_ = Shutdown(context.Background(), cfg.DataDir, cfg.SessionID)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := ConnectOrStart(ctx, cfg); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("start = %v, want the caller's deadline", err)
+	}
+	lock, _ := lockPath(cfg.DataDir, cfg.SessionID)
+	if _, err := os.Stat(lock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("host took its launch lock before the cancel: %v", err)
+	}
+	if got := ProbeHost(cfg.DataDir, cfg.SessionID); got != HostRunning {
+		t.Fatalf("starting host = %v, want running", got)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("detached host never published its descriptor")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := Shutdown(context.Background(), cfg.DataDir, cfg.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	for ProbeHost(cfg.DataDir, cfg.SessionID) != HostAbsent {
+		if time.Now().After(deadline) {
+			t.Fatalf("shut down host = %v, want absent", ProbeHost(cfg.DataDir, cfg.SessionID))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A spawn record names its host until the pid exits; a record whose name is not
+// a pid is unknown. Reconcile removes only records whose host has exited.
+func TestSpawnRecordNamesTheHostUntilItExits(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		record string
+		want   HostState
+		kept   bool
+	}{
+		{name: "live", record: spawnRecordPrefix + strconv.Itoa(os.Getpid()), want: HostRunning, kept: true},
+		{name: "exited", record: spawnRecordPrefix + "1073741823", want: HostAbsent, kept: false},
+		{name: "not a pid", record: spawnRecordPrefix + "x", want: HostUnknown, kept: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			dir, err := hostDir(dataDir, "review-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, tt.record)
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := ProbeHost(dataDir, "review-1"); got != tt.want {
+				t.Fatalf("probe = %v, want %v", got, tt.want)
+			}
+			if err := Reconcile(context.Background(), dataDir, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); (err == nil) != tt.kept {
+				t.Fatalf("record kept = %t, want %t (%v)", err == nil, tt.kept, err)
+			}
+		})
+	}
+}
+
+// An exiting host that clears its spawn record after a new host has been
+// spawned for the same session leaves the new host's record in place.
+func TestExitingHostKeepsTheNextHostsSpawnRecord(t *testing.T) {
+	dataDir := t.TempDir()
+	const exiting = 1073741823
+	if err := recordSpawn(dataDir, "review-1", exiting); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordSpawn(dataDir, "review-1", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	clearSpawnRecord(dataDir, "review-1", exiting)
+	if got := ProbeHost(dataDir, "review-1"); got != HostRunning {
+		t.Fatalf("next host = %v, want running", got)
+	}
+}
+
+// fakeControlHost answers every control action except attach with reply and
+// records the actions it saw, standing in for a surviving host process.
+func fakeControlHost(t *testing.T, reply helloResponse) (string, <-chan string) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	actions := make(chan string, 16)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			var request hello
+			if json.NewDecoder(conn).Decode(&request) == nil {
+				actions <- request.Action
+				response := reply
+				if request.Action == "attach" {
+					response = helloResponse{OK: true}
+				}
+				_ = json.NewEncoder(conn).Encode(response)
+			}
+			_ = conn.Close()
+		}
+	}()
+	return listener.Addr().String(), actions
+}
+
+func drainActions(actions <-chan string) []string {
+	var seen []string
+	for {
+		select {
+		case action := <-actions:
+			seen = append(seen, action)
+		default:
+			return seen
+		}
+	}
+}
+
+func TestReconnectRefusesHostWithoutDeliveryQueries(t *testing.T) {
+	address, actions := fakeControlHost(t, helloResponse{Error: "unknown chat host action"})
+	dataDir := t.TempDir()
+	cfg := Config{SessionID: "old-host", DataDir: dataDir, Workdir: t.TempDir(), Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	if err := writeDescriptor(dataDir, Descriptor{Version: ProtocolVersion, SessionID: cfg.SessionID, Address: address, Token: "token", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ConnectOrStart(context.Background(), cfg)
+	if !errors.Is(err, ErrIncompatible) {
+		t.Fatalf("connect error = %v, want incompatible", err)
+	}
+	if seen := drainActions(actions); len(seen) != 1 || seen[0] != "delivery-query" {
+		t.Fatalf("host actions = %v, want only the delivery probe (no attach or shutdown)", seen)
+	}
+	if _, err := readDescriptor(dataDir, cfg.SessionID); err != nil {
+		t.Fatalf("old host ownership was cleared: %v", err)
+	}
+}
+
+func TestReconnectAttachesHostThatAnswersDeliveryQueries(t *testing.T) {
+	for name, reply := range map[string]helloResponse{
+		"journal":    {OK: true},
+		"no-journal": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			address, actions := fakeControlHost(t, reply)
+			transport, err := attach(context.Background(), Descriptor{Version: ProtocolVersion, Address: address, Token: "token"}, true)
+			if err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+			_ = transport.Stdin.Close()
+			if seen := drainActions(actions); len(seen) != 2 || seen[0] != "delivery-query" || seen[1] != "attach" {
+				t.Fatalf("host actions = %v, want probe then attach", seen)
+			}
+		})
+	}
+}
+
+func TestReconnectProbeFailureIsNotOldHost(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	_, err = attach(context.Background(), Descriptor{Version: ProtocolVersion, Address: address, Token: "token"}, true)
+	if err == nil || errors.Is(err, ErrIncompatible) {
+		t.Fatalf("attach error = %v, want a connection failure that is not incompatible", err)
 	}
 }

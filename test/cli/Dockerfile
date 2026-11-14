@@ -16,9 +16,11 @@ WORKDIR /src
 
 # Cache modules first.
 COPY backend/go.mod backend/go.sum ./backend/
+COPY components/hcg/go.mod components/hcg/go.sum ./components/hcg/
 RUN cd backend && go mod download
 
 COPY backend ./backend
+COPY components/hcg ./components/hcg
 # Pure-Go SQLite (modernc) builds fine with CGO disabled -> a static binary.
 # Build against a release repo with NO published assets so `ao start` reaches the
 # fetch path and fails cleanly (404) on a fresh box. The real AgentWrapper repo

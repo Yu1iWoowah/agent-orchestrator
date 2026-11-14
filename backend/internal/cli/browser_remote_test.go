@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +24,7 @@ func executeCLIRoot(t *testing.T, deps Deps, args ...string) (string, string, er
 	if deps.Sleep == nil {
 		deps.Sleep = func(time.Duration) {}
 	}
-	err := executeWithDeps(deps, args)
+	err := executeWithTestDeps(t, deps, args)
 	return out.String(), errOut.String(), err
 }
 
@@ -35,7 +36,7 @@ type remoteBrowserCapture struct {
 
 func remoteBrowserServer(t *testing.T, capture *remoteBrowserCapture, respond func(w http.ResponseWriter)) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agent" {
 			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
 			return
@@ -111,7 +112,7 @@ func TestBrowserRemoteClearErrorsForMissingPrerequisites(t *testing.T) {
 	}
 
 	t.Setenv(envAgentBrowserToken, "remote-token")
-	deps := Deps{HTTPClient: &http.Client{Timeout: 500 * time.Millisecond}}
+	deps := Deps{HTTPClient: terminalErrorClient(errors.New("fixture remote service is unreachable"))}
 	_, _, err = executeCLIRoot(t, deps, "browser", "get", "url")
 	if err == nil || !strings.Contains(err.Error(), "unreachable") {
 		t.Fatalf("unreachable service err=%v", err)
@@ -186,7 +187,7 @@ func TestBrowserRemoteAcceptsBase64PayloadsPast64MiB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(encodedBody)
 	}))

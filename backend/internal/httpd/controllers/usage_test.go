@@ -220,3 +220,13 @@ func TestUsageAPILogsServiceErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageEventsRouteRegistered(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{}, httpd.ControlDeps{})
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/usage/sessions/example/events", nil))
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+	}
+}

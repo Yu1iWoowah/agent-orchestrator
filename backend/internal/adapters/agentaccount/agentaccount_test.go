@@ -356,6 +356,31 @@ func TestCodexManagedProbesUseFileStoreWithoutChangingDevicePolicy(t *testing.T)
 	}
 }
 
+type revokedAccountClient struct{ ports.CodexAccountClient }
+
+func (revokedAccountClient) Read(context.Context, bool) (ports.CodexAccountObservation, error) {
+	return ports.CodexAccountObservation{}, ports.ErrCodexOAuthTokenRevoked
+}
+func (revokedAccountClient) Close() error { return nil }
+
+type revokedAccountFactory struct{}
+
+func (revokedAccountFactory) Open(context.Context, ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+	return revokedAccountClient{}, nil
+}
+func (revokedAccountFactory) Capabilities(context.Context) domain.CodexAccountCapabilities {
+	return domain.CodexAccountCapabilities{}
+}
+
+// A login Codex says the provider revoked is reported as such, not as an
+// unknown failure.
+func TestCodexIdentityReportsARevokedLogin(t *testing.T) {
+	c := &Codex{Accounts: revokedAccountFactory{}, DeviceHome: "/fake-device"}
+	if _, err := c.Identity(context.Background(), "/fake-managed"); !errors.Is(err, ports.ErrAgentAccountLoginRevoked) {
+		t.Fatalf("identity error = %v", err)
+	}
+}
+
 func TestManagedCodexAccountIsLinuxOnly(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin", "windows"} {
 		for _, home := range []string{"", "/fake-device", "/fake-managed"} {

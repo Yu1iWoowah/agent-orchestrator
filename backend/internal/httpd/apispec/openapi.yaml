@@ -4040,6 +4040,274 @@ paths:
         is signed in as
       tags:
       - github
+  /api/v1/hcg-delegation/emergency-stop:
+    put:
+      operationId: setHCGDelegationStop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGStopResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/hcg-delegation/profiles:
+    get:
+      operationId: listHCGDelegationProfiles
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationProfilesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+    put:
+      operationId: registerHCGDelegationProfile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGDelegationRegistrationRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationProfilesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/hcg-reporting/emergency-stop:
+    put:
+      operationId: setHCGReportingStop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGStopResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
+  /api/v1/hcg-reporting/engine:
+    put:
+      operationId: registerHCGReportingEngine
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEngineRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGEngineResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -6584,6 +6852,63 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{id}/settings:
+    patch:
+      operationId: patchProjectSettings
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchProjectSettingsInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Compare and merge edited project settings leaves
+      tags:
+      - projects
   /api/v1/projects/{id}/tasks/prepare:
     post:
       operationId: prepareTask
@@ -7101,6 +7426,133 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/rca/emergency-stop:
+    put:
+      operationId: setRCAEmergencyStop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RCAEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAStopResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set host recorded-content stop without changing opt-ins
+      tags:
+      - usage
+  /api/v1/rca/otlp/v1/logs:
+    post:
+      operationId: ingestRCAOTLPLogs
+      parameters:
+      - in: header
+        name: X-AO-RCA-Capture
+        required: true
+        schema:
+          maxLength: 36
+          type: string
+      requestBody:
+        content:
+          application/x-protobuf:
+            schema:
+              format: binary
+              type: string
+        required: true
+      responses:
+        "200":
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "405":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Method Not Allowed
+        "411":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Length Required
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Native primary HTTP/1 only; known length identity OTLP protobuf; empty
+        ACK means numeric handoff, not durable storage
+      tags:
+      - usage
   /api/v1/remote-host/account-token:
     post:
       operationId: issueRemoteHostAccountToken
@@ -11826,6 +12278,421 @@ paths:
       summary: Read local metadata-only guardian observations
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/hcg-delegation:
+    get:
+      operationId: getHCGDelegation
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-delegation/override:
+    delete:
+      operationId: clearHCGDelegationOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+    put:
+      operationId: setHCGDelegationOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-delegation/read:
+    post:
+      operationId: readHCGDelegation
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGDelegationReadRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGDelegationReadResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed delegation; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-reporting:
+    get:
+      operationId: getHCGReporting
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
+  /api/v1/sessions/{sessionId}/hcg-reporting/override:
+    delete:
+      operationId: clearHCGReportingOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
+    put:
+      operationId: setHCGReportingOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
   /api/v1/sessions/{sessionId}/history:
     get:
       operationId: getSessionHistory
@@ -13850,6 +14717,107 @@ paths:
       summary: Replace an open question payload and advance its version
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/rca/override:
+    delete:
+      operationId: clearSessionRCAOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAPolicyResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Clear override and inherit recorded-content policy
+      tags:
+      - usage
+    put:
+      operationId: setSessionRCAOverride
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RCAEnabledRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAPolicyResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set recorded-content session override
+      tags:
+      - usage
   /api/v1/sessions/{sessionId}/renders:
     post:
       operationId: publishSessionRender
@@ -14132,8 +15100,8 @@ paths:
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/resume-agent:
-    post:
-      operationId: resumeAgent
+    get:
+      operationId: getResumeAgentStatus
       parameters:
       - description: Session identifier, e.g. project-1.
         in: path
@@ -14147,8 +15115,46 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResumeAgentResponse'
+                $ref: '#/components/schemas/ResumeAgentStatusResponse'
           description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Report the session's latest resume-agent request since the daemon started
+      tags:
+      - sessions
+    post:
+      operationId: resumeAgent
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeAgentResponse'
+          description: Accepted
         "404":
           content:
             application/json:
@@ -14173,7 +15179,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Resume an exited agent in its existing session
+      summary: Start resuming an exited agent in its existing session; GET reports
+        the outcome
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/reviewer:
@@ -16767,6 +17774,262 @@ paths:
       summary: Get detailed token and estimated cost usage for one session
       tags:
       - usage
+  /api/v1/usage/sessions/{sessionId}/composition:
+    delete:
+      operationId: purgeSessionComposition
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCAPurgeResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Purge recorded-content numbers and scopes; preserve canonical/native
+        data
+      tags:
+      - usage
+    get:
+      operationId: getSessionComposition
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: query
+        name: afterId
+        schema:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: throughId
+        schema:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: limit
+        schema:
+          maximum: 1000
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: analyze
+        schema:
+          type:
+          - "null"
+          - boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RCACompositionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Query recorded-content estimates and current canonical usage; analyze
+        explicitly starts a selected-worker snapshot
+      tags:
+      - usage
+  /api/v1/usage/sessions/{sessionId}/events:
+    get:
+      operationId: listSessionUsageEvents
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: query
+        name: afterId
+        schema:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: throughId
+        schema:
+          minimum: 0
+          type:
+          - "null"
+          - integer
+      - in: query
+        name: limit
+        schema:
+          maximum: 1000
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageEventsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read numeric model request events; throughId bounds insertions, not
+        repairs or metadata changes
+      tags:
+      - usage
+  /api/v1/usage/sessions/{sessionId}/report:
+    post:
+      operationId: runHCGReport
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HCGReportRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HCGReportResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Fixed optional reporting; native primary loopback only
+      tags:
+      - usage
   /api/v1/usage/sessions/memory:
     get:
       operationId: listSessionMemory
@@ -19189,6 +20452,7 @@ components:
           - queued
           - delivered
           - failed
+          - recorded
           type: string
         lastError:
           type: string
@@ -22743,6 +24007,442 @@ components:
       - ok
       - workerId
       type: object
+    DelegationApprovedFile:
+      properties:
+        path:
+          type: string
+        sha256:
+          type: string
+      required:
+      - path
+      - sha256
+      type: object
+    DelegationCoverage:
+      properties:
+        approved_ranges:
+          items:
+            $ref: '#/components/schemas/DelegationSourceRange'
+          type: array
+        coverage_status:
+          type: string
+        injected_ranges:
+          items:
+            $ref: '#/components/schemas/DelegationSourceRange'
+          type: array
+        injected_scope_digest:
+          type: string
+        requested_scope_digest:
+          type: string
+      required:
+      - requested_scope_digest
+      - injected_scope_digest
+      - coverage_status
+      - approved_ranges
+      - injected_ranges
+      type: object
+    DelegationCredentialReference:
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        version:
+          type: string
+      required:
+      - provider
+      - name
+      - version
+      type: object
+    DelegationDeployment:
+      properties:
+        credentialRef:
+          $ref: '#/components/schemas/DelegationCredentialReference'
+        inputs:
+          items:
+            $ref: '#/components/schemas/DelegationInputManifest'
+          type: array
+        installation:
+          $ref: '#/components/schemas/DelegationInstallation'
+        profile:
+          $ref: '#/components/schemas/DelegationProfile'
+        workspace:
+          type: string
+      required:
+      - profile
+      - credentialRef
+      - workspace
+      - installation
+      - inputs
+      type: object
+    DelegationEvidence:
+      properties:
+        content_sha256:
+          type: string
+        id:
+          type: string
+        line_end:
+          type: integer
+        line_start:
+          type: integer
+        observed_at:
+          format: date-time
+          type: string
+        path:
+          type: string
+        quote:
+          type: string
+        quote_sha256:
+          type: string
+        revision:
+          type: string
+        source_id:
+          type: string
+        verification:
+          type: string
+      required:
+      - id
+      - source_id
+      - revision
+      - content_sha256
+      - line_start
+      - line_end
+      - quote
+      - quote_sha256
+      - path
+      - observed_at
+      - verification
+      type: object
+    DelegationExternalSpend:
+      properties:
+        known:
+          type: boolean
+        nanos:
+          format: int64
+          type: integer
+        outsideGateOnly:
+          type: boolean
+      required:
+      - known
+      - outsideGateOnly
+      - nanos
+      type: object
+    DelegationFinding:
+      properties:
+        evidence_ids:
+          items:
+            type: string
+          type: array
+        id:
+          type: string
+        kind:
+          type: string
+        text:
+          type: string
+      required:
+      - id
+      - kind
+      - text
+      - evidence_ids
+      type: object
+    DelegationInputManifest:
+      properties:
+        files:
+          items:
+            $ref: '#/components/schemas/DelegationApprovedFile'
+          type: array
+        name:
+          type: string
+        projectId:
+          type: string
+        revision:
+          type: string
+      required:
+      - projectId
+      - name
+      - revision
+      - files
+      type: object
+    DelegationInstallation:
+      properties:
+        adapterVersion:
+          type: string
+        commit:
+          type: string
+        configDigest:
+          type: string
+        lockDigest:
+          type: string
+        pythonDigest:
+          type: string
+        pythonVersion:
+          type: string
+        runtimeDigest:
+          type: string
+        source:
+          type: string
+        sourceDigest:
+          type: string
+        templateVersion:
+          type: string
+        venv:
+          type: string
+      required:
+      - source
+      - venv
+      - commit
+      - sourceDigest
+      - runtimeDigest
+      - pythonDigest
+      - configDigest
+      - lockDigest
+      - pythonVersion
+      - adapterVersion
+      - templateVersion
+      type: object
+    DelegationLabGrant:
+      properties:
+        attemptsPerProvider:
+          type: integer
+        bindings:
+          items:
+            $ref: '#/components/schemas/DelegationLabSession'
+          type: array
+        canonicalOwner:
+          $ref: '#/components/schemas/DelegationLabSession'
+        expiresAt:
+          format: date-time
+          type: string
+        ownerRoot:
+          type: string
+        profiles:
+          additionalProperties:
+            $ref: '#/components/schemas/DelegationProfileRef'
+          type:
+          - object
+          - "null"
+        providerCapNanos:
+          additionalProperties:
+            format: int64
+            type: integer
+          type:
+          - object
+          - "null"
+        runId:
+          type: string
+        startsAt:
+          format: date-time
+          type: string
+        totalCapNanos:
+          format: int64
+          type: integer
+      required:
+      - runId
+      - ownerRoot
+      - canonicalOwner
+      - startsAt
+      - expiresAt
+      - profiles
+      - bindings
+      - providerCapNanos
+      - totalCapNanos
+      - attemptsPerProvider
+      type: object
+    DelegationLabSession:
+      properties:
+        projectId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      type: object
+    DelegationLongContextPrices:
+      properties:
+        cacheWriteNanoUSDPerMillion:
+          format: int64
+          type: integer
+        cachedInputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        inputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        outputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        thresholdInputTokens:
+          format: int64
+          type: integer
+      required:
+      - thresholdInputTokens
+      - inputNanoUSDPerMillion
+      - cachedInputNanoUSDPerMillion
+      - cacheWriteNanoUSDPerMillion
+      - outputNanoUSDPerMillion
+      type: object
+    DelegationOmission:
+      properties:
+        reason:
+          type: string
+        sourceId:
+          type: string
+      required:
+      - reason
+      type: object
+    DelegationPrices:
+      properties:
+        billableUsageCovered:
+          type: boolean
+        cacheWriteNanoUSDPerMillion:
+          type:
+          - "null"
+          - integer
+        cachedInputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        inputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        limitsCertified:
+          type: boolean
+        longContext:
+          $ref: '#/components/schemas/DelegationLongContextPrices'
+        outputNanoUSDPerMillion:
+          format: int64
+          type: integer
+        period:
+          type: string
+        version:
+          type: string
+      required:
+      - version
+      - period
+      - inputNanoUSDPerMillion
+      - cachedInputNanoUSDPerMillion
+      - outputNanoUSDPerMillion
+      - limitsCertified
+      - billableUsageCovered
+      type: object
+    DelegationProfile:
+      properties:
+        billingProvider:
+          type: string
+        contextTokens:
+          format: int64
+          type: integer
+        id:
+          type: string
+        maxOutputTokens:
+          format: int64
+          type: integer
+        model:
+          type: string
+        outputTokens:
+          format: int64
+          type: integer
+        prices:
+          $ref: '#/components/schemas/DelegationPrices'
+        reasoningEffort:
+          type: string
+        revision:
+          type: string
+        serviceTier:
+          type: string
+      required:
+      - prices
+      - id
+      - revision
+      - billingProvider
+      - model
+      - contextTokens
+      - maxOutputTokens
+      - outputTokens
+      type: object
+    DelegationProfileRef:
+      properties:
+        id:
+          type: string
+        revision:
+          type: string
+      required:
+      - id
+      - revision
+      type: object
+    DelegationResolvedProfile:
+      properties:
+        available:
+          type: boolean
+        billing_provider:
+          type: string
+        current:
+          type: boolean
+        digest:
+          type: string
+        id:
+          type: string
+        model:
+          type: string
+        ownerRoot:
+          type: string
+        priceVersion:
+          type: string
+        reason:
+          type: string
+        revision:
+          type: string
+        runId:
+          type: string
+      required:
+      - runId
+      - ownerRoot
+      - id
+      - revision
+      - billing_provider
+      - model
+      - digest
+      - available
+      - current
+      - priceVersion
+      - reason
+      type: object
+    DelegationSourceRange:
+      properties:
+        endLine:
+          type: integer
+        id:
+          type: string
+        path:
+          type: string
+        revision:
+          type: string
+        sha256:
+          type: string
+        startLine:
+          type: integer
+      required:
+      - id
+      - path
+      - revision
+      - sha256
+      - startLine
+      - endLine
+      type: object
+    DelegationUsageReference:
+      properties:
+        attempt_id:
+          type: string
+        profile_digest:
+          type: string
+        request_id:
+          type: string
+        status:
+          type: string
+      required:
+      - status
+      - attempt_id
+      - profile_digest
+      type: object
     DesktopArtifactLocationResponse:
       properties:
         artifactDir:
@@ -23153,6 +24853,56 @@ components:
       - outputNanos
       - coverage
       - providerAttribution
+      type: object
+    ExecutionUsageIdentity:
+      properties:
+        attemptId:
+          type: string
+        billingProvider:
+          type: string
+        delegationId:
+          type: string
+        finishReason:
+          type: string
+        id:
+          format: int64
+          type: integer
+        observedServiceTier:
+          type: string
+        profileDigest:
+          type: string
+        profileId:
+          type: string
+        profileRevision:
+          type: string
+        projectId:
+          type: string
+        projectPolicyRevision:
+          type: string
+        requestId:
+          type: string
+        requestedServiceTier:
+          type: string
+        responseId:
+          type: string
+        serviceTierStatus:
+          type: string
+        sessionId:
+          type: string
+        unknownReason:
+          type: string
+      required:
+      - id
+      - projectId
+      - sessionId
+      - delegationId
+      - attemptId
+      - billingProvider
+      - profileId
+      - profileRevision
+      - profileDigest
+      - projectPolicyRevision
+      - requestId
       type: object
     ExitAgentResponse:
       properties:
@@ -23727,6 +25477,465 @@ components:
       required:
       - since
       - until
+      type: object
+    HCGDelegationConfig:
+      properties:
+        allowedProfiles:
+          items:
+            $ref: '#/components/schemas/HCGProfileRef'
+          type: array
+        enabled:
+          type:
+          - "null"
+          - boolean
+        selectedProfile:
+          $ref: '#/components/schemas/HCGProfileRef'
+      type: object
+    HCGDelegationProfilesResponse:
+      properties:
+        profiles:
+          items:
+            $ref: '#/components/schemas/DelegationResolvedProfile'
+          type: array
+      required:
+      - profiles
+      type: object
+    HCGDelegationReadRequest:
+      properties:
+        focus:
+          type: string
+        output_limit:
+          type: integer
+        paths:
+          items:
+            type: string
+          type: array
+        question:
+          type: string
+      required:
+      - question
+      - paths
+      type: object
+    HCGDelegationReadResponse:
+      properties:
+        answer:
+          type: string
+        backend:
+          type: string
+        billing_provider:
+          type: string
+        coverage:
+          $ref: '#/components/schemas/DelegationCoverage'
+        delegation_id:
+          type: string
+        evidence:
+          items:
+            $ref: '#/components/schemas/DelegationEvidence'
+          type: array
+        findings:
+          items:
+            $ref: '#/components/schemas/DelegationFinding'
+          type: array
+        model:
+          type: string
+        omissions:
+          items:
+            $ref: '#/components/schemas/DelegationOmission'
+          type: array
+        profile_id:
+          type: string
+        profile_revision:
+          type: string
+        project_id:
+          type: string
+        reason:
+          type: string
+        schema:
+          type: string
+        session_id:
+          type: string
+        status:
+          type: string
+        usage_ref:
+          $ref: '#/components/schemas/DelegationUsageReference'
+      required:
+      - schema
+      - delegation_id
+      - status
+      - answer
+      - findings
+      - evidence
+      - omissions
+      - reason
+      - backend
+      - model
+      - billing_provider
+      - profile_id
+      - profile_revision
+      - project_id
+      - session_id
+      - usage_ref
+      - coverage
+      type: object
+    HCGDelegationRegistrationRequest:
+      properties:
+        deployment:
+          $ref: '#/components/schemas/DelegationDeployment'
+        externalSpend:
+          additionalProperties:
+            $ref: '#/components/schemas/DelegationExternalSpend'
+          type:
+          - object
+          - "null"
+        grant:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationLabGrant'
+            type: object
+      required:
+      - grant
+      - deployment
+      - externalSpend
+      type: object
+    HCGDelegationResponse:
+      properties:
+        active:
+          type: boolean
+        allowedProfiles:
+          items:
+            $ref: '#/components/schemas/DelegationProfileRef'
+          type: array
+        available:
+          type: boolean
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        hostProfileCurrentRevision:
+          type: string
+        inputs:
+          $ref: '#/components/schemas/HCGReportingInputs'
+        manifestRevision:
+          minimum: 0
+          type: integer
+        mountConfigured:
+          type: boolean
+        mountEnabled:
+          type: boolean
+        mountKnown:
+          type: boolean
+        mountProfile:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationProfileRef'
+        ownerRoot:
+          type: string
+        profileEligibility:
+          type: string
+        projectId:
+          type: string
+        projectOptIn:
+          type: boolean
+        projectPolicyRevision:
+          type: string
+        reason:
+          type: string
+        requested:
+          type: boolean
+        resolvedProfile:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationResolvedProfile'
+            type: object
+        runId:
+          type: string
+        selectedProfile:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/DelegationProfileRef'
+        selectionSource:
+          type: string
+        sessionId:
+          type: string
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - runId
+      - ownerRoot
+      - mountConfigured
+      - projectId
+      - sessionId
+      - inputs
+      - source
+      - sessionOverride
+      - projectOptIn
+      - effectiveEnabled
+      - emergencyStop
+      - requested
+      - active
+      - available
+      - reason
+      - allowedProfiles
+      - selectedProfile
+      - resolvedProfile
+      - selectionSource
+      - projectPolicyRevision
+      - hostProfileCurrentRevision
+      - profileEligibility
+      - mountKnown
+      - mountEnabled
+      - mountProfile
+      - manifestRevision
+      type: object
+    HCGDelegationToggle:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      type: object
+    HCGEnabledRequest:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      required:
+      - enabled
+      type: object
+    HCGEngineRequest:
+      properties:
+        engine:
+          enum:
+          - llm-usage-metrics
+          type: string
+        executable:
+          type: string
+        expectedVersion:
+          enum:
+          - 0.14.3
+          type: string
+      required:
+      - engine
+      - executable
+      - expectedVersion
+      type: object
+    HCGEngineResponse:
+      properties:
+        available:
+          type: boolean
+        engine:
+          type: string
+        reason:
+          type: string
+        version:
+          type: string
+      required:
+      - engine
+      - version
+      - available
+      - reason
+      type: object
+    HCGProfileRef:
+      properties:
+        id:
+          type: string
+        revision:
+          type: string
+      required:
+      - id
+      - revision
+      type: object
+    HCGReportRequest:
+      properties:
+        engine:
+          enum:
+          - llm-usage-metrics
+          type: string
+      required:
+      - engine
+      type: object
+    HCGReportResponse:
+      properties:
+        bucketAvailability:
+          type: string
+        engine:
+          type: string
+        engineVersion:
+          type: string
+        events:
+          items:
+            $ref: '#/components/schemas/HCGReportingEvent'
+          type: array
+        nativeId:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        sessionId:
+          type: string
+        source:
+          type: string
+        status:
+          type: string
+        tools:
+          items:
+            $ref: '#/components/schemas/HCGReportingToolCounts'
+          type: array
+      required:
+      - source
+      - engine
+      - engineVersion
+      - projectId
+      - sessionId
+      - nativeId
+      - observedAt
+      - status
+      - reason
+      - bucketAvailability
+      - events
+      - tools
+      type: object
+    HCGReportingConfig:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      type: object
+    HCGReportingEvent:
+      properties:
+        at:
+          format: date-time
+          type: string
+        cacheReadTokens:
+          format: int64
+          type: integer
+        cacheWriteTokens:
+          format: int64
+          type: integer
+        engineTotalTokens:
+          format: int64
+          type: integer
+        inputIncludingCache:
+          format: int64
+          type: integer
+        inputTokens:
+          format: int64
+          type: integer
+        outputTokens:
+          format: int64
+          type: integer
+        reasoningTokens:
+          format: int64
+          type: integer
+      required:
+      - at
+      - inputTokens
+      - cacheReadTokens
+      - cacheWriteTokens
+      - inputIncludingCache
+      - outputTokens
+      - reasoningTokens
+      - engineTotalTokens
+      type: object
+    HCGReportingInputs:
+      properties:
+        emergencyStop:
+          type: boolean
+        project:
+          type:
+          - "null"
+          - boolean
+        role:
+          type:
+          - "null"
+          - boolean
+        session:
+          type:
+          - "null"
+          - boolean
+      required:
+      - project
+      - role
+      - session
+      - emergencyStop
+      type: object
+    HCGReportingResponse:
+      properties:
+        active:
+          type: boolean
+        available:
+          type: boolean
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        engineVersion:
+          type: string
+        inputs:
+          $ref: '#/components/schemas/HCGReportingInputs'
+        manifestRevision:
+          minimum: 0
+          type: integer
+        projectId:
+          type: string
+        reason:
+          type: string
+        requested:
+          type: boolean
+        sessionId:
+          type: string
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      - inputs
+      - source
+      - sessionOverride
+      - effectiveEnabled
+      - emergencyStop
+      - requested
+      - active
+      - available
+      - reason
+      - engineVersion
+      - manifestRevision
+      type: object
+    HCGReportingToolCounts:
+      properties:
+        calls:
+          format: int64
+          type: integer
+        category:
+          type: string
+        errors:
+          format: int64
+          type: integer
+        unknown:
+          format: int64
+          type: integer
+      required:
+      - category
+      - calls
+      - errors
+      - unknown
+      type: object
+    HCGStopResponse:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
       type: object
     HarnessDefault:
       properties:
@@ -25016,6 +27225,23 @@ components:
       - targetSha
       - status
       type: object
+    PatchProjectSettingsInput:
+      properties:
+        config:
+          additionalProperties: {}
+          type: object
+        displayName:
+          type:
+          - "null"
+          - string
+        expected:
+          additionalProperties: {}
+          type:
+          - object
+          - "null"
+      required:
+      - expected
+      type: object
     PrepareTaskResponse:
       properties:
         ok:
@@ -25240,6 +27466,10 @@ components:
           type: object
         guardianObservability:
           $ref: '#/components/schemas/GuardianObservabilityConfig'
+        hcgDelegation:
+          $ref: '#/components/schemas/HCGDelegationConfig'
+        hcgReporting:
+          $ref: '#/components/schemas/HCGReportingConfig'
         orchestrator:
           $ref: '#/components/schemas/RoleOverride'
         orchestratorHandoff:
@@ -25254,6 +27484,8 @@ components:
           items:
             type: string
           type: array
+        rca:
+          $ref: '#/components/schemas/RCAConfig'
         reviewers:
           items:
             $ref: '#/components/schemas/DomainReviewerConfig'
@@ -25690,6 +27922,7 @@ components:
           - queued
           - delivered
           - failed
+          - recorded
           type: string
         lastError:
           type: string
@@ -25895,6 +28128,437 @@ components:
       required:
       - expectedVersion
       - payload
+      type: object
+    RCABaseline:
+      properties:
+        bytes:
+          type:
+          - "null"
+          - integer
+        estimatedTokens:
+          type:
+          - "null"
+          - integer
+        method:
+          type: string
+        status:
+          type: string
+      required:
+      - status
+      - method
+      - bytes
+      - estimatedTokens
+      type: object
+    RCABucket:
+      properties:
+        bytes:
+          type:
+          - "null"
+          - integer
+        category:
+          type: string
+        estimatedTokens:
+          type:
+          - "null"
+          - integer
+      required:
+      - category
+      - bytes
+      - estimatedTokens
+      type: object
+    RCACanonicalEvent:
+      properties:
+        bindingId:
+          format: int64
+          type: integer
+        cachedInputTokens:
+          type:
+          - "null"
+          - integer
+        id:
+          format: int64
+          type: integer
+        inputTokens:
+          type:
+          - "null"
+          - integer
+        outputTokens:
+          type:
+          - "null"
+          - integer
+        usageSourceId:
+          format: int64
+          type: integer
+      required:
+      - id
+      - bindingId
+      - usageSourceId
+      - inputTokens
+      - outputTokens
+      - cachedInputTokens
+      type: object
+    RCACanonicalPage:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/RCACanonicalEvent'
+          type: array
+        hasMore:
+          type: boolean
+        metadataAsOf:
+          format: date-time
+          type: string
+        nextAfterId:
+          format: int64
+          type: integer
+        sourceAsOf:
+          format: date-time
+          type: string
+        throughId:
+          format: int64
+          type: integer
+      required:
+      - throughId
+      - nextAfterId
+      - hasMore
+      - events
+      - metadataAsOf
+      - sourceAsOf
+      type: object
+    RCAClaudeAttempt:
+      properties:
+        buckets:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        canonicalEventId:
+          type:
+          - "null"
+          - integer
+        mcpBytes:
+          type:
+          - "null"
+          - integer
+        ordinal:
+          format: int64
+          type: integer
+        reasons:
+          items:
+            type: string
+          type: array
+      required:
+      - ordinal
+      - buckets
+      - mcpBytes
+      - reasons
+      - canonicalEventId
+      type: object
+    RCAClaudeInline:
+      properties:
+        active:
+          type: boolean
+        attempts:
+          items:
+            $ref: '#/components/schemas/RCAClaudeAttempt'
+          type: array
+        captureId:
+          type: string
+        coverage:
+          type: string
+        droppedBatches:
+          format: int64
+          type: integer
+        method:
+          type: string
+        observedAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        requested:
+          type: boolean
+        role:
+          type: string
+        sessionId:
+          type: string
+        unpaired:
+          format: int64
+          type: integer
+      required:
+      - projectId
+      - sessionId
+      - captureId
+      - role
+      - requested
+      - active
+      - reason
+      - coverage
+      - method
+      - observedAt
+      - attempts
+      - unpaired
+      - droppedBatches
+      type: object
+    RCACompositionResponse:
+      properties:
+        baseline:
+          $ref: '#/components/schemas/RCABaseline'
+        canonical:
+          $ref: '#/components/schemas/RCACanonicalPage'
+        claudeInline:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/RCAClaudeInline'
+            type: object
+        policy:
+          $ref: '#/components/schemas/RCAPolicyView'
+        projectId:
+          type: string
+        reason:
+          type: string
+        recorded:
+          anyOf:
+          - type: "null"
+          - $ref: '#/components/schemas/RCARecordedState'
+            type: object
+        requestComposition:
+          type: string
+        sessionId:
+          type: string
+        status:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      - policy
+      - status
+      - reason
+      - requestComposition
+      - recorded
+      - claudeInline
+      - canonical
+      - baseline
+      type: object
+    RCAConfig:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      type: object
+    RCAEnabledRequest:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      required:
+      - enabled
+      type: object
+    RCAPolicyResponse:
+      properties:
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        manifestRevision:
+          minimum: 0
+          type: integer
+        project:
+          type:
+          - "null"
+          - boolean
+        role:
+          type:
+          - "null"
+          - boolean
+        session:
+          type:
+          - "null"
+          - boolean
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - project
+      - role
+      - session
+      - source
+      - sessionOverride
+      - effectiveEnabled
+      - emergencyStop
+      - manifestRevision
+      type: object
+    RCAPolicyView:
+      properties:
+        effectiveEnabled:
+          type: boolean
+        emergencyStop:
+          type: boolean
+        manifestRevision:
+          minimum: 0
+          type: integer
+        project:
+          type:
+          - "null"
+          - boolean
+        role:
+          type:
+          - "null"
+          - boolean
+        session:
+          type:
+          - "null"
+          - boolean
+        sessionOverride:
+          type: string
+        source:
+          type: string
+      required:
+      - project
+      - role
+      - session
+      - source
+      - sessionOverride
+      - effectiveEnabled
+      - emergencyStop
+      - manifestRevision
+      type: object
+    RCAPurgeResponse:
+      properties:
+        purged:
+          type: boolean
+      required:
+      - purged
+      type: object
+    RCARecordedSnapshot:
+      properties:
+        analyzedBytes:
+          format: int64
+          type: integer
+        association:
+          type: string
+        bindingId:
+          type:
+          - "null"
+          - integer
+        buckets:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        endOffset:
+          format: int64
+          type: integer
+        method:
+          type: string
+        reasons:
+          items:
+            type: string
+          type: array
+        records:
+          format: int64
+          type: integer
+        scopeId:
+          type: string
+        sourceGeneration:
+          type:
+          - "null"
+          - integer
+        sourceVersion:
+          type: string
+        startOffset:
+          format: int64
+          type: integer
+        status:
+          type: string
+        turns:
+          items:
+            $ref: '#/components/schemas/RCARecordedTurn'
+          type: array
+        unpaired:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        usageSourceId:
+          type:
+          - "null"
+          - integer
+      required:
+      - scopeId
+      - usageSourceId
+      - bindingId
+      - sourceGeneration
+      - association
+      - method
+      - sourceVersion
+      - status
+      - reasons
+      - startOffset
+      - endOffset
+      - analyzedBytes
+      - records
+      - buckets
+      - turns
+      - unpaired
+      type: object
+    RCARecordedState:
+      properties:
+        observedAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        scopeRevision:
+          type: string
+        sessionId:
+          type: string
+        snapshots:
+          items:
+            $ref: '#/components/schemas/RCARecordedSnapshot'
+          type: array
+        status:
+          type: string
+      required:
+      - projectId
+      - sessionId
+      - scopeRevision
+      - observedAt
+      - status
+      - reason
+      - snapshots
+      type: object
+    RCARecordedTurn:
+      properties:
+        buckets:
+          items:
+            $ref: '#/components/schemas/RCABucket'
+          type:
+          - array
+          - "null"
+        ordinal:
+          format: int64
+          type: integer
+      required:
+      - ordinal
+      - buckets
+      type: object
+    RCAStopResponse:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
       type: object
     RebuildReviewerAccountRequest:
       properties:
@@ -26903,10 +29567,44 @@ components:
       - restoreMode
       - session
       type: object
+    ResumeAgentFailure:
+      properties:
+        code:
+          type: string
+        details:
+          additionalProperties: {}
+          type: object
+        message:
+          type: string
+        status:
+          type: integer
+      required:
+      - status
+      - code
+      - message
+      type: object
     ResumeAgentResponse:
       properties:
         ok:
           type: boolean
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        sessionId:
+          type: string
+      required:
+      - ok
+      - sessionId
+      - session
+      type: object
+    ResumeAgentStatusResponse:
+      properties:
+        error:
+          $ref: '#/components/schemas/ResumeAgentFailure'
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         resumeMode:
           enum:
           - native
@@ -26917,10 +29615,15 @@ components:
           $ref: '#/components/schemas/ControllersSessionView'
         sessionId:
           type: string
+        state:
+          enum:
+          - running
+          - succeeded
+          - failed
+          type: string
       required:
-      - ok
       - sessionId
-      - resumeMode
+      - state
       - session
       type: object
     RetryAccountRecoveryResponse:
@@ -27112,6 +29815,12 @@ components:
           type: string
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
+        hcgDelegation:
+          $ref: '#/components/schemas/HCGDelegationToggle'
+        hcgReporting:
+          $ref: '#/components/schemas/HCGReportingConfig'
+        rca:
+          $ref: '#/components/schemas/RCAConfig'
       type: object
     RollbackConversationResponse:
       properties:
@@ -29865,6 +32574,158 @@ components:
       - content
       - expectedFileFingerprint
       type: object
+    UsageBindingView:
+      properties:
+        harness:
+          type: string
+        id:
+          format: int64
+          type: integer
+        lastErrorCode:
+          type: string
+        nativeRootId:
+          type: string
+        sessionId:
+          type: string
+        sources:
+          items:
+            $ref: '#/components/schemas/UsageSourceView'
+          type: array
+        state:
+          type: string
+      required:
+      - id
+      - sessionId
+      - harness
+      - nativeRootId
+      - state
+      - lastErrorCode
+      - sources
+      type: object
+    UsageEventView:
+      properties:
+        bindingId:
+          format: int64
+          type: integer
+        cachedInputTokens:
+          type:
+          - "null"
+          - integer
+        createdAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        execution:
+          $ref: '#/components/schemas/ExecutionUsageIdentity'
+        id:
+          format: int64
+          type: integer
+        inputTokens:
+          type:
+          - "null"
+          - integer
+        measurementKind:
+          type: string
+        modelId:
+          type: string
+        outputTokens:
+          type:
+          - "null"
+          - integer
+        providerId:
+          type: string
+        providerUsage:
+          additionalProperties: {}
+          type:
+          - object
+          - "null"
+        sourceEventKey:
+          type: string
+        uncachedInputTokens:
+          type:
+          - "null"
+          - integer
+        usageProjectionStatus:
+          enum:
+          - complete
+          - partial
+          - missing
+          - invalid
+          type: string
+        usageSourceId:
+          format: int64
+          type: integer
+      required:
+      - id
+      - sourceEventKey
+      - providerId
+      - modelId
+      - measurementKind
+      - inputTokens
+      - cachedInputTokens
+      - uncachedInputTokens
+      - outputTokens
+      - createdAt
+      - providerUsage
+      - usageProjectionStatus
+      type: object
+    UsageEventsResponse:
+      properties:
+        accountId:
+          type:
+          - "null"
+          - string
+        bindings:
+          items:
+            $ref: '#/components/schemas/UsageBindingView'
+          type: array
+        consistency:
+          type: string
+        currentNativeId:
+          type: string
+        events:
+          items:
+            $ref: '#/components/schemas/UsageEventView'
+          type: array
+        hasMore:
+          type: boolean
+        metadataAsOf:
+          format: date-time
+          type: string
+        mode:
+          type: string
+        nextAfterId:
+          format: int64
+          type: integer
+        projectId:
+          type: string
+        role:
+          type: string
+        sessionId:
+          type: string
+        sourceAsOf:
+          format: date-time
+          type: string
+        throughId:
+          format: int64
+          type: integer
+      required:
+      - sessionId
+      - events
+      - bindings
+      - throughId
+      - nextAfterId
+      - hasMore
+      - sourceAsOf
+      - metadataAsOf
+      - projectId
+      - role
+      - mode
+      - accountId
+      - currentNativeId
+      - consistency
+      type: object
     UsageHarnessResponse:
       properties:
         harness:
@@ -29911,6 +32772,37 @@ components:
       required:
       - modelId
       - totals
+      type: object
+    UsageSourceView:
+      properties:
+        anomalyCount:
+          format: int64
+          type: integer
+        generation:
+          format: int64
+          type: integer
+        id:
+          format: int64
+          type: integer
+        kind:
+          type: string
+        lastErrorCode:
+          type: string
+        nativeSessionId:
+          type: string
+        state:
+          type: string
+        subagentId:
+          type: string
+      required:
+      - id
+      - kind
+      - nativeSessionId
+      - subagentId
+      - generation
+      - state
+      - lastErrorCode
+      - anomalyCount
       type: object
     UsageTotalsResponse:
       properties:

@@ -50,6 +50,10 @@ type APIDeps struct {
 	NativeSessions     ports.AgentNativeSessionResolver
 	UsageHooks         controllers.UsageHookRecorder
 	UsageSummary       controllers.UsageSummaryService
+	UsageEvents        controllers.UsageEventsService
+	HCGReporting       controllers.HCGReportingService
+	RCA                controllers.RCAService
+	HCGDelegation      controllers.HCGDelegationService
 	SessionMemory      controllers.SessionMemoryService
 	SessionSteps       controllers.SessionStepsReader
 	PRs                prsvc.ActionManager
@@ -226,7 +230,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		},
 		automations:    &controllers.AutomationsController{Svc: deps.Automations},
 		desktop:        &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
-		usage:          &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
+		usage:          &controllers.UsageController{Svc: deps.UsageSummary, Events: deps.UsageEvents, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
 		prs:            &controllers.PRsController{Svc: deps.PRs},
 		reviews:        &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications:  &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
@@ -352,6 +356,9 @@ func (a *API) Register(root chi.Router) {
 			a.desktop.Register(r)
 			a.appDiagnostics.Register(r)
 			a.usage.Register(r)
+			mountHCGReporting(r, a.deps.HCGReporting)
+			controllers.RCAController{Svc: a.deps.RCA}.Register(r)
+			mountHCGDelegation(r, a.deps.HCGDelegation)
 			mountGuardianObservation(r, a.deps.GuardianObservability)
 			a.prs.Register(r)
 			a.reviews.Register(r)

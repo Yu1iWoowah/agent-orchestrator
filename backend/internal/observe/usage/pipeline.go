@@ -30,10 +30,14 @@ func NewPipeline(
 	ingestor sourceIngestor,
 	roots []string,
 	cfg CoordinatorConfig,
+	watcherCfg TranscriptWatcherConfig,
 ) *Pipeline {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if watcherCfg.Logger == nil {
+		watcherCfg.Logger = logger
 	}
 	return &Pipeline{
 		store:    store,
@@ -42,7 +46,7 @@ func NewPipeline(
 		cfg:      cfg,
 		logger:   logger,
 		newWatcher: func(ctx context.Context, roots []string) (transcriptWatcher, error) {
-			return NewTranscriptWatcher(ctx, roots)
+			return NewTranscriptWatcher(ctx, roots, watcherCfg)
 		},
 		restartWait: defaultWatcherRestartDelay,
 		reconcile:   make(chan struct{}, 1),

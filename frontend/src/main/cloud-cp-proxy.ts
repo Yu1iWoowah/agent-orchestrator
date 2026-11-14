@@ -11,8 +11,8 @@
 // travel back.
 
 import { ipcMain } from "electron";
-import { randomUUID } from "node:crypto";
 import { getCloudAccessToken } from "./cloud-auth";
+import { createSseRelay, sseRelayError, type SseRelayEvent, type SseRelaySender } from "./sse-stream-relay";
 
 export const CLOUD_CP_REQUEST_CHANNEL = "cloudCp:request";
 export const CLOUD_CP_OPEN_STREAM_CHANNEL = "cloudCp:openStream";
@@ -50,21 +50,8 @@ export interface CloudCpProxyResponse {
 	body: string;
 }
 
-export type CloudCpStreamEvent =
-	| { type: "chunk"; data: string }
-	| { type: "end" }
-	| { type: "error"; message: string };
-
-/**
- * Structural slice of Electron.WebContents the stream side needs. Kept
- * minimal so tests can drive streams with a plain object.
- */
-export interface CloudCpStreamSender {
-	readonly id: number;
-	isDestroyed(): boolean;
-	send(channel: string, event: CloudCpStreamEvent): void;
-	once(event: "destroyed", listener: () => void): unknown;
-}
+export type CloudCpStreamEvent = SseRelayEvent;
+export type CloudCpStreamSender = SseRelaySender;
 
 export interface CloudCpProxy {
 	request(init: unknown): Promise<CloudCpProxyResponse>;
@@ -82,7 +69,7 @@ function invalid(detail: string): Error {
 }
 
 function streamError(status: number, detail: string): Error {
-	return new Error(`${CLOUD_CP_STREAM_ERROR_MARKER} ${status} ${detail}`);
+	return sseRelayError(CLOUD_CP_STREAM_ERROR_MARKER, status, detail);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -190,87 +177,17 @@ function unauthorizedResponse(): CloudCpProxyResponse {
 	};
 }
 
-async function envelopeMessage(response: Response): Promise<string> {
-	const fallback = `Cloud control plane stream request failed with status ${response.status}.`;
-	try {
-		const body = (await response.json()) as { message?: unknown; error?: unknown } | null;
-		if (typeof body?.message === "string" && body.message !== "") return body.message;
-		if (typeof body?.error === "string" && body.error !== "") return body.error;
-	} catch {
-		// Non-JSON or empty body: keep the status-derived message.
-	}
-	return fallback;
-}
-
-interface ActiveStream {
-	controller: AbortController;
-	sender: CloudCpStreamSender;
-	channel: string;
-	closed: boolean;
-}
-
 export function createCloudCpProxy(getDataDir: () => string, options: CloudCpProxyOptions = {}): CloudCpProxy {
 	// Wrap the default so the global fetch is never invoked detached from its
 	// realm (Chromium/Node throw "Illegal invocation" for a bare reference).
 	const doFetch: typeof fetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
 
-	const streams = new Map<string, ActiveStream>();
-	const streamIdsBySender = new Map<number, Set<string>>();
-
-	function teardown(streamId: string, stream: ActiveStream): void {
-		stream.closed = true;
-		streams.delete(streamId);
-		streamIdsBySender.get(stream.sender.id)?.delete(streamId);
-		stream.controller.abort();
-	}
-
-	function emit(stream: ActiveStream, event: CloudCpStreamEvent): void {
-		if (stream.closed || stream.sender.isDestroyed()) return;
-		stream.sender.send(stream.channel, event);
-	}
-
-	function trackSender(sender: CloudCpStreamSender): Set<string> {
-		let ids = streamIdsBySender.get(sender.id);
-		if (ids === undefined) {
-			ids = new Set();
-			streamIdsBySender.set(sender.id, ids);
-			sender.once("destroyed", () => {
-				const orphaned = streamIdsBySender.get(sender.id);
-				streamIdsBySender.delete(sender.id);
-				for (const streamId of orphaned ?? []) {
-					const stream = streams.get(streamId);
-					if (stream !== undefined) teardown(streamId, stream);
-				}
-			});
-		}
-		return ids;
-	}
-
-	async function pump(streamId: string, stream: ActiveStream, body: ReadableStream<Uint8Array>): Promise<void> {
-		const reader = body.getReader();
-		const decoder = new TextDecoder();
-		try {
-			for (;;) {
-				const { done, value } = await reader.read();
-				if (value !== undefined) {
-					const data = decoder.decode(value, { stream: true });
-					if (data !== "") emit(stream, { type: "chunk", data });
-				}
-				if (done) break;
-			}
-			const tail = decoder.decode();
-			if (tail !== "") emit(stream, { type: "chunk", data: tail });
-			emit(stream, { type: "end" });
-		} catch (error) {
-			emit(stream, {
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
-		} finally {
-			teardown(streamId, stream);
-			reader.releaseLock();
-		}
-	}
+	const relay = createSseRelay({
+		channel: cloudCpStreamChannel,
+		maxStreamsPerSender: MAX_STREAMS_PER_WEBCONTENTS,
+		errorMarker: CLOUD_CP_STREAM_ERROR_MARKER,
+		streamNoun: "cloud streams",
+	});
 
 	async function request(init: unknown): Promise<CloudCpProxyResponse> {
 		const valid = validateInit(init);
@@ -294,54 +211,22 @@ export function createCloudCpProxy(getDataDir: () => string, options: CloudCpPro
 	async function openStream(sender: CloudCpStreamSender, init: unknown): Promise<{ streamId: string }> {
 		const valid = validateInit(init);
 		const url = resolveTargetUrl(valid);
-		const ids = trackSender(sender);
-		if (ids.size >= MAX_STREAMS_PER_WEBCONTENTS) {
-			throw streamError(429, `This window already has ${MAX_STREAMS_PER_WEBCONTENTS} open cloud streams.`);
-		}
-		const token = await getCloudAccessToken(getDataDir());
-		if (token === null || token === "") {
-			throw streamError(401, "No AO Cloud session is available. Sign in and try again.");
-		}
-		const controller = new AbortController();
-		const response = await doFetch(url, {
-			method: valid.method.toUpperCase(),
-			headers: buildHeaders(valid.headers, token),
-			body: valid.body,
-			signal: controller.signal,
+		return relay.open(sender, async (signal) => {
+			const token = await getCloudAccessToken(getDataDir());
+			if (token === null || token === "") {
+				throw streamError(401, "No AO Cloud session is available. Sign in and try again.");
+			}
+			return doFetch(url, {
+				method: valid.method.toUpperCase(),
+				headers: buildHeaders(valid.headers, token),
+				body: valid.body,
+				signal,
+			});
 		});
-		if (!response.ok) {
-			throw streamError(response.status, await envelopeMessage(response));
-		}
-		if (response.body === null) {
-			throw streamError(response.status, "The event stream response has no body.");
-		}
-
-		const streamId = randomUUID();
-		const stream: ActiveStream = {
-			controller,
-			sender,
-			channel: cloudCpStreamChannel(streamId),
-			closed: false,
-		};
-		streams.set(streamId, stream);
-		ids.add(streamId);
-		const body = response.body;
-		// Start pumping on the next macrotask: the invoke reply for openStream is
-		// dispatched from the handler's promise chain (microtasks), so deferring
-		// guarantees the renderer learns the streamId — and subscribes — before
-		// the first chunk event can be sent.
-		setImmediate(() => {
-			void pump(streamId, stream, body);
-		});
-		return { streamId };
 	}
 
 	function closeStream(sender: Pick<CloudCpStreamSender, "id">, streamId: unknown): void {
-		if (typeof streamId !== "string") return;
-		const stream = streams.get(streamId);
-		// Only the WebContents that opened a stream may close it.
-		if (stream === undefined || stream.sender.id !== sender.id) return;
-		teardown(streamId, stream);
+		relay.close(sender, streamId);
 	}
 
 	return { request, openStream, closeStream };

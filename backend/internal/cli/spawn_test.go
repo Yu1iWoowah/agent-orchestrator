@@ -3,9 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,6 +34,47 @@ func TestSpawnHelpListsPrimeAgentHarness(t *testing.T) {
 	}
 }
 
+func TestSpawnApprovalMode(t *testing.T) {
+	for _, mode := range []string{"default", "accept-edits", "auto", "bypass-permissions"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var received map[string]any
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v1/projects/demo":
+					_, _ = io.WriteString(w, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+				case "/api/v1/sessions":
+					if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+						t.Error(err)
+					}
+					_, _ = io.WriteString(w, `{"session":{"id":"new","status":"spawning"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--account", "explicit", "--name", "new", "--approval-mode", mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if received["approvalMode"] != mode {
+				t.Fatalf("approvalMode = %v, want %s", received["approvalMode"], mode)
+			}
+		})
+	}
+	for _, mode := range []string{"", "full-access", " bypass-permissions"} {
+		t.Run("invalid:"+mode, func(t *testing.T) {
+			_, _, err := executeCLI(t, Deps{}, "spawn", "--name", "new", "--approval-mode", mode)
+			var usage usageError
+			if !errors.As(err, &usage) {
+				t.Fatalf("expected usage error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestSpawnHelpListsFXHarness(t *testing.T) {
 	out, _, err := executeCLI(t, Deps{}, "spawn", "--help")
 	if err != nil {
@@ -59,7 +100,7 @@ func TestSpawnHelpListsOpenCodeV2Harness(t *testing.T) {
 func TestSpawnCommand_MissingProjectContext(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects" {
@@ -87,7 +128,7 @@ func TestSpawnCommand_MissingProjectContext(t *testing.T) {
 // --path before touching the network.
 func TestProjectAddCommand_RequiresPath(t *testing.T) {
 	var out, errb bytes.Buffer
-	root := NewRootCommand(Deps{Out: &out, Err: &errb})
+	root := newTestRootCommand(t, Deps{Out: &out, Err: &errb})
 	root.SetArgs([]string{"project", "add"})
 	err := root.Execute()
 	if err == nil {
@@ -101,7 +142,7 @@ func TestProjectAddCommand_RequiresPath(t *testing.T) {
 func TestSpawnClaimPRWiring(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -143,7 +184,7 @@ func TestSpawnClaimPRWiring(t *testing.T) {
 func TestSpawnClaimPR_Draft(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -185,7 +226,7 @@ func TestSpawnClaimPR_GitLab(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var capturedReq claimPRRequest
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -225,7 +266,7 @@ func TestSpawnClaimPRFailureRollsBackSession(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	sessions := map[string]bool{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -316,7 +357,7 @@ func TestSpawnConfirmationIncludesDisplayName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
@@ -348,7 +389,7 @@ func TestSpawnResolvesProjectFromEnvAndDefaultAgent(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -392,7 +433,7 @@ func TestSpawnResolvesProjectFromAOSessionID(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -431,7 +472,7 @@ func TestSpawnResolvesProjectFromAOSessionID(t *testing.T) {
 func TestSpawnAOSessionIDFailureRequiresProject(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -473,7 +514,7 @@ func TestSpawnResolvesProjectFromCWD(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(oldwd) })
 
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects":
@@ -507,7 +548,7 @@ func TestSpawnStandaloneOmitsProject(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -544,7 +585,7 @@ func TestSpawnStandaloneOmitsProject(t *testing.T) {
 func TestRequestedOutputArtifactSetsRequestedOutput(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
@@ -622,7 +663,7 @@ func TestSpawnScratchRejectsGitOnlyFlags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var requests []string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				appendPrimaryRequest(&requests, r)
 				w.Header().Set("Content-Type", "application/json")
 				switch {
@@ -651,7 +692,7 @@ func TestSpawnTargetedReadinessAllowsAuthorizedAgent(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -691,7 +732,7 @@ func TestSpawnUnauthorizedReadinessWarnsAndAllows(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -731,7 +772,7 @@ func TestSpawnUnknownAuthReadinessWarnsAndAllows(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -770,7 +811,7 @@ func TestSpawnUnknownAuthReadinessWarnsAndAllows(t *testing.T) {
 func TestSpawnUnsupportedAgentReadinessBlocks(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -799,7 +840,7 @@ func TestSpawnUnsupportedAgentReadinessBlocks(t *testing.T) {
 func TestSpawnNotInstalledAgentReadinessBlocks(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -828,7 +869,7 @@ func TestSpawnInstalledWithUnknownAuthWarnsAndAllows(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -868,7 +909,7 @@ func TestSpawnUnknownInstallationWarnsAndAllows(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -907,7 +948,7 @@ func TestSpawnUnknownInstallationWarnsAndAllows(t *testing.T) {
 func TestSpawnReadinessServerErrorBlocks(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -937,7 +978,7 @@ func TestSpawnSkipAgentCheckBypassesOnlyPreflight(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -971,7 +1012,7 @@ func TestSpawnSkipAgentCheckBypassesOnlyPreflight(t *testing.T) {
 func TestSpawnInvalidHarnessPreservesDaemonErrorEnvelope(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -1000,7 +1041,7 @@ func TestSpawnInvalidHarnessPreservesDaemonErrorEnvelope(t *testing.T) {
 func TestSpawnUnknownAuthEnsureWarnsAndAllows(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
@@ -1080,7 +1121,7 @@ func TestResolveSpawnHarness_OrchestratorDefault(t *testing.T) {
 func TestSpawnModelFlagWiring(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
@@ -1113,7 +1154,7 @@ func TestSpawnModelFlagWiring(t *testing.T) {
 func TestSpawnEffortFlagWiring(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var req spawnRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
@@ -1147,7 +1188,7 @@ func TestSpawnEffortFlagWiring(t *testing.T) {
 // harnesses support effort, so the list cannot drift in the thin client.
 func TestSpawnEffortSurfacesDaemonUnsupportedEffort(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":

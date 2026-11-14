@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -14,19 +15,30 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // Four statements keep a turn only when the active lineage holds one of its
 // messages or activities at or before the fork point. That EXISTS is
-// correlated on turn_id, which no index covers. Without a conversation_id
-// bound it scans the whole message and activity tables, and once
-// sqlite_stat1 exists the planner skip-scans (branch_id, sequence) across
-// every branch in the database instead. Bound by conversation_id, it
-// range-seeks the (conversation_id, sequence) index.
+// correlated on turn_id. Without a conversation_id bound it scans the whole
+// message and activity tables, and once sqlite_stat1 exists the planner
+// skip-scans (branch_id, sequence) across every branch in the database
+// instead. Bound by conversation_id it seeks the (conversation_id, turn_id,
+// sequence) index. Without statistics the planner otherwise prefers the
+// (conversation_id, sequence) range over the input-custody (conversation_id,
+// turn_id, id) index, which reads every earlier row once per turn and makes
+// resume quadratic in history.
 const (
 	lineageMessageBound  = "lineage_message.conversation_id = conversation_turns.conversation_id"
 	lineageActivityBound = "lineage_activity.conversation_id = conversation_turns.conversation_id"
 )
+
+// The resume-path statements whose lineage lookups must seek by turn.
+var lineageTurnIndex = map[string]bool{
+	"SelectConversationTurns":                true,
+	"SelectLatestConversationTurn":           true,
+	"ListVisibleRunningTurnsForConversation": true,
+}
 
 // lineageProbe is a gen.DBTX that runs on its own read-only connection to the
 // store's file and remembers the last statement the generated code issued, so
@@ -262,6 +274,10 @@ func TestLineageTurnQueriesAreBoundByConversation(t *testing.T) {
 						if !strings.Contains(line, "conversation_id=?") || strings.Contains(line, "ANY(") || strings.HasPrefix(strings.TrimSpace(line), "SCAN") {
 							t.Errorf("%s does not seek by conversation_id: %q\nfull plan:\n%s", table, line, plan)
 						}
+						index := map[string]string{"lineage_message": "idx_conversation_messages_turn", "lineage_activity": "idx_conversation_activities_turn"}[table]
+						if lineageTurnIndex[name] && !strings.Contains(line, index+" (conversation_id=? AND turn_id=? AND sequence<?)") {
+							t.Errorf("%s does not seek %s by turn: %q\nfull plan:\n%s", table, index, line, plan)
+						}
 					}
 					if !found {
 						t.Errorf("plan has no %s lookup:\n%s", table, plan)
@@ -300,6 +316,34 @@ func TestLineageTurnQueriesAreBoundByConversation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, visible) {
 		t.Fatalf("visible turns = %v, want %v", got, visible)
+	}
+}
+
+// ConversationBranchHasVisibleTurn answers per branch what the snapshot's
+// Turns show, and tells a missing conversation from a branch with no turn.
+func TestBranchVisibleTurnMatchesSnapshotTurns(t *testing.T) {
+	ctx := context.Background()
+	s := sqlitetest.MustOpenAt(t, t.TempDir())
+	conversationID, _ := seedForkedConversation(t, s)
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversationID)
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	want := map[string]bool{"branch-without-turns": false}
+	for _, turn := range snapshot.Turns {
+		want[turn.BranchID] = true
+	}
+	if len(want) != 4 {
+		t.Fatalf("fixture branches with visible turns = %v, want root, child and nested", want)
+	}
+	for branch, visible := range want {
+		got, err := s.ConversationBranchHasVisibleTurn(ctx, conversationID, branch)
+		if err != nil || got != visible {
+			t.Errorf("branch %s visible = %v, %v; want %v", branch, got, err, visible)
+		}
+	}
+	if _, err := s.ConversationBranchHasVisibleTurn(ctx, "missing-conversation", "branch-child"); !errors.Is(err, store.ErrConversationNotFound) {
+		t.Fatalf("missing conversation error = %v, want ErrConversationNotFound", err)
 	}
 }
 

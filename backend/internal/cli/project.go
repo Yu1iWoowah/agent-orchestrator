@@ -84,9 +84,17 @@ type agentConfig struct {
 
 // roleOverride mirrors domain.RoleOverride.
 type roleOverride struct {
+	HCGDelegation hcgReportingConfig `json:"hcgDelegation,omitempty,omitzero"`
+	HCGReporting  hcgReportingConfig `json:"hcgReporting,omitempty,omitzero"`
+	RCA           rcaConfig          `json:"rca,omitempty,omitzero"`
+
 	AgentAccountID string      `json:"agentAccountId,omitempty"`
 	Agent          string      `json:"agent,omitempty"`
 	AgentConfig    agentConfig `json:"agentConfig,omitempty"`
+}
+
+type rcaConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // trackerIntakeConfig mirrors domain.TrackerIntakeConfig.
@@ -117,6 +125,9 @@ type orchestratorHandoffConfig struct {
 }
 
 type projectConfig struct {
+	RCA                   rcaConfig                   `json:"rca,omitempty,omitzero"`
+	HCGDelegation         hcgDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
+	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
 	AgentAccounts         map[string]string           `json:"agentAccounts,omitempty"`
@@ -142,6 +153,10 @@ type projectConfig struct {
 	// of another field never silently turns it off.
 	WorkersRequestReview bool             `json:"workersRequestReview,omitempty"`
 	Reviewers            []reviewerConfig `json:"reviewers,omitempty"`
+}
+
+type hcgReportingConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type guardianObservabilityConfig struct {
@@ -614,4 +629,14 @@ func confirmProjectRemoval(cmd *cobra.Command, id string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(line) == id, nil
+}
+
+type hcgDelegationProfileRef struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+}
+type hcgDelegationConfig struct {
+	Enabled         *bool                     `json:"enabled,omitempty"`
+	AllowedProfiles []hcgDelegationProfileRef `json:"allowedProfiles,omitempty"`
+	SelectedProfile *hcgDelegationProfileRef  `json:"selectedProfile,omitempty"`
 }

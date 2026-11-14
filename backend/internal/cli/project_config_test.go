@@ -11,6 +11,7 @@ import (
 )
 
 const projectConfigFixture = `{
+	"hcgReporting":{"enabled":true},
 	"guardianObservability":{"enabled":true},
 	"orchestratorHandoff":{"sharedDir":"shared","documentPath":"handoff/current.md"},
 	"canonicalRepoURL":"https://github.com/acme/demo",
@@ -19,7 +20,7 @@ const projectConfigFixture = `{
 	"postCreate":["echo created"],"preRemove":["echo removing"],
 	"agentRules":"Run tests.","agentRulesFile":"rules.md","orchestratorRules":"Coordinate.",
 	"agentConfig":{"model":"default-model","effort":"medium","mode":"high","permissions":"auto"},
-	"worker":{"agent":"codex","agentConfig":{"model":"worker-model","effort":"high","permissions":"accept-edits"}},
+	"worker":{"hcgReporting":{"enabled":false},"agent":"codex","agentConfig":{"model":"worker-model","effort":"high","permissions":"accept-edits"}},
 	"orchestrator":{"agent":"codex","agentConfig":{"model":"orchestrator-model","effort":"low"}},
 	"reviewers":[{"harness":"codex","agentConfig":{"model":"reviewer-model","effort":"xhigh"}}],
 	"trackerIntake":{"enabled":true,"provider":"github","repo":"acme/demo","assignee":"alice"},
@@ -148,6 +149,8 @@ func TestProjectConfigMirrorsDomainJSONFields(t *testing.T) {
 		{agentSettingsAllowance{}, domain.AgentSettingsAllowance{}},
 		{agentConfig{}, domain.AgentConfig{}},
 		{roleOverride{}, domain.RoleOverride{}},
+		{hcgReportingConfig{}, domain.HCGReportingConfig{}},
+		{rcaConfig{}, domain.RCAConfig{}},
 		{reviewerConfig{}, domain.ReviewerConfig{}},
 		{trackerIntakeConfig{}, domain.TrackerIntakeConfig{}},
 		{containerReapConfig{}, domain.ContainerReapConfig{}},

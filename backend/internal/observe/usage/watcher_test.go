@@ -1,8 +1,10 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 )
 
 const watcherTestTimeout = 5 * time.Second
@@ -32,7 +36,7 @@ func TestTranscriptWatcherExistingRootWrite(t *testing.T) {
 func TestTranscriptWatcherErrorsRedactRootPath(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "private-transcript-root")
 	mustNoError(t, os.WriteFile(root, []byte("not a directory"), 0o600))
-	_, err := NewTranscriptWatcher(context.Background(), []string{root})
+	_, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
 	if err == nil {
 		t.Fatal("expected file transcript root to be rejected")
 	}
@@ -43,7 +47,7 @@ func TestTranscriptWatcherErrorsRedactRootPath(t *testing.T) {
 
 func TestTranscriptWatcherDoesNotWatchUnrelatedHistory(t *testing.T) {
 	root := t.TempDir()
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{root})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	t.Cleanup(watcher.close)
 	for index := range 2_000 {
@@ -66,7 +70,7 @@ func TestTranscriptWatcherAddsOnlyRegisteredSources(t *testing.T) {
 	mustNoError(t, os.WriteFile(unrelated, []byte("{}\n"), 0o600))
 	source := filepath.Join(sourceDir, "rollout.jsonl")
 	mustNoError(t, os.WriteFile(source, []byte("{}\n"), 0o600))
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{root})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	t.Cleanup(watcher.close)
 
@@ -105,7 +109,7 @@ func TestTranscriptWatcherResolvesSymlinkedRoot(t *testing.T) {
 func TestTranscriptWatcherAddsSourceWhenRetryFindsMissingFile(t *testing.T) {
 	root := t.TempDir()
 	transcript := filepath.Join(root, "rollout.jsonl")
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{root})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	t.Cleanup(watcher.close)
 
@@ -161,7 +165,7 @@ func TestTranscriptWatcherMarksOnlyCreationEventsForDiscovery(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.jsonl")
 	mustNoError(t, os.WriteFile(path, []byte("{}\n"), 0o600))
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{root})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	t.Cleanup(watcher.close)
 
@@ -175,9 +179,124 @@ func TestTranscriptWatcherMarksOnlyCreationEventsForDiscovery(t *testing.T) {
 	}
 }
 
+func TestTranscriptWatcherRejectsAccountRootSymlinkEscape(t *testing.T) {
+	for _, name := range []string{"claude", "sessions", "archived"} {
+		for _, phase := range []string{"startup", "replace directory", "replace symlink"} {
+			t.Run(name+"/"+phase, func(t *testing.T) {
+				ctx := context.Background()
+				stateDir := t.TempDir()
+				t.Setenv("HOME", t.TempDir())
+				t.Setenv("CODEX_HOME", "")
+				t.Setenv("CLAUDE_CONFIG_DIR", "")
+				roots, err := usagesvc.DefaultSourceRoots(ctx, t.TempDir(), stateDir)
+				mustNoError(t, err)
+				root := roots.AccountCodexSessions
+				switch name {
+				case "claude":
+					root = roots.AccountClaudeProjects
+				case "archived":
+					root = roots.AccountCodexArchived
+				}
+				mustNoError(t, os.MkdirAll(filepath.Dir(root), 0o700))
+				outside := t.TempDir()
+				mustNoError(t, os.WriteFile(filepath.Join(outside, "session.jsonl"), []byte("{}\n"), 0o600))
+				link := func(target string) {
+					t.Helper()
+					if err := os.Symlink(target, root); err != nil {
+						t.Skipf("symlink unavailable: %v", err)
+					}
+				}
+				switch phase {
+				case "startup":
+					link(outside)
+				case "replace symlink":
+					inside := filepath.Join(stateDir, "inside")
+					mustNoError(t, os.Mkdir(inside, 0o700))
+					link(inside)
+				default:
+					mustNoError(t, os.Mkdir(root, 0o700))
+				}
+				path := filepath.Join(root, "session.jsonl")
+				mustNoError(t, os.WriteFile(path, []byte("{}\n"), 0o600))
+				var logs bytes.Buffer
+				watcher, err := NewTranscriptWatcher(ctx, []string{root}, TranscriptWatcherConfig{
+					ValidateRoot: roots.ValidateAccountRoot,
+					Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+				})
+				mustNoError(t, err)
+				t.Cleanup(watcher.close)
+				paths := []string{path}
+				if phase != "startup" {
+					mustNoError(t, watcher.Rebuild(ctx, paths))
+					if len(watcher.watched) != 1 {
+						t.Fatal("in-StateDir source was not watched")
+					}
+					original, err := filepath.EvalSymlinks(path)
+					mustNoError(t, err)
+					paths = append(paths, original)
+					mustNoError(t, os.Rename(root, root+"-original"))
+					link(outside)
+				}
+				mustNoError(t, watcher.Rebuild(ctx, paths))
+				if len(watcher.watched) != 0 {
+					t.Fatalf("installed %d watches through escaped account root", len(watcher.watched))
+				}
+				if !strings.Contains(logs.String(), "usage transcript root rejected") || strings.Contains(logs.String(), outside) {
+					t.Fatalf("missing or unredacted root rejection log: %s", logs.String())
+				}
+			})
+		}
+	}
+}
+
+func TestTranscriptWatcherUsesCurrentAccountRoot(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	roots, err := usagesvc.DefaultSourceRoots(ctx, t.TempDir(), state)
+	mustNoError(t, err)
+	root := roots.AccountClaudeProjects
+	insideA, insideB, outside := filepath.Join(state, "inside-a"), filepath.Join(state, "inside-b"), t.TempDir()
+	for _, dir := range []string{filepath.Dir(root), insideA, insideB} {
+		mustNoError(t, os.MkdirAll(dir, 0o700))
+	}
+	for _, dir := range []string{insideA, insideB, outside} {
+		mustNoError(t, os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}\n"), 0o600))
+	}
+	link := func(target, path string) {
+		t.Helper()
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+	}
+	link(insideA, root)
+	watcher, err := NewTranscriptWatcher(ctx, []string{root}, TranscriptWatcherConfig{ValidateRoot: roots.ValidateAccountRoot})
+	mustNoError(t, err)
+	t.Cleanup(watcher.close)
+	mustNoError(t, watcher.Rebuild(ctx, []string{filepath.Join(root, "session.jsonl")}))
+	if len(watcher.watched) != 1 {
+		t.Fatal("initial in-StateDir source was not watched")
+	}
+	mustNoError(t, os.Remove(root))
+	link(insideB, root)
+	mustNoError(t, os.Rename(insideA, insideA+"-original"))
+	link(outside, insideA)
+	mustNoError(t, roots.ValidateAccountRoot(ctx, root))
+	mustNoError(t, watcher.Rebuild(ctx, []string{filepath.Join(insideA, "session.jsonl")}))
+	if len(watcher.watched) != 0 {
+		t.Errorf("watched external source through stale resolved root: %+v", watcher.watched)
+	}
+	mustNoError(t, watcher.Rebuild(ctx, []string{filepath.Join(root, "session.jsonl")}))
+	if _, ok := watcher.watched[canonicalTranscriptPath(filepath.Join(insideB, "session.jsonl"))]; !ok {
+		t.Fatal("current in-StateDir root was not watched")
+	}
+}
+
 func startTranscriptWatcher(t *testing.T, root string, sourcePaths ...string) (*TranscriptWatcher, context.CancelFunc) {
 	t.Helper()
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{root})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
 	if err != nil {
 		t.Fatalf("NewTranscriptWatcher() error = %v", err)
 	}

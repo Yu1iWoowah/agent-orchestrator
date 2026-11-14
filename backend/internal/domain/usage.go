@@ -493,3 +493,110 @@ type SessionStep struct {
 	EndedAt time.Time
 	Failed  bool
 }
+
+// UsageLedgerEvent is the internal read row; raw provider JSON never crosses HTTP.
+type UsageLedgerEvent struct {
+	ID, BindingID, UsageSourceID int64
+	ModelUsageEvent
+	Execution *ExecutionUsageIdentity
+}
+
+// UsageEventView exposes only ledger identity and numeric usage.
+type UsageEventView struct {
+	Execution             *ExecutionUsageIdentity `json:"execution,omitempty"`
+	ID                    int64                   `json:"id"`
+	BindingID             int64                   `json:"bindingId,omitempty"`
+	UsageSourceID         int64                   `json:"usageSourceId,omitempty"`
+	SourceEventKey        string                  `json:"sourceEventKey"`
+	ProviderID            string                  `json:"providerId"`
+	ModelID               string                  `json:"modelId"`
+	MeasurementKind       string                  `json:"measurementKind"`
+	InputTokens           *int64                  `json:"inputTokens"`
+	CachedInputTokens     *int64                  `json:"cachedInputTokens"`
+	UncachedInputTokens   *int64                  `json:"uncachedInputTokens"`
+	OutputTokens          *int64                  `json:"outputTokens"`
+	CreatedAt             *time.Time              `json:"createdAt"`
+	ProviderUsage         map[string]any          `json:"providerUsage"`
+	UsageProjectionStatus string                  `json:"usageProjectionStatus" enum:"complete,partial,missing,invalid"`
+}
+
+// UsageBindingView omits paths, parser state and credentials.
+type UsageBindingView struct {
+	ID            int64             `json:"id"`
+	SessionID     SessionID         `json:"sessionId"`
+	Harness       string            `json:"harness"`
+	NativeRootID  string            `json:"nativeRootId"`
+	State         string            `json:"state"`
+	LastErrorCode string            `json:"lastErrorCode"`
+	Sources       []UsageSourceView `json:"sources"`
+}
+
+// UsageSourceView describes all discovered sources, including ones without events.
+type UsageSourceView struct {
+	ID              int64  `json:"id"`
+	Kind            string `json:"kind"`
+	NativeSessionID string `json:"nativeSessionId"`
+	SubagentID      string `json:"subagentId"`
+	Generation      int64  `json:"generation"`
+	State           string `json:"state"`
+	LastErrorCode   string `json:"lastErrorCode"`
+	AnomalyCount    int64  `json:"anomalyCount"`
+}
+
+// UsageEventsPage is a bounded read, not an isolated historical snapshot.
+type UsageEventsPage struct {
+	SessionID       SessionID          `json:"sessionId"`
+	Events          []UsageEventView   `json:"events"`
+	Bindings        []UsageBindingView `json:"bindings"`
+	ThroughID       int64              `json:"throughId"`
+	NextAfterID     int64              `json:"nextAfterId"`
+	HasMore         bool               `json:"hasMore"`
+	SourceAsOf      time.Time          `json:"sourceAsOf"`
+	MetadataAsOf    time.Time          `json:"metadataAsOf"`
+	ProjectID       ProjectID          `json:"projectId"`
+	Role            string             `json:"role"`
+	Mode            string             `json:"mode"`
+	AccountID       *string            `json:"accountId"`
+	CurrentNativeID string             `json:"currentNativeId"`
+	Consistency     string             `json:"consistency"`
+}
+
+// ExecutionUsageIdentity is provenance from the trusted execution recorder.
+// It names an auxiliary source, never a fabricated native artifact/binding.
+type ExecutionUsageIdentity struct {
+	RequestedServiceTier  string    `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier   string    `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus     string    `json:"serviceTierStatus,omitempty"`
+	ID                    int64     `json:"id"`
+	ProjectID             string    `json:"projectId"`
+	SessionID             SessionID `json:"sessionId"`
+	DelegationID          string    `json:"delegationId"`
+	AttemptID             string    `json:"attemptId"`
+	BillingProvider       string    `json:"billingProvider"`
+	ProfileID             string    `json:"profileId"`
+	ProfileRevision       string    `json:"profileRevision"`
+	ProfileDigest         string    `json:"profileDigest"`
+	ProjectPolicyRevision string    `json:"projectPolicyRevision"`
+	RequestID             string    `json:"requestId"`
+	ResponseID            string    `json:"responseId,omitempty"`
+	UnknownReason         string    `json:"unknownReason,omitempty"`
+	FinishReason          string    `json:"finishReason,omitempty"`
+}
+
+// ExecutionUsageReceipt carries only trusted, bounded provider projections.
+// Descriptor and prices refer to dispatch time, not the current registration.
+type ExecutionUsageReceipt struct {
+	CacheWriteInputTokens                                                              *int64 `json:"cacheWriteInputTokens,omitempty"`
+	RequestedServiceTier                                                               string `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier                                                                string `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus                                                                  string `json:"serviceTierStatus,omitempty"`
+	ProjectID                                                                          string
+	SessionID                                                                          SessionID
+	DelegationID, AttemptID                                                            string
+	BillingProvider, ProfileID, ProfileRevision, ProfileDigest                         string
+	ProjectPolicyRevision, ModelID, RequestID, ResponseID, UnknownReason, FinishReason string
+	ObservedAt                                                                         time.Time
+	Tokens                                                                             UsageTokenMetrics
+	TotalTokens, ReasoningOutputTokens                                                 *int64
+	Costs                                                                              UsageEventCosts
+}

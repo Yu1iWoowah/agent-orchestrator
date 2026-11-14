@@ -304,6 +304,34 @@ func (q *Queries) FinalizeUsageBindingsForSessionLaunch(ctx context.Context, arg
 	return items, nil
 }
 
+const getExecutionReceiptDigest = `-- name: GetExecutionReceiptDigest :one
+SELECT receipt_digest FROM usage_execution_sources
+WHERE session_id=? AND billing_provider=? AND profile_id=? AND profile_revision=? AND delegation_id=? AND attempt_id=?
+`
+
+type GetExecutionReceiptDigestParams struct {
+	SessionID       string
+	BillingProvider string
+	ProfileID       string
+	ProfileRevision string
+	DelegationID    string
+	AttemptID       string
+}
+
+func (q *Queries) GetExecutionReceiptDigest(ctx context.Context, arg GetExecutionReceiptDigestParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getExecutionReceiptDigest,
+		arg.SessionID,
+		arg.BillingProvider,
+		arg.ProfileID,
+		arg.ProfileRevision,
+		arg.DelegationID,
+		arg.AttemptID,
+	)
+	var receipt_digest string
+	err := row.Scan(&receipt_digest)
+	return receipt_digest, err
+}
+
 const getModelUsageEventByKey = `-- name: GetModelUsageEventByKey :one
 SELECT
     event.id, event.usage_source_id, event.provider_id, event.billing_provider_id,
@@ -316,13 +344,13 @@ WHERE event.binding_id = ? AND event.source_event_key = ?
 `
 
 type GetModelUsageEventByKeyParams struct {
-	BindingID      int64
+	BindingID      sql.NullInt64
 	SourceEventKey string
 }
 
 type GetModelUsageEventByKeyRow struct {
 	ID                    int64
-	UsageSourceID         int64
+	UsageSourceID         sql.NullInt64
 	ProviderID            string
 	BillingProviderID     sql.NullString
 	BillingProviderSource sql.NullString
@@ -384,6 +412,20 @@ func (q *Queries) GetUsageBindingBySessionHarnessRoot(ctx context.Context, arg G
 		&i.ProviderHint,
 	)
 	return i, err
+}
+
+const getUsageEventsThroughID = `-- name: GetUsageEventsThroughID :one
+SELECT CAST(COALESCE(MAX(e.id), 0) AS INTEGER)
+FROM model_usage_events e
+WHERE e.binding_id IN (SELECT ub.id FROM usage_bindings ub WHERE ub.session_id = ?1)
+   OR e.execution_source_id IN (SELECT ux.id FROM usage_execution_sources ux WHERE ux.session_id = ?1)
+`
+
+func (q *Queries) GetUsageEventsThroughID(ctx context.Context, sessionID domain.SessionID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getUsageEventsThroughID, sessionID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const getUsageSessionIncomplete = `-- name: GetUsageSessionIncomplete :one
@@ -496,7 +538,7 @@ SELECT CAST(EXISTS (
 // Whether this source still owns an event a repair pass could finish. Cheaper
 // than listing them, and it is asked once per applied chunk on a routed
 // binding.
-func (q *Queries) HasOpenUsageAttribution(ctx context.Context, usageSourceID int64) (int64, error) {
+func (q *Queries) HasOpenUsageAttribution(ctx context.Context, usageSourceID sql.NullInt64) (int64, error) {
 	row := q.db.QueryRowContext(ctx, hasOpenUsageAttribution, usageSourceID)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -545,6 +587,90 @@ func (q *Queries) HasPendingUsageDiscovery(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const insertExecutionSource = `-- name: InsertExecutionSource :one
+INSERT INTO usage_execution_sources(project_id,session_id,billing_provider,profile_id,profile_revision,profile_digest,delegation_id,attempt_id,request_id,receipt_digest,identity_json)
+SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11
+WHERE EXISTS(SELECT 1 FROM sessions WHERE id=?2 AND project_id=?1)
+RETURNING id
+`
+
+type InsertExecutionSourceParams struct {
+	ProjectID       string
+	SessionID       string
+	BillingProvider string
+	ProfileID       string
+	ProfileRevision string
+	ProfileDigest   string
+	DelegationID    string
+	AttemptID       string
+	RequestID       string
+	ReceiptDigest   string
+	IdentityJson    string
+}
+
+func (q *Queries) InsertExecutionSource(ctx context.Context, arg InsertExecutionSourceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertExecutionSource,
+		arg.ProjectID,
+		arg.SessionID,
+		arg.BillingProvider,
+		arg.ProfileID,
+		arg.ProfileRevision,
+		arg.ProfileDigest,
+		arg.DelegationID,
+		arg.AttemptID,
+		arg.RequestID,
+		arg.ReceiptDigest,
+		arg.IdentityJson,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertExecutionUsageEvent = `-- name: InsertExecutionUsageEvent :exec
+INSERT INTO model_usage_events(execution_source_id,provider_id,billing_provider_id,billing_provider_source,model_id,usage_measurement_kind,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,provider_usage_json,source_event_key,created_at,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version)
+VALUES(?1,?2,?2,'observed',?3,'provider_reported',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+`
+
+type InsertExecutionUsageEventParams struct {
+	ExecutionSourceID    sql.NullInt64
+	ProviderID           string
+	ModelID              string
+	InputTokens          sql.NullInt64
+	CachedInputTokens    sql.NullInt64
+	UncachedInputTokens  sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ProviderUsageJson    sql.NullString
+	SourceEventKey       string
+	CreatedAt            sql.NullTime
+	InputCostNanos       sql.NullInt64
+	CachedInputCostNanos sql.NullInt64
+	OutputCostNanos      sql.NullInt64
+	EstimatedCostNanos   sql.NullInt64
+	PricingVersion       string
+}
+
+func (q *Queries) InsertExecutionUsageEvent(ctx context.Context, arg InsertExecutionUsageEventParams) error {
+	_, err := q.db.ExecContext(ctx, insertExecutionUsageEvent,
+		arg.ExecutionSourceID,
+		arg.ProviderID,
+		arg.ModelID,
+		arg.InputTokens,
+		arg.CachedInputTokens,
+		arg.UncachedInputTokens,
+		arg.OutputTokens,
+		arg.ProviderUsageJson,
+		arg.SourceEventKey,
+		arg.CreatedAt,
+		arg.InputCostNanos,
+		arg.CachedInputCostNanos,
+		arg.OutputCostNanos,
+		arg.EstimatedCostNanos,
+		arg.PricingVersion,
+	)
+	return err
+}
+
 const insertModelUsageEvent = `-- name: InsertModelUsageEvent :one
 INSERT INTO model_usage_events (
     binding_id, usage_source_id, provider_id, billing_provider_id,
@@ -559,8 +685,8 @@ RETURNING id
 `
 
 type InsertModelUsageEventParams struct {
-	BindingID             int64
-	UsageSourceID         int64
+	BindingID             sql.NullInt64
+	UsageSourceID         sql.NullInt64
 	ProviderID            string
 	BillingProviderID     sql.NullString
 	BillingProviderSource sql.NullString
@@ -867,8 +993,8 @@ ORDER BY event.id
 
 type ListLegacyUsageEventsRow struct {
 	ID                    int64
-	BindingID             int64
-	UsageSourceID         int64
+	BindingID             sql.NullInt64
+	UsageSourceID         sql.NullInt64
 	ProviderID            string
 	BillingProviderID     sql.NullString
 	BillingProviderSource sql.NullString
@@ -883,7 +1009,7 @@ type ListLegacyUsageEventsRow struct {
 	SourceEventKey        string
 }
 
-func (q *Queries) ListLegacyUsageEvents(ctx context.Context, usageSourceID int64) ([]ListLegacyUsageEventsRow, error) {
+func (q *Queries) ListLegacyUsageEvents(ctx context.Context, usageSourceID sql.NullInt64) ([]ListLegacyUsageEventsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listLegacyUsageEvents, usageSourceID)
 	if err != nil {
 		return nil, err
@@ -923,10 +1049,11 @@ func (q *Queries) ListLegacyUsageEvents(ctx context.Context, usageSourceID int64
 }
 
 const listLegacyUsageSourceIDs = `-- name: ListLegacyUsageSourceIDs :many
-SELECT DISTINCT mue.usage_source_id
+SELECT DISTINCT CAST(COALESCE(mue.usage_source_id, 0) AS INTEGER) AS usage_source_id
 FROM model_usage_events mue
-WHERE mue.billing_provider_id IS NULL
-   OR mue.billing_provider_source = 'inferred'
+WHERE (mue.billing_provider_id IS NULL
+   OR mue.billing_provider_source = 'inferred')
+  AND mue.usage_source_id IS NOT NULL
 ORDER BY mue.usage_source_id
 `
 
@@ -1073,7 +1200,7 @@ SELECT
     event.pricing_version,
     event.source_event_key
 FROM model_usage_events event
-WHERE event.billing_provider_id IS NOT NULL
+WHERE event.execution_source_id IS NULL AND event.billing_provider_id IS NOT NULL
   AND CASE lower(trim(event.billing_provider_id))
         WHEN 'z.ai' THEN 'zai'
         ELSE lower(trim(event.billing_provider_id))
@@ -1093,7 +1220,7 @@ type ListUsageCostCandidatesParams struct {
 
 type ListUsageCostCandidatesRow struct {
 	ID                   int64
-	BindingID            int64
+	BindingID            sql.NullInt64
 	ProviderID           string
 	BillingProviderID    sql.NullString
 	ModelID              string
@@ -1203,6 +1330,88 @@ func (q *Queries) ListUsageDiscoveryBindings(ctx context.Context, limit int64) (
 			&i.LastErrorCode,
 			&i.UpdatedAt,
 			&i.ProviderHint,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsageEventsPage = `-- name: ListUsageEventsPage :many
+SELECT e.id, e.binding_id, e.usage_source_id, e.provider_id, e.model_id,
+ e.usage_measurement_kind, e.input_tokens, e.cached_input_tokens,
+ e.uncached_input_tokens, e.output_tokens, e.provider_usage_json,
+ e.source_event_key, e.created_at, x.id AS execution_id, x.identity_json
+FROM model_usage_events e
+LEFT JOIN usage_execution_sources x ON x.id = e.execution_source_id
+WHERE (e.binding_id IN (SELECT ub.id FROM usage_bindings ub WHERE ub.session_id = ?1)
+ OR e.execution_source_id IN (SELECT ux.id FROM usage_execution_sources ux WHERE ux.session_id = ?1))
+ AND e.id > ?2 AND e.id <= ?3
+ORDER BY e.id LIMIT ?4
+`
+
+type ListUsageEventsPageParams struct {
+	SessionID domain.SessionID
+	AfterID   int64
+	ThroughID int64
+	PageLimit int64
+}
+
+type ListUsageEventsPageRow struct {
+	ID                   int64
+	BindingID            sql.NullInt64
+	UsageSourceID        sql.NullInt64
+	ProviderID           string
+	ModelID              string
+	UsageMeasurementKind string
+	InputTokens          sql.NullInt64
+	CachedInputTokens    sql.NullInt64
+	UncachedInputTokens  sql.NullInt64
+	OutputTokens         sql.NullInt64
+	ProviderUsageJson    sql.NullString
+	SourceEventKey       string
+	CreatedAt            sql.NullTime
+	ExecutionID          sql.NullInt64
+	IdentityJson         sql.NullString
+}
+
+func (q *Queries) ListUsageEventsPage(ctx context.Context, arg ListUsageEventsPageParams) ([]ListUsageEventsPageRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUsageEventsPage,
+		arg.SessionID,
+		arg.AfterID,
+		arg.ThroughID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsageEventsPageRow{}
+	for rows.Next() {
+		var i ListUsageEventsPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.BindingID,
+			&i.UsageSourceID,
+			&i.ProviderID,
+			&i.ModelID,
+			&i.UsageMeasurementKind,
+			&i.InputTokens,
+			&i.CachedInputTokens,
+			&i.UncachedInputTokens,
+			&i.OutputTokens,
+			&i.ProviderUsageJson,
+			&i.SourceEventKey,
+			&i.CreatedAt,
+			&i.ExecutionID,
+			&i.IdentityJson,
 		); err != nil {
 			return nil, err
 		}
@@ -1348,7 +1557,7 @@ type PromoteInferredUsageEventToObservedParams struct {
 	EstimatedCostNanos        sql.NullInt64
 	PricingVersion            string
 	ID                        int64
-	ExpectedUsageSourceID     int64
+	ExpectedUsageSourceID     sql.NullInt64
 	ExpectedBillingProviderID sql.NullString
 }
 
@@ -1390,9 +1599,9 @@ WHERE model_usage_events.id = ?2
 `
 
 type RehomeOpenUsageEventToReplacementSourceParams struct {
-	UsageSourceID         int64
+	UsageSourceID         sql.NullInt64
 	ID                    int64
-	ExpectedUsageSourceID int64
+	ExpectedUsageSourceID sql.NullInt64
 }
 
 // A physically replaced transcript re-emits the same logical event under the
@@ -1486,8 +1695,8 @@ type UpdateLegacyUsageEventParams struct {
 	EstimatedCostNanos            sql.NullInt64
 	PricingVersion                string
 	ID                            int64
-	BindingID                     int64
-	UsageSourceID                 int64
+	BindingID                     sql.NullInt64
+	UsageSourceID                 sql.NullInt64
 	ExpectedBillingProviderID     sql.NullString
 	ExpectedBillingProviderSource sql.NullString
 	ExpectedProviderID            string
@@ -1506,7 +1715,7 @@ type UpdateLegacyUsageEventParams struct {
 	ExpectedSourceUpdatedAt       time.Time
 }
 
-func (q *Queries) UpdateLegacyUsageEvent(ctx context.Context, arg UpdateLegacyUsageEventParams) (int64, error) {
+func (q *Queries) UpdateLegacyUsageEvent(ctx context.Context, arg UpdateLegacyUsageEventParams) (sql.NullInt64, error) {
 	row := q.db.QueryRowContext(ctx, updateLegacyUsageEvent,
 		arg.BillingProviderID,
 		arg.BillingProviderSource,
@@ -1536,7 +1745,7 @@ func (q *Queries) UpdateLegacyUsageEvent(ctx context.Context, arg UpdateLegacyUs
 		arg.ExpectedParserStateJson,
 		arg.ExpectedSourceUpdatedAt,
 	)
-	var binding_id int64
+	var binding_id sql.NullInt64
 	err := row.Scan(&binding_id)
 	return binding_id, err
 }
@@ -1606,7 +1815,7 @@ type UpdateUsageCostCandidateParams struct {
 	EstimatedCostNanos           sql.NullInt64
 	AttemptedPricingVersion      string
 	ID                           int64
-	BindingID                    int64
+	BindingID                    sql.NullInt64
 	ExpectedBillingProviderID    sql.NullString
 	ExpectedModelID              string
 	ExpectedUsageMeasurementKind string
@@ -1619,7 +1828,7 @@ type UpdateUsageCostCandidateParams struct {
 	ExpectedPricingVersion       string
 }
 
-func (q *Queries) UpdateUsageCostCandidate(ctx context.Context, arg UpdateUsageCostCandidateParams) (int64, error) {
+func (q *Queries) UpdateUsageCostCandidate(ctx context.Context, arg UpdateUsageCostCandidateParams) (sql.NullInt64, error) {
 	row := q.db.QueryRowContext(ctx, updateUsageCostCandidate,
 		arg.InputCostNanos,
 		arg.CachedInputCostNanos,
@@ -1639,7 +1848,7 @@ func (q *Queries) UpdateUsageCostCandidate(ctx context.Context, arg UpdateUsageC
 		arg.ExpectedSourceEventKey,
 		arg.ExpectedPricingVersion,
 	)
-	var binding_id int64
+	var binding_id sql.NullInt64
 	err := row.Scan(&binding_id)
 	return binding_id, err
 }

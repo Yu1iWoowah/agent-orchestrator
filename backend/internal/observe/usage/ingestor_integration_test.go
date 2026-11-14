@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -727,6 +728,136 @@ func TestIngestorPreservesCursorWhenCodexRolloutMovesToArchive(t *testing.T) {
 	assertTokenAggregate(t, store, session.ID, 180)
 }
 
+func TestCoordinatorRejectsEscapedAccountSourceBeforeIngestion(t *testing.T) {
+	for _, mode := range []string{"inventory root", "inventory file", "replacement root"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CODEX_HOME", "")
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			roots, err := usagesvc.DefaultSourceRoots(ctx, t.TempDir(), t.TempDir())
+			mustNoError(t, err)
+			store, session := seedUsageTestSession(t, t.TempDir(), "usage", domain.HarnessClaudeCode, domain.ActivityIdle, "account-root", time.Now().UTC())
+			root := roots.AccountClaudeProjects
+			rel := filepath.Join("project", "account-root.jsonl")
+			path := filepath.Join(root, rel)
+			mustNoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			line := `{"type":"assistant","uuid":"native-initial","message":{"id":"msg-initial","model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":8,"output_tokens":2}}}` + "\n"
+			mustNoError(t, os.WriteFile(path, []byte(line), 0o600))
+			collector := usagesvc.NewCollector(store, roots, nil)
+			mustNoError(t, collector.RecordHook(ctx, session.ID, usagesvc.HookSignal{Event: "session-start", NativeSessionID: "account-root", TranscriptPath: path}))
+			bindings, err := store.ListUsageBindingsForSession(ctx, session.ID)
+			mustNoError(t, err)
+			if len(bindings) != 1 {
+				t.Fatalf("bindings=%+v", bindings)
+			}
+			ingestor := NewIngestor(store, IngestorConfig{ValidateSourcePath: collector.ValidateSourcePath})
+			ingestAllWatchable(ctx, t, store, ingestor)
+			assertTokenAggregate(t, store, session.ID, 10)
+			outside := t.TempDir()
+			mustNoError(t, os.MkdirAll(filepath.Join(outside, "project"), 0o700))
+			external := strings.NewReplacer("native-initial", "native-external", "msg-initial", "msg-external", `"input_tokens":8`, `"input_tokens":998`).Replace(line)
+			mustNoError(t, os.WriteFile(filepath.Join(outside, rel), []byte(external), 0o600))
+			if err := os.Symlink(outside, filepath.Join(t.TempDir(), "probe")); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			escape := func() error {
+				from, target := root, outside
+				if mode == "inventory file" {
+					from, target = path, filepath.Join(outside, rel)
+				}
+				if err := os.Rename(from, from+"-original"); err != nil {
+					return err
+				}
+				return os.Symlink(target, from)
+			}
+			var externalOpens atomic.Int64
+			ingestor.openTranscript = func(name string) (*os.File, error) {
+				resolved, err := filepath.EvalSymlinks(name)
+				if err == nil && pathWithin(resolved, outside) {
+					externalOpens.Add(1)
+				}
+				return os.Open(name)
+			}
+			if mode == "replacement root" {
+				mustNoError(t, os.WriteFile(path+".replacement", []byte(line), 0o600))
+				mustNoError(t, os.Rename(path+".replacement", path))
+				open := ingestor.openTranscript
+				escaped := false
+				ingestor.openTranscript = func(name string) (*os.File, error) {
+					file, err := open(name)
+					if err == nil && !escaped {
+						escaped = true
+						if escapeErr := escape(); escapeErr != nil {
+							_ = file.Close()
+							return nil, escapeErr
+						}
+					}
+					return file, err
+				}
+			}
+			results := make(chan IngestResult, 8)
+			coordinator := NewCoordinator(store, coordinatorTestIngestor(func(ctx context.Context, id int64) (IngestResult, error) {
+				result, err := ingestor.Ingest(ctx, id)
+				select {
+				case results <- result:
+				case <-ctx.Done():
+				}
+				return result, err
+			}), newCoordinatorTestWatcher(), CoordinatorConfig{Workers: 1, Reconcile: func(ctx context.Context) error {
+				if mode == "replacement root" {
+					return nil
+				}
+				return collector.ReconcileSources(ctx, 0)
+			}})
+			next := func() IngestResult {
+				t.Helper()
+				select {
+				case result := <-results:
+					return result
+				case <-time.After(5 * time.Second):
+					t.Fatal("inventory refresh did not reach ingestion")
+					return IngestResult{}
+				}
+			}
+			done := coordinator.Start(ctx)
+			t.Cleanup(func() { cancel(); waitForCoordinatorSignal(t, done, "coordinator did not stop") })
+			result := next()
+			if mode != "replacement root" {
+				mustNoError(t, escape())
+				coordinator.NotifySourcesChanged()
+				result = next()
+			}
+			for result.More || result.ReplacementSourceID != 0 {
+				result = next()
+			}
+			cancel()
+			waitForCoordinatorSignal(t, done, "coordinator did not stop")
+			if externalOpens.Load() != 0 {
+				t.Errorf("opened an external transcript %d times", externalOpens.Load())
+			}
+			sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+			mustNoError(t, err)
+			if len(sources) != 1 {
+				t.Errorf("created replacement generations through escaped root: %+v", sources)
+			} else if sources[0].LastErrorCode != domain.UsageErrorArtifactPathRejected {
+				t.Errorf("source error = %q, want path rejection", sources[0].LastErrorCode)
+			}
+			aggregates, err := store.ListUsageModelAggregates(context.Background(), session.ID)
+			mustNoError(t, err)
+			var events int64
+			for _, aggregate := range aggregates {
+				events += aggregate.Cost.EventCount
+			}
+			if events != 1 {
+				t.Errorf("usage event count = %d, want original event only", events)
+			}
+			assertTokenAggregate(t, store, session.ID, 10)
+		})
+	}
+}
+
 func TestCoordinatorCollectsCodexUsageFromFilesystemEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -744,7 +875,7 @@ func TestCoordinatorCollectsCodexUsageFromFilesystemEvents(t *testing.T) {
 		`{"type":"turn_context","payload":{"model":"gpt-5.6"}}` + "\n"
 	mustNoError(t, os.WriteFile(transcript, []byte(initial), 0o600))
 
-	watcher, err := NewTranscriptWatcher(context.Background(), []string{sessionsRoot, archiveRoot})
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{sessionsRoot, archiveRoot}, TranscriptWatcherConfig{})
 	mustNoError(t, err)
 	collector := usagesvc.NewCollector(store, usagesvc.SourceRoots{
 		CodexSessions: sessionsRoot,

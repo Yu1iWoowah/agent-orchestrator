@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/aoagents/agent-orchestrator/components/hcg v0.0.0
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/term v0.2.2
@@ -68,3 +69,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/aoagents/agent-orchestrator/components/hcg => ../components/hcg

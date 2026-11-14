@@ -15,7 +15,7 @@ import (
 // given status and body for any CLI daemon call.
 func transportServer(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
@@ -27,10 +27,10 @@ func transportServer(t *testing.T, status int, body string) *httptest.Server {
 func transportContext(t *testing.T, cfg testConfig, srv *httptest.Server) *commandContext {
 	t.Helper()
 	writeRunFileFor(t, cfg, srv)
-	return &commandContext{deps: Deps{
-		HTTPClient:   &http.Client{},
+	return newTestCommandContext(t, Deps{
+		HTTPClient:   apiFixtureClient(t, &http.Client{}),
 		ProcessAlive: func(int) bool { return true },
-	}}
+	})
 }
 
 // TestTransportDistinguishesEmptyResponses is the API-014 regression: an empty
@@ -141,7 +141,7 @@ func TestTransportDistinguishesEmptyResponses(t *testing.T) {
 func TestSpawnRejectsEmptySessionID(t *testing.T) {
 	for _, body := range []string{``, `{}`} {
 		cfg := setConfigEnv(t)
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			switch {
 			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
@@ -187,7 +187,7 @@ func TestReviewSubmitBatchRejectsEmptyEntries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, tt.body)
 			}))
@@ -228,7 +228,7 @@ func TestReviewSubmitRejectsEmptyResult(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, tt.body)
 			}))

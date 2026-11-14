@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -28,7 +27,7 @@ func TestSpawnSettingsNegotiatesBeforeSendingNewWire(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			posted, negotiated := false, false
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/spawn-capabilities":
@@ -77,7 +76,7 @@ func TestSpawnSettingsNegotiatesBeforeSendingNewWire(t *testing.T) {
 
 func TestSpawnStaleCatalogSuggestsRefreshAndPreservesError(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions" {
 			w.WriteHeader(http.StatusConflict)
@@ -96,7 +95,7 @@ func TestSpawnStaleCatalogSuggestsRefreshAndPreservesError(t *testing.T) {
 
 func TestSpawnReportsInheritedEffortReset(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions" {
 			_, _ = io.WriteString(w, `{"session":{"id":"standalone-1","status":"idle","spawnAgentSettings":{"validation":"catalog","effortCleared":true}}}`)

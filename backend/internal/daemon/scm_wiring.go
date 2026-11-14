@@ -13,14 +13,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	scmobserve "github.com/aoagents/agent-orchestrator/backend/internal/observe/scm"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
-	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 // startSCMObserver wires the provider-neutral SCM observer with both GitHub
 // and GitLab providers via a multi Provider dispatcher. Missing credentials
 // for one provider do not prevent the other from starting; the observer is
 // disabled only when no provider has usable credentials.
-func startSCMObserver(ctx context.Context, store *sqlite.Store, lcm *lifecycle.Manager, branchStates scmobserve.BranchStateReconciler, gitlabCfg config.GitLabConfig, reviewRefresher *scmReviewRefresher, logger *slog.Logger) <-chan struct{} {
+func startSCMObserver(ctx context.Context, store scmobserve.Store, lcm *lifecycle.Manager, branchStates scmobserve.BranchStateReconciler, gitlabCfg config.GitLabConfig, reviewRefresher *scmReviewRefresher, logger *slog.Logger) <-chan struct{} {
 	var named []scmmulti.NamedProvider
 
 	ghProvider, ghErr := newGitHubSCMProvider(logger)

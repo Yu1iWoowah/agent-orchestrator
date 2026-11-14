@@ -73,11 +73,15 @@ ao review submit [worker-session-id] [flags]
 | `--session string` | Worker session id (or pass it as the positional argument) | - |
 | `--verdict string` | Review verdict: `approved` or `changes_requested` | Required |
 
-If the local daemon is restarting when a result is submitted, AO retains the
-parsed result in memory and retries the same idempotent request for up to 30
-seconds. Validation errors return immediately. If the daemon remains unavailable,
-the command reports failure and can be repeated safely; daemon idempotency
-handles the case where an earlier connection dropped after committing the result.
+Each `ao review submit` sends the result at most once. The CLI first checks the
+loopback daemon's identity and readiness; if that check fails, nothing is sent
+and the error says why. If the request was sent but no valid result came back,
+or the daemon answered with a server error or rejected a batch of several
+results, some results may already be recorded: the command reports the result
+as unconfirmed, keeps the daemon's error code and request ID, and does not
+retry. Check the runs with `ao review ls` before deciding to submit the same
+results again; repeating identical results for a run that already recorded them
+is safe.
 
 **Examples:**
 

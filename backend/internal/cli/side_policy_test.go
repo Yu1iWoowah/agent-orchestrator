@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -12,7 +11,7 @@ func TestDaemonRequestsCarrySideScopeWithoutChangingMainRequests(t *testing.T) {
 		t.Run("scope-"+sideID, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			t.Setenv("AO_SIDE_CONVERSATION_ID", sideID)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if got := r.Header.Get("X-AO-Side-Conversation"); got != sideID {
 					t.Errorf("scope=%q want=%q", got, sideID)
 				}
@@ -21,7 +20,7 @@ func TestDaemonRequestsCarrySideScopeWithoutChangingMainRequests(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			writeRunFileFor(t, cfg, srv)
-			c := &commandContext{deps: Deps{HTTPClient: srv.Client(), ProcessAlive: func(int) bool { return true }}}
+			c := newTestCommandContext(t, Deps{HTTPClient: apiFixtureClient(t, srv.Client()), ProcessAlive: func(int) bool { return true }})
 			if err := c.doJSONPathWithHeaders(context.Background(), http.MethodPost, "/api/v1/orchestrators/delegate", nil, nil, nil); err != nil {
 				t.Fatal(err)
 			}

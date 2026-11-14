@@ -68,21 +68,12 @@ func TestReplacementWakeUsesManagerFenceWithoutFailingQueuedInput(t *testing.T) 
 			}
 			if path == "background admission race" {
 				svc.startBackgroundWake(source.ID)
-				deadline := time.Now().Add(5 * time.Second)
-				for {
-					svc.wakeMu.Lock()
-					running := svc.backgroundWakes[source.ID]
-					svc.wakeMu.Unlock()
-					if !running {
-						break
-					}
-					if time.Now().After(deadline) {
-						t.Fatal("background wake did not finish")
-					}
-					time.Sleep(time.Millisecond)
-				}
 			} else if err := svc.SetChatView(ctx, source.ID, "view", true); err != nil {
 				t.Errorf("fenced view returned an error: %v", err)
+			}
+			// A view wakes in the background too.
+			if !svc.WaitBackgroundWakeForTest(source.ID) {
+				t.Fatal("background wake did not finish")
 			}
 			wantCalls := 1
 			if path == "preflight" {

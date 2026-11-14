@@ -63,30 +63,41 @@ func (s *Service) SetWakeCallback(wake func(context.Context, domain.SessionID) e
 // SetChatView records a short-lived view lease. Registration and the final
 // hibernation check use the same controller gate, so opening a view either
 // prevents shutdown or waits for shutdown and then wakes the native session.
+//
+// While the controller is starting, the start itself holds that gate, and no
+// shutdown can run until it ends; the lease is recorded without waiting.
 func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID string, active bool) error {
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
-	if err := gate.lock(ctx); err != nil {
-		return err
+	locked := !s.controllerStarting(id)
+	unlock := func() {
+		if locked {
+			gate.unlock()
+		}
+	}
+	if locked {
+		if err := gate.lock(ctx); err != nil {
+			return err
+		}
 	}
 	if !active {
 		s.setViewLease(id, viewID, false)
-		gate.unlock()
+		unlock()
 		return nil
 	}
 	rec, err := s.requireChatSession(ctx, id)
 	if err != nil {
-		gate.unlock()
+		unlock()
 		return err
 	}
 	if rec.IsTerminated {
 		s.viewMu.Lock()
 		delete(s.viewLeases, id)
 		s.viewMu.Unlock()
-		gate.unlock()
+		unlock()
 		return nil
 	}
 	newView := s.setViewLease(id, viewID, true)
-	gate.unlock()
+	unlock()
 	// Renewing a lease keeps the view open; only a newly opened view wakes a
 	// sleeping provider. A failed resume must not spawn another process on
 	// every heartbeat. Explicit sends and newly opened views can still retry.
@@ -97,20 +108,10 @@ func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID s
 		rec.HibernatedAt == nil || rec.Metadata.ProviderConversationID == "" {
 		return nil
 	}
-	err = s.wakeHibernated(ctx, id)
-	if errors.Is(err, domain.ErrReplacementIntakeFenced) {
-		err = nil
-	}
-	// A slow native reconnect can outlive one lease interval. Extend this
-	// viewer's lease only if a concurrent leave has not removed it.
-	s.viewMu.Lock()
-	if views := s.viewLeases[id]; views != nil {
-		if _, present := views[viewID]; present {
-			views[viewID] = s.now().Add(chatViewLease)
-		}
-	}
-	s.viewMu.Unlock()
-	return err
+	// Wake in the background: the request answers now and the snapshot shows
+	// the start, rather than holding the view open for the whole wake.
+	s.startBackgroundWake(id)
+	return nil
 }
 
 func (s *Service) setViewLease(id domain.SessionID, viewID string, active bool) (newView bool) {
@@ -531,6 +532,10 @@ func (s *Service) clearHibernation(ctx context.Context, id domain.SessionID) err
 // Provider catalog reads are passive: opening a chat must not wake it. Hold
 // the same gate as hibernation so a provider cannot stop during the read.
 func (s *Service) readingController(ctx context.Context, id domain.SessionID) (*Controller, domain.SessionRecord, func(), error) {
+	// A starting controller cannot answer yet; say so now instead of after it.
+	if s.controllerStarting(id) {
+		return nil, domain.SessionRecord{}, nil, ErrNoController
+	}
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	if err := gate.lock(ctx); err != nil {
 		return nil, domain.SessionRecord{}, nil, err

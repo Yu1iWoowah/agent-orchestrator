@@ -76,6 +76,7 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 		// ReadHeaderTimeout guards against slow-loris even on loopback;
 		// per-request body/handler timeouts are applied per-surface.
 		ReadHeaderTimeout: 10 * time.Second,
+		ConnContext:       withRCARawConn,
 	}
 	return srv, nil
 }

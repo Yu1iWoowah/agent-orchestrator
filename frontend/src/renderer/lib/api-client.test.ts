@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	apiClient,
+	compositionClient,
 	apiErrorDetails,
 	apiErrorMessage,
 	getApiBaseUrl,
@@ -20,6 +21,28 @@ vi.mock("./telemetry", () => ({
 vi.mock("./sentry", () => ({
 	captureApiErrorToSentry: vi.fn(),
 }));
+
+describe("recorded-content client boundary",()=>{
+	afterEach(()=>vi.restoreAllMocks());
+	it("suppresses RCA diagnostics and sanitizes both canary groups on HTTP and transport faults",async()=>{
+		setApiBaseUrl("http://127.0.0.1:45873");
+		for(const canary of ["A_SYNTHETIC_CREDENTIAL_CANARY","B_SYNTHETIC_CONTENT_CANARY"]) {
+			for(const status of [400,403,500]) {
+				vi.clearAllMocks();
+				vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({message:canary,code:canary,requestId:canary}),{status,headers:{"Content-Type":"application/json"}}));
+				const safe=await compositionClient.get({sessionId:"selected",query:{analyze:true}}).then(()=>false,(error:unknown)=>error instanceof Error&&error.message==="RCA unavailable");
+				expect(safe).toBe(true);
+				expect(captureRendererEvent).not.toHaveBeenCalled();expect(captureApiErrorToSentry).not.toHaveBeenCalled();
+			}
+			vi.clearAllMocks();vi.spyOn(globalThis,"fetch").mockRejectedValue(new Error(canary));
+			const safe=await compositionClient.set({sessionId:"selected",enabled:true}).then(()=>false,(error:unknown)=>error instanceof Error&&error.message==="RCA unavailable");
+			expect(safe).toBe(true);expect(captureRendererEvent).not.toHaveBeenCalled();expect(captureApiErrorToSentry).not.toHaveBeenCalled();
+		}
+		vi.clearAllMocks();vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({message:"control",code:"CONTROL"}),{status:599,headers:{"Content-Type":"application/json"}}));
+		await apiClient.GET("/api/v1/projects");
+		expect(captureRendererEvent).toHaveBeenCalled();expect(captureApiErrorToSentry).toHaveBeenCalled();
+	});
+});
 
 const captureMock = vi.mocked(captureRendererEvent);
 const sentryCaptureMock = vi.mocked(captureApiErrorToSentry);
@@ -484,4 +507,21 @@ describe("apiErrorDetails", () => {
 			expect(apiErrorDetails(error)).toBeUndefined();
 		},
 	);
+});
+
+describe("native raw RCA diagnostic exclusion",()=>{
+ afterEach(()=>vi.restoreAllMocks());
+ it("excludes the fixed OTLP route from HTTP and transport diagnostics",async()=>{
+  setApiBaseUrl("http://127.0.0.1:45873");
+  for(const canary of ["A_SYNTHETIC_CREDENTIAL_CANARY","B_SYNTHETIC_CONTENT_CANARY"]){
+   for(const status of [400,403,413,500,503]){
+    vi.clearAllMocks();vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({message:canary,code:canary}),{status,headers:{"Content-Type":"application/json"}}));
+    await apiClient.POST("/api/v1/rca/otlp/v1/logs",{params:{header:{"X-AO-RCA-Capture":"synthetic"}},body:canary,headers:{"Content-Type":"application/x-protobuf"}});
+    expect(captureRendererEvent).not.toHaveBeenCalled();expect(captureApiErrorToSentry).not.toHaveBeenCalled();
+   }
+   vi.clearAllMocks();vi.spyOn(globalThis,"fetch").mockRejectedValue(new Error(canary));
+   await apiClient.POST("/api/v1/rca/otlp/v1/logs",{params:{header:{"X-AO-RCA-Capture":"synthetic"}},body:canary}).catch(()=>undefined);
+   expect(captureRendererEvent).not.toHaveBeenCalled();expect(captureApiErrorToSentry).not.toHaveBeenCalled();
+  }
+ });
 });

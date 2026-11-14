@@ -8,6 +8,7 @@ import type { ChatSkill } from "../../types/conversation";
 import type { ChatModel } from "../../types/conversation";
 import { apiClient, apiErrorMessage, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
+import { openDaemonEventSource } from "../../lib/daemon-event-source";
 import { ApprovalCard } from "./ChatTimelineItems";
 import { Timeline } from "./ChatWorkspace";
 import { sideConversationActivity, sideConversationSnapshot } from "./sideConversation";
@@ -529,14 +530,14 @@ export function useIndependentSideChats(
 				if (alive) setError(String(error));
 			});
 		refreshSafely();
-		let stream: EventSource | undefined;
-		if (baseUrl && typeof EventSource !== "undefined") {
-			stream = new EventSource(
-				`${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/conversation/side-chats/${encodeURIComponent(activeId)}/events`,
-			);
-			stream.addEventListener("changed", refreshSafely);
-			stream.addEventListener("snapshot", refreshSafely);
-		}
+		// Without the desktop preload no stream opens and the faster poll below runs.
+		const stream = baseUrl
+			? openDaemonEventSource(
+					`/api/v1/sessions/${encodeURIComponent(sessionId)}/conversation/side-chats/${encodeURIComponent(activeId)}/events`,
+				)
+			: undefined;
+		stream?.addEventListener("changed", refreshSafely);
+		stream?.addEventListener("snapshot", refreshSafely);
 		const timer = window.setInterval(refreshSafely, stream ? 3000 : 500);
 		return () => {
 			alive = false;

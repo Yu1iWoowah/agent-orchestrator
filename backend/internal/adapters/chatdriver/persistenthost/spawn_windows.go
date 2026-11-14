@@ -26,5 +26,10 @@ func spawnDetached(ctx context.Context, cfg Config) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("spawn detached chat host: %w", err)
 	}
+	if err := recordSpawn(cfg.DataDir, cfg.SessionID, cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Process.Release()
+		return fmt.Errorf("record detached chat host: %w", err)
+	}
 	return cmd.Process.Release()
 }

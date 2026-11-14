@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -13,21 +13,20 @@ import (
 )
 
 type settingsReconnectTransport struct {
-	base  http.RoundTripper
 	polls atomic.Int32
 }
 
-func (s *settingsReconnectTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+func (s *settingsReconnectTransport) observe(r *http.Request, next http.RoundTripper) (*http.Response, error) {
 	if strings.HasSuffix(r.URL.Path, "/operations/op-reconnect") && s.polls.Add(1) == 1 {
 		return nil, errors.New("injected daemon disconnect")
 	}
-	return s.base.RoundTrip(r)
+	return next.RoundTrip(r)
 }
 
 func TestSessionSettingsReadsQualifiedStateWithoutProjection(t *testing.T) {
 	cfg := setConfigEnv(t)
 	want := `{"sessionId":"demo-1","revision":7,"settings":{"fastMode":"off"},"pending":{"id":"op-1","phase":"pending","target":{"fastMode":"on"}},"effective":{"state":"unknown","reason":"not_provided"}}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/agent-settings" {
 			_, _ = io.WriteString(w, want)
 			return
@@ -46,7 +45,7 @@ func TestSessionSettingsReadsQualifiedStateWithoutProjection(t *testing.T) {
 func TestSessionSetWaitReloadsDaemonRunFileAfterAcceptance(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var patches, replacementReads atomic.Int32
-	replacement := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	replacement := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/sessions/demo-1/agent-settings/operations/op-moved" {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -58,7 +57,9 @@ func TestSessionSetWaitReloadsDaemonRunFileAfterAcceptance(t *testing.T) {
 		_, _ = io.WriteString(w, `{"operation":{"id":"op-moved","sessionId":"demo-1","phase":"applied","version":2}}`)
 	}))
 	t.Cleanup(replacement.Close)
-	original := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	bindTestHTTPFixture(t, replacement, os.Getpid())
+	replacementClient := apiFixtureClient(t, nil)
+	original := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/sessions/demo-1/agent-settings" {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -73,7 +74,11 @@ func TestSessionSetWaitReloadsDaemonRunFileAfterAcceptance(t *testing.T) {
 	}))
 	t.Cleanup(original.Close)
 	writeRunFileFor(t, cfg, original)
-	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "set", "demo-1", "--fast", "off", "--if-revision", "4", "--wait", "--wait-timeout", "2s", "--json")
+	originalClient := apiFixtureClient(t, nil)
+	client := &http.Client{Transport: testFixtureClients{
+		originalClient.Transport.(*testTargetGuard), replacementClient.Transport.(*testTargetGuard),
+	}}
+	out, _, err := executeCLI(t, Deps{HTTPClient: client, ProcessAlive: func(int) bool { return true }}, "session", "set", "demo-1", "--fast", "off", "--if-revision", "4", "--wait", "--wait-timeout", "2s", "--json")
 	if err != nil || patches.Load() != 1 || replacementReads.Load() != 1 || !strings.Contains(out, "applied") {
 		t.Fatalf("wait did not reconnect without mutation: patches=%d reads=%d output=%q error=%v", patches.Load(), replacementReads.Load(), out, err)
 	}
@@ -84,7 +89,7 @@ func TestSessionSetSendsRevisionCheckedTypedReset(t *testing.T) {
 		t.Run(map[bool]string{false: "read revision", true: "explicit revision"}[explicitRevision], func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var gets, patches atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/v1/sessions/demo-1/agent-settings" {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -123,7 +128,7 @@ func TestSessionSetSendsRevisionCheckedTypedReset(t *testing.T) {
 func TestSessionSetPreservesConflictEnvelopeWithoutRetry(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var patches atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch {
 			patches.Add(1)
 			w.WriteHeader(http.StatusConflict)
@@ -143,7 +148,7 @@ func TestSessionSetPreservesConflictEnvelopeWithoutRetry(t *testing.T) {
 func TestSessionSetWaitTimeoutPreservesAcceptedOperation(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var patches, cancels atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch {
 			patches.Add(1)
 		}
@@ -190,7 +195,7 @@ func TestSessionSettingsRejectsInvalidUsageBeforeHTTP(t *testing.T) {
 func TestSessionSetWaitReconnectsWithoutReissuingMutation(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var patches atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		phase := "applied"
 		if r.Method == http.MethodPatch {
 			patches.Add(1)
@@ -204,8 +209,8 @@ func TestSessionSetWaitReconnectsWithoutReissuingMutation(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	writeRunFileFor(t, cfg, srv)
-	transport := &settingsReconnectTransport{base: srv.Client().Transport}
-	deps := Deps{ProcessAlive: func(int) bool { return true }, HTTPClient: &http.Client{Transport: transport}}
+	transport := &settingsReconnectTransport{}
+	deps := Deps{ProcessAlive: func(int) bool { return true }, HTTPClient: observingFixtureClient(t, nil, true, transport.observe)}
 	out, _, err := executeCLI(t, deps, "session", "set", "demo-1", "--fast", "off", "--if-revision", "7", "--wait", "--wait-timeout", "2s", "--json")
 	if err != nil || !strings.Contains(out, "applied") || patches.Load() != 1 || transport.polls.Load() != 2 {
 		t.Fatalf("reconnect must poll the same operation, never resend PATCH: output=%q error=%v patches=%d polls=%d", out, err, patches.Load(), transport.polls.Load())
@@ -220,7 +225,7 @@ func TestSessionSetReportsImmediateOperationFailure(t *testing.T) {
 	for _, phase := range []string{"failed", "cancelled", "recovery_required"} {
 		t.Run(phase, func(t *testing.T) {
 			cfg := setConfigEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodPatch {
 					_ = json.NewEncoder(w).Encode(map[string]any{"operation": map[string]any{"id": "op-failure", "sessionId": "demo-1", "phase": phase, "errorCode": "AGENT_SETTINGS_FAILED", "requestId": "failed-request"}})
 					return

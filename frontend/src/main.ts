@@ -158,6 +158,7 @@ import {
 import { installCloudLocalAuthIPC } from "./main/cloud-auth-local";
 import { createCloudAgentProxy } from "./main/cloud-agent-proxy";
 import { installCloudCpProxy } from "./main/cloud-cp-proxy";
+import { installDaemonStreamProxy } from "./main/daemon-stream-proxy";
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
 import { DEFAULT_SENTRY_DSN } from "./shared/sentry-config";
 import { buildTelemetryBootstrap, rendererTelemetryEnabled } from "./shared/telemetry";
@@ -3553,6 +3554,9 @@ installCloudLocalAuthIPC(cloudDataDir, notifyRenderersOfCloudSession);
 // Cloud control-plane proxy IPC — cloudCp:request/openStream/closeStream.
 // CP calls go through main so the WorkOS bearer token never reaches a renderer.
 installCloudCpProxy(cloudDataDir);
+// Local daemon SSE streams (daemonStream:open/close). Main holds them so they
+// stay out of the renderer's six connections to the daemon host.
+installDaemonStreamProxy(() => (daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null));
 ipcMain.handle("cloudCp:agentBrowserUrl", (_event, baseUrl: unknown, orgId: unknown, sessionId: unknown) =>
 	cloudAgentProxy.agentBrowserUrl(baseUrl, orgId, sessionId));
 

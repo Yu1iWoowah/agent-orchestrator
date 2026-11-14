@@ -51,7 +51,7 @@ func (l *sessionRequestLog) all() []string {
 func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 	t.Helper()
 	log := &sessionRequestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.append(r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -92,7 +92,10 @@ func sessionCommandServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/exit-agent":
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","session":`+sessionJSON("demo-1", "demo", "worker", "exited", false)+`}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/resume-agent":
-			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","resumeMode":"native","session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","session":`+sessionJSON("demo-1", "demo", "worker", "exited", false)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/resume-agent":
+			_, _ = io.WriteString(w, `{"sessionId":"demo-1","state":"succeeded","resumeMode":"native","session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/sessions/demo-1":
 			var req sessionRenameRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -166,7 +169,7 @@ func TestSessionList_ProjectFilterAndDefaultFiltering(t *testing.T) {
 
 func TestSessionList_HintsWhenOnlyTerminatedOrchestratorIsHidden(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/sessions" {
 			http.NotFound(w, r)
@@ -232,7 +235,7 @@ func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var detailsMu sync.Mutex
 	detailRequests := map[string]int{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/sessions":
@@ -303,7 +306,7 @@ func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {
 
 func TestSessionList_ThreadCountUnknownVersusObservedZero(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/sessions":
@@ -454,7 +457,7 @@ func TestSessionKill_SuccessWithProjectScope(t *testing.T) {
 // force-deleted) — the CLI must say so instead of implying a full teardown.
 func TestSessionKill_PreservedWorkspaceNote(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/kill" {
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","freed":false}`)
@@ -477,7 +480,7 @@ func TestSessionKill_PreservedWorkspaceNote(t *testing.T) {
 }
 func TestSessionKill_PendingCleanupNote(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/kill" {
 			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","freed":false,"cleanupPending":true}`)
@@ -502,7 +505,7 @@ func TestSessionKill_PendingCleanupNote(t *testing.T) {
 func TestSessionRestore_SuccessWithProjectScope(t *testing.T) {
 	cfg := setConfigEnv(t)
 	log := &sessionRequestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.append(r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -535,14 +538,17 @@ func TestSessionRestore_SuccessWithProjectScope(t *testing.T) {
 func TestSessionRestore_ExitedOrchestratorResumesAgentInPlace(t *testing.T) {
 	cfg := setConfigEnv(t)
 	log := &sessionRequestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.append(r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-orch":
 			_, _ = io.WriteString(w, `{"session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","harness":"codex","activity":{"state":"exited","lastActivityAt":"2026-06-02T12:00:00Z"},"isTerminated":false,"status":"exited"}}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-orch/resume-agent":
-			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-orch","resumeMode":"native","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"idle"},"isTerminated":false,"status":"idle"}}`)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-orch","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"exited"},"isTerminated":false,"status":"exited"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-orch/resume-agent":
+			_, _ = io.WriteString(w, `{"sessionId":"demo-orch","state":"succeeded","resumeMode":"native","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"idle"},"isTerminated":false,"status":"idle"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -562,6 +568,7 @@ func TestSessionRestore_ExitedOrchestratorResumesAgentInPlace(t *testing.T) {
 	want := []string{
 		"GET /api/v1/sessions/demo-orch",
 		"POST /api/v1/sessions/demo-orch/resume-agent",
+		"GET /api/v1/sessions/demo-orch/resume-agent",
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
@@ -594,6 +601,7 @@ func TestSessionExitAndResumeAgentUseProcessOnlyRoutes(t *testing.T) {
 		"GET /api/v1/sessions/demo-1",
 		"POST /api/v1/sessions/demo-1/exit-agent",
 		"POST /api/v1/sessions/demo-1/resume-agent",
+		"GET /api/v1/sessions/demo-1/resume-agent",
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
@@ -636,7 +644,7 @@ func TestSessionCleanup_YesSkipsPrompt(t *testing.T) {
 // the two apart.
 func TestSessionCleanup_ReportsAlreadyGoneWorkspacesSeparately(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
@@ -712,7 +720,7 @@ func TestSessionCleanup_DryRunListsWithoutPromptingOrDeleting(t *testing.T) {
 // explanation, leaking workspaces invisibly.
 func TestSessionCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
@@ -967,7 +975,7 @@ func TestSessionClaimPR_JSONAndNoTakeoverError(t *testing.T) {
 // daemon answering PR_NOT_OPEN.
 func TestSessionClaimPR_Draft(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
@@ -1012,7 +1020,7 @@ func TestSessionClaimPR_Draft(t *testing.T) {
 func TestSessionClaimPR_GitLabMR(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var capturedReq claimPRRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
@@ -1041,7 +1049,7 @@ func TestSessionClaimPR_GitLabMR(t *testing.T) {
 func TestSessionClaimPR_GitLabNumericRef(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var capturedReq claimPRRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
@@ -1070,7 +1078,7 @@ func TestSessionClaimPR_GitLabNumericRef(t *testing.T) {
 func TestSessionClaimPR_GHFallbackWhenProjectRepoMissing(t *testing.T) {
 	cfg := setConfigEnv(t)
 	log := &sessionRequestLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.append(r)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -1120,7 +1128,7 @@ func TestSetupCallsHaveNoClientTimeout(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
@@ -1142,13 +1150,13 @@ func TestSetupCallsHaveNoClientTimeout(t *testing.T) {
 			var seen bool
 			var deadline time.Time
 			var hasDeadline bool
-			client := &http.Client{Timeout: 2 * time.Second, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			client := observingFixtureClient(t, &http.Client{Timeout: 2 * time.Second}, true, func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
 				if req.Method+" "+req.URL.Path == tc.call {
 					seen = true
 					deadline, hasDeadline = req.Context().Deadline()
 				}
-				return http.DefaultTransport.RoundTrip(req)
-			})}
+				return next.RoundTrip(req)
+			})
 			_, errOut, err := executeCLI(t, Deps{HTTPClient: client, ProcessAlive: func(int) bool { return true }}, tc.args...)
 			if err != nil {
 				t.Fatalf("%s failed: %v\nstderr=%s", tc.name, err, errOut)

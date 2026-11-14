@@ -303,6 +303,9 @@ type ReviewerTerminator interface {
 	TerminateReviewer(ctx context.Context, workerID domain.SessionID, body string) error
 	TeardownReviewerTerminal(ctx context.Context, workerID domain.SessionID) error
 	RestoreReviewer(ctx context.Context, workerID domain.SessionID) error
+	// ReconcileReviewers records which of the worker's reviewers have no
+	// process left. Never call it while holding that worker's review lock.
+	ReconcileReviewers(ctx context.Context, workerID domain.SessionID) error
 }
 
 type runtimeController interface {
@@ -438,6 +441,7 @@ type Manager struct {
 	tuiSettingsValidator        ports.ChatAgentSettingsValidator
 	tuiSettingsFences           map[domain.SessionID]string
 	settingsGrants              ports.AgentSettingsGrantEnvironment
+	hcgReporting                ports.HCGReportingLaunchObserver
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -828,6 +832,7 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
+	HCGReporting  ports.HCGReportingLaunchObserver
 	ReplyLanguage settingssvc.ReplyLanguageSource
 	Runtime       runtimeController
 	Agents        ports.AgentResolver
@@ -911,6 +916,7 @@ func New(d Deps) *Manager {
 		agents:                         d.Agents,
 		workspace:                      d.Workspace,
 		store:                          d.Store,
+		hcgReporting:                   d.HCGReporting,
 		replyLanguage:                  d.ReplyLanguage,
 		defaults:                       d.Defaults,
 		chat:                           d.Chat,
@@ -1723,6 +1729,7 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 	}
 	namingHandedOff = true
 	m.nameTaskBranchLater(ctx, rec, ws, workspaceProject, taskName, cancelNaming)
+	m.notifyHCGReporting(rec, env[ports.EnvHCGDelegationMCP] == "1")
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
@@ -3463,6 +3470,102 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	return m.resumeAgentWithMode(context.WithValue(ctx, explicitTUISettingsRecoveryKey{}, true), id, false)
 }
 
+// StartResumeAgent answers only the resume preconditions that need no waiting,
+// then resumes the agent on the daemon's lifetime context. Every branch that
+// waits or writes (status recovery, persistent host reconciliation, TUI
+// settings recovery, a failed spawn's retry, clearing hibernation, the launch)
+// runs in the background, so the request is not bound by the REST deadline.
+// done receives the outcome once; ResumeAgentWithMode re-checks every
+// precondition, so a change between the two reports there.
+func (m *Manager) StartResumeAgent(ctx context.Context, id domain.SessionID, done func(RestoreResult, error)) (domain.SessionRecord, error) {
+	rec, err := m.checkResumeAgent(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("resume agent %s: %w", id, err)
+	}
+	m.runInBackground(func() {
+		result, err := m.ResumeAgentWithMode(m.backgroundContext, id)
+		if err == nil && result.Session.ProvisionState.IsProvisioning() {
+			result, err = m.awaitRetriedChatSpawn(m.backgroundContext, id, result)
+		}
+		done(result, err)
+	})
+	return rec, nil
+}
+
+// awaitRetriedChatSpawn follows a failed chat start that resume handed to a new
+// background start, so the resume reports that start's outcome, not its
+// admission.
+func (m *Manager) awaitRetriedChatSpawn(ctx context.Context, id domain.SessionID, admitted RestoreResult) (RestoreResult, error) {
+	m.asyncChatSpawnsMu.Lock()
+	run := m.asyncChatSpawns[id]
+	m.asyncChatSpawnsMu.Unlock()
+	if run != nil {
+		select {
+		case <-run.done:
+		case <-ctx.Done():
+			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ctx.Err())
+		}
+	}
+	rec, err := m.getRecord(ctx, id)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if rec.ProvisionState == domain.SessionProvisionFailed {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, relaunchFailed("start", errors.New(rec.ProvisionError)))
+	}
+	return RestoreResult{Session: rec, Mode: admitted.Mode}, nil
+}
+
+// checkResumeAgent mirrors resumeAgentWithMode's refusals that are answerable
+// from the record and in-memory operation state alone.
+func (m *Manager) checkResumeAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, err
+	}
+	if !ok {
+		return domain.SessionRecord{}, ErrNotFound
+	}
+	if rec.IsTerminated {
+		return domain.SessionRecord{}, ErrTerminated
+	}
+	m.agentOpMu.Lock()
+	current := m.agentOperations[id]
+	recoveringTUI := m.tuiSettingsFences[id] != "" && current == ""
+	busy := m.agentOperationActiveLocked(id) && !recoveringTUI && current != agentOperationHibernate
+	m.agentOpMu.Unlock()
+	m.asyncChatSpawnsMu.Lock()
+	_, starting := m.asyncChatSpawns[id]
+	m.asyncChatSpawnsMu.Unlock()
+	if busy || starting || rec.ProvisionState.IsProvisioning() {
+		return domain.SessionRecord{}, ErrResumeInProgress
+	}
+	if store, ok := m.store.(interfaceTransitionStore); ok {
+		tr, active, err := store.GetActiveSessionInterfaceTransition(ctx, id)
+		if err != nil {
+			return domain.SessionRecord{}, fmt.Errorf("interface transition: %w", err)
+		}
+		if active && (tr.SettingsOperationID == "" || tr.Phase != domain.SessionInterfaceTransitionRecovery) {
+			return domain.SessionRecord{}, ErrInterfaceTransitionInProgress
+		}
+		if active {
+			return rec, nil
+		}
+	}
+	if rec.ProvisionState == domain.SessionProvisionFailed ||
+		(rec.HibernatedAt == nil && m.SessionStatusReadiness(rec) == "unavailable") {
+		return rec, nil
+	}
+	mode := domain.NormalizeSessionMode(rec.Mode)
+	if mode == domain.SessionModeChat && m.chat != nil && m.chat.HasLiveChatController(id) {
+		return domain.SessionRecord{}, ErrAgentNotExited
+	}
+	if rec.Activity.State != domain.ActivityExited && (mode != domain.SessionModeChat || m.chat == nil) {
+		return domain.SessionRecord{}, ErrAgentNotExited
+	}
+	return rec, nil
+}
+
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
 func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
@@ -4075,6 +4178,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	m.notifyHCGReporting(updated, env[ports.EnvHCGDelegationMCP] == "1")
 	return RestoreResult{Session: updated, Mode: mode}, nil
 }
 
@@ -6636,6 +6740,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 	}
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
 	setProtectedEnv(env, ports.EnvAgentSettingsGrant, "", caseInsensitive)
+	setProtectedEnv(env, ports.EnvHCGDelegationMCP, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
 	// The agent-browser service credential is host configuration, not a
@@ -6779,6 +6884,9 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, rec.ControllerOwner(), verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
+	}
+	if resolver, ok := m.hcgReporting.(ports.HCGDelegationMountResolver); ok && (rec.Kind == domain.KindWorker || rec.Kind == domain.KindOrchestrator) && rec.Harness == domain.HarnessCodex && resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: rec.ID, ProjectID: rec.ProjectID, Kind: rec.Kind, Harness: rec.Harness, Mode: domain.SessionModeTUI, DataRoot: m.dataDir}) {
+		env[ports.EnvHCGDelegationMCP] = "1"
 	}
 	return rec, env, nil
 }

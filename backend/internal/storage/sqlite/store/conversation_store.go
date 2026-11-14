@@ -1240,6 +1240,22 @@ func (s *Store) LatestVisibleUserTurnSettled(ctx context.Context, conversationID
 	return settled, nil
 }
 
+// ConversationBranchHasVisibleTurn reports whether LoadConversationSnapshot's
+// Turns would include one on branchID, without loading the conversation.
+func (s *Store) ConversationBranchHasVisibleTurn(ctx context.Context, conversationID, branchID string) (bool, error) {
+	row, err := s.qr.ConversationBranchHasVisibleTurn(ctx, gen.ConversationBranchHasVisibleTurnParams{
+		ConversationID: conversationID,
+		BranchID:       branchID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("check branch %s turns for %s: %w", branchID, conversationID, err)
+	}
+	if !row.ConversationFound {
+		return false, ErrConversationNotFound
+	}
+	return row.BranchHasTurn, nil
+}
+
 // AppendUserMessage records an inbound message and the turn it opens.
 //
 // Idempotent on clientMessageID: a retried send returns the message and turn that
@@ -1254,13 +1270,20 @@ func (s *Store) AppendUserMessage(
 	turnID string,
 	now time.Time,
 ) (created bool, err error) {
-	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, "", false, now)
+	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, "", false, now, false)
+}
+
+// AppendStartingUserMessage queues input for a session whose controller is
+// being started; that start delivers it. Unlike an undispatched append it does
+// not require the session to be provisioning or hibernated.
+func (s *Store) AppendStartingUserMessage(ctx context.Context, conversationID string, session domain.SessionID, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error) {
+	return s.appendUserMessage(ctx, conversationID, session, "", "", msg, turnID, "", false, now, true)
 }
 
 // AppendReviewUserMessage preserves the worker session needed for lifecycle
 // projection while recording the typed reviewer that owns the turn.
 func (s *Store) AppendReviewUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error) {
-	return s.appendUserMessage(ctx, conversationID, session, reviewID, generation, msg, turnID, "", false, now)
+	return s.appendUserMessage(ctx, conversationID, session, reviewID, generation, msg, turnID, "", false, now, false)
 }
 
 // AppendRetryUserMessage records a retry and its source as one transaction.
@@ -1276,18 +1299,18 @@ func (s *Store) AppendRetryUserMessage(
 	retryOfTurnID string,
 	now time.Time,
 ) (created bool, err error) {
-	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, retryOfTurnID, false, now)
+	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, retryOfTurnID, false, now, false)
 }
 
 // AppendAutoResumeRetryUserMessage consumes due consent in the retry transaction.
 // Cancellation and account binding changes use the same writer boundary.
 func (s *Store) AppendAutoResumeRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error) {
-	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, retryOfTurnID, true, now)
+	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, retryOfTurnID, true, now, false)
 }
 
 // AppendReviewRetryUserMessage atomically persists a retry for a reviewer chat.
 func (s *Store) AppendReviewRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error) {
-	return s.appendUserMessage(ctx, conversationID, session, reviewID, generation, msg, turnID, retryOfTurnID, false, now)
+	return s.appendUserMessage(ctx, conversationID, session, reviewID, generation, msg, turnID, retryOfTurnID, false, now, false)
 }
 
 func (s *Store) appendUserMessage(
@@ -1301,11 +1324,12 @@ func (s *Store) appendUserMessage(
 	retryOfTurnID string,
 	autoResume bool,
 	now time.Time,
+	starting bool,
 ) (created bool, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if generation == "" && reviewID == "" {
-		if err := s.validateUndispatchedConversation(ctx, s.qw, session, conversationID); err != nil {
+		if err := s.validateUndispatchedConversation(ctx, s.qw, session, conversationID, starting); err != nil {
 			return false, err
 		}
 	}
@@ -1349,7 +1373,7 @@ func (s *Store) appendUserMessage(
 	err = s.inTx(ctx, "append user message", func(q *gen.Queries) error {
 		if generation == "" && reviewID == "" {
 			// Another connection may have changed ownership after the preflight.
-			if err := s.validateUndispatchedConversation(ctx, q, session, conversationID); err != nil {
+			if err := s.validateUndispatchedConversation(ctx, q, session, conversationID, starting); err != nil {
 				return err
 			}
 		}
@@ -1842,6 +1866,30 @@ func (s *Store) SettleOrphanedTurns(ctx context.Context, session domain.SessionI
 		gen.SettleOrphanedConversationTurnsParams{
 			CompletedAt:        sql.NullTime{Time: now, Valid: true},
 			HandledBySessionID: session,
+		}); err != nil {
+		return fmt.Errorf("settle orphaned turns for %s: %w", session, err)
+	}
+	return nil
+}
+
+// SettleOrphanedTurnsBefore is SettleOrphanedTurns for a start that accepted
+// input while it was starting: queued turns requested at or after queuedBefore
+// are kept for that start to deliver.
+func (s *Store) SettleOrphanedTurnsBefore(ctx context.Context, session domain.SessionID, queuedBefore, now time.Time) error {
+	q, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	if err := q.FailOrphanedConversationActivities(ctx,
+		gen.FailOrphanedConversationActivitiesParams{
+			UpdatedAt:          now,
+			HandledBySessionID: session,
+		}); err != nil {
+		return fmt.Errorf("settle orphaned activities for %s: %w", session, err)
+	}
+	if err := q.SettleOrphanedConversationTurnsBefore(ctx,
+		gen.SettleOrphanedConversationTurnsBeforeParams{
+			CompletedAt:        sql.NullTime{Time: now, Valid: true},
+			HandledBySessionID: session,
+			QueuedBefore:       queuedBefore,
 		}); err != nil {
 		return fmt.Errorf("settle orphaned turns for %s: %w", session, err)
 	}

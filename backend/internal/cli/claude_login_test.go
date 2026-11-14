@@ -38,7 +38,7 @@ func TestClaudeLoginRunsEverySupportedLoginMethod(t *testing.T) {
 				},
 			}
 
-			cmd := newClaudeLoginCommand(&commandContext{deps: deps.withDefaults()})
+			cmd := newClaudeLoginCommand(newTestCommandContext(t, deps.withDefaults()))
 			cmd.SetArgs([]string{"--executable", "/managed/bin/claude"})
 			cmd.SetIn(deps.In)
 			cmd.SetOut(deps.Out)

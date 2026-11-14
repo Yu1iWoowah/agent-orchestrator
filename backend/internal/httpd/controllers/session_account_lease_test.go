@@ -27,10 +27,6 @@ func (m leaseRejectedManager) Spawn(context.Context, ports.SpawnConfig) (domain.
 	return domain.SessionRecord{}, 0, 0, m.err
 }
 
-func (m leaseRejectedManager) ResumeAgentWithMode(context.Context, domain.SessionID) (sessionmanager.RestoreResult, error) {
-	return sessionmanager.RestoreResult{}, m.err
-}
-
 func TestSessionRoutesReturnRetryable409ForRejectedAccountLease(t *testing.T) {
 	for _, tc := range []struct {
 		err  error
@@ -39,7 +35,9 @@ func TestSessionRoutesReturnRetryable409ForRejectedAccountLease(t *testing.T) {
 		{ports.ErrAgentAccountInUse, "AGENT_ACCOUNT_IN_USE"},
 		{ports.ErrAgentAccountOperationBusy, "AGENT_ACCOUNT_OPERATION_BUSY"},
 	} {
-		for _, operation := range []string{"spawn", "resume"} {
+		// A resume reports its lease rejection through GET resume-agent; the
+		// session service tests pin that it stays this retryable conflict.
+		for _, operation := range []string{"spawn"} {
 			t.Run(operation+"/"+tc.code, func(t *testing.T) {
 				// Exercise the real session service and HTTP error boundary. Only
 				// the manager's denied lease is faked; no runtime can start.
@@ -47,9 +45,6 @@ func TestSessionRoutesReturnRetryable409ForRejectedAccountLease(t *testing.T) {
 				server := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Sessions: svc}, httpd.ControlDeps{}))
 				t.Cleanup(server.Close)
 				path, request := "/api/v1/sessions", `{"kind":"worker","harness":"claude-code","mode":"tui","prompt":"fake"}`
-				if operation == "resume" {
-					path, request = "/api/v1/sessions/fake-1/resume-agent", ""
-				}
 				body, status, _ := doRequest(t, server, http.MethodPost, path, request)
 				assertErrorCode(t, body, status, http.StatusConflict, tc.code)
 				if !strings.Contains(string(body), `"retryable":true`) || strings.Contains(string(body), "canary") || strings.Contains(string(body), "cleanup is scheduled") {

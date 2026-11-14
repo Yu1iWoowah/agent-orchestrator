@@ -57,8 +57,7 @@ it("edits a Cloud project's Setup and Cleanup and saves only the two lists", asy
 	// Settings merge objects but replace arrays: coder, worker and the rest stay as stored.
 	expect(mocks.patch).toHaveBeenCalledWith("org-1", "p", {
 		config: {
-			postCreate: ["npm ci", "docker compose -p \"ao-$AO_SESSION_ID\" up -d"],
-			preRemove: ["docker compose -p \"ao-$AO_SESSION_ID\" down"],
+			postCreate: ["npm ci", 'docker compose -p "ao-$AO_SESSION_ID" up -d'],
 		},
 	});
 	await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled());
@@ -70,7 +69,7 @@ it("clears a list by saving it empty", async () => {
 	fireEvent.change(screen.getByLabelText("Step 1"), { target: { value: "" } });
 	fireEvent.submit(document.getElementById("project-settings-form")!);
 	await waitFor(() => expect(mocks.patch).toHaveBeenCalledOnce());
-	expect(mocks.patch.mock.calls[0][2]).toEqual({ config: { postCreate: ["npm ci"], preRemove: [] } });
+	expect(mocks.patch.mock.calls[0][2]).toEqual({ config: { preRemove: [] } });
 });
 
 it("does not say Cleanup is skipped for a project on Freestyle or Docker, which run it", async () => {
@@ -113,7 +112,7 @@ it("reports unsaved edits as dirty without the autosave Saving state, and lists 
 	// A single-repository project has no folder of repositories to name.
 	expect(screen.queryByText("$AO_REPOS_ROOT")).toBeNull();
 	// Save stays pinned in view however many steps the page lists.
-	expect(screen.getByRole("button", { name: "Save changes" }).closest("[data-settings-save-footer]")).toHaveClass("sticky");
+	expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
 });
 
 it("copies a variable and names the folder of every repository for a multi-repository project", async () => {

@@ -1,9 +1,11 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -854,7 +856,7 @@ func TestCollectorRejectsPathOutsideProviderRootAndSymlinkEscape(t *testing.T) {
 	store := collectorTestStore(t)
 	session := collectorTestSession(t, store, domain.HarnessClaudeCode, "claude-1", false)
 	base := t.TempDir()
-	root := filepath.Join(base, "projects")
+	root := filepath.Join(base, "agent-accounts", "history", "claude", "projects")
 	outside := filepath.Join(base, "outside.jsonl")
 	mustNoError(t, os.MkdirAll(root, 0o700))
 	mustNoError(t, os.WriteFile(outside, []byte("{}\n"), 0o600))
@@ -1855,14 +1857,182 @@ func TestDiscoverCodexPathRequiresConfiguredRoots(t *testing.T) {
 	}
 }
 
-func TestDefaultSourceRootsIncludesManagedKimiHome(t *testing.T) {
+func TestCollectorDiscoversAccountHistory(t *testing.T) {
+	const nativeID = "account-native-1"
+	for _, source := range []struct {
+		name    string
+		harness domain.AgentHarness
+		relPath string
+	}{
+		{"claude", domain.HarnessClaudeCode, "claude/projects/project/" + nativeID + ".jsonl"},
+		{"codex sessions", domain.HarnessCodex, "codex/sessions/2026/11/08/rollout-" + nativeID + ".jsonl"},
+		{"codex archived", domain.HarnessCodex, "codex/archived_sessions/rollout-" + nativeID + ".jsonl"},
+	} {
+		for _, reconcile := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reconcile=%t", source.name, reconcile), func(t *testing.T) {
+				ctx := context.Background()
+				stateDir := t.TempDir()
+				dataDir := t.TempDir()
+				t.Setenv("HOME", t.TempDir())
+				t.Setenv("CLAUDE_CONFIG_DIR", "")
+				t.Setenv("CODEX_HOME", "")
+				roots, err := DefaultSourceRoots(ctx, dataDir, stateDir)
+				mustNoError(t, err)
+				path := filepath.Join(stateDir, "agent-accounts", "history", filepath.FromSlash(source.relPath))
+				content := "{}\n"
+				if source.harness == domain.HarnessCodex {
+					content = codexSessionMetaFixture(t, nativeID, "")
+				}
+				writeUsageFixture(t, path, content)
+				store := collectorTestStore(t)
+				session := collectorTestSession(t, store, source.harness, nativeID, false)
+				collector := NewCollector(store, roots, nil)
+				found, err := collector.discoverPath(ctx, source.harness, nativeID)
+				mustNoError(t, err)
+				if found != path {
+					t.Fatalf("discovered %q, want account history %q", found, path)
+				}
+				if reconcile {
+					seedCollectorUsageBinding(t, store, session, nativeID, domain.UsageBindingActive,
+						time.Now().UTC(), domain.UsageErrorSourceDiscoveryPending)
+					mustNoError(t, collector.ReconcileSources(ctx, 8))
+				} else {
+					signal := HookSignal{Event: "session-start", NativeSessionID: nativeID}
+					if source.harness == domain.HarnessClaudeCode {
+						signal.TranscriptPath = path
+					}
+					mustNoError(t, collector.RecordHook(ctx, session.ID, signal))
+				}
+				binding, ok, err := store.GetUsageBinding(ctx, session.ID, source.harness, nativeID)
+				mustNoError(t, err)
+				wantError := ""
+				if source.name == "codex archived" {
+					wantError = domain.UsageErrorSourceDiscoveryPending
+				}
+				if !ok || binding.State != domain.UsageBindingActive || binding.LastErrorCode != wantError {
+					t.Fatalf("binding=%+v, want active with error %q", binding, wantError)
+				}
+				sources, err := store.ListUsageSourcesForBinding(ctx, binding.ID)
+				mustNoError(t, err)
+				resolved, err := filepath.EvalSymlinks(path)
+				mustNoError(t, err)
+				if len(sources) != 1 || sources[0].ArtifactPath != resolved {
+					t.Fatalf("sources=%+v, want registered account history", sources)
+				}
+			})
+		}
+	}
+}
+
+func TestCollectorRejectsAccountHistoryRootSymlinkEscape(t *testing.T) {
+	for _, name := range []string{"claude", "sessions", "archived"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			stateDir := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			t.Setenv("CODEX_HOME", "")
+			roots, err := DefaultSourceRoots(ctx, t.TempDir(), stateDir)
+			mustNoError(t, err)
+			const nativeID = "account-root-escape"
+			harness, root := domain.HarnessCodex, roots.AccountCodexSessions
+			relPath := filepath.Join("2026", "11", "08", "rollout-"+nativeID+".jsonl")
+			content := codexSessionMetaFixture(t, nativeID, "")
+			switch name {
+			case "claude":
+				harness, root = domain.HarnessClaudeCode, roots.AccountClaudeProjects
+				relPath, content = filepath.Join("project", nativeID+".jsonl"), "{}\n"
+			case "archived":
+				root, relPath = roots.AccountCodexArchived, "rollout-"+nativeID+".jsonl"
+			}
+			outside := t.TempDir()
+			writeUsageFixture(t, filepath.Join(outside, relPath), content)
+			mustNoError(t, os.MkdirAll(filepath.Dir(root), 0o700))
+			if err := os.Symlink(outside, root); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			store := collectorTestStore(t)
+			session := collectorTestSession(t, store, harness, nativeID, false)
+			collector := NewCollector(store, roots, nil)
+			var logs bytes.Buffer
+			collector.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			path := filepath.Join(root, relPath)
+			if _, _, _, err := collector.validateSourcePath(ctx, harness, path); err == nil {
+				t.Error("accepted account history root outside StateDir")
+			}
+			found, err := collector.discoverPath(ctx, harness, nativeID)
+			mustNoError(t, err)
+			if found != "" {
+				t.Error("discovered account history outside StateDir")
+			}
+			if err := collector.RecordHook(ctx, session.ID, HookSignal{
+				Event: "session-start", NativeSessionID: nativeID, TranscriptPath: path,
+			}); err == nil {
+				t.Error("hook accepted account history root outside StateDir")
+			}
+			if !strings.Contains(logs.String(), "usage account history root rejected") || strings.Contains(logs.String(), outside) {
+				t.Fatalf("missing or unredacted root rejection log: %s", logs.String())
+			}
+			bindings, err := store.ListUsageBindingsForSession(ctx, session.ID)
+			mustNoError(t, err)
+			for _, binding := range bindings {
+				sources, err := store.ListUsageSourcesForBinding(ctx, binding.ID)
+				mustNoError(t, err)
+				if len(sources) != 0 {
+					t.Fatal("registered an external source through account history root")
+				}
+			}
+		})
+	}
+}
+
+func TestAccountRootBoundaryBeforeHistoryCreation(t *testing.T) {
+	for _, mode := range []string{"missing", "dangling root", "escaping ancestor", "entire StateDir"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			stateDir := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			roots, err := DefaultSourceRoots(ctx, t.TempDir(), stateDir)
+			mustNoError(t, err)
+			root := roots.AccountClaudeProjects
+			var link, target string
+			switch mode {
+			case "dangling root":
+				link, target = root, filepath.Join(t.TempDir(), "missing")
+			case "escaping ancestor":
+				link, target = filepath.Join(stateDir, "agent-accounts"), t.TempDir()
+			case "entire StateDir":
+				link, target = root, stateDir
+			}
+			if link != "" {
+				mustNoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
+				if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			err = roots.ValidateAccountRoot(ctx, root)
+			if (err == nil) != (mode == "missing") {
+				t.Fatalf("root validation = %v for %s", err, mode)
+			}
+		})
+	}
+}
+
+func TestDefaultSourceRootsIncludesManagedHistoryAndKimiHome(t *testing.T) {
 	home := t.TempDir()
 	dataDir := filepath.Join(home, ".ao", "data")
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 
-	got, err := DefaultSourceRoots(context.Background(), dataDir)
+	stateDir := t.TempDir()
+	got, err := DefaultSourceRoots(context.Background(), dataDir, stateDir)
 	mustNoError(t, err)
+	history := filepath.Join(stateDir, "agent-accounts", "history")
+	if got.AccountClaudeProjects != filepath.Join(history, "claude", "projects") ||
+		got.AccountCodexSessions != filepath.Join(history, "codex", "sessions") ||
+		got.AccountCodexArchived != filepath.Join(history, "codex", "archived_sessions") {
+		t.Fatalf("account roots do not follow StateDir: %+v", got)
+	}
 	if got.KimiHome != filepath.Join(dataDir, "kimi") {
 		t.Fatalf("Kimi home = %q, want %q", got.KimiHome, filepath.Join(dataDir, "kimi"))
 	}
@@ -1872,14 +2042,14 @@ func TestDefaultSourceRootsFollowsClaudeConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	got, err := DefaultSourceRoots(context.Background(), "")
+	got, err := DefaultSourceRoots(context.Background(), "", "")
 	mustNoError(t, err)
 	if want := filepath.Join(home, ".claude", "projects"); got.ClaudeProjects != want {
 		t.Fatalf("Claude projects = %q, want %q", got.ClaudeProjects, want)
 	}
 	custom := filepath.Join(home, "claude-config")
 	t.Setenv("CLAUDE_CONFIG_DIR", custom)
-	got, err = DefaultSourceRoots(context.Background(), "")
+	got, err = DefaultSourceRoots(context.Background(), "", "")
 	mustNoError(t, err)
 	if want := filepath.Join(custom, "projects"); got.ClaudeProjects != want {
 		t.Fatalf("Claude projects with CLAUDE_CONFIG_DIR = %q, want %q", got.ClaudeProjects, want)

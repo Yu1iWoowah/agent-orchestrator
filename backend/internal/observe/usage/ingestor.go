@@ -36,12 +36,13 @@ type ingestorStore interface {
 
 // IngestorConfig controls bounded processing of one transcript source.
 type IngestorConfig struct {
-	ChunkBytes       int64
-	RecordBytes      int
-	FinalizationWait time.Duration
-	Clock            func() time.Time
-	Pricing          *pricing.Manager
-	OnPricingError   func(error)
+	ChunkBytes         int64
+	RecordBytes        int
+	FinalizationWait   time.Duration
+	Clock              func() time.Time
+	ValidateSourcePath func(context.Context, domain.UsageSourceKind, string) error
+	Pricing            *pricing.Manager
+	OnPricingError     func(error)
 	// RequestAttributionRepair asks for a legacy repair pass. See
 	// notifyLateRouteEvidence for the one window it closes.
 	RequestAttributionRepair func()
@@ -71,6 +72,7 @@ type Ingestor struct {
 	onPricingError   func(error)
 	requestRepair    func()
 	openTranscript   func(string) (*os.File, error)
+	validatePath     func(context.Context, domain.UsageSourceKind, string) error
 	afterRead        func()
 }
 
@@ -101,6 +103,7 @@ func NewIngestor(store ingestorStore, cfg IngestorConfig) *Ingestor {
 		onPricingError:   cfg.OnPricingError,
 		requestRepair:    cfg.RequestAttributionRepair,
 		openTranscript:   os.Open,
+		validatePath:     cfg.ValidateSourcePath,
 	}
 }
 
@@ -120,6 +123,9 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 		SyncWatch: source.Source.State == domain.UsageSourceError &&
 			source.Source.LastErrorCode == domain.UsageErrorArtifactMissing,
 	}
+	if rejected, err := i.validateSourcePath(ctx, source, now); err != nil {
+		return rejected, err
+	}
 	parserState, err := decodeParserState(source.Source)
 	if err != nil {
 		return i.retrySource(
@@ -130,7 +136,7 @@ func (i *Ingestor) Ingest(ctx context.Context, sourceID int64) (IngestResult, er
 			fmt.Errorf("decode parser state: %w", err),
 		)
 	}
-	file, err := i.openTranscript(source.Source.ArtifactPath) //nolint:gosec // path was validated at registration.
+	file, err := i.openTranscript(source.Source.ArtifactPath) //nolint:gosec // configured boundary is revalidated before opening.
 	if err != nil {
 		return i.retrySource(ctx, source.Source, domain.UsageErrorArtifactMissing, now, nil)
 	}
@@ -608,6 +614,9 @@ func (i *Ingestor) replaceSource(
 	identity string,
 	now time.Time,
 ) (IngestResult, error) {
+	if rejected, err := i.validateSourcePath(ctx, source, now); err != nil {
+		return rejected, err
+	}
 	result := IngestResult{Refresh: true}
 	replacement, err := i.store.ReplaceUsageSource(
 		ctx,
@@ -642,6 +651,24 @@ func (i *Ingestor) replaceSource(
 		}
 	}
 	return result, nil
+}
+
+func (i *Ingestor) validateSourcePath(ctx context.Context, source domain.UsageSourceContext, now time.Time) (IngestResult, error) {
+	if i.validatePath == nil {
+		return IngestResult{}, nil
+	}
+	err := i.validatePath(ctx, source.Source.Kind, source.Source.ArtifactPath)
+	if err == nil {
+		return IngestResult{}, nil
+	}
+	if ctx.Err() != nil {
+		return IngestResult{}, ctx.Err()
+	}
+	code := domain.UsageErrorArtifactPathRejected
+	if err.Error() == domain.UsageErrorArtifactMissing {
+		code = domain.UsageErrorArtifactMissing
+	}
+	return i.retrySource(ctx, source.Source, code, now, err)
 }
 
 func (i *Ingestor) retrySource(

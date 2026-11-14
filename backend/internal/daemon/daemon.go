@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,6 +69,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/documentread"
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
+	hcgsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/hcg"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/hookprocess"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
@@ -77,6 +79,7 @@ import (
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	projectdocssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 	questionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/questions"
+	rcasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/rca"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
@@ -119,6 +122,36 @@ var _ interface {
 	sessionmanager.TerminalInputObserver
 	sessionmanager.TerminalInputFencer
 } = (*terminal.Manager)(nil)
+
+type accountReviewerReconciler interface {
+	ReconcileAccountReviewers(context.Context, string) error
+}
+
+type openReviewerAccountUses interface {
+	GetOpenReviewerAccountUse(context.Context, string) (*ports.AgentAccountReviewerInUseError, error)
+}
+
+// accountAgentStopper stops an account's agents before logout or removal.
+// Reviewer bindings are independent of worker sessions: the profile is kept
+// until its reviewer is stopped or archived. A reviewer with no process left
+// is reconciled first and no longer holds it.
+func accountAgentStopper(store openReviewerAccountUses, reviewers accountReviewerReconciler, stop func(context.Context, string) error) func(context.Context, string) error {
+	return func(ctx context.Context, id string) error {
+		if reviewers != nil {
+			if err := reviewers.ReconcileAccountReviewers(ctx, id); err != nil {
+				return ports.ErrAgentAccountStorageUnavailable
+			}
+		}
+		use, err := store.GetOpenReviewerAccountUse(ctx, id)
+		if err != nil {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+		if use != nil {
+			return use
+		}
+		return stop(ctx, id)
+	}
+}
 
 // Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
 // graceful shutdown through the HTTP server and background workers.
@@ -217,6 +250,9 @@ func Run(buildVersion string) error {
 	// Open the durable store and bring up the CDC substrate: DB triggers capture
 	// changes into change_log, the poller tails it, and the broadcaster fans
 	// events out to live transports.
+	if err := hcgsvc.CheckDelegationOwnerStartup(context.Background(), cfg.DataDir); err != nil {
+		return fmt.Errorf("HCG canonical owner unavailable: %w", err)
+	}
 	store, err := sqlite.Open(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -228,6 +264,12 @@ func Run(buildVersion string) error {
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
 	}
+	hcgReporting := hcgsvc.NewLabOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
+	defer hcgReporting.Close()
+	rcaRoots, _ := usagesvc.DefaultSourceRoots(context.Background(), cfg.DataDir, cfg.StateDir)
+	rcaService := rcasvc.New(context.Background(), cfg.DataDir, store, usagesvc.NewEventsReader(store), rcaRoots)
+	defer rcaService.Close()
+	rcaService.SetClaudeLaunchEndpoint("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/api/v1/rca/otlp/v1/logs")
 	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
@@ -477,6 +519,8 @@ func Run(buildVersion string) error {
 			}
 		},
 	})
+	chatSvc.SetHCGReportingObserver(hcgReporting)
+	chatSvc.SetRCAClaudeLaunchControl(rcaService)
 	chatSvc.SetRenderCheck(renderViaDesktop(browserBroker, "__render-check"))
 	chatSvc.SetRenderMeasure(renderViaDesktop(browserBroker, "__render-measure"))
 
@@ -577,7 +621,7 @@ func Run(buildVersion string) error {
 	// The review service starts before the SCM observer it asks for review
 	// refreshes, so it holds a late-bound handle.
 	reviewRefresher := &scmReviewRefresher{}
-	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, log)
+	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, hcgReporting, log)
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -659,19 +703,8 @@ func Run(buildVersion string) error {
 	if stopper, ok := sessMgr.(interface {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {
-		agentAccountSvc.SetAgentStopper(func(ctx context.Context, id string) error {
-			// Reviewer bindings are independent of worker sessions. Keep the
-			// profile until its reviewer is explicitly stopped/archived; PR 4
-			// adds the complete usage-owner and handoff workflow.
-			use, err := store.GetOpenReviewerAccountUse(ctx, id)
-			if err != nil {
-				return ports.ErrAgentAccountStorageUnavailable
-			}
-			if use != nil {
-				return use
-			}
-			return stopper.ExitAgentsOnAccount(ctx, id)
-		})
+		reviewers, _ := sessMgr.(accountReviewerReconciler)
+		agentAccountSvc.SetAgentStopper(accountAgentStopper(store, reviewers, stopper.ExitAgentsOnAccount))
 	}
 	sessionSvc.SetAccountResolver(agentAccountSvc)
 	sessionSvc.SetComputerLoginCheck(agentAccountSvc.RunsOnComputerLogin)
@@ -731,7 +764,7 @@ func Run(buildVersion string) error {
 	// Chat session, because waking it waits for admitted input to drain.
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, ReportingPolicyChanged: hcgReporting.ProjectPolicyChanged, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged, RCAPolicyChanged: rcaService.ProjectPolicyChanged})
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
 		return errors.New("wire report delivery: session manager lacks semantic send support")
@@ -897,7 +930,7 @@ func Run(buildVersion string) error {
 			usagePricing.Wait()
 		}()
 	}
-	if roots, rootsErr := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir); rootsErr != nil {
+	if roots, rootsErr := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir, cfg.StateDir); rootsErr != nil {
 		log.Warn("usage collection disabled", "err", rootsErr)
 	} else {
 		usageCollector = usagesvc.NewCollector(store, roots, func(reconcile bool) {
@@ -913,7 +946,7 @@ func Run(buildVersion string) error {
 		if usagePricing != nil {
 			usageCollector.OnRouteResolved(usagePricing.RepairLegacyAttribution)
 		}
-		ingestorConfig := usagepipeline.IngestorConfig{}
+		ingestorConfig := usagepipeline.IngestorConfig{ValidateSourcePath: usageCollector.ValidateSourcePath}
 		if usagePricing != nil {
 			ingestorConfig.Pricing = usagePricing.Manager()
 			ingestorConfig.OnPricingError = func(err error) {
@@ -929,7 +962,7 @@ func Run(buildVersion string) error {
 				return usageCollector.ReconcileSources(reconcileCtx, 0)
 			},
 			ReconcilePath: usageCollector.ReconcilePath,
-		})
+		}, usagepipeline.TranscriptWatcherConfig{ValidateRoot: roots.ValidateAccountRoot})
 		// Safety-net reconcile tick. The pipeline is event-driven otherwise:
 		// a silently lost fsnotify watch or a resume transcript that arrived
 		// without a hook would otherwise never be re-checked. NotifySourcesChanged
@@ -950,7 +983,7 @@ func Run(buildVersion string) error {
 		}()
 		lcStack.LCM.SetUsageFinalizer(usageCollector)
 	}
-	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, sessionSvc, cfg.GitLab, reviewRefresher, log)
+	lcStack.scmDone = startSCMObserver(ctx, projectSvc.SCMStore(store), lcStack.LCM, sessionSvc, cfg.GitLab, reviewRefresher, log)
 	var prActions prsvc.ActionManager
 	prReader := newMultiSCMProvider(cfg.GitLab, log)
 	prMerger := newMultiSCMMerger(cfg.GitLab, log)
@@ -1166,6 +1199,10 @@ func Run(buildVersion string) error {
 		NativeSessions:     nativeSessions,
 		UsageHooks:         usageCollector,
 		UsageSummary:       usagesvc.NewSummaryReader(store),
+		UsageEvents:        usagesvc.NewEventsReader(store),
+		HCGReporting:       hcgReporting,
+		RCA:                rcaService,
+		HCGDelegation:      hcgReporting,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,
 		Telemetry:          telemetrySink,
@@ -1174,7 +1211,7 @@ func Run(buildVersion string) error {
 		BrowserLive:        browserLive,
 		Questions:          questionSvc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
-			Store:         store,
+			Store:         projectSvc.ImportTarget(store),
 			TargetDataDir: cfg.DataDir,
 			OpenSource: func(ctx context.Context, dataDir string) (devimportsvc.SourceStore, error) {
 				return sqlite.OpenReadOnly(ctx, dataDir)
@@ -1274,7 +1311,7 @@ func Run(buildVersion string) error {
 	if usagePipeline != nil {
 		usageDone = usagePipeline.Start(ctx)
 	}
-	if roots, err := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir); err == nil {
+	if roots, err := usagesvc.DefaultSourceRoots(ctx, cfg.DataDir, cfg.StateDir); err == nil {
 		guardianDone = startGuardianObservation(ctx, store, roots, log)
 	}
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
@@ -1601,6 +1638,9 @@ func usagePipelineWatchRoots(roots usagesvc.SourceRoots) []string {
 		roots.CodexSessions,
 		roots.CodexArchived,
 		roots.KimiHome,
+		roots.AccountClaudeProjects,
+		roots.AccountCodexSessions,
+		roots.AccountCodexArchived,
 	}
 }
 

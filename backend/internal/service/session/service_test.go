@@ -2647,6 +2647,8 @@ type fakeCommander struct {
 	killsAtSpawn      int
 	restoreErr        error
 	restoreResult     sessionmanager.RestoreResult
+	resumeCheckErr    error
+	resumeHold        chan struct{}
 	readyErr          error
 	backgroundResult  string
 	backgroundErr     error
@@ -2699,12 +2701,28 @@ func (f *fakeCommander) RestoreWithMode(context.Context, domain.SessionID) (sess
 	}
 	return f.restoreResult, nil
 }
-func (f *fakeCommander) ResumeAgentWithMode(_ context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error) {
-	f.resumed = append(f.resumed, id)
-	if f.restoreErr != nil {
-		return sessionmanager.RestoreResult{}, f.restoreErr
+
+// StartResumeAgent refuses with resumeCheckErr, otherwise settles at once, or
+// once resumeHold closes when it is set.
+func (f *fakeCommander) StartResumeAgent(_ context.Context, id domain.SessionID, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error) {
+	if f.resumeCheckErr != nil {
+		return domain.SessionRecord{}, f.resumeCheckErr
 	}
-	return f.restoreResult, nil
+	f.resumed = append(f.resumed, id)
+	result, err := f.restoreResult, f.restoreErr
+	if err != nil {
+		result = sessionmanager.RestoreResult{}
+	}
+	if f.resumeHold == nil {
+		done(result, err)
+	} else {
+		hold := f.resumeHold
+		go func() {
+			<-hold
+			done(result, err)
+		}()
+	}
+	return domain.SessionRecord{ID: id, ProjectID: "mer"}, nil
 }
 func (f *fakeCommander) ExitAgent(_ context.Context, id domain.SessionID) (domain.SessionRecord, error) {
 	f.exited = append(f.exited, id)
@@ -4077,14 +4095,94 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 			Mode:    sessionmanager.RestoreModeNative,
 		},
 	}
+	st.sessions["mer-1"] = rec
 	svc := &Service{manager: fc, store: st}
 
-	got, err := svc.ResumeAgent(context.Background(), "mer-1")
-	if err != nil {
-		t.Fatalf("ResumeAgent: %v", err)
+	if _, err := svc.StartResumeAgent(context.Background(), "mer-1"); err != nil {
+		t.Fatalf("StartResumeAgent: %v", err)
 	}
-	if got.Session.ID != "mer-1" || got.Mode != RestoreModeViewNative {
-		t.Fatalf("resume outcome = %+v", got)
+	got, err := svc.ResumeAgentStatus(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ResumeAgentStatus: %v", err)
+	}
+	if got.State != ResumeAgentSucceeded || got.Session.ID != "mer-1" || got.Mode != RestoreModeViewNative || got.Err != nil {
+		t.Fatalf("resume status = %+v", got)
+	}
+}
+
+// resumeAgentFailure runs one background resume and returns the error its
+// status reports.
+func resumeAgentFailure(t *testing.T, svc *Service, id domain.SessionID) error {
+	t.Helper()
+	if _, err := svc.StartResumeAgent(context.Background(), id); err != nil {
+		t.Fatalf("StartResumeAgent: %v", err)
+	}
+	status, err := svc.ResumeAgentStatus(context.Background(), id)
+	if err != nil {
+		t.Fatalf("ResumeAgentStatus: %v", err)
+	}
+	if status.State != ResumeAgentFailed {
+		t.Fatalf("resume status = %+v, want failed", status)
+	}
+	return status.Err
+}
+
+func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex}
+	fc := &fakeCommander{restoreResult: sessionmanager.RestoreResult{Mode: sessionmanager.RestoreModeSavedPrompt}, resumeHold: make(chan struct{})}
+	finished := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	svc := &Service{manager: fc, store: st, clock: func() time.Time { return finished }}
+	ctx := context.Background()
+	var apiErr *apierr.Error
+
+	if _, err := svc.ResumeAgentStatus(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindNotFound || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
+		t.Fatalf("status before any resume = %v, want AGENT_RESUME_NOT_FOUND", err)
+	}
+	// A refusal answerable inline records nothing.
+	fc.resumeCheckErr = fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrAgentNotExited)
+	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_NOT_EXITED" {
+		t.Fatalf("refused start = %v, want AGENT_NOT_EXITED", err)
+	}
+	if _, err := svc.ResumeAgentStatus(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
+		t.Fatalf("status after a refusal = %v, want AGENT_RESUME_NOT_FOUND", err)
+	}
+	fc.resumeCheckErr = nil
+
+	if _, err := svc.StartResumeAgent(ctx, "mer-1"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentRunning || got.Mode != "" || got.FinishedAt != nil {
+		t.Fatalf("running status = %+v, %v", got, err)
+	}
+	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "AGENT_RESUME_IN_PROGRESS" {
+		t.Fatalf("second start while running = %v, want AGENT_RESUME_IN_PROGRESS", err)
+	}
+	// A refusal after a recorded resume keeps that record.
+	fc.resumeCheckErr = fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrTerminated)
+	close(fc.resumeHold)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := svc.ResumeAgentStatus(ctx, "mer-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State == ResumeAgentSucceeded {
+			if got.Mode != RestoreModeViewSavedPrompt || got.Session.ID != "mer-1" || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
+				t.Fatalf("succeeded status = %+v", got)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resume never settled: %+v", got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "SESSION_TERMINATED" {
+		t.Fatalf("refused start = %v, want SESSION_TERMINATED", err)
+	}
+	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentSucceeded {
+		t.Fatalf("status after a later refusal = %+v, %v", got, err)
 	}
 }
 
@@ -6085,9 +6183,11 @@ func TestResumeAgentMapsRelaunchFailureToConflict(t *testing.T) {
 	cause := sessionmanager.RelaunchError{Step: "runtime", Err: errors.New("tmux: secret-token failed")}
 	fc := &fakeCommander{restoreErr: fmt.Errorf("resume agent mer-1: %w", &cause)}
 	sink := &fakeTelemetrySink{}
-	svc := NewWithDeps(Deps{Manager: fc, Store: newFakeStore(), Telemetry: sink})
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	svc := NewWithDeps(Deps{Manager: fc, Store: st, Telemetry: sink})
 
-	_, err := svc.ResumeAgent(context.Background(), "mer-1")
+	err := resumeAgentFailure(t, svc, "mer-1")
 	var apiErr *apierr.Error
 	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "AGENT_RESUME_FAILED" {
 		t.Fatalf("err = %#v, want conflict AGENT_RESUME_FAILED", err)
@@ -6115,7 +6215,7 @@ func TestResumeAgentMapsRelaunchFailureToConflict(t *testing.T) {
 	}
 
 	fc.restoreErr = fmt.Errorf("resume agent mer-1: %w", &sessionmanager.RelaunchError{Step: "runtime", Err: context.DeadlineExceeded})
-	_, err = svc.ResumeAgent(context.Background(), "mer-1")
+	err = resumeAgentFailure(t, svc, "mer-1")
 	if errors.As(err, &apiErr) {
 		t.Fatalf("deadline must stay unmapped for the 503 path, got %v", err)
 	}
@@ -6123,7 +6223,7 @@ func TestResumeAgentMapsRelaunchFailureToConflict(t *testing.T) {
 		t.Fatalf("a deadline is already counted as ao.http.5xx; events = %#v", sink.events)
 	}
 	fc.restoreErr = fmt.Errorf("resume agent mer-1: %w", &sessionmanager.RelaunchError{Step: "runtime", Err: context.Canceled})
-	_, _ = svc.ResumeAgent(context.Background(), "mer-1")
+	_ = resumeAgentFailure(t, svc, "mer-1")
 	if len(sink.events) != 2 {
 		t.Fatalf("a client that left mid-relaunch is not a failure to count; events = %#v", sink.events)
 	}

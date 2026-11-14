@@ -53,12 +53,46 @@ func (m *Manager) beginBoundHarnessUse(ctx context.Context, rec domain.SessionRe
 	return m.beginHarnessAndAccountUse(ctx, rec.Harness, id)
 }
 
+// ReconcileAccountReviewers records which reviewers holding account id have no
+// process left, worker by worker, so owner checks count only reviewers that
+// still run. A failed reconcile keeps the account in use.
+func (m *Manager) ReconcileAccountReviewers(ctx context.Context, id string) error {
+	store, ok := m.store.(ports.AgentAccountUsageStore)
+	if !ok {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	owners, err := store.ListAgentAccountUsageOwners(ctx, id)
+	if err != nil {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	m.reviewersMu.Lock()
+	reviewer := m.reviewers
+	m.reviewersMu.Unlock()
+	if reviewer == nil {
+		return nil
+	}
+	seen := map[domain.SessionID]bool{}
+	for _, owner := range owners {
+		if owner.Kind != "reviewer" || !owner.Blocking || seen[owner.SessionID] {
+			continue
+		}
+		seen[owner.SessionID] = true
+		if err := reviewer.ReconcileReviewers(ctx, owner.SessionID); err != nil {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+	}
+	return nil
+}
+
 // AccountUsageOwners augments durable bindings with launches whose execution
 // has not yet reported activity. A failed probe is never evidence of no owner.
 func (m *Manager) AccountUsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
 	store, ok := m.store.(ports.AgentAccountUsageStore)
 	if !ok {
 		return nil, ports.ErrAgentAccountStorageUnavailable
+	}
+	if err := m.ReconcileAccountReviewers(ctx, id); err != nil {
+		return nil, err
 	}
 	owners, err := store.ListAgentAccountUsageOwners(ctx, id)
 	if err != nil {

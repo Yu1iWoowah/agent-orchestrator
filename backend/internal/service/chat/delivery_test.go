@@ -44,6 +44,9 @@ func (f *fakeConversation) QueryDeliveryAttempt(_ context.Context, key ports.Cha
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, ok := f.deliveryReceipts[key.AttemptID]
+	if !ok && f.deliveryDenied {
+		return r, ports.ErrChatDeliveryDenied
+	}
 	if !ok {
 		return r, ports.ErrChatDeliveryUnverified
 	}
@@ -436,5 +439,257 @@ func TestSettledDeliveryAckRetriesWithoutAnotherTurn(t *testing.T) {
 	}
 	if err := h.svc.StopAll(t.Context()); err != nil {
 		t.Fatalf("settled ACK recovery blocked shutdown: %v", err)
+	}
+}
+
+// legacyHostConversation answers delivery queries like a host without a
+// record. Without receipts it stands in for a host that predates them.
+type legacyHostConversation struct {
+	*fakeConversation
+	withoutReceipts bool
+	timeout         bool
+	queryStarted    chan struct{}
+}
+
+func (c *legacyHostConversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
+	ref, err := c.fakeConversation.SendTurn(ctx, msg)
+	if c.withoutReceipts {
+		ref.Delivery = nil
+	}
+	return ref, err
+}
+
+func (c *legacyHostConversation) QueryDeliveryAttempt(ctx context.Context, _ ports.ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error) {
+	if c.timeout {
+		c.queryStarted <- struct{}{}
+		<-ctx.Done()
+		return domain.ChatDeliveryReceipt{}, ctx.Err()
+	}
+	return domain.ChatDeliveryReceipt{}, ports.ErrChatDeliveryDenied
+}
+
+func TestLegacyDeliverySettlesOnlyWithoutCorrelationAfterCompletedMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		withoutReceipts bool
+		timeout         bool
+		memberState     domain.TurnState
+		settles         bool
+	}{
+		{name: "settles", withoutReceipts: true, memberState: domain.TurnStateCompleted, settles: true},
+		{name: "failed-member", withoutReceipts: true, memberState: domain.TurnStateFailed},
+		{name: "interrupted-member", withoutReceipts: true, memberState: domain.TurnStateInterrupted},
+		{name: "request-id", memberState: domain.TurnStateCompleted},
+		{name: "query-timeout", withoutReceipts: true, timeout: true, memberState: domain.TurnStateCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newSettingsTestClock()
+			conv := &legacyHostConversation{fakeConversation: newFakeConversation(), withoutReceipts: tc.withoutReceipts, timeout: tc.timeout, queryStarted: make(chan struct{}, 8)}
+			// Its receipts stay outcome_unknown but carry the host epoch and request ID.
+			conv.deliveryPrepared = tc.name == "request-id"
+			expireQuery := func() {
+				if tc.timeout {
+					<-conv.queryStarted
+					clock.awaitTimer(t, 10*time.Second)
+					clock.advance(10 * time.Second)
+				}
+			}
+			h := deliveryHarness(t, conv, clock)
+			turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "legacy input", ClientMessageID: "legacy-" + tc.name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A running member never settles: the silent attempt opens its question.
+			clock.awaitTimer(t, 30*time.Second)
+			h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+			expireQuery()
+			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+				a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				return e == nil && a.AttentionID != "" && !a.ExecutionSettled
+			})
+			blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+			// No native receipt accompanies the terminal event from this host.
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: tc.memberState}
+			expireQuery()
+			if tc.settles {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+					return e == nil && a.ExecutionSettled
+				})
+				saved, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if saved.Disposition != domain.ChatDeliveryUnknown || saved.EvidenceLevel != 0 || saved.ErrorCode != "CHAT_DELIVERY_LEGACY_SETTLED" || saved.Receipt == nil || saved.Receipt.Source != "incomplete" || saved.Receipt.Complete || !saved.Receipt.ExecutionSettled {
+					t.Fatalf("legacy settlement = %+v receipt=%+v", saved, saved.Receipt)
+				}
+				question, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+				if err != nil || question.State != "cancelled" || question.CloseReason != "原執行已確認結束" {
+					t.Fatalf("open delivery question = %+v %v", question, err)
+				}
+				if pending, err := h.st.PendingChatDeliveries(t.Context(), testSession); err != nil || len(pending) != 0 {
+					t.Fatalf("settled legacy attempt still pending: %+v %v", pending, err)
+				}
+				// A later host receipt short of acceptance cannot rewrite the settlement.
+				late := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, ProviderEpoch: "host-epoch", ProviderRequestID: "rpc-1", Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ObservedAt: clock.Now()}
+				if _, err := h.ctrl.RecordDeliveryReceiptForTest(t.Context(), late); err != nil {
+					t.Fatal(err)
+				}
+				kept, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if err != nil || kept.Version != saved.Version || kept.ErrorCode != "CHAT_DELIVERY_LEGACY_SETTLED" || kept.Receipt.ProviderEpoch != "" {
+					t.Fatalf("host receipt rewrote legacy settlement: %+v %v", kept, err)
+				}
+				if err := h.svc.StopAll(t.Context()); err != nil {
+					t.Fatalf("shutdown preflight still blocked: %v", err)
+				}
+			} else {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+					return e == nil && a.Version > blocked.Version
+				})
+				saved, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if saved.ExecutionSettled || saved.ErrorCode == "CHAT_DELIVERY_LEGACY_SETTLED" {
+					t.Fatalf("attempt settled outside the legacy conditions: %+v", saved)
+				}
+			}
+			if len(conv.sentTexts()) != 1 {
+				t.Fatal("legacy input replayed")
+			}
+		})
+	}
+}
+
+func TestHostCannotSettleUnknownDelivery(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &legacyHostConversation{fakeConversation: newFakeConversation(), withoutReceipts: true}
+	h := deliveryHarness(t, conv, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "host receipt", ClientMessageID: "host-unknown-settled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: clock.Now()}
+	if _, err := h.ctrl.RecordDeliveryReceiptForTest(t.Context(), r); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
+		t.Fatalf("host incomplete settled receipt = %v, want rejected", err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	if err != nil || saved.ExecutionSettled {
+		t.Fatalf("host settled an unknown outcome: %+v %v", saved, err)
+	}
+}
+
+func TestLegacySettlementReleasesHeldDispatchAndHibernation(t *testing.T) {
+	h, conv := settledHibernationHarness(t, "")
+	ctx := t.Context()
+	conv.mu.Lock()
+	conv.deliveryDenied = true
+	conv.sendErr = errors.New("provider connection lost after write")
+	conv.mu.Unlock()
+	// An uncertain send holds the controller on the original attempt.
+	_, _ = h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "uncertain original", ClientMessageID: "uncertain-original"})
+	pending, err := h.st.PendingChatDeliveries(ctx, testSession)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("uncertain original attempt = %+v %v", pending, err)
+	}
+	original := pending[0]
+	conv.mu.Lock()
+	conv.sendErr = nil
+	conv.mu.Unlock()
+	// The original execution later completed every member.
+	if err := h.st.SettleTurnByID(ctx, original.TurnIDs[0], domain.TurnStateCompleted, "", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
+		return e == nil && a.ExecutionSettled && a.ErrorCode == "CHAT_DELIVERY_LEGACY_SETTLED"
+	})
+	next, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "after legacy settlement", ClientMessageID: "after-legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent := conv.sentTexts(); len(sent) != 1 || sent[0] != "after legacy settlement" {
+		t.Fatalf("settled legacy attempt still holds dispatch: sent=%v turn=%+v", sent, next)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: next.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, next.ID)
+		return e == nil && a.ExecutionSettled
+	})
+	if err := h.svc.DrainQueued(ctx, testSession); err != nil {
+		t.Fatal(err)
+	}
+	rec, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("get session = %v, %v", found, err)
+	}
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-chatsvc.IdleBeforeHibernate)}
+	if err := h.st.UpdateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if slept, err := h.svc.HibernateChat(ctx, testSession); err != nil || !slept {
+		t.Fatalf("settled legacy attempt blocks hibernation: slept=%v err=%v", slept, err)
+	}
+}
+
+// deliveryLinkRaceStore makes the first prompt link lose a real owner CAS.
+type deliveryLinkRaceStore struct {
+	*store.Store
+	raced  atomic.Bool
+	prompt atomic.Value
+}
+
+func (s *deliveryLinkRaceStore) BlockChatDeliveryWithAttention(ctx context.Context, a domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner, prompt domain.AttentionQuestionCreate, at time.Time) (domain.ChatDeliveryAttempt, error) {
+	if !s.raced.Swap(true) {
+		s.prompt.Store(prompt.ID)
+		stale := actor
+		stale.BranchID = "replaced-branch"
+		return s.Store.BlockChatDeliveryWithAttention(ctx, a, expected, stale, prompt, at)
+	}
+	return s.Store.BlockChatDeliveryWithAttention(ctx, a, expected, actor, prompt, at)
+}
+
+func TestFailedPromptLinkRollsBackAndNextBlockRetries(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &stalledDeliveryConversation{fakeConversation: newFakeConversation(), queryCount: make(chan string, 8)}
+	race := &deliveryLinkRaceStore{}
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { race.Store = st; return race }, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "silent original", ClientMessageID: "link-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	// The block's own deadline, then the monitor's retry after the failed link.
+	clock.awaitTimer(t, 5*time.Second)
+	clock.awaitTimer(t, 5*time.Second)
+	// The failed block leaves neither the prompt nor its blocked state behind.
+	first, _ := race.prompt.Load().(string)
+	if first == "" {
+		t.Fatal("first block never reached the store")
+	}
+	if _, err := h.st.GetAttentionQuestion(t.Context(), testSession, first); !errors.Is(err, domain.ErrAttentionQuestionNotFound) {
+		t.Fatalf("rolled-back delivery prompt is visible: %v", err)
+	}
+	if unlinked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID); err != nil || unlinked.AttentionID != "" || unlinked.BlockedSince != nil {
+		t.Fatalf("failed block left partial state: %+v %v", unlinked, err)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(5 * time.Second) })
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+		return e == nil && a.AttentionID != ""
+	})
+	blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	question, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+	if err != nil || question.State != "open" || blocked.AttentionID == first {
+		t.Fatalf("retried block = %+v question=%+v %v", blocked, question, err)
 	}
 }

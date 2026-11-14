@@ -1,0 +1,365 @@
+"""RH-FIX3: real Git evidence; sensitive values are synthetic fixture markers."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from test_handoff import h
+from test_handoff import FlowFixture
+import test_fix2 as fix2
+
+
+MARKER = b"RH_FIX3_UNCOMMITTED_FIXTURE_MARKER\n"
+
+
+class WorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.fresh("initial")
+
+    def fresh(self, name):
+        self.root = h.mkdir(self.base / name)
+        self.repo = h.mkdir(self.root / "repo")
+        self.git(self.repo, "init", "-b", "main", "--template=")
+        (self.repo / "plain").write_bytes(b"original\n")
+        self.commit(self.repo)
+
+    def git(self, path, *args):
+        return subprocess.check_output(["git", "--no-optional-locks", "-c", "core.hooksPath=/dev/null",
+                                       "-C", str(path), *args], stderr=subprocess.PIPE)
+
+    def commit(self, path):
+        self.git(path, "add", ".")
+        self.git(path, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "commit", "-m", "fixture")
+
+    def template(self):
+        path = self.repo / "cloud/.env.example"
+        path.parent.mkdir()
+        path.write_bytes(b"PUBLIC_FIXTURE=example\n")
+        self.commit(self.repo)
+        return path
+
+    def old(self):
+        workspace = self.root / "old-workspace"
+        self.git(self.repo, "worktree", "add", "-b", "old", str(workspace))
+        root = h.mkdir(self.root / "run")
+        data = h.mkdir(self.root / "data")
+        shared = h.mkdir(data / "shared")
+        cli = SimpleNamespace(data_dir=data, get=lambda _: dict(status="ok", project=dict(id=h.PROJECT, config={})),
+                              documents=lambda: dict(sharedDir=str(shared)))
+        run = SimpleNamespace(root=root, old="old", cli=cli, state={})
+        plan = dict(original_ref="refs/heads/old", classification=[])
+        h.publish(root / "old/preservation.json", h.canonical(plan))
+        return workspace, run, plan
+
+    def no_marker(self, directory):
+        for path in directory.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(MARKER, path.read_bytes(), str(path))
+                self.assertNotIn(MARKER.hex().encode(), path.read_bytes(), str(path))
+
+    def test_committed_template_worker_and_old(self):
+        source = self.template()
+        oid = self.git(self.repo, "rev-parse", "HEAD").decode().strip()
+        self.git(self.repo, "update-index", "--add", "--cacheinfo", "160000," + oid + ",module")
+        (self.repo / "module").mkdir()
+        self.commit(self.repo)
+        result = h.git_snapshot(self.repo, self.root / "snapshot")
+        doc = json.loads(Path(result["path"]).read_bytes())
+        item = doc["files"]["cloud/.env.example"]
+        self.assertEqual((self.root / "snapshot/objects" / item["sha256"]).read_bytes(), source.read_bytes())
+        workspace, run, plan = self.old()
+        proof = h.old_git_state(run, plan, workspace)
+        self.assertEqual(proof["head"], self.git(workspace, "rev-parse", "HEAD").decode().strip())
+        self.assertEqual(proof["gitlinks"]["module"]["state"], "uninitialized")
+
+    def test_staged_sensitive_marker_never_reaches_patch(self):
+        path = self.template()
+        path.write_bytes(MARKER)
+        self.git(self.repo, "add", "cloud/.env.example")
+        destination = self.root / "snapshot"
+        with self.assertRaises(h.Stop):
+            h.git_snapshot(self.repo, destination)
+        self.no_marker(destination)
+
+    def test_old_tracked_template_modification_stops(self):
+        self.template()
+        workspace, run, plan = self.old()
+        (workspace / "cloud/.env.example").write_bytes(MARKER)
+        with self.assertRaises(h.Stop):
+            h.old_git_state(run, plan, workspace)
+        self.no_marker(run.root)
+
+    def test_untracked_ignored_staged_and_deleted_names_stop_before_saving(self):
+        cases = ["untracked", "ignored", "added", "auth-added", "staged", "working", "index-only", "deleted", "renamed", "flag", "mode", "conflict"]
+        for role in ("worker", "old"):
+            for case in cases:
+                with self.subTest(role=role, case=case):
+                    self.fresh(role + "-" + case)
+                    self.template()
+                    if role == "old":
+                        workspace, run, plan = self.old()
+                        destination = run.root
+                    else:
+                        workspace, destination = self.repo, self.root / "snapshot"
+                    source = workspace / "cloud/.env.example"
+                    if case in ("untracked", "ignored"):
+                        if case == "ignored":
+                            (workspace / ".gitignore").write_text(".env\n")
+                        (workspace / ".env").write_bytes(MARKER)
+                    elif case in ("added", "auth-added"):
+                        source = workspace / ("new/.env.example" if case == "added" else "auth.json")
+                        source.parent.mkdir(exist_ok=True)
+                        source.write_bytes(MARKER)
+                        self.git(workspace, "add", str(source.relative_to(workspace)))
+                    elif case in ("staged", "working", "index-only"):
+                        original = source.read_bytes()
+                        source.write_bytes(MARKER)
+                        if case != "working":
+                            self.git(workspace, "add", "cloud/.env.example")
+                        if case == "index-only":
+                            source.write_bytes(original)
+                    elif case == "deleted":
+                        self.git(workspace, "rm", "cloud/.env.example")
+                    elif case == "renamed":
+                        self.git(workspace, "mv", "cloud/.env.example", "renamed")
+                        (workspace / "renamed").write_bytes(MARKER)
+                    elif case == "flag":
+                        self.git(workspace, "update-index", "--assume-unchanged", "cloud/.env.example")
+                        source.write_bytes(MARKER)
+                    elif case == "mode":
+                        source.chmod(0o755)
+                    else:
+                        oid = self.git(workspace, "rev-parse", "HEAD:cloud/.env.example").decode().strip()
+                        data = ("0 " + "0" * 40 + "\tcloud/.env.example\n100644 " + oid + " 1\tcloud/.env.example\n").encode()
+                        subprocess.run(["git", "-C", str(workspace), "update-index", "--index-info"], input=data, check=True, capture_output=True)
+                    with self.assertRaises(h.Stop):
+                        if role == "old":
+                            plan["classification"] = [{"path": ".env", "disposition": "discardable", "basis": "not a bypass"}]
+                            h.old_git_state(run, plan, workspace)
+                        else:
+                            h.git_snapshot(workspace, destination)
+                    self.no_marker(destination)
+
+    def test_other_committed_sensitive_names_and_parent_paths_still_stop(self):
+        for i, relative in enumerate([".env", "auth.json", ".env.sample", ".env.template", ".env/.env.example", "auth.json/.env.example"]):
+            for role in ("worker", "old"):
+                with self.subTest(path=relative, role=role):
+                    self.fresh(role + str(i))
+                    source = self.repo / relative
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.write_bytes(MARKER)
+                    self.commit(self.repo)
+                    if role == "old":
+                        workspace, run, plan = self.old()
+                        destination = run.root
+                    else:
+                        workspace, destination = self.repo, self.root / "snapshot"
+                    with self.assertRaises(h.Stop):
+                        h.old_git_state(run, plan, workspace) if role == "old" else h.git_snapshot(workspace, destination)
+                    self.no_marker(destination)
+
+    def test_symlink_template_and_git_filter_do_not_prove_raw_equality(self):
+        for problem in ("symlink", "filter"):
+            self.fresh(problem)
+            source = self.template()
+            if problem == "symlink":
+                source.unlink()
+                source.symlink_to("../plain")
+                self.commit(self.repo)
+            else:
+                (self.repo / ".gitattributes").write_text("cloud/.env.example filter=fixture\n")
+                self.git(self.repo, "config", "filter.fixture.clean", "sed s/MODIFIED/PUBLIC_FIXTURE/g")
+                self.commit(self.repo)
+                source.write_bytes(b"MODIFIED=example\n")
+                self.git(self.repo, "add", "cloud/.env.example")
+                self.assertEqual(self.git(self.repo, "status", "--porcelain"), b"")
+            with self.assertRaises(h.Stop):
+                h.git_snapshot(self.repo, self.root / "snapshot")
+
+    def test_normal_staged_dirty_untracked_and_literal_paths_remain_preserved(self):
+        self.template()
+        (self.repo / "plain").write_bytes(b"staged ordinary\n")
+        self.git(self.repo, "add", "plain")
+        (self.repo / "plain").write_bytes(b"dirty ordinary\n")
+        (self.repo / "literal[abc]").write_bytes(b"untracked ordinary")
+        result = h.git_snapshot(self.repo, self.root / "snapshot")
+        doc = h.decode(Path(result["path"]).read_bytes())
+        self.assertIn("literal[abc]", doc["files"])
+        self.assertIn(b"staged ordinary", (self.root / "snapshot/index.patch").read_bytes())
+        self.assertIn(b"dirty ordinary", (self.root / "snapshot/worktree.patch").read_bytes())
+        self.assertNotIn(b".env.example", (self.root / "snapshot/index.patch").read_bytes())
+        workspace, run, plan = self.old()
+        (workspace / "plain").write_bytes(b"ordinary old dirty")
+        self.assertIn(b"ordinary old dirty", bytes.fromhex(h.old_git_state(run, plan, workspace)["dirty_patch"]))
+
+    def test_template_drift_uses_checked_bytes_and_never_adds_sensitive_patch(self):
+        for role in ("worker", "old"):
+            self.fresh(role)
+            self.template()
+            if role == "old":
+                workspace, run, plan = self.old()
+                destination = run.root
+            else:
+                workspace, destination = self.repo, self.root / "snapshot"
+            original = h.workspace_patch
+            def drift(path, inputs, cached=False):
+                (workspace / "cloud/.env.example").write_bytes(MARKER)
+                return original(path, inputs, cached)
+            with patch.object(h, "workspace_patch", side_effect=drift), self.assertRaises(h.Stop):
+                h.old_git_state(run, plan, workspace) if role == "old" else h.git_snapshot(workspace, destination)
+            self.no_marker(destination)
+            self.assertFalse((destination / "snapshot.json").exists())
+
+    def test_empty_patch_inventory_does_not_fall_back_to_whole_tree(self):
+        source = self.template()
+        self.git(self.repo, "rm", "plain")
+        self.commit(self.repo)
+        inputs = h.workspace_git_inputs(self.repo)
+        self.assertEqual(inputs["patch_paths"], [])
+        source.write_bytes(MARKER)
+        with patch.object(h, "old_git", side_effect=AssertionError("must not invoke unrestricted diff")):
+            self.assertEqual(h.workspace_patch(self.repo, inputs), b"")
+
+    def test_file_to_directory_drift_never_saves_sensitive_child_patch(self):
+        for role in ("worker", "old"):
+            with self.subTest(role=role):
+                self.fresh("directory-drift-" + role)
+                if role == "old":
+                    workspace, run, plan = self.old()
+                    destination = run.root
+                else:
+                    workspace, destination = self.repo, self.root / "snapshot"
+                original = h.old_git
+                changed = False
+                def drift(args, **kwargs):
+                    nonlocal changed
+                    if "--binary" in args and not changed:
+                        changed = True
+                        (workspace / "plain").unlink()
+                        (workspace / "plain").mkdir()
+                        (workspace / "plain/.env").write_bytes(MARKER)
+                        self.git(workspace, "add", "-A", "--", "plain")
+                    return original(args, **kwargs)
+                with patch.object(h, "old_git", side_effect=drift), self.assertRaises(h.Stop):
+                    h.old_git_state(run, plan, workspace) if role == "old" else h.git_snapshot(workspace, destination)
+                self.assertTrue(changed)
+                self.no_marker(destination)
+                self.assertFalse((destination / "snapshot.json").exists())
+
+    def test_empty_committed_template_intent_to_add_is_not_stage_zero_proof(self):
+        source = self.template()
+        source.write_bytes(b"")
+        self.commit(self.repo)
+        self.git(self.repo, "rm", "--cached", "cloud/.env.example")
+        self.git(self.repo, "add", "-N", "cloud/.env.example")
+        with self.assertRaises(h.Stop):
+            h.git_snapshot(self.repo, self.root / "snapshot")
+
+    def test_unknown_partial_snapshot_object_type_is_rejected_before_history(self):
+        root = h.mkdir(self.root / "runs")
+        run = h.mkdir(root / "00000000-0000-4000-8000-000000000123")
+        h.publish(root / ".qualified/qualification.json", b"{}")
+        h.publish(run / "workers" / "worker" / ("before-" + "a" * 32) / "objects", b"not an objects directory")
+        state = dict(effects={}, old_id="historical-old", project_id=h.PROJECT, target={}, script_sha256="fixture", cli_sha256="fixture",
+                     error="sensitive workspace content cannot be preserved: cloud/.env.example")
+        authorization = dict(state, expected_effects=[], qualification_sha256=h.digest(b"{}"))
+        with self.assertRaisesRegex(h.Stop, "partial snapshot"):
+            h.verify_partial_snapshots(run)
+
+    def test_copy_and_dependency_entries_do_not_inherit_template_exception(self):
+        source = self.template()
+        workspace, run, plan = self.old()
+        row = dict(path=str(source), kind="fixture", basis="necessary")
+        with self.assertRaises(h.Stop):
+            h.source_inputs(run, "old", self.repo, [row])
+        self.assertTrue(h.source_inputs(run, "old", self.repo, [dict(row, path=str(self.repo / "plain"))]))
+        plan["classification"] = [dict(path="cloud/.env.example", disposition="copy", basis="cannot bypass")]
+        with self.assertRaises(h.Stop):
+            h.old_git_state(run, plan, workspace)
+        with self.assertRaises(h.Stop):
+            h.preserve_dependencies([source], self.root / "dependencies", [self.repo])
+
+    def test_actual_checkout_tree_worker_and_linked_old(self):
+        source = Path(h.__file__).resolve().parents[2]
+        revision = self.git(source, "rev-parse", "HEAD").decode().strip()
+        self.git(self.repo, "fetch", "--no-tags", "--depth=1", source.as_uri(), revision)
+        self.git(self.repo, "checkout", "--detach", revision)
+        result = h.git_snapshot(self.repo, self.root / "actual-snapshot")
+        doc = h.decode(Path(result["path"]).read_bytes())
+        self.assertIn("cloud/.env.example", doc["files"])
+        self.assertEqual(doc["gitlinks"]["private/ao-cloud"]["state"], "uninitialized")
+        workspace, run, plan = self.old()
+        proof = h.old_git_state(run, plan, workspace)
+        self.assertEqual(proof["head"], revision)
+        self.assertEqual(proof["tree"]["cloud/.env.example"]["sha256"], doc["files"]["cloud/.env.example"]["sha256"])
+
+
+class ProducerTests(unittest.TestCase):
+    def add_template(self, workspace):
+        source = workspace / "cloud/.env.example"
+        source.parent.mkdir()
+        source.write_bytes(b"PUBLIC_FIXTURE=example\n")
+        subprocess.run(["git", "-C", str(workspace), "add", "cloud/.env.example"], check=True, capture_output=True)
+        git = lambda *args: subprocess.check_output(["git", "-C", str(workspace), "-c", "user.name=fixture",
+                                                      "-c", "user.email=fixture@example.invalid", *args], stderr=subprocess.PIPE).decode().strip()
+        # A real commit without leaving unrelated COMMIT_EDITMSG in the linked old metadata.
+        commit = git("commit-tree", git("write-tree"), "-p", "HEAD", "-m", "template")
+        git("update-ref", "HEAD", commit)
+        return source
+
+    def test_script_quiescent_and_old_real_producer_capture_verify(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FlowFixture(Path(temp), "claude-code", "codex", worker=True)
+            fake.run.request["workers"][0].update(stop_d_source_refs=[], hold_state="held", hold_source_refs=["human"],
+                task_owner_id=None, task_refs=[], release=dict(mode="keep-held", authority_refs=[],
+                reserved_resume_d=None, resume_d_source_refs=[]))
+            request_raw = h.canonical(fake.run.request)
+            (fake.run.root / "start.json").write_bytes(request_raw)
+            fake.run.state["start_sha256"] = h.digest(request_raw)
+            self.add_template(fake.worker_path)
+            self.add_template(fake.workspace)
+            h.run_protocol(fake.run)
+            self.assertEqual(fake.run.state["outcome"], "complete")
+            stop = h.decode(h.private_read(fake.run.root / "workers/worker/stop.json"))
+            self.assertEqual(stop["source_type"], "script-quiescent")
+            proof = h.decode(h.private_read(fake.run.root / "old/preservation-evidence.json"))
+            self.assertIn("sha256", proof["tree"]["cloud/.env.example"])
+
+    def test_worker_self_real_helper_and_consumer_positive_and_dirty_negative(self):
+        for dirty in (False, True):
+            with self.subTest(dirty=dirty):
+                fixture = fix2.WorkerProducerTests()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                fake, _ = fixture.prepared()
+                source = self.add_template(fake.worker_path)
+                if dirty:
+                    source.write_bytes(MARKER)
+                    with self.assertRaises(h.Stop):
+                        fake.dispatch_actor(2)
+                    for path in fake.run.root.rglob("*"):
+                        if path.is_file():
+                            self.assertNotIn(MARKER, path.read_bytes())
+                else:
+                    receipt = fake.dispatch_actor(2)
+                    self.assertEqual(receipt["state"], "safe")
+                    self.assertEqual(fake.run.worker_stop({"id": "worker"})["state"], "safe")
+
+    def test_old_helper_refuses_dirty_template_before_saved_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FlowFixture(Path(temp), "codex", "claude-code")
+            self.add_template(fake.workspace).write_bytes(MARKER)
+            with self.assertRaises(h.Stop):
+                h.run_protocol(fake.run)
+            self.assertNotIn("kill", fake.mutations)
+            for path in fake.run.root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(MARKER, path.read_bytes())

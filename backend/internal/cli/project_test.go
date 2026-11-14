@@ -18,7 +18,7 @@ type projectCapture struct {
 func projectServer(t *testing.T, status int, respBody string) (*httptest.Server, *projectCapture) {
 	t.Helper()
 	capture := &projectCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.method = r.Method
 		capture.path = r.URL.Path
 		data, err := io.ReadAll(r.Body)
@@ -449,5 +449,25 @@ func TestProjectRemove_YesSkipsConfirmationAndSupportsBackendRemoveEnvelope(t *t
 	}
 	if strings.Contains(out, "Type the project id") || !strings.Contains(out, "removed project demo") {
 		t.Fatalf("--yes output should skip prompt and print removal:\n%s", out)
+	}
+}
+
+func TestProjectSetConfigDelegationExactRefs(t *testing.T) {
+	cfg := setConfigEnv(t)
+	server, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/synthetic"}}`)
+	defer server.Close()
+	writeRunFileFor(t, cfg, server)
+	raw := `{"hcgDelegation":{"enabled":true,"allowedProfiles":[{"id":"openai-fixture","revision":"v1"}],"selectedProfile":{"id":"openai-fixture","revision":"v1"}},"worker":{"hcgDelegation":{"enabled":false},"agent":"codex"},"sessionPrefix":"synthetic"}`
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "project", "set-config", "demo", "--config-json", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request setConfigRequest
+	if err := json.Unmarshal(capture.body, &request); err != nil {
+		t.Fatal(err)
+	}
+	config := request.Config
+	if config.HCGDelegation.Enabled == nil || !*config.HCGDelegation.Enabled || len(config.HCGDelegation.AllowedProfiles) != 1 || config.HCGDelegation.SelectedProfile == nil || config.HCGDelegation.SelectedProfile.Revision != "v1" || config.Worker.HCGDelegation.Enabled == nil || *config.Worker.HCGDelegation.Enabled || config.Worker.Agent != "codex" || config.SessionPrefix != "synthetic" {
+		t.Fatalf("complete replacement lost fields: %+v", config)
 	}
 }

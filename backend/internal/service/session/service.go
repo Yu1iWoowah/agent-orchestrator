@@ -83,7 +83,7 @@ type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
 	RunBackgroundTask(ctx context.Context, id domain.SessionID, systemPrompt, prompt string) (string, error)
 	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
-	ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
+	StartResumeAgent(ctx context.Context, id domain.SessionID, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error)
 	RetireForReplacement(ctx context.Context, id domain.SessionID) error
@@ -158,10 +158,34 @@ type RestoreOutcome struct {
 	Mode    RestoreModeView `json:"restoreMode"`
 }
 
-// ResumeAgentOutcome reports the resumed read model and how AO relaunched it.
-type ResumeAgentOutcome struct {
-	Session domain.Session  `json:"session"`
-	Mode    RestoreModeView `json:"resumeMode"`
+// ResumeAgentState is the progress of a session's latest resume-agent request.
+type ResumeAgentState string
+
+// The states a resume-agent request moves through.
+const (
+	ResumeAgentRunning   ResumeAgentState = "running"
+	ResumeAgentSucceeded ResumeAgentState = "succeeded"
+	ResumeAgentFailed    ResumeAgentState = "failed"
+)
+
+// ResumeAgentStatus reports a session's latest resume-agent request. Err is
+// the API error the request would have answered had it run inline; FinishedAt
+// is set once it settled.
+type ResumeAgentStatus struct {
+	State      ResumeAgentState
+	Mode       RestoreModeView
+	Err        error
+	FinishedAt *time.Time
+	Session    domain.Session
+}
+
+// resumeAgentOperation is the in-memory record of one resume-agent request;
+// a daemon restart forgets it.
+type resumeAgentOperation struct {
+	state    ResumeAgentState
+	mode     RestoreModeView
+	err      error
+	finished *time.Time
 }
 
 // ExitAgentOutcome reports the still-live AO session after only its agent
@@ -215,6 +239,11 @@ type Service struct {
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
 	workspaceCache      *workspaceCache
 	workspaceManifests  *workspaceManifestIndex
+
+	// resumeAgents keeps each session's latest resume-agent request in memory.
+	resumeAgentsMu sync.Mutex
+	resumeAgents   map[domain.SessionID]*resumeAgentOperation
+
 	// commitSelections caches resolved commit selections. Their keys are
 	// immutable SHAs, so entries never go stale.
 	commitSelections *commitSelectionCache
@@ -955,20 +984,80 @@ func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgent
 	return ExitAgentOutcome{Session: session}, nil
 }
 
-// ResumeAgent relaunches an exited agent without restoring a terminated
-// session or recreating its workspace.
-func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeAgentOutcome, error) {
-	res, err := s.manager.ResumeAgentWithMode(ctx, id)
-	if err != nil {
-		apiErr := toAPIError(err)
-		s.emitRelaunchFailed(ctx, "resume_agent", id, err, apiErr)
-		return ResumeAgentOutcome{}, apiErr
+// StartResumeAgent admits a relaunch of an exited agent without restoring a
+// terminated session or recreating its workspace. It answers the preconditions
+// that need no waiting and returns while the relaunch runs in the background;
+// ResumeAgentStatus reports its outcome. A session with a resume still running
+// answers the existing in-progress conflict.
+func (s *Service) StartResumeAgent(ctx context.Context, id domain.SessionID) (domain.Session, error) {
+	s.resumeAgentsMu.Lock()
+	previous := s.resumeAgents[id]
+	if previous != nil && previous.state == ResumeAgentRunning {
+		s.resumeAgentsMu.Unlock()
+		return domain.Session{}, toAPIError(fmt.Errorf("resume agent %s: %w", id, sessionmanager.ErrResumeInProgress))
 	}
-	session, err := s.toSession(ctx, res.Session)
-	if err != nil {
-		return ResumeAgentOutcome{}, err
+	op := &resumeAgentOperation{state: ResumeAgentRunning}
+	if s.resumeAgents == nil {
+		s.resumeAgents = map[domain.SessionID]*resumeAgentOperation{}
 	}
-	return ResumeAgentOutcome{Session: session, Mode: restoreModeView(res.Mode)}, nil
+	s.resumeAgents[id] = op
+	s.resumeAgentsMu.Unlock()
+	rec, err := s.manager.StartResumeAgent(ctx, id, func(res sessionmanager.RestoreResult, err error) {
+		s.finishResumeAgent(id, op, res, err)
+	})
+	if err != nil {
+		s.resumeAgentsMu.Lock()
+		if s.resumeAgents[id] == op {
+			if previous == nil {
+				delete(s.resumeAgents, id)
+			} else {
+				s.resumeAgents[id] = previous
+			}
+		}
+		s.resumeAgentsMu.Unlock()
+		return domain.Session{}, toAPIError(err)
+	}
+	return s.toSession(ctx, rec)
+}
+
+func (s *Service) finishResumeAgent(id domain.SessionID, op *resumeAgentOperation, res sessionmanager.RestoreResult, err error) {
+	state, mode, mapped := ResumeAgentSucceeded, restoreModeView(res.Mode), error(nil)
+	if err != nil {
+		ctx := s.backgroundContext
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		state, mode, mapped = ResumeAgentFailed, "", toAPIError(err)
+		s.emitRelaunchFailed(ctx, "resume_agent", id, err, mapped)
+	}
+	finished := s.now()
+	s.resumeAgentsMu.Lock()
+	op.state, op.mode, op.err, op.finished = state, mode, mapped, &finished
+	s.resumeAgentsMu.Unlock()
+}
+
+// ResumeAgentStatus reports the session's latest resume-agent request since the
+// daemon started. With none recorded it answers not found.
+func (s *Service) ResumeAgentStatus(ctx context.Context, id domain.SessionID) (ResumeAgentStatus, error) {
+	s.resumeAgentsMu.Lock()
+	op := s.resumeAgents[id]
+	var status ResumeAgentStatus
+	if op != nil {
+		status = ResumeAgentStatus{State: op.state, Mode: op.mode, Err: op.err, FinishedAt: op.finished}
+	}
+	s.resumeAgentsMu.Unlock()
+	if op == nil {
+		return ResumeAgentStatus{}, apierr.NotFound("AGENT_RESUME_NOT_FOUND", "No resume of this agent is recorded since the daemon started")
+	}
+	rec, ok, err := s.store.GetSession(ctx, id)
+	if err != nil {
+		return ResumeAgentStatus{}, fmt.Errorf("resume agent status %s: %w", id, err)
+	}
+	if !ok {
+		return ResumeAgentStatus{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	status.Session, err = s.toSession(ctx, rec)
+	return status, err
 }
 
 // StartAccountTransition moves the session's agent to another provider account

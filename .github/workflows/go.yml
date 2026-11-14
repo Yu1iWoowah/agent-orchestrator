@@ -7,6 +7,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "backend/**"
+      - "components/hcg/**"
+      - "tools/reusable-handoff/**"
       - "cloud/**"
       - "pricing/**"
       - "frontend/src/api/schema.ts"

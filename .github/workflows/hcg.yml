@@ -1,0 +1,39 @@
+name: HCG
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "components/hcg/**"
+      - "backend/internal/domain/usage.go"
+      - "backend/internal/service/usage/**"
+      - "backend/internal/service/hcg/**"
+      - "backend/internal/httpd/**"
+      - "backend/internal/storage/sqlite/**"
+      - "backend/internal/daemon/daemon.go"
+      - "go.work"
+      - ".github/workflows/hcg.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  usage-reader:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: components/hcg/go.mod
+          cache: false
+      - name: Verify standalone module
+        working-directory: components/hcg
+        env:
+          GOWORK: "off"
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+          go build ./...

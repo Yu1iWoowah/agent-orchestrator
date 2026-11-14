@@ -15,6 +15,13 @@ vi.mock("../lib/api-client", async (importOriginal) => ({
 	hasTrustedApiBaseUrl: () => true,
 }));
 
+// Local streams come from the preload bridge; route them to the stubbed
+// EventSource below.
+vi.mock("../lib/daemon-event-source", () => ({
+	hasDaemonEventStreams: () => true,
+	openDaemonEventSource: (path: string) => new (globalThis as unknown as { EventSource: new (url: string) => unknown }).EventSource(path),
+}));
+
 class EventSourceStub extends EventTarget {
 	static instances: EventSourceStub[] = [];
 	readyState = 1;

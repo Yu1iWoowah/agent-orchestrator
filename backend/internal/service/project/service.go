@@ -53,6 +53,7 @@ type Manager interface {
 	// UpdateSettings atomically replaces a project's user-facing display name
 	// and per-project config, returning the updated read-model.
 	UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error)
+	PatchSettings(ctx context.Context, id domain.ProjectID, in PatchSettingsInput) (Project, error)
 	SetPermissions(ctx context.Context, id domain.ProjectID, in SetPermissionsInput) (Project, error)
 	// ForgetPermissions clears the remembered policy, so new sessions use the agent's own default.
 	ForgetPermissions(ctx context.Context, id domain.ProjectID) (Project, error)
@@ -74,17 +75,25 @@ type SessionTeardowner interface {
 
 // Service implements project registration and lookup use-cases for controllers.
 type Service struct {
-	store          Store
-	sessions       SessionTeardowner
-	clock          func() time.Time
-	telemetry      ports.EventSink
-	defaultHarness domain.AgentHarness
-	logger         *slog.Logger
+	store           Store
+	sessions        SessionTeardowner
+	clock           func() time.Time
+	telemetry       ports.EventSink
+	defaultHarness  domain.AgentHarness
+	logger          *slog.Logger
+	withProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
+
+	reportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
+	delegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
+	rcaPolicyChanged        func(domain.ProjectID, domain.RCAPolicySnapshot)
 	// addMu serialises the whole body of Add. Workspace registration performs
 	// filesystem mutations (git init, .gitignore writes, commits) that are not
 	// covered by the store's own writeMu, so path/id conflict checks plus the
 	// subsequent mutation must be atomic from the perspective of concurrent callers.
 	addMu sync.Mutex
+	// configMu preserves commit-to-notification order across all config writers.
+	// Native session launchers never take this lock.
+	configMu sync.Mutex
 }
 
 const maxDisplayNameLen = 100
@@ -102,7 +111,13 @@ type Deps struct {
 	Telemetry      ports.EventSink
 	// Logger receives structured logs. Left nil, the service falls back to
 	// slog.Default, keeping service-focused tests logger-free.
-	Logger *slog.Logger
+	Logger          *slog.Logger
+	WithProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
+
+	// ReportingPolicyChanged cancels affected reports after durable policy changes.
+	ReportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
+	DelegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
+	RCAPolicyChanged        func(domain.ProjectID, domain.RCAPolicySnapshot)
 }
 
 // New returns a project service backed by the given durable store.
@@ -117,12 +132,17 @@ func NewWithDeps(d Deps) *Service {
 		defaultHarness = domain.AgentHarness(config.DefaultAgent)
 	}
 	s := &Service{
-		store:          d.Store,
-		sessions:       d.Sessions,
-		clock:          d.Clock,
-		telemetry:      d.Telemetry,
-		defaultHarness: defaultHarness,
-		logger:         d.Logger,
+		store:           d.Store,
+		sessions:        d.Sessions,
+		clock:           d.Clock,
+		telemetry:       d.Telemetry,
+		defaultHarness:  defaultHarness,
+		logger:          d.Logger,
+		withProjectGate: d.WithProjectGate,
+
+		reportingPolicyChanged:  d.ReportingPolicyChanged,
+		delegationPolicyChanged: d.DelegationPolicyChanged,
+		rcaPolicyChanged:        d.RCAPolicyChanged,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
@@ -308,7 +328,7 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 		}
-		if err := m.store.UpsertWorkspaceProject(ctx, row, repos); err != nil {
+		if err := m.commitProjectRegistration(row, func() error { return m.store.UpsertWorkspaceProject(ctx, row, repos) }); err != nil {
 			return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register workspace project")
 		}
 		if in.ClonePreparationID != "" {
@@ -356,9 +376,10 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 	if err := row.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
-	if err := m.store.UpsertProject(ctx, row); err != nil {
+	if err := m.commitProjectRegistration(row, func() error { return m.store.UpsertProject(ctx, row) }); err != nil {
 		return Project{}, apierr.Internal("PROJECT_ADD_FAILED", "Failed to register project")
 	}
+
 	if in.ClonePreparationID != "" {
 		removeClonePreparationMarker(path)
 	}
@@ -703,6 +724,8 @@ func remoteHost(remote string) string {
 // UpdateSettings atomically replaces the project's stored display name and
 // config. Both values are validated before a single database update.
 func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in UpdateSettingsInput) (Project, error) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
@@ -747,6 +770,7 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
 	row.DisplayName = inDisplayName
+	m.notifyReportingPolicyChanged(id, row.Config, in.Config)
 	row.Config = in.Config
 	return m.projectFromRow(ctx, row), nil
 }
@@ -754,6 +778,8 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 // SetConfig replaces the project's stored config. The typed config is validated
 // here so a bad value is rejected when set rather than surfacing at spawn.
 func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
@@ -787,11 +813,47 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
+	previousConfig := row.Config
 	row.Config = in.Config
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
 	}
+	m.notifyReportingPolicyChanged(id, previousConfig, row.Config)
 	return m.projectFromRow(ctx, row), nil
+}
+
+// Both registration shapes publish the complete snapshot before another config
+// request can commit. No fallible HCG work changes registration's result.
+func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func() error) error {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
+	if err := write(); err != nil {
+		return err
+	}
+	if m.reportingPolicyChanged != nil {
+		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
+	}
+	if m.rcaPolicyChanged != nil {
+		m.rcaPolicyChanged(domain.ProjectID(row.ID), row.Config.RCAPolicySnapshot())
+	}
+	if m.delegationPolicyChanged != nil {
+		m.delegationPolicyChanged(domain.ProjectID(row.ID), row.Config.DelegationPolicySnapshot())
+	}
+	return nil
+}
+
+func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, after domain.ProjectConfig) {
+	if m.delegationPolicyChanged != nil && !reflect.DeepEqual(before.DelegationPolicySnapshot(), after.DelegationPolicySnapshot()) {
+		m.delegationPolicyChanged(id, after.DelegationPolicySnapshot())
+	}
+	if m.reportingPolicyChanged != nil && !reflect.DeepEqual(
+		[]domain.HCGReportingConfig{before.HCGReporting, before.Worker.HCGReporting, before.Orchestrator.HCGReporting},
+		[]domain.HCGReportingConfig{after.HCGReporting, after.Worker.HCGReporting, after.Orchestrator.HCGReporting}) {
+		m.reportingPolicyChanged(id, after.ReportingPolicySnapshot())
+	}
+	if m.rcaPolicyChanged != nil && !reflect.DeepEqual(before.RCAPolicySnapshot(), after.RCAPolicySnapshot()) {
+		m.rcaPolicyChanged(id, after.RCAPolicySnapshot())
+	}
 }
 
 func validateScratchProjectConfig(cfg domain.ProjectConfig) error {

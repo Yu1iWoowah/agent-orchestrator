@@ -25,7 +25,73 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
+	"github.com/aoagents/agent-orchestrator/components/hcg/reporting"
 )
+
+// RCACompositionResponse contains only numeric estimates and safe references.
+type RCACompositionResponse domain.RCAComposition
+
+// RCAOTLPHeader carries a non-secret native capture namespace, never a bearer.
+type RCAOTLPHeader struct {
+	Capture string `header:"X-AO-RCA-Capture" required:"true" maxLength:"36"`
+}
+
+// RCAPolicyResponse reports effective RCA policy.
+type RCAPolicyResponse domain.RCAPolicyView
+
+// RCAEnabledRequest requires an explicit boolean control value.
+type RCAEnabledRequest struct {
+	Enabled *bool `json:"enabled" required:"true"`
+}
+
+// RCAStopResponse acknowledges the requested host stop.
+type RCAStopResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+// RCAPurgeResponse acknowledges numeric/scope deletion.
+type RCAPurgeResponse struct {
+	Purged bool `json:"purged"`
+}
+
+// RCACompositionQuery defines canonical paging and explicit snapshot analysis.
+type RCACompositionQuery struct {
+	AfterID   *int64 `query:"afterId,omitempty" minimum:"0"`
+	ThroughID *int64 `query:"throughId,omitempty" minimum:"0"`
+	Limit     *int64 `query:"limit,omitempty" minimum:"1" maximum:"1000"`
+	Analyze   *bool  `query:"analyze,omitempty"`
+}
+
+// HCGReportingResponse contains effective policy without local paths.
+type HCGReportingResponse reporting.View
+
+// HCGEngineResponse reports fixed deployment availability without its executable path.
+type HCGEngineResponse reporting.EngineStatus
+
+// HCGReportResponse contains only safe external-analysis identity and numbers.
+type HCGReportResponse reporting.Snapshot
+
+// HCGEnabledRequest requires an explicit boolean; null is rejected.
+type HCGEnabledRequest struct {
+	Enabled *bool `json:"enabled" required:"true"`
+}
+
+// HCGStopResponse echoes the persisted reporting emergency-stop value.
+type HCGStopResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+// HCGEngineRequest registers one fixed, separately installed consumer.
+type HCGEngineRequest struct {
+	Engine          string `json:"engine" enum:"llm-usage-metrics"`
+	Executable      string `json:"executable"`
+	ExpectedVersion string `json:"expectedVersion" enum:"0.14.3"`
+}
+
+// HCGReportRequest selects the fixed consumer without changing policy.
+type HCGReportRequest struct {
+	Engine string `json:"engine" enum:"llm-usage-metrics"`
+}
 
 // CreateReportRequest is the local caller-to-daemon report submission contract.
 // SessionID attributes the report; like the rest of AO's unauthenticated
@@ -179,6 +245,9 @@ type ListProjectsResponse struct {
 type ProjectResponse struct {
 	Project projectsvc.Project `json:"project"`
 }
+
+// PatchProjectSettingsRequest is the leaf-merge settings request.
+type PatchProjectSettingsRequest = projectsvc.PatchSettingsInput
 
 // GetProjectResponse is the { status, project } body of GET /projects/{id},
 // where project is oneOf Project|Degraded discriminated by status.
@@ -1177,12 +1246,35 @@ type ExitAgentResponse struct {
 	Session   SessionView      `json:"session"`
 }
 
-// ResumeAgentResponse is the body of POST /api/v1/sessions/{sessionId}/resume-agent.
+// ResumeAgentResponse is the 202 body of POST
+// /api/v1/sessions/{sessionId}/resume-agent: the resume was admitted and runs
+// in the background. GET on the same path reports its outcome.
 type ResumeAgentResponse struct {
-	OK         bool                       `json:"ok"`
+	OK        bool             `json:"ok"`
+	SessionID domain.SessionID `json:"sessionId"`
+	Session   SessionView      `json:"session"`
+}
+
+// ResumeAgentStatusResponse is the body of GET
+// /api/v1/sessions/{sessionId}/resume-agent: the session's latest resume since
+// the daemon started. resumeMode is set once it succeeded, error once it failed,
+// finishedAt once it settled either way.
+type ResumeAgentStatusResponse struct {
 	SessionID  domain.SessionID           `json:"sessionId"`
-	ResumeMode sessionsvc.RestoreModeView `json:"resumeMode" enum:"native,saved_prompt,fresh"`
+	State      string                     `json:"state" enum:"running,succeeded,failed"`
+	ResumeMode sessionsvc.RestoreModeView `json:"resumeMode,omitempty" enum:"native,saved_prompt,fresh"`
+	Error      *ResumeAgentFailure        `json:"error,omitempty"`
+	FinishedAt *time.Time                 `json:"finishedAt,omitempty"`
 	Session    SessionView                `json:"session"`
+}
+
+// ResumeAgentFailure is the error a failed background resume reports: the
+// HTTP status and envelope fields the request would have answered inline.
+type ResumeAgentFailure struct {
+	Status  int            `json:"status"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // StartSessionInterfaceTransitionRequest is the body of POST
@@ -4569,4 +4661,31 @@ type GuardianPurgeQuery struct {
 // ProtectedSideListResponse lists unresolved protected sides across launches.
 type ProtectedSideListResponse struct {
 	Sides []chatsvc.ProtectedSide `json:"sides"`
+}
+
+// UsageEventsResponse is the safe numeric ledger page.
+type UsageEventsResponse domain.UsageEventsPage
+
+// UsageEventsQuery fixes the scan upper bound after the first page.
+type UsageEventsQuery struct {
+	AfterID   *int64 `query:"afterId,omitempty" minimum:"0"`
+	ThroughID *int64 `query:"throughId,omitempty" minimum:"0"`
+	Limit     *int64 `query:"limit,omitempty" minimum:"1" maximum:"1000"`
+}
+
+// HCGDelegationResponse exposes effective fixed delegation policy.
+type HCGDelegationResponse reporting.DelegationView
+
+// HCGDelegationReadRequest carries the bounded question and explicit relative files.
+type HCGDelegationReadRequest reporting.DelegationRequest
+
+// HCGDelegationReadResponse exposes only the verified fixed reply.
+type HCGDelegationReadResponse reporting.DelegationReply
+
+// HCGDelegationRegistrationRequest carries an approved descriptor without key material.
+type HCGDelegationRegistrationRequest reporting.DelegationRegistration
+
+// HCGDelegationProfilesResponse lists safe immutable profile references.
+type HCGDelegationProfilesResponse struct {
+	Profiles []reporting.DelegationResolvedProfile `json:"profiles"`
 }

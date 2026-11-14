@@ -8,10 +8,113 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
+
+type rhCatalogProvider struct {
+	provider domain.AgentAccountProvider
+	mu       sync.Mutex
+	calls    map[string][]string
+}
+
+func (p *rhCatalogProvider) record(home, operation string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls[home] = append(p.calls[home], operation)
+}
+func (p *rhCatalogProvider) Provider() domain.AgentAccountProvider { return p.provider }
+func (p *rhCatalogProvider) Identity(_ context.Context, home string) (domain.AgentAccountIdentityCheck, error) {
+	p.record(home, "identity")
+	return domain.AgentAccountIdentityCheck{SignedIn: true, Email: "fixture@example.invalid"}, nil
+}
+func (p *rhCatalogProvider) Limits(_ context.Context, home string) (domain.AgentAccountLimits, error) {
+	p.record(home, "limits")
+	return domain.AgentAccountLimits{}, nil
+}
+func (p *rhCatalogProvider) Prepare(home string) error { p.record(home, "prepare"); return nil }
+func (*rhCatalogProvider) LoginArgv(context.Context) ([]string, error) {
+	return nil, errors.New("login forbidden in RH catalog test")
+}
+func (*rhCatalogProvider) Logout(context.Context, string) error {
+	return errors.New("logout forbidden in RH catalog test")
+}
+func (*rhCatalogProvider) LaunchEnv(string) map[string]string { return nil }
+
+func TestReusableHandoffAccountRefreshIsGlobalBeforeCLIFilter(t *testing.T) {
+	cfg := setConfigEnv(t)
+	store := sqlitetest.MustOpen(t)
+	root := filepath.Join(t.TempDir(), "accounts")
+	providers := []*rhCatalogProvider{
+		{provider: domain.AgentAccountProviderClaude, calls: map[string][]string{}},
+		{provider: domain.AgentAccountProviderCodex, calls: map[string][]string{}},
+	}
+	var adapters []ports.AgentAccountProviderCLI
+	for _, provider := range providers {
+		adapters = append(adapters, provider)
+		for _, suffix := range []string{"one", "two"} {
+			id := string(provider.provider) + "-" + suffix
+			home := filepath.Join(root, string(provider.provider), id)
+			if err := os.MkdirAll(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAgentAccount(context.Background(), domain.AgentAccount{
+				ID: id, Provider: provider.provider, Home: home, CreatedAt: time.Now(),
+				ProfileKind: domain.AgentAccountProfileContained,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	service := agentaccounts.New(store, adapters, root, nil, nil)
+	router := chi.NewRouter()
+	router.Route("/api/v1", func(r chi.Router) { (&controllers.AgentAccountsController{Svc: service}).Register(r) })
+	server := newFixtureServer(t, router)
+	defer server.Close()
+	writeRunFileFor(t, cfg, server)
+	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "ls", "--provider", "codex", "--refresh", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Accounts []struct {
+			Provider string `json:"provider"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Accounts) != 3 {
+		t.Fatalf("filtered accounts=%d, want device plus two", len(response.Accounts))
+	}
+	for _, account := range response.Accounts {
+		if account.Provider != "codex" {
+			t.Fatalf("CLI filter leaked provider %s", account.Provider)
+		}
+	}
+	for _, provider := range providers {
+		provider.mu.Lock()
+		for _, suffix := range []string{"one", "two"} {
+			home := filepath.Join(root, string(provider.provider), string(provider.provider)+"-"+suffix)
+			if got := strings.Join(provider.calls[home], ","); got != "prepare,identity,limits" {
+				t.Errorf("provider=%s profile=%s operations=%q", provider.provider, suffix, got)
+			}
+		}
+		provider.mu.Unlock()
+	}
+}
 
 func TestAccountUsageErrorsDoNotCallDaemon(t *testing.T) {
 	for _, args := range [][]string{{"ls", "--provider", ""}, {"use", "A", "--default", "--project", ""}, {"use", "A", "--default", "--session", " "}, {"use", "A"}, {"use", "A", "--default", "--session", "s"}, {"use", "A", "--default", "--role", "worker"}, {"use", "A", "--project", "p", "--role", "reviewer"}, {"use", "A", "--project", "p", "--wait"}, {"add"}, {"add", "--provider", "other"}, {"login"}, {"rm"}} {
@@ -39,7 +142,7 @@ func TestAccountCommandsUseOnlyDaemonRoutes(t *testing.T) {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -72,7 +175,7 @@ func TestAccountCommandsUseOnlyDaemonRoutes(t *testing.T) {
 
 func TestAccountDaemonFailurePreservesRequestID(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -91,7 +194,7 @@ func TestAccountDaemonFailurePreservesRequestID(t *testing.T) {
 func TestSpawnExplicitAccountReachesDaemonWithoutGlobalReadiness(t *testing.T) {
 	cfg := setConfigEnv(t)
 	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -121,7 +224,7 @@ func TestAccountLoginReconnectDoesNotStartAnotherProfileOrPrintProviderFields(t 
 	cfg := setConfigEnv(t)
 	verifies := 0
 	gets := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -164,7 +267,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -193,7 +296,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	var out, stderr bytes.Buffer
-	root := NewRootCommand(Deps{Out: &out, Err: &stderr, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{Out: &out, Err: &stderr, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"account", "add", "--provider", "codex", "--no-attach"})
 	err := root.ExecuteContext(ctx)
 	if !cancelled || !errors.Is(err, context.Canceled) || !strings.Contains(stderr.String(), "cleanup confirmed") {
@@ -205,7 +308,7 @@ func TestAccountUseWaitRequiresDurableCompleted(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			gets := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -233,7 +336,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -254,7 +357,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	var stderr bytes.Buffer
-	root := NewRootCommand(Deps{Err: &stderr, Out: io.Discard, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{Err: &stderr, Out: io.Discard, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"account", "add", "--provider", "codex", "--no-attach"})
 	err := root.ExecuteContext(ctx)
 	if !cancelled || !errors.Is(err, context.Canceled) || !strings.Contains(stderr.String(), "cleanup confirmed") {
@@ -264,7 +367,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 
 func TestAccountRemoveShowsOnlyBlockingOwnersWithoutStoppingThem(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return

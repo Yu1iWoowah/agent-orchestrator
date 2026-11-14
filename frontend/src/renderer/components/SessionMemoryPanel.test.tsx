@@ -6,10 +6,12 @@ import { toKanbanColumn } from "@aoagents/product-ui";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import type { SessionMemoryReading } from "../hooks/useSessionMemory";
 import { AppMemoryIndicator } from "./SessionMemoryPanel";
+import { compositionFixture } from "../test/fixtures/rca-composition";
 import { TooltipProvider } from "./ui/tooltip";
 
-const { appMemoryMock, clipboardMock, memoryQueryMock, postMock, usageQueryMock, workspaceQueryMock } = vi.hoisted(() => ({
+const { compositionGetMock, appMemoryMock, clipboardMock, memoryQueryMock, postMock, usageQueryMock, workspaceQueryMock } = vi.hoisted(() => ({
 	appMemoryMock: vi.fn(),
+	compositionGetMock: vi.fn(),
 	clipboardMock: vi.fn(),
 	usageQueryMock: vi.fn(),
 	memoryQueryMock: vi.fn(),
@@ -40,6 +42,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { POST: (...args: unknown[]) => postMock(...args) },
+	compositionClient: { get: compositionGetMock },
 	apiErrorCode: (error: unknown) => (error as { code?: string } | null)?.code,
 	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
 }));
@@ -128,6 +131,7 @@ function renderButton() {
 
 beforeEach(() => {
 	postMock.mockReset().mockResolvedValue({ data: {} });
+	compositionGetMock.mockReset().mockResolvedValue({ ...compositionFixture(), sessionId: "s-small" });
 	clipboardMock.mockReset().mockResolvedValue(undefined);
 	usageQueryMock.mockReset().mockReturnValue({ data: undefined });
 	const workspace: WorkspaceSummary = {
@@ -644,5 +648,36 @@ describe("AppMemoryIndicator", () => {
 		const rows = within(await screen.findByTestId("session-memory-table")).getAllByTestId("session-memory-row");
 		expect(within(rows[0]).getByTestId("session-memory-status")).toHaveTextContent("idle · 2h");
 		expect(screen.queryByText("Recent")).not.toBeInTheDocument();
+	});
+});
+
+
+describe("recorded content entry", () => {
+	function showWorker(overrides: Partial<WorkspaceSession> = {}) {
+		workspaceQueryMock.mockReturnValue({ data: [{ id: "agent-orchestrator", name: "project", sessions: [{ ...session("s-small", "Codex worker"), workspaceId: "agent-orchestrator", provider: "codex", ...overrides }] }], isSuccess: true });
+		return renderButton();
+	}
+	it("fetches composition only after selecting the approved local Codex worker", async () => {
+		showWorker();
+		await userEvent.click(screen.getByTestId("app-memory-indicator"));
+		expect(compositionGetMock).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Recorded content" }));
+		expect(await screen.findByRole("table", { name: "Recorded content estimates" })).toBeInTheDocument();
+		expect(compositionGetMock).toHaveBeenCalledWith({ sessionId: "s-small" });
+		await userEvent.click(screen.getByRole("button", { name: "Recorded content" }));
+		expect(screen.queryByTestId("session-composition")).not.toBeInTheDocument();
+	});
+
+ it.each(["worker","orchestrator"] satisfies WorkspaceSession["kind"][])("offers local Claude Chat %s through the existing entry",async(kind)=>{
+  showWorker({provider:"claude-code",mode:"chat",kind});
+  await userEvent.click(screen.getByTestId("app-memory-indicator"));
+  expect(screen.getByRole("button",{name:"Recorded content"})).toBeInTheDocument();
+  expect(compositionGetMock).not.toHaveBeenCalled();
+ });
+	it.each<Partial<WorkspaceSession>>([{ provider: "claude-code" }, {provider:"claude-code",mode:"tui"}, {provider:"claude-code",mode:"chat",hostId:"remote"}, { workspaceId: "other" }, { kind: "orchestrator" }, { hostId: "remote" }])("does not offer out-of-scope sources %j", async (overrides) => {
+		showWorker(overrides);
+		await userEvent.click(screen.getByTestId("app-memory-indicator"));
+		expect(screen.queryByRole("button", { name: "Recorded content" })).not.toBeInTheDocument();
+		expect(compositionGetMock).not.toHaveBeenCalled();
 	});
 });

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -44,7 +43,7 @@ func TestAppCLIUsesCapabilityAndPreservesPartialEvidence(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "next.js-1")
 	writeAppCredential(t, cfg.dataDir, testAppGrant)
 	var paths []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/desktop/diagnostics/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -176,9 +175,9 @@ func TestAppCapabilityNeverFollowsRedirect(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "next.js-1")
 	writeAppCredential(t, cfg.dataDir, testAppGrant)
 	calls := 0
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusNoContent) }))
+	target := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusNoContent) }))
 	defer target.Close()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "app", "status")
@@ -193,7 +192,7 @@ func TestAppCaptureCancellationReachesDaemon(t *testing.T) {
 	writeAppCredential(t, cfg.dataDir, testAppGrant)
 	received := make(chan struct{})
 	cancelled := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/desktop/diagnostics/snapshots" {
 			t.Error("unexpected diagnostic request")
 			w.WriteHeader(http.StatusNotFound)
@@ -210,7 +209,7 @@ func TestAppCaptureCancellationReachesDaemon(t *testing.T) {
 	writeRunFileFor(t, cfg, srv)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cmd := NewRootCommand(Deps{ProcessAlive: func(int) bool { return true }})
+	cmd := newTestRootCommand(t, Deps{HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	cmd.SetArgs([]string{"app", "snapshot"})
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()
