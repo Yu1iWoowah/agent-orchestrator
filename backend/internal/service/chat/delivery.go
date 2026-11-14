@@ -130,7 +130,8 @@ func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDel
 
 func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
 	journal, ok := c.store.(chatDeliveryJournal)
-	if !ok || r.Validate() != nil {
+	// Only the daemon may settle an unknown outcome (settleLegacyDelivery).
+	if !ok || r.Validate() != nil || r.Disposition == domain.ChatDeliveryUnknown && r.ExecutionSettled {
 		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
 	}
 	current, err := c.deliveryOwner(ctx, journal)
@@ -318,6 +319,9 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 		if errors.Is(context.Cause(queryCtx), context.DeadlineExceeded) {
 			return a, errors.Join(ports.ErrChatDeliveryUnverified, context.DeadlineExceeded)
 		}
+		if errors.Is(err, ports.ErrChatDeliveryDenied) {
+			return a, ports.ErrChatDeliveryDenied
+		}
 		return a, ports.ErrChatDeliveryUnverified
 	}
 	if receipt.AttemptID != a.ID {
@@ -389,6 +393,52 @@ func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	a.Version++
 	_, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
 	return err
+}
+
+// settleLegacyDelivery ends an attempt left by a host without delivery
+// receipts (user decision u1-delivery-unknown-1 v2, dlv-d6-write-1). It needs
+// all three facts: no epoch or request ID, the host answered without a record,
+// and every member turn completed. The outcome stays unknown and is never
+// replayed; only a daemon-written incomplete receipt may carry the settlement.
+func (c *Controller) settleLegacyDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (bool, error) {
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
+	journal, ok := c.store.(chatDeliveryJournal)
+	if !ok {
+		return false, ports.ErrChatDeliveryUnverified
+	}
+	current, err := c.deliveryOwner(ctx, journal)
+	if err != nil {
+		return false, err
+	}
+	a, err = journal.ChatDeliveryAttempt(ctx, c.sessionID, a.ID)
+	if err != nil || a.ExecutionSettled || a.Disposition != domain.ChatDeliveryUnknown && a.Disposition != domain.ChatDeliveryReserved {
+		return false, err
+	}
+	r := domain.ChatDeliveryReceipt{AttemptID: a.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: c.now()}
+	if a.Receipt != nil {
+		if a.Receipt.ProviderEpoch != "" || a.Receipt.ProviderRequestID != "" {
+			return false, nil
+		}
+		r.ProviderTurnID = a.Receipt.ProviderTurnID
+	}
+	for _, id := range a.TurnIDs {
+		turn, err := c.store.TurnByID(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if turn.State != domain.TurnStateCompleted {
+			return false, nil
+		}
+	}
+	a.Version++
+	a.UpdatedAt = laterChatTime(c.now(), a.UpdatedAt)
+	a.Disposition, a.Receipt, a.ExecutionSettled, a.EvidenceLevel = domain.ChatDeliveryUnknown, &r, true, 0
+	a.NextCheckAt, a.BlockedSince, a.ErrorCode = nil, nil, "CHAT_DELIVERY_LEGACY_SETTLED"
+	if _, err := journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *Controller) startDeliveryMonitor() {
@@ -474,6 +524,14 @@ func (c *Controller) monitorDeliveries() {
 						}
 						if queryErr == nil && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
 							continue
+						}
+						if errors.Is(queryErr, ports.ErrChatDeliveryDenied) {
+							settleCtx, settleCancel := c.deadlineContext(context.Background(), 5*time.Second)
+							settled, settleErr := c.settleLegacyDelivery(settleCtx, a)
+							settleCancel()
+							if settled && settleErr == nil {
+								continue
+							}
 						}
 						if queryErr == nil && saved.NextCheckAt != nil && saved.NextCheckAt.After(c.now()) {
 							due = *saved.NextCheckAt

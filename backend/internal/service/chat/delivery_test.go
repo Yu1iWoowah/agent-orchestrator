@@ -438,3 +438,134 @@ func TestSettledDeliveryAckRetriesWithoutAnotherTurn(t *testing.T) {
 		t.Fatalf("settled ACK recovery blocked shutdown: %v", err)
 	}
 }
+
+// legacyHostConversation answers delivery queries like a host without a
+// record. Without receipts it stands in for a host that predates them.
+type legacyHostConversation struct {
+	*fakeConversation
+	withoutReceipts bool
+	timeout         bool
+	queryStarted    chan struct{}
+}
+
+func (c *legacyHostConversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
+	ref, err := c.fakeConversation.SendTurn(ctx, msg)
+	if c.withoutReceipts {
+		ref.Delivery = nil
+	}
+	return ref, err
+}
+
+func (c *legacyHostConversation) QueryDeliveryAttempt(ctx context.Context, _ ports.ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error) {
+	if c.timeout {
+		c.queryStarted <- struct{}{}
+		<-ctx.Done()
+		return domain.ChatDeliveryReceipt{}, ctx.Err()
+	}
+	return domain.ChatDeliveryReceipt{}, ports.ErrChatDeliveryDenied
+}
+
+func TestLegacyDeliverySettlesOnlyWithoutCorrelationAfterCompletedMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		withoutReceipts bool
+		timeout         bool
+		memberState     domain.TurnState
+		settles         bool
+	}{
+		{name: "settles", withoutReceipts: true, memberState: domain.TurnStateCompleted, settles: true},
+		{name: "failed-member", withoutReceipts: true, memberState: domain.TurnStateFailed},
+		{name: "interrupted-member", withoutReceipts: true, memberState: domain.TurnStateInterrupted},
+		{name: "request-id", memberState: domain.TurnStateCompleted},
+		{name: "query-timeout", withoutReceipts: true, timeout: true, memberState: domain.TurnStateCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newSettingsTestClock()
+			conv := &legacyHostConversation{fakeConversation: newFakeConversation(), withoutReceipts: tc.withoutReceipts, timeout: tc.timeout, queryStarted: make(chan struct{}, 8)}
+			// Its receipts stay outcome_unknown but carry the host epoch and request ID.
+			conv.deliveryPrepared = tc.name == "request-id"
+			expireQuery := func() {
+				if tc.timeout {
+					<-conv.queryStarted
+					clock.awaitTimer(t, 10*time.Second)
+					clock.advance(10 * time.Second)
+				}
+			}
+			h := deliveryHarness(t, conv, clock)
+			turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "legacy input", ClientMessageID: "legacy-" + tc.name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A running member never settles: the silent attempt opens its question.
+			clock.awaitTimer(t, 30*time.Second)
+			h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+			expireQuery()
+			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+				a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				return e == nil && a.AttentionID != "" && !a.ExecutionSettled
+			})
+			blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+			// No native receipt accompanies the terminal event from this host.
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: tc.memberState}
+			expireQuery()
+			if tc.settles {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+					return e == nil && a.ExecutionSettled
+				})
+				saved, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if saved.Disposition != domain.ChatDeliveryUnknown || saved.EvidenceLevel != 0 || saved.ErrorCode != "CHAT_DELIVERY_LEGACY_SETTLED" || saved.Receipt == nil || saved.Receipt.Source != "incomplete" || saved.Receipt.Complete || !saved.Receipt.ExecutionSettled {
+					t.Fatalf("legacy settlement = %+v receipt=%+v", saved, saved.Receipt)
+				}
+				question, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+				if err != nil || question.State != "cancelled" || question.CloseReason != "原執行已確認結束" {
+					t.Fatalf("open delivery question = %+v %v", question, err)
+				}
+				if pending, err := h.st.PendingChatDeliveries(t.Context(), testSession); err != nil || len(pending) != 0 {
+					t.Fatalf("settled legacy attempt still pending: %+v %v", pending, err)
+				}
+				if err := h.svc.StopAll(t.Context()); err != nil {
+					t.Fatalf("shutdown preflight still blocked: %v", err)
+				}
+			} else {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+					return e == nil && a.Version > blocked.Version
+				})
+				saved, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if saved.ExecutionSettled || saved.ErrorCode == "CHAT_DELIVERY_LEGACY_SETTLED" {
+					t.Fatalf("attempt settled outside the legacy conditions: %+v", saved)
+				}
+			}
+			if len(conv.sentTexts()) != 1 {
+				t.Fatal("legacy input replayed")
+			}
+		})
+	}
+}
+
+func TestHostCannotSettleUnknownDelivery(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &legacyHostConversation{fakeConversation: newFakeConversation(), withoutReceipts: true}
+	h := deliveryHarness(t, conv, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "host receipt", ClientMessageID: "host-unknown-settled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: clock.Now()}
+	if _, err := h.ctrl.RecordDeliveryReceiptForTest(t.Context(), r); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
+		t.Fatalf("host incomplete settled receipt = %v, want rejected", err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	if err != nil || saved.ExecutionSettled {
+		t.Fatalf("host settled an unknown outcome: %+v %v", saved, err)
+	}
+}
