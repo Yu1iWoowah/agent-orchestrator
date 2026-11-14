@@ -1050,6 +1050,94 @@ func TestSpawnAsyncChat_KillFencesWorkspacePublicationAndControllerStart(t *test
 	}
 }
 
+// Retiring an orchestrator for replacement while its background chat start is
+// still running fences that start the same way Kill does.
+func TestSpawnAsyncChat_RetireFencesWorkspacePublicationAndControllerStart(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	blockingStore := &blockingWorkspacePublishStore{
+		fakeStore: st,
+		entered:   make(chan context.Context, 1),
+		release:   make(chan struct{}),
+	}
+	m.store = blockingStore
+	deferred := deferredBackground(m)
+
+	cfg := asyncChatSpawnConfig("do the thing")
+	cfg.Kind = domain.KindOrchestrator
+	rec, _, _, err := m.Spawn(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	go (*deferred)[0]()
+	workerCtx := <-blockingStore.entered
+	retired := make(chan error, 1)
+	go func() { retired <- m.RetireForReplacement(context.Background(), rec.ID) }()
+	select {
+	case <-workerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("RetireForReplacement did not cancel the provisioning worker")
+	}
+	close(blockingStore.release)
+	if err := <-retired; err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	stored := st.sessions[rec.ID]
+	if !stored.IsTerminated {
+		t.Fatal("retired orchestrator was not marked terminated")
+	}
+	if stored.ProvisionState != domain.SessionProvisionFailed {
+		t.Fatalf("provision state = %q, want failed", stored.ProvisionState)
+	}
+	if len(launcher.started) != 0 {
+		t.Fatal("controller started after retirement")
+	}
+}
+
+// When the background start cannot be cancelled within the teardown budget,
+// retirement fails and leaves the orchestrator as it was.
+func TestSpawnAsyncChat_RetireStopsWhenProvisioningCannotBeCancelled(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	m.killTeardown = 20 * time.Millisecond
+	blockingStore := &blockingWorkspacePublishStore{
+		fakeStore: st,
+		entered:   make(chan context.Context, 1),
+		release:   make(chan struct{}),
+	}
+	m.store = blockingStore
+	deferred := deferredBackground(m)
+
+	cfg := asyncChatSpawnConfig("do the thing")
+	cfg.Kind = domain.KindOrchestrator
+	rec, _, _, err := m.Spawn(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	background := make(chan struct{})
+	go func() { (*deferred)[0](); close(background) }()
+	<-blockingStore.entered
+
+	retired := make(chan error, 1)
+	go func() { retired <- m.RetireForReplacement(context.Background(), rec.ID) }()
+	select {
+	case err = <-retired:
+	case <-time.After(5 * time.Second):
+		close(blockingStore.release)
+		t.Fatal("RetireForReplacement did not bound its wait for the provisioning worker")
+	}
+	if err == nil || !strings.Contains(err.Error(), "cancel provisioning") {
+		t.Fatalf("retire err = %v, want cancel provisioning failure", err)
+	}
+	if st.sessions[rec.ID].IsTerminated {
+		t.Fatal("retirement marked the orchestrator terminated after failing to cancel its start")
+	}
+	close(blockingStore.release)
+	<-background
+}
+
 func TestSpawnAsyncChat_PreparedProvisionFailureClearsRemovedWorkspace(t *testing.T) {
 	launcher := &recordingLauncher{}
 	m, st, _ := newChatManager(launcher)
