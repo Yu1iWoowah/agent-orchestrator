@@ -1199,6 +1199,26 @@ describe("SessionView", () => {
 		expect(resumeAgentPostMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("forgets a failed resume once the open screen sees the agent started elsewhere", async () => {
+		const session = exitedSession("chat");
+		resumeAgentPostMock.mockResolvedValueOnce({
+			data: undefined, error: { code: "AGENT_RESUME_FAILED", message: "AO could not restart the agent" }, response: { status: 409 },
+		});
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeFailed("sess-1")).toBe(true));
+		// The CLI resumes it while this screen stays open.
+		session.status = "working";
+		session.activity = { state: "idle", lastActivityAt: "" };
+		view.rerender(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeFailed("sess-1")).toBe(false));
+		// The agent exits again; reopening resumes it rather than keeping the old failure.
+		session.status = "exited";
+		session.activity = { state: "exited", lastActivityAt: "" };
+		view.unmount();
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(2));
+	});
+
 	it("does not record a background resume that met another resume in progress", async () => {
 		exitedSession("chat");
 		render(<SessionView sessionId="sess-1" />);

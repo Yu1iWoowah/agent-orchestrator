@@ -537,12 +537,19 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 		(!usesPreviewWorkspaceData && !hostId && canResumeAgent(session, resumeStatus.transition) &&
 		!resumeStatus.statusError && openedSession.current.key === uiSessionId && !openedSession.current.checked);
 	const resumeOnOpen = autoResume.mutate;
+	// Any time the agent is seen running, however it was started (another
+	// screen, the CLI), a recorded failure no longer applies.
+	const agentSeenRunning = Boolean(!usesPreviewWorkspaceData && !hostId && session && !session.cloud &&
+		(!session.statusReadiness || session.statusReadiness === "ready") && !sessionAgentExited(session));
+	const runningSessionId = agentSeenRunning ? session?.id : undefined;
+	useEffect(() => {
+		if (runningSessionId) clearResumeFailure(runningSessionId);
+	}, [runningSessionId]);
 	useEffect(() => {
 		if (openedSession.current.key !== uiSessionId) openedSession.current = { key: uiSessionId, checked: false };
 		if (usesPreviewWorkspaceData || hostId || session?.cloud || !session || daemonStatus.state !== "ready" ||
 			(session.statusReadiness && session.statusReadiness !== "ready") || openedSession.current.checked) return;
 		if (!sessionAgentExited(session)) {
-			clearResumeFailure(session.id);
 			openedSession.current.checked = true;
 			return;
 		}
