@@ -3147,7 +3147,9 @@ def prepare_request(root, initial, old, human_id, control_id, run_id):
                     found[entry["id"]] = (raw, page, entry)
         require(set(found) == {human_id, control_id}, "human or control message not in old transcript")
         human, control = found[human_id][2], found[control_id][2]
-        require(control.get("turnId") and control["turnId"] == human.get("turnId"), "control record not from the turn handling the human instruction")
+        # A batched follower input keeps its own turnId; the turn that actually handled it is consumedByTurnId.
+        handled_by = human.get("consumedByTurnId") or human.get("turnId")
+        require(control.get("turnId") and control["turnId"] == handled_by, "control record not from the turn handling the human instruction")
         block = control_block(control.get("text"))
         require(block.get("stop") == "無具名停", "old named a stop; request not published")
         sources = []

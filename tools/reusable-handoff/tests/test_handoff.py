@@ -1555,7 +1555,7 @@ class SpeedPreparationTests(unittest.TestCase):
         self.assertIn("source_rule", worker)
         self.assertNotIn("classification_row", worker)
 
-    def packaging_fixture(self, text=None, control_turn="preparing", stop="無具名停"):
+    def packaging_fixture(self, text=None, control_turn="preparing", stop="無具名停", human_turn=None, name="runs"):
         old_path = self.root / "worktrees" / h.PROJECT / "orchestrator/old"
         block = {"schema": "rh-control-record/1", "stop": stop, "target": {k: v for k, v in target().items() if k != "mode"},
                  "workers": [], "workspace_index": [{"session_id": "old", "kind": "orchestrator", "path": str(old_path)}]}
@@ -1565,12 +1565,15 @@ class SpeedPreparationTests(unittest.TestCase):
                  text="請交接", createdAt="2026-11-15T00:00:00Z"),
             dict(id="control", kind="message", role="assistant", turnId=control_turn, revision=3, sequence=2, text=control_text)])
         page["transcript"]["turns"].append({"id": "preparing", "state": "running"})
+        if human_turn:
+            # A queued follower input keeps its own turnId and records the handling turn separately.
+            page["transcript"]["entries"][0].update(turnId="follower", consumedByTurnId=human_turn)
         raw = json.dumps(page).encode()
         cli = type("PackagingCLI", (), {})()
         cli.execution = type("Execution", (), {"bindings": set()})()
         cli.last_raw = raw
         cli.session = lambda sid: copy.deepcopy(page)
-        root = h.mkdir(self.root / "runs")
+        root = h.mkdir(self.root / name)
         return root, cli, raw
 
     def package(self, root, cli, run_id=None):
@@ -1589,6 +1592,14 @@ class SpeedPreparationTests(unittest.TestCase):
         self.assertEqual(request["workspace_index"][0]["source_refs"], ["control"])
         self.assertIn("start --run " + request["request_id"], result["start_command"])
         self.assertEqual(cli.execution.bindings, {"old"})
+
+    def test_packaging_helper_matches_batched_human_by_consuming_turn(self):
+        root, cli, _ = self.packaging_fixture(human_turn="preparing")
+        request = h.decode(h.private_read(Path(self.package(root, cli)["request"])))
+        self.assertEqual(request["prepared_by"]["turn_id"], "preparing")
+        root, cli, _ = self.packaging_fixture(human_turn="other-leader", name="other")
+        with self.assertRaisesRegex(h.Stop, "not from the turn handling the human instruction"):
+            self.package(root, cli)
 
     def test_packaging_helper_refuses_missing_block_named_stop_foreign_turn_and_conflicts(self):
         cases = {"missing block": dict(text="沒有區塊"), "named stop": dict(stop="②"), "foreign turn": dict(control_turn="earlier")}
