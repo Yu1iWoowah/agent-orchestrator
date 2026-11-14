@@ -3,12 +3,17 @@ package ports
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 // ErrChatDeliveryUnverified retains the original execution instead of replaying it.
 var ErrChatDeliveryUnverified = errors.New("chat delivery evidence is unavailable")
+
+// ErrChatDeliveryDenied is a host reply without error text that confirms no
+// record. It is still unverified, never proof of non-delivery.
+var ErrChatDeliveryDenied = fmt.Errorf("%w: host answered without a record", ErrChatDeliveryUnverified)
 
 // ErrChatShutdownNotSettled refuses a normal detach without settlement evidence.
 var ErrChatShutdownNotSettled = errors.New("shutdown_not_settled")

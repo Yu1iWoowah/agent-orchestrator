@@ -1010,3 +1010,97 @@ func TestReconnectOnlyNeverPreparesOrStartsMissingHost(t *testing.T) {
 		t.Fatalf("health check wrote a descriptor: %v", err)
 	}
 }
+
+// fakeControlHost answers every control action except attach with reply and
+// records the actions it saw, standing in for a surviving host process.
+func fakeControlHost(t *testing.T, reply helloResponse) (string, <-chan string) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	actions := make(chan string, 16)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			var request hello
+			if json.NewDecoder(conn).Decode(&request) == nil {
+				actions <- request.Action
+				response := reply
+				if request.Action == "attach" {
+					response = helloResponse{OK: true}
+				}
+				_ = json.NewEncoder(conn).Encode(response)
+			}
+			_ = conn.Close()
+		}
+	}()
+	return listener.Addr().String(), actions
+}
+
+func drainActions(actions <-chan string) []string {
+	var seen []string
+	for {
+		select {
+		case action := <-actions:
+			seen = append(seen, action)
+		default:
+			return seen
+		}
+	}
+}
+
+func TestReconnectRefusesHostWithoutDeliveryQueries(t *testing.T) {
+	address, actions := fakeControlHost(t, helloResponse{Error: "unknown chat host action"})
+	dataDir := t.TempDir()
+	cfg := Config{SessionID: "old-host", DataDir: dataDir, Workdir: t.TempDir(), Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	if err := writeDescriptor(dataDir, Descriptor{Version: ProtocolVersion, SessionID: cfg.SessionID, Address: address, Token: "token", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ConnectOrStart(context.Background(), cfg)
+	if !errors.Is(err, ErrIncompatible) {
+		t.Fatalf("connect error = %v, want incompatible", err)
+	}
+	if seen := drainActions(actions); len(seen) != 1 || seen[0] != "delivery-query" {
+		t.Fatalf("host actions = %v, want only the delivery probe (no attach or shutdown)", seen)
+	}
+	if _, err := readDescriptor(dataDir, cfg.SessionID); err != nil {
+		t.Fatalf("old host ownership was cleared: %v", err)
+	}
+}
+
+func TestReconnectAttachesHostThatAnswersDeliveryQueries(t *testing.T) {
+	for name, reply := range map[string]helloResponse{
+		"journal":    {OK: true},
+		"no-journal": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			address, actions := fakeControlHost(t, reply)
+			transport, err := attach(context.Background(), Descriptor{Version: ProtocolVersion, Address: address, Token: "token"}, true)
+			if err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+			_ = transport.Stdin.Close()
+			if seen := drainActions(actions); len(seen) != 2 || seen[0] != "delivery-query" || seen[1] != "attach" {
+				t.Fatalf("host actions = %v, want probe then attach", seen)
+			}
+		})
+	}
+}
+
+func TestReconnectProbeFailureIsNotOldHost(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	_, err = attach(context.Background(), Descriptor{Version: ProtocolVersion, Address: address, Token: "token"}, true)
+	if err == nil || errors.Is(err, ErrIncompatible) {
+		t.Fatalf("attach error = %v, want a connection failure that is not incompatible", err)
+	}
+}

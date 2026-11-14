@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -23,6 +24,9 @@ const maxDeliveryRecords = 4096
 const maxDeliveryJournalBytes = 64 << 20
 
 var errDuplicateDeliveryAttempt = errors.New("delivery attempt already reserved")
+
+// errUnknownHostAction is a host that predates delivery evidence.
+var errUnknownHostAction = fmt.Errorf("%w: unknown chat host action", ports.ErrChatDeliveryUnverified)
 
 type deliveryWait struct {
 	NativeTurn string
@@ -526,6 +530,12 @@ func (c *DeliveryClient) call(ctx context.Context, keys []ports.ChatDeliveryLook
 		return nil, err
 	}
 	if !response.OK {
+		switch response.Error {
+		case "":
+			return nil, ports.ErrChatDeliveryDenied
+		case "unknown chat host action":
+			return nil, errUnknownHostAction
+		}
 		return nil, ports.ErrChatDeliveryUnverified
 	}
 	return response.Deliveries, nil

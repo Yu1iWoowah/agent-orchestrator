@@ -463,6 +463,11 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 	if d.Version != ProtocolVersion {
 		return nil, fmt.Errorf("%w: host=%d daemon=%d", ErrIncompatible, d.Version, ProtocolVersion)
 	}
+	if reconnected {
+		if err := probeDeliverySupport(ctx, d); err != nil {
+			return nil, err
+		}
+	}
 	handshakeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	dialer := net.Dialer{}
@@ -507,6 +512,22 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 		Stdin:                    conn, Stdout: reader, Reconnected: reconnected,
 		NextRequestID: response.NextRequestID, ACPState: response.ACPState,
 	}, nil
+}
+
+// probeDeliverySupport refuses a surviving host that cannot answer delivery
+// queries. Only its explicit unknown-action reply proves that; a failed or
+// silent probe keeps the existing inconclusive path, and the host stays alive.
+func probeDeliverySupport(ctx context.Context, d Descriptor) error {
+	probeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	_, err := (&DeliveryClient{descriptor: d}).call(probeCtx, nil, "delivery-query")
+	if errors.Is(err, errUnknownHostAction) {
+		return fmt.Errorf("%w: host predates delivery evidence", ErrIncompatible)
+	}
+	if err != nil && !errors.Is(err, ports.ErrChatDeliveryUnverified) {
+		return err
+	}
+	return nil
 }
 
 func bindConnToContext(ctx context.Context, conn net.Conn) func(error) error {
