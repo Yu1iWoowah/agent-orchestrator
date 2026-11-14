@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -28,6 +29,10 @@ func TestMain(m *testing.M) {
 		}
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
+		}
+		// Holds a detached host before it takes its launch lock.
+		if delay, err := time.ParseDuration(os.Getenv("AO_CHAT_HOST_START_DELAY")); err == nil {
+			time.Sleep(delay)
 		}
 		err := Run(context.Background(), Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
@@ -1008,5 +1013,91 @@ func TestReconnectOnlyNeverPreparesOrStartsMissingHost(t *testing.T) {
 	}
 	if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("health check wrote a descriptor: %v", err)
+	}
+}
+
+// A start whose caller stops waiting before the detached host takes its launch
+// lock still leaves that host visible, until it has shut down.
+func TestCancelledStartLeavesTheStartingHostVisible(t *testing.T) {
+	cfg := Config{SessionID: "cancelled-start", DataDir: t.TempDir(), Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1", "AO_CHAT_HOST_START_DELAY=1s"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	t.Cleanup(func() {
+		// Even on failure, wait for the delayed host to publish or exit first.
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); err == nil || ProbeHost(cfg.DataDir, cfg.SessionID) == HostAbsent {
+				break
+			}
+		}
+		_ = Shutdown(context.Background(), cfg.DataDir, cfg.SessionID)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := ConnectOrStart(ctx, cfg); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("start = %v, want the caller's deadline", err)
+	}
+	lock, _ := lockPath(cfg.DataDir, cfg.SessionID)
+	if _, err := os.Stat(lock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("host took its launch lock before the cancel: %v", err)
+	}
+	if got := ProbeHost(cfg.DataDir, cfg.SessionID); got != HostRunning {
+		t.Fatalf("starting host = %v, want running", got)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("detached host never published its descriptor")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := Shutdown(context.Background(), cfg.DataDir, cfg.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	for ProbeHost(cfg.DataDir, cfg.SessionID) != HostAbsent {
+		if time.Now().After(deadline) {
+			t.Fatalf("shut down host = %v, want absent", ProbeHost(cfg.DataDir, cfg.SessionID))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A spawn record names its host until the pid exits; an empty record is
+// unknown. Reconcile removes only records whose host has exited.
+func TestSpawnRecordNamesTheHostUntilItExits(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		record string
+		want   HostState
+		kept   bool
+	}{
+		{name: "live", record: strconv.Itoa(os.Getpid()) + "\n", want: HostRunning, kept: true},
+		{name: "exited", record: "1073741823\n", want: HostAbsent, kept: false},
+		{name: "pid not written yet", record: "", want: HostUnknown, kept: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			path, err := spawnPath(dataDir, "review-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tt.record), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := ProbeHost(dataDir, "review-1"); got != tt.want {
+				t.Fatalf("probe = %v, want %v", got, tt.want)
+			}
+			if err := Reconcile(context.Background(), dataDir, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); (err == nil) != tt.kept {
+				t.Fatalf("record kept = %t, want %t (%v)", err == nil, tt.kept, err)
+			}
+		})
 	}
 }
