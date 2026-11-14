@@ -635,3 +635,61 @@ func TestLegacySettlementReleasesHeldDispatchAndHibernation(t *testing.T) {
 		t.Fatalf("settled legacy attempt blocks hibernation: slept=%v err=%v", slept, err)
 	}
 }
+
+// deliveryLinkRaceStore makes the first prompt link lose a real owner CAS.
+type deliveryLinkRaceStore struct {
+	*store.Store
+	raced  atomic.Bool
+	prompt atomic.Value
+}
+
+func (s *deliveryLinkRaceStore) BlockChatDeliveryWithAttention(ctx context.Context, a domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner, prompt domain.AttentionQuestionCreate, at time.Time) (domain.ChatDeliveryAttempt, error) {
+	if !s.raced.Swap(true) {
+		s.prompt.Store(prompt.ID)
+		stale := actor
+		stale.BranchID = "replaced-branch"
+		return s.Store.BlockChatDeliveryWithAttention(ctx, a, expected, stale, prompt, at)
+	}
+	return s.Store.BlockChatDeliveryWithAttention(ctx, a, expected, actor, prompt, at)
+}
+
+func TestFailedPromptLinkRollsBackAndNextBlockRetries(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &stalledDeliveryConversation{fakeConversation: newFakeConversation(), queryCount: make(chan string, 8)}
+	race := &deliveryLinkRaceStore{}
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { race.Store = st; return race }, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "silent original", ClientMessageID: "link-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	// The block's own deadline, then the monitor's retry after the failed link.
+	clock.awaitTimer(t, 5*time.Second)
+	clock.awaitTimer(t, 5*time.Second)
+	// The failed block leaves neither the prompt nor its blocked state behind.
+	first, _ := race.prompt.Load().(string)
+	if first == "" {
+		t.Fatal("first block never reached the store")
+	}
+	if _, err := h.st.GetAttentionQuestion(t.Context(), testSession, first); !errors.Is(err, domain.ErrAttentionQuestionNotFound) {
+		t.Fatalf("rolled-back delivery prompt is visible: %v", err)
+	}
+	if unlinked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID); err != nil || unlinked.AttentionID != "" || unlinked.BlockedSince != nil {
+		t.Fatalf("failed block left partial state: %+v %v", unlinked, err)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(5 * time.Second) })
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+		return e == nil && a.AttentionID != ""
+	})
+	blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	question, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+	if err != nil || question.State != "open" || blocked.AttentionID == first {
+		t.Fatalf("retried block = %+v question=%+v %v", blocked, question, err)
+	}
+}

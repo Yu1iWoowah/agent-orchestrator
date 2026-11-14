@@ -214,3 +214,54 @@ func TestTerminalDeliveryWithdrawsAttentionAtomically(t *testing.T) {
 		})
 	}
 }
+
+func TestDeliveryPromptAndAttemptLinkCommitTogether(t *testing.T) {
+	s, _, rec := settingsStartFixture(t, "")
+	ctx := t.Context()
+	current, err := s.SessionAgentSettings(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := s.ConversationForSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	owner := *dispatchSnapshot(t, current).Owner
+	if _, err := s.AppendUserMessage(ctx, conv.ID, rec.ID, current.OwnerGeneration, domain.ConversationMessage{ID: "message", Text: "preserved input", ClientMessageID: "input", Origin: domain.MessageOriginHuman}, "turn", at); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.ReserveChatDelivery(ctx, domain.ChatDeliveryAttempt{ID: "attempt", SessionID: rec.ID, ConversationID: conv.ID, Owner: owner, Revision: current.Revision, TurnIDs: []string{"turn"}, Disposition: domain.ChatDeliveryReserved, CreatedAt: at, UpdatedAt: at, LastProgressAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version++
+	a.BlockedSince = &at
+	a.ErrorCode = "CHAT_EXECUTION_STATE_UNVERIFIED"
+	prompt := askCreate(rec.ID)
+	prompt.ClientKey = "delivery-" + a.ID + "-1"
+	// An owner CAS failure on the link rolls the prompt back with it.
+	stale := owner
+	stale.BranchID = "other-branch"
+	if _, err := s.BlockChatDeliveryWithAttention(ctx, a, 0, stale, prompt, at); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+		t.Fatalf("stale owner block = %v", err)
+	}
+	if _, err := s.GetAttentionQuestion(ctx, rec.ID, prompt.ID); !errors.Is(err, domain.ErrAttentionQuestionNotFound) {
+		t.Fatalf("delivery prompt became visible without its attempt link: %v", err)
+	}
+	if unchanged, err := s.ChatDeliveryAttempt(ctx, rec.ID, a.ID); err != nil || unchanged.Version != 0 || unchanged.AttentionID != "" || unchanged.BlockedSince != nil {
+		t.Fatalf("failed block changed the attempt: %+v %v", unchanged, err)
+	}
+	linked, err := s.BlockChatDeliveryWithAttention(ctx, a, 0, owner, prompt, at)
+	if err != nil || linked.AttentionID != prompt.ID {
+		t.Fatalf("retried block = %+v %v", linked, err)
+	}
+	stored, err := s.ChatDeliveryAttempt(ctx, rec.ID, a.ID)
+	if err != nil || stored.AttentionID != prompt.ID || stored.Version != 1 {
+		t.Fatalf("stored link = %+v %v", stored, err)
+	}
+	receipt, err := s.AnswerAttentionQuestion(ctx, rec.ID, askAnswer(prompt.ID), at)
+	if err != nil || receipt.DeliveryState != "recorded" {
+		t.Fatalf("answer to the linked prompt = %+v %v", receipt, err)
+	}
+}

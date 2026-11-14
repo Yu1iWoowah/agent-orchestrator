@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -115,111 +116,144 @@ func (s *Store) UpdateChatDelivery(ctx context.Context, next domain.ChatDelivery
 	}
 	defer s.writeMu.Unlock()
 	err := s.inTx(ctx, "update chat delivery", func(q *gen.Queries) error {
-		row, err := q.GetChatDeliveryAttempt(ctx, gen.GetChatDeliveryAttemptParams{SessionID: string(next.SessionID), ID: next.ID})
-		if err != nil {
-			return err
-		}
-		old, err := decodeChatDelivery(row)
-		if err != nil {
-			return err
-		}
-		current, err := q.GetSessionAgentSettings(ctx, next.SessionID)
-		if err != nil {
-			return err
-		}
-		if current.IsTerminated || chatJournalOwner(current) != actor || actor.AccountID != old.Owner.AccountID || actor.ProviderConversationID != old.Owner.ProviderConversationID || actor.BranchID != old.Owner.BranchID || old.Version != expected || old.Owner != next.Owner || old.Revision != next.Revision || old.ConversationID != next.ConversationID || !slices.Equal(old.TurnIDs, next.TurnIDs) || !slices.Equal(old.InputRefs, next.InputRefs) || !old.CreatedAt.Equal(next.CreatedAt) || next.UpdatedAt.Before(old.UpdatedAt) || next.LastProgressAt.Before(old.LastProgressAt) || old.PreparedTurnID != "" && next.PreparedTurnID != old.PreparedTurnID || old.ExecutionSettled && !next.ExecutionSettled {
-			return ports.ErrAgentSettingsConflict
-		}
-		if !old.ExecutionSettled && next.ExecutionSettled && (next.Receipt == nil || !next.Receipt.ExecutionSettled) {
-			return ports.ErrAgentSettingsInvalid
-		}
-		if next.Receipt != nil {
-			if !old.Accepts(*next.Receipt) || next.Disposition != next.Receipt.Disposition {
-				return ports.ErrAgentSettingsConflict
-			}
-		} else if old.Receipt != nil || next.Disposition != old.Disposition {
-			return ports.ErrAgentSettingsConflict
-		}
-		level := 0
-		if next.Disposition == domain.ChatDeliveryAccepted {
-			level = 2
-		}
-		if next.EvidenceLevel != level {
-			return ports.ErrAgentSettingsInvalid
-		}
-		raw, err := json.Marshal(next)
-		if err != nil {
-			return err
-		}
-		n, err := q.UpdateChatDeliveryAttempt(ctx, gen.UpdateChatDeliveryAttemptParams{Disposition: string(next.Disposition), EvidenceLevel: int64(level), RecordJson: string(raw), UpdatedAt: next.UpdatedAt, SessionID: string(next.SessionID), ID: next.ID, ExpectedVersion: expected})
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return ports.ErrAgentSettingsConflict
-		}
-		// Progress recovery closes this episode atomically. A later silence can
-		// create a fresh question instead of leaving a dismissed warning invisible.
-		attentionID := old.AttentionID
-		if attentionID == "" {
-			attentionID = next.AttentionID
-		}
-		recovered := old.BlockedSince != nil && next.BlockedSince == nil
-		if attentionID != "" && (recovered || next.ExecutionSettled || next.Disposition == domain.ChatDeliveryNotSent) {
-			question, err := questionRow(ctx, q, next.SessionID, attentionID)
-			if err != nil {
-				return err
-			}
-			if question.ClientKey != "delivery-"+next.ID && !strings.HasPrefix(question.ClientKey, "delivery-"+next.ID+"-") {
-				return ports.ErrAgentSettingsConflict
-			}
-			if question.State == "open" {
-				reason := "原執行已確認結束"
-				if next.Disposition == domain.ChatDeliveryNotSent {
-					reason = "原輸入已確認未送出"
-				} else if !next.ExecutionSettled {
-					reason = "原執行已恢復進度"
-				}
-				n, err := q.CloseAttentionQuestion(ctx, gen.CloseAttentionQuestionParams{ID: question.ID, OriginSessionID: string(next.SessionID), ExpectedVersion: question.Version, State: "cancelled", Actor: "agent", Reason: reason, At: sql.NullTime{Time: next.UpdatedAt.UTC(), Valid: true}})
-				if err != nil {
-					return err
-				}
-				if n != 1 {
-					return ports.ErrAgentSettingsConflict
-				}
-				row, err := questionRow(ctx, q, next.SessionID, attentionID)
-				if err != nil {
-					return err
-				}
-				record, err := questionRecord(ctx, q, row)
-				if err != nil {
-					return err
-				}
-				if err := appendQuestionCompatibility(ctx, q, record, "cancelled", reason, next.UpdatedAt); err != nil {
-					return err
-				}
-			}
-		}
-		if next.Disposition == domain.ChatDeliveryNotSent && old.Disposition != domain.ChatDeliveryNotSent {
-			for _, input := range next.InputRefs {
-				if _, err := q.RequeueUnforwardedDeliveryMember(ctx, gen.RequeueUnforwardedDeliveryMemberParams{
-					TurnID: input.TurnID, ConversationID: next.ConversationID, BranchID: input.BranchID,
-					SessionID: input.SessionID, PreparedTurnID: next.PreparedTurnID,
-				}); err != nil {
-					return err
-				}
-			}
-		}
-		if next.Receipt != nil {
-			proof, err := json.Marshal(next.Receipt)
-			if err != nil {
-				return err
-			}
-			return q.InsertChatDeliveryReceipt(ctx, gen.InsertChatDeliveryReceiptParams{AttemptID: next.ID, Version: next.Version, ReceiptJson: string(proof), RecordedAt: next.UpdatedAt})
-		}
-		return nil
+		return updateChatDelivery(ctx, q, next, expected, actor)
 	})
 	return next, err
+}
+
+// BlockChatDeliveryWithAttention creates the delivery prompt and links it to
+// its attempt in one transaction, so a prompt is never visible unlinked. A
+// failed owner/version check rolls both back; the next block retries.
+func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner, prompt domain.AttentionQuestionCreate, at time.Time) (domain.ChatDeliveryAttempt, error) {
+	if next.AttentionID != "" || next.BlockedSince == nil || prompt.OriginSessionID != next.SessionID || next.Validate() != nil || expected < 0 || next.Version != expected+1 {
+		return next, ports.ErrAgentSettingsInvalid
+	}
+	prepared, err := prepareAttentionQuestion(prompt)
+	if err != nil {
+		return next, err
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return next, err
+	}
+	defer s.writeMu.Unlock()
+	err = s.inTx(ctx, "block chat delivery", func(q *gen.Queries) error {
+		question, _, err := insertAttentionQuestion(ctx, q, prepared, at)
+		if err != nil {
+			return err
+		}
+		next.AttentionID = question.ID
+		return updateChatDelivery(ctx, q, next, expected, actor)
+	})
+	if err != nil {
+		next.AttentionID = ""
+	}
+	return next, err
+}
+
+func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner) error {
+	row, err := q.GetChatDeliveryAttempt(ctx, gen.GetChatDeliveryAttemptParams{SessionID: string(next.SessionID), ID: next.ID})
+	if err != nil {
+		return err
+	}
+	old, err := decodeChatDelivery(row)
+	if err != nil {
+		return err
+	}
+	current, err := q.GetSessionAgentSettings(ctx, next.SessionID)
+	if err != nil {
+		return err
+	}
+	if current.IsTerminated || chatJournalOwner(current) != actor || actor.AccountID != old.Owner.AccountID || actor.ProviderConversationID != old.Owner.ProviderConversationID || actor.BranchID != old.Owner.BranchID || old.Version != expected || old.Owner != next.Owner || old.Revision != next.Revision || old.ConversationID != next.ConversationID || !slices.Equal(old.TurnIDs, next.TurnIDs) || !slices.Equal(old.InputRefs, next.InputRefs) || !old.CreatedAt.Equal(next.CreatedAt) || next.UpdatedAt.Before(old.UpdatedAt) || next.LastProgressAt.Before(old.LastProgressAt) || old.PreparedTurnID != "" && next.PreparedTurnID != old.PreparedTurnID || old.ExecutionSettled && !next.ExecutionSettled {
+		return ports.ErrAgentSettingsConflict
+	}
+	if !old.ExecutionSettled && next.ExecutionSettled && (next.Receipt == nil || !next.Receipt.ExecutionSettled) {
+		return ports.ErrAgentSettingsInvalid
+	}
+	if next.Receipt != nil {
+		if !old.Accepts(*next.Receipt) || next.Disposition != next.Receipt.Disposition {
+			return ports.ErrAgentSettingsConflict
+		}
+	} else if old.Receipt != nil || next.Disposition != old.Disposition {
+		return ports.ErrAgentSettingsConflict
+	}
+	level := 0
+	if next.Disposition == domain.ChatDeliveryAccepted {
+		level = 2
+	}
+	if next.EvidenceLevel != level {
+		return ports.ErrAgentSettingsInvalid
+	}
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	n, err := q.UpdateChatDeliveryAttempt(ctx, gen.UpdateChatDeliveryAttemptParams{Disposition: string(next.Disposition), EvidenceLevel: int64(level), RecordJson: string(raw), UpdatedAt: next.UpdatedAt, SessionID: string(next.SessionID), ID: next.ID, ExpectedVersion: expected})
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ports.ErrAgentSettingsConflict
+	}
+	// Progress recovery closes this episode atomically. A later silence can
+	// create a fresh question instead of leaving a dismissed warning invisible.
+	attentionID := old.AttentionID
+	if attentionID == "" {
+		attentionID = next.AttentionID
+	}
+	recovered := old.BlockedSince != nil && next.BlockedSince == nil
+	if attentionID != "" && (recovered || next.ExecutionSettled || next.Disposition == domain.ChatDeliveryNotSent) {
+		question, err := questionRow(ctx, q, next.SessionID, attentionID)
+		if err != nil {
+			return err
+		}
+		if question.ClientKey != "delivery-"+next.ID && !strings.HasPrefix(question.ClientKey, "delivery-"+next.ID+"-") {
+			return ports.ErrAgentSettingsConflict
+		}
+		if question.State == "open" {
+			reason := "原執行已確認結束"
+			if next.Disposition == domain.ChatDeliveryNotSent {
+				reason = "原輸入已確認未送出"
+			} else if !next.ExecutionSettled {
+				reason = "原執行已恢復進度"
+			}
+			n, err := q.CloseAttentionQuestion(ctx, gen.CloseAttentionQuestionParams{ID: question.ID, OriginSessionID: string(next.SessionID), ExpectedVersion: question.Version, State: "cancelled", Actor: "agent", Reason: reason, At: sql.NullTime{Time: next.UpdatedAt.UTC(), Valid: true}})
+			if err != nil {
+				return err
+			}
+			if n != 1 {
+				return ports.ErrAgentSettingsConflict
+			}
+			row, err := questionRow(ctx, q, next.SessionID, attentionID)
+			if err != nil {
+				return err
+			}
+			record, err := questionRecord(ctx, q, row)
+			if err != nil {
+				return err
+			}
+			if err := appendQuestionCompatibility(ctx, q, record, "cancelled", reason, next.UpdatedAt); err != nil {
+				return err
+			}
+		}
+	}
+	if next.Disposition == domain.ChatDeliveryNotSent && old.Disposition != domain.ChatDeliveryNotSent {
+		for _, input := range next.InputRefs {
+			if _, err := q.RequeueUnforwardedDeliveryMember(ctx, gen.RequeueUnforwardedDeliveryMemberParams{
+				TurnID: input.TurnID, ConversationID: next.ConversationID, BranchID: input.BranchID,
+				SessionID: input.SessionID, PreparedTurnID: next.PreparedTurnID,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	if next.Receipt != nil {
+		proof, err := json.Marshal(next.Receipt)
+		if err != nil {
+			return err
+		}
+		return q.InsertChatDeliveryReceipt(ctx, gen.InsertChatDeliveryReceiptParams{AttemptID: next.ID, Version: next.Version, ReceiptJson: string(proof), RecordedAt: next.UpdatedAt})
+	}
+	return nil
 }
 
 // ChatDeliveryAttempt reads a stable lookup key after a lost acknowledgement.

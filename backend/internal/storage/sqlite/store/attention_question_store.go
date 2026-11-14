@@ -28,15 +28,40 @@ func questionFingerprint(value any) (string, error) {
 
 // CreateAttentionQuestion atomically stores a validated question and its readable compatibility record.
 func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.AttentionQuestionCreate, at time.Time) (domain.AttentionQuestionRecord, bool, error) {
-	payload, err := domain.ParseAttentionQuestionPayload(command.Payload, command.Kind)
+	prepared, err := prepareAttentionQuestion(command)
 	if err != nil {
 		return domain.AttentionQuestionRecord{}, false, err
 	}
-	if err := domain.ValidateAttentionClientKey(command.ClientKey); err != nil {
+	if err := s.writeMu.LockContext(ctx); err != nil {
 		return domain.AttentionQuestionRecord{}, false, err
 	}
+	defer s.writeMu.Unlock()
+	var result domain.AttentionQuestionRecord
+	created := false
+	err = s.inTx(ctx, "create attention question", func(q *gen.Queries) error {
+		var err error
+		result, created, err = insertAttentionQuestion(ctx, q, prepared, at)
+		return err
+	})
+	return result, created, err
+}
+
+type preparedAttentionQuestion struct {
+	command     domain.AttentionQuestionCreate
+	raw         []byte
+	fingerprint string
+}
+
+func prepareAttentionQuestion(command domain.AttentionQuestionCreate) (preparedAttentionQuestion, error) {
+	payload, err := domain.ParseAttentionQuestionPayload(command.Payload, command.Kind)
+	if err != nil {
+		return preparedAttentionQuestion{}, err
+	}
+	if err := domain.ValidateAttentionClientKey(command.ClientKey); err != nil {
+		return preparedAttentionQuestion{}, err
+	}
 	if command.ID == "" || command.OriginSessionID == "" || command.Audience != "user" {
-		return domain.AttentionQuestionRecord{}, false, &domain.AttentionValidationError{Field: "audience", Message: "question ID, origin session and user audience are required"}
+		return preparedAttentionQuestion{}, &domain.AttentionValidationError{Field: "audience", Message: "question ID, origin session and user audience are required"}
 	}
 	if command.ExpiresAt != nil {
 		utc := command.ExpiresAt.UTC()
@@ -50,19 +75,21 @@ func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.Atte
 		SupersedesID string
 	}{payload, command.Kind, command.Audience, command.ExpiresAt, command.SupersedesID})
 	if err != nil {
-		return domain.AttentionQuestionRecord{}, false, err
+		return preparedAttentionQuestion{}, err
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return domain.AttentionQuestionRecord{}, false, err
+		return preparedAttentionQuestion{}, err
 	}
-	if err := s.writeMu.LockContext(ctx); err != nil {
-		return domain.AttentionQuestionRecord{}, false, err
-	}
-	defer s.writeMu.Unlock()
+	return preparedAttentionQuestion{command: command, raw: raw, fingerprint: fingerprint}, nil
+}
+
+// insertAttentionQuestion runs inside the caller's write transaction.
+func insertAttentionQuestion(ctx context.Context, q *gen.Queries, prepared preparedAttentionQuestion, at time.Time) (domain.AttentionQuestionRecord, bool, error) {
+	command, raw, fingerprint := prepared.command, prepared.raw, prepared.fingerprint
 	var result domain.AttentionQuestionRecord
 	created := false
-	err = s.inTx(ctx, "create attention question", func(q *gen.Queries) error {
+	err := func() error {
 		forwardedBy := command.OriginSessionID
 		if command.SourceReportID != "" {
 			var err error
@@ -137,7 +164,7 @@ func (s *Store) CreateAttentionQuestion(ctx context.Context, command domain.Atte
 		}
 		created = true
 		return nil
-	})
+	}()
 	return result, created, err
 }
 

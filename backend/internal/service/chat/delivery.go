@@ -341,6 +341,10 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	return c.recordDeliveryReceipt(ctx, receipt)
 }
 
+type deliveryAttentionBlocker interface {
+	BlockChatDeliveryWithAttention(context.Context, domain.ChatDeliveryAttempt, int64, domain.AgentSettingsOwner, domain.AttentionQuestionCreate, time.Time) (domain.ChatDeliveryAttempt, error)
+}
+
 type deliveryAttentionWriter interface {
 	CreateAttentionQuestion(context.Context, domain.AttentionQuestionCreate, time.Time) (domain.AttentionQuestionRecord, bool, error)
 }
@@ -378,13 +382,10 @@ func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	}
 	a.Version++
 	a.UpdatedAt = c.now()
-	a, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
-	if err != nil {
-		return err
-	}
-	attention, ok := c.store.(deliveryAttentionWriter)
+	blocker, ok := c.store.(deliveryAttentionBlocker)
 	if !ok || a.AttentionID != "" {
-		return nil
+		_, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
+		return err
 	}
 	payload, err := json.Marshal(domain.AttentionQuestionPayload{SchemaVersion: 1,
 		Title: "訊息執行狀態待確認", Explanation: "輸入與原執行紀錄已保留。尚未取得足夠證據，AO 不會自動重送；請檢查原執行或等待連線恢復。",
@@ -396,13 +397,10 @@ func (c *Controller) blockDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	if err != nil {
 		return err
 	}
-	q, _, err := attention.CreateAttentionQuestion(ctx, domain.AttentionQuestionCreate{ID: uuid.NewString(), OriginSessionID: c.sessionID, ClientKey: "delivery-" + a.ID + "-" + strconv.FormatInt(a.BlockedSince.UnixNano(), 36), Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: payload}, c.now())
-	if err != nil {
-		return err
-	}
-	a.AttentionID, a.UpdatedAt = q.ID, c.now()
-	a.Version++
-	_, err = journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
+	// The prompt and its attempt link commit together: an answer can never
+	// reach an unlinked delivery prompt and be sent to the agent.
+	prompt := domain.AttentionQuestionCreate{ID: uuid.NewString(), OriginSessionID: c.sessionID, ClientKey: "delivery-" + a.ID + "-" + strconv.FormatInt(a.BlockedSince.UnixNano(), 36), Audience: "user", Kind: domain.AttentionQuestionKindQuestion, Payload: payload}
+	_, err = blocker.BlockChatDeliveryWithAttention(ctx, a, a.Version-1, ownerForSettings(current), prompt, c.now())
 	return err
 }
 
