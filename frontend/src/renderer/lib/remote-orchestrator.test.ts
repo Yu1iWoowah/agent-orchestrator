@@ -2,16 +2,17 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { openRemoteOrchestrator } from "./remote-orchestrator";
 import type { WorkspaceSession } from "../types/workspace";
 
-const mocks = vi.hoisted(() => ({ post: vi.fn(), selectedHosts: [] as string[] }));
+const mocks = vi.hoisted(() => ({ post: vi.fn(), get: vi.fn(), selectedHosts: [] as string[] }));
 vi.mock("./host-clients", () => ({
 	clientForSessionHost: (hostId: string) => {
 		mocks.selectedHosts.push(hostId);
-		return { POST: mocks.post };
+		return { POST: mocks.post, GET: mocks.get };
 	},
 }));
 
 beforeEach(() => {
 	mocks.post.mockReset();
+	mocks.get.mockReset().mockResolvedValue({ data: { sessionId: "orch-a", state: "succeeded", resumeMode: "native" }, response: { status: 200 } });
 	mocks.selectedHosts.length = 0;
 });
 
@@ -33,7 +34,7 @@ it("resumes an exited orchestrator on its owning host", async () => {
 		title: "Orchestrator", provider: "opencode", kind: "orchestrator", status: "working",
 		updatedAt: "2026-09-28T00:00:00Z", prs: [], activity: { state: "exited", lastActivityAt: "2026-09-28T00:00:00Z" },
 	};
-	mocks.post.mockResolvedValue({ data: { resumeMode: "native" } });
+	mocks.post.mockResolvedValue({ data: { ok: true, sessionId: "orch-a" }, response: { status: 202 } });
 	await expect(openRemoteOrchestrator("box-a", "shared", orchestrator)).resolves.toBe("orch-a");
 	expect(mocks.selectedHosts).toEqual(["box-a"]);
 	expect(mocks.post).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {

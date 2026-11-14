@@ -1,11 +1,11 @@
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
-import { aoBridge } from "../lib/bridge";
 import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
+import { followResume, noteResumeFailure, useResumeWatch } from "../lib/resume-watch";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
 import { cn } from "../lib/utils";
 import type { WorkspaceSession } from "../types/workspace";
@@ -31,7 +31,8 @@ export function ResumeAgentControl({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const canResume = useCanResumeAgent(session, hostId);
-	const resuming = useIsMutating({ mutationKey: ["resume-agent", hostId ?? "local", session.id] }) > 0;
+	const watch = useResumeWatch(session.id, hostId);
+	const resuming = useIsMutating({ mutationKey: ["resume-agent", hostId ?? "local", session.id] }) > 0 || watch?.state === "running";
 	const resume = useMutation({
 		mutationKey: ["resume-agent", hostId ?? "local", session.id],
 		mutationFn: async () => {
@@ -39,31 +40,26 @@ export function ResumeAgentControl({
 			const { data, error, response } = await clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/resume-agent", {
 				params: { path: { sessionId: session.id } },
 			});
-			if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
-			return data;
-		},
-		onSuccess: async (data) => {
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
-			if (data?.resumeMode === "saved_prompt") {
-				void aoBridge.notifications
-					.show({
-						id: `resume-agent-fallback:${hostId ?? "local"}:${session.id}:${Date.now()}`,
-						title: t("inspector.startedFromPrompt"),
-						body: t("inspector.resumeFallbackBody"),
-					})
-					.catch((err) => {
-						console.warn("Unable to show resume fallback notification", err);
-					});
+			if (error) {
+				noteResumeFailure(session.id, error, hostId);
+				throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
 			}
+			// The daemon finishes the resume in the background; the watch shows
+			// a failure here and refreshes the session once it settles.
+			followResume(session.id, hostId, response, data, refresh);
 		},
+		onSuccess: refresh,
 	});
+	function refresh() {
+		return queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
+	}
 
 	// Cloud sessions re-provision through the control plane (useRestoreSession),
 	// not this local-daemon route — the local daemon has never heard of them and
 	// would answer "Unknown session".
 	if (!canResume) return null;
 
-	const error = resume.error instanceof Error ? resume.error.message : null;
+	const error = resume.error instanceof Error ? resume.error.message : watch?.state === "failed" ? watch.message : null;
 	const control = (
 		<>
 			<Button

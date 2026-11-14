@@ -59,6 +59,7 @@ import {
 } from "../hooks/useShellTerminals";
 import { useSessionInterfaceSwitch } from "../hooks/useSessionInterfaceSwitch";
 import { canResumeAgent, resumeAgentOnOpen } from "../hooks/useCanResumeAgent";
+import { clearResumeFailure, resumeFailed, shouldResumeOnOpen, useResumeWatch } from "../lib/resume-watch";
 import { useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import { conversationQueryKey, conversationSettled } from "../hooks/useConversation";
 import { discardCapturedPendingFileAttachments } from "../hooks/useFileAttachments";
@@ -506,7 +507,13 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	const openedSession = useRef({ key: uiSessionId, checked: false });
 	const autoResume = useMutation({
 		mutationKey: ["resume-agent", "local", sessionId],
-		mutationFn: resumeAgentOnOpen,
+		mutationFn: async (id: string) => {
+			const refresh = () => Promise.all([
+				refreshWorkspaces(),
+				queryClient.invalidateQueries({ queryKey: conversationQueryKey(id) }),
+			]);
+			if (await shouldResumeOnOpen(id, refresh)) await resumeAgentOnOpen(id, refresh);
+		},
 		onSettled: async (_data, _error, id) => {
 			await Promise.all([
 				refreshWorkspaces(),
@@ -514,13 +521,19 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 			]);
 		},
 	});
+	// The daemon finishes a resume in the background; this follows it after the
+	// request settles, including a failure recorded since.
+	const resumeWatch = useResumeWatch(hostId ? undefined : sessionId);
+	const resumeError = autoResume.variables === sessionId && autoResume.isError
+		? apiErrorMessage(autoResume.error)
+		: resumeWatch?.state === "failed" ? resumeWatch.message : undefined;
 	// True while a background resume owns the chat surface: hide the stopped
 	// banner and disable sending, but keep history readable. Covers the initial
 	// check (before the mutation fires) and the mutation in flight. Once checked
 	// is set, only the in-flight mutation keeps it true — switching back to an
 	// already-resumed session no longer flashes "Resuming agent…" while the
 	// workspace query catches up with the new activity state.
-	const quietResume = (autoResume.variables === sessionId && autoResume.isPending) ||
+	const quietResume = (autoResume.variables === sessionId && autoResume.isPending) || resumeWatch?.state === "running" ||
 		(!usesPreviewWorkspaceData && !hostId && canResumeAgent(session, resumeStatus.transition) &&
 		!resumeStatus.statusError && openedSession.current.key === uiSessionId && !openedSession.current.checked);
 	const resumeOnOpen = autoResume.mutate;
@@ -529,13 +542,16 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 		if (usesPreviewWorkspaceData || hostId || session?.cloud || !session || daemonStatus.state !== "ready" ||
 			(session.statusReadiness && session.statusReadiness !== "ready") || openedSession.current.checked) return;
 		if (!sessionAgentExited(session)) {
+			clearResumeFailure(session.id);
 			openedSession.current.checked = true;
 			return;
 		}
 		if (!canResume) return;
 		// One attempt per route opening; a failed resume or a later agent exit
-		// stays stopped rather than entering an automatic restart loop.
+		// stays stopped rather than entering an automatic restart loop. After a
+		// failed resume only the Resume button tries again.
 		openedSession.current.checked = true;
+		if (resumeFailed(session.id)) return;
 		resumeOnOpen(session.id);
 	}, [canResume, daemonStatus.state, hostId, resumeOnOpen, session, uiSessionId]);
 	const previewBaselineRef = useRef<{ sessionId: string; key: string } | null>(null);
@@ -1929,9 +1945,9 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 
 	return (
 		<div className="relative flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="session-detail">
-			{!hostId && !session?.cloud && session?.mode !== "chat" && sessionAgentExited(session) && autoResume.variables === sessionId && autoResume.isError ? (
+			{!hostId && !session?.cloud && session?.mode !== "chat" && sessionAgentExited(session) && resumeError ? (
 				<p className="px-4 py-2 text-xs text-error" role="alert">
-					{apiErrorMessage(autoResume.error)}
+					{resumeError}
 				</p>
 			) : null}
 			<div
@@ -2040,8 +2056,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 									workspaceFileActive={Boolean(fileTabs.activePath)}
 									auxiliaryTabOrder={resolvedAuxiliaryTabOrder}
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
-									controllerResumeError={!hostId && autoResume.variables === sessionId && autoResume.isError
-										? apiErrorMessage(autoResume.error) : undefined}
+									controllerResumeError={hostId ? undefined : resumeError}
 									controllerTransitioning={interfaceUi.controllerTransitioning}
 									accountMoving={interfaceUi.accountMoving}
 									arriving={interfaceUi.optimisticTarget === "chat"}

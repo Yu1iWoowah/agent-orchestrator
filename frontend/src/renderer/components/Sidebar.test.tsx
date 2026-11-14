@@ -188,10 +188,11 @@ vi.mock("../hooks/useSettings", () => ({
 	useSettings: () => ({ settings: { trackerIntakeEnabled: true }, isLoading: false, error: undefined }),
 }));
 
+const apiTrust = vi.hoisted(() => ({ trusted: false }));
 vi.mock("../lib/api-client", async (original) => ({
 	...await original<typeof import("../lib/api-client")>(),
 	apiClient: { GET: getMock, POST: postMock },
-	hasTrustedApiBaseUrl: () => false,
+	hasTrustedApiBaseUrl: () => apiTrust.trusted,
 	apiErrorMessage: (error: unknown) => {
 		if (error instanceof Error) return error.message;
 		if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
@@ -1312,6 +1313,25 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Pin session")).toHaveProperty("tabIndex", 0);
 		expect(screen.queryByRole("button", { name: "Rename fix login" })).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Archive session")).toHaveProperty("tabIndex", 0);
+	});
+
+	it("prefetches a hovered stopped chat session without resuming its agent", async () => {
+		vi.useFakeTimers();
+		apiTrust.trusted = true;
+		try {
+			renderSidebar({
+				workspaces: [{ ...workspace, sessions: [{ ...session, mode: "chat", status: "exited", activity: { state: "exited", lastActivityAt: "" } }] }],
+			});
+			fireEvent.mouseEnter(screen.getByLabelText("Open fix login"));
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(2_000);
+			});
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/conversation", expect.anything());
+			expect(postMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", expect.anything());
+		} finally {
+			apiTrust.trusted = false;
+			vi.useRealTimers();
+		}
 	});
 
 	it("fades the message age out in favor of the overlaid hover actions", () => {

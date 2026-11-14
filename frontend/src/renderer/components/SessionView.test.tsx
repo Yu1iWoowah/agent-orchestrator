@@ -16,6 +16,7 @@ import { inspectorIsOpen, rememberedFileDisplayMode, useUiStore, type InspectorV
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
+import { resetResumeWatches, resumeFailed } from "../lib/resume-watch";
 import { chatDraftScopeKey } from "../lib/chat-drafts";
 import { useFileAttachments, type FileAttachment } from "../hooks/useFileAttachments";
 
@@ -86,6 +87,7 @@ const cloudSessionPoll = vi.hoisted(() => vi.fn());
 const cloudGateState = vi.hoisted(() => ({ cloudEnabled: true }));
 const workspaceSessionLookup = vi.hoisted(() => vi.fn());
 const resumeAgentPostMock = vi.hoisted(() => vi.fn());
+const resumeStatusMock = vi.hoisted(() => vi.fn());
 
 async function chooseSessionAction(name: string) {
 	const user = userEvent.setup();
@@ -308,6 +310,7 @@ vi.mock("./chat/SessionChatSurface", async () => {
 		onSelectChat,
 		controllerTransitioning,
 		agentResuming,
+		controllerResumeError,
 		shellTerminals = [],
 		shellTarget,
 		onSelectShellTerminal,
@@ -333,6 +336,7 @@ vi.mock("./chat/SessionChatSurface", async () => {
 		onSelectChat?: () => void;
 		agentResuming?: boolean;
 		controllerTransitioning?: boolean;
+		controllerResumeError?: string;
 		shellTerminals?: Array<{ handleId: string; title: string }>;
 		shellTarget?: { kind: "shell"; handleId: string };
 		onSelectShellTerminal?: (handleId: string) => void;
@@ -352,6 +356,7 @@ vi.mock("./chat/SessionChatSurface", async () => {
 			data-testid="chat-surface"
 			data-transitioning={controllerTransitioning || agentResuming ? "true" : "false"}
 			data-new-work-disabled={newWorkDisabled ? "true" : "false"}
+			data-resume-error={controllerResumeError ?? ""}
 		>
 			chat surface
 			<div data-testid={`auxiliary-tab-order-${session.id}`}>
@@ -1034,10 +1039,15 @@ describe("SessionView", () => {
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
 		reviewGetMock.mockReset();
+		resetResumeWatches();
 		resumeAgentPostMock.mockReset();
-		resumeAgentPostMock.mockResolvedValue({ data: {}, error: undefined });
+		resumeAgentPostMock.mockResolvedValue({ data: {}, error: undefined, response: { status: 202 } });
+		resumeStatusMock.mockReset().mockResolvedValue({
+			data: undefined, error: { code: "AGENT_RESUME_NOT_FOUND" }, response: { status: 404 },
+		});
 		chatViewPostMock.mockReset().mockResolvedValue({ error: undefined });
 		reviewGetMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/resume-agent") return resumeStatusMock();
 			if (path === "/api/v1/sessions/{sessionId}/workspace/manifest") {
 				return {
 					data: {
@@ -1116,7 +1126,7 @@ describe("SessionView", () => {
 		session.mode = "chat";
 		session.status = "exited";
 		session.activity = { state: "exited", lastActivityAt: "" };
-		let finishResume!: (value: { data: object; error: undefined }) => void;
+		let finishResume!: (value: never) => void;
 		resumeAgentPostMock.mockImplementation(() => new Promise((resolve) => { finishResume = resolve; }));
 		render(<SessionView sessionId="sess-1" />);
 		expect(chatSurfaceTransitionRenders[0]).toBe(true);
@@ -1125,9 +1135,12 @@ describe("SessionView", () => {
 		await act(async () => {
 			session.activity = { state: "idle", lastActivityAt: "" };
 			session.status = "working";
-			finishResume({ data: {}, error: undefined });
+			finishResume({ data: {}, error: undefined, response: { status: 202 } } as never);
 		});
-		await waitFor(() => expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"));
+		// The surface stays quiet while the background resume is followed.
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+		resumeStatusMock.mockResolvedValue({ data: { sessionId: "sess-1", state: "succeeded", resumeMode: "native" }, response: { status: 200 } });
+		await waitFor(() => expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"), { timeout: 3000 });
 	});
 
 	it("does not restart an agent that exits while its session is already open", async () => {
@@ -1139,6 +1152,64 @@ describe("SessionView", () => {
 		view.rerender(<SessionView sessionId="sess-1" />);
 		await act(async () => {});
 		expect(resumeAgentPostMock).not.toHaveBeenCalled();
+	});
+
+	function exitedSession(mode: "chat" | "tui") {
+		const session = workerSession("sess-1");
+		session.mode = mode;
+		session.status = "exited";
+		session.activity = { state: "exited", lastActivityAt: "" };
+		return session;
+	}
+
+	it("follows a resume the daemon is already running instead of starting another", async () => {
+		exitedSession("chat");
+		resumeStatusMock.mockResolvedValue({ data: { sessionId: "sess-1", state: "running" }, response: { status: 200 } });
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeStatusMock).toHaveBeenCalled());
+		await act(async () => {});
+		expect(resumeAgentPostMock).not.toHaveBeenCalled();
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "true");
+	});
+
+	it("keeps a TUI session whose recorded resume failed stopped, showing why", async () => {
+		exitedSession("tui");
+		resumeStatusMock.mockResolvedValue({
+			data: { sessionId: "sess-1", state: "failed", error: { status: 409, code: "AGENT_NOT_EXITED", message: "The agent is still running; only exited agents can be resumed" } },
+			response: { status: 200 },
+		});
+		render(<SessionView sessionId="sess-1" />);
+		expect(await screen.findByRole("alert")).toHaveTextContent("The agent is still running; only exited agents can be resumed");
+		expect(resumeAgentPostMock).not.toHaveBeenCalled();
+		expect(resumeFailed("sess-1")).toBe(true);
+	});
+
+	it("records a resume that fails before its controller starts, even after the session is closed", async () => {
+		exitedSession("chat");
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
+		resumeStatusMock.mockResolvedValue({
+			data: { sessionId: "sess-1", state: "failed", error: { status: 409, code: "AGENT_ACCOUNT_IN_USE", message: "The account is being used by another operation. Wait for it to finish, then retry." } },
+			response: { status: 200 },
+		});
+		view.unmount();
+		await waitFor(() => expect(resumeFailed("sess-1")).toBe(true), { timeout: 3000 });
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-resume-error", "The account is being used by another operation. Wait for it to finish, then retry."));
+		expect(resumeAgentPostMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not record a background resume that met another resume in progress", async () => {
+		exitedSession("chat");
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
+		resumeStatusMock.mockResolvedValue({
+			data: { sessionId: "sess-1", state: "failed", error: { status: 409, code: "AGENT_RESUME_IN_PROGRESS", message: "The agent is already being resumed" } },
+			response: { status: 200 },
+		});
+		await waitFor(() => expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"), { timeout: 3000 });
+		expect(resumeFailed("sess-1")).toBe(false);
+		expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-resume-error", "");
 	});
 
 	it("keeps terminated sessions stopped when opened", async () => {
