@@ -6470,7 +6470,7 @@ export interface components {
             /** Format: date-time */
             deliveredAt?: null | string;
             /** @enum {string} */
-            deliveryState: "queued" | "delivered" | "failed";
+            deliveryState: "queued" | "delivered" | "failed" | "recorded";
             lastError?: string;
             notes?: null | string;
             /** Format: int64 */
@@ -9223,7 +9223,7 @@ export interface components {
             /** Format: date-time */
             deliveredAt?: null | string;
             /** @enum {string} */
-            deliveryState: "queued" | "delivered" | "failed";
+            deliveryState: "queued" | "delivered" | "failed" | "recorded";
             lastError?: string;
             notes?: null | string;
             /** Format: int64 */

@@ -20413,6 +20413,7 @@ components:
           - queued
           - delivered
           - failed
+          - recorded
           type: string
         lastError:
           type: string
@@ -27879,6 +27880,7 @@ components:
           - queued
           - delivered
           - failed
+          - recorded
           type: string
         lastError:
           type: string

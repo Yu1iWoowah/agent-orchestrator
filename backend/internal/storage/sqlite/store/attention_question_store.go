@@ -368,7 +368,17 @@ func (s *Store) AnswerAttentionQuestion(ctx context.Context, session domain.Sess
 		if submission.Notes != nil {
 			notes = sql.NullString{String: *submission.Notes, Valid: true}
 		}
-		answer, err := q.InsertAttentionAnswer(ctx, gen.InsertAttentionAnswerParams{QuestionID: row.ID, ClientAnswerID: submission.ClientAnswerID, QuestionVersion: submission.ExpectedVersion, AnswersJson: string(answerJSON), Fingerprint: fingerprint, Message: message, SavedAt: at.UTC(), Notes: notes})
+		// An answer to an AO delivery prompt is recorded only: sending it would
+		// start a new agent turn that the same unverifiable host cannot confirm.
+		deliveryState := "queued"
+		deliveryPrompt, err := q.IsChatDeliveryAttention(ctx, gen.IsChatDeliveryAttentionParams{SessionID: row.OriginSessionID, AttentionID: row.ID})
+		if err != nil {
+			return err
+		}
+		if deliveryPrompt {
+			deliveryState = "recorded"
+		}
+		answer, err := q.InsertAttentionAnswer(ctx, gen.InsertAttentionAnswerParams{QuestionID: row.ID, ClientAnswerID: submission.ClientAnswerID, QuestionVersion: submission.ExpectedVersion, AnswersJson: string(answerJSON), Fingerprint: fingerprint, Message: message, SavedAt: at.UTC(), Notes: notes, DeliveryState: deliveryState})
 		if err != nil {
 			return err
 		}

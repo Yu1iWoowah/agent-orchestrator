@@ -77,7 +77,7 @@ function isAnswer(value: unknown): value is QuestionAnswer {
 function isReceipt(value: unknown): value is QuestionReceipt {
 	return isRecord(value) && (value.notes === undefined || isText(value.notes, 4000)) && isToken(value.clientAnswerId, 128) &&
 		isVersion(value.questionVersion) && isDate(value.savedAt) &&
-		typeof value.deliveryState === "string" && ["queued", "delivered", "failed"].includes(value.deliveryState) &&
+		typeof value.deliveryState === "string" && ["queued", "delivered", "failed", "recorded"].includes(value.deliveryState) &&
 		optionalDate(value.deliveredAt) && optionalString(value.lastError) &&
 		(value.deliveryState !== "delivered" || isDate(value.deliveredAt)) &&
 		Array.isArray(value.answers) && value.answers.length >= 1 && value.answers.length <= 4 &&

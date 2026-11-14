@@ -127,6 +127,16 @@ describe("answer notes", () => {
 		for (const changed of [{ ...receipt, notes: "changed" }, { ...receipt, answers: [{ ...built.answers[0], notes: "changed" }, built.answers[1]] }]) expect(() => parseQuestionReceipt(changed, submission)).toThrow();
 		expect(parseSessionQuestion({ ...question, state: "answered", answer: receipt }, "session").answer).toEqual(receipt);
 	});
+	it("accepts an answer recorded without agent delivery and rejects unknown states", () => {
+		const question = sessionQuestionFixture(); const fields = emptyQuestionFields(question.payload);
+		fields.target = { selectedOptionIds: ["stage"], otherSelected: false, otherText: "", notes: "" };
+		fields.checks.selectedOptionIds = ["test"];
+		const built = questionAnswers(question.payload, fields, "");
+		expect(built.errors).toEqual({});
+		const receipt = { clientAnswerId: "reply", questionVersion: question.version, answers: built.answers, savedAt: "2026-10-29T01:00:00Z", deliveryState: "recorded" };
+		expect(parseSessionQuestion({ ...question, state: "answered", answer: receipt }, "session").answer).toEqual(receipt);
+		expect(() => parseSessionQuestion({ ...question, state: "answered", answer: { ...receipt, deliveryState: "sent" } }, "session")).toThrow();
+	});
 	it("validates Unicode notes limits independently of required choices", () => {
 		const { payload } = sessionQuestionFixture(); const fields = emptyQuestionFields(payload);
 		fields.target.notes = "only notes";

@@ -737,3 +737,59 @@ func TestAttentionQuestionOverallNotesPreserveLegacyAnswerArray(t *testing.T) {
 		}
 	})
 }
+
+func TestAttentionAnswerToDeliveryPromptIsRecordedNotQueued(t *testing.T) {
+	s, _, rec := settingsStartFixture(t, "")
+	ctx := t.Context()
+	current, err := s.SessionAgentSettings(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := s.ConversationForSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	owner := *dispatchSnapshot(t, current).Owner
+	if _, err := s.AppendUserMessage(ctx, conv.ID, rec.ID, current.OwnerGeneration, domain.ConversationMessage{ID: "message", Text: "preserved input", ClientMessageID: "input", Origin: domain.MessageOriginHuman}, "turn", at); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.ReserveChatDelivery(ctx, domain.ChatDeliveryAttempt{ID: "attempt", SessionID: rec.ID, ConversationID: conv.ID, Owner: owner, Revision: current.Revision, TurnIDs: []string{"turn"}, Disposition: domain.ChatDeliveryReserved, CreatedAt: at, UpdatedAt: at, LastProgressAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := askCreate(rec.ID)
+	prompt.ClientKey = "delivery-" + a.ID + "-1"
+	linked, _, err := s.CreateAttentionQuestion(ctx, prompt, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version++
+	a.AttentionID = linked.ID
+	a.BlockedSince = &at
+	a.ErrorCode = "CHAT_EXECUTION_STATE_UNVERIFIED"
+	if _, err = s.UpdateChatDelivery(ctx, a, 0, owner); err != nil {
+		t.Fatal(err)
+	}
+	// An agent may pick the same prefix; only the attempt link records-only.
+	agentAsk := askCreate(rec.ID)
+	agentAsk.ID, agentAsk.ClientKey = "question-2", "delivery-"+a.ID
+	unlinked, _, err := s.CreateAttentionQuestion(ctx, agentAsk, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{linked.ID: "recorded", unlinked.ID: "queued"} {
+		receipt, err := s.AnswerAttentionQuestion(ctx, rec.ID, askAnswer(id), at)
+		if err != nil || receipt.DeliveryState != want {
+			t.Fatalf("answer %s receipt = %+v, %v; want %s", id, receipt, err, want)
+		}
+		got, err := s.GetAttentionQuestion(ctx, rec.ID, id)
+		if err != nil || got.State != "answered" || got.Answer == nil || got.Answer.DeliveryState != want {
+			t.Fatalf("saved answer %s = %+v, %v", id, got, err)
+		}
+	}
+	outbox, err := s.PendingAttentionAnswers(ctx, 10)
+	if err != nil || len(outbox) != 1 || outbox[0].QuestionID != unlinked.ID {
+		t.Fatalf("delivery prompt answer reached the agent outbox: %+v, %v", outbox, err)
+	}
+}

@@ -224,8 +224,8 @@ func (q *Queries) GetAttentionQuestion(ctx context.Context, arg GetAttentionQues
 }
 
 const insertAttentionAnswer = `-- name: InsertAttentionAnswer :one
-INSERT INTO attention_answers(question_id,client_answer_id,question_version,answers_json,fingerprint,message,saved_at,notes)
-VALUES(?,?,?,?,?,?,?,?8) RETURNING question_id, client_answer_id, question_version, answers_json, fingerprint, message, saved_at, delivery_state, delivered_at, last_error, delivery_attempts, notes
+INSERT INTO attention_answers(question_id,client_answer_id,question_version,answers_json,fingerprint,message,saved_at,notes,delivery_state)
+VALUES(?,?,?,?,?,?,?,?8,?9) RETURNING question_id, client_answer_id, question_version, answers_json, fingerprint, message, saved_at, delivery_state, delivered_at, last_error, delivery_attempts, notes
 `
 
 type InsertAttentionAnswerParams struct {
@@ -237,6 +237,7 @@ type InsertAttentionAnswerParams struct {
 	Message         string
 	SavedAt         time.Time
 	Notes           sql.NullString
+	DeliveryState   string
 }
 
 func (q *Queries) InsertAttentionAnswer(ctx context.Context, arg InsertAttentionAnswerParams) (AttentionAnswer, error) {
@@ -249,6 +250,7 @@ func (q *Queries) InsertAttentionAnswer(ctx context.Context, arg InsertAttention
 		arg.Message,
 		arg.SavedAt,
 		arg.Notes,
+		arg.DeliveryState,
 	)
 	var i AttentionAnswer
 	err := row.Scan(
@@ -330,6 +332,24 @@ func (q *Queries) InsertAttentionQuestion(ctx context.Context, arg InsertAttenti
 		&i.SeenAt,
 	)
 	return i, err
+}
+
+const isChatDeliveryAttention = `-- name: IsChatDeliveryAttention :one
+SELECT EXISTS(SELECT 1 FROM chat_delivery_attempts WHERE session_id=?1
+ AND json_extract(record_json,'$.attentionId')=?2)
+`
+
+type IsChatDeliveryAttentionParams struct {
+	SessionID   string
+	AttentionID string
+}
+
+// An AO delivery prompt is linked from its attempt, never by client key.
+func (q *Queries) IsChatDeliveryAttention(ctx context.Context, arg IsChatDeliveryAttentionParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isChatDeliveryAttention, arg.SessionID, arg.AttentionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const listAttentionQuestions = `-- name: ListAttentionQuestions :many
