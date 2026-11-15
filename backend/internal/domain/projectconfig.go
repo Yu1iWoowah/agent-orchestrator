@@ -57,10 +57,6 @@ type ProjectConfig struct {
 	// orchestrator sessions.
 	OrchestratorRules string `json:"orchestratorRules,omitempty"`
 
-	// AgentAccounts contains local-only opaque provider account references.
-	// Cloud/sync/export projections must omit these installation-specific IDs.
-	AgentAccounts map[AgentAccountProvider]string `json:"agentAccounts,omitempty"`
-
 	// AgentConfig is the default agent config for the project.
 	AgentConfig AgentConfig `json:"agentConfig,omitempty"`
 	// Worker and Orchestrator are role-specific harness/agent-config overrides.

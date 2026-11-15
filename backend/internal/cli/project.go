@@ -130,7 +130,6 @@ type projectConfig struct {
 	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
-	AgentAccounts         map[string]string           `json:"agentAccounts,omitempty"`
 	OrchestratorHandoff   orchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
 
 	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`
@@ -411,6 +410,14 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		var cfg projectConfig
 		if err := json.Unmarshal([]byte(opts.configJSON), &cfg); err != nil {
 			return projectConfig{}, usageError{fmt.Errorf("--config-json is not a valid JSON object: %w", err)}
+		}
+		// The mirror no longer has agentAccounts, so Unmarshal would drop it
+		// and set-config would replace the whole config without it.
+		var keys map[string]json.RawMessage
+		if json.Unmarshal([]byte(opts.configJSON), &keys) == nil {
+			if _, ok := keys["agentAccounts"]; ok {
+				return projectConfig{}, usageError{errors.New("--config-json: agentAccounts was removed; use `ao account use <id> --project <id> --role <role>` or `--default`")}
+			}
 		}
 		return cfg, nil
 	}

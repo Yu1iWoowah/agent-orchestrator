@@ -358,7 +358,6 @@ ao account add --provider claude
 ao account login <account-id>
 ao account login --operation <operation-id>
 ao account use <account-id> --default
-ao account use <account-id> --project <project-id>
 ao account use <account-id> --project <project-id> --role worker
 ao account use <account-id> --project <project-id> --role reviewer --reviewer claude-code
 ao spawn --project <project-id> --agent codex --account <account-id> --name "Worker"
@@ -368,14 +367,16 @@ ao account logout <account-id>
 ao account rm <account-id>
 ```
 
-`use` requires exactly one scope. `--default` applies to the account's provider;
-`--project` alone changes that provider's project default. Role selection changes
-only that role's reference. Reviewer selection always names the configured
-harness with `--reviewer`, never an array position. Project mutations preserve
-other config fields in a daemon transaction. A provider mismatch is rejected.
-Existing sessions and reviewer executions keep their own durable binding when
-any default changes. New work inherits explicit selection, then role, project,
-and global defaults. Explicit device accounts preserve the device login policy.
+`use` requires exactly one scope. `--default` applies to the account's provider.
+`--project` requires `--role worker`, `orchestrator`, or `reviewer` and changes
+only that role's reference; projects have no provider-wide account default.
+Reviewer selection always names the configured harness with `--reviewer`, never
+an array position. Project mutations preserve other config fields in a daemon
+transaction. A provider mismatch is rejected and never falls back to another
+account. Existing sessions and reviewer executions keep their own durable
+binding when any default changes. New work uses the explicit selection, then the
+role account, then the provider's global default, then the device login.
+Explicit device accounts preserve the device login policy.
 
 A session move drains the current turn by default. Only `--stop-turn` authorizes
 interruption. Without `--wait`, the printed transition is pending, not proof of

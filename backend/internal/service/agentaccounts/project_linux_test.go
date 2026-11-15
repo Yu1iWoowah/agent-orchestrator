@@ -29,7 +29,13 @@ func TestProjectAccountMutationIsLocalAndPreservesConfiguredRoles(t *testing.T) 
 	if err := s.SetProjectAccount(ports.WithRemoteAccountRequest(ctx), "p", "A", "", ""); !errors.Is(err, ports.ErrAgentAccountLocalOnly) {
 		t.Fatalf("remote=%v", err)
 	}
-	for _, role := range []string{"", "worker", "reviewer"} {
+	if err := s.SetProjectAccount(ctx, "p", "A", "", ""); !errors.Is(err, ports.ErrAgentAccountScopeInvalid) {
+		t.Fatalf("empty role = %v, want scope invalid: project provider defaults were removed", err)
+	}
+	if got, _, err := st.GetProject(ctx, "p"); err != nil || got.Config.Worker.AgentAccountID != "" {
+		t.Fatalf("empty role wrote config=%+v err=%v", got.Config, err)
+	}
+	for _, role := range []string{"worker", "reviewer"} {
 		reviewer := ""
 		if role == "reviewer" {
 			reviewer = "claude-code"
@@ -39,7 +45,7 @@ func TestProjectAccountMutationIsLocalAndPreservesConfiguredRoles(t *testing.T) 
 		}
 	}
 	got, _, err := st.GetProject(ctx, "p")
-	if err != nil || got.Config.AgentAccounts[domain.AgentAccountProviderClaude] != "A" || got.Config.Worker.AgentAccountID != "A" || got.Config.Reviewers[0].AgentAccountID != "A" {
+	if err != nil || got.Config.Worker.AgentAccountID != "A" || got.Config.Reviewers[0].AgentAccountID != "A" {
 		t.Fatalf("config=%+v err=%v", got.Config, err)
 	}
 }

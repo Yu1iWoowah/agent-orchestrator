@@ -285,7 +285,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Set one local project provider or role account without replacing config */
+        /** Set one local project role account without replacing config */
         put: operations["setProjectAgentAccount"];
         post?: never;
         delete?: never;
@@ -9026,6 +9026,10 @@ export interface components {
             preparationId: string;
         };
         ProjectConfig: {
+            /**
+             * @deprecated
+             * @description Removed. Requests that include this key are rejected; responses never include it.
+             */
             agentAccounts?: {
                 [key: string]: string;
             };

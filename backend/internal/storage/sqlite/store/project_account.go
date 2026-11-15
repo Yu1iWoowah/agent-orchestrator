@@ -35,14 +35,6 @@ func (s *Store) SetProjectAgentAccount(ctx context.Context, id, account string, 
 			return ok && p == provider
 		}
 		switch role {
-		case "":
-			if reviewer != "" {
-				return ports.ErrAgentAccountScopeInvalid
-			}
-			if cfg.AgentAccounts == nil {
-				cfg.AgentAccounts = map[domain.AgentAccountProvider]string{}
-			}
-			cfg.AgentAccounts[provider] = account
 		case "worker", "orchestrator":
 			if reviewer != "" {
 				return ports.ErrAgentAccountScopeInvalid

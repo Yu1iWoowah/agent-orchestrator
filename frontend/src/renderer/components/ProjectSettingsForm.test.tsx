@@ -2115,7 +2115,6 @@ describe("ProjectSettingsForm", () => {
 			repo: "",
 			defaultBranch: "main",
 			config: {
-				agentAccounts: { codex: "project-A" },
 				worker: { agent: "codex", agentAccountId: "worker-A" },
 				orchestrator: { agent: "claude-code", agentAccountId: "orchestrator-B" },
 				reviewers: [{ harness: "codex", agentAccountId: "reviewer-C" }, { harness: "claude-code", agentAccountId: "reviewer-D", agentConfig: {model:"claude-native"} }],
@@ -2123,6 +2122,8 @@ describe("ProjectSettingsForm", () => {
 		});
 		const client = renderSettings("proj-1", undefined, "agents");
 		await screen.findByRole("button", { name: "Worker model" });
+		// Only role account pickers remain: worker, orchestrator, primary and extra reviewer.
+		expect(screen.getAllByTestId("agent-account-picker")).toHaveLength(4);
 		await chooseCustomModel("Worker model", "custom-native");
 		submitSettings();
 		await waitFor(() => expect(patchMock).toHaveBeenCalledOnce());
@@ -2132,7 +2133,6 @@ describe("ProjectSettingsForm", () => {
 		});
 		expect(client.getQueryData(["project", "proj-1"])).toMatchObject({
 			config: {
-				agentAccounts: { codex: "project-A" },
 				worker: { agentAccountId: "worker-A" },
 				orchestrator: { agentAccountId: "orchestrator-B" },
 				reviewers: [

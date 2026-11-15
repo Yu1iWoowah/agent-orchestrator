@@ -122,7 +122,6 @@ export function projectDraftConflictPaths(paths: readonly string[]): string[] {
 				"reviewerPermissions",
 				"accountSettings.reviewers",
 			];
-		if (role === "agentAccounts") return [`accountSettings.providers${member ? `.${member}` : ""}`];
 		if (role === "worker" || role === "orchestrator") {
 			if (member === "agentAccountId") return [`accountSettings.${role}`];
 			if (member === "agent") return [`${role}Agent`];

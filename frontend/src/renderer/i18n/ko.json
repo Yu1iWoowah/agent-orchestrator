@@ -3982,7 +3982,6 @@
 	"settings.agentAccounts.unknownLimits": "사용 한도 알 수 없음",
 	"settings.agentAccounts.limitsUpdated": "한도 업데이트 {{time}}",
 	"settings.agentAccounts.logoutDescription": "{{email}}에서 로그아웃할까요? 기존 세션은 이 계정을 유지하며 다시 로그인해야 합니다.",
-	"settings.agentAccounts.projectDefaults": "프로젝트 기본 계정",
 	"settings.agentAccounts.recoveryTitle": "중지하고 복구 재시도",
 	"settings.agentAccounts.recoveryDescription": "이전 컨트롤러의 중지를 확인할 수 없습니다. 재개 전에 중지를 다시 시도하세요. 현재 턴이 중단될 수 있습니다. 중지가 확인될 때까지 다른 쓰기 프로세스를 시작하지 않습니다.",
 	"settings.agentAccounts.recoveryAction": "중지 후 재시도",

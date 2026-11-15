@@ -117,7 +117,7 @@ func TestReusableHandoffAccountRefreshIsGlobalBeforeCLIFilter(t *testing.T) {
 }
 
 func TestAccountUsageErrorsDoNotCallDaemon(t *testing.T) {
-	for _, args := range [][]string{{"ls", "--provider", ""}, {"use", "A", "--default", "--project", ""}, {"use", "A", "--default", "--session", " "}, {"use", "A"}, {"use", "A", "--default", "--session", "s"}, {"use", "A", "--default", "--role", "worker"}, {"use", "A", "--project", "p", "--role", "reviewer"}, {"use", "A", "--project", "p", "--wait"}, {"add"}, {"add", "--provider", "other"}, {"login"}, {"rm"}} {
+	for _, args := range [][]string{{"ls", "--provider", ""}, {"use", "A", "--default", "--project", ""}, {"use", "A", "--default", "--session", " "}, {"use", "A"}, {"use", "A", "--default", "--session", "s"}, {"use", "A", "--default", "--role", "worker"}, {"use", "A", "--project", "p", "--role", "reviewer"}, {"use", "A", "--project", "p"}, {"use", "A", "--project", "p", "--wait"}, {"add"}, {"add", "--provider", "other"}, {"login"}, {"rm"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, _, err := executeCLI(t, Deps{}, append([]string{"account"}, args...)...)
 			if ExitCode(err) != 2 {

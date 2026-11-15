@@ -88,3 +88,27 @@ func TestResolvedBindingSerializesThreeChoicesAtTheSameInstant(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoricalProjectSourceBindingsReadBackUnchanged(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	worker := seedUsageSession(t, s, domain.HarnessCodex)
+	now := time.Now().UTC()
+	review := domain.Review{ID: "historic-review", SessionID: worker.ID, ProjectID: worker.ProjectID, Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now}
+	mustNoError(t, s.UpsertReview(ctx, review))
+	// New resolution never produces "project"; bindings stored before the
+	// project provider default was removed keep it as a durable fact.
+	historic := domain.ResolvedAgentAccount{AccountID: "project-P", Provider: domain.AgentAccountProviderCodex, Source: "project"}
+	mustNoError(t, s.BindSessionAgentAccountWithSource(ctx, worker.ID, historic, now))
+	mustNoError(t, s.BindReviewerAgentAccount(ctx, review.ID, historic, now))
+	session, found, err := s.GetSessionAgentAccountBinding(ctx, worker.ID, historic.Provider)
+	mustNoError(t, err)
+	if !found || session != historic {
+		t.Fatalf("session binding=%+v found=%v", session, found)
+	}
+	reviewer, found, err := s.GetReviewerAgentAccount(ctx, review.ID, historic.Provider)
+	mustNoError(t, err)
+	if !found || reviewer != historic {
+		t.Fatalf("reviewer binding=%+v found=%v", reviewer, found)
+	}
+}

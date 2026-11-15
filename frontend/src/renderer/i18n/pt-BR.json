@@ -4052,7 +4052,6 @@
 	"settings.agentAccounts.unknownLimits": "Limites de uso desconhecidos",
 	"settings.agentAccounts.limitsUpdated": "Limites atualizados {{time}}",
 	"settings.agentAccounts.logoutDescription": "Sair de {{email}}? As sessões existentes mantêm esta conta e precisarão entrar novamente.",
-	"settings.agentAccounts.projectDefaults": "Contas padrão do projeto",
 	"settings.agentAccounts.recoveryTitle": "Parar e tentar recuperar novamente",
 	"settings.agentAccounts.recoveryDescription": "O AO não confirmou a parada do controlador anterior. Tente pará-lo novamente antes de continuar. Isso pode interromper o turno atual. Nenhum outro processo de escrita será iniciado até a confirmação.",
 	"settings.agentAccounts.recoveryAction": "Parar e tentar novamente",
