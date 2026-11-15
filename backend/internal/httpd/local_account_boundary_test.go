@@ -35,7 +35,7 @@ func TestLANProjectRoundTripPreservesPrivateSettingsWithoutExposingThem(t *testi
 			t.Fatalf("git fixture: %v %s", err, out)
 		}
 	}
-	config := domain.ProjectConfig{AgentAccounts: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderCodex: "private-reference-canary"}, Worker: domain.RoleOverride{Harness: domain.HarnessCodex, AgentAccountID: "private-reference-canary"}, Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode, AgentAccountID: "orchestrator-reference-canary"}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentAccountID: "reviewer-reference-canary"}}, Env: map[string]string{"ANTHROPIC_API_KEY": "credential-canary", "CODEX_HOME": "/private/home-canary", "KEEP": "ordinary"}}
+	config := domain.ProjectConfig{Worker: domain.RoleOverride{Harness: domain.HarnessCodex, AgentAccountID: "private-reference-canary"}, Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode, AgentAccountID: "orchestrator-reference-canary"}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentAccountID: "reviewer-reference-canary"}}, Env: map[string]string{"ANTHROPIC_API_KEY": "credential-canary", "CODEX_HOME": "/private/home-canary", "KEEP": "ordinary"}}
 	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Kind: domain.ProjectKindSingleRepo, Path: path, Config: config, RegisteredAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

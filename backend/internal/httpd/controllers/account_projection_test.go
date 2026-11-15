@@ -13,7 +13,7 @@ import (
 )
 
 func TestRemoteProjectProjectionOmitsLocalAccountReferencesAndSecrets(t *testing.T) {
-	config := domain.ProjectConfig{AgentAccounts: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderCodex: "private-A"}, Worker: domain.RoleOverride{AgentAccountID: "private-A"}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentAccountID: "private-C"}}, Env: map[string]string{"CODEX_HOME": "/fake/private/profile", "OPENAI_API_KEY": "fake-credential-marker", "KEEP": "ordinary"}}
+	config := domain.ProjectConfig{Worker: domain.RoleOverride{AgentAccountID: "private-A"}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentAccountID: "private-C"}}, Env: map[string]string{"CODEX_HOME": "/fake/private/profile", "OPENAI_API_KEY": "fake-credential-marker", "KEEP": "ordinary"}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/p", nil)
 	req = req.WithContext(ports.WithRemoteAccountRequest(req.Context()))
 	projected := projectForAccountRequest(req, projectsvc.Project{ID: "p", Config: &config})

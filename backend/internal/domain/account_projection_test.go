@@ -7,7 +7,7 @@ import (
 )
 
 func TestLocalAccountReferencesDoNotEnterExportAndMatchStableReviewerHarness(t *testing.T) {
-	local := ProjectConfig{Env: map[string]string{"KEEP": "yes", "OPENAI_API_KEY": "fake-credential-marker", "CLAUDE_CONFIG_DIR": "/fake/private-profile"}, AgentAccounts: map[AgentAccountProvider]string{AgentAccountProviderCodex: "project-private"}, Worker: RoleOverride{AgentAccountID: "worker-private", AgentConfig: AgentConfig{Model: "keep-model"}}, Orchestrator: RoleOverride{AgentAccountID: "orchestrator-private"}, Reviewers: []ReviewerConfig{{Harness: ReviewerClaudeCode, AgentAccountID: "claude-private"}, {Harness: ReviewerCodex, AgentAccountID: "codex-private"}}}
+	local := ProjectConfig{Env: map[string]string{"KEEP": "yes", "OPENAI_API_KEY": "fake-credential-marker", "CLAUDE_CONFIG_DIR": "/fake/private-profile"}, Worker: RoleOverride{AgentAccountID: "worker-private", AgentConfig: AgentConfig{Model: "keep-model"}}, Orchestrator: RoleOverride{AgentAccountID: "orchestrator-private"}, Reviewers: []ReviewerConfig{{Harness: ReviewerClaudeCode, AgentAccountID: "claude-private"}, {Harness: ReviewerCodex, AgentAccountID: "codex-private"}}}
 	public := local.WithoutLocalAccounts()
 	wire, err := json.Marshal(public)
 	if err != nil {
@@ -26,9 +26,5 @@ func TestLocalAccountReferencesDoNotEnterExportAndMatchStableReviewerHarness(t *
 	}
 	if restored.Reviewers[0].AgentAccountID != "codex-private" || restored.Reviewers[1].AgentAccountID != "claude-private" {
 		t.Fatal("reviewer references moved by array index")
-	}
-	restored.AgentAccounts[AgentAccountProviderCodex] = "changed"
-	if local.AgentAccounts[AgentAccountProviderCodex] != "project-private" {
-		t.Fatal("projection shares mutable local reference map")
 	}
 }
