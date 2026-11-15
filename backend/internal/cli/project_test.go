@@ -471,3 +471,21 @@ func TestProjectSetConfigDelegationExactRefs(t *testing.T) {
 		t.Fatalf("complete replacement lost fields: %+v", config)
 	}
 }
+
+func TestProjectSetConfigRejectsRemovedAgentAccountsWithoutCallingDaemon(t *testing.T) {
+	for _, value := range []string{`{"codex":"A"}`, `{}`, `null`} {
+		t.Run(value, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+				"project", "set-config", "demo", "--config-json", `{"agentRules":"keep","agentAccounts":`+value+`}`)
+			if ExitCode(err) != 2 || !strings.Contains(err.Error(), "agentAccounts") {
+				t.Fatalf("exit=%d err=%v", ExitCode(err), err)
+			}
+			if strings.HasPrefix(capture.path, "/api/v1/projects") {
+				t.Fatalf("daemon received %s %s", capture.method, capture.path)
+			}
+		})
+	}
+}
