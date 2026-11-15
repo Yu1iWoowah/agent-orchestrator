@@ -27,9 +27,6 @@ func (s *Service) ResolveAccount(ctx context.Context, in ports.AgentAccountResol
 		return domain.ResolvedAgentAccount{}, nil
 	}
 	if id == "" {
-		id, source = in.ProjectConfig.AgentAccounts[provider], domain.AgentAccountSourceProject
-	}
-	if id == "" {
 		var set bool
 		var err error
 		id, set, err = s.store.GetAgentAccountDefault(ctx, provider)
