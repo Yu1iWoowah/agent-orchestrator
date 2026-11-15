@@ -99,3 +99,18 @@ func TestRemoveProjectAgentAccountsStopsAndNamesAbnormalProjects(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveProjectAgentAccountsUpgradesSchemaWithoutProjectConfig(t *testing.T) {
+	// 0008 adds projects.config; a database from before it must still upgrade.
+	db := openMigratedDatabaseCopy(t, 7)
+	if _, err := db.Exec(`INSERT INTO projects(id,path,registered_at) VALUES('old','/fake/old',CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("upgrade from v7: %v", err)
+	}
+	var applied int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id=? AND is_applied=1`, removeProjectAgentAccountsVersion).Scan(&applied); err != nil || applied != 1 {
+		t.Fatalf("cleanup migration not applied: %d %v", applied, err)
+	}
+}

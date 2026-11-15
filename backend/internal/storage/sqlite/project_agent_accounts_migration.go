@@ -24,6 +24,14 @@ func prepareRemoveProjectAgentAccounts(db *sql.DB) error {
 	if tables != 2 {
 		return nil
 	}
+	// projects.config arrives in 0008; an older schema has no agentAccounts.
+	var configColumn int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'config'`).Scan(&configColumn); err != nil {
+		return err
+	}
+	if configColumn == 0 {
+		return nil
+	}
 	var applied int
 	if err := db.QueryRow(`
 SELECT COALESCE((
