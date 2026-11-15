@@ -706,12 +706,15 @@ func firstProgressHarness(t *testing.T, deferred bool) (*harness, *stalledDelive
 	t.Helper()
 	clock := newSettingsTestClock()
 	stalled := &stalledDeliveryConversation{fakeConversation: newFakeConversation(), queryCount: make(chan string, 64)}
-	stalled.setDeliveryClock(clock.Now, true)
 	var conv ports.ChatConversation = stalled
 	if deferred {
 		conv = &deferredDeliveryConversation{stalled}
 	}
 	h := deliveryHarness(t, conv, clock)
+	// The harness models eager drivers as accepted at send. Both shapes report
+	// the same recorded prompt here (unknown, incomplete, epoch and request id,
+	// no progress), so only the driver differs between them.
+	stalled.setDeliveryClock(clock.Now, true)
 	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "large context prompt", ClientMessageID: "first-progress"})
 	if err != nil {
 		t.Fatal(err)
@@ -811,14 +814,13 @@ func TestACPFirstProgressBeforeLimitFollowsNativeProgress(t *testing.T) {
 
 func TestEagerPromptWithoutProgressStillOpensQuestionAtThirtySeconds(t *testing.T) {
 	h, conv, clock, a := firstProgressHarness(t, false)
+	if r := a.Receipt; a.Disposition != domain.ChatDeliveryUnknown || r == nil || r.Source != "incomplete" || r.ProviderEpoch == "" || r.ProviderRequestID == "" || r.ProgressSequence != 0 {
+		t.Fatalf("eager attempt is not the recorded-prompt state the ACP wait covers: %+v", a)
+	}
 	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
 	awaitDeliveryQuery(t, conv, a.ID)
-	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
-		saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
-		return err == nil && saved.AttentionID != ""
-	})
-	blocked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
-	if err != nil || blocked.ErrorCode != "CHAT_EXECUTION_STATE_UNVERIFIED" || clock.Now().Sub(a.CreatedAt) != 30*time.Second {
-		t.Fatalf("an eager prompt without progress must keep the 30 second question: %+v at %s %v", blocked, clock.Now().Sub(a.CreatedAt), err)
+	blocked := awaitDeliveryDecision(t, h, clock, a.ID)
+	if blocked.AttentionID == "" || blocked.ErrorCode != "CHAT_EXECUTION_STATE_UNVERIFIED" || clock.Now().Sub(a.CreatedAt) != 30*time.Second {
+		t.Fatalf("an eager prompt in the same state must keep the 30 second question: %+v at %s", blocked, clock.Now().Sub(a.CreatedAt))
 	}
 }
