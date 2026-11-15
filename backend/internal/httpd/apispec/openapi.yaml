@@ -814,7 +814,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
-      summary: Set one local project provider or role account without replacing config
+      summary: Set one local project role account without replacing config
       tags:
       - agents
   /api/v1/agents/accounts/{accountId}/reset-credit:
@@ -27443,6 +27443,9 @@ components:
         agentAccounts:
           additionalProperties:
             type: string
+          deprecated: true
+          description: Removed. Requests that include this key are rejected; responses
+            never include it.
           type: object
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'

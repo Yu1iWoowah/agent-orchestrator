@@ -50,6 +50,7 @@ func Build() ([]byte, error) {
 		jsonschema.InterceptProp(requiredFromJSONTag),
 		jsonschema.InterceptNullability(nonNullableSlices),
 		jsonschema.InterceptNullability(validNullableReferenceUnions),
+		jsonschema.InterceptSchema(deprecatedProjectAgentAccounts),
 		// Clean component schema names (which become the generated TS type names):
 		// swaggest defaults to PackageType, e.g. "ProjectProject", "EnvelopeAPIError".
 		jsonschema.InterceptDefName(schemaName),
@@ -923,6 +924,30 @@ func validNullableReferenceUnions(p jsonschema.InterceptNullabilityParams) {
 			return
 		}
 	}
+}
+
+// deprecatedProjectAgentAccounts keeps the published optional
+// ProjectConfig.agentAccounts shape after the project provider account layer
+// was removed from the domain. Mutations carrying the key are rejected before
+// decoding, and responses never include it.
+func deprecatedProjectAgentAccounts(p jsonschema.InterceptSchemaParams) (bool, error) {
+	if !p.Processed || !p.Value.IsValid() || p.Schema == nil {
+		return false, nil
+	}
+	t := p.Value.Type()
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t != reflect.TypeFor[domain.ProjectConfig]() {
+		return false, nil
+	}
+	value := (&jsonschema.Schema{}).WithType(jsonschema.String.Type())
+	field := (&jsonschema.Schema{}).WithType(jsonschema.Object.Type()).
+		WithAdditionalProperties(value.ToSchemaOrBool()).
+		WithDeprecated(true).
+		WithDescription("Removed. Requests that include this key are rejected; responses never include it.")
+	p.Schema.WithPropertiesItem("agentAccounts", field.ToSchemaOrBool())
+	return false, nil
 }
 
 // requiredFromJSONTag marks a property required when its json tag lacks
@@ -2385,7 +2410,7 @@ func agentOperations() []operation {
 		},
 		{
 			method: http.MethodPut, path: "/api/v1/agents/accounts/{accountId}/projects/{projectId}", id: "setProjectAgentAccount", tag: "agents",
-			summary: "Set one local project provider or role account without replacing config", pathParams: []any{controllers.AgentAccountProjectParam{}}, reqBody: controllers.SetProjectAgentAccountRequest{},
+			summary: "Set one local project role account without replacing config", pathParams: []any{controllers.AgentAccountProjectParam{}}, reqBody: controllers.SetProjectAgentAccountRequest{},
 			resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{

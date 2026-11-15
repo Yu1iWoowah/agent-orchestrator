@@ -130,7 +130,6 @@ type projectConfig struct {
 	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
-	AgentAccounts         map[string]string           `json:"agentAccounts,omitempty"`
 	OrchestratorHandoff   orchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
 
 	ContainerReap     *containerReapConfig `json:"containerReap,omitempty"`

@@ -116,6 +116,9 @@ func newAccountUseCommand(c *commandContext) *cobra.Command {
 		if role != "" && (project == "" || (role != "worker" && role != "orchestrator" && role != "reviewer")) {
 			return usageError{fmt.Errorf("--role requires --project and worker, orchestrator, or reviewer")}
 		}
+		if project != "" && role == "" {
+			return usageError{fmt.Errorf("--project requires --role worker, orchestrator, or reviewer; project provider defaults were removed")}
+		}
 		if (role == "reviewer" && reviewer == "") || (reviewer != "" && role != "reviewer") {
 			return usageError{fmt.Errorf("--role reviewer requires --reviewer <harness>; --reviewer applies only to that role")}
 		}
@@ -174,7 +177,7 @@ func newAccountUseCommand(c *commandContext) *cobra.Command {
 	}}
 	f := cmd.Flags()
 	f.BoolVar(&global, "default", false, "Set this provider's global default for new work")
-	f.StringVar(&project, "project", "", "Set a project provider or role default")
+	f.StringVar(&project, "project", "", "Set a project role account (requires --role)")
 	f.StringVar(&role, "role", "", "Project role: worker, orchestrator, reviewer")
 	f.StringVar(&reviewer, "reviewer", "", "Stable reviewer harness identity, never array position")
 	f.StringVar(&session, "session", "", "Explicitly hand off this session")
