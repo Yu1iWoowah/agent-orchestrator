@@ -29,7 +29,7 @@ import uuid
 
 PROJECT = "agent-orchestrator"
 SENSITIVE_SOURCE = re.compile(r"(^|/)(\.env(?:\..*)?|credentials(?:\.json)?|auth\.json|tokens?\.json|id_rsa|id_ed25519)(/|$)")
-LIMITS = dict(read=30, notify=60, kill=60, exit=60, spawn=180, resume=180,
+LIMITS = dict(read=30, notify=60, kill=60, exit=60, spawn=180, resume=180, prepare=600,
               workers=1800, old_2a=600, export=600, native=120, bootstrap=900,
               old_idle=900, new_idle=900, nonce=600, final=600)
 OUTBOX = "尚未送達的report outbox不在本次conversation cut/delta範圍內，接手後才由AO既有持久outbox送達；不宣稱已匯出、已讀或已整合。"
@@ -649,7 +649,8 @@ class Journal:
             publish(self.root / "binding.json", canonical(dict(binding, run_id=self.run_id, protocol=CALL_PROTOCOL)))
 
     def register(self, role, actor, maintenance=None):
-        require(role in ("start", "_run", "continue", "worker-receipt", "old-receipt", "bootstrap", "finalize", "inspect", "retire", "locate"), "unknown execution role")
+        require(role in ("start", "_run", "continue", "worker-receipt", "old-receipt", "bootstrap", "finalize", "inspect", "retire", "locate",
+                         "prepare-request"), "unknown execution role")
         identifier(actor)
         with self.mutex():
             state = self.state()
@@ -804,7 +805,7 @@ class Execution:
 
     def descriptor(self, cli, transport, parameters, read=False, effect_id=None, verifying=False):
         require(verifying or not (self.directory / "close.json").exists(), "execution already closed")
-        require(self.phase in ("locate", "preflight", "prepared", "workers", "2a", "export", "retire", "spawn", "native",
+        require(self.phase in ("locate", "preflight", "prepared", "prepare", "prepare-request", "workers", "2a", "export", "retire", "spawn", "native",
                               "bootstrap", "resume", "nonce", "final", "_run", "continue", "worker-receipt", "old-receipt", "finalize", "inspect"),
                 "operation phase UNKNOWN")
         actor = cli.env["AO_SESSION_ID"]
@@ -1270,7 +1271,7 @@ def workspace_git_inputs(workspace):
         templates[relative] = dict(raw=raw, mode=stat.S_IMODE(info.st_mode),
                                    identity=(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
     return dict(head=head, tree=tree_raw, index=index_raw, staged_names=staged_names, others=others, ignored=ignored,
-                files=files, templates=templates,
+                files=files, templates=templates, tree_entries=tree, index_entries=index,
                 patch_paths=sorted(os.fsdecode(n) for n in set(tree) | files if not SENSITIVE_SOURCE.search(os.fsdecode(n))))
 
 
@@ -1292,8 +1293,19 @@ def workspace_patch(workspace, inputs, cached=False):
     return patch
 
 
-def git_snapshot(workspace, destination):
-    """Read-only Git plus preserved bytes, including staged and dirty content."""
+def committed_unchanged(inputs, name, raw, mode):
+    """True only when the bytes, index and HEAD prove the same committed blob."""
+    entry = inputs["tree_entries"].get(name)
+    if not entry or entry[1] != "blob" or entry[0] not in ("100644", "100755") or inputs["index_entries"].get(name) != [("H", entry[0], entry[2], "0")]:
+        return False
+    if bool(mode & 0o111) != (entry[0] == "100755"):
+        return False
+    algorithm = hashlib.sha1 if len(entry[2]) == 40 else hashlib.sha256
+    return algorithm(b"blob %d\0" % len(raw) + raw).hexdigest() == entry[2]
+
+
+def git_snapshot(workspace, destination, write=True):
+    """Hash every file; preserve bytes HEAD cannot reproduce. write=False only computes the same snapshot."""
     path = no_symlinks(workspace)
     require(path.is_dir(), "registered workspace missing")
     def git(*args):
@@ -1303,7 +1315,8 @@ def git_snapshot(workspace, destination):
         require(result.returncode == 0, "workspace snapshot unavailable: " + result.stderr.decode(errors="replace"))
         return result.stdout
     inputs = workspace_git_inputs(path)
-    mkdir(destination)
+    if write:
+        mkdir(destination)
     branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
     links = gitlink_facts(path)
     values = {"schema": "rh-workspace-snapshot/2", "gitlinks": links, "head": git("rev-parse", "HEAD").decode().strip(),
@@ -1312,7 +1325,8 @@ def git_snapshot(workspace, destination):
               "index": git("ls-files", "--stage", "-z").hex(), "files": {}}
     for name, cached in (("index.patch", True), ("worktree.patch", False)):
         raw = workspace_patch(path, inputs, cached)
-        publish(Path(destination) / name, raw)
+        if write:
+            publish(Path(destination) / name, raw)
         values[name] = digest(raw)
     files = inputs["files"]
     for raw_name in sorted(files):
@@ -1328,10 +1342,14 @@ def git_snapshot(workspace, destination):
         template = inputs["templates"].get(name)
         raw = template["raw"] if template else source.read_bytes()
         sha = digest(raw)
-        publish(Path(destination) / "objects" / sha, raw)
-        values["files"][name] = {"sha256": sha, "mode": template["mode"] if template else stat.S_IMODE(source.stat().st_mode)}
+        mode = template["mode"] if template else stat.S_IMODE(source.stat().st_mode)
+        if write and not committed_unchanged(inputs, raw_name, raw, mode):
+            publish(Path(destination) / "objects" / sha, raw)
+        values["files"][name] = {"sha256": sha, "mode": mode}
     require(workspace_git_inputs(path) == inputs, "workspace source drift during snapshot")
     raw = canonical(values)
+    if not write:
+        return {"sha256": digest(raw), "raw": raw}
     publish(Path(destination) / "snapshot.json", raw)
     return {"path": str(Path(destination) / "snapshot.json"), "sha256": digest(raw),
             "branch": values["branch"], "head": values["head"]}
@@ -1766,8 +1784,11 @@ class Run:
             if not quiescent(snap, stop["settled"]["in_flight"], self):
                 return False
             require(stop["workspace"]["path"] == self.workspace(sid), "stop workspace differs from registered workspace")
-            actual = git_snapshot(stop["workspace"]["path"], directory / ("verify-" + uuid.uuid4().hex))
-            require(actual["sha256"] == stop["workspace"]["after_snapshot"]["sha256"], "worker content drift: " + sid)
+            # Recheck computes the same snapshot without writing objects; only a drift keeps evidence.
+            actual = git_snapshot(stop["workspace"]["path"], None, write=False)
+            if actual["sha256"] != stop["workspace"]["after_snapshot"]["sha256"]:
+                publish(directory / ("verify-" + uuid.uuid4().hex) / "snapshot.json", actual["raw"])
+                raise Stop("worker content drift: " + sid)
             return stop
         if quiescent(snap, run=self):
             workspace = self.workspace(sid)
@@ -2123,10 +2144,13 @@ def producer_description(run, action, sid):
                  "preservation_sources": [], "in_flight": [], "pending_question_refs": []} if action == "worker-receipt" else
                 {"schema": "rh-old-statement/1", "run_id": run.run_id, "old_id": sid, "original_ref": "<existing refs/heads/...>",
                  "classification": [], "pending_question_refs": []})
+    # The 2a message must stay under the send limit: old gets its row shape, workers keep their source rule.
+    rule = ({"source_rule": "必要原件只限本actor已綁workspace或自己的AO artifact；每筆preservation_sources填path/kind/basis；helper固定copy並保留原物/mode/hash/相對關係。in_flight填reference/activity_id/state/receipt_path，必須原terminal來源，不自造終態。"}
+            if action == "worker-receipt" else
+            {"classification_row": {"path": "<相對路徑>", "disposition": "copy|rebuildable|discardable", "basis": "<依據>", "scope": "directory（可省）"}})
     return {"command": helper_command(run.root, action, sid), "statement": str(directory / "draft/statement.json"), "template": template,
             "permissions": "目錄0700／檔0600／拒symlink；只填語意statement，不自行產snapshot/stop/phase或完成時刻。",
-            "evidence_root": str(directory),
-            "source_rule": "必要原件只限本actor已綁workspace或自己的AO artifact；每筆preservation_sources填path/kind/basis；helper固定copy並保留原物/mode/hash/相對關係。in_flight填reference/activity_id/state/receipt_path，必須原terminal來源，不自造終態。",
+            "evidence_root": str(directory), **rule,
             "completion": "先完成statement/managed等準備，再另開獨立tool command activity原樣執行command，stdout直接回原tool；不加heredoc、重導、前後hash/ls/echo/exit、pipeline或背景符號。只接受原固定命令或原支援的一層可逆shell wrapper。成功後短回覆並completed/hold，runner在原turn結束後核實際結果；不要輪詢等自身完成。任何STOP不重試或改回條。"}
 
 
@@ -2802,6 +2826,7 @@ def run_protocol(run):
         state["stages"][name]["completed_at"] = now()
         state["completed_stages"].append(name)
         run.save()
+    stage("prepare", lambda: run.wait("prepare", lambda: prepared_turn_ready(run)))
     stage("workers", lambda: run.wait("workers", run.workers))
     stage("2a", lambda: phase_2a(run))
     stage("export", lambda: run.wait("export", lambda: export_material(run)))
@@ -3047,34 +3072,146 @@ def qualified(root, old, initial, temp):
     return cli
 
 
-def validate_sources_live(req, cli):
-    snap = cli.session(req["old_id"])
-    cli.old_snapshot_raw = getattr(cli, "last_raw", canonical(snap))
-    session = snap["session"]
-    require(session["id"] == req["old_id"] and session["projectId"] == PROJECT and session["kind"] == "orchestrator" and
-            session["harness"] in ("codex", "claude-code") and session["mode"] == "chat" and not session["isTerminated"], "old identity invalid")
-    all_entries = list(entries(snap))
-    page = snap
-    wanted = {s["message_id"] for s in req["sources"]}
+CONTROL_BLOCK = re.compile(r"```rh-control\n(.*?)\n```", re.S)
+
+
+def control_block(text):
+    """The control record's one fixed JSON block; its stop marker is machine-checked, never inferred from prose."""
+    blocks = CONTROL_BLOCK.findall(text or "")
+    require(len(blocks) == 1, "control record lacks one fixed rh-control JSON block")
+    block = decode(blocks[0].encode())
+    require(isinstance(block, dict) and block.get("schema") == "rh-control-record/1", "control block schema mismatch")
+    return block
+
+
+def transcript_pages(cli, sid, wanted):
+    """Original response pages, newest first, until every wanted message id has been seen."""
+    page = cli.session(sid)
+    pages = [(getattr(cli, "last_raw", canonical(page)), page)]
+    seen = {e.get("id") for e in entries(page)}
     cursor = None
-    while not wanted.issubset({e.get("id") for e in all_entries}) and page["transcript"]["hasMoreBefore"]:
+    while not set(wanted) <= seen and page["transcript"]["hasMoreBefore"]:
         before = page["transcript"]["next"]["before"]
         require(type(before) is int and (cursor is None or before < cursor), "authority cursor did not advance")
         cursor = before
-        page = cli.read(["session", "get", req["old_id"], "--transcript", "500", "--cap", "0", "--before", str(before)])
-        require(page["transcript"]["conversationId"] == snap["transcript"]["conversationId"], "authority conversation changed")
-        all_entries.extend(entries(page))
+        page = cli.read(["session", "get", sid, "--transcript", "500", "--cap", "0", "--before", str(before)])
+        require(page["transcript"]["conversationId"] == pages[0][1]["transcript"]["conversationId"], "authority conversation changed")
+        pages.append((getattr(cli, "last_raw", canonical(page)), page))
+        seen |= {e.get("id") for e in entries(page)}
+    return pages
+
+
+def validate_sources_live(req, cli):
+    pages = transcript_pages(cli, req["old_id"], {s["message_id"] for s in req["sources"]})
+    cli.old_snapshot_raw, snap = pages[0]
+    session = snap["session"]
+    require(session["id"] == req["old_id"] and session["projectId"] == PROJECT and session["kind"] == "orchestrator" and
+            session["harness"] in ("codex", "claude-code") and session["mode"] == "chat" and not session["isTerminated"], "old identity invalid")
+    all_entries = [e for _, page in pages for e in entries(page)]
     for source in req["sources"]:
         require(source["conversation_id"] == snap["transcript"]["conversationId"], "source outside old conversation")
         matches = [e for e in all_entries if e.get("id") == source["message_id"]]
-        require(len(matches) == 1 and matches[0].get("revision") == source["revision"] and
-                digest(matches[0].get("text", "").encode()) == source["message_text_sha256"], "authority changed/missing")
-        source_identity(source, matches[0])
+        require(len(matches) == 1, "authority changed/missing")
+        live = matches[0]
+        # The preparing turn may still be running: its control record can only settle (same text, revision not lower).
+        preparing = source["kind"] == "old-control-record" and live.get("turnId") == req["prepared_by"]["turn_id"]
+        require((live.get("revision") == source["revision"] or
+                 preparing and type(live.get("revision")) is int and type(source["revision"]) is int and live["revision"] >= source["revision"]) and
+                digest(live.get("text", "").encode()) == source["message_text_sha256"], "authority changed/missing")
+        source_identity(source, live)
         workspace_refs = {ref for row in req.get("workspace_index", []) for ref in row["source_refs"]}
         if source["kind"] == "old-control-record" and source["ref"] in workspace_refs:
-            require(matches[0].get("turnId") == req["prepared_by"]["turn_id"], "live workspace record not from preparing turn")
+            require(live.get("turnId") == req["prepared_by"]["turn_id"], "live workspace record not from preparing turn")
     require(any(t["id"] == req["prepared_by"]["turn_id"] for t in snap["transcript"].get("turns", [])), "preparing turn not observed")
     return snap
+
+
+def prepare_request(root, initial, old, human_id, control_id, run_id):
+    """Old's fixed packaging helper: reads original bytes and its control block; it decides no authority."""
+    require(os.environ.get("AO_SESSION_ID") == old, "prepare-request must run as old")
+    with lock(root / (".old-" + identifier(old) + ".lock")):
+        slot = root / ".start" / identifier(old)
+        require(not (slot / "request.json").exists(), "start slot already holds a request")
+        mkdir(slot / "evidence")
+        cli = qualified(root, old, initial, slot)
+        cli.execution.bindings = {old}
+        pages = transcript_pages(cli, old, {human_id, control_id})
+        session = pages[0][1]["session"]
+        require(session["id"] == old and session["projectId"] == PROJECT and session["kind"] == "orchestrator" and
+                session["mode"] == "chat" and not session["isTerminated"], "old identity invalid")
+        found = {}
+        for raw, page in pages:
+            for entry in entries(page):
+                if entry.get("id") in (human_id, control_id):
+                    require(entry["id"] not in found, "source message ambiguous")
+                    found[entry["id"]] = (raw, page, entry)
+        require(set(found) == {human_id, control_id}, "human or control message not in old transcript")
+        human, control = found[human_id][2], found[control_id][2]
+        # A batched follower input keeps its own turnId; the turn that actually handled it is consumedByTurnId.
+        handled_by = human.get("consumedByTurnId") or human.get("turnId")
+        require(control.get("turnId") and control["turnId"] == handled_by, "control record not from the turn handling the human instruction")
+        block = control_block(control.get("text"))
+        require(block.get("stop") == "無具名停", "old named a stop; request not published")
+        sources = []
+        for ref, kind, message_id in (("human", "human-message", human_id), ("control", "old-control-record", control_id)):
+            raw, page, entry = found[message_id]
+            source = dict(ref=ref, kind=kind, conversation_id=page["transcript"]["conversationId"], branch_id=page["transcript"]["activeBranchId"],
+                          message_id=message_id, revision=entry.get("revision"), raw_relpath="evidence/" + run_id + "-" + ref + ".json",
+                          raw_sha256=digest(raw), message_text_sha256=digest(entry.get("text", "").encode()))
+            source_identity(source, entry)
+            publish(slot / source["raw_relpath"], raw)
+            sources.append(source)
+        created = human.get("createdAt")
+        require(isinstance(created, str) and created, "original human createdAt missing")
+        target = dict(block.get("target") or {}, mode="chat")
+        request = {"schema": "rh-start-request/1", "request_id": run_id, "project_id": PROJECT, "old_id": old,
+                   "prepared_by": {"session_id": old, "turn_id": control["turnId"]}, "target": target,
+                   "authority": {"source_refs": ["human"], "t0_source_ref": "human",
+                                 "t0_created_at": created, "t0_precision": "sub-second" if "." in created else "second"},
+                   "workers": block.get("workers"),
+                   "workspace_index": [dict(row, source_refs=["control"]) for row in block.get("workspace_index") or []],
+                   "sources": sources}
+        raw = canonical(request)
+        validate_request(decode(raw), slot, old, target)
+        publish(slot / "request.json", raw)
+    command = [sys.executable, str(Path(__file__).absolute()), "start", "--run", run_id, "--old", old,
+               *[x for key in ("harness", "account", "model", "effort", "approval_mode")
+                 for x in ("--" + key.replace("_", "-"), target[key])]]
+    return {"run_id": run_id, "request": str(slot / "request.json"), "start_command": shlex.join(command)}
+
+
+def prepared_turn_ready(run):
+    """Before any worker or lifecycle effect: the one preparing turn settled, no newer human, and no named stop."""
+    request = run.request
+    turn_id = request["prepared_by"]["turn_id"]
+    human = next(s for s in request["sources"] if s["ref"] == request["authority"]["t0_source_ref"])
+    controls = [s for s in request["sources"] if s["kind"] == "old-control-record"]
+    require(controls, "preparation lacks an old control record")
+    snap = run.snapshot(run.old)
+    turns = {t.get("id"): t for t in snap["transcript"].get("turns", [])}
+    require(turn_id in turns, "preparing turn not observed")
+    state = turns[turn_id].get("state")
+    if state in ("queued", "running"):
+        return False
+    require(state == "completed", "preparing turn ended " + str(state))
+    pages = transcript_pages(run.cli, run.old, {human["message_id"], *(s["message_id"] for s in controls)})
+    all_entries = [e for _, page in pages for e in entries(page)]
+    def live(source):
+        matches = [e for e in all_entries if e.get("id") == source["message_id"]]
+        require(len(matches) == 1, "preparation source missing/ambiguous")
+        return matches[0]
+    revisions = {}
+    for source in controls:
+        entry = live(source)
+        require(digest(entry.get("text", "").encode()) == source["message_text_sha256"] and not entry.get("streaming") and
+                type(entry.get("revision")) is int and entry["revision"] >= source["revision"], "preparing control record changed or not settled")
+        require(control_block(entry["text"]).get("stop") == "無具名停", "old control record names a stop")
+        revisions[source["ref"]] = entry["revision"]
+    sequence = live(human).get("sequence")
+    require(type(sequence) is int, "UNKNOWN original human sequence")
+    reject_new_human({"transcript": {"entries": all_entries}}, sequence)
+    run.state["preparation"] = {"turn_id": turn_id, "settled_revisions": revisions, "human_sequence": sequence}
+    return True
 
 
 def write_initial_state(root, req, raw, cli):
@@ -3812,11 +3949,16 @@ def main(argv=None):
         begin.add_argument("--" + key, required=True)
     for action in ("status", "continue", "_run", "bootstrap", "finalize", "worker-receipt", "old-receipt", "retire"):
         sub.add_parser(action).add_argument("--run", required=True)
+    packaging = sub.add_parser("prepare-request")
+    for key in ("old", "human", "control"):
+        packaging.add_argument("--" + key, required=True)
     inspect = sub.add_parser("inspect")
     inspect.add_argument("--run", required=True)
     inspect.add_argument("--path", required=True)
     inspect.add_argument("--offset", type=int, required=True)
     args = parser.parse_args(argv)
+    if args.action == "prepare-request":
+        args.run = str(uuid.uuid4())
     execution = None
     try:
         require(str(uuid.UUID(args.run)) == args.run, "canonical run UUID required")
@@ -3863,7 +4005,9 @@ def main(argv=None):
                     initial.execution = execution
             else:
                 root, initial = locate(getattr(args, "old", None), create=args.action == "start", execution=execution)
-        if args.action == "start":
+        if args.action == "prepare-request":
+            result = prepare_request(root, initial, args.old, args.human, args.control, args.run)
+        elif args.action == "start":
             target = {k: getattr(args, k) for k in ("harness", "account", "model", "effort", "approval_mode")}
             target["mode"] = "chat"
             result = start(root, initial, args.old, target, args.run)

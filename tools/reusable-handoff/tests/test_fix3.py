@@ -74,7 +74,9 @@ class WorkspaceTests(unittest.TestCase):
         result = h.git_snapshot(self.repo, self.root / "snapshot")
         doc = json.loads(Path(result["path"]).read_bytes())
         item = doc["files"]["cloud/.env.example"]
-        self.assertEqual((self.root / "snapshot/objects" / item["sha256"]).read_bytes(), source.read_bytes())
+        # RH-SPEED: the unchanged committed template is hashed from its compared bytes; HEAD protects it.
+        self.assertEqual(item["sha256"], h.digest(source.read_bytes()))
+        self.assertFalse((self.root / "snapshot/objects" / item["sha256"]).exists())
         workspace, run, plan = self.old()
         proof = h.old_git_state(run, plan, workspace)
         self.assertEqual(proof["head"], self.git(workspace, "rev-parse", "HEAD").decode().strip())
