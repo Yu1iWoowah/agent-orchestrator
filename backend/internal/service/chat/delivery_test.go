@@ -693,3 +693,132 @@ func TestFailedPromptLinkRollsBackAndNextBlockRetries(t *testing.T) {
 		t.Fatalf("retried block = %+v question=%+v %v", blocked, question, err)
 	}
 }
+
+// deferredDeliveryConversation is ACP-shaped: its prompt answers only when the
+// turn ends, so until the first progress event the host reports the recorded
+// prompt as unknown and incomplete with no progress.
+type deferredDeliveryConversation struct{ *stalledDeliveryConversation }
+
+func (c *deferredDeliveryConversation) StartDeferredTurn(string) error { return nil }
+func (c *deferredDeliveryConversation) DiscardDeferredTurn(string)     {}
+
+func firstProgressHarness(t *testing.T, deferred bool) (*harness, *stalledDeliveryConversation, *settingsTestClock, domain.ChatDeliveryAttempt) {
+	t.Helper()
+	clock := newSettingsTestClock()
+	stalled := &stalledDeliveryConversation{fakeConversation: newFakeConversation(), queryCount: make(chan string, 64)}
+	stalled.setDeliveryClock(clock.Now, true)
+	var conv ports.ChatConversation = stalled
+	if deferred {
+		conv = &deferredDeliveryConversation{stalled}
+	}
+	h := deliveryHarness(t, conv, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "large context prompt", ClientMessageID: "first-progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	return h, stalled, clock, a
+}
+
+func awaitDeliveryQuery(t *testing.T, conv *stalledDeliveryConversation, id string) {
+	t.Helper()
+	select {
+	case key := <-conv.queryCount:
+		if key != id {
+			t.Fatal(key)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("original execution was not queried")
+	}
+}
+
+// awaitDeliveryDecision returns the attempt once the monitor has either opened
+// a question or rescheduled the next check after the current time.
+func awaitDeliveryDecision(t *testing.T, h *harness, clock *settingsTestClock, id string) domain.ChatDeliveryAttempt {
+	t.Helper()
+	var saved domain.ChatDeliveryAttempt
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		var err error
+		saved, err = h.st.ChatDeliveryAttempt(t.Context(), testSession, id)
+		return err == nil && (saved.AttentionID != "" || saved.NextCheckAt != nil && saved.NextCheckAt.After(clock.Now()))
+	})
+	return saved
+}
+
+func TestACPPromptWithoutProgressWaitsUntilFirstEventLimit(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	limit := a.CreatedAt.Add(5 * time.Minute)
+	for clock.Now().Add(30 * time.Second).Before(limit) {
+		h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+		awaitDeliveryQuery(t, conv, a.ID)
+		saved := awaitDeliveryDecision(t, h, clock, a.ID)
+		want := clock.Now().Add(30 * time.Second)
+		if want.After(limit) {
+			want = limit
+		}
+		if saved.AttentionID != "" || saved.BlockedSince != nil || saved.ErrorCode != "" {
+			t.Fatalf("after %s an ACP prompt awaiting its first event opened a question: %+v", clock.Now().Sub(a.CreatedAt), saved)
+		}
+		if !saved.LastProgressAt.Equal(a.LastProgressAt) || saved.NextCheckAt == nil || !saved.NextCheckAt.Equal(want) {
+			t.Fatalf("recheck changed progress time or missed its schedule: last=%s next=%v want=%s", saved.LastProgressAt, saved.NextCheckAt, want)
+		}
+		clock.awaitTimer(t, 30*time.Second)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+		return err == nil && saved.AttentionID != ""
+	})
+	blocked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || blocked.ErrorCode != "CHAT_EXECUTION_STATE_UNVERIFIED" || !clock.Now().Equal(limit) {
+		t.Fatalf("no first event by the limit must open one question: %+v at %s %v", blocked, clock.Now().Sub(a.CreatedAt), err)
+	}
+}
+
+func TestACPFirstProgressBeforeLimitFollowsNativeProgress(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	if waiting := awaitDeliveryDecision(t, h, clock, a.ID); waiting.AttentionID != "" || waiting.BlockedSince != nil {
+		t.Fatalf("at 30 seconds an ACP prompt awaiting its first event opened a question: %+v", waiting)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(15 * time.Second) })
+	eventAt := clock.Now()
+	conv.mu.Lock()
+	receipt := conv.deliveryReceipts[a.ID]
+	receipt.Progress = "running"
+	receipt.ProgressSequence = 1
+	receipt.ObservedAt = eventAt
+	conv.deliveryReceipts[a.ID] = receipt
+	conv.mu.Unlock()
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(15 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	clock.awaitTimer(t, 15*time.Second)
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || saved.AttentionID != "" || saved.BlockedSince != nil || saved.ErrorCode != "" {
+		t.Fatalf("first progress before the limit opened a question: %+v %v", saved, err)
+	}
+	if !saved.LastProgressAt.Equal(eventAt) || saved.NextCheckAt == nil || !saved.NextCheckAt.Equal(eventAt.Add(30*time.Second)) {
+		t.Fatalf("first progress did not hand over to the native progress budget: %+v", saved)
+	}
+}
+
+func TestEagerPromptWithoutProgressStillOpensQuestionAtThirtySeconds(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, false)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+		return err == nil && saved.AttentionID != ""
+	})
+	blocked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || blocked.ErrorCode != "CHAT_EXECUTION_STATE_UNVERIFIED" || clock.Now().Sub(a.CreatedAt) != 30*time.Second {
+		t.Fatalf("an eager prompt without progress must keep the 30 second question: %+v at %s %v", blocked, clock.Now().Sub(a.CreatedAt), err)
+	}
+}
