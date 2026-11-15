@@ -37,6 +37,12 @@ func (c *Controller) deliveryOwner(ctx context.Context, journal chatDeliveryJour
 
 var errDeliveryPending = errors.New("original delivery is not settled")
 
+// deliveryFirstProgressLimit bounds how long an ACP prompt the host has
+// recorded may wait for its first progress event. It stays below the host's
+// promptStallTimeout (15 minutes), whose synthesized failure never reaches the
+// delivery journal.
+const deliveryFirstProgressLimit = 5 * time.Minute
+
 func (c *Controller) reserveDeliveryLocked(ctx context.Context, members []string) (*domain.ChatDeliveryAttempt, bool, error) {
 	journal, ok := c.store.(chatDeliveryJournal)
 	_, supported := c.conv.(ports.ChatDeliveryObserver)
@@ -189,6 +195,18 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 			// execution whose silence alone is no evidence. Recheck it without
 			// changing when its last event actually happened.
 			nextCheck = c.now().Add(30 * time.Second)
+		}
+		// An ACP prompt answers only when its turn ends, so the host's record of
+		// this prompt before any progress event is not a stall yet. Recheck until
+		// the first-event limit, counted from creation, then block as before.
+		_, deferredStart := c.conv.(ports.ChatDeferredTurnStarter)
+		awaitingFirstEvent := deferredStart && r.Disposition == domain.ChatDeliveryUnknown && r.ProviderEpoch != "" &&
+			r.ProviderRequestID != "" && r.ProgressSequence == 0 && a.BlockedSince == nil
+		if limit := a.CreatedAt.Add(deliveryFirstProgressLimit); awaitingFirstEvent && !nextCheck.After(c.now()) && limit.After(c.now()) {
+			nextCheck = c.now().Add(30 * time.Second)
+			if nextCheck.After(limit) {
+				nextCheck = limit
+			}
 		}
 		a.NextCheckAt = &nextCheck
 	}
