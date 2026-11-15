@@ -3982,7 +3982,6 @@
 	"settings.agentAccounts.unknownLimits": "使用量の上限は不明",
 	"settings.agentAccounts.limitsUpdated": "上限の更新日時 {{time}}",
 	"settings.agentAccounts.logoutDescription": "{{email}} からサインアウトしますか？既存のセッションはこのアカウントを保持し、再ログインが必要です。",
-	"settings.agentAccounts.projectDefaults": "プロジェクトの既定アカウント",
 	"settings.agentAccounts.recoveryTitle": "停止して復旧を再試行",
 	"settings.agentAccounts.recoveryDescription": "前のコントローラーの停止を確認できませんでした。再開する前に停止を再試行してください。現在のターンが中断される場合があります。停止を確認するまで別の書き込みプロセスは起動しません。",
 	"settings.agentAccounts.recoveryAction": "停止して再試行",

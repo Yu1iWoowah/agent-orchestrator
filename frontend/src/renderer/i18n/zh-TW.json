@@ -3963,7 +3963,6 @@
 	"settings.agentAccounts.unknownLimits": "額度未知",
 	"settings.agentAccounts.limitsUpdated": "額度更新於 {{time}}",
 	"settings.agentAccounts.logoutDescription": "要登出 {{email}} 嗎？既有 session 會保留此帳號，並需要重新登入。",
-	"settings.agentAccounts.projectDefaults": "專案帳號預設",
 	"settings.agentAccounts.recoveryTitle": "停止並重試恢復",
 	"settings.agentAccounts.recoveryDescription": "AO 無法確認先前的控制器已停止。繼續工作前請重試停止，這可能中斷目前的回合。確認停止前，AO 不會啟動另一個寫入者。",
 	"settings.agentAccounts.recoveryAction": "停止並重試",

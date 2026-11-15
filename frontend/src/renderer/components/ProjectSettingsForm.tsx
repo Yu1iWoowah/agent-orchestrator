@@ -219,13 +219,8 @@ function SettingsBody({
 			workspaceRepos={project.kind === "workspace" ? (project.workspaceRepos ?? []) : undefined}
 			repository={project.repo}
 			modelScope={(agent, role, draft) => {
-				const provider = agent === "codex" ? "codex" : agent === "claude-code" ? "claude" : undefined;
 				const roleAccount = role === "reviewer" ? draft.accountSettings?.reviewers[agent] : draft.accountSettings?.[role];
-				return localAccountModelScope(
-					projectId,
-					role,
-					roleAccount || (provider ? draft.accountSettings?.providers[provider] : undefined),
-				);
+				return localAccountModelScope(projectId, role, roleAccount);
 			}}
 			defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
 			reviewerWarning={reviewerTrustWarning}
@@ -248,7 +243,6 @@ function localSettingsDraft(project: Project, hostId?: string): ProjectSettingsD
 			? {
 					accountSettings: {
 						projectId,
-						providers: { ...config.agentAccounts },
 						worker: config.worker?.agentAccountId ?? "",
 						orchestrator: config.orchestrator?.agentAccountId ?? "",
 						reviewers: Object.fromEntries(
@@ -295,7 +289,6 @@ function localSettingsValues(project: Project, values: ProjectSettingsDraft) {
 	const configValues: ProjectConfig = isScratchProject
 		? {
 				...scratchSupportedConfig(config),
-				agentAccounts: Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== "")),
 				worker: {
 					...config.worker,
 					agentAccountId: values.accountSettings?.worker || undefined,
@@ -325,7 +318,6 @@ function localSettingsValues(project: Project, values: ProjectSettingsDraft) {
 			}
 		: {
 				...config,
-				agentAccounts: Object.fromEntries(Object.entries(values.accountSettings?.providers ?? {}).filter(([, id]) => id !== "")),
 				defaultBranch: values.defaultBranch.trim() === DEFAULT_BRANCH_AUTO ? undefined : values.defaultBranch || undefined,
 				sessionPrefix: values.sessionPrefix || undefined,
 				worker: {

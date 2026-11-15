@@ -3963,7 +3963,6 @@
 	"settings.agentAccounts.unknownLimits": "Usage limits unknown",
 	"settings.agentAccounts.limitsUpdated": "Limits updated {{time}}",
 	"settings.agentAccounts.logoutDescription": "Sign out {{email}}? Existing sessions keep this account and will need to sign in again.",
-	"settings.agentAccounts.projectDefaults": "Project account defaults",
 	"settings.agentAccounts.recoveryTitle": "Stop and retry recovery",
 	"settings.agentAccounts.recoveryDescription": "AO could not confirm the previous controller stopped. Retry stopping it before resuming. This may interrupt its current turn. AO will not start another writer until stopping is confirmed.",
 	"settings.agentAccounts.recoveryAction": "Stop and retry",

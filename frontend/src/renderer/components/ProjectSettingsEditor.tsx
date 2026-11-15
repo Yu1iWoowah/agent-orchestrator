@@ -31,7 +31,6 @@ export type ProjectSettingsDraft = {
 	coder?: { workspaceNamePrefix: string; parameters: Record<string, string> };
 	accountSettings?: {
 		projectId: string;
-		providers: Partial<Record<"claude" | "codex", string>>;
 		worker: string;
 		orchestrator: string;
 		/** Account drafts are keyed by harness, not by their position in the list. */
@@ -428,39 +427,6 @@ export function ProjectSettingsEditor({
 					</>
 				) : (
 					<>
-						{accountSettings ? (
-							<ProjectSettingsSection title={t("settings.agentAccounts.projectDefaults")} grouped>
-								{(["claude", "codex"] as const).map((provider) => (
-									<ProjectSettingsRow
-										key={provider}
-										label={provider === "claude" ? "Claude Code" : "Codex"}
-									>
-										<AgentAccountPicker
-											harness={provider === "claude" ? "claude-code" : "codex"}
-											inheritId=""
-											value={accountSettings?.providers[provider] ?? ""}
-											label={t("settings.agentAccounts.projectDefaults") + ` · ${provider}`}
-											onChange={(value) =>
-												setDraft((current) =>
-													current.accountSettings
-														? {
-																...current,
-																accountSettings: {
-																	...current.accountSettings,
-																	providers: {
-																		...current.accountSettings.providers,
-																		[provider]: value,
-																	},
-																},
-															}
-														: current,
-												)
-											}
-										/>
-									</ProjectSettingsRow>
-								))}
-							</ProjectSettingsSection>
-						) : null}
 						{visibleRoles.map((role) => {
 							const fields = roleFields[role];
 							const selectedAgent = draft[fields.agent];
@@ -607,7 +573,7 @@ export function ProjectSettingsEditor({
 														? (accountSettings.reviewers[agent] ?? "")
 														: accountSettings[role]
 												}
-												inheritId={accountSettings.providers[accountProvider] ?? ""}
+												inheritGlobal
 												onChange={(value) =>
 													setDraft((current) =>
 														!current.accountSettings
@@ -663,11 +629,7 @@ export function ProjectSettingsEditor({
 													projectId={accountSettings.projectId}
 													role="reviewer"
 													value={accountSettings.reviewers[harness] ?? ""}
-													inheritId={
-														accountSettings.providers[
-															agentAccountProviderFor(harness) ?? "codex"
-														] ?? ""
-													}
+													inheritGlobal
 													onChange={(value) =>
 														setDraft((current) =>
 															!current.accountSettings

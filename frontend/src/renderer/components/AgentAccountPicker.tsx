@@ -10,7 +10,9 @@ import { localAccountModelScope, type LocalAccountRole } from "../lib/local-acco
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
 /** Values are only explicit references. The daemon owns inheritance; catalog
- * updates change the annotation, never the user's draft or retry payload. */
+ * updates change the annotation, never the user's draft or retry payload.
+ * inheritGlobal previews the global/device default that a cleared role
+ * reference falls back to, instead of this project's saved role account. */
 export function AgentAccountPicker({
 	harness,
 	value,
@@ -18,7 +20,7 @@ export function AgentAccountPicker({
 	projectId = "",
 	role = "worker",
 	disabled = false,
-	inheritId,
+	inheritGlobal = false,
 	label,
 }: {
 	harness: string;
@@ -27,7 +29,7 @@ export function AgentAccountPicker({
 	projectId?: string;
 	role?: LocalAccountRole;
 	disabled?: boolean;
-	inheritId?: string;
+	inheritGlobal?: boolean;
 	label?: string;
 }) {
 	const { t } = useTranslation();
@@ -36,16 +38,16 @@ export function AgentAccountPicker({
 	const catalog = useQuery({
 		...agentModelsQueryOptions(
 			harness,
-			localAccountModelScope(inheritId === undefined ? projectId : "", role),
+			localAccountModelScope(inheritGlobal ? "" : projectId, role),
 			undefined,
 			true,
 		),
-		enabled: Boolean(provider) && !inheritId,
+		enabled: Boolean(provider),
 	});
 	if (!provider) return null;
 	const rows = (accounts.data ?? []).filter((a) => a.provider === provider);
 	const binding = catalog.data?.accountBinding;
-	const inherited = rows.find((a) => a.id === (inheritId || binding?.accountId));
+	const inherited = rows.find((a) => a.id === binding?.accountId);
 	const inheritedName = inherited ? agentAccountName(inherited, t) : undefined;
 	const unavailable = value !== "" && !rows.some((a) => a.id === value);
 	const options = [
@@ -54,9 +56,7 @@ export function AgentAccountPicker({
 			label: inheritedName
 				? t("settings.agentAccounts.inheritAccount", {
 						name: inheritedName,
-						source: t(
-							`settings.agentAccounts.source.${inheritId ? "project" : (binding?.source ?? "global")}`,
-						),
+						source: t(`settings.agentAccounts.source.${binding?.source ?? "global"}`),
 					})
 				: t("settings.agentAccounts.inherit"),
 		},

@@ -3982,7 +3982,6 @@
 	"settings.agentAccounts.unknownLimits": "Nutzungslimits unbekannt",
 	"settings.agentAccounts.limitsUpdated": "Limits aktualisiert {{time}}",
 	"settings.agentAccounts.logoutDescription": "{{email}} abmelden? Bestehende Sitzungen behalten dieses Konto und benötigen eine erneute Anmeldung.",
-	"settings.agentAccounts.projectDefaults": "Standardkonten des Projekts",
 	"settings.agentAccounts.recoveryTitle": "Stoppen und Wiederherstellung wiederholen",
 	"settings.agentAccounts.recoveryDescription": "AO konnte den Stopp des vorherigen Controllers nicht bestätigen. Wiederholen Sie den Stopp vor dem Fortsetzen. Der aktuelle Durchlauf kann unterbrochen werden. Bis zur Bestätigung startet kein weiterer schreibender Prozess.",
 	"settings.agentAccounts.recoveryAction": "Stoppen und wiederholen",

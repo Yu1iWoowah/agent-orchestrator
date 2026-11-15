@@ -4052,7 +4052,6 @@
 	"settings.agentAccounts.unknownLimits": "Límites de uso desconocidos",
 	"settings.agentAccounts.limitsUpdated": "Límites actualizados {{time}}",
 	"settings.agentAccounts.logoutDescription": "¿Cerrar la sesión de {{email}}? Las sesiones existentes conservan esta cuenta y necesitarán volver a iniciar sesión.",
-	"settings.agentAccounts.projectDefaults": "Cuentas predeterminadas del proyecto",
 	"settings.agentAccounts.recoveryTitle": "Detener y reintentar recuperación",
 	"settings.agentAccounts.recoveryDescription": "AO no pudo confirmar que el controlador anterior se detuvo. Reintenta detenerlo antes de continuar. Esto puede interrumpir su turno actual. No se iniciará otro proceso de escritura hasta confirmar la detención.",
 	"settings.agentAccounts.recoveryAction": "Detener y reintentar",

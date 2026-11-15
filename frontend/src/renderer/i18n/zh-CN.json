@@ -3964,7 +3964,6 @@
 	"settings.agentAccounts.unknownLimits": "额度未知",
 	"settings.agentAccounts.limitsUpdated": "额度更新于 {{time}}",
 	"settings.agentAccounts.logoutDescription": "要退出 {{email}} 吗？现有任务会保留此账号，并需要重新登录。",
-	"settings.agentAccounts.projectDefaults": "项目账号默认",
 	"settings.agentAccounts.recoveryTitle": "停止并重试恢复",
 	"settings.agentAccounts.recoveryDescription": "AO 无法确认先前的控制器已停止。继续任务前请重试停止，这可能中断当前回合。确认停止前，AO 不会启动另一个写入者。",
 	"settings.agentAccounts.recoveryAction": "停止并重试",
