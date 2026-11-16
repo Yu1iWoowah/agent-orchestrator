@@ -33,7 +33,7 @@ var expectedUsageTableColumns = map[string][]string{
 		// 0116 appends: ALTER TABLE has no way to place a column mid-row, and a
 		// second full rebuild to move it beside billing_provider_id would cost
 		// more than the adjacency is worth.
-		"billing_provider_source",
+		"billing_provider_source", "service_tier", "provider_message_id",
 	},
 }
 
@@ -726,7 +726,7 @@ func TestMigrateAllowsEveryShippedHarness(t *testing.T) {
 }
 
 func TestCodewhaleHarnessMigrationDownRestoresConstraint(t *testing.T) {
-	db := openMigratedTestDB(t)
+	db := openMigratedDatabaseCopy(t, 193)
 	if _, err := db.Exec(`
 INSERT INTO projects (id, path, registered_at, config)
 VALUES ('codewhale-project', '/repo/codewhale', ?, '{}');

@@ -74,12 +74,25 @@ func assertSharedInputRows(t *testing.T, db *sql.DB) {
 	}
 }
 
+func sharedInputRebuildObjects(t *testing.T, db *sql.DB) map[string]string {
+	t.Helper()
+	// The immutable rebuild appends the exact upstream column at the end.
+	result := sharedInputObjects(t, db)
+	const column = ", failure_code TEXT NOT NULL DEFAULT ''"
+	definition := result["table:conversation_turns"]
+	if strings.Count(definition, column) != 1 {
+		t.Fatal("failure_code definition was not preserved")
+	}
+	result["table:conversation_turns"] = strings.Replace(definition, column, "", 1)
+	return result
+}
+
 func TestSharedInputMigrationPreservesInventoryAndUpDownUp(t *testing.T) {
 	db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
 	seedSharedInputMigration(t, db)
-	before := sharedInputObjects(t, db)
+	before := sharedInputRebuildObjects(t, db)
 	upTo(t, db, sharedInputCustodyVersion)
-	after := sharedInputObjects(t, db)
+	after := sharedInputRebuildObjects(t, db)
 	for key, definition := range before {
 		got := after[key]
 		switch key {
@@ -94,7 +107,7 @@ func TestSharedInputMigrationPreservesInventoryAndUpDownUp(t *testing.T) {
 	}
 	assertSharedInputRows(t, db)
 	downTo(t, db, sharedInputCustodyVersion-1)
-	if reverted := sharedInputObjects(t, db); !reflect.DeepEqual(before, reverted) {
+	if reverted := sharedInputRebuildObjects(t, db); !reflect.DeepEqual(before, reverted) {
 		for key, definition := range before {
 			if reverted[key] != definition {
 				t.Errorf("Down changed %s", key)
@@ -106,7 +119,7 @@ func TestSharedInputMigrationPreservesInventoryAndUpDownUp(t *testing.T) {
 	}
 	assertSharedInputRows(t, db)
 	upTo(t, db, sharedInputCustodyVersion)
-	if reapplied := sharedInputObjects(t, db); !reflect.DeepEqual(after, reapplied) {
+	if reapplied := sharedInputRebuildObjects(t, db); !reflect.DeepEqual(after, reapplied) {
 		t.Fatal("up/down/up did not restore complete guarded schema")
 	}
 	assertSharedInputRows(t, db)
@@ -472,7 +485,7 @@ func TestSharedInputUnpublishedCandidateShapesFailClosed(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				db := openMigratedDatabaseCopy(t, sharedInputCustodyVersion-1)
 				seedSharedInputMigration(t, db)
-				originalSchema := sharedInputObjects(t, db)
+				originalSchema := sharedInputRebuildObjects(t, db)
 				func() {
 					gooseMu.Lock()
 					defer gooseMu.Unlock()
@@ -518,7 +531,7 @@ INSERT INTO conversation_input_actions(action_key,turn_id,kind,expected_owner,ex
 					if err != nil {
 						t.Fatal(err)
 					}
-					if !reflect.DeepEqual(originalSchema, sharedInputObjects(t, db)) {
+					if !reflect.DeepEqual(originalSchema, sharedInputRebuildObjects(t, db)) {
 						t.Fatal("empty 21-trigger backout changed original schema")
 					}
 				} else {

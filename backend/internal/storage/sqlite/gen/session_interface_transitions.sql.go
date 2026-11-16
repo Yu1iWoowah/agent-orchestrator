@@ -34,9 +34,32 @@ type AcknowledgeSessionInterfaceTransitionNoticeParams struct {
 	SessionID            domain.SessionID
 }
 
-func (q *Queries) AcknowledgeSessionInterfaceTransitionNotice(ctx context.Context, arg AcknowledgeSessionInterfaceTransitionNoticeParams) (SessionInterfaceTransition, error) {
+type AcknowledgeSessionInterfaceTransitionNoticeRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
+func (q *Queries) AcknowledgeSessionInterfaceTransitionNotice(ctx context.Context, arg AcknowledgeSessionInterfaceTransitionNoticeParams) (AcknowledgeSessionInterfaceTransitionNoticeRow, error) {
 	row := q.db.QueryRowContext(ctx, acknowledgeSessionInterfaceTransitionNotice, arg.NoticeAcknowledgedAt, arg.ID, arg.SessionID)
-	var i SessionInterfaceTransition
+	var i AcknowledgeSessionInterfaceTransitionNoticeRow
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
@@ -137,9 +160,32 @@ ORDER BY created_at DESC
 LIMIT 1
 `
 
-func (q *Queries) GetActiveSessionInterfaceTransition(ctx context.Context, sessionID domain.SessionID) (SessionInterfaceTransition, error) {
+type GetActiveSessionInterfaceTransitionRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
+func (q *Queries) GetActiveSessionInterfaceTransition(ctx context.Context, sessionID domain.SessionID) (GetActiveSessionInterfaceTransitionRow, error) {
 	row := q.db.QueryRowContext(ctx, getActiveSessionInterfaceTransition, sessionID)
-	var i SessionInterfaceTransition
+	var i GetActiveSessionInterfaceTransitionRow
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
@@ -176,12 +222,35 @@ ORDER BY created_at DESC, rowid DESC
 LIMIT 1
 `
 
+type GetLatestSessionInterfaceTransitionRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
 // Tests and injected clocks can assign multiple sagas the same timestamp.
 // This rowid table is append-only for a surviving session, so descending rowid
 // is the unique insertion-order tie-break that identifies the newer saga.
-func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessionID domain.SessionID) (SessionInterfaceTransition, error) {
+func (q *Queries) GetLatestSessionInterfaceTransition(ctx context.Context, sessionID domain.SessionID) (GetLatestSessionInterfaceTransitionRow, error) {
 	row := q.db.QueryRowContext(ctx, getLatestSessionInterfaceTransition, sessionID)
-	var i SessionInterfaceTransition
+	var i GetLatestSessionInterfaceTransitionRow
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
@@ -216,9 +285,32 @@ FROM session_interface_transitions
 WHERE id = ?
 `
 
-func (q *Queries) GetSessionInterfaceTransition(ctx context.Context, id string) (SessionInterfaceTransition, error) {
+type GetSessionInterfaceTransitionRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
+func (q *Queries) GetSessionInterfaceTransition(ctx context.Context, id string) (GetSessionInterfaceTransitionRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionInterfaceTransition, id)
-	var i SessionInterfaceTransition
+	var i GetSessionInterfaceTransitionRow
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
@@ -288,7 +380,30 @@ type InsertSessionInterfaceTransitionParams struct {
 	SettingsOperationID  string
 }
 
-func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg InsertSessionInterfaceTransitionParams) (SessionInterfaceTransition, error) {
+type InsertSessionInterfaceTransitionRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
+func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg InsertSessionInterfaceTransitionParams) (InsertSessionInterfaceTransitionRow, error) {
 	row := q.db.QueryRowContext(ctx, insertSessionInterfaceTransition,
 		arg.ID,
 		arg.SessionID,
@@ -304,7 +419,7 @@ func (q *Queries) InsertSessionInterfaceTransition(ctx context.Context, arg Inse
 		arg.TargetAccountID,
 		arg.SettingsOperationID,
 	)
-	var i SessionInterfaceTransition
+	var i InsertSessionInterfaceTransitionRow
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
@@ -340,15 +455,38 @@ WHERE phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required') OR 
 ORDER BY created_at
 `
 
-func (q *Queries) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]SessionInterfaceTransition, error) {
+type ListActiveSessionInterfaceTransitionsRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
+func (q *Queries) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]ListActiveSessionInterfaceTransitionsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listActiveSessionInterfaceTransitions)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SessionInterfaceTransition{}
+	items := []ListActiveSessionInterfaceTransitionsRow{}
 	for rows.Next() {
-		var i SessionInterfaceTransition
+		var i ListActiveSessionInterfaceTransitionsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.SessionID,
@@ -399,15 +537,38 @@ WHERE t.phase IN ('completed', 'failed', 'cancelled', 'recovery_required') AND N
 ORDER BY t.updated_at, t.id
 `
 
-func (q *Queries) ListDeliverableSessionInterfaceTransitions(ctx context.Context) ([]SessionInterfaceTransition, error) {
+type ListDeliverableSessionInterfaceTransitionsRow struct {
+	ID                    string
+	SessionID             domain.SessionID
+	SourceMode            domain.SessionMode
+	TargetMode            domain.SessionMode
+	Policy                domain.SessionInterfaceTransitionPolicy
+	Phase                 domain.SessionInterfaceTransitionPhase
+	NativeConversationID  string
+	ErrorCode             string
+	ErrorDetail           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	CompletedAt           sql.NullTime
+	NoticeAcknowledgedAt  sql.NullTime
+	HistoryPolicy         domain.SessionInterfaceTransitionHistoryPolicy
+	SourceAccountID       string
+	TargetAccountID       string
+	TargetRuntimeLaunchID string
+	TargetRuntimeHandleID string
+	TargetRuntimeState    string
+	SettingsOperationID   string
+}
+
+func (q *Queries) ListDeliverableSessionInterfaceTransitions(ctx context.Context) ([]ListDeliverableSessionInterfaceTransitionsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeliverableSessionInterfaceTransitions)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SessionInterfaceTransition{}
+	items := []ListDeliverableSessionInterfaceTransitionsRow{}
 	for rows.Next() {
-		var i SessionInterfaceTransition
+		var i ListDeliverableSessionInterfaceTransitionsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.SessionID,
@@ -494,7 +655,7 @@ func (q *Queries) ListPendingSessionInterfaceTransitionMessages(ctx context.Cont
 }
 
 const listUnsettledAccountTransitions = `-- name: ListUnsettledAccountTransitions :many
-SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id FROM session_interface_transitions AS t
+SELECT t.id, t.session_id, t.source_mode, t.target_mode, t.policy, t.phase, t.native_conversation_id, t.error_code, t.error_detail, t.created_at, t.updated_at, t.completed_at, t.notice_acknowledged_at, t.history_policy, t.source_account_id, t.target_account_id, t.target_runtime_launch_id, t.target_runtime_handle_id, t.target_runtime_state, t.settings_operation_id, t.degraded_kind FROM session_interface_transitions AS t
 JOIN account_transition_recovery_evidence AS r ON r.id=t.id
 WHERE r.current_target=0
 ORDER BY t.created_at,t.id
@@ -530,6 +691,7 @@ func (q *Queries) ListUnsettledAccountTransitions(ctx context.Context) ([]Sessio
 			&i.TargetRuntimeHandleID,
 			&i.TargetRuntimeState,
 			&i.SettingsOperationID,
+			&i.DegradedKind,
 		); err != nil {
 			return nil, err
 		}

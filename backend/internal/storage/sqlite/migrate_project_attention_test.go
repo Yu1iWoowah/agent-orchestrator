@@ -20,9 +20,7 @@ func TestProjectAttentionUpgradeCDCDownAndReopen(t *testing.T) {
 	exec(`INSERT INTO projects(id,path,registered_at) VALUES('project','isolated-project',CURRENT_TIMESTAMP)`)
 	exec(`INSERT INTO sessions(id,project_id,num,activity_last_at,created_at,updated_at) VALUES('worker','project',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 	exec(`INSERT INTO attention_questions(id,project_id,origin_session_id,origin_harness,client_key,audience,kind,payload_json,create_fingerprint,created_at,updated_at) VALUES('existing','project','worker','claude-code','key','user','question','{}','hash',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
-	if err := migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	upTo(t, db, 20261029135418896)
 	revision := func() int64 {
 		t.Helper()
 		var value int64
