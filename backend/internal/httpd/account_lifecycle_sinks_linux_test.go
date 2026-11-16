@@ -22,6 +22,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 func TestLifecycleSecretsStayOutOfDurableAndExportSinks(t *testing.T) {
@@ -89,7 +90,7 @@ for line in sys.stdin:
 	sink := &captureSink{}
 	var captures []string
 	router := chi.NewRouter()
-	router.Use(requestLoggerWithCapture(logger, sink, func(_ context.Context, e error, _ map[string]string, _ string) {
+	router.Use(requestLoggerWithCapture(logger, sink, func(_ context.Context, e error, _ map[string]string, _ string, _ telemetrymeta.SafeRoute, _ telemetrymeta.FailureSite) {
 		captures = append(captures, e.Error())
 	}))
 	(&controllers.AgentAccountsController{Svc: svc}).Register(router)

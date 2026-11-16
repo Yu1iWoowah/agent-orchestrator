@@ -10,10 +10,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/caller"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 )
 
@@ -48,11 +50,11 @@ type daemonRequestError struct{ cause error }
 func (e daemonRequestError) Error() string { return e.cause.Error() }
 func (e daemonRequestError) Unwrap() error { return e.cause }
 
-var errDaemonUnavailable = errors.New("AO daemon unavailable")
+var errDaemonUnavailable = errors.New("the Orchestrator daemon is unavailable")
 
 // errDaemonNotRunning distinguishes a missing/stale run file from transport
 // failures so hooks can keep expected restart noise out of the agent's stderr.
-var errDaemonNotRunning = errors.New("AO daemon is not running")
+var errDaemonNotRunning = errors.New("the Orchestrator daemon is not running")
 
 // daemonUnavailableError keeps the established user-facing diagnostics while
 // giving the few idempotent CLI operations that can safely retry a typed signal.
@@ -209,6 +211,10 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		req.Header.Set(name, value)
 	}
 	applySettingsIdentity(req, os.Getenv)
+
+	if callerID := callerSession(); callerID != "" {
+		req.Header.Set(caller.Header, callerID)
+	}
 	if sideID := os.Getenv("AO_SIDE_CONVERSATION_ID"); sideID != "" {
 		req.Header.Set("X-AO-Side-Conversation", sideID)
 	}
@@ -286,4 +292,14 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+// callerSession is the agent session running this command, so the daemon can
+// file the action it takes under that agent's running turn. A shell the user
+// opened in the session's terminal tab has none.
+func callerSession() string {
+	if os.Getenv(caller.ShellTerminalEnv) != "" {
+		return ""
+	}
+	return strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
 }

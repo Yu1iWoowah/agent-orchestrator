@@ -42,6 +42,7 @@ func (s *Store) CreateSessionInterfaceTransition(
 			HistoryPolicy:        rec.HistoryPolicy,
 			Phase:                rec.Phase,
 			NativeConversationID: rec.NativeConversationID,
+			DegradedKind:         rec.DegradedKind,
 			CreatedAt:            rec.CreatedAt,
 			UpdatedAt:            rec.UpdatedAt,
 			SourceAccountID:      rec.SourceAccountID,
@@ -101,7 +102,8 @@ func (s *Store) CreateSessionInterfaceTransitionAfter(
 			ID: rec.ID, SessionID: rec.SessionID, SourceMode: rec.SourceMode,
 			TargetMode: rec.TargetMode, Policy: rec.Policy, HistoryPolicy: rec.HistoryPolicy,
 			Phase: rec.Phase, NativeConversationID: rec.NativeConversationID,
-			CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt,
+			DegradedKind: rec.DegradedKind,
+			CreatedAt:    rec.CreatedAt, UpdatedAt: rec.UpdatedAt,
 			SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
 		})
 		if insertErr == nil {
@@ -225,6 +227,53 @@ func (s *Store) AdvanceSessionInterfaceTransition(
 	return rows > 0, nil
 }
 
+// CompleteSessionInterfaceTransition commits a degraded handoff and its notice
+// together, so every completed handoff has an outbox entry after a restart.
+// A stale phase changes neither the transition nor the outbox.
+func (s *Store) CompleteSessionInterfaceTransition(
+	ctx context.Context,
+	id string,
+	expected domain.SessionInterfaceTransitionPhase,
+	message string,
+	now time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var moved bool
+	err := s.inTx(ctx, "complete interface transition with notice", func(q *gen.Queries) error {
+		current, err := q.GetSessionInterfaceTransition(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Phase != expected || current.Phase.Terminal() {
+			return nil
+		}
+		rows, err := q.AdvanceSessionInterfaceTransition(ctx, gen.AdvanceSessionInterfaceTransitionParams{
+			Phase:                domain.SessionInterfaceTransitionCompleted,
+			NativeConversationID: current.NativeConversationID,
+			UpdatedAt:            now,
+			CompletedAt:          sql.NullTime{Time: now, Valid: true},
+			ID:                   id,
+			Phase_2:              expected,
+		})
+		if err != nil || rows == 0 {
+			return err
+		}
+		if err := q.EnqueueSessionInterfaceTransitionMessage(ctx, gen.EnqueueSessionInterfaceTransitionMessageParams{
+			TransitionID: id, ClientMessageID: "interface-transition:" + id + ":context-boundary",
+			Message: message, CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		moved = true
+		return nil
+	})
+	return moved && err == nil, err
+}
+
 // AcknowledgeSessionInterfaceTransitionNotice records that a user has seen a
 // failed or recovered transition notice. The transition remains intact as an
 // audit record, and COALESCE makes retries return the original timestamp.
@@ -265,7 +314,21 @@ func (s *Store) CommitSessionControllerEpoch(
 	nativeID string,
 	now time.Time,
 ) (bool, error) {
-	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, false, now)
+	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, false, false, now)
+}
+
+// CommitSessionControllerEpochArchivedChat commits a degraded identity-reset
+// handoff into a fresh terminal. The source Chat may carry real messages: its
+// conversation stays archived exactly as it is instead of having to prove its
+// root untouched (upstream issue #7724). The CAS proof is unchanged.
+func (s *Store) CommitSessionControllerEpochArchivedChat(
+	ctx context.Context,
+	id domain.SessionID,
+	source, target domain.SessionMode,
+	nativeID string,
+	now time.Time,
+) (bool, error) {
+	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, false, true, now)
 }
 
 // RestoreSessionControllerEpoch atomically restores the source interface after
@@ -279,7 +342,7 @@ func (s *Store) RestoreSessionControllerEpoch(
 	nativeID string,
 	now time.Time,
 ) (bool, error) {
-	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, true, now)
+	return s.commitSessionControllerEpoch(ctx, id, source, target, nativeID, true, false, now)
 }
 
 func (s *Store) commitSessionControllerEpoch(
@@ -287,7 +350,7 @@ func (s *Store) commitSessionControllerEpoch(
 	id domain.SessionID,
 	source, target domain.SessionMode,
 	nativeID string,
-	restore bool,
+	restore, archivedChat bool,
 	now time.Time,
 ) (bool, error) {
 	s.writeMu.Lock()
@@ -329,7 +392,10 @@ func (s *Store) commitSessionControllerEpoch(
 	if source == domain.SessionModeChat && target == domain.SessionModeTUI && nativeID == "" {
 		// A fresh TUI will choose its own native identity. Release the unused
 		// Chat reservation and event namespace in the same transaction, so a
-		// later return can bind that identity without inventing inherited history.
+		// later return can bind that identity without inventing inherited
+		// history. The degraded archived-chat commit runs this release first
+		// too: only a Chat whose conversation actually holds messages keeps
+		// its binding archived (upstream issue #7724).
 		released, err := q.ReleaseUntouchedConversationProvider(ctx, gen.ReleaseUntouchedConversationProviderParams{
 			SessionID:       &id,
 			ProviderScopeID: uuid.NewString(),
@@ -341,12 +407,19 @@ func (s *Store) commitSessionControllerEpoch(
 			// A Chat whose controller never started (its start failed, or it
 			// was never opened) has no conversation row: the freshness proof
 			// accepts that, and there is no reservation to release.
-			_, lookupErr := q.SelectConversationBySession(ctx, &id)
-			switch {
-			case errors.Is(lookupErr, sql.ErrNoRows):
+			if _, lookupErr := q.SelectConversationBySession(ctx, &id); errors.Is(lookupErr, sql.ErrNoRows) {
 				released = 1
-			case lookupErr != nil:
+			} else if lookupErr != nil {
 				return false, fmt.Errorf("release untouched Chat provider for %s: %w", id, lookupErr)
+			} else if archivedChat {
+				// The proof refused, so the Chat conversation holds real
+				// content (activity or turns). A degraded identity-reset
+				// fresh TUI archives that messaged Chat exactly as it is,
+				// provider binding included: its messages stay in Chat
+				// instead of having to prove the root untouched (upstream
+				// issue #7724). Without the degraded admission the commit
+				// still fails below.
+				released = 1
 			}
 		}
 		if released != 1 {
@@ -469,6 +542,7 @@ func interfaceTransitionQueryToDomain(row gen.GetSessionInterfaceTransitionRow) 
 		SourceMode: row.SourceMode, TargetMode: row.TargetMode,
 		Policy: row.Policy, HistoryPolicy: row.HistoryPolicy, Phase: row.Phase,
 		NativeConversationID: row.NativeConversationID,
+		DegradedKind:         row.DegradedKind,
 		SourceAccountID:      row.SourceAccountID, TargetAccountID: row.TargetAccountID,
 		TargetRuntimeLaunchID: row.TargetRuntimeLaunchID, TargetRuntimeHandleID: row.TargetRuntimeHandleID, TargetRuntimeState: domain.AccountTransitionRuntimeState(row.TargetRuntimeState),
 		ErrorCode: row.ErrorCode, ErrorDetail: row.ErrorDetail,
@@ -501,6 +575,7 @@ func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.Sess
 		Policy:                row.Policy,
 		Phase:                 row.Phase,
 		NativeConversationID:  row.NativeConversationID,
+		DegradedKind:          row.DegradedKind,
 		ErrorCode:             row.ErrorCode,
 		ErrorDetail:           row.ErrorDetail,
 		CreatedAt:             row.CreatedAt,

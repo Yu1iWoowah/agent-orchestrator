@@ -11,6 +11,7 @@ import (
 func TestHumanAnswerSemanticDeliveryWaitsForExactAcceptanceAndDeduplicates(t *testing.T) {
 	const key = "question-answer-ask-1"
 	store := newFakeStore()
+	receipts := newFakeSemanticReceiptStore(store)
 	store.sessions["s1"] = pastStartupGate(domain.SessionRecord{ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI, Activity: domain.Activity{State: domain.ActivityIdle}, Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"}})
 	messenger := &fakeMessenger{onSend: func(id domain.SessionID, message string) {
 		if got, ok := domain.ReportDeliveryID(message); !ok || got != key {
@@ -22,8 +23,10 @@ func TestHumanAnswerSemanticDeliveryWaitsForExactAcceptanceAndDeduplicates(t *te
 		rec.Metadata.ConversationCheckpointGeneration = "launch-1"
 		rec.Metadata.ConversationCheckpointTurnID = key
 		store.sessions[id] = rec
+		receipts.accept(id, rec.Metadata.RuntimeLaunchID, key)
 	}}
 	manager := newSendTestManager(t, semanticSignalingAgent{}, messenger, store)
+	manager.store = receipts
 	for range 2 {
 		if err := manager.SendSemanticWithOptions(context.Background(), "s1", "User chose Staging", key, ports.MessageDeliveryOptions{AuthoredByUser: true}); err != nil {
 			t.Fatal(err)

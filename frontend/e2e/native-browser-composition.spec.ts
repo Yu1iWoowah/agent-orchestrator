@@ -15,6 +15,17 @@ async function pixel(page: Page, x: number, y: number) {
 	}, [...png]);
 }
 
+async function themeColor(page: Page, token: string) {
+	return page.evaluate((token) => {
+		const canvas = document.createElement("canvas");
+		canvas.width = canvas.height = 1;
+		const context = canvas.getContext("2d")!;
+		context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+		context.fillRect(0, 0, 1, 1);
+		return [...context.getImageData(0, 0, 1, 1).data];
+	}, token);
+}
+
 test("Settings restores its canvas while the live Browser stays mounted @P0", async ({ page }) => {
 	await installFakeAgent(page, { workers: [{ id: "native-settings", title: "Browser settings regression", mode: "tui" }] });
 	await page.addInitScript(() => {
@@ -31,15 +42,15 @@ test("Settings restores its canvas while the live Browser stays mounted @P0", as
 	await page.getByRole("button", { name: "Settings", exact: true }).click();
 	await expect(page.getByTestId("settings-page")).toBeVisible();
 	await expect(page.locator("html")).not.toHaveAttribute("data-browser-hole", "true");
-	expect(await pixel(page, 350, 180)).toEqual([40, 42, 54, 255]);
+	expect(await pixel(page, 350, 180)).toEqual(await themeColor(page, "--color-surface"));
 	await expect(page.getByTestId("browser-panel")).toHaveAttribute("data-browser-native-page", "live");
 });
 
 for (const theme of ["dark", "light"]) {
 	test(`native browser only clears the visible viewport in ${theme} theme @P0`, async ({ page }) => {
 		await page.goto(`/e2e/native-browser-composition/harness.html?theme=${theme}`);
-		const header = theme === "dark" ? [33, 34, 44, 255] : [238, 238, 238, 255];
-		const canvas = theme === "dark" ? [40, 42, 54, 255] : [245, 245, 245, 255];
+		const header = await themeColor(page, "--color-sidebar");
+		const canvas = await themeColor(page, "--color-bg-primary");
 		// A mounted but hidden Browser must not clear any shell background.
 		await page.locator("#session").evaluate((element) => element.classList.add("hidden"));
 		expect(await pixel(page, 400, 10)).toEqual(header);
@@ -48,8 +59,9 @@ for (const theme of ["dark", "light"]) {
 		await page.evaluate(() => {
 			const root = document.documentElement;
 			root.dataset.browserHole = "true";
+			root.dataset.browserNativeLive = "true";
 			for (const [key, value] of Object.entries({ x: 600, y: 120, w: 300, h: 400 })) {
-				root.style.setProperty(`--browser-hole-${key}`, `${value}px`);
+				document.querySelector<HTMLElement>(".app-shell-root")!.style.setProperty(`--browser-hole-${key}`, `${value}px`);
 			}
 		});
 		expect(await pixel(page, 400, 10)).toEqual(header);
@@ -57,6 +69,7 @@ for (const theme of ["dark", "light"]) {
 		// Settings retains the hidden session DOM, including its live marker.
 		await page.evaluate(() => {
 			delete document.documentElement.dataset.browserHole;
+			delete document.documentElement.dataset.browserNativeLive;
 			document.getElementById("session")!.classList.add("hidden");
 			document.getElementById("settings")!.classList.remove("hidden");
 		});

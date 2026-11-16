@@ -1,3 +1,4 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import {
 	useInfiniteQuery,
 	useMutation,
@@ -8,7 +9,6 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { components, paths } from "../../api/schema";
-import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 import { toActivity } from "./useConversation";
 import { useProviderInputDraftStore } from "../stores/provider-input-draft-store";
@@ -50,9 +50,7 @@ async function fetchAttentionSource(
 	if (error?.code === "ATTENTION_CHANGED")
 		throw new AttentionSourceUnavailable();
 	if (error || !data)
-		throw new Error(
-			apiErrorMessage(error, "The request is no longer available."),
-		);
+		throw apiErrorException(error, "The request is no longer available.");
 	return checkedAttentionResponse(data);
 }
 
@@ -205,7 +203,7 @@ export function useSessionAttention(
 			)
 				throw new AttentionUnavailable();
 			if (error || !data)
-				throw new Error(apiErrorMessage(error, "Could not load attention."));
+				throw apiErrorException(error, "Could not load attention.");
 			if (branchId && data.activeBranchId !== branchId)
 				throw new Error("The active branch changed.");
 			return checkedAttentionResponse(data);
@@ -263,9 +261,7 @@ export function useAttentionSelection(
 				},
 			);
 			if (error)
-				throw new Error(
-					apiErrorMessage(error, "Could not mark the request read."),
-				);
+				throw apiErrorException(error, "Could not mark the request read.");
 		},
 		onSuccess: (_data, input) =>
 			client.invalidateQueries({

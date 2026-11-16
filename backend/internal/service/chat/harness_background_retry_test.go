@@ -141,7 +141,7 @@ func TestHarnessBackgroundRequeueFailurePreservesTerminalOutcome(t *testing.T) {
 						texts = append(texts, "follower")
 					}
 					for _, text := range texts {
-						turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: text, ClientMessageID: text})
+						turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: text, ClientMessageID: text})
 						if batch && (err != nil || turn.State != domain.TurnStateQueued) {
 							t.Fatalf("queue: %+v %v", turn, err)
 						}

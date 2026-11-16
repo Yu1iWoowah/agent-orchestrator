@@ -87,10 +87,11 @@ func (s *postClaimExcerptStore) ConversationMessages(ctx context.Context, cid st
 	return messages, err
 }
 func TestPostClaimInvalidInputDoesNotFailSibling(t *testing.T) {
+	// Relayed messages exercise batch recovery; human inputs now dispatch one per turn.
 	conv := newFakeConversation()
 	var fault *postClaimExcerptStore
 	h := newHarnessWithConversationAndStore(t, conv, func(st *store.Store) chatsvc.Store { fault = &postClaimExcerptStore{Store: st}; return fault })
-	seed, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "seed", ClientMessageID: "audit-seed", Origin: domain.MessageOriginHuman})
+	seed, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "seed", ClientMessageID: "audit-seed", Origin: domain.MessageOriginAutomation})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,15 +100,15 @@ func TestPostClaimInvalidInputDoesNotFailSibling(t *testing.T) {
 		return len(s.Messages) == 2 && s.Turns[0].State == domain.TurnStateCompleted
 	})
 	source := snap.Messages[1]
-	first, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "active", ClientMessageID: "audit-active"})
+	first, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "active", ClientMessageID: "audit-active"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "excerpt changes after claim", ClientMessageID: "audit-bad", Origin: domain.MessageOriginHuman, Excerpts: []ports.ChatExcerptReference{{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision, Text: "Selected source"}}})
+	bad, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "excerpt changes after claim", ClientMessageID: "audit-bad", Origin: domain.MessageOriginAutomation, Excerpts: []ports.ChatExcerptReference{{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision, Text: "Selected source"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	good, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "valid sibling", ClientMessageID: "audit-good"})
+	good, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "valid sibling", ClientMessageID: "audit-good"})
 	if err != nil {
 		t.Fatal(err)
 	}

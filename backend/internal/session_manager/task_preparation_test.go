@@ -1005,3 +1005,32 @@ func TestFailedOrdinarySpawnRetainsPartialWorkspaceInventory(t *testing.T) {
 		})
 	}
 }
+
+func TestFailedPreparationFallbackReportsTheStepThatEndedTheSpawn(t *testing.T) {
+	m, st, _, ws := newManager()
+	m.runBackground = func(work func()) { work() }
+	project := st.projects["mer"]
+	ws.createErr = errors.New("speculative worktree failed")
+	token, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.createErr = nil
+	ws.path = t.TempDir()
+	project.Config.PostCreate = []string{"exit 3"}
+	st.projects["mer"] = project
+	ctx, trace := WithSpawnTrace(context.Background())
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, TaskPreparation: token}); err == nil {
+		t.Fatal("Spawn succeeded, want the Setup step to fail it")
+	}
+	if ws.createCount != 2 {
+		t.Fatalf("workspace creates = %d, want the failed preparation then a fresh worktree", ws.createCount)
+	}
+	facts := trace.Facts()
+	if facts.FailedStep != SpawnStepSetup {
+		t.Fatalf("failed_step = %q, want %q: the preparation's own failure was recovered", facts.FailedStep, SpawnStepSetup)
+	}
+	if _, ok := facts.StepMs["worktree_ms"]; !ok {
+		t.Fatalf("steps = %v, want the worktree step timed", facts.StepMs)
+	}
+}

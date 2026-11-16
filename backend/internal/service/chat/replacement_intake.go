@@ -36,7 +36,7 @@ func (s *Service) QueueReplacementIntake(ctx context.Context, id domain.SessionI
 		return zero, err
 	}
 	msg = s.resolveSteerSender(ctx, msg)
-	turn, err := s.queueWithoutController(ctx, rec, msg)
+	turn, err := s.queueWithoutController(ctx, rec, msg, false)
 	if err != nil || turn.ID != "" || msg.ClientMessageID == "" {
 		return turn, err
 	}

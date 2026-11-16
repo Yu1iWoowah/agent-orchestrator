@@ -29,25 +29,35 @@ func (s *Store) validateUndispatchedConversation(ctx context.Context, q *gen.Que
 		return domain.ErrSessionNotProvisioning
 	}
 	if !row.ProvisionState.IsProvisioning() && !row.HibernatedAt.Valid && !starting {
+		move, moveErr := q.GetActiveSessionInterfaceTransition(ctx, id)
+		if moveErr != nil && !errors.Is(moveErr, sql.ErrNoRows) {
+			return fmt.Errorf("check account move of %s: %w", id, moveErr)
+		}
+		awaitingTarget := moveErr == nil && interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(move)).AccountMoveAwaitsTarget()
 		rec := rowToRecord(row)
 		if rec.Kind != domain.KindOrchestrator {
-			return domain.ErrSessionNotProvisioning
-		}
-		operation, err := q.GetActiveOrchestratorReplacement(ctx, string(rec.ProjectID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return domain.ErrSessionNotProvisioning
-		}
-		if err != nil {
-			return err
-		}
-		op, err := s.decodeCheckpointedReplacement(ctx, q, operation)
-		if err != nil {
-			return err
-		}
-		source := op.SourceRetiredAt == nil && rec.ID == op.SourceSessionID && rec.ControllerOwner() == op.SourceOwner && op.SourceCapabilityVerifier != "" && rec.Metadata.BrowserCapabilityVerifier == op.SourceCapabilityVerifier
-		successor := op.SourceRetiredAt != nil && rec.Mode == domain.SessionModeChat && (rec.ID == op.SuccessorSessionID || op.SpawnRequestID != "" && op.SpawnRequestHash != "" && rec.ClientRequestID == op.SpawnRequestID && rec.ClientRequestHash == op.SpawnRequestHash)
-		if rec.Harness != domain.HarnessClaudeCode || (!source && !successor) {
-			return domain.ErrReplacementSourceChanged
+			if !awaitingTarget {
+				return domain.ErrSessionNotProvisioning
+			}
+		} else {
+			operation, err := q.GetActiveOrchestratorReplacement(ctx, string(rec.ProjectID))
+			if errors.Is(err, sql.ErrNoRows) {
+				if !awaitingTarget {
+					return domain.ErrSessionNotProvisioning
+				}
+			} else if err != nil {
+				return err
+			} else {
+				op, err := s.decodeCheckpointedReplacement(ctx, q, operation)
+				if err != nil {
+					return err
+				}
+				source := op.SourceRetiredAt == nil && rec.ID == op.SourceSessionID && rec.ControllerOwner() == op.SourceOwner && op.SourceCapabilityVerifier != "" && rec.Metadata.BrowserCapabilityVerifier == op.SourceCapabilityVerifier
+				successor := op.SourceRetiredAt != nil && rec.Mode == domain.SessionModeChat && (rec.ID == op.SuccessorSessionID || op.SpawnRequestID != "" && op.SpawnRequestHash != "" && rec.ClientRequestID == op.SpawnRequestID && rec.ClientRequestHash == op.SpawnRequestHash)
+				if rec.Harness != domain.HarnessClaudeCode || (!source && !successor) {
+					return domain.ErrReplacementSourceChanged
+				}
+			}
 		}
 	}
 	conversation, err := q.SelectConversationByID(ctx, conversationID)

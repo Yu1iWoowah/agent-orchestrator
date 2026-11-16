@@ -7,11 +7,20 @@ SELECT * FROM app_settings WHERE id = 1;
 -- name: SetDefaultSessionMode :exec
 UPDATE app_settings SET default_session_mode = ?, updated_at = ? WHERE id = 1;
 
--- name: SetCloudOffering :exec
-UPDATE app_settings SET cloud_offering = ?, updated_at = ? WHERE id = 1;
-
 -- name: SetVersionRefresh :exec
 UPDATE app_settings SET version_refresh = ?, updated_at = ? WHERE id = 1;
+
+-- name: SetComputerUse :exec
+UPDATE app_settings SET computer_use = ?, updated_at = ? WHERE id = 1;
+
+-- name: SetLimitHistory :exec
+UPDATE app_settings SET limit_history = ?, updated_at = ? WHERE id = 1;
+
+-- name: GetLimitHistory :one
+SELECT limit_history FROM app_settings WHERE id = 1;
+
+-- name: SetSessionRetentionDays :exec
+UPDATE app_settings SET session_retention_days = ?, updated_at = ? WHERE id = 1;
 
 -- name: SetHarnessDefault :exec
 UPDATE app_settings
@@ -27,3 +36,6 @@ WHERE id = 1;
 
 -- name: SetReplyLanguage :exec
 UPDATE app_settings SET reply_language = ?, updated_at = ? WHERE id = 1;
+
+-- name: SetAccountHandoff :exec
+UPDATE app_settings SET account_handoff = ?, updated_at = ? WHERE id = 1;

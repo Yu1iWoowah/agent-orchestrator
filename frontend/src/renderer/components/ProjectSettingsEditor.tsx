@@ -10,7 +10,7 @@ import {
 	ProjectSettingsSection,
 	ProjectSettingsValueRow,
 } from "@aoagents/product-ui";
-import { Pencil } from "lucide-react";
+import { Pencil } from "@/components/app-icons";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -19,11 +19,7 @@ import type {
 } from "./ProjectSettingsForm";
 import { deriveRepoHost, deriveRepoPath, IntakeFields, intakeNeedsRule } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
-import {
-	AgentModelField,
-	ProjectAutoReviewToggle,
-	ProjectWorkersRequestReviewToggle,
-} from "./settings/ProjectAgentRoleControls";
+import { AgentModelField, ProjectAutoReviewToggle, ProjectCoAuthorCommitsToggle, ProjectWorkersRequestReviewToggle } from "./settings/ProjectAgentRoleControls";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Button } from "./ui/button";
 
@@ -59,6 +55,8 @@ export type ProjectSettingsDraft = {
 	autoReview: boolean;
 	/** Local-only: workers may ask AO to review their own PRs. */
 	workersRequestReview?: boolean;
+	/** Cloud-only: agent commits name the AO GitHub App as a co-author. */
+	coAuthorCommits?: boolean;
 	intakeEnabled: boolean;
 	intakeRepo: string;
 	intakeAssignee: string;
@@ -90,6 +88,7 @@ type Capabilities = {
 	reviewer: boolean;
 	requiredAgents: boolean;
 	workersRequestReview?: boolean;
+	coAuthorCommits?: boolean;
 	nameLimit?: number;
 	requiredBranch?: boolean;
 	/** Cloud defaults and tuning belong to its runtime, rather than the local catalog. */
@@ -141,6 +140,8 @@ export function ProjectSettingsEditor({
 	defaultReviewer = () => "",
 	modelScope,
 	modelHostId,
+	cloudOrgId,
+	intakeDescription,
 	reviewerWarning,
 	autoReviewDescription,
 	save,
@@ -159,6 +160,7 @@ export function ProjectSettingsEditor({
 	renderAgent: (props: ProjectAgentPickerProps) => ReactNode;
 	defaultReviewer?: (draft: ProjectSettingsDraft) => string;
 	modelScope: (agent: string, role: ProjectSettingsRole, draft: ProjectSettingsDraft) => string;
+	cloudOrgId?: string;
 	/** Self-hosted daemon whose model catalog the role pickers read. */
 	modelHostId?: string;
 	reviewerWarning?: (agent: string) => string | null;
@@ -166,6 +168,7 @@ export function ProjectSettingsEditor({
 	save: (
 		values: ProjectSettingsDraft,
 	) => Promise<{ values?: ProjectSettingsDraft }>;
+	intakeDescription?: string;
 	onSaveState?: (state: ProjectSettingsSaveState) => void;
 	reload?: (draft: ProjectSettingsDraft, paths: string[]) => Promise<{ values: ProjectSettingsDraft; baseline: ProjectSettingsDraft }>;
 	/** Read-only sections appended to the General page (e.g. a Cloud project's Coder template). */
@@ -393,6 +396,7 @@ export function ProjectSettingsEditor({
 									<ProjectSettingsSection title={t("settings.project.issues")} grouped>
 										<IntakeFields
 											variant="settings"
+                                        description={intakeDescription}
 											form={intake}
 											onChange={(values) =>
 												patch({
@@ -420,6 +424,7 @@ export function ProjectSettingsEditor({
 											onCheckedChange={(workersRequestReview) => patch({ workersRequestReview })}
 										/>
 									)}
+                                    {capabilities.coAuthorCommits && <ProjectCoAuthorCommitsToggle checked={draft.coAuthorCommits ?? true} onCheckedChange={(coAuthorCommits) => patch({ coAuthorCommits })} />}
 								</ProjectSettingsSection>
 							</>
 						)}
@@ -481,8 +486,8 @@ export function ProjectSettingsEditor({
 								}));
 							return (
 								<ProjectSettingsSection key={role} title={t(`settings.models.${role}Role`)} grouped>
-									<ProjectSettingsRow label={t("settings.project.agent")}>
-										<div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+									<ProjectSettingsRow label={t("settings.project.agent")} className="flex-wrap items-start justify-end gap-x-2 gap-y-1.5 [&>:first-child]:mr-auto [&>:first-child]:min-h-control-md [&>:last-child]:contents">
+										<div className="contents">
 											<div className="min-w-0">
 												{renderAgent({
 													disabled: capabilities.lockedAgents,
@@ -507,12 +512,14 @@ export function ProjectSettingsEditor({
 														})),
 												})}
 											</div>
-											<div className="min-w-0 space-y-1.5">
+											<div className="contents">
 												<AgentModelField
+                                                    warningClassName="order-last basis-full px-0"
 													role={role}
 													agentId={agent}
 													projectId={modelScope(agent, role, draft)}
 													hostId={modelHostId}
+                                                    cloudOrgId={cloudOrgId}
 													model={inheritsWorker ? draft.workerModel : draft[fields.model]}
 													mode={draft[fields.mode]}
 													effort={inheritsWorker ? draft.workerEffort : draft[fields.effort]}

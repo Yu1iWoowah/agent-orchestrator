@@ -1,4 +1,5 @@
-import { apiClient, apiErrorMessage } from "./api-client";
+import { apiErrorException } from "./api-error-exception";
+import { apiClient } from "./api-client";
 import {
 	readDocumentContent,
 	resolveDocument,
@@ -31,7 +32,7 @@ export async function downloadDocument(
 				parseAs: "blob",
 			},
 		);
-		if (response.error) throw new Error(apiErrorMessage(response.error));
+		if (response.error) throw apiErrorException(response.error);
 		if (!response.data) throw new Error("Download response missing");
 		data = new Blob([response.data], { type: "application/octet-stream" });
 	}

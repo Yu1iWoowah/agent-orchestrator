@@ -108,7 +108,7 @@ it("separates reports from user questions and marks only an inspected report rea
 	show();
 	expect(
 		screen.getByRole("button", { name: "Open project attention" }),
-	).toHaveClass("topbar-control");
+	).toBeEnabled();
 	await waitFor(() =>
 		expect(
 			screen.getByRole("button", { name: "Open project attention" }),

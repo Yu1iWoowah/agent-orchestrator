@@ -23,6 +23,19 @@ func TestUsagePipelineWatchRootsIncludesManagedWrites(t *testing.T) {
 		AccountClaudeProjects: filepath.Join(history, "claude", "projects"),
 		AccountCodexSessions:  filepath.Join(history, "codex", "sessions"),
 		AccountCodexArchived:  filepath.Join(history, "codex", "archived_sessions"),
+		PiSessions:            t.TempDir(),
+		PiAgentSessions:       t.TempDir(),
+		QwenUsage:             t.TempDir(),
+		OMPSessions:           t.TempDir(),
+		KimchiSessions:        t.TempDir(),
+		GooseSessions:         t.TempDir(),
+		OpenCodeData:          t.TempDir(),
+		KiloData:              t.TempDir(),
+		PrimeAgentSessions:    t.TempDir(),
+		GrokSessions:          t.TempDir(),
+		AgyCLIConversations:   t.TempDir(),
+		AgyACPConversations:   t.TempDir(),
+		DeepSeekSessions:      t.TempDir(),
 	}
 	for _, test := range []struct {
 		name string

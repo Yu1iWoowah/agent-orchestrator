@@ -14,6 +14,8 @@
   "ProviderItemAliases": null,
   "ClientMessageID": "",
   "TurnState": "",
+  "FailureCode": "",
+  "UsageLimitResetsAt": "0001-01-01T00:00:00Z",
   "Delta": "",
   "Text": "",
   "ActivityKind": "command",

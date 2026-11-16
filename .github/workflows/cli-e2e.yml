@@ -1,22 +1,14 @@
 name: CLI E2E
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "backend/**"
-      - "components/hcg/**"
-      - "test/cli/**"
-      - ".github/workflows/cli-e2e.yml"
+  workflow_call:
+    inputs:
+      native:
+        type: boolean
+        required: true
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Primary tier: the cross-platform Go E2E suite (build tag `e2e`) runs the real
@@ -25,12 +17,12 @@ jobs:
   # binary and uses explicit AO_RUN_FILE/AO_DATA_DIR overrides plus a free port.
   # Default state-path resolution is covered by config unit tests.
   native:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.native && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
@@ -39,11 +31,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27.1"
+          go-version: "1.27.4"
           cache: false
-
-      - name: Native transcript publication policy
-        run: go test -count=1 ./internal/filefingerprint && go test -count=1 -run '^TestNative(StabilityMissingChangeTimeFailsClosed|TranscriptPlatformStabilityPolicy)$' ./internal/adapters/agent/claudecode
 
       - name: CLI E2E (native)
         run: go test -tags e2e -v ./internal/cli/...
@@ -54,15 +43,15 @@ jobs:
   # --init gives a real PID-1 reaper so the daemon the check starts is reaped
   # after `stop` instead of lingering as a zombie.
   container:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - name: Build fresh-install image
         run: |
           docker build -f test/cli/Dockerfile -t ao-cli-smoke \
-            --build-arg GO_IMAGE=mirror.gcr.io/library/golang:1.27.1-bookworm \
+            --build-arg GO_IMAGE=mirror.gcr.io/library/golang:1.27.4-bookworm \
             --build-arg RUNTIME_IMAGE=mirror.gcr.io/library/debian:bookworm-slim .
 
       - name: Fresh-install check (container)

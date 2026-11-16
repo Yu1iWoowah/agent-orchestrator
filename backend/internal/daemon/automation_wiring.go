@@ -14,8 +14,8 @@ import (
 // startAutomations repairs crash-interrupted durable state before launching the
 // cadence-only observer. Reconciliation is best effort so one malformed legacy
 // row cannot prevent daemon readiness.
-func startAutomations(ctx context.Context, store *sqlite.Store, sessions *sessionsvc.Service, accounts ports.AgentAccountResolver, logger *slog.Logger) (*automationsvc.Service, <-chan struct{}) {
-	service := automationsvc.New(automationsvc.Deps{Store: store, Spawner: sessions})
+func startAutomations(ctx context.Context, store *sqlite.Store, sessions *sessionsvc.Service, accounts ports.AgentAccountResolver, telemetry ports.EventSink, logger *slog.Logger) (*automationsvc.Service, <-chan struct{}) {
+	service := automationsvc.New(automationsvc.Deps{Store: store, Spawner: sessions, Telemetry: telemetry})
 	service.SetAccountResolver(accounts)
 	if err := service.Reconcile(ctx); err != nil {
 		logger.Warn("automation startup reconciliation completed with errors", "err", err)

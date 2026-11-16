@@ -27,6 +27,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	rcasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/rca"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 // Both consumers use the existing metadata/ledger read ports. No fake replaces
@@ -154,8 +155,12 @@ func TestRCAActualHTTPFlowCanariesAndCanonicalControl(t *testing.T) {
 			httpCaptures, panicCaptures := 0, 0
 			router := NewRouterWithControl(config.Config{}, log, nil, APIDeps{RCA: svc, Telemetry: sink}, ControlDeps{})
 			outer := chi.NewRouter()
-			outer.Use(requestLoggerWithCapture(log, sink, func(context.Context, error, map[string]string, string) { httpCaptures++ }))
-			outer.Use(recoverTelemetryWithCapture(log, sink, func(context.Context, any, string, map[string]string, string) { panicCaptures++ }))
+			outer.Use(requestLoggerWithCapture(log, sink, func(context.Context, error, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite) {
+				httpCaptures++
+			}))
+			outer.Use(recoverTelemetryWithCapture(log, sink, func(context.Context, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite) {
+				panicCaptures++
+			}))
 			outer.Get("/control", func(w http.ResponseWriter, r *http.Request) {
 				envelope.WriteError(w, r, errors.New("connected control"))
 			})

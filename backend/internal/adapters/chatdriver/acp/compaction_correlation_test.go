@@ -138,7 +138,7 @@ func TestCompactionOutcomeRequiresNativeEvidence(t *testing.T) {
 				response.Meta = map[string]any{persistenthost.ACPEventIDMetaKey: "host-result"}
 			}
 			if tc.responseFailure {
-				c.promptResponseFailure = func(acpsdk.PromptResponse) error { return errors.New("native operation failed") }
+				c.promptResponseFailure = func(acpsdk.PromptResponse, string) error { return errors.New("native operation failed") }
 			}
 			c.finishPrompt("command", response, promptErr)
 			var terminal *ports.ChatEvent

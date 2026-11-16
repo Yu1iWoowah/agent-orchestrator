@@ -1,3 +1,4 @@
+import { Checkbox } from "./ui/checkbox";
 import { Copy, File, FileText, MoreHorizontal, Pin } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArtifactActionsMenu } from "./ArtifactActionsMenu";
@@ -9,7 +10,7 @@ import { formatTimeCompact } from "../lib/format-time";
 import { useNavigateToSession } from "../lib/navigate-to-session";
 import { useArtifactsViewStore, type ArtifactViewMode } from "../stores/artifacts-view-store";
 import { useUiStore } from "../stores/ui-store";
-import { ArtifactGalleryCard } from "./ArtifactGalleryCard";
+import { ArtifactGalleryCard, type ArtifactCardSelection } from "./ArtifactGalleryCard";
 import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
@@ -19,12 +20,14 @@ export function CatalogArtifactCard({
 	view,
 	onOpen,
 	legacyPin,
+	selection,
 }: {
 	row: CatalogArtifactRow;
 	projectName: string;
 	view: ArtifactViewMode;
 	onOpen: () => void;
 	legacyPin?: string;
+	selection?: ArtifactCardSelection;
 }) {
 	const { t } = useTranslation();
 	const navigate = useNavigateToSession();
@@ -119,15 +122,18 @@ export function CatalogArtifactCard({
 				row={{ name: row.name, path: row.path, kind, updatedAt: row.updatedAt }}
 				context={context}
 				detail={row.path}
-				actions={actions}
+				selection={selection}
+				actions={selection ? null : actions}
 				onPreview={onOpen}
 			/>
 		);
 	return (
 		<li className="group/artifact flex min-h-11 min-w-0 items-center gap-2 rounded-md bg-card px-3 hover:bg-accent focus-within:bg-accent">
+            {selection ? <Checkbox aria-label={selection.label} title={selection.disabledReason} checked={selection.selected} disabled={Boolean(selection.disabledReason)} onCheckedChange={selection.onToggle} /> : null}
 			<button
 				type="button"
-				onClick={onOpen}
+				onClick={selection ? selection.disabledReason ? undefined : selection.onToggle : onOpen}
+                disabled={Boolean(selection?.disabledReason)}
 				className="min-w-0 flex-1 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 				title={row.path}
 			>
@@ -138,7 +144,7 @@ export function CatalogArtifactCard({
 				<span className="block text-xs text-muted-foreground">{context}</span>
 				<span className="block break-all font-mono text-xs text-muted-foreground">{row.path}</span>
 			</button>
-			{actions}
+			{selection ? null : actions}
 			{row.updatedAt ? (
 				<time className="shrink-0 text-xs tabular-nums text-muted-foreground" dateTime={row.updatedAt}>
 					{formatTimeCompact(row.updatedAt)}

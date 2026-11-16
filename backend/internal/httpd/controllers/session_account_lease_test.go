@@ -23,6 +23,8 @@ type leaseRejectedManager struct {
 	err error
 }
 
+func (m leaseRejectedManager) SetProvisionObserver(sessionmanager.ProvisionObserver) {}
+
 func (m leaseRejectedManager) Spawn(context.Context, ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
 	return domain.SessionRecord{}, 0, 0, m.err
 }

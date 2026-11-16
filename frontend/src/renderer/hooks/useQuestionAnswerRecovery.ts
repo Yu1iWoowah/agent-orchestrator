@@ -1,3 +1,4 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import { type QueryClient, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { clientForSessionHost } from "../lib/host-clients";
@@ -77,7 +78,7 @@ export async function sendQuestionAnswer(client: QueryClient, key: string): Prom
 			useQuestionDraftStore.getState().rejected(key, answer.clientAnswerId, apiErrorMessage(error, "Check your answers."), responseFieldErrors(error.details));
 			return;
 		}
-		if (error || !data) throw new Error(apiErrorMessage(error, "The save result could not be confirmed."));
+		if (error || !data) throw apiErrorException(error, "The save result could not be confirmed.");
 		await savedAnswer(client, key, parseQuestionReceipt(data, answer));
 	} catch (error) {
 		useQuestionDraftStore.getState().unknown(key, answer.clientAnswerId, error instanceof Error ? error.message : "The save result could not be confirmed.", Date.now());

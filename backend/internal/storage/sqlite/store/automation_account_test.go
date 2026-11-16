@@ -21,6 +21,7 @@ func TestAutomationAccountReferenceRoundTripsCreateUpdateAndDueRun(t *testing.T)
 	if err != nil || !found || got.AgentAccountID != "worker-A" {
 		t.Fatalf("automation lost account: %+v %v", got, err)
 	}
+	a = got
 	a.AgentAccountID = "worker-B"
 	if _, err := s.UpdateAutomation(ctx, a); err != nil {
 		t.Fatal(err)

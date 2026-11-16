@@ -14,25 +14,14 @@ import (
 
 const getSessionCleanupFacts = `-- name: GetSessionCleanupFacts :one
 SELECT session_id, session_generation, runtime_released_at, workspace_disposition,
-    attempt_count, last_attempt_at, next_attempt_at, failure_code
+    attempt_count, last_attempt_at, next_attempt_at, failure_code, report_only
 FROM session_cleanup_facts
 WHERE session_id = ?
 `
 
-type GetSessionCleanupFactsRow struct {
-	SessionID            domain.SessionID
-	SessionGeneration    int64
-	RuntimeReleasedAt    sql.NullTime
-	WorkspaceDisposition string
-	AttemptCount         int64
-	LastAttemptAt        sql.NullTime
-	NextAttemptAt        sql.NullTime
-	FailureCode          string
-}
-
-func (q *Queries) GetSessionCleanupFacts(ctx context.Context, sessionID domain.SessionID) (GetSessionCleanupFactsRow, error) {
+func (q *Queries) GetSessionCleanupFacts(ctx context.Context, sessionID domain.SessionID) (SessionCleanupFact, error) {
 	row := q.db.QueryRowContext(ctx, getSessionCleanupFacts, sessionID)
-	var i GetSessionCleanupFactsRow
+	var i SessionCleanupFact
 	err := row.Scan(
 		&i.SessionID,
 		&i.SessionGeneration,
@@ -42,6 +31,7 @@ func (q *Queries) GetSessionCleanupFacts(ctx context.Context, sessionID domain.S
 		&i.LastAttemptAt,
 		&i.NextAttemptAt,
 		&i.FailureCode,
+		&i.ReportOnly,
 	)
 	return i, err
 }
@@ -52,34 +42,23 @@ WITH wanted_session AS (
     FROM json_each(?) AS j
 )
 SELECT f.session_id, f.session_generation, f.runtime_released_at, f.workspace_disposition,
-    f.attempt_count, f.last_attempt_at, f.next_attempt_at, f.failure_code
+    f.attempt_count, f.last_attempt_at, f.next_attempt_at, f.failure_code, f.report_only
 FROM session_cleanup_facts f
 JOIN wanted_session ON wanted_session.session_id = f.session_id
 `
 
-type ListSessionCleanupFactsBySessionsRow struct {
-	SessionID            domain.SessionID
-	SessionGeneration    int64
-	RuntimeReleasedAt    sql.NullTime
-	WorkspaceDisposition string
-	AttemptCount         int64
-	LastAttemptAt        sql.NullTime
-	NextAttemptAt        sql.NullTime
-	FailureCode          string
-}
-
 // Batch form of GetSessionCleanupFacts for session-list reads: the JSON array of
 // session ids replaces one lookup per archived session. Sessions with no facts
 // row are simply absent from the result.
-func (q *Queries) ListSessionCleanupFactsBySessions(ctx context.Context, jsonEach interface{}) ([]ListSessionCleanupFactsBySessionsRow, error) {
+func (q *Queries) ListSessionCleanupFactsBySessions(ctx context.Context, jsonEach interface{}) ([]SessionCleanupFact, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionCleanupFactsBySessions, jsonEach)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListSessionCleanupFactsBySessionsRow{}
+	items := []SessionCleanupFact{}
 	for rows.Next() {
-		var i ListSessionCleanupFactsBySessionsRow
+		var i SessionCleanupFact
 		if err := rows.Scan(
 			&i.SessionID,
 			&i.SessionGeneration,
@@ -89,6 +68,7 @@ func (q *Queries) ListSessionCleanupFactsBySessions(ctx context.Context, jsonEac
 			&i.LastAttemptAt,
 			&i.NextAttemptAt,
 			&i.FailureCode,
+			&i.ReportOnly,
 		); err != nil {
 			return nil, err
 		}
@@ -106,8 +86,8 @@ func (q *Queries) ListSessionCleanupFactsBySessions(ctx context.Context, jsonEac
 const upsertSessionCleanupFacts = `-- name: UpsertSessionCleanupFacts :exec
 INSERT INTO session_cleanup_facts (
     session_id, session_generation, runtime_released_at, workspace_disposition,
-    attempt_count, last_attempt_at, next_attempt_at, failure_code
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    attempt_count, last_attempt_at, next_attempt_at, failure_code, report_only
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (session_id) DO UPDATE SET
     session_generation = excluded.session_generation,
     runtime_released_at = excluded.runtime_released_at,
@@ -115,7 +95,8 @@ ON CONFLICT (session_id) DO UPDATE SET
     attempt_count = excluded.attempt_count,
     last_attempt_at = excluded.last_attempt_at,
     next_attempt_at = excluded.next_attempt_at,
-    failure_code = excluded.failure_code
+    failure_code = excluded.failure_code,
+    report_only = excluded.report_only
 `
 
 type UpsertSessionCleanupFactsParams struct {
@@ -127,6 +108,7 @@ type UpsertSessionCleanupFactsParams struct {
 	LastAttemptAt        sql.NullTime
 	NextAttemptAt        sql.NullTime
 	FailureCode          string
+	ReportOnly           bool
 }
 
 func (q *Queries) UpsertSessionCleanupFacts(ctx context.Context, arg UpsertSessionCleanupFactsParams) error {
@@ -139,6 +121,7 @@ func (q *Queries) UpsertSessionCleanupFacts(ctx context.Context, arg UpsertSessi
 		arg.LastAttemptAt,
 		arg.NextAttemptAt,
 		arg.FailureCode,
+		arg.ReportOnly,
 	)
 	return err
 }

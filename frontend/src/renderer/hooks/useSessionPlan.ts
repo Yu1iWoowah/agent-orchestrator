@@ -1,6 +1,6 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { components, paths } from "../../api/schema";
-import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 
 export type SessionPlan = components["schemas"]["SessionPlanResponse"];
@@ -23,7 +23,7 @@ export function useSessionPlan(sessionId: string, hostId?: string) {
 				(response.status === 404 && error?.code !== "SESSION_NOT_FOUND")
 			)
 				throw new PlanUnavailable("Plan is not supported by this host.");
-			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load Plan."));
+			if (error || !data) throw apiErrorException(error, "Could not load Plan.");
 			return data;
 		},
 		retry: false,
@@ -48,7 +48,7 @@ export function useSessionPlanHistory(
 				"/api/v1/sessions/{sessionId}/plan/history",
 				{ params: { path: { sessionId }, query }, signal },
 			);
-			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load Plan history."));
+			if (error || !data) throw apiErrorException(error, "Could not load Plan history.");
 			if (branchId && data.activeBranchId !== branchId)
 				throw new Error("The active branch changed. Refresh Plan history.");
 			return data;

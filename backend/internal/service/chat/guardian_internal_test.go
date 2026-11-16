@@ -109,7 +109,7 @@ func TestGuardianReviewProjectUnitScopeGatesAndFailureIsolation(t *testing.T) {
 				owner = domain.ReviewConversationOwner("reviewer")
 			}
 			now := launched
-			c := newController("session", owner, domain.ConversationRecord{ID: "conversation"}, "generation", tc.harness, guardianProjectionConversation{}, store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil)
+			c := newController("session", owner, domain.ConversationRecord{ID: "conversation"}, "generation", tc.harness, "", guardianProjectionConversation{}, store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil, nil, nil)
 			c.settingsObservationOwner = c.observationOwner("account")
 			now = now.Add(time.Minute)
 			review := &domain.GuardianReview{ReviewID: "review", ParentThreadID: "child", ParentTurnID: "turn", Action: "execve", Status: "approved", StartedAt: &launched, SawCompleted: true}
@@ -162,7 +162,7 @@ func TestGuardianReviewTransientFailureRetriedWithoutAck(t *testing.T) {
 				store.declineQueue = true
 			}
 			var logs bytes.Buffer
-			c := newController("session", domain.SessionConversationOwner("session"), domain.ConversationRecord{ID: "conversation"}, "generation", domain.HarnessCodex, guardianProjectionConversation{}, store, nil, slog.New(slog.NewTextHandler(&logs, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil)
+			c := newController("session", domain.SessionConversationOwner("session"), domain.ConversationRecord{ID: "conversation"}, "generation", domain.HarnessCodex, "", guardianProjectionConversation{}, store, nil, slog.New(slog.NewTextHandler(&logs, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil, nil, nil)
 			c.settingsObservationOwner = c.observationOwner("account")
 			r := &domain.GuardianReview{ReviewID: "review", ParentThreadID: "native-root", ParentTurnID: "turn", Action: "execve", Status: "approved", StartedAt: &now, SawCompleted: true}
 			event := ports.ChatEvent{Kind: ports.ChatEventActivityCompleted, ProviderTurnID: "turn", ProviderItemID: "auto-review:review", ActivityKind: domain.ActivityKindAutoReview, ActivityStatus: domain.ActivityStatusCompleted, GuardianReview: r}
@@ -207,7 +207,7 @@ func TestGuardianFailuresNeverStopNonPersistentChat(t *testing.T) {
 			}
 			closes := 0
 			var logs bytes.Buffer
-			c := newController("session", domain.SessionConversationOwner("session"), domain.ConversationRecord{ID: "conversation"}, "generation", domain.HarnessCodex, guardianProjectionConversation{closes: &closes}, store, nil, slog.New(slog.NewTextHandler(&logs, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil)
+			c := newController("session", domain.SessionConversationOwner("session"), domain.ConversationRecord{ID: "conversation"}, "generation", domain.HarnessCodex, "", guardianProjectionConversation{closes: &closes}, store, nil, slog.New(slog.NewTextHandler(&logs, nil)), func() string { return "activity" }, func() time.Time { return now }, nil, nil, nil, nil, nil)
 			c.settingsObservationOwner = c.observationOwner("account")
 			initialState := c.state
 			r := &domain.GuardianReview{ReviewID: "review", ParentThreadID: "native-root", ParentTurnID: "turn", Action: "execve", Status: "approved", StartedAt: &now, SawCompleted: true}

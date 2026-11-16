@@ -174,7 +174,7 @@ describe("daemon stream proxy", () => {
 	it("counts local streams apart from cloud streams, which keep their bearer", async () => {
 		const local = localProxy();
 		const cloudFetch = fakeFetch();
-		const cloud = createCloudCpProxy(() => "/data", { fetchImpl: cloudFetch.fetchImpl });
+		const cloud = createCloudCpProxy(() => "/data", { controlPlaneUrl: async () => "https://cp.test/", fetchImpl: cloudFetch.fetchImpl });
 		const sender = fakeSender();
 
 		for (let index = 0; index < MAX_DAEMON_STREAMS_PER_WEBCONTENTS; index += 1) {

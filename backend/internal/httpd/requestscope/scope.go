@@ -45,3 +45,33 @@ func OnRCARawFinished(ctx context.Context, release func()) bool {
 	register, _ := ctx.Value(rcaFinishedKey{}).(func(func()) bool)
 	return register != nil && register(release)
 }
+
+// CredentialKind names what authenticated a request on the LAN listener.
+type CredentialKind string
+
+// The credentials the LAN listener accepts. A pairing code counts only for pairing.
+const (
+	CredentialPassword    CredentialKind = "password"
+	CredentialAccount     CredentialKind = "account"
+	CredentialDevice      CredentialKind = "device"
+	CredentialPairingCode CredentialKind = "pairing-code"
+)
+
+// Credential is what the LAN listener accepted. DeviceID is set for CredentialDevice.
+type Credential struct {
+	Kind     CredentialKind
+	DeviceID string
+}
+
+type credentialKey struct{}
+
+// WithCredential records the credential the LAN listener accepted.
+func WithCredential(ctx context.Context, credential Credential) context.Context {
+	return context.WithValue(ctx, credentialKey{}, credential)
+}
+
+// CredentialFrom returns the accepted credential, or the zero Credential for a loopback request.
+func CredentialFrom(ctx context.Context) Credential {
+	credential, _ := ctx.Value(credentialKey{}).(Credential)
+	return credential
+}
