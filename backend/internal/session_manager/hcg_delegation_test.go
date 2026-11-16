@@ -50,7 +50,7 @@ func TestHCGDelegationChatMountFreshAndRestore(t *testing.T) {
 			}
 		}
 	}
-	if got := mgr.chatMCPServers(domain.HarnessCodex, domain.SessionKind("reviewer"), "review", "p", map[string]string{}); len(got) != 1 || got[0].Name != "ao" {
+	if got := mgr.chatMCPServers(t.Context(), domain.HarnessCodex, domain.SessionKind("reviewer"), "review", "p", map[string]string{}); len(got) != 1 || got[0].Name != "ao" {
 		t.Fatal("reviewer received delegation")
 	}
 }

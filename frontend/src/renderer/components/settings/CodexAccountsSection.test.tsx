@@ -152,8 +152,8 @@ it("shows a simple empty state when Codex is signed out on the device", async ()
 	expect(useButton).toHaveTextContent(/^Use$/);
 	expect(firstRow.querySelector('button[aria-expanded="false"]')).toBeInTheDocument();
 	// The header is the shared settings row: identity, chevron and Use all sit on its centre line.
-	expect(firstRow.firstElementChild).toHaveClass("settings-row-bar");
-	expect(firstRow.querySelector(".lucide-chevron-down")).not.toHaveClass("mt-1.5");
+	expect(firstRow.firstElementChild).toHaveClass("min-h-12", "items-center");
+	expect(firstRow.querySelector(".icon-chevron-down")).not.toHaveClass("mt-1.5");
 });
 
 it("does not offer an empty provider expand interaction when no accounts exist", async () => {
@@ -599,18 +599,13 @@ it("quietly refreshes invalidated capacity without showing an internal warning",
 	expect(screen.queryByText("internal invalidation detail")).not.toBeInTheDocument();
 });
 
-it("collapses the provider while rotating only its chevron", async () => {
-	renderSection();
+it("keeps the saved account rows visible in the Harness card", async () => {
+	const { container } = renderSection();
 	await screen.findByText("active@example.com");
-	const providerToggle = screen.getByRole("button", { name: /Codex/ });
-	const icon = providerToggle.querySelector("img");
-	const chevron = providerToggle.querySelector("svg");
-	expect(icon).not.toBeNull();
-	expect(chevron).not.toBeNull();
-	fireEvent.click(providerToggle);
-	expect(screen.queryByText("active@example.com")).not.toBeInTheDocument();
-	expect(icon?.getAttribute("class")).not.toContain("rotate");
-	expect(chevron?.getAttribute("class")).toContain("rotate");
+	const provider = container.querySelector('[data-agent-provider="codex"]') as HTMLElement;
+	expect(within(provider).getByRole("heading", { name: "Subscriptions" })).toBeInTheDocument();
+	expect(within(provider).getByText("other@example.com")).toBeInTheDocument();
+	expect(within(provider).getByRole("button", { name: "Add account" })).toBeEnabled();
 });
 
 it("starts account login immediately with no name prompt and auto-scrolls the inline terminal", async () => {

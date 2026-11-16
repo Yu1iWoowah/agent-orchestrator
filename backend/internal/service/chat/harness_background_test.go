@@ -153,7 +153,7 @@ func TestHarnessBackgroundDispatchRaceRequeuesBatch(t *testing.T) {
 			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Turns) == 1 })
 			var ids []string
 			for _, text := range []string{"lead", "follower"} {
-				turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: text, ClientMessageID: text})
+				turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: text, ClientMessageID: text})
 				if err != nil || turn.State != domain.TurnStateQueued {
 					t.Fatalf("queue: %+v %v", turn, err)
 				}
@@ -374,7 +374,7 @@ func TestHarnessBackgroundBatchRequeueFailureSettlesFollowers(t *testing.T) {
 			conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "prior", ProviderInitiated: true})
 			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Turns) == 1 })
 			for _, text := range []string{"lead", "follower"} {
-				turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: text})
+				turn, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: text})
 				if err != nil || turn.State != domain.TurnStateQueued {
 					t.Fatalf("queue: %+v %v", turn, err)
 				}
@@ -398,7 +398,7 @@ func TestHarnessBackgroundBatchRequeueFailureSettlesFollowers(t *testing.T) {
 				}
 				return false
 			})
-			next, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Text: "fresh input"})
+			next, err := h.ctrl.Send(context.Background(), ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "fresh input"})
 			if err != nil || next.State != domain.TurnStateRunning || len(conv.sentMessages()) != 1 {
 				t.Fatalf("batch cleanup stranded controller: %+v %v sent=%+v", next, err, conv.sentMessages())
 			}

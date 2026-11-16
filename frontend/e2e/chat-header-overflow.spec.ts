@@ -18,7 +18,7 @@ test("chat tabs stay clipped before the header actions in a narrow pane @P0", as
 		return document.elementFromPoint(bounds.right + 8, bounds.y + bounds.height / 2)
 			?.closest('[data-terminal-role="primary"]') === null;
 	})).toBe(true);
-	const scroller = region.locator(".session-tab-scroll-region");
+	const scroller = region.locator("[data-tab-scroll-region]");
 	await expect.poll(() => scroller.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(0);
 	await scroller.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
 	await expect.poll(() => scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);

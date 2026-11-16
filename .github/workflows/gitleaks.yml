@@ -10,6 +10,7 @@ permissions:
   contents: read
 
 concurrency:
+  # Each main push scans its own commit range; do not abandon an unscanned range.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -17,6 +18,7 @@ jobs:
   scan:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:

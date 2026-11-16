@@ -16,7 +16,7 @@ const sessionId = "decision-fixture";
 const project = { id: "project", name: "Decision fixture", path: "/fixture", kind: "single_repo", folderMissing: false, sessionPrefix: "decision" } satisfies components["schemas"]["ProjectSummary"];
 const session = {
 	id: sessionId, projectId: project.id, kind: "orchestrator", mode: "chat", harness: "claude-code", status: "idle", statusReadiness: "ready",
-	isTerminated: false, isPinned: false, kanbanColumn: "building", displayStatus: "Working", outputType: "none", prs: [],
+	isTerminated: false, isPinned: false, needsResume: false, workspacePublished: false, kanbanColumn: "building", displayStatus: "Working", outputType: "none", prs: [],
 	autoInjectCI: false, autoInjectReview: false, autoReviewEnabled: false, chatProviderPreserved: false, terminateOnPrMerge: false,
 	createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z", lastEventAt: "2026-10-29T00:00:00Z",
 	activity: { state: "idle", lastActivityAt: "2026-10-29T00:00:00Z" },

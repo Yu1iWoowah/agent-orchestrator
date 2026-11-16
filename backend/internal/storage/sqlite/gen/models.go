@@ -230,11 +230,11 @@ type AppSetting struct {
 	CloudOffering        bool
 	HarnessDefaults      string
 	VersionRefresh       bool
-	ComputerUse          int64
+	ComputerUse          bool
 	ReplyLanguage        string
 	SessionRetentionDays int64
-	AccountHandoff       int64
-	LimitHistory         int64
+	AccountHandoff       bool
+	LimitHistory         bool
 }
 
 type AttentionAnswer struct {
@@ -1433,7 +1433,7 @@ type SessionAgentSettingsWriterSettlement struct {
 
 type SessionArtifact struct {
 	ID             string
-	SessionID      string
+	SessionID      domain.SessionID
 	Path           string
 	RegisteredAt   sql.NullTime
 	FileDev        int64
@@ -1468,7 +1468,7 @@ type SessionCleanupFact struct {
 	LastAttemptAt        sql.NullTime
 	NextAttemptAt        sql.NullTime
 	FailureCode          string
-	ReportOnly           int64
+	ReportOnly           bool
 }
 
 type SessionFork struct {

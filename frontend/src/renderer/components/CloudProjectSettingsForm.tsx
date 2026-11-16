@@ -7,7 +7,7 @@ import {
 } from "../lib/project-settings-patch";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ProjectSettingsRow, ProjectSettingsSection as SettingsGroup, ProjectSettingsValueRow } from "@aoagents/product-ui";
-import { TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "@/components/app-icons";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCloudCp } from "../hooks/useCloudCp";
@@ -23,21 +23,16 @@ import { CLOUD_AGENT_PROVIDERS, connectedCredentialType, credentialModelScope } 
 import { agentLabel } from "../lib/agent-options";
 import { coderWorkspaceNamePrefixFor, isValidCoderWorkspaceNamePrefix } from "../lib/coder-workspace-name";
 import { CODER_PROVIDER, projectSandboxProvider } from "../lib/cloud-offering";
-import { isStandaloneCloudProject, projectAdditionalRepos, projectConfigText } from "../lib/cloud-project-repos";
-import type { CloudCpProject, CloudCpProjectCoderConfig } from "../lib/cloud-cp";
-import {
-	CLOUD_SETTINGS_ATOMIC_PATHS,
-	cloudProjectSettingsDraft,
-	cloudProjectSettingsPatch,
-	type CloudProjectRoleDraft,
-	type CloudProjectSettingsDraft,
-} from "../lib/cloud-project-settings";
+import { isCloudWorkspaceProject, isStandaloneCloudProject, projectAdditionalRepos, projectConfigText, projectRepositoryUrls, repoDirName } from "../lib/cloud-project-repos";
+import { CloudCpError, type CloudCpProject, type CloudCpProjectCoderConfig, type CloudCpProjectSettingsRequest } from "../lib/cloud-cp";
+import { CLOUD_SETTINGS_ATOMIC_PATHS, cloudProjectSettingsDraft, cloudProjectSettingsPatch, type CloudProjectRoleDraft, type CloudProjectSettingsDraft } from "../lib/cloud-project-settings";
 import { AgentAvatar } from "./AgentAvatar";
 import type { ProjectSettingsSaveState, ProjectSettingsSection as SettingsSection } from "./ProjectSettingsForm";
 import { ProjectSettingsEditor, type ProjectAgentPickerProps, type ProjectSettingsDraft } from "./ProjectSettingsEditor";
 import { AgentSelectMenuItem } from "./settings/AgentSelectMenuItem";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { SettingsInlineInput, SettingsRow } from "./settings/SettingsRow";
+import { useUiStore } from "../stores/ui-store";
 
 export const cloudProjectSettingsQueryKey = (baseUrl: string, orgId: string, projectId: string) =>
 	["cloud-project-settings", baseUrl, orgId, projectId] as const;
@@ -112,6 +107,9 @@ function CloudSettingsAdapter({
 	const usesCoder = offering.hasCoder && projectSandboxProvider(project.config, offering) === CODER_PROVIDER;
 	const standalone = isStandaloneCloudProject(project);
 	const additionalRepos = projectAdditionalRepos(project.config);
+	const workspace = isCloudWorkspaceProject(project);
+	const intakeVisible = !standalone;
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const snapshot = (value: CloudCpProject) => ({
 		displayName: value.displayName,
 		defaultBranch: value.defaultBranch,
@@ -128,10 +126,21 @@ function CloudSettingsAdapter({
 		const latest = await client.getProject(project.orgId, project.id);
 		const paths = conflictingSettings(patch, expected, snapshot(latest.project), CLOUD_SETTINGS_ATOMIC_PATHS);
 		if (paths.length) throw new ProjectSettingsConflict(paths);
-		const response = await client.updateProjectSettings(project.orgId, project.id, patch);
-		accept(response.project);
-		void queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
-		return { values: toEditorDraft(cloudProjectSettingsDraft(response.project)) };
+  let updated: CloudCpProject | undefined;
+  try {
+   updated = (await client.updateProjectSettings(project.orgId, project.id, patch)).project;
+  } catch (error) {
+   if (patch.config?.coAuthorCommits === undefined || !coAuthorCommitsUnsupported(error)) throw error;
+   const { coAuthorCommits: _unsupported, ...config } = patch.config;
+   const rest: CloudCpProjectSettingsRequest = { ...patch };
+   if (Object.keys(config).length > 0) rest.config = config;
+   else delete rest.config;
+   if (Object.keys(rest).length > 0) updated = (await client.updateProjectSettings(project.orgId, project.id, rest)).project;
+   showGlobalToast(t("settings.cloudProject.coAuthorCommitsUnsupported"), undefined, "error");
+  }
+  if (updated) accept(updated);
+  void queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
+  return { values: toEditorDraft(cloudProjectSettingsDraft(baseline.current)) };
 	};
 	const reload = async (draft: ProjectSettingsDraft, paths: string[]) => {
 		const before = toEditorDraft(cloudProjectSettingsDraft(baseline.current));
@@ -149,7 +158,9 @@ function CloudSettingsAdapter({
 			capabilities={{
 				workflow: !standalone,
 				sessionPrefix: true,
-				intake: false,
+				intake: intakeVisible,
+ workersRequestReview: !standalone,
+ coAuthorCommits: !standalone,
 				reviewer: true,
 				requiredAgents: false,
 				nameLimit: 120,
@@ -158,45 +169,27 @@ function CloudSettingsAdapter({
 				lockedAgents: true,
 			}}
 			details={[
-				{ label: t("settings.project.id"), value: project.id },
-				{
-					label: t("settings.project.kind"),
-					value: standalone
-						? t("settings.project.kind.cloudStandalone", { defaultValue: "Cloud, without a repository" })
-						: t("settings.project.kind.cloud"),
-				},
-				// A standalone project's repository URL is only a placeholder.
-				standalone
-					? {
-							label: t("settings.project.repo"),
-							value: t("settings.cloudProject.noRepository", { defaultValue: "No repository" }),
-						}
-					: { label: t("settings.project.repo"), value: project.repositoryUrl, href: project.repositoryUrl },
-				...additionalRepos.map((repo, index) => ({
-					label: t("settings.cloudProject.additionalRepositoryN", {
-						defaultValue: "Additional repository {{number}}",
-						number: index + 1,
-					}),
-					value: repo.url,
-					href: repo.url,
-				})),
-			]}
-			generalExtra={
-				usesCoder
-					? (draft, patch) => (
-							<CloudProjectCoderSettings
-								project={project}
-								value={draft.coder ?? { parameters: {}, workspaceNamePrefix: "" }}
-								onChange={(coder) => patch({ coder })}
-							/>
-						)
-					: undefined
-			}
+			{ label: t("settings.project.id"), value: project.id },
+			{ label: t("settings.project.kind"), value: standalone ? t("settings.project.kind.cloudStandalone", { defaultValue: "Cloud, without a repository" }) : workspace ? t("settings.project.kind.cloudWorkspace", { defaultValue: "Cloud workspace" }) : t("settings.project.kind.cloud") },
+			// A standalone project's repository URL is only a placeholder.
+			...(workspace ? [] : [standalone
+				? { label: t("settings.project.repo"), value: t("settings.cloudProject.noRepository", { defaultValue: "No repository" }) }
+				: { label: t("settings.project.repo"), value: project.repositoryUrl, href: project.repositoryUrl },
+			...additionalRepos.map((repo, index) => ({ label: t("settings.cloudProject.additionalRepositoryN", { defaultValue: "Additional repository {{number}}", number: index + 1 }), value: repo.url, href: repo.url }))]),
+		]}
+		workspaceRepos={workspace ? projectRepositoryUrls(project).map((url) => ({ name: repoDirName(url), relativePath: repoDirName(url), repo: url })) : undefined}
+   generalExtra={usesCoder || intakeVisible ? (draft, patch) => <>
+    {intakeVisible ? <CloudIntakeStatus project={project} /> : null}
+    {usesCoder ? <CloudProjectCoderSettings project={project} value={draft.coder ?? { parameters: {}, workspaceNamePrefix: "" }} onChange={(coder) => patch({ coder })} /> : null}
+   </> : undefined}
 			validateExtra={(draft) =>
 				usesCoder && !isValidCoderWorkspaceNamePrefix(draft.coder?.workspaceNamePrefix?.trim() ?? "")
 					? t("coder.workspacePrefix.invalid")
 					: undefined
 			}
+			repository={standalone ? undefined : project.repositoryUrl}
+			cloudOrgId={project.orgId}
+			intakeDescription={t("settings.cloudProject.intakeDescription")}
 			modelScope={(agent) => (agent === "opencode" && opencodeCredential ? credentialModelScope(opencodeCredential) : "")}
 			// Without a project reviewer, Cloud reviews with the session's agent: the worker's.
 			defaultReviewer={(draft) => draft.workerAgent}
@@ -207,6 +200,16 @@ function CloudSettingsAdapter({
 			onSaveState={onSaveState}
 		/>
 	);
+}
+
+/**
+ * A control plane that predates the co-author setting rejects it as an unknown
+ * one, with exactly this answer. Any other failure, even one that names the
+ * setting, is a failure to save and is reported as one.
+ */
+function coAuthorCommitsUnsupported(error: unknown): boolean {
+	return error instanceof CloudCpError && error.status === 422 && error.code === "validation_error" &&
+		error.message === "unsupported or null config.coAuthorCommits";
 }
 
 /** The coder config the control plane stores on a project (config.coder). */
@@ -390,29 +393,15 @@ function CloudAgentPicker({ role, draft, value, disabled, onChange }: ProjectAge
 
 function toEditorDraft(values: CloudProjectSettingsDraft): ProjectSettingsDraft {
 	return {
-		displayName: values.displayName,
-		defaultBranch: values.defaultBranch,
-		autoReview: values.autoReview,
+		displayName: values.displayName, defaultBranch: values.defaultBranch, autoReview: values.autoReview,
+		sessionPrefix: values.sessionPrefix, workersRequestReview: values.workersRequestReview, coAuthorCommits: values.coAuthorCommits,
+		intakeEnabled: values.intake.enabled, intakeRepo: values.intake.repo, intakeAssignee: values.intake.assignee,
+		workerAgent: values.worker.agent, orchestratorAgent: values.orchestrator.agent, reviewerHarness: values.reviewer.agent,
+		workerModel: values.worker.agentConfig.model, orchestratorModel: values.orchestrator.agentConfig.model, reviewerModel: values.reviewer.agentConfig.model,
+		workerMode: values.worker.agentConfig.mode, orchestratorMode: values.orchestrator.agentConfig.mode, reviewerMode: values.reviewer.agentConfig.mode,
+		workerEffort: values.worker.agentConfig.effort, orchestratorEffort: values.orchestrator.agentConfig.effort, reviewerEffort: values.reviewer.agentConfig.effort,
+		workerPermissions: values.worker.agentConfig.permissions, orchestratorPermissions: values.orchestrator.agentConfig.permissions, reviewerPermissions: values.reviewer.agentConfig.permissions,
 		coder: values.coder,
-		sessionPrefix: values.sessionPrefix,
-		intakeEnabled: false,
-		intakeRepo: "",
-		intakeAssignee: "",
-		workerAgent: values.worker.agent,
-		orchestratorAgent: values.orchestrator.agent,
-		reviewerHarness: values.reviewer.agent,
-		workerModel: values.worker.agentConfig.model,
-		orchestratorModel: values.orchestrator.agentConfig.model,
-		reviewerModel: values.reviewer.agentConfig.model,
-		workerMode: values.worker.agentConfig.mode,
-		orchestratorMode: values.orchestrator.agentConfig.mode,
-		reviewerMode: values.reviewer.agentConfig.mode,
-		workerEffort: values.worker.agentConfig.effort,
-		orchestratorEffort: values.orchestrator.agentConfig.effort,
-		reviewerEffort: values.reviewer.agentConfig.effort,
-		workerPermissions: values.worker.agentConfig.permissions,
-		orchestratorPermissions: values.orchestrator.agentConfig.permissions,
-		reviewerPermissions: values.reviewer.agentConfig.permissions,
 	};
 }
 
@@ -439,13 +428,26 @@ function toCloudDraft(values: ProjectSettingsDraft): CloudProjectSettingsDraft {
 		return { agent: provider, agentConfig: { model, mode, effort, permissions } };
 	};
 	return {
-		displayName: values.displayName,
-		defaultBranch: values.defaultBranch,
-		sessionPrefix: values.sessionPrefix,
-		autoReview: values.autoReview,
+		displayName: values.displayName, defaultBranch: values.defaultBranch, sessionPrefix: values.sessionPrefix, autoReview: values.autoReview,
 		coder: values.coder ?? { parameters: {}, workspaceNamePrefix: "" },
-		worker: role("worker"),
-		orchestrator: role("orchestrator"),
-		reviewer: role("reviewer"),
+		workersRequestReview: values.workersRequestReview ?? false,
+		coAuthorCommits: values.coAuthorCommits ?? true,
+		intake: { enabled: values.intakeEnabled, repo: values.intakeRepo, assignee: values.intakeAssignee },
+		worker: role("worker"), orchestrator: role("orchestrator"), reviewer: role("reviewer"),
 	};
+}
+
+/** When issue intake last looked for issues, or why it could not. */
+function CloudIntakeStatus({ project }: { project: CloudCpProject }) {
+	const { t } = useTranslation();
+	const { client, ready, baseUrl } = useCloudCp();
+	const status = useQuery({
+		queryKey: ["cloud-project-intake", baseUrl, project.orgId, project.id],
+		enabled: ready && project.config.trackerIntake?.enabled === true,
+		refetchInterval: 60_000,
+		retry: false,
+		queryFn: ({ signal }) => client.getProjectIntakeStatus(project.orgId, project.id, { signal }),
+	});
+	if (!status.data?.enabled || !status.data.lastError) return null;
+	return <p className="px-(--settings-row-inset) text-xs text-error" role="alert">{t("settings.cloudProject.intakeLastError", { error: status.data.lastError })}</p>;
 }

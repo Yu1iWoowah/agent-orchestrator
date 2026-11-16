@@ -28,6 +28,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	rcasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/rca"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 func claudeWireField(field int, data []byte) []byte {
@@ -111,8 +112,12 @@ func TestRCAClaudeActualHTTPFlowCanariesAndCanonicalControl(t *testing.T) {
 			var httpCaptures, panicCaptures atomic.Uint64
 			router := NewRouterWithControl(config.Config{AllowedOrigins: []string{"app://renderer"}}, logger, nil, APIDeps{RCA: svc, Telemetry: sink}, ControlDeps{})
 			outer := chi.NewRouter()
-			outer.Use(requestLoggerWithCapture(logger, sink, func(context.Context, error, map[string]string, string) { httpCaptures.Add(1) }))
-			outer.Use(recoverTelemetryWithCapture(logger, sink, func(context.Context, any, string, map[string]string, string) { panicCaptures.Add(1) }))
+			outer.Use(requestLoggerWithCapture(logger, sink, func(context.Context, error, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite) {
+				httpCaptures.Add(1)
+			}))
+			outer.Use(recoverTelemetryWithCapture(logger, sink, func(context.Context, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite) {
+				panicCaptures.Add(1)
+			}))
 			outer.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if isRCARawRequest(r) {

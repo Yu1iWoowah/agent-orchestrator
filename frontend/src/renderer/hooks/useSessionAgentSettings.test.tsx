@@ -9,6 +9,7 @@ import { agentSettingsOperation } from "../test/agent-settings-fixtures";
 const { getMock, patchMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), patchMock: vi.fn(), postMock: vi.fn() }));
 vi.mock("../lib/host-clients", async (importOriginal) => ({
 	...await importOriginal<typeof import("../lib/host-clients")>(),
+	baseUrlForHost: () => "http://127.0.0.1:4123",
 	clientForSessionHost: () => ({ GET: getMock, PATCH: patchMock, POST: postMock }),
 }));
 

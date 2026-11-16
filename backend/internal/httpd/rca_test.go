@@ -15,6 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 type rcaHTTPFixture struct {
@@ -114,8 +115,12 @@ func TestRCARealMiddlewareSuppressesSinksAndCaptures(t *testing.T) {
 			sink := &captureSink{}
 			httpCaptures, panicCaptures := 0, 0
 			router := chi.NewRouter()
-			router.Use(requestLoggerWithCapture(log, sink, func(context.Context, error, map[string]string, string) { httpCaptures++ }))
-			router.Use(recoverTelemetryWithCapture(log, sink, func(context.Context, any, string, map[string]string, string) { panicCaptures++ }))
+			router.Use(requestLoggerWithCapture(log, sink, func(context.Context, error, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite) {
+				httpCaptures++
+			}))
+			router.Use(recoverTelemetryWithCapture(log, sink, func(context.Context, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite) {
+				panicCaptures++
+			}))
 			router.Handle("/api/v1/usage/sessions/{sessionId}/composition", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if status == 500 {
 					envelope.WriteError(w, r, errors.New(canary))

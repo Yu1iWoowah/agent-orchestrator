@@ -1,14 +1,15 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Play } from "lucide-react";
-import { apiErrorMessage } from "../lib/api-client";
+import { Play } from "@/components/app-icons";
 import { clientForSessionHost } from "../lib/host-clients";
-import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { cloudSessionsQueryKey, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { followResume, noteResumeFailure, useResumeWatch } from "../lib/resume-watch";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
 import { cn } from "../lib/utils";
-import type { WorkspaceSession } from "../types/workspace";
+import { sessionAgentExited, type WorkspaceSession } from "../types/workspace";
 import { Button } from "./ui/button";
 
 /**
@@ -31,33 +32,43 @@ export function ResumeAgentControl({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const canResume = useCanResumeAgent(session, hostId);
+	// A Cloud session's exited agent starts again in its live worker, through
+	// the control plane rather than this machine's daemon.
+	const canResumeCloud = Boolean(session.cloud) && sessionAgentExited(session);
+	const { client: cloudClient } = useCloudCp(Boolean(session.cloud));
 	const watch = useResumeWatch(session.id, hostId);
 	const resuming = useIsMutating({ mutationKey: ["resume-agent", hostId ?? "local", session.id] }) > 0 || watch?.state === "running";
 	const resume = useMutation({
 		mutationKey: ["resume-agent", hostId ?? "local", session.id],
 		mutationFn: async () => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				const restarted = await cloudClient.restartSessionAgent(session.cloud.orgId, session.id);
+				if (!restarted.requested) throw new Error(t("inspector.resumeAgentAlreadyRunning"));
+				return undefined;
+			}
 			const { data, error, response } = await clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/resume-agent", {
 				params: { path: { sessionId: session.id } },
 			});
 			if (error) {
 				noteResumeFailure(session.id, error, hostId);
-				throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
+				throw apiErrorException(error, `Failed to resume agent (${response.status})`);
 			}
 			// The daemon finishes the resume in the background; the watch shows
 			// a failure here and refreshes the session once it settles.
 			followResume(session.id, hostId, response, data, refresh);
+			return data;
 		},
 		onSuccess: refresh,
 	});
 	function refresh() {
-		return queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
+		return queryClient.invalidateQueries({ queryKey: session.cloud ? cloudSessionsQueryKey : workspaceQueryKeyForHost(hostId) });
 	}
 
-	// Cloud sessions re-provision through the control plane (useRestoreSession),
-	// not this local-daemon route — the local daemon has never heard of them and
-	// would answer "Unknown session".
-	if (!canResume) return null;
+	// A deleted Cloud session re-provisions through the control plane
+	// (useRestoreSession); one whose agent exited restarts it there, never
+	// through this machine's daemon, which has never heard of it.
+	if (!canResume && !canResumeCloud) return null;
 
 	const error = resume.error instanceof Error ? resume.error.message : watch?.state === "failed" ? watch.message : null;
 	const control = (
@@ -68,7 +79,7 @@ export function ResumeAgentControl({
 				onClick={() => resume.mutate()}
 				size="sm"
 				type="button"
-				variant="outline"
+				variant="secondary"
 			>
 				<Play className="size-icon-sm" aria-hidden="true" />
 				{t("inspector.resumeAgent")}

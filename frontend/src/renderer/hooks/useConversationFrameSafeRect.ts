@@ -60,7 +60,11 @@ export function useConversationFrameSafeRect(
 		if (composer) observer.observe(composer);
 		const viewport = surface.querySelector<HTMLElement>(".chat-scroll-viewport");
 		if (viewport) observer.observe(viewport);
-		const mutations = new MutationObserver(schedule);
+		const mutations = new MutationObserver((records) => {
+			if (records.some((record) => !(record.target instanceof Element && record.target.closest("[data-conversation-frames]")))) schedule();
+		});
+		// The timeline and inline controls can mount after the surface's first read.
+		mutations.observe(surface, { childList: true, subtree: true });
 		if (viewport) {
 			mutations.observe(viewport, { childList: true, subtree: true });
 			viewport.addEventListener("scroll", schedule, { passive: true });

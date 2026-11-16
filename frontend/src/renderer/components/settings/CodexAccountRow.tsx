@@ -1,4 +1,4 @@
-import { ChevronDown, CircleAlert, CircleCheck, LoaderCircle, LogOut, Trash2, UserRound } from "lucide-react";
+import { ChevronDown, CircleAlert, CircleCheck, LoaderCircle, LogOut, Trash2, UserRound } from "@/components/app-icons";
 import { useTranslation } from "react-i18next";
 import { codexAccountAuthorized, codexAuthenticationDisplay } from "../../hooks/codex-accounts-state";
 import type { CodexAccount, CodexActiveLogin } from "../../hooks/useCodexAccountsQuery";
@@ -43,7 +43,7 @@ export function CodexAccountRow({ account, expanded, resetCreditSupported, mutat
 	const identity = <><UserRound data-testid="codex-account-avatar" className="size-6 shrink-0 text-settings-muted" aria-hidden="true" /><div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate text-sm leading-5 text-settings-label">{account.label}</p>{account.active ? <span className="shrink-0 text-xs text-success">{t("settings.codexAccounts.inUse")}</span> : null}</div><p className="mt-0.5 flex min-w-0 items-center gap-1 text-control leading-4 text-settings-muted">{confirmed ? <CircleCheck className="size-3.5 shrink-0 text-success" aria-hidden="true" /> : <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />}<span className="shrink-0">{authenticationLabel}</span>{summary ? <><span aria-hidden="true">·</span><span className="truncate">{summary}</span></> : null}{authentication.checking || authenticationRetryBusy ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-label={t("settings.codexAccounts.checking")} /> : null}</p></div></>;
 	return (
 		<div id={`codex-account-${account.id}`} data-account-id={account.id} tabIndex={-1} className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-			<div className="settings-row-bar">
+			<div className="flex min-h-12 items-center gap-3 px-3 py-2.5">
 				{needsSignIn
 					? <div className="flex min-w-0 flex-1 items-center gap-3">{identity}</div>
 					: <button type="button" className="flex min-w-0 flex-1 items-center gap-3 rounded-sm text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-expanded={expanded} onClick={onToggle}>{identity}<ChevronDown className={`ml-auto size-4 shrink-0 text-settings-muted transition-transform ${expanded ? "" : "-rotate-90"}`} aria-hidden="true" /></button>}

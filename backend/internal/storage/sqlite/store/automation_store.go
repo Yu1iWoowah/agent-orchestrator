@@ -13,6 +13,12 @@ import (
 
 // CreateAutomation persists a validated automation definition.
 func (s *Store) CreateAutomation(ctx context.Context, rec domain.Automation) (domain.Automation, error) {
+	if rec.TemplateID == "" {
+		rec.TemplateID = domain.AutomationTemplateCustom
+	}
+	if rec.UseCase == "" {
+		rec.UseCase = domain.AutomationUseCaseUnknown
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.qw.InsertAutomation(ctx, automationToInsert(rec)); err != nil {
@@ -63,7 +69,7 @@ func (s *Store) ListAutomations(ctx context.Context, filter domain.AutomationFil
 	}
 	items := make([]domain.Automation, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, automationFromGen(gen.GetAutomationRow(row)))
+		items = append(items, automationFromGen(row))
 	}
 	return domain.AutomationPage{Items: items, Total: total}, nil
 }
@@ -91,9 +97,9 @@ func (s *Store) UpdateAutomation(ctx context.Context, rec domain.Automation) (bo
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.UpdateAutomation(ctx, gen.UpdateAutomationParams{
-		AgentAccountID: rec.AgentAccountID,
 		DisplayName:    rec.DisplayName,
 		Prompt:         rec.Prompt,
+		UseCase:        rec.UseCase,
 		Kind:           rec.Kind,
 		Harness:        rec.Harness,
 		Model:          rec.Model,
@@ -106,6 +112,7 @@ func (s *Store) UpdateAutomation(ctx context.Context, rec domain.Automation) (bo
 		LastRunAt:      timePtrToNullTime(rec.LastRunAt),
 		UpdatedAt:      rec.UpdatedAt,
 		ID:             rec.ID,
+		AgentAccountID: rec.AgentAccountID,
 	})
 	if err != nil {
 		return false, fmt.Errorf("update automation %s: %w", rec.ID, err)
@@ -133,7 +140,7 @@ func (s *Store) ListDueAutomations(ctx context.Context, now time.Time, limit int
 	}
 	items := make([]domain.Automation, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, automationFromGen(gen.GetAutomationRow(row)))
+		items = append(items, automationFromGen(row))
 	}
 	return items, nil
 }
@@ -216,11 +223,12 @@ func (s *Store) ClaimNextAutomationRun(ctx context.Context, now, leaseExpiresAt 
 
 func automationToInsert(rec domain.Automation) gen.InsertAutomationParams {
 	return gen.InsertAutomationParams{
-		AgentAccountID: rec.AgentAccountID,
+		TemplateID:     rec.TemplateID,
 		ID:             rec.ID,
 		ProjectID:      rec.ProjectID,
 		DisplayName:    rec.DisplayName,
 		Prompt:         rec.Prompt,
+		UseCase:        rec.UseCase,
 		Kind:           rec.Kind,
 		Harness:        rec.Harness,
 		Model:          rec.Model,
@@ -233,16 +241,18 @@ func automationToInsert(rec domain.Automation) gen.InsertAutomationParams {
 		LastRunAt:      timePtrToNullTime(rec.LastRunAt),
 		CreatedAt:      rec.CreatedAt,
 		UpdatedAt:      rec.UpdatedAt,
+		AgentAccountID: rec.AgentAccountID,
 	}
 }
 
-func automationFromGen(row gen.GetAutomationRow) domain.Automation {
+func automationFromGen(row gen.Automation) domain.Automation {
 	return domain.Automation{
-		AgentAccountID: row.AgentAccountID,
 		ID:             row.ID,
 		ProjectID:      row.ProjectID,
 		DisplayName:    row.DisplayName,
 		Prompt:         row.Prompt,
+		TemplateID:     row.TemplateID,
+		UseCase:        row.UseCase,
 		Kind:           row.Kind,
 		Harness:        row.Harness,
 		Model:          row.Model,
@@ -255,6 +265,7 @@ func automationFromGen(row gen.GetAutomationRow) domain.Automation {
 		LastRunAt:      nullTimeToTimePtr(row.LastRunAt),
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
+		AgentAccountID: row.AgentAccountID,
 	}
 }
 

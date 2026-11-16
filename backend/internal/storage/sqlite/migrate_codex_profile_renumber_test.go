@@ -44,6 +44,9 @@ func TestMigrateRepairsRenumberedCodexProfileHistory(t *testing.T) {
 	if err := migrate(db); err != nil {
 		t.Fatalf("second migration pass: %v", err)
 	}
+	assertAppliedMigrations(t, db, 117)
+	assertTableSQLContains(t, db, "usage_bindings", "trim(harness)")
+	assertTableSQLContains(t, db, "usage_sources", "trim(kind)")
 }
 
 type legacyCodexProfileMigration struct {

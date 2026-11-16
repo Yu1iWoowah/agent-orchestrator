@@ -25,6 +25,7 @@ vi.mock("./agent-viewer", async (importOriginal) => {
 	};
 });
 
+import { getCloudAccessToken } from "./cloud-auth";
 import { createCloudAgentProxy, retryAfterMs, type CloudAgentProxy } from "./cloud-agent-proxy";
 
 type Seen = { method: string; url: string; auth?: string; cookie?: string; origin?: string; body: string };
@@ -102,9 +103,26 @@ function upgrade(agent: URL, origin?: string, host = agent.host): Promise<string
 }
 
 describe("cloud agent proxy", () => {
+	it.each(["origin", "port", "path", "unconfigured"])("rejects new and cached destinations before reading the bearer (%s)", async (change) => {
+		const { baseUrl, seen } = await startCp();
+		let configured: string | null = baseUrl;
+		proxy = createCloudAgentProxy(() => dataDir, async () => configured);
+		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
+		configured = change === "origin" ? "https://other.example" : change === "port" ? "http://127.0.0.1:1" : change === "path" ? `${baseUrl}/other` : null;
+		vi.mocked(getCloudAccessToken).mockClear();
+		const request = vi.spyOn(globalThis, "fetch");
+		seen.length = 0;
+		expect(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).toBe("");
+		expect((await send(agent, "GET", "/stats")).status).toBe(401);
+		expect(await upgrade(agent, agent.origin)).toBe("");
+		expect(getCloudAccessToken).not.toHaveBeenCalled();
+		expect(request).not.toHaveBeenCalled();
+		expect(seen).toEqual([]);
+	});
+
 	it("serves a cloud session's agent browser on its own origin once the control plane says it has one", async () => {
 		const { baseUrl, seen } = await startCp();
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		expect(agent.hostname).toMatch(/^ao-preview-[0-9a-f]{32}\.localhost$/);
 		expect(`${agent.protocol}${agent.pathname}${agent.search}`).toBe("https:/v/cdp?embed=1&sq=70&ss=1");
@@ -117,7 +135,7 @@ describe("cloud agent proxy", () => {
 
 	it("gives no agent browser when the sandbox has none, the control plane is unreachable, or no one is signed in", async () => {
 		const { baseUrl } = await startCp(() => 502);
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		expect(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).toBe("");
 		expect(await proxy.agentBrowserUrl("http://127.0.0.1:1", "org-1", "ses-1")).toBe("");
 		token.value = null;
@@ -126,9 +144,25 @@ describe("cloud agent proxy", () => {
 		await expect(proxy.agentBrowserUrl(baseUrl, "../x", "ses-1")).rejects.toThrow(/invalid/);
 	});
 
+	it("sends the bearer only to the configured control plane", async () => {
+		const other = await startCp();
+		const otherServer = cp;
+		const { baseUrl, seen } = await startCp();
+		try {
+			proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
+			expect(await proxy.agentBrowserUrl(other.baseUrl, "org-1", "ses-1")).toBe("");
+			expect(other.seen).toEqual([]);
+			expect(await proxy.agentBrowserUrl(`${baseUrl}/`, "org-1", "ses-1")).not.toBe("");
+			expect(seen).toEqual([expect.objectContaining({ auth: "Bearer cloud-token" })]);
+		} finally {
+			otherServer?.closeAllConnections();
+			await new Promise<void>((resolve) => (otherServer ? otherServer.close(() => resolve()) : resolve()));
+		}
+	});
+
 	it("waits out the control plane's Retry-After for a session whose agent browser is not connected", async () => {
 		const { baseUrl, seen } = await startCp(() => 409, `{"code":"AGENT_BROWSER_UNAVAILABLE"}`, { "retry-after": "60" });
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		let now = 1_000_000;
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		expect(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).toBe("");
@@ -150,14 +184,14 @@ describe("cloud agent proxy", () => {
 
 	it("gives no agent browser while the sandbox's has not started: showing it would start it", async () => {
 		const { baseUrl, seen } = await startCp(() => 200, `{"running":false}`);
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		expect(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).toBe("");
 		expect(seen.map((request) => request.url)).toEqual([route("stats")]);
 	});
 
 	it("tries again after its server failed to start", async () => {
 		const { baseUrl } = await startCp();
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		listenFailures.left = 1;
 		await expect(proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).rejects.toThrow(/listen/);
 		expect(new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).pathname).toBe("/v/cdp");
@@ -165,17 +199,17 @@ describe("cloud agent proxy", () => {
 
 	it("keeps a session's origin across restarts, and only with the same secret", async () => {
 		const { baseUrl } = await startCp();
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const first = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		expect(new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-2")).hostname).not.toBe(first.hostname);
 		await proxy.close();
 		expect(proxy.isAgentBrowserUrl(first.href)).toBe(false);
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		expect(new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).hostname).toBe(first.hostname);
 		await proxy.close();
 		const otherDir = await mkdtemp(path.join(os.tmpdir(), "cloud-agent-proxy-"));
 		try {
-			proxy = createCloudAgentProxy(() => otherDir);
+			proxy = createCloudAgentProxy(() => otherDir, async () => baseUrl);
 			expect(new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1")).hostname).not.toBe(first.hostname);
 		} finally {
 			await proxy.close();
@@ -185,7 +219,7 @@ describe("cloud agent proxy", () => {
 
 	it("forwards the viewer's requests with the bearer and without its own credentials", async () => {
 		const { baseUrl, seen } = await startCp();
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		token.value = "rotated-token";
 		const page = await send(agent, "GET", "/v/cdp?embed=1&tab=R1", { Cookie: "session=viewer", Authorization: "Bearer viewer" });
@@ -200,7 +234,7 @@ describe("cloud agent proxy", () => {
 
 	it("refuses other origins, hosts and routes before the control plane sees them", async () => {
 		const { baseUrl, seen } = await startCp();
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		const count = seen.length;
 		expect((await send(agent, "POST", "/upload", { Origin: "https://evil.example" }, "x")).status).toBe(403);
@@ -216,7 +250,7 @@ describe("cloud agent proxy", () => {
 
 	it("answers 502 when the control plane is unreachable", async () => {
 		const { baseUrl } = await startCp();
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		cp?.closeAllConnections();
 		await new Promise<void>((resolve) => cp?.close(() => resolve()));
@@ -236,7 +270,7 @@ describe("cloud agent proxy", () => {
 			upgradeCookie = req.headers.cookie;
 			wss.handleUpgrade(req, socket, head, (ws) => ws.on("message", (data, isBinary) => ws.send(isBinary ? data : `echo ${data}`)));
 		});
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		const viewer = new WebSocket(`wss://127.0.0.1:${agent.port}/ws/cdp?token=null`, { ...trust(agent), origin: agent.origin, headers: { Host: agent.host, Cookie: "session=viewer" } });
 		const echoed = await new Promise<string>((resolve, reject) => {
@@ -263,7 +297,7 @@ describe("cloud agent proxy", () => {
 			upgrades++;
 			socket.destroy();
 		});
-		proxy = createCloudAgentProxy(() => dataDir);
+		proxy = createCloudAgentProxy(() => dataDir, async () => baseUrl);
 		const agent = new URL(await proxy.agentBrowserUrl(baseUrl, "org-1", "ses-1"));
 		expect(await upgrade(agent, "https://evil.example")).toBe("");
 		expect(await upgrade(agent)).toBe("");

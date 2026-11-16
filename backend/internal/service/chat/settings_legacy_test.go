@@ -62,7 +62,7 @@ func TestLegacyBusyPickerProjectsAndCoalescesLocalChoices(t *testing.T) {
 					for _, paged := range []bool{false, true} {
 						var snapshot chatsvc.Snapshot
 						if paged {
-							snapshot, err = h.svc.SnapshotPage(t.Context(), testSession, 0, 10)
+							snapshot, err = h.svc.SnapshotPage(t.Context(), testSession, 0, 0, 10)
 						} else {
 							snapshot, err = h.svc.Snapshot(t.Context(), testSession)
 						}

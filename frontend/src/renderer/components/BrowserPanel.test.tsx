@@ -1196,8 +1196,14 @@ describe("BrowserPanel", () => {
 
 		expect(firstTab).toHaveAttribute("aria-selected", "false");
 		expect(secondTab).toHaveAttribute("aria-selected", "true");
-		expect(firstTab).toHaveAttribute("data-slot", "tooltip-trigger");
-		expect(screen.getByRole("button", { name: "Close tab First app" })).toHaveAttribute("data-slot", "tooltip-trigger");
+		// The shared tab frame: the full title as the tab's native tooltip, and
+		// the ghost close button in the icon's slot.
+		expect(firstTab).toHaveAttribute("title", "First app");
+		expect(firstTab.closest("[data-terminal-tab-frame]")).not.toBeNull();
+		expect(firstTab.closest("[data-terminal-tab-frame]")).not.toHaveAttribute("data-active");
+		expect(secondTab.closest("[data-terminal-tab-frame]")).toHaveAttribute("data-active");
+		expect(tabList).toHaveAttribute("data-tab-strip");
+		expect(screen.getByRole("button", { name: "Close tab First app" })).toBeInTheDocument();
 		await userEvent.click(firstTab);
 		expect(hookState.selectTab).toHaveBeenCalledWith("t1");
 	});
@@ -1211,9 +1217,10 @@ describe("BrowserPanel", () => {
 
 		const overlay = screen.getByTestId("browser-tab-drag-overlay");
 		expect(overlay).toHaveClass("browser-panel__tab--drag-overlay");
+		expect(overlay).toHaveAttribute("data-dragging");
 		expect(overlay).toHaveTextContent("First app");
-		expect(overlay.querySelector(".browser-panel__tab-icon")).not.toBeNull();
-		expect(overlay.querySelector(".browser-panel__tab-close")).not.toBeNull();
+		expect(overlay.querySelector("[data-terminal-tab-frame][data-active]")).not.toBeNull();
+		expect(overlay.querySelector('button[aria-label="Close tab First app"]')).not.toBeNull();
 	});
 
 	it("moves browser tab focus and selection with arrow keys", async () => {
@@ -1246,6 +1253,8 @@ describe("BrowserPanel", () => {
 		await userEvent.click(within(tabList).getByRole("button", { name: "Close tab Second app" }));
 
 		expect(hookState.closeTab).toHaveBeenCalledWith("t2");
+		// Closing an inactive tab does not select it first.
+		expect(hookState.selectTab).not.toHaveBeenCalled();
 	});
 
 	it("allows closing the final browser tab", async () => {
@@ -1262,20 +1271,20 @@ describe("BrowserPanel", () => {
 		hookState.activeTabId = "t1";
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
 
-		expect(screen.queryByRole("tab", { name: "New tab" })).not.toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "New tab" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Close tab New tab" })).toBeInTheDocument();
 	});
 
 	it("shows the empty tab's close icon in its drag overlay", () => {
 		render(<BrowserTopTabDragOverlay tab={{ id: "t1", url: "about:blank", title: "", active: true }} />);
-		expect(screen.getByTestId("browser-tab-drag-overlay").querySelector(".browser-panel__tab-close")).not.toBeNull();
+		expect(screen.getByTestId("browser-tab-drag-overlay").querySelector('button[aria-label="Close tab New tab"]')).not.toBeNull();
 	});
 
 	it("shows no placeholder tab when empty and still offers the new tab button", async () => {
 		hookState.tabs = [];
 		hookState.activeTabId = "";
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut session={session} />);
-		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
+		expect(screen.getByRole("tablist", { name: "Browser tabs" })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Open new tab" }));
 		expect(hookState.openTab).toHaveBeenCalled();
 	});
@@ -1309,9 +1318,9 @@ describe("BrowserPanel", () => {
 		expect(screen.getByTestId("browser-tab-row")).toContainElement(tabs);
 	});
 
-	it("does not duplicate a single browser tab beside its address", () => {
+	it("keeps one browser tab in the strip beside its address", () => {
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
-		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
+		expect(screen.getByRole("tablist", { name: "Browser tabs" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Open new tab" })).toBeInTheDocument();
 		expect(screen.getByTestId("browser-address-bar")).toBeInTheDocument();
 	});
@@ -1320,7 +1329,7 @@ describe("BrowserPanel", () => {
 		hookState.tabs = [{ id: "t1", url: "https://example.test/", title: "AO guarded navigation", active: true }];
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 		expect(screen.getByText("AO guarded navigation")).toBeVisible();
-		expect(screen.queryByRole("tablist", { name: "Browser tabs" })).not.toBeInTheDocument();
+		expect(screen.getByRole("tablist", { name: "Browser tabs" })).toBeInTheDocument();
 	});
 
 	it.each(["", "https://example.test/", "example.test", "about:blank"])("hides a single-page URL fallback title (%s)", (title) => {
@@ -1365,7 +1374,7 @@ describe("BrowserPanel", () => {
 		expect(focused).toHaveFocus();
 		hookState.tabs = hookState.tabs.slice(0, 1);
 		rerender(<TooltipProvider><BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} /></TooltipProvider>);
-		await waitFor(() => expect(screen.getByRole("button", { name: "Close tab First app" })).toHaveFocus());
+		await waitFor(() => expect(target === "remaining close" ? screen.getByRole("button", { name: "Close tab First app" }) : screen.getByRole("tab", { name: "First app" })).toHaveFocus());
 	});
 
 	it("does not steal address focus when two browser tabs become one", () => {
@@ -1531,6 +1540,44 @@ describe("BrowserPanel", () => {
 		expect(screen.getByText("Connection refused")).toBeInTheDocument();
 	});
 
+	it("shows a session-ended state with disabled controls for terminated sessions", () => {
+		const terminated = { ...session, status: "terminated", isTerminated: true } as const;
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={terminated} />);
+
+		expect(screen.getByText("Session ended — browser preview unavailable.")).toBeInTheDocument();
+		expect(screen.queryByText("Enter a URL or click one in the terminal.")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Forward" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Reload" })).toBeDisabled();
+		expect(screen.getByRole("textbox", { name: "Browser URL" })).toBeDisabled();
+		for (const button of screen.getAllByRole("button", { name: "Open new tab" })) {
+			expect(button).toBeDisabled();
+		}
+	});
+
+	it.each(["terminated artifact", "exited agent"])("keeps a useful browser interactive for a %s", async (kind) => {
+		const previewUrl = "http://ao-preview-artifact.abc.localhost:3001/report.html";
+		const owner = kind === "terminated artifact"
+			? { ...session, isTerminated: true, previewUrl }
+			: { ...session, isTerminated: false, activity: { state: "exited" as const, lastActivityAt: "2026-06-10T00:00:00Z" } };
+		hookState.navState = { ...hookState.navState, url: previewUrl, canGoBack: true, canGoForward: true };
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={owner} />);
+		expect(screen.queryByText("Session ended — browser preview unavailable.")).not.toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Browser URL" })).toBeEnabled();
+		for (const name of ["Back", "Forward", "Reload"]) {
+			expect(screen.getByRole("button", { name })).toBeEnabled();
+		}
+		for (const button of screen.getAllByRole("button", { name: "Open new tab" })) expect(button).toBeEnabled();
+		await userEvent.click(screen.getByRole("button", { name: "Reload" }));
+		expect(hookState.reload).toHaveBeenCalled();
+	});
+
+	it("does not keep a remote artifact alive after its session terminates", () => {
+		const owner = { ...session, isTerminated: true, hostId: "remote", previewUrl: "http://ao-preview-artifact.abc.localhost:3001/report.html" };
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={owner} />);
+		expect(screen.getByRole("button", { name: "Reload" })).toBeDisabled();
+	});
+
 	it("toggles pop-out mode", async () => {
 		const onTogglePopOut = vi.fn();
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
@@ -1618,16 +1665,16 @@ describe("BrowserPanel", () => {
 		{
 			rejectionCode: "BROWSER_RUNTIME_TOKEN_REJECTED",
 			message:
-				"The AO daemon refused the browser runtime because another AO launch started it. Run `ao stop`, then reopen AO.",
+				"The Orchestrator daemon refused the browser runtime because another Orchestrator launch started it. Run `ao stop`, then reopen Orchestrator.",
 		},
 		{
 			rejectionCode: "BROWSER_RUNTIME_PROTOCOL_MISMATCH",
 			message:
-				"The AO daemon refused the browser runtime because it comes from a different AO version than this app. Run `ao stop`, then reopen AO.",
+				"The Orchestrator daemon refused the browser runtime because it comes from a different Orchestrator version than this app. Run `ao stop`, then reopen Orchestrator.",
 		},
 		// A malformed hello, a code this app doesn't know, or none: no cause is claimed.
-		{ rejectionCode: "BROWSER_RUNTIME_BAD_HELLO", message: "The AO daemon refused the browser runtime. Run `ao stop`, then reopen AO." },
-		{ rejectionCode: undefined, message: "The AO daemon refused the browser runtime. Run `ao stop`, then reopen AO." },
+		{ rejectionCode: "BROWSER_RUNTIME_BAD_HELLO", message: "The Orchestrator daemon refused the browser runtime. Run `ao stop`, then reopen Orchestrator." },
+		{ rejectionCode: undefined, message: "The Orchestrator daemon refused the browser runtime. Run `ao stop`, then reopen Orchestrator." },
 	])(
 		"says why the daemon refused the runtime ($rejectionCode), without a Reconnect that can't help (#6466)",
 		({ rejectionCode, message }) => {
@@ -1700,7 +1747,8 @@ describe("BrowserPanel", () => {
 		expect(screen.getByRole("button", { name: "Send annotations" })).toHaveTextContent("2");
 		expect(screen.getByRole("button", { name: "Send annotations" })).toHaveClass(
 			"browser-panel__annotation-send",
-			"bg-primary",
+			"button-raised",
+			"[--button-color:var(--primary)]",
 			"text-primary-foreground",
 		);
 
@@ -2034,7 +2082,7 @@ describe("BrowserPanel", () => {
 	});
 
 	it("shows annotation send errors", async () => {
-		postMock.mockResolvedValue({ error: { message: "AO daemon is not ready." } });
+		postMock.mockResolvedValue({ error: { message: "Orchestrator daemon is not ready." } });
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
@@ -2042,12 +2090,12 @@ describe("BrowserPanel", () => {
 			annotationSubmitListeners.forEach((listener) => listener(annotationPayload("Make this button blue.")));
 		});
 
-		expect(await screen.findByText("AO daemon is not ready.")).toBeInTheDocument();
+		expect(await screen.findByText("Orchestrator daemon is not ready.")).toBeInTheDocument();
 	});
 
 	it("keeps a failed annotation queued so the user can retry it", async () => {
 		postMock
-			.mockResolvedValueOnce({ error: { message: "AO daemon is not ready." } })
+			.mockResolvedValueOnce({ error: { message: "Orchestrator daemon is not ready." } })
 			.mockResolvedValueOnce({ data: {} });
 		hookState.navState = { ...hookState.navState, url: "http://localhost:5173/" };
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
@@ -2058,7 +2106,7 @@ describe("BrowserPanel", () => {
 			);
 		});
 
-		expect(await screen.findByText("AO daemon is not ready.")).toBeInTheDocument();
+		expect(await screen.findByText("Orchestrator daemon is not ready.")).toBeInTheDocument();
 		expect(postMock).toHaveBeenCalledTimes(1);
 
 		await userEvent.click(screen.getByRole("button", { name: /retry annotation/i }));

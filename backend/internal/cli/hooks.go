@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/copilot"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/memcode"
@@ -51,8 +52,9 @@ const (
 // POST /api/v1/sessions/{id}/activity. The CLI keeps its own copy so it need
 // not import httpd. Event carries the AO hook sub-command that produced the
 // state; ToolName/ToolUseID are the tool-use correlation facts lifted from the
-// native payload when present. All four are optional: an old daemon decodes
-// the body leniently and simply ignores them.
+// native payload when present. AgentSessionID is a native resumable-session id
+// lifted from the payload when present. All four are optional: an old daemon
+// decodes the body leniently and simply ignores them.
 type setActivityAPIRequest struct {
 	ObservedAt                   time.Time                           `json:"observedAt,omitempty"`
 	State                        string                              `json:"state,omitempty"`
@@ -76,6 +78,9 @@ type setActivityAPIRequest struct {
 	Entrypoint                   string                              `json:"entrypoint,omitempty"`
 	ProcessID                    int                                 `json:"processId,omitempty"`
 	Usage                        *usageHookMetadata                  `json:"usage,omitempty"`
+	// PRMayHaveChanged reports a finished shell command that probably changed
+	// the session's PR (gh pr merge, git push), so the daemon re-reads it early.
+	PRMayHaveChanged bool `json:"prMayHaveChanged,omitempty"`
 }
 
 type usageHookMetadata struct {
@@ -127,6 +132,18 @@ func activityMeta(payload []byte) (toolName, toolUseID string) {
 		p.ToolUseID = ""
 	}
 	return p.ToolName, p.ToolUseID
+}
+
+// hookCommandMayChangePR reports whether a post-tool-use payload's shell
+// command (`tool_input.command`, left raw so a string or argv both work)
+// probably changed a pull request.
+func hookCommandMayChangePR(payload []byte) bool {
+	var p struct {
+		ToolInput struct {
+			Command json.RawMessage `json:"command"`
+		} `json:"tool_input"`
+	}
+	return json.Unmarshal(normalizeHookPayload(payload), &p) == nil && domain.CommandMayChangePR(string(p.ToolInput.Command))
 }
 
 // claudeSubagentFacts keeps native child identity separate from the resumable
@@ -224,6 +241,19 @@ func normalizeHookPayload(payload []byte) []byte {
 	return bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))
 }
 
+// hookAgentSessionIDForHarness is shared by worker and reviewer hooks. Cline
+// must not inherit generic task/conversation aliases when its parser rejects them.
+func hookAgentSessionIDForHarness(agent string, payload []byte) string {
+	if agent == "cline" {
+		id, _ := activitydispatch.AgentSessionID(agent, payload)
+		return id
+	}
+	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
+		return hookAgentSessionID(payload)
+	}
+	return ""
+}
+
 // hookAgentSessionID extracts the native resume handle shared by Agy, Copilot,
 // Codex, Claude Code, Cline, and other hook payloads. It is independent of
 // activity derivation because SessionStart is intentionally metadata-only for
@@ -296,7 +326,7 @@ func hookLaunchID(payload []byte) string {
 func hookUsageMetadata(agent string, payload []byte) *usageHookMetadata {
 	payload = normalizeHookPayload(payload)
 	harness := domain.AgentHarness(agent)
-	if harness != domain.HarnessClaudeCode && harness != domain.HarnessCodex {
+	if harness != domain.HarnessClaudeCode && harness != domain.HarnessCodex && harness != domain.HarnessPi {
 		return nil
 	}
 	var native struct {
@@ -314,6 +344,15 @@ func hookUsageMetadata(agent string, payload []byte) *usageHookMetadata {
 		ModelID:                strings.TrimSpace(native.Model),
 		SubagentID:             strings.TrimSpace(native.SubagentID),
 		SubagentTranscriptPath: strings.TrimSpace(native.SubagentTranscriptPath),
+	}
+	if harness == domain.HarnessPi {
+		meta.ModelID = ""
+		meta.SubagentID = ""
+		meta.SubagentTranscriptPath = ""
+		if meta.TranscriptPath == "" {
+			return nil
+		}
+		return meta
 	}
 	if meta.TranscriptPath == "" && meta.SubagentTranscriptPath == "" && meta.ModelID == "" {
 		return nil
@@ -404,6 +443,10 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 	}
 	decodeErr := json.Unmarshal(payload, &p)
 	observedPrompt := firstHookValue(p.Prompt, p.UserPrompt, p.UserPromptCamel)
+	coordinationPrompt := observedPrompt
+	if agent == domain.HarnessClaudeCode {
+		coordinationPrompt = normalizeClaudePastedPrompt(observedPrompt)
+	}
 	var userPrompt, assistant, finalMessage, turnID string
 	origin := domain.ConversationCheckpointOriginUnknown
 	// Conversation checkpoints are trusted only at the main-turn boundaries that
@@ -442,7 +485,7 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 	// AO's own handoff request and continuation kickoff are coordination turns,
 	// not the latest real user instruction. They remain in provider history but
 	// must not overwrite deterministic user intent.
-	if isAOCoordinationMessage(observedPrompt) {
+	if isAOCoordinationMessage(coordinationPrompt) {
 		userPrompt = ""
 		assistant = ""
 		finalMessage = ""
@@ -456,7 +499,7 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 	if decodeErr != nil {
 		turnRequest, finalMessage = "", ""
 	}
-	coordinationID, _ := domain.CoordinationDeliveryID(observedPrompt)
+	coordinationID, _ := domain.CoordinationDeliveryID(coordinationPrompt)
 	return hookConversationSnapshot{
 		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
@@ -467,6 +510,69 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 		CoordinationID:        coordinationID,
 		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
 	}
+}
+
+var claudePastedContentPrefix = regexp.MustCompile(`^<pasted_content id="([A-Za-z0-9_-]+)">`)
+var claudePastedContentTag = regexp.MustCompile(`<pasted_content id="([A-Za-z0-9_-]+)">|</pasted_content(?: id="([A-Za-z0-9_-]+)")?>`)
+var claudePastedContentLeadingClosing = regexp.MustCompile(`^</pasted_content(?: id="([A-Za-z0-9_-]+)")?>`)
+
+// normalizeClaudePastedPrompt removes only Claude's leading paste wrapper.
+// A report envelope can continue after the pasted segment, so keep that suffix.
+// Human text before the wrapper or inside it still precedes the report envelope.
+func normalizeClaudePastedPrompt(prompt string) string {
+	match := claudePastedContentPrefix.FindStringSubmatch(prompt)
+	if match == nil {
+		return prompt
+	}
+	content := strings.TrimPrefix(prompt, match[0])
+	before, after, ok := strings.Cut(content, `</pasted_content id="`+match[1]+`">`)
+	if !ok {
+		before, after, ok = strings.Cut(content, "</pasted_content>")
+	}
+	if !ok {
+		return prompt
+	}
+	return before + after
+}
+
+func reportDeliveryHasOnlyPastedClosers(value string) bool {
+	const reportClose = "</ao-report-delivery>"
+	closeAt := strings.Index(value, reportClose)
+	if closeAt < 0 {
+		return false
+	}
+	suffix := strings.TrimSpace(value[closeAt+len(reportClose):])
+	if suffix == "" {
+		return true
+	}
+	// Each closer, with or without an ID, must close a paste block that is
+	// still open, the same closers normalizeClaudePastedPrompt accepts. A plain
+	// closer closes the innermost block, an ID closer the innermost with its ID.
+	var open []string
+	closeBlock := func(id string) bool {
+		for i := len(open) - 1; i >= 0; i-- {
+			if id == "" || open[i] == id {
+				open = append(open[:i], open[i+1:]...)
+				return true
+			}
+		}
+		return false
+	}
+	for _, tag := range claudePastedContentTag.FindAllStringSubmatch(value[:closeAt], -1) {
+		if tag[1] != "" {
+			open = append(open, tag[1])
+		} else if !closeBlock(tag[2]) {
+			return false
+		}
+	}
+	for suffix != "" {
+		match := claudePastedContentLeadingClosing.FindStringSubmatch(suffix)
+		if len(match) != 2 || !closeBlock(match[1]) {
+			return false
+		}
+		suffix = strings.TrimSpace(suffix[len(match[0]):])
+	}
+	return true
 }
 
 func firstHookValue(values ...string) string {
@@ -480,8 +586,14 @@ func firstHookValue(values ...string) string {
 
 func isAOCoordinationMessage(value string) bool {
 	value = strings.TrimSpace(value)
-	_, reportDelivery := domain.CoordinationDeliveryID(value)
-	return reportDelivery || strings.HasPrefix(value, "<ao-handoff-request") ||
+	if _, reportDelivery := domain.ReportDeliveryID(value); reportDelivery {
+		// A report envelope may share a prompt with a human instruction. Keep
+		// the delivery ID for acknowledgement, but only classify the whole
+		// prompt as coordination when only Claude paste closers follow it.
+		return reportDeliveryHasOnlyPastedClosers(value)
+	}
+	_, sessionDelivery := domain.CoordinationDeliveryID(value)
+	return sessionDelivery || strings.HasPrefix(value, "<ao-handoff-request") ||
 		strings.HasPrefix(value, "AO transferred the previous agent's context in hidden system instructions.")
 }
 
@@ -535,7 +647,7 @@ type claudePreToolUseDenyOutput struct {
 
 const artifactToolName = "Artifact"
 
-const artifactNudgeReason = "AO does not show Claude artifacts. Write the deliverable as a file in the session artifact directory; " +
+const artifactNudgeReason = "Orchestrator does not show Claude artifacts. Write the deliverable as a file in the session artifact directory; " +
 	"in a chat session, use html_render."
 
 // claimArtifactNudge reports whether this is the session's first Artifact tool
@@ -575,29 +687,15 @@ func (c *commandContext) emitArtifactNudge(agent, event, sessionID string, paylo
 	}
 }
 
-// reviewerSubmitCommandPattern matches the exact command shapes the review
-// prompt dictates: a single-quoted JSON literal fed through `printf '%s'` into
-// either the GitHub review POST or `ao review submit`. Claude Code ≥ 2.1.257
-// prompts on any Bash command its analyzer cannot verify statically, and allow
-// rules never match such commands, so the headless reviewer would hang. The
-// shape is safe to auto-allow: `printf '%s'` performs no format interpretation
-// and a single-quoted operand (quote-backslash-quote-quote for embedded single
-// quotes, as the prompt instructs) cannot expand or run anything. The
-// captured session id is checked against AO_REVIEW_WORKER_SESSION_ID after the
-// match.
-const reviewerSubmitJSONLiteral = `'[^']*(?:'\\''[^']*)*'`
-
-var reviewerSubmitCommandPattern = regexp.MustCompile(`^printf '%s' ` + reviewerSubmitJSONLiteral + ` \| (?:` +
-	`gh api --method POST repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pulls/[0-9]+/reviews --input - --jq '\.id'` +
-	`|ao review submit --session (?P<session>[A-Za-z0-9_-]+) --reviews -)$`)
-
-const reviewerPermissionDenyMessage = "AO headless reviewer: no human can answer permission prompts. " +
+const reviewerPermissionDenyMessage = "Orchestrator headless reviewer: no human can answer permission prompts. " +
 	"Use only the allowlisted read commands (git diff/log/show/status, gh pr view/diff/checks, Read, Grep, Glob) " +
 	"and the exact single-line `printf '%s' '<json>' | ...` submit commands from the review task."
 
 // reviewerPermissionDecision answers a Claude Code reviewer's PermissionRequest:
-// allow the exact submit shapes, deny everything else so the session degrades
-// into a denial the model can route around instead of an unanswered prompt.
+// allow the exact submit shapes (claudecode.ReviewerSubmitCommandAllowed, which
+// checks the captured session against AO_REVIEW_WORKER_SESSION_ID), deny
+// everything else so the session degrades into a denial the model can route
+// around instead of an unanswered prompt.
 func reviewerPermissionDecision(payload []byte, workerSessionID string) claudePermissionHookOutput {
 	var p struct {
 		ToolName  string `json:"tool_name"`
@@ -610,16 +708,7 @@ func reviewerPermissionDecision(payload []byte, workerSessionID string) claudePe
 	out.HookSpecificOutput.HookEventName = "PermissionRequest"
 	out.HookSpecificOutput.Decision.Behavior = "deny"
 	out.HookSpecificOutput.Decision.Message = reviewerPermissionDenyMessage
-	if p.ToolName != "Bash" {
-		return out
-	}
-	m := reviewerSubmitCommandPattern.FindStringSubmatch(strings.TrimSpace(p.ToolInput.Command))
-	if m == nil {
-		return out
-	}
-	if session := m[reviewerSubmitCommandPattern.SubexpIndex("session")]; workerSessionID == "" || (session != "" && session != workerSessionID) {
-		// An unset AO_REVIEW_WORKER_SESSION_ID means a broken launch (the
-		// launcher always sets it); admit nothing rather than any worker.
+	if p.ToolName != "Bash" || !claudecode.ReviewerSubmitCommandAllowed(p.ToolInput.Command, workerSessionID) {
 		return out
 	}
 	out.HookSpecificOutput.Decision.Behavior = "allow"
@@ -707,10 +796,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	}
 
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
-	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
-		agentSessionID = hookAgentSessionID(payload)
-	}
+	agentSessionID := hookAgentSessionIDForHarness(agent, payload)
 	if agent == "memcode" && event == "session-start" {
 		agentSessionID = os.Getenv("MEMCODE_SESSION_ID")
 	}
@@ -728,7 +814,8 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 			}
 		}
 	}
-	if !hasActivity && agentSessionID == "" && usage == nil && subagentID == "" {
+	prMayHaveChanged := event == "post-tool-use" && hookCommandMayChangePR(payload)
+	if !hasActivity && agentSessionID == "" && usage == nil && subagentID == "" && !prMayHaveChanged {
 		// Unknown agent, or an event carrying neither activity nor resumable
 		// session metadata: report nothing.
 		return nil
@@ -754,6 +841,9 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		domain.HarnessOMP, domain.HarnessPi,
 		domain.HarnessAmp, domain.HarnessPrimeAgent:
 		conversation = hookSemanticAcceptanceFacts(event, payload)
+		if domain.AgentHarness(agent) == domain.HarnessPi {
+			conversation.TranscriptPath = hookConversationFacts(domain.HarnessPi, event, payload).TranscriptPath
+		}
 	}
 	// Every agent's turn text feeds the terminal turn history. It never becomes a replay checkpoint.
 	history := hookConversationFacts(domain.AgentHarness(agent), event, payload)
@@ -782,6 +872,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		TranscriptPath:               conversation.TranscriptPath,
 		LaunchID:                     launchID,
 		Usage:                        usage,
+		PRMayHaveChanged:             prMayHaveChanged,
 	}
 	if hasActivity {
 		req.State = string(state)
@@ -933,10 +1024,7 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 		return nil
 	}
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
-	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
-		agentSessionID = hookAgentSessionID(payload)
-	}
+	agentSessionID := hookAgentSessionIDForHarness(agent, payload)
 	if !hasActivity && agentSessionID == "" {
 		return nil
 	}

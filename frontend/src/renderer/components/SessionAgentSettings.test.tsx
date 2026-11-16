@@ -360,7 +360,7 @@ describe("Session agent settings intent", () => {
 			await waitFor(() => expect(client.getMutationCache().find({ mutationKey: terminateSessionMutationKey })?.state.status).toBe("success"));
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", expect.objectContaining({ params: { path: { sessionId: "sess-1" } }, body: undefined }));
 			expect(client.getQueryData(workspaceQueryKey)).toEqual([expect.objectContaining({ sessions: [expect.objectContaining({ id: "sess-1", isTerminated: true })] })]);
-			expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_kill_succeeded", { project_id: "ws-1" });
+			expect(captureRendererEventMock).toHaveBeenCalledWith("ao.sessions.killed", { project_id: "ws-1" });
 		} finally {
 			await act(async () => { await appI18n.changeLanguage("en"); });
 		}
@@ -378,7 +378,7 @@ describe("Session agent settings intent", () => {
 		await userEvent.click(within(dialog).getByRole("button", { name: "Archive session" }));
 		expect(await within(dialog).findByRole("alert")).toHaveTextContent("Writer is still unconfirmed");
 		expect(client.getQueryData(workspaceQueryKey)).toEqual(workspaces);
-		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_kill_failed", { project_id: "ws-1" });
+		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.sessions.kill_failed", { project_id: "ws-1" });
 		await userEvent.click(within(dialog).getByRole("button", { name: "Archive session" }));
 		await waitFor(() => expect(client.getMutationCache().findAll({ mutationKey: terminateSessionMutationKey }).at(-1)?.state.status).toBe("success"));
 		expect(postMock).toHaveBeenCalledTimes(2);

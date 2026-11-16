@@ -33,13 +33,14 @@ func (s *Service) QueueUserMessage(
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
-	return s.queueWithoutController(ctx, record, msg)
+	return s.queueWithoutController(ctx, record, msg, false)
 }
 
 func (s *Service) queueWithoutController(
 	ctx context.Context,
 	record domain.SessionRecord,
 	msg ports.ChatUserMessage,
+	behindAccountMove bool,
 ) (domain.ConversationTurn, error) {
 	if err := validateReplacementControlMessage(ctx, record.ID, record.Metadata.ControllerGeneration, msg); err != nil {
 		return domain.ConversationTurn{}, err
@@ -78,7 +79,7 @@ func (s *Service) queueWithoutController(
 			intakeLocked = true
 			s.markStartIntake(record.ID)
 			startingIntake = true
-		default:
+		case !behindAccountMove:
 			return domain.ConversationTurn{}, ErrNotProvisioning
 		}
 	}
@@ -112,6 +113,7 @@ func (s *Service) queueWithoutController(
 		SenderProjectID:     msg.SenderProjectID,
 		SenderDisplayName:   msg.SenderDisplayName,
 		AuthoredByUser:      msg.AuthoredByUser,
+		SpawnOpeningPrompt:  msg.SpawnOpeningPrompt,
 		Continuation:        msg.Continuation,
 		InteractionAt:       msg.InteractionAt,
 	}

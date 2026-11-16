@@ -3,12 +3,34 @@ import {
 	type SessionInterfaceTransition,
 	useSessionInterfaceTransitionStatus,
 } from "./useSessionInterfaceTransition";
-import { sessionAgentExited, type WorkspaceSession } from "../types/workspace";
+import { sessionAgentExited, sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { appI18n } from "../i18n";
 import { clientForSessionHost } from "../lib/host-clients";
 import { followResume, noteResumeFailure, watchResume } from "../lib/resume-watch";
 
 const resumesInFlight = new Map<string, Promise<void>>();
+
+export function resumeAgentErrorMessage(error: unknown, status?: number): string {
+	switch (apiErrorCode(error)) {
+		case "AGENT_NOT_EXITED": return appI18n.t("inspector.resumeAlreadyRunning");
+		case "AGENT_RESUME_IN_PROGRESS": return appI18n.t("inspector.resumeInProgress");
+		case "CHAT_RESUME_FAILED": return appI18n.t("inspector.resumeSavedConversationFailed");
+		case "CHAT_AUTH_REQUIRED":
+		case "AGENT_AUTH_REQUIRED": return appI18n.t("inspector.resumeAuthRequired");
+		default: return apiErrorMessage(error, `Failed to resume agent (${status ?? "unknown"})`);
+	}
+}
+
+/** A failed resume as a thrown Error that keeps the API error code. */
+export function resumeAgentError(error: unknown, status?: number): Error {
+	return Object.assign(new Error(resumeAgentErrorMessage(error, status)), { code: apiErrorCode(error) });
+}
+
+/** A failed resume says another app still holds the chat. */
+export function resumeOpenElsewhere(error: unknown): boolean {
+	return apiErrorCode(error) === "SESSION_OPEN_ELSEWHERE";
+}
 
 /**
  * Ask the daemon to resume a local session's stopped agent, sharing one
@@ -30,7 +52,7 @@ export function resumeAgentOnOpen(sessionId: string, refresh: () => unknown): Pr
 			return;
 		}
 		noteResumeFailure(sessionId, error);
-		throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
+		throw resumeAgentError(error, response.status);
 	});
 }
 
@@ -49,7 +71,7 @@ export function canResumeAgent(
 ): boolean {
 	return Boolean(
 		session &&
-			sessionAgentExited(session) &&
+			(session.needsResume && sessionIsActive(session) || sessionAgentExited(session)) &&
 			!session.cloud &&
 			!interfaceTransitionIsActive(transition),
 	);

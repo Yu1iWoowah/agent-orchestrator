@@ -16,6 +16,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+func TestIdleBeforeHibernateRetainsForkPolicy(t *testing.T) {
+	if chatsvc.IdleBeforeHibernate != 90*time.Second {
+		t.Fatalf("idle hibernation delay = %s, want 90s", chatsvc.IdleBeforeHibernate)
+	}
+}
+
 type hibernationConversation struct {
 	*fakeConversation
 	calls                   atomic.Int32
@@ -1306,13 +1312,13 @@ func TestSendDuringHibernationAcceptsThenWakesNativeConversation(t *testing.T) {
 	if err := svc.DrainQueued(ctx, testSession); err != nil {
 		t.Fatal(err)
 	}
-	h.advance(6 * time.Minute)
+	h.advance(chatsvc.IdleBeforeHibernate + time.Minute)
 	rec, found, err := st.GetSession(ctx, testSession)
 	if err != nil || !found {
 		t.Fatalf("get session = %v, %v", found, err)
 	}
 	rec.Kind = domain.KindWorker
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-6 * time.Minute)}
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-chatsvc.IdleBeforeHibernate - time.Minute)}
 	rec.Metadata.ProviderConversationID = first.ProviderConversationID()
 	if err := st.UpdateSession(ctx, rec); err != nil {
 		t.Fatal(err)

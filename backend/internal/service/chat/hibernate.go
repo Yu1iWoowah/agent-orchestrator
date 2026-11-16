@@ -729,6 +729,7 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 		if resultErr != nil {
 			s.log.Warn("chat wake failed", "session", id,
 				"took", time.Since(run.started).Round(time.Millisecond), "err", resultErr)
+			captureChatFault(ctx, resultErr, "", "chat_wake", "wake")
 		} else {
 			s.log.Info("chat wake finished", "session", id,
 				"took", time.Since(run.started).Round(time.Millisecond))

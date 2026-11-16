@@ -65,6 +65,7 @@ func (c *uncertainDeferredConversation) SendTurn(ctx context.Context, msg ports.
 }
 
 func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
+	// Daemon inputs exercise batched piggyback recovery; human inputs dispatch one per turn.
 	for _, mode := range []string{"direct", "queuedAhead", "queuedList", "queuedClaim", "settings", "input", "direct-settings", "direct-input", "uncertain", "bindRequeue", "invalidPreview", "invalidPreviewRetry", "invalidPreviewOlderUncertain"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
@@ -106,7 +107,7 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 			if !direct {
 				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "previous", ProviderInitiated: true})
 				h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Turns) == 1 })
-				if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: "older queued input", ClientMessageID: "older"}); err != nil {
+				if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Origin: domain.MessageOriginDaemon, Text: "older queued input", ClientMessageID: "older"}); err != nil {
 					t.Fatal(err)
 				}
 				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "previous", TurnState: domain.TurnStateFailed})
@@ -145,7 +146,7 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 			} else {
 				fault.armed.Store(true)
 			}
-			turn, firstErr := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "accepted input", ClientMessageID: "accepted", Origin: domain.MessageOriginHuman})
+			turn, firstErr := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "accepted input", ClientMessageID: "accepted", Origin: domain.MessageOriginDaemon})
 			saved, err := h.st.TurnByID(ctx, turn.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -187,13 +188,13 @@ func TestDispatchRecoveryPreservesPiggybackReports(t *testing.T) {
 				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: olderTurn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
 				fence("valid-preview-input-completed")
 			}
-			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "trigger queue", ClientMessageID: "trigger", Origin: domain.MessageOriginHuman}); err != nil {
+			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "trigger queue", ClientMessageID: "trigger", Origin: domain.MessageOriginDaemon}); err != nil {
 				t.Fatal(err)
 			}
 			fence("delivery-fence")
 			copies := 0
 			for _, m := range conv.sentMessages() {
-				if strings.HasPrefix(m.Text, "AO pending messages in enqueue order.") {
+				if strings.HasPrefix(m.Text, "Orchestrator pending messages in enqueue order.") {
 					for _, item := range parseDeliveredBatch(t, m.Text) {
 						copies += strings.Count(item.Text, "<ao-worker-reports>")
 					}
@@ -315,7 +316,7 @@ func TestLastReadyRetryIsBounded(t *testing.T) {
 			}
 			conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "previous", ProviderInitiated: true})
 			fence("previous-started")
-			turn, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: "retain waiting input", ClientMessageID: "waiting"})
+			turn, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "retain waiting input", ClientMessageID: "waiting"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -345,7 +346,7 @@ func TestLastReadyRetryIsBounded(t *testing.T) {
 			}
 			fault.failAlways.Store(false)
 			readFault.armed.Store(false)
-			if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: "next real input", ClientMessageID: "next"}); err != nil {
+			if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "next real input", ClientMessageID: "next"}); err != nil {
 				t.Fatal(err)
 			}
 			messages := conv.sentMessages()

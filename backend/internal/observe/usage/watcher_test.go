@@ -85,6 +85,32 @@ func TestTranscriptWatcherAddsOnlyRegisteredSources(t *testing.T) {
 	}
 }
 
+func TestTranscriptWatcherRefreshesWorkspaceRoot(t *testing.T) {
+	globalRoot := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), ".qwen-runtime", "usage")
+	mustNoError(t, os.MkdirAll(workspaceRoot, 0o700))
+	source := filepath.Join(workspaceRoot, "token-usage-2026-08.jsonl")
+	mustNoError(t, os.WriteFile(source, []byte("{}\n"), 0o600))
+	watcher, err := NewTranscriptWatcher(context.Background(), []string{globalRoot}, TranscriptWatcherConfig{})
+	mustNoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := watcher.Start(ctx)
+	t.Cleanup(func() { cancel(); <-done })
+
+	mustNoError(t, watcher.Rebuild(ctx, []string{source}))
+	watcher.mu.Lock()
+	_, watched := watcher.watched[source]
+	watcher.mu.Unlock()
+	if watched {
+		t.Fatal("workspace source was watched before its root was registered")
+	}
+	mustNoError(t, watcher.SetRoots(ctx, []string{globalRoot, workspaceRoot}))
+	mustNoError(t, watcher.Rebuild(ctx, []string{source}))
+	waitForWatchedPath(t, watcher, source)
+	mustNoError(t, os.WriteFile(source, []byte("{\"updated\":true}\n"), 0o600))
+	waitForTranscriptEvent(t, watcher.Events(), source)
+}
+
 func TestTranscriptWatcherResolvesSymlinkedRoot(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "transcripts")
@@ -294,6 +320,23 @@ func TestTranscriptWatcherUsesCurrentAccountRoot(t *testing.T) {
 	}
 }
 
+func TestTranscriptWatcherEmitsSnapshotSourceWrites(t *testing.T) {
+	root := t.TempDir()
+	grok := filepath.Join(root, "grok", "usage.json")
+	deepseek := filepath.Join(root, "deepseek", "session.v4.jsonl.zstd")
+	for _, path := range []string{grok, deepseek} {
+		mustNoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		mustNoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	}
+	watcher, cancel := startTranscriptWatcher(t, root, grok, deepseek)
+	defer stopTranscriptWatcher(t, watcher, cancel)
+
+	for _, path := range []string{grok, deepseek} {
+		mustNoError(t, os.WriteFile(path, []byte(`{"updated":true}`), 0o600))
+		waitForTranscriptEvent(t, watcher.Events(), path)
+	}
+}
+
 func startTranscriptWatcher(t *testing.T, root string, sourcePaths ...string) (*TranscriptWatcher, context.CancelFunc) {
 	t.Helper()
 	watcher, err := NewTranscriptWatcher(context.Background(), []string{root}, TranscriptWatcherConfig{})
@@ -403,5 +446,26 @@ func waitForClosedWatcherErrors(t *testing.T, errors <-chan error) {
 		case <-timer.C:
 			t.Fatal("errors channel did not close")
 		}
+	}
+}
+
+func TestTranscriptWatcherDoesNotWatchEscapedWAL(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	database := filepath.Join(root, "usage.db")
+	external := filepath.Join(outside, "private")
+	mustNoError(t, os.WriteFile(database, nil, 0o600))
+	mustNoError(t, os.WriteFile(external, nil, 0o600))
+	if err := os.Symlink(external, database+sqliteWALSuffix); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	watcher, err := NewTranscriptWatcher(t.Context(), []string{root}, TranscriptWatcherConfig{})
+	mustNoError(t, err)
+	t.Cleanup(watcher.close)
+	mustNoError(t, watcher.Rebuild(t.Context(), []string{database}))
+	if len(watcher.watched) != 1 {
+		t.Fatalf("unexpected watched files: %v", watcher.watched)
+	}
+	if _, ok := watcher.watched[canonicalTranscriptPath(database)]; !ok {
+		t.Fatal("database was not watched")
 	}
 }

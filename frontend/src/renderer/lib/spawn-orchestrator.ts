@@ -1,3 +1,4 @@
+import { apiErrorException } from "./api-error-exception";
 import { apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId } from "./api-client";
 import { resumeOnce } from "../hooks/useCanResumeAgent";
 import { followResume, noteResumeFailure } from "./resume-watch";
@@ -85,10 +86,13 @@ export async function spawnOrchestrator(
 			);
 		}
 
-		void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", { project_id: projectId, source });
+		void captureRendererEvent("ao.orchestrators.spawned", { project_id: projectId, source });
 		return data.orchestrator.id;
 	} catch (err) {
-		void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", { project_id: projectId, source });
+		void captureRendererEvent("ao.orchestrators.spawn_failed", {
+			project_id: projectId, source,
+			...(err instanceof OrchestratorSpawnError ? { error_code: err.code, http_status: err.status } : {}),
+		});
 		throw err;
 	}
 }
@@ -117,7 +121,7 @@ async function requestOrchestratorResume(sessionId: string, hostId?: string): Pr
 	});
 	if (error && apiErrorCode(error) !== "AGENT_NOT_EXITED") {
 		noteResumeFailure(sessionId, error, hostId);
-		throw new Error(apiErrorMessage(error, `Could not resume the orchestrator (${response.status})`));
+		throw apiErrorException(error, `Could not resume the orchestrator (${response.status})`);
 	}
 	if (error) return;
 	// The daemon finishes the resume in the background; the watch records a

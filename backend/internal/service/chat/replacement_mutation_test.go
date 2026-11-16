@@ -27,7 +27,7 @@ func TestReplacementFencesPublicChatMutationsAndPreservesQueuedReceipt(t *testin
 			case "promote":
 				_, err = h.svc.PromoteQueuedTurn(ctx, testSession, queued.ID)
 			case "rollback":
-				_, err = h.svc.Rollback(ctx, testSession, queued.ID)
+				_, err = h.svc.Rollback(ctx, testSession, queued.ID, "")
 			case "fork":
 				_, err = h.svc.ForkConversation(ctx, testSession)
 			case "edit":

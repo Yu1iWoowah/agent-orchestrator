@@ -102,7 +102,7 @@ func TestTranscriptSnapshotRetainsCapturedBatchInput(t *testing.T) {
 		t.Fatal("missing reservation proof")
 	}
 	// Settle a queued member against the dispatch lead without adding timeline rows.
-	if e = st.CompleteQueuedBatch(ctx, conversation, []string{"member"}, "native-provider", histClock); e != nil {
+	if e = st.CompleteQueuedBatch(ctx, conversation, []string{"member"}, "native-provider", "", histClock); e != nil {
 		t.Fatal(e)
 	}
 	b, e := st.LoadTranscriptSourceSnapshot(ctx, session)
