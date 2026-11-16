@@ -48,7 +48,7 @@ func (s *Store) CreateSessionInterfaceTransition(
 			TargetAccountID:      rec.TargetAccountID,
 		})
 		if err == nil {
-			transition, created = interfaceTransitionToDomain(row), true
+			transition, created = interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)), true
 			return nil
 		}
 		if !isSQLiteUnique(err) {
@@ -58,7 +58,7 @@ func (s *Store) CreateSessionInterfaceTransition(
 		if lookupErr != nil {
 			return fmt.Errorf("read winning interface transition for %s: %w", rec.SessionID, lookupErr)
 		}
-		transition = interfaceTransitionToDomain(existing)
+		transition = interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(existing))
 		return nil
 	})
 	return transition, created, err
@@ -105,7 +105,7 @@ func (s *Store) CreateSessionInterfaceTransitionAfter(
 			SourceAccountID: rec.SourceAccountID, TargetAccountID: rec.TargetAccountID,
 		})
 		if insertErr == nil {
-			transition, created = interfaceTransitionToDomain(row), true
+			transition, created = interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)), true
 			return nil
 		}
 		if !isSQLiteUnique(insertErr) {
@@ -115,7 +115,7 @@ func (s *Store) CreateSessionInterfaceTransitionAfter(
 		if activeErr != nil {
 			return fmt.Errorf("read winning interface transition for %s: %w", rec.SessionID, activeErr)
 		}
-		transition = interfaceTransitionToDomain(existing)
+		transition = interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(existing))
 		return nil
 	})
 	return transition, created, predecessorMatched, err
@@ -133,7 +133,7 @@ func (s *Store) GetSessionInterfaceTransition(
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, false, fmt.Errorf("get interface transition %s: %w", id, err)
 	}
-	return interfaceTransitionToDomain(row), true, nil
+	return interfaceTransitionQueryToDomain(row), true, nil
 }
 
 // GetActiveSessionInterfaceTransition reads the active transition for a session.
@@ -148,7 +148,7 @@ func (s *Store) GetActiveSessionInterfaceTransition(
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, false, fmt.Errorf("get active interface transition for %s: %w", id, err)
 	}
-	return interfaceTransitionToDomain(row), true, nil
+	return interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)), true, nil
 }
 
 // GetLatestSessionInterfaceTransition reads the newest transition for a session.
@@ -163,7 +163,7 @@ func (s *Store) GetLatestSessionInterfaceTransition(
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, false, fmt.Errorf("get latest interface transition for %s: %w", id, err)
 	}
-	return interfaceTransitionToDomain(row), true, nil
+	return interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)), true, nil
 }
 
 // ListActiveSessionInterfaceTransitions lists transitions that have not reached a terminal phase.
@@ -174,7 +174,7 @@ func (s *Store) ListActiveSessionInterfaceTransitions(ctx context.Context) ([]do
 	}
 	out := make([]domain.SessionInterfaceTransition, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, interfaceTransitionToDomain(row))
+		out = append(out, interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)))
 	}
 	return out, nil
 }
@@ -189,7 +189,7 @@ func (s *Store) ListDeliverableSessionInterfaceTransitions(ctx context.Context) 
 	}
 	out := make([]domain.SessionInterfaceTransition, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, interfaceTransitionToDomain(row))
+		out = append(out, interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)))
 	}
 	return out, nil
 }
@@ -251,7 +251,7 @@ func (s *Store) AcknowledgeSessionInterfaceTransitionNotice(
 		return domain.SessionInterfaceTransition{}, false,
 			fmt.Errorf("acknowledge interface transition notice %s: %w", transitionID, err)
 	}
-	return interfaceTransitionToDomain(row), true, nil
+	return interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow(row)), true, nil
 }
 
 // CommitSessionControllerEpoch is the atomic persistence primitive used only by
@@ -463,7 +463,7 @@ func (s *Store) MarkSessionInterfaceTransitionMessageDelivered(
 	return nil
 }
 
-func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.SessionInterfaceTransition {
+func interfaceTransitionQueryToDomain(row gen.GetSessionInterfaceTransitionRow) domain.SessionInterfaceTransition {
 	return domain.SessionInterfaceTransition{
 		ID: row.ID, SessionID: row.SessionID, SettingsOperationID: row.SettingsOperationID,
 		SourceMode: row.SourceMode, TargetMode: row.TargetMode,
@@ -489,4 +489,30 @@ func settingsTransitionAvailable(ctx context.Context, q *gen.Queries, id domain.
 		return err
 	}
 	return nil
+}
+
+// SELECT * callers return the full model; keep the existing domain projection.
+func interfaceTransitionToDomain(row gen.SessionInterfaceTransition) domain.SessionInterfaceTransition {
+	return interfaceTransitionQueryToDomain(gen.GetSessionInterfaceTransitionRow{
+		ID:                    row.ID,
+		SessionID:             row.SessionID,
+		SourceMode:            row.SourceMode,
+		TargetMode:            row.TargetMode,
+		Policy:                row.Policy,
+		Phase:                 row.Phase,
+		NativeConversationID:  row.NativeConversationID,
+		ErrorCode:             row.ErrorCode,
+		ErrorDetail:           row.ErrorDetail,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
+		CompletedAt:           row.CompletedAt,
+		NoticeAcknowledgedAt:  row.NoticeAcknowledgedAt,
+		HistoryPolicy:         row.HistoryPolicy,
+		SourceAccountID:       row.SourceAccountID,
+		TargetAccountID:       row.TargetAccountID,
+		TargetRuntimeLaunchID: row.TargetRuntimeLaunchID,
+		TargetRuntimeHandleID: row.TargetRuntimeHandleID,
+		TargetRuntimeState:    row.TargetRuntimeState,
+		SettingsOperationID:   row.SettingsOperationID,
+	})
 }

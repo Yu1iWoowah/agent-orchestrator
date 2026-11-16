@@ -63,7 +63,7 @@ func (s *Store) ListAutomations(ctx context.Context, filter domain.AutomationFil
 	}
 	items := make([]domain.Automation, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, automationFromGen(row))
+		items = append(items, automationFromGen(gen.GetAutomationRow(row)))
 	}
 	return domain.AutomationPage{Items: items, Total: total}, nil
 }
@@ -133,7 +133,7 @@ func (s *Store) ListDueAutomations(ctx context.Context, now time.Time, limit int
 	}
 	items := make([]domain.Automation, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, automationFromGen(row))
+		items = append(items, automationFromGen(gen.GetAutomationRow(row)))
 	}
 	return items, nil
 }
@@ -236,7 +236,7 @@ func automationToInsert(rec domain.Automation) gen.InsertAutomationParams {
 	}
 }
 
-func automationFromGen(row gen.Automation) domain.Automation {
+func automationFromGen(row gen.GetAutomationRow) domain.Automation {
 	return domain.Automation{
 		AgentAccountID: row.AgentAccountID,
 		ID:             row.ID,

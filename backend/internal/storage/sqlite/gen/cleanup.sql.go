@@ -19,9 +19,20 @@ FROM session_cleanup_facts
 WHERE session_id = ?
 `
 
-func (q *Queries) GetSessionCleanupFacts(ctx context.Context, sessionID domain.SessionID) (SessionCleanupFact, error) {
+type GetSessionCleanupFactsRow struct {
+	SessionID            domain.SessionID
+	SessionGeneration    int64
+	RuntimeReleasedAt    sql.NullTime
+	WorkspaceDisposition string
+	AttemptCount         int64
+	LastAttemptAt        sql.NullTime
+	NextAttemptAt        sql.NullTime
+	FailureCode          string
+}
+
+func (q *Queries) GetSessionCleanupFacts(ctx context.Context, sessionID domain.SessionID) (GetSessionCleanupFactsRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionCleanupFacts, sessionID)
-	var i SessionCleanupFact
+	var i GetSessionCleanupFactsRow
 	err := row.Scan(
 		&i.SessionID,
 		&i.SessionGeneration,
@@ -46,18 +57,29 @@ FROM session_cleanup_facts f
 JOIN wanted_session ON wanted_session.session_id = f.session_id
 `
 
+type ListSessionCleanupFactsBySessionsRow struct {
+	SessionID            domain.SessionID
+	SessionGeneration    int64
+	RuntimeReleasedAt    sql.NullTime
+	WorkspaceDisposition string
+	AttemptCount         int64
+	LastAttemptAt        sql.NullTime
+	NextAttemptAt        sql.NullTime
+	FailureCode          string
+}
+
 // Batch form of GetSessionCleanupFacts for session-list reads: the JSON array of
 // session ids replaces one lookup per archived session. Sessions with no facts
 // row are simply absent from the result.
-func (q *Queries) ListSessionCleanupFactsBySessions(ctx context.Context, jsonEach interface{}) ([]SessionCleanupFact, error) {
+func (q *Queries) ListSessionCleanupFactsBySessions(ctx context.Context, jsonEach interface{}) ([]ListSessionCleanupFactsBySessionsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionCleanupFactsBySessions, jsonEach)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SessionCleanupFact{}
+	items := []ListSessionCleanupFactsBySessionsRow{}
 	for rows.Next() {
-		var i SessionCleanupFact
+		var i ListSessionCleanupFactsBySessionsRow
 		if err := rows.Scan(
 			&i.SessionID,
 			&i.SessionGeneration,

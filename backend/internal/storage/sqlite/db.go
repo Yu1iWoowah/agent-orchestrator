@@ -1615,6 +1615,17 @@ SELECT COALESCE((
 	if applied117 == 0 {
 		return nil
 	}
+	// The upstream open-kind migration deliberately removes the enumerated
+	// kimi/kimi_wire CHECKs. Its receipt supersedes this legacy shape probe;
+	// replaying 0117 would rewrite a healthy ledger on every startup.
+	var openKindsApplied int
+	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version
+ WHERE version_id=20261103030401452 ORDER BY id DESC LIMIT 1),0)`).Scan(&openKindsApplied); err != nil {
+		return err
+	}
+	if openKindsApplied != 0 {
+		return nil
+	}
 
 	var kimiUsageShape int
 	if err := db.QueryRow(`

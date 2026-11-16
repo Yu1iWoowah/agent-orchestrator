@@ -66,7 +66,7 @@ func (s *Store) ListSessionCleanupFactsForSessions(ctx context.Context, ids []do
 		return nil, fmt.Errorf("list session cleanup facts: %w", err)
 	}
 	for _, row := range rows {
-		out[row.SessionID] = sessionCleanupFromGen(row)
+		out[row.SessionID] = sessionCleanupFromGen(gen.GetSessionCleanupFactsRow(row))
 	}
 	return out, nil
 }
@@ -124,7 +124,7 @@ func (s *Store) ListTerminalCleanupCandidates(ctx context.Context, now time.Time
 	return ids, nil
 }
 
-func sessionCleanupFromGen(row gen.SessionCleanupFact) domain.SessionCleanupRecord {
+func sessionCleanupFromGen(row gen.GetSessionCleanupFactsRow) domain.SessionCleanupRecord {
 	return domain.SessionCleanupRecord{
 		SessionID:            row.SessionID,
 		SessionGeneration:    row.SessionGeneration,

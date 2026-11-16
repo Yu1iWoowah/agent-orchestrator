@@ -180,9 +180,29 @@ FROM automations
 WHERE id = ?
 `
 
-func (q *Queries) GetAutomation(ctx context.Context, id domain.AutomationID) (Automation, error) {
+type GetAutomationRow struct {
+	ID             domain.AutomationID
+	ProjectID      domain.ProjectID
+	DisplayName    string
+	Prompt         string
+	Kind           domain.SessionKind
+	Harness        domain.AgentHarness
+	RruleText      string
+	Timezone       string
+	Enabled        bool
+	NextRunAt      time.Time
+	LastRunAt      sql.NullTime
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Model          string
+	Mode           string
+	Effort         string
+	AgentAccountID string
+}
+
+func (q *Queries) GetAutomation(ctx context.Context, id domain.AutomationID) (GetAutomationRow, error) {
 	row := q.db.QueryRowContext(ctx, getAutomation, id)
-	var i Automation
+	var i GetAutomationRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -526,7 +546,27 @@ type ListAutomationsParams struct {
 	PageLimit     int64
 }
 
-func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams) ([]Automation, error) {
+type ListAutomationsRow struct {
+	ID             domain.AutomationID
+	ProjectID      domain.ProjectID
+	DisplayName    string
+	Prompt         string
+	Kind           domain.SessionKind
+	Harness        domain.AgentHarness
+	RruleText      string
+	Timezone       string
+	Enabled        bool
+	NextRunAt      time.Time
+	LastRunAt      sql.NullTime
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Model          string
+	Mode           string
+	Effort         string
+	AgentAccountID string
+}
+
+func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams) ([]ListAutomationsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAutomations,
 		arg.ProjectID,
 		arg.EnabledFilter,
@@ -537,9 +577,9 @@ func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Automation{}
+	items := []ListAutomationsRow{}
 	for rows.Next() {
-		var i Automation
+		var i ListAutomationsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -586,15 +626,35 @@ type ListDueAutomationsParams struct {
 	Limit     int64
 }
 
-func (q *Queries) ListDueAutomations(ctx context.Context, arg ListDueAutomationsParams) ([]Automation, error) {
+type ListDueAutomationsRow struct {
+	ID             domain.AutomationID
+	ProjectID      domain.ProjectID
+	DisplayName    string
+	Prompt         string
+	Kind           domain.SessionKind
+	Harness        domain.AgentHarness
+	RruleText      string
+	Timezone       string
+	Enabled        bool
+	NextRunAt      time.Time
+	LastRunAt      sql.NullTime
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Model          string
+	Mode           string
+	Effort         string
+	AgentAccountID string
+}
+
+func (q *Queries) ListDueAutomations(ctx context.Context, arg ListDueAutomationsParams) ([]ListDueAutomationsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDueAutomations, arg.NextRunAt, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Automation{}
+	items := []ListDueAutomationsRow{}
 	for rows.Next() {
-		var i Automation
+		var i ListDueAutomationsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,

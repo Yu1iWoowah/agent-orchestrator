@@ -23,13 +23,8 @@ INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at) VALUES(
 	for _, table := range tables {
 		before[table] = migrationTableFacts(t, db, table)
 	}
-	for i := 0; i < 2; i++ {
-		if err := migrate(db); err != nil {
-			t.Fatal(err)
-		}
-		if err := migrate(db); err != nil {
-			t.Fatal(err)
-		}
+	assertFacts := func() {
+		t.Helper()
 		for _, table := range tables {
 			after := migrationTableFacts(t, db, table)
 			if len(after) != len(before[table]) {
@@ -51,11 +46,17 @@ INSERT INTO session_agent_settings_audit(operation_id,phase,recorded_at) VALUES(
 		if err := db.QueryRow(`SELECT error_code FROM session_agent_settings_operations WHERE id='legacy-operation'`).Scan(&code); err != nil || code != "" {
 			t.Fatal("invented legacy failure code")
 		}
+	}
+	for i := 0; i < 2; i++ {
+		upTo(t, db, 20261029115938350)
+		upTo(t, db, 20261029115938350)
+		assertFacts()
 		downTo(t, db, base)
 	}
 	if err := migrate(db); err != nil {
 		t.Fatal(err)
 	}
+	assertFacts()
 	var integrity string
 	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatalf("integrity: %s %v", integrity, err)
