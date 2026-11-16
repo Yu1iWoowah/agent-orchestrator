@@ -13,7 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import type { CloudShareAccess, CloudShareGrant, CloudShareLink, CloudShareLinks, CloudShareSession } from "../shared/cloud-share";
-import { parseCloudBaseUrl } from "./cloud-cp-proxy";
+import { parseCloudBaseUrl, pinControlPlaneUrl, type ControlPlaneUrlResolver } from "./cloud-control-plane-url";
 
 const API_PREFIX = "/api/cloud/v1";
 /** The folder in a session's artifacts that holds version history; never shared. */
@@ -204,6 +204,7 @@ async function openResolved(file: ResolvedShareFile): Promise<fs.FileHandle> {
 }
 
 export interface CloudShareApi {
+	controlPlaneUrl: ControlPlaneUrlResolver;
 	fetch: (url: string, init: RequestInit) => Promise<Response>;
 	/** The sign-in token, or null when signed out. */
 	getToken: () => Promise<string | null>;
@@ -275,10 +276,12 @@ async function callApi<T>(
 	timeoutMs: number = SHARE_TIMEOUTS.api,
 ): Promise<T> {
 	return fetchWithin(timeoutMs, signal, async (limited) => {
+		const configured = await untilAborted(pinControlPlaneUrl(baseUrl, api.controlPlaneUrl), limited);
 		const token = await untilAborted(api.getToken(), limited);
 		if (!token) throw new CloudShareError("signed_out", "Sign in to share.");
-		const response = await api.fetch(apiUrl(baseUrl, apiPath), {
+		const response = await api.fetch(apiUrl(configured, apiPath), {
 			method,
+			redirect: "error",
 			headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
 			body: body === undefined ? undefined : JSON.stringify(body),
 			signal: limited,
@@ -317,10 +320,12 @@ export async function shareLinksAvailable(api: CloudShareApi, baseUrl: string, c
 	// The token read (which may refresh it) and the request share one limit.
 	const limited = AbortSignal.timeout(SHARE_TIMEOUTS.probe);
 	try {
+		const configured = await untilAborted(pinControlPlaneUrl(baseUrl, api.controlPlaneUrl), limited);
 		const token = await untilAborted(api.getToken(), limited);
 		const target = cloudSession ? `${sessionApiPath(cloudSession)}/artifacts/share` : "/me/artifact-shares";
-		const response = await api.fetch(apiUrl(baseUrl, target), {
+		const response = await api.fetch(apiUrl(configured, target), {
 			method: "GET",
+			redirect: "error",
 			headers: token ? { Authorization: `Bearer ${token}` } : {},
 			signal: limited,
 		});
@@ -519,11 +524,13 @@ export async function uploadShare(
 		const target = input.shareId ? shareLinkPath(input.shareId) : "/me/artifact-shares";
 		const query = new URLSearchParams({ name: input.name, project: input.project, feature: input.feature });
 		return fetchWithin(SHARE_TIMEOUTS.publish, signal, async (limited) => {
+			const configured = await untilAborted(pinControlPlaneUrl(baseUrl, api.controlPlaneUrl), limited);
 			const token = await untilAborted(api.getToken(), limited);
 			if (!token) throw new CloudShareError("signed_out", "Sign in to share.");
 			const body = await fs.readFile(snapshot.path, { signal: limited });
-			const response = await api.fetch(apiUrl(baseUrl, `${target}?${query}`), {
+			const response = await api.fetch(apiUrl(configured, `${target}?${query}`), {
 				method: input.shareId ? "PUT" : "POST",
+				redirect: "error",
 				headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream", "X-AO-Artifact-SHA256": snapshot.sha256 },
 				body,
 				signal: limited,

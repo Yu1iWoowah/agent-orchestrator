@@ -4063,12 +4063,20 @@ registerCloudArtifactIpc({
 // Copies made for "Show in" pile up under ~/.ao/cloud-artifacts; drop stale ones.
 void pruneCloudArtifactFolders().catch((error) => console.warn("AO: unable to prune old cloud artifact copies", error));
 
+// The control plane the daemon is configured for, the only server the AO
+// Cloud token is sent to (the renderer reads the same value from the daemon).
+const cloudControlPlaneUrl = createControlPlaneUrlResolver(() =>
+	daemonStatus.state === "ready" && daemonStatus.port
+		? { baseUrl: `http://127.0.0.1:${daemonStatus.port}`, key: `${daemonStatus.port}:${daemonStatus.pid ?? ""}` }
+		: null);
+
 // Share links: publishing reads the file and holds the token here, in the main
 // process; the renderer asks for it when the person presses Publish.
 const shareSnapshotDir = path.join(desktopDataDir, "tmp", "share-uploads");
 void clearShareSnapshots(shareSnapshotDir).catch(() => undefined);
 registerCloudShareIpc({
 	ipcMain,
+	controlPlaneUrl: cloudControlPlaneUrl,
 	daemonDataDir: resolvedDaemonDataDir,
 	snapshotDir: () => shareSnapshotDir,
 	getToken: () => getCloudAccessToken(cloudDataDir()),
@@ -4425,13 +4433,6 @@ function cloudDataDir(): string {
 	return resolveCloudAuthDir(process.env, os.homedir(), desktopLaunchWorkingDirectory, !isDev);
 }
 
-// The control plane the daemon is configured for, the only server the AO
-// Cloud token is sent to (the renderer reads the same value from the daemon).
-const cloudControlPlaneUrl = createControlPlaneUrlResolver(() =>
-	daemonStatus.state === "ready" && daemonStatus.port
-		? { baseUrl: `http://127.0.0.1:${daemonStatus.port}`, key: `${daemonStatus.port}:${daemonStatus.pid ?? ""}` }
-		: null);
-
 // Cloud sessions' agent browsers, served to the Browser panel's agent tabs.
 const cloudAgentProxy = createCloudAgentProxy(cloudDataDir, cloudControlPlaneUrl);
 
@@ -4483,7 +4484,7 @@ function notifyRenderersOfCloudSession(
 // Telemetry's Cloud binding is retired as part of sign-out itself, not only when
 // the renderer later hands the sign-out to the daemon: the app can quit first,
 // and a CLI-started daemon would then restore the departed account.
-installCloudIPC(cloudDataDir, notifyRenderersOfCloudSession, async () => {
+installCloudIPC(cloudDataDir, notifyRenderersOfCloudSession, cloudControlPlaneUrl, async () => {
 	// Cloud artifact previews cached on disk go with the account, before the app can quit.
 	await artifactSnapshotStore.clearCloud().catch((error) => {
 		console.warn("AO: could not delete the cached Cloud artifact previews", error);

@@ -41,6 +41,7 @@ import {
 	unpublishShareLink,
 	uploadShare,
 } from "./cloud-share";
+import { pinControlPlaneUrl } from "./cloud-control-plane-url";
 import { type ShareLinkRecordStore, artifactRecordKey, shareAccess, shareRecordKey } from "./cloud-share-links";
 
 export interface CloudShareIpcDeps extends CloudShareApi {
@@ -189,6 +190,7 @@ export function registerCloudShareIpc(deps: CloudShareIpcDeps): void {
 
 	const publishCloudFile = async (file: CloudSessionShareFile): Promise<CloudSharePublishResult> => {
 		if (isVideo(file.path)) return { status: "unsupported", message: "Sharing videos is coming soon." };
+		await pinControlPlaneUrl(file.baseUrl, deps.controlPlaneUrl);
 		if (!(await deps.getToken())) return { status: "signed_out" };
 		if (!file.fingerprint) return { status: "changed", inspection: await inspectCloudFile(file, true) };
 		try {
@@ -314,6 +316,7 @@ export function registerCloudShareIpc(deps: CloudShareIpcDeps): void {
 		try {
 			const resolved = await resolveShareFile(deps.daemonDataDir(), file.sessionId, file.path);
 			if (isVideo(resolved.name)) return { status: "unsupported", message: "Sharing videos is coming soon." };
+			await pinControlPlaneUrl(file.baseUrl, deps.controlPlaneUrl);
 			if (!(await deps.getToken())) return { status: "signed_out" };
 			const progress = (sentBytes: number, totalBytes: number) => {
 				if (!sender.isDestroyed()) sender.send(CLOUD_SHARE_PROGRESS_CHANNEL, { sessionId: file.sessionId, path: file.path, sentBytes, totalBytes });

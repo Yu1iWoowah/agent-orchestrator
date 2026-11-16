@@ -15,6 +15,7 @@ import { isWebDistinctId, type CloudAccount, type CloudSignInContext } from "../
 // import cycle with cloud-auth-local that made the bundler split chunks
 // incorrectly and panic. Both modules only use each other's exports inside
 // functions, so the static ES cycle is safe at module-init time.
+import { pinControlPlaneUrl, type ControlPlaneUrlResolver } from "./cloud-control-plane-url";
 import { revokeLocalSession } from "./cloud-auth-local";
 import { providerAuthFlow } from "./provider-auth-flow";
 
@@ -773,6 +774,7 @@ async function savedAsDefaultAccount(response: Response): Promise<boolean> {
 export function installCloudIPC(
   getDataDir: () => string,
   notifyRenderers: (session: CloudAccount | null) => void,
+  controlPlaneUrl: ControlPlaneUrlResolver,
   // Runs before an explicit sign-out completes, so its effects are durable even
   // if the app quits right after.
   onSignedOut: () => Promise<void> = async () => undefined,
@@ -821,14 +823,7 @@ export function installCloudIPC(
     // account: "new" saves the login as another account, an account id signs
     // that account in again; absent, the login replaces the agent's default.
     if (account !== undefined && account !== "new" && !(typeof account === "string" && UUID_PATTERN.test(account))) throw new Error("Invalid Cloud provider login request.");
-    let base: URL;
-    try {
-      base = new URL(baseUrl);
-    } catch {
-      throw new Error("Cloud control plane URL is invalid.");
-    }
-    if (base.protocol !== "https:" && !(base.protocol === "http:" && (base.hostname === "localhost" || base.hostname === "127.0.0.1"))) throw new Error("Cloud control plane must use HTTPS.");
-    if (base.username !== "" || base.password !== "" || base.search !== "" || base.hash !== "") throw new Error("Cloud control plane URL must not include credentials, a query string, or a fragment.");
+    const base = new URL(await pinControlPlaneUrl(baseUrl, controlPlaneUrl));
     const dataDir = getDataDir();
     const token = await getCloudAccessToken(dataDir);
     if (!token) throw new Error("Sign in to Orchestrator Cloud before connecting a provider.");

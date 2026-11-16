@@ -53,3 +53,43 @@ export function sameControlPlaneUrl(a: string, b: string): boolean {
 		return false;
 	}
 }
+
+function invalid(detail: string): Error {
+	return new Error(`Invalid cloud control-plane request: ${detail}`);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+	return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+/** A renderer-supplied CP base URL: https, or http on loopback only. */
+export function parseCloudBaseUrl(baseUrl: unknown): URL {
+	if (typeof baseUrl !== "string" || baseUrl === "") throw invalid("baseUrl must be a non-empty string.");
+	let base: URL;
+	try {
+		base = new URL(baseUrl);
+	} catch {
+		throw invalid(`baseUrl ${JSON.stringify(baseUrl)} is not a valid URL.`);
+	}
+	const httpsOk = base.protocol === "https:";
+	const loopbackHttpOk = base.protocol === "http:" && isLoopbackHost(base.hostname);
+	if (!httpsOk && !loopbackHttpOk) {
+		throw invalid("baseUrl must use https (http is allowed only for localhost/127.0.0.1).");
+	}
+	if (base.username !== "" || base.password !== "" || base.search !== "" || base.hash !== "") {
+		throw invalid("baseUrl must not carry credentials, a query string, or a fragment.");
+	}
+	return base;
+}
+
+/** Validate the renderer's destination before any credential is read. */
+export async function pinControlPlaneUrl(baseUrl: string, resolve: ControlPlaneUrlResolver): Promise<string> {
+	const requested = parseCloudBaseUrl(baseUrl);
+	const configured = await resolve();
+	if (!configured) throw invalid("no Orchestrator Cloud control plane is configured.");
+	const pinned = parseCloudBaseUrl(configured);
+	if (!sameControlPlaneUrl(requested.href, pinned.href)) {
+		throw invalid("baseUrl is not the configured Orchestrator Cloud control plane.");
+	}
+	return pinned.href;
+}

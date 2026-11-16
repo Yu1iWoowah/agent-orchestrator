@@ -10,8 +10,7 @@ import type { TLSSocket } from "node:tls";
 import { WebSocket, WebSocketServer } from "ws";
 import { agentBrowserRunning, agentViewerUrl, HOP_BY_HOP_HEADERS, listenOnStablePort } from "./agent-viewer";
 import { getCloudAccessToken } from "./cloud-auth";
-import { sameControlPlaneUrl, type ControlPlaneUrlResolver } from "./cloud-control-plane-url";
-import { parseCloudBaseUrl } from "./cloud-cp-proxy";
+import { parseCloudBaseUrl, pinControlPlaneUrl, type ControlPlaneUrlResolver } from "./cloud-control-plane-url";
 import { previewCertificate } from "./preview-certificate";
 
 // Loopback HTTPS proxy fronting AO Cloud sessions' agent browsers (the
@@ -79,11 +78,18 @@ export function retryAfterMs(header: string | null): number {
 }
 
 /**
- * controlPlaneUrl, when given, is the configured control plane: the bearer
+ * controlPlaneUrl is the configured control plane: the bearer
  * goes only there, and a session named on any other gets no agent browser.
  */
-export function createCloudAgentProxy(getDataDir: () => string, controlPlaneUrl?: ControlPlaneUrlResolver): CloudAgentProxy {
-	const bearer = async (): Promise<string | null> => (await getCloudAccessToken(getDataDir()).catch(() => null)) || null;
+export function createCloudAgentProxy(getDataDir: () => string, controlPlaneUrl: ControlPlaneUrlResolver): CloudAgentProxy {
+	const bearer = async (base: URL): Promise<string | null> => {
+		try {
+			await pinControlPlaneUrl(base.href, controlPlaneUrl);
+			return (await getCloudAccessToken(getDataDir())) || null;
+		} catch {
+			return null;
+		}
+	};
 	let secret: Promise<Buffer> | undefined;
 	const loadKey = (): Promise<Buffer> =>
 		(secret ??= loadSecret(getDataDir()).catch((error: unknown) => {
@@ -133,7 +139,7 @@ export function createCloudAgentProxy(getDataDir: () => string, controlPlaneUrl?
 				left = !res.writableEnded;
 				if (left) proxied?.destroy();
 			});
-			const token = await bearer();
+			const token = await bearer(found.target.base);
 			if (left) return;
 			if (!token) return answer(res, 401, "no Orchestrator Cloud session");
 			const headers: OutgoingHttpHeaders = {};
@@ -177,7 +183,7 @@ export function createCloudAgentProxy(getDataDir: () => string, controlPlaneUrl?
 		const handleUpgrade = async (req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> => {
 			const found = route(req.headers.host, req.url);
 			if (!found || found.tail !== "ws/cdp" || req.headers.origin !== found.origin) return void socket.destroy();
-			const token = await bearer();
+			const token = await bearer(found.target.base);
 			if (!token || socket.destroyed) return void socket.destroy();
 			const url = cpUrl(found.target, found.tail, found.search);
 			url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -252,10 +258,6 @@ export function createCloudAgentProxy(getDataDir: () => string, controlPlaneUrl?
 			if (typeof orgId !== "string" || typeof sessionId !== "string" || !ID.test(orgId) || !ID.test(sessionId)) {
 				throw new Error("invalid cloud agent browser session");
 			}
-			if (controlPlaneUrl) {
-				const configured = await controlPlaneUrl();
-				if (!configured || !sameControlPlaneUrl(base.href, configured)) return "";
-			}
 			const target: Target = { base, orgId, sessionId };
 			// Only a sandbox whose agent browser runs has an agent tab: the CP answers
 			// 409 for one without, or asleep, saying when to ask again (older CPs
@@ -266,9 +268,9 @@ export function createCloudAgentProxy(getDataDir: () => string, controlPlaneUrl?
 			// Forget sessions whose wait is over, so closed ones do not pile up.
 			for (const [key, until] of notConnectedUntil) if (until <= now) notConnectedUntil.delete(key);
 			if (notConnectedUntil.has(sessionKey)) return "";
-			const token = await bearer();
+			const token = await bearer(base);
 			if (!token) return "";
-			const probe = await fetch(cpUrl(target, "stats"), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8_000) })
+			const probe = await fetch(cpUrl(target, "stats"), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8_000) })
 				.catch(() => null);
 			if (probe?.status === 409) {
 				notConnectedUntil.set(sessionKey, Date.now() + retryAfterMs(probe.headers.get("retry-after")));

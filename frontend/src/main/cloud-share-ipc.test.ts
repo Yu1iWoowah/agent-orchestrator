@@ -33,7 +33,7 @@ afterEach(async () => {
 	await fs.rm(dataDir, { recursive: true, force: true });
 });
 
-function setup(options: { token?: string | null; finalizeStatus?: number; finalizeCode?: string; shareStatus?: number; shareCode?: string; listStatus?: number; unreachable?: boolean; shares?: unknown[]; listGate?: Promise<void>; cloudShareMissing?: boolean } = {}) {
+function setup(options: { configured?: string | null; token?: string | null; finalizeStatus?: number; finalizeCode?: string; shareStatus?: number; shareCode?: string; listStatus?: number; unreachable?: boolean; shares?: unknown[]; listGate?: Promise<void>; cloudShareMissing?: boolean } = {}) {
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
 	const requests: string[] = [];
 	const bodies = new Map<string, unknown>();
@@ -41,11 +41,13 @@ function setup(options: { token?: string | null; finalizeStatus?: number; finali
 	const sent: unknown[] = [];
 	const authorizations: Array<string | null> = [];
 	const sender = { id: 7, isDestroyed: () => false, send: vi.fn((channel: string, value: unknown) => channel === CLOUD_SHARE_PROGRESS_CHANNEL && sent.push(value)) };
+	const getToken = vi.fn(async () => (options.token === undefined ? "token-1" : options.token));
 	registerCloudShareIpc({
 		ipcMain: { handle: vi.fn((channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => handlers.set(channel, handler)) },
 		daemonDataDir: () => dataDir,
 		snapshotDir: () => path.join(dataDir, "snapshots"),
-		getToken: async () => (options.token === undefined ? "token-1" : options.token),
+		controlPlaneUrl: async () => options.configured === undefined ? "https://cp.test" : options.configured,
+		getToken,
 		records,
 		fetch: vi.fn(async (url: string, init: RequestInit) => {
 			const { pathname } = new URL(url);
@@ -100,7 +102,7 @@ function setup(options: { token?: string | null; finalizeStatus?: number; finali
 		const { fingerprint } = (await invoke("cloudShare:inspect", target)) as { fingerprint: string };
 		return invoke("cloudShare:publish", { ...target, fingerprint });
 	};
-	return { invoke, publish, file, cloudFile, requests, bodies, records, sent, handlers, sender, authorizations };
+	return { getToken, invoke, publish, file, cloudFile, requests, bodies, records, sent, handlers, sender, authorizations };
 }
 
 async function snapshots(): Promise<string[]> {
@@ -108,6 +110,39 @@ async function snapshots(): Promise<string[]> {
 }
 
 describe("cloudShare IPC", () => {
+	it.each([
+		["other origin", "https://attacker.test", "https://cp.test"],
+		["other port", "https://cp.test:444", "https://cp.test"],
+		["other path", "https://cp.test/other", "https://cp.test"],
+		["missing control plane", "https://cp.test", null],
+	])("refuses every token-bearing IPC before credential access (%s)", async (_name, baseUrl, configured) => {
+		const { invoke, file, cloudFile, getToken, requests } = setup({ configured });
+		const { fingerprint } = await invoke("cloudShare:inspect", file) as { fingerprint: string };
+		const operations: Array<[string, object, boolean]> = [
+			["available", {}, true],
+			["available", { cloudSession: { orgId: ORG_ID, sessionId: CLOUD_SESSION_ID } }, true],
+			["list", {}, false],
+			["inspect", cloudFile, false],
+			["publish", { ...file, fingerprint }, false],
+			["publish", { ...cloudFile, fingerprint: CLOUD_SHA256 }, false],
+			["unpublish", { shareId: SHARE_ID }, false],
+			["setAccess", { shareId: SHARE_ID, access: "restricted" }, false],
+			["grants", { shareId: SHARE_ID }, false],
+			["invite", { shareId: SHARE_ID, emails: ["reader@example.com"] }, false],
+			["removeGrant", { shareId: SHARE_ID, grantId: GRANT_ID }, false],
+		];
+		for (const [operation, args, probe] of operations) {
+			const result = await Promise.resolve(invoke(`cloudShare:${operation}`, { ...args, baseUrl })).catch((error: unknown) => error);
+			if (probe) expect(result).toBeNull();
+			else {
+				expect(result).toBeInstanceOf(Error);
+				expect(result).toMatchObject({ message: expect.stringMatching(/configured/) });
+			}
+			expect(getToken, operation).not.toHaveBeenCalled();
+			expect(requests, operation).toEqual([]);
+		}
+	});
+
 	it("inspects a file from its metadata, without reading it, uploading it or calling the control plane", async () => {
 		const { invoke, file, requests } = setup();
 		const read = vi.spyOn(fs, "readFile");

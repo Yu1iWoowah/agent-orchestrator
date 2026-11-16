@@ -84,7 +84,7 @@ describe("native WorkOS authentication", () => {
     mocks.encryptionAvailable = true;
     mocks.selectedStorageBackend = "gnome_libsecret";
     dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-cloud-auth-"));
-    installCloudIPC(() => dataDir, mocks.notifyRenderers);
+    installCloudIPC(() => dataDir, mocks.notifyRenderers, async () => "https://cloud.example");
     mocks.getAuthorizationUrlWithPKCE.mockResolvedValue({
       url: "https://workos.example/authorize",
       state: "state_123",
@@ -348,6 +348,27 @@ describe("native WorkOS authentication", () => {
       )).rejects.toThrow("WorkOS callback is incomplete");
       expect(mocks.authenticateWithCode).not.toHaveBeenCalled();
     });
+  });
+
+  it.each([
+    ["https://attacker.test", "https://cloud.example"],
+    ["https://cloud.example:444", "https://cloud.example"],
+    ["https://cloud.example/other", "https://cloud.example"],
+    ["https://cloud.example", null],
+  ])("rejects provider login destination %s before reading credentials", async (baseUrl, configured) => {
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink("ao-app://callback?code=code_123&state=state_123", dataDir);
+    vi.clearAllMocks();
+    const readDataDir = vi.fn(() => dataDir);
+    const request = vi.spyOn(globalThis, "fetch");
+    installCloudIPC(readDataDir, mocks.notifyRenderers, async () => configured);
+    const handler = mocks.ipcHandle.mock.calls.find(([channel]) => channel === "cloud:connectProviderAuth")?.[1];
+    await expect(handler({}, { baseUrl, provider: "codex" })).rejects.toThrow(/configured/);
+    expect(readDataDir).not.toHaveBeenCalled();
+    expect(mocks.decryptString).not.toHaveBeenCalled();
+    expect(mocks.authenticateWithRefreshToken).not.toHaveBeenCalled();
+    expect(mocks.providerAuthenticate).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("requires an AO Cloud session before starting provider login", async () => {
@@ -962,7 +983,7 @@ describe("cloud:signOut", () => {
     const order: string[] = [];
     mocks.ipcHandle.mockClear();
     mocks.notifyRenderers.mockImplementation(() => order.push("notified"));
-    installCloudIPC(() => dataDir, mocks.notifyRenderers, async () => {
+    installCloudIPC(() => dataDir, mocks.notifyRenderers, async () => "https://cloud.example", async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       order.push("telemetry retired");
     });
@@ -996,7 +1017,7 @@ describe("cloud:signOut with telemetry", () => {
     mocks.ipcHandle.mockClear();
     installCloudIPC(() => authDir, () => {
       bindingAtNotify.push(existsSync(path.join(telemetryDir, "telemetry_bound_user")));
-    }, () => ctl.signOut());
+    }, async () => "https://cloud.example", () => ctl.signOut());
     const handler = mocks.ipcHandle.mock.calls.find(([channel]) => channel === "cloud:signOut")?.[1] as () => Promise<void>;
     await handler();
 

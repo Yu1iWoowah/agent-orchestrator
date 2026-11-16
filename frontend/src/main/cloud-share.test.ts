@@ -180,7 +180,7 @@ function fakeControlPlane(partSize: number, options: { failPart?: number; finali
 	const calls: Call[] = [];
 	const stored = new Map<number, Uint8Array>();
 	const api: CloudShareApi = {
-		getToken: async () => token.value,
+		controlPlaneUrl: async () => "https://cp.test", getToken: async () => token.value,
 		fetch: vi.fn(async (url: string, init: RequestInit) => {
 			const headers = Object.fromEntries(new Headers(init.headers).entries());
 			const body = init.body as string | Uint8Array | undefined;
@@ -223,7 +223,7 @@ async function snapshotOf(content: string) {
 // signal aborts.
 function silentControlPlane(): CloudShareApi {
 	return {
-		getToken: async () => "token-1",
+		controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1",
 		fetch: vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
 			const fail = () => reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError"));
 			// Like fetch, a request cancelled before it starts fails at once.
@@ -232,6 +232,33 @@ function silentControlPlane(): CloudShareApi {
 		})),
 	};
 }
+
+describe("share destination", () => {
+	it("uses the configured base path and refuses redirects on token-bearing requests", async () => {
+		const api: CloudShareApi = {
+			controlPlaneUrl: async () => "https://cp.test/prefix/",
+			getToken: vi.fn(async () => "token-1"),
+			fetch: vi.fn(async () => Response.json({ shares: [] })),
+		};
+		await listShareLinks(api, "https://CP.test:443/prefix");
+		expect(api.fetch).toHaveBeenCalledWith("https://cp.test/prefix/api/cloud/v1/me/artifact-shares", expect.objectContaining({ redirect: "error" }));
+	});
+
+	it("rechecks the destination before falling back to an inline upload", async () => {
+		let configured: string | null = "https://cp.test";
+		const api: CloudShareApi = {
+			controlPlaneUrl: async () => configured,
+			getToken: vi.fn(async () => "token-1"),
+			fetch: vi.fn(async () => {
+				configured = null;
+				return new Response("", { status: 404 });
+			}),
+		};
+		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot: await snapshotOf("v1"), name: "upload.txt", project: "p", feature: "f" }, () => undefined)).rejects.toThrow(/configured/);
+		expect(api.getToken).toHaveBeenCalledTimes(1);
+		expect(api.fetch).toHaveBeenCalledTimes(1);
+	});
+});
 
 describe("share request time limits", () => {
 	const saved = { ...SHARE_TIMEOUTS };
@@ -246,9 +273,17 @@ describe("share request time limits", () => {
 		await expect(shareLinksAvailable(silentControlPlane(), "https://cp.test")).resolves.toBeNull();
 	});
 
+	it("bounds a stalled destination lookup before reading a token", async () => {
+		const api: CloudShareApi = { controlPlaneUrl: () => new Promise(() => undefined), getToken: vi.fn(), fetch: vi.fn() };
+		await expect(listShareLinks(api, "https://cp.test")).rejects.toMatchObject({ code: "timeout" });
+		await expect(shareLinksAvailable(api, "https://cp.test")).resolves.toBeNull();
+		expect(api.getToken).not.toHaveBeenCalled();
+		expect(api.fetch).not.toHaveBeenCalled();
+	});
+
 	it("counts a token refresh that stalls against the request's limit", async () => {
 		const fetch = vi.fn();
-		const stalledToken: CloudShareApi = { getToken: () => new Promise<string | null>(() => undefined), fetch };
+		const stalledToken: CloudShareApi = { controlPlaneUrl: async () => "https://cp.test", getToken: () => new Promise<string | null>(() => undefined), fetch };
 		await expect(listShareLinks(stalledToken, "https://cp.test")).rejects.toMatchObject({ code: "timeout" });
 		await expect(shareLinksAvailable(stalledToken, "https://cp.test")).resolves.toBeNull();
 		expect(fetch).not.toHaveBeenCalled();
@@ -351,7 +386,7 @@ describe("fork inline share contract", () => {
 	it("does not infer Cloud publishing from the fork's local share list", async () => {
 		const cloud = forkContract.cloudSessionShare;
 		const api: CloudShareApi = {
-			getToken: async () => "token-1",
+			controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1",
 			fetch: vi.fn(async (url, init) => {
 				expect(init.method).toBe("GET");
 				if (new URL(url).pathname === "/api/cloud/v1/me/artifact-shares") return Response.json(forkContract.list);
@@ -377,14 +412,14 @@ describe("fork inline share contract", () => {
 		{ status: 403, allow: "", available: null },
 		{ status: 500, allow: "", available: null },
 	])("requires the Cloud route to advertise POST (%j)", async ({ status, allow, available }) => {
-		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status, headers: { Allow: allow } })) };
+		const api: CloudShareApi = { controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status, headers: { Allow: allow } })) };
 		await expect(shareLinksAvailable(api, "https://cp.test", forkContract.cloudSessionShare)).resolves.toBe(available);
 	});
 
 	it("publishes, republishes and copies links using the fork's routes and URL field", async () => {
 		const requests: string[] = [];
 		const api: CloudShareApi = {
-			getToken: async () => "token-1",
+			controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1",
 			fetch: vi.fn(async (url, init) => {
 				const target = new URL(url);
 				const route = `${init.method} ${target.pathname}`;
@@ -437,14 +472,14 @@ describe("fork inline share contract", () => {
 	});
 
 	it.each([{ access: "restricted" as const }, { emails: ["reader@example.com"] }])("does not turn a private request into a public inline upload (%j)", async (access) => {
-		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status: 405 })) };
+		const api: CloudShareApi = { controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status: 405 })) };
 		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot: await snapshotOf("private"), name: "upload.txt", project: "p", feature: "f", ...access }, () => undefined))
 			.rejects.toMatchObject({ code: "unsupported_sharing" });
 		expect(api.fetch).toHaveBeenCalledTimes(1);
 	});
 
 	it("refuses an oversized inline snapshot before reading or sending its bytes", async () => {
-		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status: 404 })) };
+		const api: CloudShareApi = { controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status: 404 })) };
 		const snapshot = { path: "does-not-exist", size: forkContract.maxBytes + 1, sha256: sha(""), fingerprint: "" };
 		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot, name: "upload.txt", project: "p", feature: "f" }, () => undefined))
 			.rejects.toMatchObject({ code: "artifact_share_too_large" });
@@ -452,7 +487,7 @@ describe("fork inline share contract", () => {
 	});
 
 	it.each([401, 403, 404, 409, 500])("does not retry a structured upload error as an inline publish (%i)", async (status) => {
-		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => Response.json({ code: "upload_refused" }, { status })) };
+		const api: CloudShareApi = { controlPlaneUrl: async () => "https://cp.test", getToken: async () => "token-1", fetch: vi.fn(async () => Response.json({ code: "upload_refused" }, { status })) };
 		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot: await snapshotOf("v1"), name: "upload.txt", project: "p", feature: "f" }, () => undefined))
 			.rejects.toMatchObject({ status });
 		expect(api.fetch).toHaveBeenCalledTimes(1);

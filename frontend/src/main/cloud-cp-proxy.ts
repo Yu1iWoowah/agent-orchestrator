@@ -16,7 +16,7 @@ import { ipcMain } from "electron";
 import { getCloudAccessToken } from "./cloud-auth";
 import { createSseRelay, sseRelayError, type SseRelayEvent, type SseRelaySender } from "./sse-stream-relay";
 
-import { sameControlPlaneUrl, type ControlPlaneUrlResolver } from "./cloud-control-plane-url";
+import { parseCloudBaseUrl, pinControlPlaneUrl, type ControlPlaneUrlResolver } from "./cloud-control-plane-url";
 import {
 	CLOUD_CP_BINARY_TIMEOUT,
 	CLOUD_CP_BINARY_TOO_LARGE,
@@ -126,30 +126,6 @@ function invalid(detail: string): Error {
 
 function streamError(status: number, detail: string): Error {
 	return sseRelayError(CLOUD_CP_STREAM_ERROR_MARKER, status, detail);
-}
-
-function isLoopbackHost(hostname: string): boolean {
-	return hostname === "localhost" || hostname === "127.0.0.1";
-}
-
-/** A renderer-supplied CP base URL: https, or http on loopback only. */
-export function parseCloudBaseUrl(baseUrl: unknown): URL {
-	if (typeof baseUrl !== "string" || baseUrl === "") throw invalid("baseUrl must be a non-empty string.");
-	let base: URL;
-	try {
-		base = new URL(baseUrl);
-	} catch {
-		throw invalid(`baseUrl ${JSON.stringify(baseUrl)} is not a valid URL.`);
-	}
-	const httpsOk = base.protocol === "https:";
-	const loopbackHttpOk = base.protocol === "http:" && isLoopbackHost(base.hostname);
-	if (!httpsOk && !loopbackHttpOk) {
-		throw invalid("baseUrl must use https (http is allowed only for localhost/127.0.0.1).");
-	}
-	if (base.username !== "" || base.password !== "" || base.search !== "" || base.hash !== "") {
-		throw invalid("baseUrl must not carry credentials, a query string, or a fragment.");
-	}
-	return base;
 }
 
 function validateInit(init: unknown): CloudCpProxyRequestInit {
@@ -309,12 +285,7 @@ export async function pinnedTargetUrl(
 	init: Pick<CloudCpProxyRequestInit, "baseUrl" | "path" | "method">,
 	controlPlaneUrl: ControlPlaneUrlResolver,
 ): Promise<string> {
-	const configured = await controlPlaneUrl();
-	if (!configured) throw invalid("no Orchestrator Cloud control plane is configured.");
-	parseCloudBaseUrl(configured);
-	if (!sameControlPlaneUrl(init.baseUrl, configured)) {
-		throw invalid("baseUrl is not the configured Orchestrator Cloud control plane.");
-	}
+	const configured = await pinControlPlaneUrl(init.baseUrl, controlPlaneUrl);
 	return resolveTargetUrl({ baseUrl: configured, path: init.path, method: init.method });
 }
 
@@ -471,3 +442,5 @@ export function installCloudCpProxy(getDataDir: () => string, controlPlaneUrl: C
 	});
 	return proxy;
 }
+
+export { parseCloudBaseUrl } from "./cloud-control-plane-url";
