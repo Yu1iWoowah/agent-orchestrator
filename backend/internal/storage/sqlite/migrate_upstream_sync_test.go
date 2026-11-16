@@ -414,6 +414,29 @@ func TestUpstreamSyncRestartAfterIndexPreparation(t *testing.T) {
 	}
 }
 
+func TestUpstreamSyncSchemaAdoptsCRLF(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, upstreamSyncSchemaVersion-1)
+	seedSharedInputMigration(t, db)
+	seedUpstreamRepriceNativeEvent(t, db)
+	mustExec(t, db, `UPDATE conversation_turns SET failure_code='retained' WHERE id='retry'`)
+	mustExec(t, db, `UPDATE model_usage_events SET service_tier='priority',provider_message_id='message' WHERE id=81`)
+	query := `SELECT failure_code,service_tier,provider_message_id FROM conversation_turns JOIN model_usage_events ON model_usage_events.id=81 WHERE conversation_turns.id='retry'`
+	before := upstreamSyncRows(t, db, query)
+	source, err := migrationsFS.ReadFile("migrations/20261116001259486_upstream_sync_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf := strings.ReplaceAll(strings.ReplaceAll(string(source), "\r\n", "\n"), "\n", "\r\n")
+	if err := applyUpstreamSyncSchema(db, []byte(crlf)); err != nil {
+		t.Fatalf("adopt existing columns from CRLF SQL: %v", err)
+	}
+	if got := upstreamSyncRows(t, db, query); got != before {
+		t.Fatalf("CRLF adoption changed values: %s -> %s", before, got)
+	}
+	assertUpstreamSyncLedger(t, db)
+	assertUpstreamSyncConstraints(t, db)
+}
+
 func TestUpstreamSyncSchemaReceiptFailureIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	db := openMigratedDatabaseCopyAt(t, dir, upstreamSyncSchemaVersion-1, pragmas)

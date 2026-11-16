@@ -26,9 +26,8 @@ func TestMigrateTUISettingsPreservesEveryExistingFactAndRoundTrips(t *testing.T)
 	for _, table := range tables {
 		before[table] = migrationTableFacts(t, db, table)
 	}
-	for i := 0; i < 2; i++ {
-		upTo(t, db, 20261029193014190)
-		upTo(t, db, 20261029193014190)
+	assertFacts := func() {
+		t.Helper()
 		for _, table := range tables {
 			after := migrationTableFacts(t, db, table)
 			if len(after) != len(before[table]) {
@@ -46,9 +45,17 @@ func TestMigrateTUISettingsPreservesEveryExistingFactAndRoundTrips(t *testing.T)
 		if err := db.QueryRow("SELECT settings_operation_id FROM session_interface_transitions WHERE id='old-handoff'").Scan(&marker); err != nil || marker != "" {
 			t.Fatalf("invented settings owner: %q %v", marker, err)
 		}
+	}
+	for i := 0; i < 2; i++ {
+		upTo(t, db, 20261029193014190)
+		upTo(t, db, 20261029193014190)
+		assertFacts()
 		downTo(t, db, tuiSettingsBaseVersion)
 	}
-	upTo(t, db, 20261029193014190)
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	assertFacts()
 	var integrity string
 	if err := db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatalf("integrity=%s %v", integrity, err)

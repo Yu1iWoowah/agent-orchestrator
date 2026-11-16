@@ -82,7 +82,11 @@ func migrateUpTo(db *sql.DB, version int64, opts ...goose.OptionsFunc) error {
 				return err
 			}
 		case upstreamSyncSchemaVersion:
-			if err := applyUpstreamSyncSchema(db); err != nil {
+			source, err := migrationsFS.ReadFile("migrations/20261116001259486_upstream_sync_schema.sql")
+			if err != nil {
+				return err
+			}
+			if err := applyUpstreamSyncSchema(db, source); err != nil {
 				return err
 			}
 		}
@@ -220,7 +224,7 @@ func validateUpstreamIndex(tx *sql.Tx, name string, known ...string) error {
 // The SQL migration is the code-generation source of truth. On an upgraded
 // fork, apply all of its effects and its receipt atomically while retaining
 // columns that upstream migrations have already supplied.
-func applyUpstreamSyncSchema(db *sql.DB) error {
+func applyUpstreamSyncSchema(db *sql.DB, source []byte) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -230,11 +234,8 @@ func applyUpstreamSyncSchema(db *sql.DB) error {
 	if err != nil || applied {
 		return err
 	}
-	source, err := migrationsFS.ReadFile("migrations/20261116001259486_upstream_sync_schema.sql")
-	if err != nil {
-		return err
-	}
-	statement, _, ok := strings.Cut(string(source), "-- +goose Down")
+	// Match the canonical ALTER statements regardless of checkout line endings.
+	statement, _, ok := strings.Cut(strings.ReplaceAll(string(source), "\r\n", "\n"), "-- +goose Down")
 	if !ok {
 		return fmt.Errorf("upstream sync: missing SQL boundary")
 	}

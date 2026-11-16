@@ -50,6 +50,8 @@ startup 拒絕並保留 copy，須依核准復原程序處理。
 Vsync SQL 同時是 sqlc schema 來源，包含 SQL parser 重播原重建後所需的三個
 `ADD COLUMN`。production runner 只在驗明 type、nullability、default、CHECK
 宣告後採納既有欄位，不忽略 duplicate-column 錯誤。
+比對與剝除 `ALTER` 前，runner 先將記憶體內的 Vsync SQL 正規化成 LF；
+CRLF checkout 不影響採納，repository 中的 SQL bytes 不變。
 索引比對保留 SQL 字串常值的大小寫與空白。
 
 U 的 open usage-kind migration 已取代舊 0117 enum shape。
@@ -83,11 +85,22 @@ u3／F1 的 execution fixture 使用 300,000 input tokens、非 NULL
 欄位已存在／缺少時的 Vsync receipt failure、未知欄位／索引拒絕、原生交易
 失敗的 FK 恢復及不安全 Down 拒絕。既有單一 migration 往返測試停在自己的
 目標版本，避免跨過 Vsync 才測舊版 Down。
+managed settings、TUI settings 與 project attention 的原 facts／CDC 斷言
+也在 `migrate(db)` 到最高版本後驗證；Down 段仍只從各自目標版本執行。
 
 F1 queries 使用 repository pinned `npm run sqlc`。
 實作證據另以 sqlc v1.31.1 在 scratch 生成固定 U 原文 `queries/usage.sql`，
 並對 production 建立的資料庫執行 generated insert、repricing read、
 provider message 去重與 tier repair；PR1 沒有匯入 U query API。
+
+## PR2 待確認
+
+- 整合 fork Plan overlay 時，確認 `20261103094403671` 補入的
+  `spansTurns`／`superseded` 旗標如何影響舊 Plan 顯示與已接受版本。
+- 整合 composer 時，確認 `20261113111818788` 清除過期
+  `model_reroute_json` 後的顯示，並保留 timeline 的 provider-switch／reroute 證據。
+
+兩項都保留 U 的資料修復語意；PR1 僅記錄接點，不修改這些 migration 或 UI。
 
 ## Rollback 與換版
 
