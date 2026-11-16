@@ -139,7 +139,7 @@ func normalizedUpstreamSQL(statement string) string {
 
 func validateUpstreamIndex(tx *sql.Tx, name string, known ...string) error {
 	var definition string
-	err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&definition)
+	err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=? COLLATE NOCASE`, name).Scan(&definition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}

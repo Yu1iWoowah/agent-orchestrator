@@ -464,6 +464,7 @@ func TestUpstreamSyncRejectsUnknownShapes(t *testing.T) {
 		{"column_extra_check", upstreamSyncSchemaVersion, `ALTER TABLE model_usage_events DROP COLUMN service_tier; ALTER TABLE model_usage_events ADD COLUMN service_tier TEXT CHECK (service_tier IS NULL OR (trim(service_tier) <> '' AND length(service_tier) <= 64)) CHECK(length(service_tier)<8)`},
 		{"column_default", upstreamSyncSchemaVersion, `DROP INDEX idx_conversation_turns_failed_recent; ALTER TABLE conversation_turns DROP COLUMN failure_code; ALTER TABLE conversation_turns ADD COLUMN failure_code TEXT NOT NULL DEFAULT 'other'`},
 		{"index_shape", upstreamSyncSchemaVersion, `DROP INDEX idx_model_usage_events_provider_message; CREATE INDEX idx_model_usage_events_provider_message ON model_usage_events(provider_message_id)`},
+		{"index_identifier_case", forkLineageIndexesVersion, `DROP INDEX idx_conversation_activities_turn; CREATE INDEX IDX_CONVERSATION_ACTIVITIES_TURN ON conversation_activities(sequence)`},
 		{"index_preparation", forkLineageIndexesVersion, `DROP INDEX idx_conversation_activities_turn; CREATE INDEX idx_conversation_activities_turn ON conversation_activities(sequence)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
