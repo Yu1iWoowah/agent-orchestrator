@@ -139,7 +139,8 @@ export interface paths {
         /** @description Lists the signed-in user's public artifact share links, newest first, with how many they may hold. Revoked links are listed with revokedAt so they can be published again; they serve nothing and use no slot, so used counts only active links. unlimited is true when the user is an active member of a paid, contract or otherwise entitled organization: the limit then does not apply. Available only when the development-only AO_CLOUD_ARTIFACT_SHARES flag is on; otherwise 404. */
         get: operations["listArtifactShares"];
         put?: never;
-        post?: never;
+        /** @description Publishes the request body, one file from a local session, as the link of the document named by project, feature and name. A new document gets a new public link at <project>-<feature>-<email> under the share origin; a taken name gets a -2, -3, ... suffix. Publishing a document that already has a link replaces the version that link serves: the URL and slot stay, the earlier version is no longer served, and the response is 200 with replaced true. A revoked link is restored the same way. Content-Length and X-AO-Artifact-SHA256 are required. Returns 409 artifact_share_limit_reached when a new document would exceed the user's limit of links; revoked links count toward it. */
+        post: operations["createArtifactShare"];
         delete?: never;
         options?: never;
         head?: never;
@@ -156,7 +157,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /** @description Replaces the file an existing link serves. The link keeps its URL and does not count against the limit again. name must match the link's file name, which is part of its document; another name returns 409 artifact_share_name_changed, and the renamed file is published as a new link with POST. */
+        put: operations["updateArtifactShare"];
         post?: never;
         /** @description Revokes a link: it stops serving at once, its stored file is deleted at once, and it frees its slot for another document. Publishing the same document again uploads it again and restores the link, under a new URL, when a slot is free; the revoked URL never serves again. A link already revoked returns 404. Who the link was shared with is deleted with it: publishing again starts with nobody invited. */
         delete: operations["deleteArtifactShare"];
@@ -4852,6 +4854,36 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
+        InlineArtifactShare: {
+            /** Format: uuid */
+            id: string;
+            /** @description The link's subdomain label. */
+            slug: string;
+            /** @description The public link, for example http://<slug>.share.localhost:8081/. */
+            url: string;
+            name: string;
+            contentType: string;
+            /** Format: int64 */
+            size: number;
+            sha256: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description When the link was revoked. A revoked link serves nothing but still uses a slot.
+             */
+            revokedAt?: string;
+        };
+        InlineArtifactShareEnvelope: {
+            share: components["schemas"]["InlineArtifactShare"];
+        };
+        InlineArtifactSharePublishResult: {
+            share: components["schemas"]["InlineArtifactShare"];
+            /** @description True when publishing replaced the version of the document's existing link. */
+            replaced: boolean;
+        };
         ArtifactShare: {
             /** Format: uuid */
             id: string;
@@ -6079,6 +6111,10 @@ export interface components {
         };
     };
     parameters: {
+        /** @description The file name, without a directory. */
+        ArtifactShareName: string;
+        /** @description Lowercase hex SHA-256 of the body. */
+        ArtifactShareSHA256: string;
         AgentAccountId: string;
         CueId: string;
         ReviewRunId: string;
@@ -6384,6 +6420,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArtifactShareList"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createArtifactShare: {
+        parameters: {
+            query: {
+                /** @description The file name, without a directory. */
+                name: components["parameters"]["ArtifactShareName"];
+                project?: string;
+                feature?: string;
+            };
+            header: {
+                /** @description Lowercase hex SHA-256 of the body. */
+                "X-AO-Artifact-SHA256": components["parameters"]["ArtifactShareSHA256"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The document's existing link, now serving the new version. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InlineArtifactSharePublishResult"];
+                };
+            };
+            /** @description The new share link. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InlineArtifactSharePublishResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateArtifactShare: {
+        parameters: {
+            query: {
+                /** @description The file name, without a directory. */
+                name: components["parameters"]["ArtifactShareName"];
+            };
+            header: {
+                /** @description Lowercase hex SHA-256 of the body. */
+                "X-AO-Artifact-SHA256": components["parameters"]["ArtifactShareSHA256"];
+            };
+            path: {
+                shareId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The updated share link. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InlineArtifactShareEnvelope"];
                 };
             };
             default: components["responses"]["Error"];
