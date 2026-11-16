@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { installFakeAgent } from "./support/fake-bridge";
 
@@ -157,10 +158,17 @@ async function recordShown(page: Page) {
 }
 
 type SwitchFrame = { at: number; route: string; inert: boolean; log: string };
+const switchFramePrefix = "__ao_held_switch_frame__";
+type SwitchDiagnostic = {
+	sessionId: string;
+	clickedAt: number;
+	phases: { phase: string; at: number }[];
+	frames: { receivedAt: number; rendererStartedAt: number; frame: SwitchFrame }[];
+};
 
 /** Records, from the next frame on, each change in route, held state and shown session. */
-async function recordSwitch(page: Page): Promise<() => Promise<SwitchFrame[]>> {
-	await page.evaluate((titles) => {
+async function recordSwitch(page: Page, index: number): Promise<() => Promise<SwitchFrame[]>> {
+	await page.evaluate(({ titles, index, prefix }) => {
 		const state = window as unknown as { __switchFrames: SwitchFrame[]; __switchStop: boolean };
 		const started = performance.now();
 		state.__switchFrames = [];
@@ -175,12 +183,16 @@ async function recordSwitch(page: Page): Promise<() => Promise<SwitchFrame[]>> {
 				log: titles.find((title) => text.includes(`Answer from ${title} 0.`)) ?? "none",
 			};
 			const key = `${frame.route}|${frame.inert}|${frame.log}`;
-			if (key !== last) state.__switchFrames.push(frame);
+			if (key !== last) {
+				state.__switchFrames.push(frame);
+				// Mirror only state changes, so a later page timeout cannot erase them.
+				console.debug(prefix + JSON.stringify({ index, rendererStartedAt: performance.timeOrigin + started, frame }));
+			}
 			last = key;
 			if (!state.__switchStop) requestAnimationFrame(tick);
 		};
 		requestAnimationFrame(tick);
-	}, sessions.map((session) => session.title));
+	}, { titles: sessions.map((session) => session.title), index, prefix: switchFramePrefix });
 	return () => page.evaluate(() => {
 		const state = window as unknown as { __switchFrames: SwitchFrame[]; __switchStop: boolean };
 		state.__switchStop = true;
@@ -193,23 +205,41 @@ test.afterEach(async ({ page }) => {
 	await throttle(page, 1).catch(() => undefined);
 });
 
-test("renderer: streaming replies keep updating through rapid session switches @T0", async ({ page }) => {
+test("renderer: streaming replies keep updating through rapid session switches @T0", async ({ page }, testInfo) => {
+	const startedAt = Date.now();
 	const errors: string[] = [];
 	page.on("pageerror", (error) => errors.push(error.message));
 	// Seven switches on a 4x throttled dev build outlast the default timeout.
 	test.setTimeout(120_000);
 	const harness = await heldHarness(page);
+	const switches: SwitchDiagnostic[] = [];
+	page.on("console", (message) => {
+		const text = message.text();
+		if (!text.startsWith(switchFramePrefix)) return;
+		const { index, rendererStartedAt, frame } = JSON.parse(text.slice(switchFramePrefix.length)) as {
+			index: number; rendererStartedAt: number; frame: SwitchFrame;
+		};
+		switches[index]?.frames.push({ receivedAt: Date.now(), rendererStartedAt, frame });
+	});
 	harness.startStreaming();
 	await throttle(page, 4);
 	try {
 		let previous = sessions[0];
 		for (const session of [sessions[1], sessions[2], sessions[0], sessions[2], sessions[1], sessions[0], sessions[1]]) {
 			const clicked = Date.now();
+			const diagnostic: SwitchDiagnostic = { sessionId: session.id, clickedAt: clicked, phases: [], frames: [] };
+			switches.push(diagnostic);
+			const phase = (phase: string) => diagnostic.phases.push({ phase, at: Date.now() });
 			const firstRequest = harness.requests.length;
-			const timeline = await recordSwitch(page);
+			phase("recording-start");
+			const timeline = await recordSwitch(page, switches.length - 1);
+			phase("recording-ready");
 			await page.getByRole("button", { name: `Open ${session.title}`, exact: true }).click();
+			phase("click-complete");
 			await expectShowing(page, session);
+			phase("destination-ready");
 			const frames = await timeline();
+			phase("frames-read");
 			// A streaming session on screen must not stall the switch: every
 			// streamed update restarts the destination's background render, so
 			// the hold gives way after a bounded time. Routing before the hold
@@ -230,9 +260,22 @@ test("renderer: streaming replies keep updating through rapid session switches @
 			// The shown session keeps streaming after the switch. Its reply grows
 			// faster than a throttled dev build repaints it, so wait for the
 			// shown reply to advance rather than to catch up with the stream.
+			phase("stream-check");
 			const shownChunk = await latestShownChunk(page);
 			await expect.poll(() => latestShownChunk(page), { timeout: 10_000 }).toBeGreaterThan(shownChunk);
+			phase("stream-advanced");
 		}
+	} catch (error) {
+		const diagnostic = {
+			startedAt, failedAt: Date.now(), switches, conversationFetches: harness.requests,
+			clocks: "Node timestamps are Date.now(); rendererStartedAt is performance.timeOrigin + started; frame.at is relative to that renderer start. receivedAt includes console delivery delay.",
+		};
+		const body = JSON.stringify(diagnostic, null, 2);
+		console.log(`held-session failure timeline: ${body}`);
+		const path = testInfo.outputPath("held-session-switch-timeline.json");
+		await writeFile(path, body);
+		await testInfo.attach("held-session-switch-timeline", { path, contentType: "application/json" });
+		throw error;
 	} finally {
 		harness.stop();
 	}

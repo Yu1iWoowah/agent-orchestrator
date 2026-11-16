@@ -442,7 +442,7 @@ jobs:
         working-directory: packages/product-ui
 
       - name: Run renderer smoke suite
-        run: CI=true npm run test:e2e:renderer -- --shard=${{ matrix.shard }}/2
+        run: CI=true npm run test:e2e:renderer -- --shard=${{ matrix.shard }}/2 --workers=1
 
       # Screenshots and attachments from failed specs, so a flaky pixel check
       # can be inspected instead of only re-run.
