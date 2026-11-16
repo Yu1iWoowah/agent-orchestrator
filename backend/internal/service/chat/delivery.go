@@ -240,6 +240,29 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	return saved, err
 }
 
+// holdForUnsettledDelivery keeps queued work behind a prompt whose execution
+// the journal has not settled, as if it were the original of the next send.
+// Settlement releases it through releasePendingDelivery. An unreadable journal
+// holds too: unknown execution is never evidence that sending again is safe.
+func (c *Controller) holdForUnsettledDelivery(ctx context.Context) bool {
+	journal, ok := c.store.(chatDeliveryJournal)
+	if _, supported := c.conv.(ports.ChatDeliveryObserver); !ok || !supported || c.reviewID != "" {
+		return false
+	}
+	attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
+	if err != nil {
+		return true
+	}
+	if len(attempts) == 0 {
+		return false
+	}
+	c.mu.Lock()
+	c.pendingDeliveryID = attempts[0].ID
+	c.mu.Unlock()
+	c.startDeliveryMonitor()
+	return true
+}
+
 // releasePendingDelivery resumes queued work held behind a now-settled original.
 func (c *Controller) releasePendingDelivery(id string) {
 	c.mu.Lock()

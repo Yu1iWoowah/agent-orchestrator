@@ -3,6 +3,7 @@ package chat_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -809,6 +810,41 @@ func TestACPFirstProgressBeforeLimitFollowsNativeProgress(t *testing.T) {
 	}
 	if !saved.LastProgressAt.Equal(eventAt) || saved.NextCheckAt == nil || !saved.NextCheckAt.Equal(eventAt.Add(30*time.Second)) {
 		t.Fatalf("first progress did not hand over to the native progress budget: %+v", saved)
+	}
+}
+
+// The host's stall watchdog fails a prompt without telling the delivery
+// journal. Until that prompt's execution settles, the stall must not release
+// queued input onto the provider; settlement then lets it go.
+func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	if _, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "queued", ClientMessageID: "queued", Origin: domain.MessageOriginHuman}); err != nil {
+		t.Fatal(err)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+	// Sent directly: the fake's emit would attach a settled receipt, which the
+	// ACP driver never does for a watchdog failure.
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
+		TurnState: domain.TurnStateFailed, Err: fmt.Errorf("ACP session/prompt: %w", ports.ErrChatPromptStalled)}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["large context prompt"] == domain.TurnStateFailed
+	})
+	assertTurnStaysQueued(t, h, "queued")
+	if sent := conv.sentTexts(); len(sent) != 1 {
+		t.Fatalf("provider received %v while the stalled prompt's execution was unverified", sent)
+	}
+
+	conv.mu.Lock()
+	receipt := conv.deliveryReceipts[a.ID]
+	receipt.Disposition, receipt.Source, receipt.Complete, receipt.ExecutionSettled = domain.ChatDeliveryAccepted, "provider_response", true, true
+	conv.deliveryReceipts[a.ID] = receipt
+	conv.mu.Unlock()
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued
+	})
+	if sent := conv.sentTexts(); len(sent) != 2 || sent[1] != "queued" {
+		t.Fatalf("provider received %v, want the queued input once the stalled prompt settled", sent)
 	}
 }
 
