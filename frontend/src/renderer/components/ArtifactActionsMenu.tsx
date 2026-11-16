@@ -126,7 +126,7 @@ export function ArtifactActionsMenu({
 	const [shareIntent, setShareIntent] = useState<"publish" | "unpublish">("publish");
 	const published = Boolean(artifact.shareUrl);
 	const sharing = useRef(false);
-	const shareAvailable = useShareAvailable();
+	const shareAvailable = useShareAvailable(!published && session.cloud ? { orgId: session.cloud.orgId, sessionId: session.id } : undefined);
 	const canShare = Boolean(share) && iconOnly && shareAvailable && !VIDEO_FILE.test(artifact.path);
 	const actionClassName = cn(className, (menuOpen || shareOpen) && "opacity-100 [@media(hover:hover)]:opacity-100");
 	// The artifact directory is on this machine only for a local session.
@@ -486,7 +486,7 @@ export function DeferredArtifactActionsMenu(props: ArtifactActionsMenuProps) {
 	// What reached the stand-ins before the menu replaced them, to repeat on it.
 	const replay = useRef<{ hover?: [place: number, move: PointerEvent]; focus?: number; presses: Array<[place: number, press: Press]> }>({ presses: [] });
 	// The queries the menu starts, so it offers the same items when it first opens.
-	useShareAvailable();
+	useShareAvailable(!artifact.shareUrl && session.cloud ? { orgId: session.cloud.orgId, sessionId: session.id } : undefined);
 	useCloudMeUserId(Boolean(session.cloud));
 	useCloudArtifactAccess(session, Boolean(session.cloud) && !props.downloadUrl);
 

@@ -21,6 +21,7 @@ import {
 	listShareLinks,
 	SHARE_TIMEOUTS,
 	shareLinksAvailable,
+	shareCloudSessionArtifact,
 	uploadShare,
 	type CloudShareApi,
 } from "./cloud-share";
@@ -347,6 +348,39 @@ describe("uploadShare", () => {
 describe("fork inline share contract", () => {
 	// TestArtifactShareDesktopContract checks these wire responses against the
 	// real Go router. Do not invent multipart endpoints in this fixture.
+	it("does not infer Cloud publishing from the fork's local share list", async () => {
+		const cloud = forkContract.cloudSessionShare;
+		const api: CloudShareApi = {
+			getToken: async () => "token-1",
+			fetch: vi.fn(async (url, init) => {
+				expect(init.method).toBe("GET");
+				if (new URL(url).pathname === "/api/cloud/v1/me/artifact-shares") return Response.json(forkContract.list);
+				expect(new URL(url).pathname).toBe(`/api/cloud/v1/orgs/${cloud.orgId}/sessions/${cloud.sessionId}/artifacts/share`);
+				return new Response(cloud.body, { status: cloud.status, headers: { Allow: cloud.allow } });
+			}),
+		};
+		await expect(shareLinksAvailable(api, "https://cp.test")).resolves.toBe(true);
+		await expect(shareLinksAvailable(api, "https://cp.test", cloud)).resolves.toBe(false);
+		for (const shareId of [undefined, forkContract.publish.share.id]) {
+			await expect(shareCloudSessionArtifact(api, "https://cp.test", { ...cloud, path: "upload.txt", sha256: sha("v1"), shareId }))
+				.rejects.toMatchObject({ code: "unsupported_sharing" });
+		}
+	});
+
+	it.each([
+		{ status: 405, allow: "POST", available: true },
+		{ status: 405, allow: "GET, POST", available: true },
+		{ status: 405, allow: "DELETE", available: false },
+		{ status: 405, allow: "", available: false },
+		{ status: 200, allow: "", available: null },
+		{ status: 401, allow: "", available: null },
+		{ status: 403, allow: "", available: null },
+		{ status: 500, allow: "", available: null },
+	])("requires the Cloud route to advertise POST (%j)", async ({ status, allow, available }) => {
+		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status, headers: { Allow: allow } })) };
+		await expect(shareLinksAvailable(api, "https://cp.test", forkContract.cloudSessionShare)).resolves.toBe(available);
+	});
+
 	it("publishes, republishes and copies links using the fork's routes and URL field", async () => {
 		const requests: string[] = [];
 		const api: CloudShareApi = {

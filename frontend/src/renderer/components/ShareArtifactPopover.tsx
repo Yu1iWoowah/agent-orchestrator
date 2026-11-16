@@ -10,6 +10,7 @@ import {
 	type CloudShareLink,
 	type CloudShareLinks,
 	type CloudSharePublishResult,
+	type CloudShareSession,
 	artifactShareUrl,
 	isPrivateShare,
 	sameShareFingerprint,
@@ -113,7 +114,7 @@ function errorMessage(error: unknown): string {
 	return message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, "");
 }
 
-/** Whether each control plane serves share links, as far as this run has found out. */
+/** Availability is separate for local uploads and each Cloud session's route. */
 const shareAvailability = new Map<string, boolean>();
 const shareAvailabilityChecks = new Map<string, Promise<boolean | null>>();
 
@@ -122,30 +123,35 @@ const shareAvailabilityChecks = new Map<string, Promise<boolean | null>>();
  * while its share flag is on; until the main process has checked, and when
  * they are off, Publish is not offered. The answer is kept for this run.
  */
-export function useShareAvailable(): boolean {
+export function useShareAvailable(cloudSession?: CloudShareSession): boolean {
 	const { baseUrl } = useShareAccess();
-	const [available, setAvailable] = useState(() => shareAvailability.get(baseUrl) ?? false);
+	const orgId = cloudSession?.orgId;
+	const sessionId = cloudSession?.sessionId;
+	const key = JSON.stringify([baseUrl, orgId, sessionId]);
+	const [availability, setAvailability] = useState(() => ({ key, available: shareAvailability.get(key) ?? false }));
 	useEffect(() => {
+		const setAvailable = (available: boolean) => setAvailability({ key, available });
 		if (!baseUrl) return setAvailable(false);
-		const known = shareAvailability.get(baseUrl);
+		const known = shareAvailability.get(key);
 		if (known !== undefined) return setAvailable(known);
 		let cancelled = false;
-		let check = shareAvailabilityChecks.get(baseUrl);
+		let check = shareAvailabilityChecks.get(key);
 		if (!check) {
-			check = aoBridge.cloudShare.available(baseUrl).catch(() => null);
-			shareAvailabilityChecks.set(baseUrl, check);
+			check = (orgId === undefined ? aoBridge.cloudShare.available(baseUrl)
+				: aoBridge.cloudShare.available(baseUrl, { orgId, sessionId: sessionId ?? "" })).catch(() => null);
+			shareAvailabilityChecks.set(key, check);
 		}
 		void check.then((result) => {
 			// An unreachable control plane is asked again next time.
-			if (result === null) shareAvailabilityChecks.delete(baseUrl);
-			else shareAvailability.set(baseUrl, result);
+			if (result === null) shareAvailabilityChecks.delete(key);
+			else shareAvailability.set(key, result);
 			if (!cancelled) setAvailable(result === true);
 		});
 		return () => {
 			cancelled = true;
 		};
-	}, [baseUrl]);
-	return available;
+	}, [baseUrl, orgId, sessionId, key]);
+	return availability.key === key && availability.available;
 }
 
 /**
@@ -492,7 +498,7 @@ export function ShareArtifactButton({ file, name, className, iconOnly = false, r
 	// Checked again when the panel changes the link and when it closes.
 	const [checks, setChecks] = useState(0);
 	const recheck = useCallback(() => setChecks((count) => count + 1), []);
-	const available = useShareAvailable();
+	const available = useShareAvailable(file.source === "cloud" ? { orgId: file.orgId ?? "", sessionId: file.sessionId } : undefined);
 	const { baseUrl, signedIn, scope } = useShareAccess();
 	const video = VIDEO_FILE.test(file.path);
 	const publishing = usePublishing(pendingKey(baseUrl, file));

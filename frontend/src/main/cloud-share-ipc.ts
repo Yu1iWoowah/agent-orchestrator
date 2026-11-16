@@ -154,6 +154,7 @@ function refusal(error: unknown): CloudSharePublishResult {
 			case "artifact_share_limit_reached":
 				return { status: "limit", message: error.message };
 			case "artifact_share_type_unsupported":
+			case "unsupported_sharing":
 				return { status: "unsupported", message: error.message };
 			case "artifact_share_not_owner":
 				return { status: "not_owner" };
@@ -229,8 +230,17 @@ export function registerCloudShareIpc(deps: CloudShareIpcDeps): void {
 		};
 	});
 
-	deps.ipcMain.handle("cloudShare:available", async (_event, value: unknown): Promise<boolean | null> =>
-		shareLinksAvailable(deps, baseUrlArgument(value)));
+	deps.ipcMain.handle("cloudShare:available", async (_event, value: unknown): Promise<boolean | null> => {
+		const baseUrl = baseUrlArgument(value);
+		const cloudSession = (value as { cloudSession?: unknown }).cloudSession;
+		if (cloudSession === undefined) return shareLinksAvailable(deps, baseUrl);
+		if (!cloudSession || typeof cloudSession !== "object" ||
+			!("orgId" in cloudSession) || typeof cloudSession.orgId !== "string" ||
+			!("sessionId" in cloudSession) || typeof cloudSession.sessionId !== "string") {
+			throw new CloudShareError("invalid_request", "Not a cloud session's artifact.");
+		}
+		return shareLinksAvailable(deps, baseUrl, { orgId: cloudSession.orgId, sessionId: cloudSession.sessionId });
+	});
 
 	deps.ipcMain.handle("cloudShare:list", async (_event, value: unknown): Promise<CloudShareLinks> => {
 		const baseUrl = baseUrlArgument(value);

@@ -5,14 +5,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-const backendModule = 'module github.com/aoagents/agent-orchestrator/backend\n\ngo 1.27.4\n';
+const backendModule = 'module github.com/aoagents/agent-orchestrator/backend\n\ngo 1.27.4\n\nrequire github.com/google/uuid v1.6.0\n';
 const work = 'go 1.27.4\n\nuse (\n ./backend\n ./cloud\n ./components/hcg\n)\n';
 const cases = [
-  ['retained fork modules and in-tree or versioned replacements', () => {}, null],
+  ['retained fork modules and in-tree or versioned replacements', root => writeFileSync(path.join(root, 'go.work'), work + '\nreplace github.com/aoagents/agent-orchestrator/cloud v0.1.0 => ./cloud\nreplace example.com/module => example.org/public v1.0.0\n'), null],
   ['missing cloud module', root => rmSync(path.join(root, 'cloud/go.mod')), /retained cloud/],
   ['missing workspace module', root => writeFileSync(path.join(root, 'go.work'), work + 'use ./missing\n'), /go.work uses/],
   ['public code importing cloud', root => writeFileSync(path.join(root, 'backend/bad.go'), 'package backend\nimport _ "github.com/aoagents/agent-orchestrator/cloud/internal/httpapi"\n'), /Go files import/],
   ['npm script pointing to private checkout', root => writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { cloud: 'cd ../ao-control-plane && go build' } })), /external private control plane/],
+  ['workspace relative replace escaping checkout', root => writeFileSync(path.join(root, 'go.work'), work + '\nreplace github.com/google/uuid => ../ao-control-plane/uuid\n'), /go.work: local replace targets outside checkout/],
+  ['workspace absolute replace escaping checkout', root => writeFileSync(path.join(root, 'go.work'), work + '\nreplace github.com/google/uuid => /opt/private/ao-control-plane/uuid\n'), /go.work: local replace targets outside checkout/],
   ['relative replace escaping checkout', root => writeFileSync(path.join(root, 'backend/go.mod'), backendModule + '\nreplace github.com/aoagents/agent-orchestrator/cloud => ../../ao-control-plane\n'), /local replace targets outside checkout/],
   ['required module replaced by absolute private path', root => writeFileSync(path.join(root, 'backend/go.mod'), backendModule + '\nrequire github.com/aoagents/agent-orchestrator/cloud v0.0.0\nreplace github.com/aoagents/agent-orchestrator/cloud => /opt/private/ao-control-plane\n'), /local replace targets outside checkout/],
 ];

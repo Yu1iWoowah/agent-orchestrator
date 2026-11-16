@@ -24,6 +24,13 @@ func TestArtifactShareDesktopContract(t *testing.T) {
 			Status int    `json:"status"`
 			Body   string `json:"body"`
 		} `json:"unsupportedMultipart"`
+		CloudSessionShare struct {
+			OrgID     string `json:"orgId"`
+			SessionID string `json:"sessionId"`
+			Status    int    `json:"status"`
+			Body      string `json:"body"`
+			Allow     string `json:"allow"`
+		} `json:"cloudSessionShare"`
 		MaxBytes  int             `json:"maxBytes"`
 		Publish   json.RawMessage `json:"publish"`
 		Republish json.RawMessage `json:"republish"`
@@ -36,6 +43,19 @@ func TestArtifactShareDesktopContract(t *testing.T) {
 		t.Fatalf("desktop inline upload limit = %d, router limit = %d", contract.MaxBytes, domain.MaxArtifactShareBytes)
 	}
 	h := newShareHarness(t, &ArtifactShareOptions{Origin: shareOrigin, Limit: 3})
+	cloud := contract.CloudSessionShare
+	sessionPath := "/api/cloud/v1/orgs/" + cloud.OrgID + "/sessions/" + cloud.SessionID
+	if listed := h.request(http.MethodGet, sessionPath+"/artifacts", "", artifactTokenA, nil, nil); listed.Code != http.StatusOK {
+		t.Fatalf("existing Cloud artifact list: %d %s", listed.Code, listed.Body.String())
+	}
+	// A shared-link list and a Cloud artifact list do not establish that
+	// this control plane can copy a Cloud artifact into a share link.
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		missing := h.request(method, sessionPath+"/artifacts/share", "", artifactTokenA, nil, nil)
+		if missing.Code != cloud.Status || missing.Body.String() != cloud.Body || missing.Header().Get("Allow") != cloud.Allow {
+			t.Fatalf("Cloud share route %s: %d %q Allow=%q", method, missing.Code, missing.Body.String(), missing.Header().Get("Allow"))
+		}
+	}
 	missing := h.request(http.MethodPost, "/api/cloud/v1/me/artifact-shares/uploads", "", artifactTokenA, []byte(`{}`), nil)
 	if missing.Code != contract.UnsupportedMultipart.Status || missing.Body.String() != contract.UnsupportedMultipart.Body {
 		t.Fatalf("multipart route: %d %q", missing.Code, missing.Body.String())

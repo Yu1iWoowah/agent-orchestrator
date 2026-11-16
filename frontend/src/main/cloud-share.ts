@@ -12,7 +12,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
-import type { CloudShareAccess, CloudShareGrant, CloudShareLink, CloudShareLinks } from "../shared/cloud-share";
+import type { CloudShareAccess, CloudShareGrant, CloudShareLink, CloudShareLinks, CloudShareSession } from "../shared/cloud-share";
 import { parseCloudBaseUrl } from "./cloud-cp-proxy";
 
 const API_PREFIX = "/api/cloud/v1";
@@ -309,19 +309,27 @@ function normalizeShareLink(share: CloudShareLink | InlineShareLink): CloudShare
  * Whether the control plane serves share links: the routes exist only while
  * its share flag is on, so a 404 means it does not. It needs no sign-in: a
  * signed-out request gets 401 from a control plane that serves them. Null
- * when the control plane could not be reached.
+ * when the control plane could not be reached. A Cloud source needs its own
+ * POST route: a safe GET must return 405 with Allow: POST. A list alone says
+ * nothing about Cloud publishing; ambiguous responses leave it unavailable.
  */
-export async function shareLinksAvailable(api: CloudShareApi, baseUrl: string): Promise<boolean | null> {
+export async function shareLinksAvailable(api: CloudShareApi, baseUrl: string, cloudSession?: CloudShareSession): Promise<boolean | null> {
 	// The token read (which may refresh it) and the request share one limit.
 	const limited = AbortSignal.timeout(SHARE_TIMEOUTS.probe);
 	try {
 		const token = await untilAborted(api.getToken(), limited);
-		const response = await api.fetch(apiUrl(baseUrl, "/me/artifact-shares"), {
+		const target = cloudSession ? `${sessionApiPath(cloudSession)}/artifacts/share` : "/me/artifact-shares";
+		const response = await api.fetch(apiUrl(baseUrl, target), {
 			method: "GET",
 			headers: token ? { Authorization: `Bearer ${token}` } : {},
 			signal: limited,
 		});
 		await response.body?.cancel().catch(() => undefined);
+		if (cloudSession) {
+			if (response.status === 404) return false;
+			if (response.status !== 405) return null;
+			return response.headers.get("Allow")?.split(",").some((method) => method.trim().toUpperCase() === "POST") ?? false;
+		}
 		return response.status !== 404;
 	} catch {
 		return null;
@@ -391,7 +399,7 @@ export interface CloudSessionArtifactRef {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function sessionApiPath(ref: CloudSessionArtifactRef): string {
+function sessionApiPath(ref: CloudShareSession): string {
 	if (!UUID_PATTERN.test(ref.orgId) || !UUID_PATTERN.test(ref.sessionId)) {
 		throw new CloudShareError("invalid_file", "Not a cloud session's artifact.");
 	}
@@ -421,13 +429,17 @@ export async function cloudSessionArtifactVersion(
  * uploaded from here. It refuses (artifact_share_source_changed) when the
  * committed version is no longer sha256, the one the person was shown.
  */
-export function shareCloudSessionArtifact(
+export async function shareCloudSessionArtifact(
 	api: CloudShareApi,
 	baseUrl: string,
 	ref: CloudSessionArtifactRef & ShareAccessInput & { sha256: string; shareId?: string },
 	signal?: AbortSignal,
 ): Promise<{ share: CloudShareLink; replaced: boolean }> {
-	return callApi<{ share: CloudShareLink; replaced: boolean }>(api, baseUrl, "POST", `${sessionApiPath(ref)}/artifacts/share`,
+	const target = `${sessionApiPath(ref)}/artifacts/share`;
+	if (await shareLinksAvailable(api, baseUrl, ref) !== true) {
+		throw new CloudShareError("unsupported_sharing", "Cloud artifact sharing is unavailable on this control plane.");
+	}
+	return callApi<{ share: CloudShareLink; replaced: boolean }>(api, baseUrl, "POST", target,
 		{ path: ref.path, sha256: ref.sha256, ...(ref.shareId ? { shareId: ref.shareId } : {}), ...accessFields(ref) }, signal, SHARE_TIMEOUTS.publish);
 }
 

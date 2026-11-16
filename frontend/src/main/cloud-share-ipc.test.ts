@@ -3,6 +3,7 @@ import { openSync, closeSync, writeSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import forkContract from "../../../cloud/internal/httpapi/testdata/artifact-share-desktop.json";
 
 vi.mock("electron", () => ({ ipcMain: {} }));
 vi.mock("./cloud-auth", () => ({ getCloudAccessToken: vi.fn(async () => "token-1") }));
@@ -32,7 +33,7 @@ afterEach(async () => {
 	await fs.rm(dataDir, { recursive: true, force: true });
 });
 
-function setup(options: { token?: string | null; finalizeStatus?: number; finalizeCode?: string; shareStatus?: number; shareCode?: string; listStatus?: number; unreachable?: boolean; shares?: unknown[]; listGate?: Promise<void> } = {}) {
+function setup(options: { token?: string | null; finalizeStatus?: number; finalizeCode?: string; shareStatus?: number; shareCode?: string; listStatus?: number; unreachable?: boolean; shares?: unknown[]; listGate?: Promise<void>; cloudShareMissing?: boolean } = {}) {
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
 	const requests: string[] = [];
 	const bodies = new Map<string, unknown>();
@@ -72,6 +73,11 @@ function setup(options: { token?: string | null; finalizeStatus?: number; finali
 				return json({ artifacts: [{ path: "reports/q3 plan.md", name: "q3 plan.md", kind: "markdown", size: 4096, sha256: "0".repeat(64) }] });
 			}
 			if (pathname === `${CLOUD_SESSION_PATH}/artifacts/share`) {
+				if (options.cloudShareMissing) {
+					const cloud = forkContract.cloudSessionShare;
+					return new Response(cloud.body, { status: cloud.status, headers: { Allow: cloud.allow } });
+				}
+				if (init.method === "GET") return new Response(null, { status: 405, headers: { Allow: "POST" } });
 				if (options.shareStatus) return json({ code: options.shareCode, message: "Refused." }, options.shareStatus);
 				return json({ share: { id: SHARE_ID, slug: "abc", contentUrl: "https://abc.share.test/" }, replaced: false }, 201);
 			}
@@ -309,7 +315,7 @@ describe("cloudShare IPC", () => {
 	it("publishes a cloud session's file without uploading it", async () => {
 		const { invoke, cloudFile, requests, bodies, records } = setup();
 		await expect(invoke("cloudShare:publish", { ...cloudFile, fingerprint: CLOUD_SHA256 })).resolves.toMatchObject({ status: "published", share: { id: SHARE_ID } });
-		expect(requests).toEqual([`POST ${CLOUD_SESSION_PATH}/artifacts/share`]);
+		expect(requests).toEqual([`GET ${CLOUD_SESSION_PATH}/artifacts/share`, `POST ${CLOUD_SESSION_PATH}/artifacts/share`]);
 		// The control plane shares only the version the person was shown.
 		expect(bodies.get(`${CLOUD_SESSION_PATH}/artifacts/share`)).toEqual({ path: "reports/q3 plan.md", sha256: CLOUD_SHA256 });
 		// The link is remembered apart from any local session's file.
@@ -501,5 +507,19 @@ describe("cloudShare IPC", () => {
 		expect(signedOut.authorizations).toEqual([null]);
 		const unreachable = setup({ unreachable: true });
 		await expect(unreachable.invoke("cloudShare:available", { baseUrl: "https://cp.test" })).resolves.toBeNull();
+	});
+
+	it("keeps local sharing available but refuses Cloud publish and republish on the fork router contract", async () => {
+		const { invoke, cloudFile, requests } = setup({ cloudShareMissing: true });
+		const cloudSession = { orgId: cloudFile.orgId, sessionId: cloudFile.sessionId };
+		await expect(invoke("cloudShare:available", { baseUrl: "https://cp.test" })).resolves.toBe(true);
+		await expect(invoke("cloudShare:available", { baseUrl: "https://cp.test", cloudSession })).resolves.toBe(false);
+		for (const shareId of [undefined, SHARE_ID]) {
+			await expect(invoke("cloudShare:publish", { ...cloudFile, fingerprint: CLOUD_SHA256, shareId }))
+				.resolves.toMatchObject({ status: "unsupported", message: "Cloud artifact sharing is unavailable on this control plane." });
+		}
+		expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
+		await expect(invoke("cloudShare:available", { baseUrl: "https://cp.test", cloudSession: { orgId: cloudFile.orgId } }))
+			.rejects.toThrow("Not a cloud session's artifact.");
 	});
 });

@@ -69,6 +69,7 @@ import {
 	type CloudShareLinks,
 	type CloudShareProgress,
 	type CloudSharePublishResult,
+	type CloudShareSession,
 } from "./shared/cloud-share";
 import type { LocalLoginInput, LocalRegisterInput } from "./main/cloud-auth-local";
 import type { PushFolderInput, PushFolderPreview, PushFolderResult } from "./main/cloud-folder-push";
@@ -549,7 +550,7 @@ const api = {
 	// the file or the token. See shared/cloud-share.ts.
 	cloudShare: {
 		inspect: (file: CloudShareFile) => ipcRenderer.invoke("cloudShare:inspect", file) as Promise<CloudShareInspection>,
-		available: (baseUrl: string) => ipcRenderer.invoke("cloudShare:available", { baseUrl }) as Promise<boolean | null>,
+		available: (baseUrl: string, cloudSession?: CloudShareSession) => ipcRenderer.invoke("cloudShare:available", { baseUrl, cloudSession }) as Promise<boolean | null>,
 		list: (baseUrl: string) => ipcRenderer.invoke("cloudShare:list", { baseUrl }) as Promise<CloudShareLinks>,
 		publish: (file: CloudShareFile) => ipcRenderer.invoke("cloudShare:publish", file) as Promise<CloudSharePublishResult>,
 		cancel: () => ipcRenderer.invoke("cloudShare:cancel") as Promise<void>,

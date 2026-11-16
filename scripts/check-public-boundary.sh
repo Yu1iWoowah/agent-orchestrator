@@ -42,14 +42,15 @@ PY
 	then :; else status=1; fi
 done < <(git ls-files 'package.json' '*/package.json' | grep -v node_modules)
 
-# 5. Local module replacements cannot escape to a private checkout. Go's
+# 5. Local module and workspace replacements cannot escape the checkout. Go's
 # parser distinguishes directory targets from versioned module replacements.
 while IFS= read -r -d '' manifest; do
 	if python3 - "$manifest" <<'PY'
 import json, pathlib, subprocess, sys
 root = pathlib.Path.cwd().resolve()
 manifest = pathlib.Path(sys.argv[1])
-module = json.loads(subprocess.check_output(["go", "mod", "edit", "-json", str(manifest)], text=True))
+kind = "work" if manifest.name == "go.work" else "mod"
+module = json.loads(subprocess.check_output(["go", kind, "edit", "-json", str(manifest)], text=True))
 bad = []
 for replacement in module.get("Replace") or []:
     target = replacement["New"]
@@ -62,7 +63,7 @@ if bad:
     sys.exit(1)
 PY
 	then :; else status=1; fi
-done < <(git ls-files -z 'go.mod' '*/go.mod')
+done < <(git ls-files -z 'go.mod' '*/go.mod' 'go.work' '*/go.work')
 
 if [[ "$status" == 0 ]]; then
 	echo "public boundary: ok"

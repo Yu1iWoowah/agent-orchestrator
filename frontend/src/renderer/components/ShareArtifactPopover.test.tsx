@@ -664,6 +664,33 @@ describe("ShareArtifactButton states", () => {
 		expect(screen.queryByRole("button", { name: /^Publish/ })).toBeNull();
 	});
 
+	it.each([false, true])("does not reuse local availability for a Cloud source (published=%s)", async (published) => {
+		mocks.baseUrl = `https://source-${published}.test`;
+		const available = vi.spyOn(aoBridge.cloudShare, "available").mockImplementation(async (_baseUrl, cloudSession) => !cloudSession);
+		const { inspectSpy, publishSpy } = stub(
+			published ? { ...inspection, shareId: SHARE_ID, publishedFingerprint: "older" } : inspection,
+			published ? { ...links, shares: [share] } : links,
+		);
+		const client = new QueryClient();
+		const view = (file: typeof localFile) => <QueryClientProvider client={client}><TooltipProvider>
+			<ShareArtifactButton file={file} name="report.html" published={published} />
+		</TooltipProvider></QueryClientProvider>;
+		const rendered = render(view(localFile));
+		await screen.findByRole("button", { name: `${published ? "Republish" : "Publish"}: report.html` });
+		inspectSpy.mockClear();
+		rendered.rerender(view(cloudFile));
+		// Even the render before the Cloud probe finishes must not use the
+		// previous local source's positive answer.
+		expect(screen.queryByRole("button", { name: /publish/i })).toBeNull();
+		await waitFor(() => expect(available).toHaveBeenCalledWith(mocks.baseUrl, { orgId: cloudFile.orgId, sessionId: cloudFile.sessionId }));
+		expect(screen.queryByRole("button", { name: /publish/i })).toBeNull();
+		expect(inspectSpy).not.toHaveBeenCalled();
+		expect(publishSpy).not.toHaveBeenCalled();
+		rendered.rerender(view(localFile));
+		await screen.findByRole("button", { name: `${published ? "Republish" : "Publish"}: report.html` });
+		expect(available).toHaveBeenCalledTimes(2);
+	});
+
 	it("shows a refusal's message, without Electron's IPC wrapper", async () => {
 		stub(inspection, links, { status: "error", message: "There is not enough free disk space to prepare this file for sharing." });
 		await openPopover(cloudFile);

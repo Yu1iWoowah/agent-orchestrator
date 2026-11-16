@@ -76,6 +76,9 @@ export interface CloudSessionShareFile extends CloudShareFile {
 	orgId: string;
 }
 
+/** A Cloud source whose publish route must be available separately from local uploads. */
+export type CloudShareSession = Pick<CloudSessionShareFile, "orgId" | "sessionId">;
+
 /** A share link, as the control plane lists it. */
 export interface CloudShareLink {
 	id: string;

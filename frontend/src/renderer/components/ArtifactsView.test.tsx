@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
 import { useArtifactsViewStore } from "../stores/artifacts-view-store";
+import { aoBridge } from "../lib/bridge";
 import {
 	CLOUD_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
@@ -708,6 +709,22 @@ describe("ArtifactsView", () => {
 				`https://cp.test/artifact-files/token/${name}?v=2026-10-11T10%3A00%3A00Z`,
 			);
 		}
+	});
+
+	it("hides Cloud Publish in the card menu and viewer when only local uploads are available", async () => {
+		const available = vi.spyOn(aoBridge.cloudShare, "available").mockImplementation(async (_baseUrl, cloudSession) => !cloudSession);
+		const cloud = session("cloud-without-share", "Cloud notes", [{ name: "notes.md", kind: "markdown", updatedAt: "2026-10-11T10:00:00Z" }]);
+		cloud.cloud = { orgId: "fork-org", createdByUserId: "me-1" };
+		mocks.workspaces = [{ id: "cloud-project", name: "Cloud project", path: "", kind: CLOUD_PROJECT_KIND, cloudOrgId: "fork-org", sessions: [cloud] }];
+		renderView();
+		await userEvent.click(screen.getByRole("button", { name: "More actions: notes.md" }));
+		await waitFor(() => expect(available).toHaveBeenCalledWith("https://cp.test", { orgId: "fork-org", sessionId: cloud.id }));
+		expect(screen.queryByRole("menuitem", { name: "Publish" })).not.toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
+		await userEvent.click(screen.getByRole("button", { name: /^notes\.md/ }));
+		const dialog = await screen.findByRole("dialog", { name: "notes.md" });
+		expect(within(dialog).queryByRole("button", { name: /publish/i })).not.toBeInTheDocument();
+		available.mockRestore();
 	});
 
 	it("offers no Share on another member's cloud session file", async () => {

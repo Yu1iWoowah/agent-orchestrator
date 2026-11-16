@@ -47,5 +47,12 @@
     ],
     "limit": 3,
     "used": 1
+  },
+  "cloudSessionShare": {
+    "orgId": "a1a1a1a1-0000-4000-8000-000000000001",
+    "sessionId": "a1a1a1a1-0000-4000-8000-0000000000a1",
+    "status": 404,
+    "body": "404 page not found\n",
+    "allow": ""
   }
 }
