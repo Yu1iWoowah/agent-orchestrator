@@ -329,7 +329,7 @@ func TestInsertUsageSourceErrorRedactsArtifactPath(t *testing.T) {
 
 	_, err := s.InsertUsageSource(ctx, domain.UsageSourceRecord{
 		BindingID:    source.BindingID,
-		Kind:         domain.UsageSourceKind("invalid"),
+		Kind:         domain.UsageSourceKind(""),
 		ArtifactPath: secretPath,
 		State:        domain.UsageSourcePending,
 		UpdatedAt:    now,
@@ -373,7 +373,7 @@ func TestReplaceUsageSourceRollsBackRetirementWhenInsertFails(t *testing.T) {
 
 	_, err := s.ReplaceUsageSource(ctx, source.ID, domain.UsageErrorArtifactReplaced, domain.UsageSourceRecord{
 		BindingID:       source.BindingID,
-		Kind:            domain.UsageSourceKind("invalid"),
+		Kind:            domain.UsageSourceKind(""),
 		NativeSessionID: source.NativeSessionID,
 		ArtifactPath:    "/tmp/codex/replacement.jsonl",
 		FileIdentity:    "replacement",
