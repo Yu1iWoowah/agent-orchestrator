@@ -17,6 +17,7 @@ writer 序列執行。
 
 | 邊界 | 處理 |
 | --- | --- |
+| U `20261031173316629` 長 context 重新計價 | 保存既有 execution rows 的四項成本與 `pricing_version`，執行原 U SQL 後恢復；保存、SQL、恢復與 receipt 同一交易提交。native usage 仍由原 SQL 清空舊價格。 |
 | F `20261101152248341` turn 重建 | 保全既有 U `failure_code` 非空值與索引，在原 FK 邊界執行原 SQL，再恢復擴充欄位。 |
 | F `20261109083558284` usage 重建 | 先保全既有 U tier／message ID 與三個索引，執行原 SQL，再恢復擴充欄位。 |
 | U `20261107181854835`、F `20261113162757663` | 僅在版本 pending 時核對兩個同名索引；以交易移除已知定義，再執行整份原 migration。 |
@@ -72,6 +73,11 @@ disabled 且 in-use 的 account、歷史 `source=project` session／reviewer bin
 未決 delivery／receipts、side compaction obligation，以及 HCG execution
 provenance／usage cost facts。三個新 U 欄位在合法部分升級點填值，
 不假稱 u3 原本已有這些欄位。
+
+u3／F1 的 execution fixture 使用 300,000 input tokens、非 NULL
+`billing_provider_id` 與四項成本，覆蓋 U 長 context UPDATE 的條件。
+另驗證成本恢復／receipt 寫入失敗皆 rollback、重啟可重試、NULL／zero
+成本保留，以及尚無 execution 欄位時與既有 fork 的 native usage 重新計價。
 
 其餘案例涵蓋兩個 index 分段、兩個 rebuild copy 執行前／commit 後的重啟、
 欄位已存在／缺少時的 Vsync receipt failure、未知欄位／索引拒絕、原生交易

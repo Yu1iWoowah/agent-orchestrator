@@ -17,10 +17,11 @@ const sharedInputCustodyVersion int64 = 20261101152248341
 // Only the turn rebuild disables FK enforcement, before Goose opens its native
 // transaction; its SQL rejects new FK violations in the rebuilt dependency set.
 const (
-	forkUsageRebuildVersion      int64 = 20261109083558284
-	upstreamDeleteIndexesVersion int64 = 20261107181854835
-	forkLineageIndexesVersion    int64 = 20261113162757663
-	upstreamSyncSchemaVersion    int64 = 20261116001259486
+	upstreamLongContextRepriceVersion int64 = 20261031173316629
+	forkUsageRebuildVersion           int64 = 20261109083558284
+	upstreamDeleteIndexesVersion      int64 = 20261107181854835
+	forkLineageIndexesVersion         int64 = 20261113162757663
+	upstreamSyncSchemaVersion         int64 = 20261116001259486
 )
 
 // Only boundaries present in the active FS participate. Old-version fixtures
@@ -33,7 +34,7 @@ func migrateUpTo(db *sql.DB, version int64, opts ...goose.OptionsFunc) error {
 	for _, migration := range migrations {
 		boundary := migration.Version
 		switch boundary {
-		case sharedInputCustodyVersion, forkUsageRebuildVersion, upstreamDeleteIndexesVersion, forkLineageIndexesVersion, upstreamSyncSchemaVersion:
+		case upstreamLongContextRepriceVersion, sharedInputCustodyVersion, forkUsageRebuildVersion, upstreamDeleteIndexesVersion, forkLineageIndexesVersion, upstreamSyncSchemaVersion:
 		default:
 			continue
 		}
@@ -57,6 +58,10 @@ func migrateUpTo(db *sql.DB, version int64, opts ...goose.OptionsFunc) error {
 			}
 		}
 		switch boundary {
+		case upstreamLongContextRepriceVersion:
+			if err := applyUpstreamLongContextReprice(db); err != nil {
+				return err
+			}
 		case forkUsageRebuildVersion:
 			if err := withUpstreamRebuildColumns(db, "model_usage_events", func() error {
 				return goose.UpTo(db, "migrations", boundary, opts...)
@@ -90,6 +95,64 @@ func upstreamMigrationApplied(tx *sql.Tx, version int64) (bool, error) {
 	err := tx.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version
  WHERE version_id=? ORDER BY id DESC LIMIT 1),0)`, version).Scan(&applied)
 	return applied != 0, err
+}
+
+// Execution costs are dispatch-time receipt facts, not repricing candidates.
+// Preserve them around the unchanged upstream SQL in the receipt's transaction.
+// Fresh installs have no execution_source_id yet and need only the original SQL.
+func applyUpstreamLongContextReprice(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	applied, err := upstreamMigrationApplied(tx, upstreamLongContextRepriceVersion)
+	if err != nil || applied {
+		return err
+	}
+	source, err := migrationsFS.ReadFile("migrations/20261031173316629_usage_long_context_reprice.sql")
+	if err != nil {
+		return err
+	}
+	statement, _, ok := strings.Cut(string(source), "-- +goose Down")
+	if !ok {
+		return fmt.Errorf("upstream long-context reprice: missing SQL boundary")
+	}
+	var executions int
+	if err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('model_usage_events') WHERE name='execution_source_id'`).Scan(&executions); err != nil {
+		return err
+	}
+	if executions != 0 {
+		if _, err := tx.Exec(`CREATE TEMP TABLE _upstream_sync_execution_costs (
+ id INTEGER PRIMARY KEY, input_cost_nanos INTEGER, cached_input_cost_nanos INTEGER,
+ output_cost_nanos INTEGER, estimated_cost_nanos INTEGER, pricing_version TEXT NOT NULL
+);
+INSERT INTO _upstream_sync_execution_costs
+SELECT id,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version
+FROM model_usage_events
+WHERE execution_source_id IS NOT NULL AND provider_id='openai'
+ AND input_tokens>272000 AND billing_provider_id IS NOT NULL`); err != nil {
+			return fmt.Errorf("preserve execution costs: %w", err)
+		}
+	}
+	if _, err := tx.Exec(statement); err != nil {
+		return fmt.Errorf("upstream long-context reprice: %w", err)
+	}
+	if executions != 0 {
+		if _, err := tx.Exec(`UPDATE model_usage_events
+SET (input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version) = (
+ SELECT input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version
+ FROM _upstream_sync_execution_costs saved WHERE saved.id=model_usage_events.id
+)
+WHERE id IN (SELECT id FROM _upstream_sync_execution_costs);
+DROP TABLE _upstream_sync_execution_costs`); err != nil {
+			return fmt.Errorf("restore execution costs: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(?,1)`, upstreamLongContextRepriceVersion); err != nil {
+		return fmt.Errorf("upstream long-context reprice receipt: %w", err)
+	}
+	return tx.Commit()
 }
 
 // Startup owns the single writer. Committing removal before Goose is restartable:

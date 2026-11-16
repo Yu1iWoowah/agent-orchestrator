@@ -554,7 +554,7 @@ func seedUpstreamProtectedRows(t *testing.T, db *sql.DB, version int64) map[stri
 		`INSERT INTO chat_side_compactions VALUES('compact','side','isolated-native','native','epoch','unknown',1,0,'{"obligation":"kept"}')`,
 		`INSERT INTO chat_side_contents VALUES('side','{"text":"kept"}')`,
 		`INSERT INTO usage_execution_sources(id,project_id,session_id,billing_provider,profile_id,profile_revision,profile_digest,delegation_id,attempt_id,request_id,receipt_digest,identity_json) VALUES(80,'project','worker','openai','profile','v1','digest','delegation','attempt','request','receipt','{}')`,
-		`INSERT INTO model_usage_events(id,execution_source_id,provider_id,model_id,usage_measurement_kind,source_event_key,input_tokens,estimated_cost_nanos,pricing_version,created_at) VALUES(80,80,'openai','model','provider_reported','execution-event',42,123,'price-v1',CURRENT_TIMESTAMP)`,
+		`INSERT INTO model_usage_events(id,execution_source_id,provider_id,billing_provider_id,billing_provider_source,model_id,usage_measurement_kind,source_event_key,input_tokens,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version,created_at) VALUES(80,80,'openai','openai','observed','gpt-5.1','provider_reported','execution-event',300000,600000,70000,8000,678000,'price-v1',CURRENT_TIMESTAMP)`,
 	} {
 		mustExec(t, db, statement)
 	}
@@ -572,11 +572,102 @@ func seedUpstreamProtectedRows(t *testing.T, db *sql.DB, version int64) map[stri
 	}
 	for _, query := range []string{
 		`SELECT id,state,controller_generation,plan_json,branch_id FROM conversation_turns ORDER BY id`,
-		`SELECT id,execution_source_id,provider_id,model_id,usage_measurement_kind,source_event_key,input_tokens,estimated_cost_nanos,pricing_version FROM model_usage_events ORDER BY id`,
+		`SELECT id,execution_source_id,provider_id,billing_provider_id,billing_provider_source,model_id,usage_measurement_kind,source_event_key,input_tokens,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version FROM model_usage_events ORDER BY id`,
 	} {
 		result[query] = upstreamSyncRows(t, db, query)
 	}
 	return result
+}
+
+func seedUpstreamRepriceNativeEvent(t *testing.T, db *sql.DB) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO usage_bindings(id,session_id,harness,native_root_id,state,updated_at) VALUES(7,'worker','codex','native','active',CURRENT_TIMESTAMP)`)
+	mustExec(t, db, `INSERT INTO usage_sources(id,binding_id,kind,artifact_path,state,updated_at) VALUES(8,7,'codex_rollout','synthetic-usage','active',CURRENT_TIMESTAMP)`)
+	mustExec(t, db, `INSERT INTO model_usage_events(id,binding_id,usage_source_id,provider_id,billing_provider_id,billing_provider_source,model_id,usage_measurement_kind,source_event_key,input_tokens,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version,created_at) VALUES(81,7,8,'openai','openai','observed','gpt-5.1','native_reported','native-event',300000,600000,70000,8000,678000,'price-v1',CURRENT_TIMESTAMP)`)
+}
+
+func TestUpstreamSyncRepriceWithoutExecutionSchema(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, upstreamLongContextRepriceVersion-1)
+	mustExec(t, db, `INSERT INTO projects(id,path,registered_at) VALUES('project','isolated-project',CURRENT_TIMESTAMP)`)
+	mustExec(t, db, `INSERT INTO sessions(id,project_id,num,activity_last_at,created_at,updated_at) VALUES('worker','project',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+	seedUpstreamRepriceNativeEvent(t, db)
+	upTo(t, db, upstreamLongContextRepriceVersion)
+	query := `SELECT input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version FROM model_usage_events WHERE id=81`
+	if got := upstreamSyncRows(t, db, query); got != `[[null,null,null,null,""]]` {
+		t.Fatalf("native event was not repriced: %s", got)
+	}
+}
+
+func TestUpstreamSyncRepriceIsAtomic(t *testing.T) {
+	for _, tc := range []struct{ name, trigger string }{
+		{"restore", `CREATE TRIGGER fail_reprice BEFORE UPDATE ON model_usage_events
+ WHEN NEW.execution_source_id IS NOT NULL AND NEW.pricing_version='price-v1'
+ BEGIN SELECT RAISE(ABORT,'injected reprice failure'); END`},
+		{"receipt", `CREATE TRIGGER fail_reprice BEFORE INSERT ON goose_db_version
+ WHEN NEW.version_id=20261031173316629
+ BEGIN SELECT RAISE(ABORT,'injected reprice failure'); END`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			upstreamSyncLegacyDatabase(t, dir, 20261115050041608)
+			db, err := sql.Open("sqlite", databaseURI(dir)+pragmas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			db.SetMaxOpenConns(1)
+			seedUpstreamRepriceNativeEvent(t, db)
+			// NULL and zero are also receipt facts; do not coalesce them on restore.
+			mustExec(t, db, `INSERT INTO usage_execution_sources(id,project_id,session_id,billing_provider,profile_id,profile_revision,profile_digest,delegation_id,attempt_id,request_id,receipt_digest,identity_json) VALUES(82,'project','worker','openai','profile','v1','digest','delegation','partial-attempt','partial-request','partial-receipt','{}')`)
+			mustExec(t, db, `INSERT INTO model_usage_events(id,execution_source_id,provider_id,billing_provider_id,model_id,usage_measurement_kind,source_event_key,input_tokens,input_cost_nanos,output_cost_nanos,pricing_version,created_at) VALUES(82,82,'openai','openai','gpt-5.1','provider_reported','partial-event',300000,0,23,'partial',CURRENT_TIMESTAMP)`)
+			costs := `SELECT id,input_cost_nanos,cached_input_cost_nanos,output_cost_nanos,estimated_cost_nanos,pricing_version FROM model_usage_events`
+			allBefore := upstreamSyncRows(t, db, costs+` ORDER BY id`)
+			executionBefore := upstreamSyncRows(t, db, costs+` WHERE execution_source_id IS NOT NULL ORDER BY id`)
+			mustExec(t, db, tc.trigger)
+			if store, err := Open(dir); err == nil {
+				_ = store.Close()
+				t.Fatal("expected injected migration failure")
+			} else if !strings.Contains(err.Error(), "injected reprice failure") {
+				t.Fatal(err)
+			}
+			if got := upstreamSyncRows(t, db, costs+` ORDER BY id`); got != allBefore {
+				t.Fatalf("failed reprice changed costs: %s -> %s", allBefore, got)
+			}
+			var receipts int
+			if err := db.QueryRow(`SELECT count(*) FROM goose_db_version WHERE version_id=?`, upstreamLongContextRepriceVersion).Scan(&receipts); err != nil || receipts != 0 {
+				t.Fatalf("failed reprice wrote receipt: %d %v", receipts, err)
+			}
+			mustExec(t, db, `DROP TRIGGER fail_reprice`)
+			store, err := Open(dir)
+			if err != nil {
+				t.Fatalf("retry production Open: %v", err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := upstreamSyncRows(t, db, costs+` WHERE execution_source_id IS NOT NULL ORDER BY id`); got != executionBefore {
+				t.Fatalf("retry lost execution costs: %s -> %s", executionBefore, got)
+			}
+			if got := upstreamSyncRows(t, db, costs+` WHERE id=81`); got != `[[81,null,null,null,null,""]]` {
+				t.Fatalf("native event was not repriced: %s", got)
+			}
+			assertUpstreamSyncLedger(t, db)
+			// An applied migration must not clear later backfill on another Open.
+			mustExec(t, db, `UPDATE model_usage_events SET input_cost_nanos=12,estimated_cost_nanos=12,pricing_version='new-price' WHERE id=81`)
+			after := upstreamSyncRows(t, db, costs+` ORDER BY id`)
+			store, err = Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := upstreamSyncRows(t, db, costs+` ORDER BY id`); got != after {
+				t.Fatalf("reopen changed costs: %s -> %s", after, got)
+			}
+			assertUpstreamSyncLedger(t, db)
+		})
+	}
 }
 
 func TestUpstreamSyncRestoresRebuildAfterRestart(t *testing.T) {
