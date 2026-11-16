@@ -27,7 +27,7 @@ kind = "work" if manifest.name == "go.work" else "mod"
 module = json.loads(subprocess.check_output(["go", kind, "edit", "-json", str(manifest)], text=True))
 # A new Go directive needs a boundary audit before this gate accepts it.
 known = {"Go", "Toolchain", "Godebug", "Use", "Replace"} if kind == "work" else {
-    "Module", "Go", "Toolchain", "Godebug", "Require", "Exclude", "Replace", "Retract", "Tool", "Ignore"
+    "Module", "Go", "Toolchain", "GoDebug", "Require", "Exclude", "Replace", "Retract", "Tool", "Ignore"
 }
 if module.keys() - known:
     reject("unreviewed Go fields: " + ", ".join(sorted(module.keys() - known)))

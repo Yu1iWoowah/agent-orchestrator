@@ -8,6 +8,8 @@ import test from 'node:test';
 const backendModule = 'module github.com/aoagents/agent-orchestrator/backend\n\ngo 1.27.4\n\nrequire github.com/google/uuid v1.6.0\n';
 const work = 'go 1.27.4\n\nuse (\n ./backend\n ./cloud\n ./components/hcg\n)\n';
 const cases = [
+  ['module godebug directive', root => writeFileSync(path.join(root, 'backend/go.mod'), backendModule + 'godebug default=go1.27\n'), null],
+  ['workspace godebug directive', root => writeFileSync(path.join(root, 'go.work'), work + 'godebug default=go1.27\n'), null],
   ['retained fork modules and in-tree or versioned replacements', root => writeFileSync(path.join(root, 'go.work'), work + '\nreplace github.com/aoagents/agent-orchestrator/cloud v0.1.0 => ./cloud\nreplace example.com/module => example.org/public v1.0.0\n'), null],
   ['in-tree paths and import-based tools', root => {
     mkdirSync(path.join(root, 'backend/generated'), { mode: 0o700 });
