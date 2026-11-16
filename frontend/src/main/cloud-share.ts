@@ -4,7 +4,7 @@
  * Only a person publishes. The renderer names a file; this module resolves it
  * strictly inside the session's artifacts folder, copies it once into a
  * private snapshot while hashing it, and uploads that snapshot straight to
- * storage through the control plane's presigned multipart upload. The bytes
+ * storage through the control plane's supported upload protocol. The bytes
  * that go public are exactly the ones copied, even if an agent rewrites the
  * file meanwhile. The sign-in token never leaves this process.
  */
@@ -20,6 +20,8 @@ const API_PREFIX = "/api/cloud/v1";
 export const VERSIONS_DIR = ".versions";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const READ_CHUNK = 1 << 20;
+/** The retained fork's inline route accepts at most 10 MiB. */
+const INLINE_SHARE_MAX_BYTES = 10 << 20;
 /** Parts presigned per request; the control plane allows up to 100. */
 const PRESIGN_BATCH = 8;
 /** Parts uploaded at once. */
@@ -281,14 +283,26 @@ async function callApi<T>(
 			body: body === undefined ? undefined : JSON.stringify(body),
 			signal: limited,
 		});
-		if (response.status === 401) throw new CloudShareError("signed_out", "Sign in to share.", 401);
-		if (!response.ok) {
-			const envelope = (await response.json().catch(() => ({}))) as { code?: string; message?: string };
-			throw new CloudShareError(envelope.code || `http_${response.status}`, envelope.message || `Request failed (${response.status})`, response.status);
-		}
-		if (response.status === 204) return undefined as T;
-		return (await response.json()) as T;
+		return readApiResponse<T>(response);
 	});
+}
+
+async function readApiResponse<T>(response: Response): Promise<T> {
+	if (response.status === 401) throw new CloudShareError("signed_out", "Sign in to share.", 401);
+	if (!response.ok) {
+		const envelope = (await response.json().catch(() => ({}))) as { code?: string; message?: string };
+		throw new CloudShareError(envelope.code || `http_${response.status}`, envelope.message || `Request failed (${response.status})`, response.status);
+	}
+	if (response.status === 204) return undefined as T;
+	return (await response.json()) as T;
+}
+
+type InlineShareLink = Omit<CloudShareLink, "contentUrl"> & { url: string };
+
+function normalizeShareLink(share: CloudShareLink | InlineShareLink): CloudShareLink {
+	if ("contentUrl" in share) return share;
+	const { url, ...rest } = share;
+	return { ...rest, contentUrl: url };
 }
 
 /**
@@ -315,8 +329,9 @@ export async function shareLinksAvailable(api: CloudShareApi, baseUrl: string): 
 }
 
 export function listShareLinks(api: CloudShareApi, baseUrl: string): Promise<CloudShareLinks> {
-	return callApi<CloudShareLinks>(api, baseUrl, "GET", "/me/artifact-shares").then((links) => ({
+	return callApi<Omit<CloudShareLinks, "shares"> & { shares: Array<CloudShareLink | InlineShareLink> }>(api, baseUrl, "GET", "/me/artifact-shares").then((links) => ({
 		...links,
+		shares: links.shares.map(normalizeShareLink),
 		unlimited: Boolean(links.unlimited),
 		privateLinks: Boolean(links.privateLinks),
 	}));
@@ -461,7 +476,8 @@ async function hashRange(handle: fs.FileHandle, range: { offset: number; length:
 /**
  * Uploads a snapshot as a share link's file: starts the upload, presigns and
  * puts its parts, and finalizes it. A failure or cancel before finalizing
- * aborts the upload so its parts are discarded.
+ * aborts the upload so its parts are discarded. A control plane without the
+ * multipart route uses the retained public-only inline POST/PUT protocol.
  */
 export async function uploadShare(
 	api: CloudShareApi,
@@ -472,10 +488,39 @@ export async function uploadShare(
 	const { baseUrl, snapshot } = input;
 	// An update names where the file is now too, so its link follows a file
 	// moved to another folder.
-	const start = await callApi<UploadStart>(api, baseUrl, "POST", "/me/artifact-shares/uploads", {
-		name: input.name, size: snapshot.size, sha256: snapshot.sha256, project: input.project, feature: input.feature,
-		...(input.shareId ? { shareId: input.shareId } : {}),
-	}, signal);
+	let start: UploadStart;
+	try {
+		start = await callApi<UploadStart>(api, baseUrl, "POST", "/me/artifact-shares/uploads", {
+			name: input.name, size: snapshot.size, sha256: snapshot.sha256, project: input.project, feature: input.feature,
+			...(input.shareId ? { shareId: input.shareId } : {}),
+		}, signal);
+	} catch (error) {
+		// Only an absent route selects the inline protocol, never a denied or
+		// failed upload. In particular, do not publish a private request publicly.
+		if (!(error instanceof CloudShareError) || (error.status !== 404 && error.status !== 405) || error.code !== `http_${error.status}`) throw error;
+		if (input.access === "restricted" || input.emails?.length) {
+			throw new CloudShareError("unsupported_sharing", "This control plane supports public share links only.");
+		}
+		if (snapshot.size > INLINE_SHARE_MAX_BYTES) {
+			throw new CloudShareError("artifact_share_too_large", "A shared artifact can be at most 10 MiB.", 413);
+		}
+		const target = input.shareId ? shareLinkPath(input.shareId) : "/me/artifact-shares";
+		const query = new URLSearchParams({ name: input.name, project: input.project, feature: input.feature });
+		return fetchWithin(SHARE_TIMEOUTS.publish, signal, async (limited) => {
+			const token = await untilAborted(api.getToken(), limited);
+			if (!token) throw new CloudShareError("signed_out", "Sign in to share.");
+			const body = await fs.readFile(snapshot.path, { signal: limited });
+			const response = await api.fetch(apiUrl(baseUrl, `${target}?${query}`), {
+				method: input.shareId ? "PUT" : "POST",
+				headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream", "X-AO-Artifact-SHA256": snapshot.sha256 },
+				body,
+				signal: limited,
+			});
+			const result = await readApiResponse<{ share: InlineShareLink; replaced?: boolean }>(response);
+			onProgress(body.byteLength);
+			return { share: normalizeShareLink(result.share), replaced: Boolean(input.shareId || result.replaced) };
+		});
+	}
 	const handle = await fs.open(snapshot.path, "r");
 	// One failed part stops the others before the upload is aborted and the
 	// snapshot closed.

@@ -4,6 +4,8 @@ import { openSync, closeSync, writeSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import forkContract from "../../../cloud/internal/httpapi/testdata/artifact-share-desktop.json";
+import { artifactShareUrl } from "../shared/cloud-share";
 
 const token = { value: "token-1" as string | null };
 vi.mock("electron", () => ({ ipcMain: {} }));
@@ -339,6 +341,87 @@ describe("uploadShare", () => {
 		token.value = "token-1";
 		await expect(listShareLinks(api, "http://evil.test")).rejects.toThrow("https");
 		await expect(listShareLinks(api, "https://cp.test")).resolves.toMatchObject({ limit: 3, used: 1, unlimited: false });
+	});
+});
+
+describe("fork inline share contract", () => {
+	// TestArtifactShareDesktopContract checks these wire responses against the
+	// real Go router. Do not invent multipart endpoints in this fixture.
+	it("publishes, republishes and copies links using the fork's routes and URL field", async () => {
+		const requests: string[] = [];
+		const api: CloudShareApi = {
+			getToken: async () => "token-1",
+			fetch: vi.fn(async (url, init) => {
+				const target = new URL(url);
+				const route = `${init.method} ${target.pathname}`;
+				requests.push(route);
+				const headers = new Headers(init.headers);
+				expect(headers.get("Authorization")).toBe("Bearer token-1");
+				if (route === "POST /api/cloud/v1/me/artifact-shares/uploads") {
+					return new Response(forkContract.unsupportedMultipart.body, { status: forkContract.unsupportedMultipart.status });
+				}
+				if (route === "GET /api/cloud/v1/me/artifact-shares") return Response.json(forkContract.list);
+				const updating = init.method === "PUT";
+				expect(target.pathname).toBe(`/api/cloud/v1/me/artifact-shares${updating ? `/${forkContract.publish.share.id}` : ""}`);
+				expect(init.method).toBe(updating ? "PUT" : "POST");
+				expect(target.searchParams.get("name")).toBe("upload.txt");
+				expect(target.searchParams.get("project")).toBe("p");
+				expect(target.searchParams.get("feature")).toBe("f");
+				expect(init.body).toEqual(Buffer.from(updating ? "v2" : "v1"));
+				expect(headers.get("X-AO-Artifact-SHA256")).toBe(sha(updating ? "v2" : "v1"));
+				expect(headers.get("Content-Type")).toBe("application/octet-stream");
+				// Chromium derives these itself from the Buffer body.
+				expect(headers.has("Content-Length")).toBe(false);
+				expect(headers.has("Host")).toBe(false);
+				return Response.json(updating ? forkContract.republish : forkContract.publish, { status: updating ? 200 : 201 });
+			}),
+		};
+		const input = { baseUrl: "https://cp.test", name: "upload.txt", project: "p", feature: "f" };
+		expect(await shareLinksAvailable(api, input.baseUrl)).toBe(true);
+		const progress = vi.fn();
+		const first = await uploadShare(api, { ...input, snapshot: await snapshotOf("v1") }, progress);
+		expect(first.replaced).toBe(false);
+		expect(first.share.sha256).toBe(forkContract.publish.share.sha256);
+		expect(artifactShareUrl(first.share)).toBe(forkContract.publish.share.url);
+		const second = await uploadShare(api, { ...input, snapshot: await snapshotOf("v2"), shareId: first.share.id }, progress);
+		expect(second.replaced).toBe(true);
+		expect(second.share.sha256).toBe(forkContract.republish.share.sha256);
+		expect(artifactShareUrl(second.share)).toBe(artifactShareUrl(first.share));
+		expect(progress.mock.calls).toEqual([[2], [2]]);
+		const listed = await listShareLinks(api, input.baseUrl);
+		expect(listed).toMatchObject({ limit: 3, used: 1, unlimited: false, privateLinks: false });
+		expect(listed.shares).toEqual([second.share]);
+		expect(artifactShareUrl(listed.shares[0])).toBe(forkContract.publish.share.url);
+		expect(requests).toEqual([
+			"GET /api/cloud/v1/me/artifact-shares",
+			"POST /api/cloud/v1/me/artifact-shares/uploads",
+			"POST /api/cloud/v1/me/artifact-shares",
+			"POST /api/cloud/v1/me/artifact-shares/uploads",
+			`PUT /api/cloud/v1/me/artifact-shares/${first.share.id}`,
+			"GET /api/cloud/v1/me/artifact-shares",
+		]);
+	});
+
+	it.each([{ access: "restricted" as const }, { emails: ["reader@example.com"] }])("does not turn a private request into a public inline upload (%j)", async (access) => {
+		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status: 405 })) };
+		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot: await snapshotOf("private"), name: "upload.txt", project: "p", feature: "f", ...access }, () => undefined))
+			.rejects.toMatchObject({ code: "unsupported_sharing" });
+		expect(api.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("refuses an oversized inline snapshot before reading or sending its bytes", async () => {
+		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => new Response("", { status: 404 })) };
+		const snapshot = { path: "does-not-exist", size: forkContract.maxBytes + 1, sha256: sha(""), fingerprint: "" };
+		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot, name: "upload.txt", project: "p", feature: "f" }, () => undefined))
+			.rejects.toMatchObject({ code: "artifact_share_too_large" });
+		expect(api.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([401, 403, 404, 409, 500])("does not retry a structured upload error as an inline publish (%i)", async (status) => {
+		const api: CloudShareApi = { getToken: async () => "token-1", fetch: vi.fn(async () => Response.json({ code: "upload_refused" }, { status })) };
+		await expect(uploadShare(api, { baseUrl: "https://cp.test", snapshot: await snapshotOf("v1"), name: "upload.txt", project: "p", feature: "f" }, () => undefined))
+			.rejects.toMatchObject({ status });
+		expect(api.fetch).toHaveBeenCalledTimes(1);
 	});
 });
 

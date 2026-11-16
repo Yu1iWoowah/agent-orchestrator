@@ -1,0 +1,51 @@
+{
+  "unsupportedMultipart": {
+    "status": 405,
+    "body": ""
+  },
+  "maxBytes": 10485760,
+  "publish": {
+    "share": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "slug": "p-f-aditi1178-gmail-com",
+      "url": "http://p-f-aditi1178-gmail-com.share.localhost:8080/",
+      "name": "upload.txt",
+      "contentType": "text/plain; charset=utf-8",
+      "size": 2,
+      "sha256": "3bfc269594ef649228e9a74bab00f042efc91d5acc6fbee31a382e80d42388fe",
+      "createdAt": "2026-10-16T09:00:01Z",
+      "updatedAt": "2026-10-16T09:00:01Z"
+    },
+    "replaced": false
+  },
+  "republish": {
+    "share": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "slug": "p-f-aditi1178-gmail-com",
+      "url": "http://p-f-aditi1178-gmail-com.share.localhost:8080/",
+      "name": "upload.txt",
+      "contentType": "text/plain; charset=utf-8",
+      "size": 2,
+      "sha256": "fb04dcb6970e4c3d1873de51fd5a50d7bb46b3383113602665c350ec40b5f990",
+      "createdAt": "2026-10-16T09:00:01Z",
+      "updatedAt": "2026-10-16T09:00:02Z"
+    }
+  },
+  "list": {
+    "shares": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "slug": "p-f-aditi1178-gmail-com",
+        "url": "http://p-f-aditi1178-gmail-com.share.localhost:8080/",
+        "name": "upload.txt",
+        "contentType": "text/plain; charset=utf-8",
+        "size": 2,
+        "sha256": "fb04dcb6970e4c3d1873de51fd5a50d7bb46b3383113602665c350ec40b5f990",
+        "createdAt": "2026-10-16T09:00:01Z",
+        "updatedAt": "2026-10-16T09:00:02Z"
+      }
+    ],
+    "limit": 3,
+    "used": 1
+  }
+}

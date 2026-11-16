@@ -29,5 +29,12 @@ jobs:
           go-version-file: backend/go.mod
           cache: false
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Check the public boundary
         run: scripts/check-public-boundary.sh
+
+      - name: Test the public boundary checker
+        run: node --test scripts/check-public-boundary.test.mjs

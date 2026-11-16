@@ -16,6 +16,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+func TestIdleBeforeHibernateRetainsForkPolicy(t *testing.T) {
+	if chatsvc.IdleBeforeHibernate != 90*time.Second {
+		t.Fatalf("idle hibernation delay = %s, want 90s", chatsvc.IdleBeforeHibernate)
+	}
+}
+
 type hibernationConversation struct {
 	*fakeConversation
 	calls                   atomic.Int32

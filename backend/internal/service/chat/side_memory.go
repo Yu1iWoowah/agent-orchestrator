@@ -479,6 +479,10 @@ func (m *memorySideStore) SetSideRecovering(_ context.Context, id, generation st
 	defer m.mu.Unlock()
 	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(side *domain.SideConversation) {
+		// This attempt may start a new host. Neither an earlier shutdown nor
+		// its still-running cleanup can prove that the new host has stopped.
+		delete(m.hostStopped, id)
+		m.cleanupEpoch[id]++
 		side.State = "recovering"
 		side.ErrorMessage = ""
 		side.RecreateRequired = false

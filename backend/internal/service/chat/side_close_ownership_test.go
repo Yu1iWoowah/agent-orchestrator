@@ -239,6 +239,107 @@ func TestSideCloseStaleOpeningCannotReplaceKnownFork(t *testing.T) {
 	}
 }
 
+type retrySideOpenDriver struct {
+	ports.ChatDriver
+	conv       ports.ChatConversation
+	firstError error
+	starts     atomic.Int32
+}
+
+func (d *retrySideOpenDriver) Driver(domain.AgentHarness) (ports.ChatDriver, error) {
+	return d, nil
+}
+
+func (d *retrySideOpenDriver) SupportsChat(domain.AgentHarness) bool { return true }
+
+func (d *retrySideOpenDriver) Start(context.Context, ports.ChatStartConfig) (ports.ChatConversation, error) {
+	if d.starts.Add(1) == 1 && d.firstError != nil {
+		return nil, d.firstError
+	}
+	return d.conv, nil
+}
+
+func TestSideRetryRequiresFreshHostStop(t *testing.T) {
+	for _, lateStop := range []bool{false, true} {
+		t.Run(map[bool]string{false: "failed-open", true: "previous-stop-in-flight"}[lateStop], func(t *testing.T) {
+			driver := &retrySideOpenDriver{conv: &deferredSideTestConversation{}}
+			svc := New(Options{DataDir: t.TempDir(), AppRunID: "launch", Store: closeOwnershipParentStore{}, Sessions: sideSessionReader{}, Drivers: driver})
+			t.Cleanup(svc.sides.cancel)
+			_, _ = svc.sides.store.ClaimSideLaunch(t.Context(), "launch", time.Now())
+			side := domain.SideConversation{PolicyVersion: sidePolicyVersion, ID: "side", SessionID: "parent", MainConversationID: "main", AppRunID: "launch", ProviderHostID: "btw-launch-side", Harness: domain.HarnessCodex, Generation: "generation", State: "opening", LaunchConfig: json.RawMessage(`{}`)}
+			if _, _, err := svc.sides.store.CreateSideConversation(t.Context(), side); err != nil {
+				t.Fatal(err)
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var stops atomic.Int32
+			svc.stopProviderHost = func(_ context.Context, host domain.SessionID) error {
+				if host != domain.SessionID(side.ProviderHostID) {
+					t.Errorf("stopped another host: %s", host)
+				}
+				if stops.Add(1) == 1 && lateStop {
+					close(entered)
+					<-release
+				}
+				return nil
+			}
+			parent := &sideCleanupTestConversation{onDelete: func() {
+				if stops.Load() != 2 {
+					t.Error("deleted the retried fork without stopping its new host")
+				}
+			}}
+			svc.controllers["parent"] = &Controller{conv: parent, harness: domain.HarnessCodex}
+			var stopped chan error
+			if lateStop {
+				if err := svc.sides.store.SetSideFailed(t.Context(), side.ID, side.Generation, "provider offline", time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				stopped = make(chan error, 1)
+				go func() { stopped <- svc.sides.stopSideHost(t.Context(), side) }()
+				<-entered
+				t.Cleanup(func() {
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+				})
+			} else {
+				driver.firstError = errors.New("provider offline")
+				svc.sides.open(side, StartConfig{}, driver)
+				failed, err := svc.sides.store.SideConversation(t.Context(), side.ID)
+				if err != nil || failed.State != "failed" || failed.ProviderForkID != "" || stops.Load() != 1 {
+					t.Fatalf("first opening: side=%+v stops=%d err=%v", failed, stops.Load(), err)
+				}
+			}
+			if err := svc.RetrySideConnection(t.Context(), side.SessionID, side.ID); err != nil {
+				t.Fatal(err)
+			}
+			for deadline := time.Now().Add(3 * time.Second); ; {
+				current, err := svc.sides.store.SideConversation(t.Context(), side.ID)
+				if err == nil && current.State == "ready" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("retry did not become ready: %+v %v", current, err)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if lateStop {
+				close(release)
+				if err := <-stopped; !errors.Is(err, ErrSideNotReady) {
+					t.Errorf("old shutdown confirmed the retried host: %v", err)
+				}
+			}
+			if err := svc.CloseIndependentSideChat(t.Context(), side.SessionID, side.ID); err != nil {
+				t.Fatal(err)
+			}
+			if stops.Load() != 2 || len(parent.deleted) != 1 {
+				t.Fatalf("retried host cleanup: stops=%d deleted=%v", stops.Load(), parent.deleted)
+			}
+		})
+	}
+}
+
 func TestSideCloseLateForkRequiresFreshHostStop(t *testing.T) {
 	svc := New(Options{DataDir: t.TempDir(), AppRunID: "launch"})
 	_, _ = svc.sides.store.ClaimSideLaunch(t.Context(), "launch", time.Now())
