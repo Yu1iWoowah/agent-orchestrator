@@ -188,14 +188,16 @@ A 的試合併有 249 個衝突路徑與 216 個雙方修改但自動合併的�
 - Windows ConPTY、macOS 簽章與 updater 只能由 CI 原生 job 證明。
 - 真 Claude Code 的 isolated lab（2026-11-18）：Plan 會出現在 Chat；一個 session 串流時，
   另一個 session 的恢復不受阻塞；daemon 重啟後，persistent host 讓進行中的 turn
-  對回原本的 turn 並完成，沒有重送。同一個 lab 看到兩個 F1 既有、不是同步造成的問題，
-  都不在本輪修正：
+  對回原本的 turn 並完成，沒有重送。同一個 lab 看到兩個問題，都不在本輪修正：
   - idle hibernation 與 `ao stop` 都因 delivery 證據未結算（`shutdown_not_settled`）
-    而被拒絕，provider 程序保留。根源與 backlog 214（Claude ACP 擋 `ao stop`）相同，
-    併入 214，在 u4 安裝前處理。
-  - 目錄沒有標示預設模型時，session 設定變更回
-    `AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE`；觸發條件是全新 HOME 沒有 Claude 的
-    model 設定。明確指定模型也被拒的原因未定，記 backlog（B 組）。
+    而被拒絕，provider 程序保留。這是 F1 既有的行為，根源與 backlog 214
+    （Claude ACP 擋 `ao stop`）相同，併入 214，在 u4 安裝前處理。
+  - session 設定變更回 `AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE`。判定程式
+    （`agentsettings`）是 F1 既有，F1→HEAD 沒有變動；目錄沒有標示預設模型是因為
+    全新 HOME 沒有 Claude 的 model 設定。但明確指定模型也被拒的原因未定，是否與同步
+    有關沒有判定：U 在 Claude 目錄指紋加了 salt（`modelcatalog/catalog.go:447`），
+    這個可能也沒有排除。記 backlog（B 組）；u4 換版後要核對既有 session 的目錄快照，
+    確認重新讀取目錄後設定能力會恢復。
 
 ### u4 換版界線
 
