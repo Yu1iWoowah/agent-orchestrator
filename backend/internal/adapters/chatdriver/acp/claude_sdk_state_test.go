@@ -3,6 +3,7 @@ package acp
 import (
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
@@ -53,5 +54,44 @@ func TestClaudeSDKSessionStateBecomesProviderState(t *testing.T) {
 	case event := <-conv.events:
 		t.Fatalf("unexpected event %+v", event)
 	default:
+	}
+}
+
+// With background turns on, every SDK state frame feeds both the background
+// turn tracker and provider.state. The turn boundary must come first and only
+// once, so provider.state never opens or closes a turn of its own.
+func TestClaudeSDKStateFollowsBackgroundTurnBoundaries(t *testing.T) {
+	conv := &conversation{
+		claudeBackgroundTurns: true,
+		log:                   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sessionID:             "native", reportedSessionID: "native",
+		events:   make(chan ports.ChatEvent, 16),
+		messages: make(map[string]string), thoughts: make(map[string]string),
+		nestedMessages: make(map[string]nestedMessageState), tools: make(map[string]*toolState),
+	}
+	for _, frame := range []string{
+		`{"sessionId":"native","message":{"type":"system","subtype":"session_state_changed","state":"running","uuid":"cycle-1"}}`,
+		`{"sessionId":"native","message":{"type":"result","subtype":"success","uuid":"result-1"}}`,
+		`{"sessionId":"native","message":{"type":"system","subtype":"session_state_changed","state":"idle","uuid":"idle-1"}}`,
+	} {
+		if !conv.handleNotification(claudeSDKMessageMethod, []byte(frame)) {
+			t.Fatalf("%s was not handled", frame)
+		}
+	}
+	var got []string
+	for len(conv.events) > 0 {
+		event := <-conv.events
+		label := string(event.Kind)
+		switch {
+		case event.ThreadState != nil:
+			label += ":" + string(event.ThreadState.Status)
+		case event.ControllerState != "":
+			label += ":" + string(event.ControllerState)
+		}
+		got = append(got, label)
+	}
+	want := []string{"turn.started", "controller.state:busy", "provider.state:active", "turn.completed", "controller.state:ready", "provider.state:idle"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
