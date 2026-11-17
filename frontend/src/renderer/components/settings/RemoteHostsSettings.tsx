@@ -70,11 +70,13 @@ export function RemoteHostsSettings({ titleHidden }: { titleHidden?: boolean }) 
 		setFormError("");
 	};
 
+	// A saved password is only kept for the address it was verified at.
+	const passwordRequired = !editing?.hostId || url.trim() !== editing.url;
 	const save = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		const nextLabel = label.trim();
 		const nextUrl = url.trim();
-		if (!nextLabel || !nextUrl || (!editing?.hostId && !password)) return;
+		if (!nextLabel || !nextUrl || (passwordRequired && !password)) return;
 		setBusy(true);
 		setFormError("");
 		try {
@@ -187,11 +189,11 @@ export function RemoteHostsSettings({ titleHidden }: { titleHidden?: boolean }) 
 				<p className="settings-content-row text-pretty text-control leading-4 text-settings-muted">{t("remote.setupHint")}</p>
 				<SettingsRow label={t("remote.name")}><Input aria-label={t("remote.name")} className="w-80 max-w-full" disabled={busy} maxLength={64} onChange={(event) => setLabel(event.target.value)} required value={label} /></SettingsRow>
 				<SettingsRow label={t("mobile.address")}><Input aria-label={t("mobile.address")} className="w-80 max-w-full" disabled={busy} inputMode="url" onChange={(event) => setUrl(event.target.value)} placeholder={t("remote.addressPlaceholder")} required value={url} /></SettingsRow>
-				<SettingsRow label={t("remote.connectionPassword")}><Input aria-label={t("remote.connectionPassword")} autoComplete="off" className="w-80 max-w-full" disabled={busy} onChange={(event) => setPassword(event.target.value)} placeholder={editing?.hostId ? t("remote.keepPassword") : undefined} required={!editing?.hostId} type="password" value={password} /></SettingsRow>
+				<SettingsRow label={t("remote.connectionPassword")}><Input aria-label={t("remote.connectionPassword")} autoComplete="off" className="w-80 max-w-full" disabled={busy} onChange={(event) => setPassword(event.target.value)} placeholder={passwordRequired ? undefined : t("remote.keepPassword")} required={passwordRequired} type="password" value={password} /></SettingsRow>
 				<div className="settings-content-row flex items-center justify-end gap-2">
 					{formError ? <p className="mr-auto min-w-0 text-xs text-error" role="alert">{formError}</p> : null}
 					{editing ? <Button disabled={busy} onClick={resetForm} size="sm" type="button" variant="quiet">{t("confirm.cancel")}</Button> : null}
-					<Button disabled={busy || !label.trim() || !url.trim() || (!editing?.hostId && !password)} size="sm" type="submit" variant="quiet">{busy ? t("remote.saving") : editing ? t("remote.saveHost") : t("remote.addHost")}</Button>
+					<Button disabled={busy || !label.trim() || !url.trim() || (passwordRequired && !password)} size="sm" type="submit" variant="quiet">{busy ? t("remote.saving") : editing ? t("remote.saveHost") : t("remote.addHost")}</Button>
 				</div>
 			</SettingsSection>
 		</form>
