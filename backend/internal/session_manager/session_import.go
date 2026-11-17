@@ -102,14 +102,32 @@ func (m *Manager) applyImportedConfigEnv(ctx context.Context, rec domain.Session
 				if sameDirectory(current, ref.ConfigDir) {
 					return
 				}
-				if rel, err := filepath.Rel(ref.ConfigDir, rec.Metadata.NativeTranscriptPath); err == nil && filepath.IsLocal(rel) {
-					// Codex compresses an inactive rollout in place and restores it on resume.
-					plain := strings.TrimSuffix(rel, ".zst")
+				rel, relErr := filepath.Rel(ref.ConfigDir, rec.Metadata.NativeTranscriptPath)
+				local := relErr == nil && filepath.IsLocal(rel)
+				// Codex compresses an inactive rollout in place and restores it on resume.
+				plain := strings.TrimSuffix(rel, ".zst")
+				if local {
 					for _, name := range []string{plain, plain + ".zst"} {
 						if _, err := os.Stat(filepath.Join(current, name)); err == nil {
 							return
 						}
 					}
+				}
+				if m.importRunsOnManagedAccount(ctx, rec) {
+					// A fork-managed profile links only AO's own history, never the
+					// computer's, so the conversation is copied into it (user decision
+					// UPSYNC-PR2-B A-Q1=A). Pointing the provider home back at the source
+					// would run the chat outside the account the session is bound to.
+					if !local {
+						m.logger.Warn("imported conversation is outside its provider home; not copied into the account",
+							"sessionID", rec.ID, "harness", rec.Harness)
+						return
+					}
+					if err := copyImportedTranscript(ref.ConfigDir, current, plain); err != nil {
+						m.logger.Warn("imported conversation not copied into the session's account",
+							"sessionID", rec.ID, "harness", rec.Harness, "error", err)
+					}
+					return
 				}
 			}
 		}
@@ -119,6 +137,61 @@ func (m *Manager) applyImportedConfigEnv(ctx context.Context, rec domain.Session
 		value = hooks.configValue(ref.ConfigDir)
 	}
 	setProtectedEnv(env, key, value, envKeysCaseInsensitive)
+}
+
+// importRunsOnManagedAccount reports whether the session's agent runs on an
+// AO-managed account rather than the computer's own login. An unreadable
+// binding counts as managed: it must not send the agent to another home.
+func (m *Manager) importRunsOnManagedAccount(ctx context.Context, rec domain.SessionRecord) bool {
+	provider, ok := domain.AgentAccountProviderFor(rec.Harness)
+	if !ok || m.agentAccounts == nil {
+		return false
+	}
+	accountID, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+	if err != nil {
+		return true
+	}
+	return accountID != "" && accountID != domain.DeviceAgentAccountID(provider)
+}
+
+// copyImportedTranscript places the imported conversation file at the same
+// path under an account's provider home, whose history folders are AO's own.
+// It reads only that one file, in whichever form (plain or compressed) the
+// source holds, and never replaces a file already there.
+func copyImportedTranscript(sourceHome, accountHome, plain string) error {
+	for _, name := range []string{plain, plain + ".zst"} {
+		source, err := os.Open(filepath.Join(sourceHome, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		err = writeImportedTranscript(source, filepath.Join(accountHome, name))
+		_ = source.Close()
+		return err
+	}
+	return fmt.Errorf("imported conversation %s is gone from its provider home", plain)
+}
+
+func writeImportedTranscript(source io.Reader, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, source); err != nil {
+		_ = out.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(target)
+		return err
+	}
+	return nil
 }
 
 // relocateImportedSession lets a provider that finds a session by the directory
