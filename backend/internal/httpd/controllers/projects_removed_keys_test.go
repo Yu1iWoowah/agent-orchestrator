@@ -53,6 +53,7 @@ func TestProjectConfigRoutesRejectRemovedAgentAccountsBeforeService(t *testing.T
 		{http.MethodPost, "/projects", `{"path":"/fake/p","config":{"agentAccounts":{"codex":"P"}}}`},
 		{http.MethodPost, "/projects/clone", `{` + clone + `,"config":{"agentAccounts":{}}}`},
 		{http.MethodPost, "/projects/clone/prepare", `{` + clone + `,"config":{"agentAccounts":{"codex":"P"}}}`},
+		{http.MethodPost, "/projects/clone/prepare/stream", `{` + clone + `,"config":{"agentAccounts":{"codex":"P"}}}`},
 		{http.MethodPost, "/projects/clone/check", `{` + clone + `,"config":{"agentAccounts":{"codex":"P"}}}`},
 		{http.MethodPut, "/projects/p", `{"displayName":"P","config":{"agentAccounts":null}}`},
 		{http.MethodPut, "/projects/p/config", `{"config":{"agentAccounts":{"claude":"P"}}}`},

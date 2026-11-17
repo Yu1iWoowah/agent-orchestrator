@@ -91,8 +91,7 @@ func (c *ProjectsController) prepareCloneStream(w http.ResponseWriter, r *http.R
 		return
 	}
 	var in projectsvc.CloneInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	flusher, ok := w.(http.Flusher)
