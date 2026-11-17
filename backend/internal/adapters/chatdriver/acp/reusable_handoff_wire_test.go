@@ -19,8 +19,14 @@ func TestReusableHandoffProducer(t *testing.T) {
 			status = acpsdk.ToolCallStatusCompleted
 			meta["terminal_exit"] = map[string]any{"terminal_id": input.ID, "exit_code": *input.ExitCode}
 		}
+		if input.Settled != "" {
+			status = acpsdk.ToolCallStatus(input.Settled)
+		}
+		if input.ProcessHandle {
+			meta["terminal_info"] = map[string]any{"terminal_id": input.ID}
+		}
 		tool := &toolState{id: input.ID, kind: acpsdk.ToolKindExecute, status: status, rawInput: map[string]any{"command": input.Command}, terminalOutput: input.Stdout, meta: meta,
 			content: []acpsdk.ToolCallContent{{Terminal: &acpsdk.ToolCallContentTerminal{Type: "terminal", TerminalId: input.ID}}}}
-		return (&conversation{}).toolEvent(input.Turn, tool, input.ExitCode != nil)
+		return (&conversation{}).toolEvent(input.Turn, tool, input.ExitCode != nil || input.Settled != "")
 	})
 }
