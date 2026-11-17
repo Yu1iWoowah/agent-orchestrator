@@ -11,6 +11,7 @@ import { toKanbanColumn } from "@aoagents/product-ui";
 import { appI18n } from "../i18n";
 
 // Instant motion updates so height tweens do not leave tests waiting on timers.
+vi.mock("./ProjectAttention", () => ({ ProjectAttention: () => <button type="button" data-testid="project-attention" /> }));
 vi.mock("motion/react", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("motion/react")>();
 	return {
@@ -294,6 +295,13 @@ describe("SessionsBoard", () => {
 		workspaceQueryMock.mockReturnValue({ data: [{ ...workspaceWithSessions([worker]), kind: "cloud", cloudOrgId: "org-mine" }], isSuccess: true });
 		renderBoard("p1");
 		expect(screen.getAllByRole("button", { name: /^(Task|New task)$/ }).length).toBeGreaterThan(0);
+	});
+
+	it("shows one project attention entry in a local board header", () => {
+		// The header's board actions own the entry; the board used to mount a second one.
+		workspaceQueryMock.mockReturnValue({ data: [workspaceWithSessions([boardSession({ id: "s1", title: "Upgrade to React 20", status: "working" })])], isSuccess: true });
+		renderBoard("p1");
+		expect(screen.getAllByTestId("project-attention")).toHaveLength(1);
 	});
 
 	it("leaves an unflagged cloud project on its board", () => {
