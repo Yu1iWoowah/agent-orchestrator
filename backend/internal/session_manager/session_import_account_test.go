@@ -2,7 +2,9 @@ package sessionmanager
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -114,4 +116,127 @@ func mustAccountProvider(t *testing.T, h domain.AgentHarness) domain.AgentAccoun
 		t.Fatalf("%s has no accounts", h)
 	}
 	return p
+}
+
+// Only the account's own history link may lead out of its home. A link deeper
+// down that points outside AO's history must not receive the copy, and the
+// launch still stays on the account.
+func TestImportCopyRefusesALinkOutOfAOHistory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	source := filepath.Join(root, "native-home")
+	transcript := filepath.Join(source, "projects", "-work", "native.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aoHistory := filepath.Join(root, "ao", "history", "claude")
+	account := filepath.Join(root, "ao", "accounts", "acct-1")
+	outside := filepath.Join(root, "outside")
+	for _, dir := range []string{aoHistory, account, outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(aoHistory, filepath.Join(account, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(aoHistory, "-work")); err != nil {
+		t.Fatal(err)
+	}
+	accounts := newTransitionAccounts(&[]string{})
+	m := &Manager{agents: importHomeAgents{}, agentAccounts: accounts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rec := domain.SessionRecord{ID: "imported", Harness: domain.HarnessClaudeCode}
+	rec.Metadata = domain.SessionMetadata{ProviderConversationID: "native", NativeTranscriptPath: transcript,
+		ImportSource: &domain.SessionImportSource{NativeID: "native", ConfigDir: source}}
+	accounts.bound[rec.ID] = "acct-1"
+	env := map[string]string{"CLAUDE_CONFIG_DIR": account}
+	m.applyImportedConfigEnv(context.Background(), rec, env)
+	if env["CLAUDE_CONFIG_DIR"] != account {
+		t.Fatalf("launch left the account: %v", env)
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("copy escaped AO history into %s: %v %v", outside, entries, err)
+	}
+}
+
+// pausingReader reports, partway through the copy, whether the final name
+// already exists; an interrupted daemon would leave whatever stands there.
+type pausingReader struct {
+	data    []byte
+	read    int
+	midway  func()
+	failAt  int
+	stopped bool
+}
+
+func (r *pausingReader) Read(p []byte) (int, error) {
+	if r.read >= len(r.data) {
+		return 0, io.EOF
+	}
+	if r.read > 0 && r.midway != nil {
+		r.midway()
+		r.midway = nil
+	}
+	if r.failAt > 0 && r.read >= r.failAt {
+		r.stopped = true
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p[:min(len(p), 4)], r.data[r.read:])
+	r.read += n
+	return n, nil
+}
+
+// The conversation appears under its final name only once complete. A copy cut
+// short leaves nothing there, so the next launch copies it again instead of
+// taking a truncated file as the conversation.
+func TestImportCopyPublishesOnlyAFinishedConversation(t *testing.T) {
+	root := t.TempDir()
+	account := filepath.Join(root, "acct")
+	aoHistory := filepath.Join(root, "history")
+	for _, dir := range []string{account, aoHistory} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(aoHistory, filepath.Join(account, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	name := "projects/-work/native.jsonl"
+	final := filepath.Join(account, filepath.FromSlash(name))
+	content := []byte("{\"turn\":1}\n{\"turn\":2}\n")
+
+	visibleMidway := true
+	cut := &pausingReader{data: content, failAt: 8, midway: func() {
+		_, err := os.Stat(final)
+		visibleMidway = err == nil
+	}}
+	if err := publishImportedTranscript(cut, account, name); err == nil || !cut.stopped {
+		t.Fatalf("interrupted copy reported %v", err)
+	}
+	if visibleMidway {
+		t.Fatal("the unfinished conversation stood at its final name during the copy")
+	}
+	if _, err := os.Stat(final); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("an interrupted copy left the final name: %v", err)
+	}
+
+	if err := publishImportedTranscript(&pausingReader{data: content}, account, name); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(final); err != nil || string(got) != string(content) {
+		t.Fatalf("next launch did not place the whole conversation: %q %v", got, err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(final))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("staging files left behind: %v %v", entries, err)
+	}
+	if err := publishImportedTranscript(&pausingReader{data: []byte("other")}, account, name); err == nil {
+		t.Fatal("an existing conversation was replaced")
+	}
+	if got, _ := os.ReadFile(final); string(got) != string(content) {
+		t.Fatalf("existing conversation changed: %q", got)
+	}
 }

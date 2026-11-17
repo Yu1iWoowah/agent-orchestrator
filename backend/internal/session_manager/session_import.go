@@ -11,8 +11,10 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -167,31 +169,53 @@ func copyImportedTranscript(sourceHome, accountHome, plain string) error {
 		if err != nil {
 			return err
 		}
-		err = writeImportedTranscript(source, filepath.Join(accountHome, name))
+		err = publishImportedTranscript(source, accountHome, filepath.ToSlash(name))
 		_ = source.Close()
 		return err
 	}
 	return fmt.Errorf("imported conversation %s is gone from its provider home", plain)
 }
 
-func writeImportedTranscript(source io.Reader, target string) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return err
+// publishImportedTranscript writes source to name under accountHome. The only
+// link it follows is the account's own history folder (name's first element),
+// the link into AO's history that preparing the profile checked; everything
+// below it is resolved inside that folder, so a link further down cannot carry
+// the copy outside it. The file is written and closed under a staging name and
+// then linked into place, which fails rather than replaces: an interrupted copy
+// never stands at the name a later launch takes as the finished conversation.
+func publishImportedTranscript(source io.Reader, accountHome, name string) error {
+	folder, rel, nested := strings.Cut(name, "/")
+	base := accountHome
+	if nested {
+		base = filepath.Join(accountHome, folder)
+	} else {
+		rel = folder
 	}
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	root, err := os.OpenRoot(base)
 	if err != nil {
 		return err
 	}
+	defer root.Close()
+	dir := path.Dir(rel)
+	if dir != "." {
+		if err := root.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	staging := path.Join(dir, "."+path.Base(rel)+".ao-import-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	out, err := root.OpenFile(staging, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Remove(staging) }()
 	if _, err := io.Copy(out, source); err != nil {
 		_ = out.Close()
-		_ = os.Remove(target)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		_ = os.Remove(target)
 		return err
 	}
-	return nil
+	return root.Link(staging, rel)
 }
 
 // relocateImportedSession lets a provider that finds a session by the directory
