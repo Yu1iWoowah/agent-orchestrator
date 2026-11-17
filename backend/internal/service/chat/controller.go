@@ -2704,9 +2704,15 @@ func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch boo
 func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) (map[string]error, error) {
 	var rejected map[string]error
 	c.mu.Lock()
-	cutoff := c.cancelQueuedAt
-	c.cancelQueuedAt = time.Time{}
 	busy := c.pendingTurnID != "" || c.pendingDeliveryID != "" || c.deliveryQuiescing
+	// A busy drain does nothing, so it must leave a Stop cutoff for the drain
+	// that runs once the agent is free; consuming it here would let the pre-Stop
+	// queue survive and dispatch later.
+	var cutoff time.Time
+	if !busy {
+		cutoff = c.cancelQueuedAt
+		c.cancelQueuedAt = time.Time{}
+	}
 	handoff := c.handoff
 	c.mu.Unlock()
 
@@ -4413,8 +4419,11 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// the queue so it cannot cascade through the same outage (issue #4861). A
 		// prompt the host's watchdog failed for silence is not an outage: the
 		// provider never answered, so the queued messages get their own turns.
+		// The watchdog's failure never reaches the delivery journal, so a stalled
+		// prompt whose execution is still unverified keeps the queue until that
+		// delivery settles.
 		releaseQueue := settledTurnState(event) == domain.TurnStateCompleted ||
-			errors.Is(event.Err, ports.ErrChatPromptStalled)
+			errors.Is(event.Err, ports.ErrChatPromptStalled) && !c.holdForUnsettledDelivery(ctx)
 		_ = c.drainLocked(ctx, releaseQueue) // drain logs failures.
 	case ports.ChatEventProviderState:
 		c.reportProviderState(ctx, event.ThreadState, now)
