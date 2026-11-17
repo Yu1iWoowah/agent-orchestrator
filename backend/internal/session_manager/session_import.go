@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -191,18 +190,19 @@ func publishImportedTranscript(source io.Reader, accountHome, name string) error
 	} else {
 		rel = folder
 	}
+	rel = filepath.FromSlash(rel)
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		return err
 	}
-	defer root.Close()
-	dir := path.Dir(rel)
+	defer func() { _ = root.Close() }()
+	dir := filepath.Dir(rel)
 	if dir != "." {
 		if err := root.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
-	staging := path.Join(dir, "."+path.Base(rel)+".ao-import-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	staging := filepath.Join(dir, "."+filepath.Base(rel)+".ao-import-"+strconv.FormatInt(time.Now().UnixNano(), 36))
 	out, err := root.OpenFile(staging, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
