@@ -106,7 +106,7 @@ describe("registerRemotesIpc", () => {
 		} finally { resetMainErrorCaptureForTests(); }
 	});
 
-	it("hides this installation without deleting its account record or original password", async () => {
+	it("hides this installation without deleting its account record", async () => {
 		const file = await tempFile();
 		const original = await readFile(file, "utf8");
 		const ipc = fakeIpc();
@@ -119,7 +119,8 @@ describe("registerRemotesIpc", () => {
 		await ipc.invoke("remotes:syncAccountHosts", TEST_ACCOUNT);
 		await expect(ipc.invoke("remotes:list")).resolves.toEqual([]);
 		expect(JSON.parse(await readFile(file, "utf8")).remotes).toEqual([
-			{ hostId: "h_workbox", label: "New name", url: "https://rotated.example", password: "old", accountUserId: TEST_ACCOUNT },
+			// Moved by the directory, so it carries the account token, not the local password.
+			{ hostId: "h_workbox", label: "New name", url: "https://rotated.example", password: "a".repeat(64), accountUserId: TEST_ACCOUNT },
 		]);
 	});
 
@@ -524,24 +525,51 @@ describe("registerRemotesIpc", () => {
 		]);
 	});
 
-	it("preserves and shows a legacy pairing when its host is discovered in the account", async () => {
-		const file = await tempFile();
-		await writeFile(file, JSON.stringify({ remotes: [
-			{ hostId: "h_legacy", label: "Old", url: "https://old.example", password: "pairing-password" },
-		] }));
-		const ipc = fakeIpc();
-		registerRemotes(ipc.ipcMain, {
-			file, registry: new RemoteRegistry(async () => { throw new Error("unused"); }),
-			requireAccount: signedIn, getAccountId: async () => "user-a",
-			cloudRequest: cloudListing({ hostId: "h_legacy", label: "Discovered", url: "https://new.example" }),
+	// A local credential only goes to the address it was typed for. When the
+	// account directory moves a locally paired host, it continues on the account
+	// token and becomes directory-managed (user decision upsync-pr2e-cloudsync-2).
+	describe("a locally paired host found in the account directory", () => {
+		const accountToken = "a".repeat(64);
+		const setup = async (local: Record<string, unknown>, cloudUrl: string) => {
+			const file = await tempFile();
+			await writeFile(file, JSON.stringify({ remotes: [{ hostId: "h_local", label: "Old", url: "https://old.example", accountUserId: "user-a", ...local }] }));
+			let listing = cloudListing({ hostId: "h_local", label: "Discovered", url: cloudUrl });
+			const identity = vi.fn(async () => "h_local");
+			const probe = vi.fn(async () => "online" as const);
+			const ipc = fakeIpc();
+			registerRemotes(ipc.ipcMain, {
+				file, registry: new RemoteRegistry(async () => { throw new Error("must not connect"); }),
+				requireAccount: signedIn, getAccountId: async () => "user-a", identity, probe,
+				cloudRequest: (...args) => listing(...args),
+			});
+			const saved = async () => (JSON.parse(await readFile(file, "utf8")) as { remotes: Array<Record<string, unknown>> }).remotes;
+			return { ipc, identity, probe, saved, unlist: () => { listing = cloudListing(); } };
+		};
+
+		it.each([
+			["pairing password", { password: "pairing-password" }],
+			["device token", { password: "aod_" + "d".repeat(64), fallbackPassword: "pairing-password" }],
+		])("moves on the account token and drops its %s", async (_name, local) => {
+			const { ipc, identity, probe, saved } = await setup(local, "https://new.example");
+			await ipc.invoke("remotes:syncAccountHosts", "user-a");
+			expect(await saved()).toEqual([{ hostId: "h_local", label: "Discovered", url: "https://new.example", password: accountToken, accountUserId: "user-a" }]);
+			expect(identity).not.toHaveBeenCalled();
+			expect(probe).not.toHaveBeenCalled();
 		});
 
-		await ipc.invoke("remotes:syncAccountHosts", "user-a");
-		await expect(ipc.invoke("remotes:list")).resolves.toEqual([
-			{ hostId: "h_legacy", label: "Discovered", url: "https://new.example" },
-		]);
-		const saved = JSON.parse(await readFile(file, "utf8")) as { remotes: Array<{ password: string }> };
-		expect(saved.remotes[0]?.password).toBe("pairing-password");
+		it("keeps the local password at the same address", async () => {
+			const { ipc, saved } = await setup({ password: "pairing-password" }, "https://old.example");
+			await ipc.invoke("remotes:syncAccountHosts", "user-a");
+			expect(await saved()).toEqual([{ hostId: "h_local", label: "Discovered", url: "https://old.example", password: "pairing-password", accountUserId: "user-a" }]);
+		});
+
+		it("is removed with the directory once it has moved", async () => {
+			const { ipc, saved, unlist } = await setup({ password: "pairing-password" }, "https://new.example");
+			await ipc.invoke("remotes:syncAccountHosts", "user-a");
+			unlist();
+			await ipc.invoke("remotes:syncAccountHosts", "user-a");
+			expect(await saved()).toEqual([]);
+		});
 	});
 
 	it("links a paired host to the account without returning its token", async () => {
@@ -648,14 +676,14 @@ describe("registerRemotesIpc", () => {
 			registerRemotes(ipc.ipcMain, {
 				file, registry: new RemoteRegistry(async () => { throw new Error("unused"); }), requireAccount: signedIn,
 				cloudRequest: cloudListing(
-					{ hostId: "h_paired", label: "Renamed", url: "https://moved.example" },
+					{ hostId: "h_paired", label: "Renamed", url: "https://paired.example" },
 					{ hostId: "h_token", label: "Token", url: "https://token.example" },
 				),
 			});
 			await ipc.invoke("remotes:syncAccountHosts", TEST_ACCOUNT);
 			// Neither password is replaced by the account token, and the host the account dropped goes.
 			expect(JSON.parse(await readFile(file, "utf8")).remotes).toEqual([
-				{ hostId: "h_paired", label: "Renamed", url: "https://moved.example", sealedPassword: "sealed-pairing", accountUserId: TEST_ACCOUNT },
+				{ hostId: "h_paired", label: "Renamed", url: "https://paired.example", sealedPassword: "sealed-pairing", accountUserId: TEST_ACCOUNT },
 				{ hostId: "h_token", label: "Token", url: "https://token.example", sealedPassword: "sealed-token", accountToken: true, accountUserId: TEST_ACCOUNT },
 			]);
 		} finally {

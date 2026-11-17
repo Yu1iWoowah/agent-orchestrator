@@ -301,9 +301,12 @@ export function registerRemotesIpc(
 		const local = (await readRemotes(file)).find((entry) => entry.hostId === host.hostId);
 		// Keep the original password on the machine that performed pairing; a
 		// Cloud refresh must not replace it with the narrower account token. A
-		// password this launch cannot decrypt is kept the same way.
-		if (local && (local.sealedPassword || (local.password && !holdsAccountToken(local)))) {
-			if (local.label !== host.label || local.url !== host.url) await updateRemote(file, local.url, { label: host.label, url: host.url });
+		// password this launch cannot decrypt is kept the same way. That holds only
+		// at the address it was paired at: a local credential never goes to an
+		// address it was not typed for, so a moved host continues on the account
+		// token and becomes directory-managed.
+		if (local && (local.sealedPassword || (local.password && !holdsAccountToken(local))) && local.url === host.url) {
+			if (local.label !== host.label) await updateRemote(file, local.url, { label: host.label });
 			return;
 		}
 		await addRemote(file, { hostId: host.hostId, label: host.label, url: host.url, password: host.token, accountUserId: account });
