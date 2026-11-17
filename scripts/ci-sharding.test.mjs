@@ -52,7 +52,7 @@ if (args[0] === 'list' || args.includes('-list')) {
 function assertRace(args) {
   assert.ok(args.includes('-race'));
   assert.ok(args.includes('-count=1'));
-  assert.ok(args.includes('-timeout=10m'));
+  assert.ok(args.includes('-timeout=20m'));
 }
 
 const DEDICATED = ['example/backend/internal/storage/sqlite', 'example/backend/internal/service/chat', 'example/backend/internal/session_manager', 'example/backend/internal/storage/sqlite/store'];
@@ -169,6 +169,6 @@ test('vitest matrix and command agree on two complete shards', () => {
   assert.match(script, /^ *npx vitest run --shard=\$\{\{ matrix\.shard \}\}\/2$/m);
   assert.match(script, /^ *npx vitest related --run --passWithNoTests --shard=\$\{\{ matrix\.shard \}\}\/2 /m);
   assert.match(block, /timeout-minutes: 30/);
-  assert.match(job(go, 'backend-core'), /timeout-minutes: 20/);
+  assert.match(job(go, 'backend-core'), /timeout-minutes: 30/);
   for (const id of ['chat-race', 'session-store-race', 'sqlite-race']) assert.match(job(go, id), /-timeout=20m/);
 });

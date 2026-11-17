@@ -21,7 +21,7 @@ env:
 jobs:
   backend-core:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +54,8 @@ jobs:
           packages=$(go list ./... | grep -v -e '/internal/storage/sqlite$' -e '/internal/service/chat$' -e '/internal/session_manager$' -e '/internal/storage/sqlite/store$')
           selected=$(printf '%s\n' "$packages" | awk -v shard=${{ matrix.shard }} '((NR - 1) % 3) == shard')
           test -n "$selected"
-          printf '%s\n' "$selected" | xargs go test -race -count=1 -timeout=10m
+          # acp and codexappserver take 6-7 minutes each and can exceed 10 under load.
+          printf '%s\n' "$selected" | xargs go test -race -count=1 -timeout=20m
 
   chat-race:
     runs-on: ubuntu-latest
