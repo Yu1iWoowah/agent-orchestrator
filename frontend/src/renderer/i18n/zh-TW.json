@@ -2065,7 +2065,7 @@
 	"settings.options.searchAria": "搜尋 {{label}}",
 	"settings.options.searchPlaceholder": "搜尋選項",
 	"settings.field.edit": "編輯 {{label}}",
-	"settings.project.coAuthorCommitsDescription": "When enabled, commits the agent make in this project list the Orchestrator GitHub App as a co-author. The commit author does not change.",
+	"settings.project.coAuthorCommitsDescription": "開啟後，agent 在這個專案中建立的 commit 會把 Orchestrator GitHub App 列為共同作者。commit 作者不會改變。",
 	"settings.project.coAuthorCommitsToggle": "將 Orchestrator 加為 commit 共同作者",
 	"settings.cloudProject.coAuthorCommitsUnsupported": "這個 Cloud 控制平面還不支援共同作者設定，因此會維持開啟。",
 	"settings.project.details": "專案詳細資訊",
