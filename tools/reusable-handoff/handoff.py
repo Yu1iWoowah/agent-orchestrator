@@ -518,11 +518,11 @@ def quiescent(snapshot, settled_receipts=(), run=None):
     if any(t.get("state") in ("queued", "running") for t in transcript.get("turns", [])):
         return False
     helper = completed_old_helper(run, snapshot) if run else None
-    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"), transcript.get("turns", []))
+    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"))
                for entry in transcript.get("entries", []))
 
 
-def activity_quiescent(entry, receipts=(), run=None, sid=None, turns=()):
+def activity_quiescent(entry, receipts=(), run=None, sid=None):
     if entry.get("kind") != "activity":
         return True
     if entry.get("status") not in ("completed", "resolved", "cancelled", "failed", "recovered"):
@@ -534,11 +534,9 @@ def activity_quiescent(entry, receipts=(), run=None, sid=None, turns=()):
         return True
     handles = operation_handles(entry)
     if entry.get("activityKind") == "command" and detail.get("exitCode") is None:
-        # A reconnectable process (Codex PTY, ACP terminal) without an exit needs a terminal receipt; AO
-        # settles a completed turn's leftovers as completed, so failed/cancelled there came from the provider.
-        turn = next((t.get("state") for t in turns if t.get("id") == entry.get("turnId")), None)
-        if not (entry["status"] in ("failed", "cancelled") and turn == "completed"):
-            handles += [{"reference": str(detail[key]), "state": "UNKNOWN"} for key in ("processId", "terminalId") if detail.get(key) is not None]
+        # A reconnectable process (Codex PTY, ACP terminal) without an exit needs a terminal receipt of that same
+        # operation: AO and the ACP driver settle leftovers themselves, so neither status nor turn proves it ended.
+        handles += [{"reference": str(detail[key]), "state": "UNKNOWN"} for key in ("processId", "terminalId") if detail.get(key) is not None]
     return all(handle["reference"] != "UNKNOWN" and (handle["state"] in ("completed", "cancelled", "failed") or operation_terminal(entry, handle, receipts))
                for handle in handles)
 
@@ -1573,6 +1571,7 @@ class Run:
                 cli.execution.new_id = self.state["new_id"]
             cli.execution.phase = self.state.get("stage", "prepared")
         self.recovered = set()
+        self.unsettled = {}
 
     def save(self):
         self.state["last_progress_at"] = now()
@@ -1604,9 +1603,9 @@ class Run:
         start = waits[phase]
         require(start["boot_id"] == boot_id() and self.clock() >= start["monotonic"], "UNKNOWN elapsed clock: " + phase)
         while True:
-            require(self.clock() - start["monotonic"] < start["limit"], "wait deadline reached: " + phase)
+            self.check_deadline(phase, start)
             result = predicate()
-            require(self.clock() - start["monotonic"] < start["limit"], "wait deadline reached: " + phase)
+            self.check_deadline(phase, start)
             if result:
                 start["completed_at"] = now()
                 start["elapsed"] = self.clock() - start["monotonic"]
@@ -1614,6 +1613,18 @@ class Run:
                 self.save()
                 return result
             self.sleep(2)
+
+    def check_deadline(self, phase, start):
+        # A workers deadline names each still-open worker and the activities that kept it open.
+        named = " " + json.dumps(self.unsettled, sort_keys=True) if phase == "workers" and self.unsettled else ""
+        require(self.clock() - start["monotonic"] < start["limit"], "wait deadline reached: " + phase + named)
+
+    def quiescent_worker(self, sid, snap, receipts=()):
+        if quiescent(snap, receipts, self):
+            self.unsettled.pop(sid, None)
+            return True
+        self.unsettled[sid] = [e.get("id") for e in entries(snap) if not activity_quiescent(e, receipts, self, sid)] or ["session/turn"]
+        return False
 
     def rearm_wait(self):
         """An explicit same-run manual attempt, never invoked by polling."""
@@ -1790,7 +1801,7 @@ class Run:
                 require(stop["stop_directive"]["last_ack_d"] == rules["reserved_stop_d"], "worker stop D does not match reserved directive")
                 if not completed(snap, stop["evidence_turn_id"]):
                     return False
-            if not quiescent(snap, stop["settled"]["in_flight"], self):
+            if not self.quiescent_worker(sid, snap, stop["settled"]["in_flight"]):
                 return False
             require(stop["workspace"]["path"] == self.workspace(sid), "stop workspace differs from registered workspace")
             # Recheck computes the same snapshot without writing objects; only a drift keeps evidence.
@@ -1799,12 +1810,12 @@ class Run:
                 publish(directory / ("verify-" + uuid.uuid4().hex) / "snapshot.json", actual["raw"])
                 raise Stop("worker content drift: " + sid)
             return stop
-        if quiescent(snap, run=self):
+        if self.quiescent_worker(sid, snap):
             workspace = self.workspace(sid)
             before = git_snapshot(workspace, directory / ("before-" + uuid.uuid4().hex))
             self.sleep(2)
             after = git_snapshot(workspace, directory / ("after-" + uuid.uuid4().hex))
-            if before["sha256"] != after["sha256"] or not quiescent(self.snapshot(sid), run=self):
+            if before["sha256"] != after["sha256"] or not self.quiescent_worker(sid, self.snapshot(sid)):
                 return False
             publish(directory / "quiescent-observation.raw", getattr(self.cli, "last_raw", canonical(snap)))
             publish(directory / "provenance.json", canonical([]))
@@ -2123,7 +2134,7 @@ def worker_receipt(run):
     if proof["retained"] or proof["truncated_fields"]:
         reasons.append("other incomplete/unknown producer activity")
     for entry in entries(snap):
-        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid, snap["transcript"].get("turns", [])):
+        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid):
             reasons.append("other tool/operation not positively terminal: " + str(entry.get("id")))
     before = after = None
     try:

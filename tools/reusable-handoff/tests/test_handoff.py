@@ -1033,6 +1033,20 @@ finally:
         self.assertEqual(len(run.cli.calls), 1)
         self.assertEqual(run.state["waits"]["workers"]["monotonic"], 0)
 
+    def test_T01_workers_deadline_names_the_worker_and_its_open_activity(self):
+        run = self.run_fixture()
+        idle = snapshot(entries=[{"id": "open-terminal", "sequence": 3, "kind": "activity", "activityKind": "command",
+                                  "status": "failed", "turnId": "turn", "detail": {"terminalId": "open-terminal"}}])
+        idle["session"].update(id="worker", kind="worker")
+        run.cli.session = lambda _: idle
+        self.worker_index(run)
+        run.request["workers"] = []
+        elapsed = [0]
+        run.clock = lambda: elapsed[0]
+        run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
+        with self.assertRaisesRegex(h.Stop, "wait deadline reached: workers.*worker.*open-terminal"):
+            run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+
     def test_T05_running_2a_and_bootstrap_receipts_wait_for_completed(self):
         for sid, phase in (("old", "old_2a"), ("new", "bootstrap")):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
@@ -1267,13 +1281,17 @@ finally:
         source = self.root / "process-terminal.json"
         h.publish(source, h.canonical(dict(reference="tool", activity_id="tool", state="completed")))
         receipt = dict(reference="tool", activity_id="tool", state="completed", evidence_path=str(source), sha256=h.digest(source.read_bytes()))
-        # status is what the provider settles, or what AO's terminalActivityStatus gives a turn's leftovers.
+        # Neither status nor turn proves a process ended: AO's terminalActivityStatus settles a turn's leftovers,
+        # a later completed settle rewrites only the turn (interrupted/failed then completed), and the ACP driver
+        # synthesizes failed for tools still open when the prompt ends. Only a same-operation receipt counts.
         for handle, status, turn, receipts, expected in [
                 (False, "completed", "completed", [], True), (False, "failed", "completed", [], True),
                 (True, "completed", "completed", [], False), (True, "completed", "completed", [receipt], True),
                 (True, "failed", "failed", [], False), (True, "cancelled", "interrupted", [], False),
-                (True, "recovered", "recovered", [], False), (True, "failed", "completed", [], True),
-                (True, "cancelled", "completed", [], True)]:
+                (True, "recovered", "recovered", [], False),
+                (True, "cancelled", "completed", [], False),  # interrupted, then the same turn settled completed
+                (True, "failed", "completed", [], False),  # failed then completed, or ACP prompt-end synthesis
+                (True, "failed", "completed", [receipt], True)]:
             with self.subTest(handle=handle, status=status, turn=turn, receipt=bool(receipts)):
                 snap = produced_activity(snapshot(), "external-command", "", None, "worker", "turn", "tool", 5,
                                          handle=handle, settled="failed" if status == "failed" else "completed")

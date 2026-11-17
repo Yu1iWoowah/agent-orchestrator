@@ -154,7 +154,7 @@ CLI 的非空 AO_DATA_DIR 優先、否則 home/.ao/data；相對值在啟動時�
 session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、detached 都能定位，detached branch 記 null。保存原註冊清單與 path／Git metadata 身分；安全停點後 branch／HEAD／內容／註冊漂移仍停止。零筆、多筆、prunable、缺失、矛盾或別名均停止。
 同一輪會對所有 live worker 收檔或送出原保留 D；請求由 intent 冪等，不等第一位 safe 才通知下一位。
 正常 CLI `incomplete` 是 queued／running turn、streaming／未結工具的清單，交由各 predicate 有界等待；真正截斷仍停止。
-未結工具＝status 非終態；或帶 running job／session handle 而無完成收據；或 command 缺 exitCode 且帶 `processId`／`terminalId`，而沒有同一操作的終態收據。例外：所屬 turn 是 completed 時，failed／cancelled 只可能由 provider 回報（AO 在 completed turn 收尾只設 completed），視為已結束。缺 exitCode 本身不算未結。
+未結工具＝status 非終態；或帶 running job／session handle 而無完成收據；或 command 缺 exitCode 且帶 `processId`／`terminalId`，而沒有同一操作的終態收據。status 與 turn 狀態都不能證明程序已結束（AO 與 ACP driver 會自行收尾遺留的 activity），只認同一操作的終態收據（使用者 rh-realdata-fix-q4-2＝strict-named）。worker 最近視窗內有這類 command 時，workers 階段會等到期限，STOP 原因指名該 worker 與 activity；要先正常結束該 worker，或等該筆移出最近視窗。缺 exitCode 本身不算未結。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
 
 ## old Git 保全與正常回收（v3.1 §6）
