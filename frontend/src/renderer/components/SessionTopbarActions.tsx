@@ -126,7 +126,7 @@ export function SessionTopbarActions({
 			data-compact-actions={compactActions ? "true" : "false"}
 			data-testid="workspace-topbar-actions"
 		>
-			{session?.id === orchestrator?.id && session?.mode === "tui" && projectId ? <ProjectAttention projectId={projectId} hostId={hostId} /> : null}
+			{session?.id === orchestrator?.id && session?.mode === "tui" && projectId ? <ProjectAttention key={`${hostId ?? "local"}:${projectId}`} projectId={projectId} hostId={hostId} /> : null}
 			{session ? <SessionOwnerTag session={session} /> : null}
 			{isOrchestrator ? <ProjectTerminationFeedback projectId={projectId} hostId={hostId} /> : null}
 			{/* A worker's way back to its orchestrator leads the row. */}
