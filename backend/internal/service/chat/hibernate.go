@@ -811,6 +811,7 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 		if err := s.DrainQueued(ctx, id); err != nil {
 			_ = s.saveWakeAttempt(ctx, attempt, "blocked", "CHAT_DRAIN_UNAVAILABLE")
 			s.log.Warn("chat session woke but queued inputs remain fenced", "session", id, "code", "CHAT_DRAIN_UNAVAILABLE")
+			captureChatFault(ctx, err, "", "chat_wake", "drain")
 			return
 		}
 		_ = s.saveWakeAttempt(ctx, attempt, "ready", "")

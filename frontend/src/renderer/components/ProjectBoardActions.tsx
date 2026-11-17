@@ -89,7 +89,7 @@ export function ProjectBoardActions({ actions, placement, quiet = false, cloud =
 			{canCreateAsTui ? <Button type="button" size="sm" disabled={busy} onClick={() => openOrchestrator("tui")} style={style} variant="primary">{t("newTask.createAsTui")}</Button> : null}
 		</div>
 	) : null;
-	return header ? <>{!cloud && projectId ? <ProjectAttention projectId={projectId} hostId={hostId} /> : null}{feedback}{orchestratorButton}{newTaskButton}</> : <>
+	return header ? <>{!cloud && projectId ? <ProjectAttention key={`${hostId ?? "local"}:${projectId}`} projectId={projectId} hostId={hostId} /> : null}{feedback}{orchestratorButton}{newTaskButton}</> : <>
 		<div className="mt-5 flex items-center gap-2">{orchestratorButton}{newTaskButton}</div>
 		{feedback}
 	</>;
