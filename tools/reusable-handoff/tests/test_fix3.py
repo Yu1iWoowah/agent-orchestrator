@@ -142,13 +142,51 @@ class WorkspaceTests(unittest.TestCase):
                         oid = self.git(workspace, "rev-parse", "HEAD:cloud/.env.example").decode().strip()
                         data = ("0 " + "0" * 40 + "\tcloud/.env.example\n100644 " + oid + " 1\tcloud/.env.example\n").encode()
                         subprocess.run(["git", "-C", str(workspace), "update-index", "--index-info"], input=data, check=True, capture_output=True)
-                    with self.assertRaises(h.Stop):
-                        if role == "old":
-                            plan["classification"] = [{"path": ".env", "disposition": "discardable", "basis": "not a bypass"}]
-                            h.old_git_state(run, plan, workspace)
-                        else:
-                            h.git_snapshot(workspace, destination)
+                    if role == "worker" and case == "ignored":
+                        # A worker snapshot never reads or saves ignored names; they stay in place.
+                        h.git_snapshot(workspace, destination)
+                    else:
+                        with self.assertRaises(h.Stop):
+                            if role == "old":
+                                plan["classification"] = [{"path": ".env", "disposition": "discardable", "basis": "not a bypass"}]
+                                h.old_git_state(run, plan, workspace)
+                            else:
+                                h.git_snapshot(workspace, destination)
                     self.no_marker(destination)
+
+    def dependency_env(self, workspace):
+        bundled = workspace / "node_modules/bottleneck/.env"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_bytes(MARKER)
+
+    def test_worker_snapshot_detects_ignored_names_added_or_removed_between_snapshots(self):
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        self.commit(self.repo)
+        bundled = self.repo / "node_modules/bottleneck/.env"
+        bundled.parent.mkdir(parents=True)
+        without = h.git_snapshot(self.repo, None, write=False)["sha256"]
+        bundled.write_bytes(MARKER)
+        added = h.git_snapshot(self.repo, None, write=False)["sha256"]
+        self.assertNotEqual(added, without)
+        bundled.write_bytes(b"other bytes, same name\n")
+        self.assertEqual(h.git_snapshot(self.repo, None, write=False)["sha256"], added)
+        bundled.unlink()
+        self.assertEqual(h.git_snapshot(self.repo, None, write=False)["sha256"], without)
+
+    def test_dependency_bundled_env_is_inventoried_for_worker_and_stops_old(self):
+        self.template()
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        self.commit(self.repo)
+        self.dependency_env(self.repo)
+        destination = self.root / "snapshot"
+        doc = json.loads(Path(h.git_snapshot(self.repo, destination)["path"]).read_bytes())
+        self.assertNotIn("node_modules/bottleneck/.env", doc["files"])
+        self.no_marker(destination)
+        workspace, run, plan = self.old()
+        self.dependency_env(workspace)
+        with self.assertRaisesRegex(h.Stop, "node_modules/bottleneck/.env"):
+            h.old_git_state(run, plan, workspace)
+        self.no_marker(run.root)
 
     def test_other_committed_sensitive_names_and_parent_paths_still_stop(self):
         for i, relative in enumerate([".env", "auth.json", ".env.sample", ".env.template", ".env/.env.example", "auth.json/.env.example"]):
@@ -354,6 +392,33 @@ class ProducerTests(unittest.TestCase):
                     receipt = fake.dispatch_actor(2)
                     self.assertEqual(receipt["state"], "safe")
                     self.assertEqual(fake.run.worker_stop({"id": "worker"})["state"], "safe")
+
+    def test_worker_helper_keeps_dependency_bundled_env_in_place(self):
+        fixture = fix2.WorkerProducerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fake, _ = fixture.prepared()
+        self.add_template(fake.worker_path)
+        exclude = Path(subprocess.check_output(["git", "-C", str(fake.worker_path), "rev-parse", "--git-path", "info/exclude"]).decode().strip())
+        exclude = exclude if exclude.is_absolute() else fake.worker_path / exclude
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text("node_modules/\n")
+        bundled = fake.worker_path / "node_modules/bottleneck/.env"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_bytes(MARKER)
+        receipt = fake.dispatch_actor(2)
+        self.assertEqual(receipt["state"], "safe")
+        self.assertEqual(fake.run.worker_stop({"id": "worker"})["state"], "safe")
+        self.assertEqual(bundled.read_bytes(), MARKER)
+        for path in fake.run.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(MARKER, path.read_bytes())
+        # Names are inventoried after the safe receipt: adding or removing one is drift.
+        extra = bundled.parent / ".env.local"
+        for change in (lambda: extra.write_bytes(MARKER), lambda: (extra.unlink(), bundled.unlink())):
+            change()
+            with self.assertRaisesRegex(h.Stop, "worker content drift"):
+                fake.run.worker_stop({"id": "worker"})
 
     def test_old_helper_refuses_dirty_template_before_saved_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
