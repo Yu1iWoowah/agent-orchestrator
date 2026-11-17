@@ -397,6 +397,25 @@ func TestDeleteSession(t *testing.T) {
 	}
 }
 
+type protectedHistoryStore struct{ *fakeStore }
+
+func (protectedHistoryStore) CheckTerminatedSessionDeletable(context.Context, domain.SessionID) error {
+	return domain.ErrSessionHistoryProtected
+}
+
+// A store refusal comes before the cleanup step, so the worktree stays too.
+func TestDeleteSession_ProtectedHistoryRefusesBeforeCleanup(t *testing.T) {
+	m, st, _, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	m.store = protectedHistoryStore{st}
+	if err := m.DeleteSession(ctx, "mer-1", true); !errors.Is(err, domain.ErrSessionHistoryProtected) {
+		t.Fatalf("DeleteSession = %v, want ErrSessionHistoryProtected", err)
+	}
+	if _, exists := st.sessions["mer-1"]; ws.destroyed != 0 || !exists {
+		t.Fatalf("refused delete changed state: destroyed=%d exists=%v", ws.destroyed, exists)
+	}
+}
+
 // With cleanup, a worktree still on disk is released first, the way cleanup
 // does it; a refusal keeps both the worktree and the session.
 func TestDeleteSession_CleansUpFirst(t *testing.T) {

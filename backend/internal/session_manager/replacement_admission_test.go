@@ -21,7 +21,7 @@ func (s *replacementFenceStore) GetActiveOrchestratorReplacement(_ context.Conte
 }
 
 func TestReplacementAdmissionRefusesLegacyActionsBeforeSideEffects(t *testing.T) {
-	for _, action := range []string{"spawn", "kill", "request kill", "restore", "resume", "exit", "legacy retire", "interface switch", "provider switch", "account switch"} {
+	for _, action := range []string{"spawn", "kill", "request kill", "restore", "resume", "exit", "legacy retire", "interface switch", "provider switch", "account switch", "delete"} {
 		t.Run(action, func(t *testing.T) {
 			m, st, rt, ws := newManager()
 			source := mkLive("mer-1")
@@ -50,6 +50,8 @@ func TestReplacementAdmissionRefusesLegacyActionsBeforeSideEffects(t *testing.T)
 				err = m.SwitchTUIProvider(ctx, source.ID, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessCodex})
 			case "legacy retire":
 				err = m.RetireForReplacement(ctx, source.ID)
+			case "delete":
+				err = m.DeleteSession(ctx, source.ID, true)
 			}
 			if !errors.Is(err, domain.ErrReplacementInProgress) {
 				t.Fatalf("%s bypassed replacement admission: %v", action, err)
@@ -99,7 +101,11 @@ func TestReplacementAdmissionRefusesRetiredSourceEvenAfterCompletion(t *testing.
 	if !errors.Is(err, domain.ErrReplacementSourceRetired) {
 		t.Fatalf("completed replacement revived retired source: %v", err)
 	}
-	if rt.created != 0 || ws.createCount != 0 || !st.sessions[source.ID].IsTerminated {
+	// Deleting it, by hand or by retention, would drop the handoff evidence.
+	if err := m.DeleteSession(ctx, source.ID, true); !errors.Is(err, domain.ErrReplacementSourceRetired) {
+		t.Fatalf("delete of retired source = %v", err)
+	}
+	if _, exists := st.sessions[source.ID]; rt.created != 0 || ws.createCount != 0 || ws.destroyed != 0 || !exists || !st.sessions[source.ID].IsTerminated {
 		t.Fatal("retired source changed before refusal")
 	}
 }

@@ -179,6 +179,52 @@ func TestDeleteTerminatedSessionRefusesSharedConversationHistory(t *testing.T) {
 	}
 }
 
+// An input under custody leaves only through its own explicit delete. The
+// refusal comes before the history drains, so nothing of the session goes.
+func TestDeleteTerminatedSessionRefusesHistoryUnderCustody(t *testing.T) {
+	dir := t.TempDir()
+	s := sqlitetest.MustOpenAt(t, dir)
+	ctx := context.Background()
+	seedProject(t, s, "del")
+	sess := terminalSession(t, s, "del", 0)
+	upsertFacts(t, s, domain.SessionCleanupRecord{SessionID: sess.ID, WorkspaceDisposition: domain.DispositionRemoved})
+	now := time.Now().UTC()
+	if _, err := s.CreateConversation(ctx, "conv-held", domain.ConversationScopeSession, "del", sess.ID, now); err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	raw := openRawDB(t, dir)
+	for _, q := range []string{
+		`INSERT INTO conversation_turns (id, conversation_id, handled_by_session_id, state, requested_at) VALUES ('turn-held', 'conv-held', ?1, 'queued', ?2)`,
+		`INSERT INTO conversation_provider_events (conversation_id, session_id, method, payload_json, received_at) VALUES ('conv-held', ?1, 'message.delta', '{}', ?2)`,
+		`INSERT INTO conversation_activities (id, conversation_id, turn_id, sequence, kind, status, created_at, updated_at) VALUES ('activity-held', 'conv-held', 'turn-held', 1, 'command', 'completed', ?2, ?2)`,
+	} {
+		if _, err := raw.ExecContext(ctx, q, sess.ID, now); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if _, err := s.RegisterInputCustody(ctx, "turn-held", "owner", "register", now); err != nil {
+		t.Fatalf("register custody: %v", err)
+	}
+
+	if err := s.CheckTerminatedSessionDeletable(ctx, sess.ID); !errors.Is(err, domain.ErrSessionHistoryProtected) {
+		t.Fatalf("check = %v; want ErrSessionHistoryProtected", err)
+	}
+	deleted, err := s.DeleteTerminatedSession(ctx, sess.ID)
+	if !errors.Is(err, domain.ErrSessionHistoryProtected) || deleted {
+		t.Fatalf("delete = %v, %v; want ErrSessionHistoryProtected", deleted, err)
+	}
+	for _, q := range []string{
+		`SELECT count(*) FROM sessions WHERE id = ?1`,
+		`SELECT count(*) FROM conversation_provider_events WHERE session_id = ?1`,
+		`SELECT count(*) FROM conversation_activities WHERE conversation_id = 'conv-held' AND ?1 <> ''`,
+		`SELECT count(*) FROM conversation_input_custody WHERE turn_id = 'turn-held' AND ?1 <> ''`,
+	} {
+		if n := countRows(t, raw, q, sess.ID); n != 1 {
+			t.Fatalf("refused delete changed %q: %d rows, want 1", q, n)
+		}
+	}
+}
+
 func openRawDB(t *testing.T, dir string) *sql.DB {
 	t.Helper()
 	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "ao.db")+"?_pragma=busy_timeout(5000)")
