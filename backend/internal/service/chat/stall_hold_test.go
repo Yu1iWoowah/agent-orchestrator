@@ -18,11 +18,12 @@ import (
 type stallHoldStore struct {
 	*store.Store
 	failPending atomic.Bool
+	failWhen    atomic.Pointer[func() bool]
 	afterRead   atomic.Pointer[func()]
 }
 
 func (s *stallHoldStore) PendingChatDeliveries(ctx context.Context, id domain.SessionID) ([]domain.ChatDeliveryAttempt, error) {
-	if s.failPending.Load() {
+	if fail := s.failWhen.Load(); s.failPending.Load() || fail != nil && (*fail)() {
 		return nil, fmt.Errorf("journal unavailable")
 	}
 	attempts, err := s.Store.PendingChatDeliveries(ctx, id)
@@ -192,4 +193,45 @@ func TestStalledPromptHoldSeesSettlementDuringInstall(t *testing.T) {
 	if !fired.Load() {
 		t.Fatal("the settlement was not placed between the hold's read and install")
 	}
+}
+
+// The placeholder can outlive the attempt it stood for: here the attempt
+// settles by receipt while the journal is unreadable, and the monitor's next
+// sweep reads the journal empty but fails to resolve the placeholder. That
+// failure must schedule another read, so storage recovering releases the queue
+// with no further Send or event.
+func TestStalledPromptHoldRetriesAFailedPlaceholderRead(t *testing.T) {
+	h, conv, st, clock, a := stallHoldHarness(t)
+	sendQueued(t, h, "queued")
+	st.failPending.Store(true)
+	emitStall(t, h, conv)
+
+	receipt := conv.fakeDeliveryReceipt(a.ID, "provider-turn-1", true)
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventProviderState, ThreadState: &ports.ChatThreadState{Status: domain.ThreadStatusIdle}, Delivery: receipt}
+	h.awaitSnapshot(t, func(store.ConversationSnapshot) bool {
+		saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+		return err == nil && saved.ExecutionSettled
+	})
+	assertTurnStaysQueued(t, h, "queued")
+
+	// Next sweep: the monitor's own read succeeds and is empty, the
+	// placeholder's read fails; every later read succeeds.
+	var calls atomic.Int32
+	failSecond := func() bool { return calls.Add(1) == 2 }
+	st.failWhen.Store(&failSecond)
+	st.failPending.Store(false)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatal("the monitor never tried to resolve the placeholder")
+	}
+	assertTurnStaysQueued(t, h, "queued")
+
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued
+	})
 }
