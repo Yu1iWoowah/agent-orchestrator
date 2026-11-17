@@ -146,7 +146,7 @@ describe("registerRemotesIpc", () => {
 		const probe = vi.fn(async () => "online" as const);
 		const ipc = fakeIpc();
 		registerRemotes(ipc.ipcMain, { file, registry: new RemoteRegistry(async () => { throw new Error("unused"); }), requireAccount: signedIn, identity: async () => "h_this_mac", probe });
-		await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { url: "https://self.example" })).rejects.toThrow(/itself/);
+		await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { url: "https://self.example", password: "new" })).rejects.toThrow(/itself/);
 		await expect(ipc.invoke("remotes:linkAccountHost", "http://192.0.2.1:1")).rejects.toThrow(/itself/);
 		expect(probe).not.toHaveBeenCalled();
 	});
@@ -413,8 +413,46 @@ describe("registerRemotesIpc", () => {
 			identity: async () => { throw new TypeError("fetch failed"); },
 		});
 
-		await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { url: "https://new.trycloudflare.com" })).resolves.toBe("offline");
+		await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { url: "https://new.trycloudflare.com", password: "new" })).resolves.toBe("offline");
 		expect((JSON.parse(await readFile(file, "utf8")).remotes as Array<{ url: string }>)[0].url).toBe("http://192.0.2.1:1");
+	});
+
+	// The identity answer is unauthenticated: an address change without a newly
+	// typed password would hand the saved credential to whoever answers there.
+	describe("changing a saved host's address", () => {
+		const setup = async () => {
+			const file = await tempFile();
+			const identity = vi.fn(async () => "h_workbox");
+			const probe = vi.fn(async () => "online" as const);
+			const pair = vi.fn(async () => ({ kind: "unsupported" as const }));
+			const ipc = fakeIpc();
+			registerRemotes(ipc.ipcMain, { file, registry: new RemoteRegistry(async () => { throw new Error("unused"); }), requireAccount: signedIn, identity, probe, pair });
+			const saved = async () => (JSON.parse(await readFile(file, "utf8")).remotes as Array<{ label: string; url: string; password: string }>)[0];
+			return { ipc, identity, probe, pair, saved };
+		};
+
+		it("refuses a new address without a newly typed password, before any request", async () => {
+			const { ipc, identity, probe, pair, saved } = await setup();
+			await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { label: "workbox", url: "http://203.0.113.9:1" })).rejects.toThrow(/password again/);
+			expect(identity).not.toHaveBeenCalled();
+			expect(probe).not.toHaveBeenCalled();
+			expect(pair).not.toHaveBeenCalled();
+			expect(await saved()).toMatchObject({ url: "http://192.0.2.1:1", password: "old" });
+		});
+
+		it("moves to a new address with a newly typed password", async () => {
+			const { ipc, probe, saved } = await setup();
+			await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { label: "workbox", url: "http://203.0.113.9:1", password: "typed" })).resolves.toBe("online");
+			expect(probe).toHaveBeenCalledWith(expect.objectContaining({ url: "http://203.0.113.9:1", password: "typed" }));
+			expect(await saved()).toMatchObject({ url: "http://203.0.113.9:1", password: "typed" });
+		});
+
+		it("renames without a password, keeping the saved one at the same address", async () => {
+			const { ipc, probe, saved } = await setup();
+			await expect(ipc.invoke("remotes:update", "http://192.0.2.1:1", { label: "Renamed", url: "http://192.0.2.1:1" })).resolves.toBe("online");
+			expect(probe).toHaveBeenCalledWith(expect.objectContaining({ url: "http://192.0.2.1:1", password: "old" }));
+			expect(await saved()).toMatchObject({ label: "Renamed", url: "http://192.0.2.1:1", password: "old" });
+		});
 	});
 
 	it("lists hosts without their passwords", async () => {

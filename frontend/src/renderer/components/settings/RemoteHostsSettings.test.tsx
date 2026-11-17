@@ -109,7 +109,7 @@ it("explains how to re-pair a saved host without an identity", async () => {
 	expect(remotes.update).not.toHaveBeenCalled();
 });
 
-it("edits a saved host without reading or replacing its password", async () => {
+it("renames a saved host without reading or replacing its password", async () => {
 	saved.entries = [{ hostId: "box-a", label: "Box A", url: "http://box-a:3001" }];
 	renderSettings();
 	await screen.findByRole("button", { name: "Edit Box A" });
@@ -117,13 +117,30 @@ it("edits a saved host without reading or replacing its password", async () => {
 	expect(screen.getByLabelText("Pairing code or password")).toHaveValue("");
 	expect(screen.getByLabelText("Pairing code or password")).not.toBeRequired();
 	fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Office" } });
-	fireEvent.change(screen.getByRole("textbox", { name: "Address" }), { target: { value: "http://office:3011" } });
 	fireEvent.click(screen.getByRole("button", { name: "Save host" }));
 	await waitFor(() => expect(remotes.update).toHaveBeenCalledWith("http://box-a:3001", {
 		label: "Office",
-		url: "http://office:3011",
+		url: "http://box-a:3001",
 	}));
 	expect(await screen.findByText("Office")).toBeVisible();
+});
+
+// The saved password only goes to the address it was verified at.
+it("asks for the password again when a saved host's address changes", async () => {
+	saved.entries = [{ hostId: "box-a", label: "Box A", url: "http://box-a:3001" }];
+	renderSettings();
+	await screen.findByRole("button", { name: "Edit Box A" });
+	fireEvent.click(screen.getByRole("button", { name: "Edit Box A" }));
+	fireEvent.change(screen.getByRole("textbox", { name: "Address" }), { target: { value: "http://office:3011" } });
+	expect(screen.getByLabelText("Pairing code or password")).toBeRequired();
+	expect(screen.getByRole("button", { name: "Save host" })).toBeDisabled();
+	fireEvent.change(screen.getByLabelText("Pairing code or password"), { target: { value: "typed" } });
+	fireEvent.click(screen.getByRole("button", { name: "Save host" }));
+	await waitFor(() => expect(remotes.update).toHaveBeenCalledWith("http://box-a:3001", {
+		label: "Box A",
+		url: "http://office:3011",
+		password: "typed",
+	}));
 });
 
 it("requires confirmation before forgetting a host", async () => {

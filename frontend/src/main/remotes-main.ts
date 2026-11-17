@@ -202,6 +202,12 @@ export function registerRemotesIpc(
 		const account = await accountID();
 		if (!(await owned()).some((entry) => entry.url === url)) throw new ExpectedIpcError("Host does not belong to this account.");
 		const editable: RemoteChanges = { label: changes.label, url: changes.url, password: changes.password };
+		// A saved credential only goes to the address it was verified at. The
+		// identity answer is unauthenticated, so a new address must come with a
+		// password the user typed for it.
+		if (editable.url !== undefined && editable.url !== url && !editable.password) {
+			throw new ExpectedIpcError("Enter the host's password again to change its address.");
+		}
 		const current = (await readRemotes(file)).find((entry) => entry.url === url);
 		if (editable.password !== undefined && current) {
 			const typed: RemoteEntry = { ...current, url: editable.url ?? url, password: editable.password, fallbackPassword: undefined, sealedFallbackPassword: undefined };
