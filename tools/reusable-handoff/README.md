@@ -309,7 +309,7 @@ stop／D／hold／原題 owner／放行權沿用 start，缺 D 不猜，缺放�
 worker helper 保存原 CLI 回應與 exclusion proof，只排除本次唯一 running turn、本 turn streaming assistant、精確自身 helper activity。
 其他 queued／running turn、同 turn 其他工具、核准、無法映射的 incomplete、真正外部 job 都阻擋 safe。
 runner 仍等真 completed 且沒有必要 incomplete；idle 沒有自身 helper 例外。
-worker 自述及 script-quiescent 都用同一 `rh-workspace-snapshot/2`，保存相同 regular/index/patch bytes 與 gitlink facts。
+worker 自述及 script-quiescent 都用同一 `rh-workspace-snapshot/2`，保存相同 regular/index/patch bytes、gitlink facts 與 ignored 名稱清單的 digest（不讀 ignored 內容）。
 缺證據時 blocked／pending 可有 null snapshot 並具體說明原因；所有提供的引用仍須在該 worker 固定目錄內且 hash 正確。
 正常流程拒絕 stop/1，不以 blocked 繞過路徑檢查。
 

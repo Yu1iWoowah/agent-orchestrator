@@ -1329,7 +1329,9 @@ def git_snapshot(workspace, destination, write=True):
     values = {"schema": "rh-workspace-snapshot/2", "gitlinks": links, "head": git("rev-parse", "HEAD").decode().strip(),
               "branch": None if branch == "HEAD" else branch, "detached": branch == "HEAD",
               "status": git("status", "--porcelain=v1", "-z", "--untracked-files=all").hex(),
-              "index": git("ls-files", "--stage", "-z").hex(), "files": {}}
+              "index": git("ls-files", "--stage", "-z").hex(), "files": {},
+              # Ignored files are never read; their names alone make adds/removes visible drift.
+              "ignored": digest(inputs["ignored"])}
     for name, cached in (("index.patch", True), ("worktree.patch", False)):
         raw = workspace_patch(path, inputs, cached)
         if write:

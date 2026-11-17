@@ -159,6 +159,20 @@ class WorkspaceTests(unittest.TestCase):
         bundled.parent.mkdir(parents=True)
         bundled.write_bytes(MARKER)
 
+    def test_worker_snapshot_detects_ignored_names_added_or_removed_between_snapshots(self):
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        self.commit(self.repo)
+        bundled = self.repo / "node_modules/bottleneck/.env"
+        bundled.parent.mkdir(parents=True)
+        without = h.git_snapshot(self.repo, None, write=False)["sha256"]
+        bundled.write_bytes(MARKER)
+        added = h.git_snapshot(self.repo, None, write=False)["sha256"]
+        self.assertNotEqual(added, without)
+        bundled.write_bytes(b"other bytes, same name\n")
+        self.assertEqual(h.git_snapshot(self.repo, None, write=False)["sha256"], added)
+        bundled.unlink()
+        self.assertEqual(h.git_snapshot(self.repo, None, write=False)["sha256"], without)
+
     def test_dependency_bundled_env_is_inventoried_for_worker_and_stops_old(self):
         self.template()
         (self.repo / ".gitignore").write_text("node_modules/\n")
@@ -399,6 +413,12 @@ class ProducerTests(unittest.TestCase):
         for path in fake.run.root.rglob("*"):
             if path.is_file():
                 self.assertNotIn(MARKER, path.read_bytes())
+        # Names are inventoried after the safe receipt: adding or removing one is drift.
+        extra = bundled.parent / ".env.local"
+        for change in (lambda: extra.write_bytes(MARKER), lambda: (extra.unlink(), bundled.unlink())):
+            change()
+            with self.assertRaisesRegex(h.Stop, "worker content drift"):
+                fake.run.worker_stop({"id": "worker"})
 
     def test_old_helper_refuses_dirty_template_before_saved_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
