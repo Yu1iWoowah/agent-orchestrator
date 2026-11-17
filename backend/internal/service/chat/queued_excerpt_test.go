@@ -39,8 +39,10 @@ func TestCapturedExcerptSurvivesQueueAndSourceDeletion(t *testing.T) {
 		t.Fatalf("conflict = %v", err)
 	}
 	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: active.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	// The turn leaves the durable queue before the provider has it, so running
+	// alone does not mean the send happened yet.
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["explain"] == domain.TurnStateRunning
+		return turnStateByText(t, s)["explain"] == domain.TurnStateRunning && h.conv.sendCallCount() == 2
 	})
 	sent := h.conv.sentMessages()
 	if len(sent) != 2 || !strings.Contains(sent[1].Text, ref.Text) || !strings.Contains(sent[1].Text, ref.Snapshot.RawText) {
