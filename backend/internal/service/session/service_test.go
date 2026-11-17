@@ -3963,6 +3963,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"delete live session", fmt.Errorf("delete mer-1: %w", sessionmanager.ErrSessionNotTerminated), apierr.KindConflict, "SESSION_NOT_TERMINATED"},
 		{"delete unreleased workspace", fmt.Errorf("delete mer-1: %w", sessionmanager.ErrWorkspaceNotReleased), apierr.KindConflict, "WORKSPACE_NOT_RELEASED"},
 		{"delete shared history", fmt.Errorf("delete mer-1: %w", domain.ErrSessionHistoryShared), apierr.KindConflict, "SESSION_HISTORY_SHARED"},
+		{"delete protected history", fmt.Errorf("delete mer-1: %w", domain.ErrSessionHistoryProtected), apierr.KindConflict, "SESSION_HISTORY_PROTECTED"},
 		{"delete cleanup refused", fmt.Errorf("delete mer-1: %w", &sessionmanager.CleanupRefusedError{Code: domain.CleanupSkipDirty, Reason: "workspace has uncommitted changes"}), apierr.KindConflict, "WORKSPACE_CLEANUP_REFUSED"},
 		{"unknown harness", fmt.Errorf("spawn: %w: %q", sessionmanager.ErrUnknownHarness, "bogus"), apierr.KindInvalid, "UNKNOWN_HARNESS"},
 		{"missing harness", fmt.Errorf("spawn: %w: configure project worker.agent or pass --harness", sessionmanager.ErrMissingHarness), apierr.KindInvalid, "AGENT_REQUIRED"},

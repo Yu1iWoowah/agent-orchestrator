@@ -452,17 +452,36 @@ type terminatedSessionDeleter interface {
 	DeleteTerminatedSession(ctx context.Context, id domain.SessionID) (bool, error)
 }
 
+// terminatedSessionDeleteChecker refuses a delete the store would refuse,
+// before the cleanup step writes anything. Optional like the deleter.
+type terminatedSessionDeleteChecker interface {
+	CheckTerminatedSessionDeletable(ctx context.Context, id domain.SessionID) error
+}
+
 // DeleteSession permanently removes a terminated session's record once its
 // workspace is released (or it never had one), along with its AO-owned files.
 // With cleanup, a worktree still on disk is first cleaned up the way
 // `ao session cleanup` does it, never forced. The delete holds the session's
 // operation guard, so a restore cannot run between the checks and the delete.
 // Branches and PRs are not touched, and the store keeps the session's spend in
-// the agent account usage totals.
+// the agent account usage totals. An orchestrator delete takes the same
+// replacement admission as Kill, so neither an active replacement nor a
+// retired replacement source loses its evidence; every refusal comes before
+// the cleanup step.
 func (m *Manager) DeleteSession(ctx context.Context, id domain.SessionID, cleanup bool) error {
 	deleter, ok := m.store.(terminatedSessionDeleter)
 	if !ok {
 		return fmt.Errorf("delete %s: session deletion is not supported by this store", id)
+	}
+	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete %s: %w", id, err)
+	}
+	defer releaseReplacement()
+	if checker, ok := m.store.(terminatedSessionDeleteChecker); ok {
+		if err := checker.CheckTerminatedSessionDeletable(ctx, id); err != nil {
+			return fmt.Errorf("delete %s: %w", id, err)
+		}
 	}
 	if cleanup {
 		if err := m.cleanupBeforeDelete(ctx, id); err != nil {

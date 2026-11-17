@@ -2141,6 +2141,9 @@ func mapSessionError(err error) error {
 	case errors.Is(err, domain.ErrSessionHistoryShared):
 		return apierr.Conflict("SESSION_HISTORY_SHARED",
 			"This session's turns belong to a conversation that outlives it, so it cannot be deleted.", nil)
+	case errors.Is(err, domain.ErrSessionHistoryProtected):
+		return apierr.Conflict("SESSION_HISTORY_PROTECTED",
+			"This session still holds input custody or orchestrator ownership records, so it cannot be deleted.", nil)
 	case errors.Is(err, chatsvc.ErrNoController), errors.Is(err, chatsvc.ErrNotProvisioning):
 		// A chat session whose controller stopped or never started. Same answer
 		// steer-or-send gives, so clients can offer a resume instead of a 500.

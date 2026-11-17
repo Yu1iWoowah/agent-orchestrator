@@ -224,3 +224,67 @@ func TestReplacementDirectDispatchKeepsHeldReceiptAtomic(t *testing.T) {
 		})
 	}
 }
+
+// An account move that stopped the old agent lets input queue for the new one,
+// for a worker or an orchestrator alike. Before the old agent stops nothing
+// queues.
+func TestUndispatchedAppendDuringAccountMove(t *testing.T) {
+	cases := []struct {
+		name  string
+		kind  domain.SessionKind
+		phase domain.SessionInterfaceTransitionPhase
+		want  error
+	}{
+		{"worker without a move", domain.KindWorker, "", domain.ErrSessionNotProvisioning},
+		{"worker before the old agent stops", domain.KindWorker, domain.SessionInterfaceTransitionRequested, domain.ErrSessionNotProvisioning},
+		{"worker awaiting the new agent", domain.KindWorker, domain.SessionInterfaceTransitionSourceStopped, nil},
+		{"orchestrator without a move", domain.KindOrchestrator, "", domain.ErrSessionNotProvisioning},
+		{"orchestrator awaiting the new agent", domain.KindOrchestrator, domain.SessionInterfaceTransitionSourceStopped, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestStore(t)
+			ctx := context.Background()
+			project := "account-move"
+			seedProject(t, st, project)
+			record := sampleRecord(project)
+			record.Kind, record.Mode = tc.kind, domain.SessionModeChat
+			session, err := st.CreateSession(ctx, record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conversation, err := st.CreateConversation(ctx, "moving-"+string(session.ID), domain.ConversationScopeSession, domain.ProjectID(project), session.ID, histClock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.phase != "" {
+				move := domain.SessionInterfaceTransition{
+					ID: "move", SessionID: session.ID, SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeChat,
+					Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
+					Phase: domain.SessionInterfaceTransitionRequested, SourceAccountID: "acct-a", TargetAccountID: "acct-b",
+					CreatedAt: histClock, UpdatedAt: histClock,
+				}
+				if _, created, err := st.CreateSessionInterfaceTransition(ctx, move); err != nil || !created {
+					t.Fatalf("create move: created=%v err=%v", created, err)
+				}
+				if tc.phase != move.Phase {
+					if moved, err := st.AdvanceSessionInterfaceTransition(ctx, move.ID, move.Phase, tc.phase, "", "", "", histClock.Add(time.Second)); err != nil || !moved {
+						t.Fatalf("advance move: moved=%v err=%v", moved, err)
+					}
+				}
+			}
+			created, err := st.AppendUserMessage(ctx, conversation.ID, session.ID, "", domain.ConversationMessage{
+				ID: "during-move", Text: "for the new agent", Origin: domain.MessageOriginHuman,
+			}, "during-move-turn", histClock.Add(2*time.Second))
+			if tc.want == nil {
+				if err != nil || !created {
+					t.Fatalf("append = created %v, %v; want queued", created, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) || created {
+				t.Fatalf("append = created %v, %v; want %v", created, err, tc.want)
+			}
+		})
+	}
+}

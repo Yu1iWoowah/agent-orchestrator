@@ -11,6 +11,12 @@ import (
 // unlink it from, a conversation that outlives the session.
 var ErrSessionHistoryShared = errors.New("session is part of a conversation it does not own")
 
+// ErrSessionHistoryProtected refuses deleting a session whose own history
+// still holds records a cascade must not remove: an input under custody, which
+// only its explicit custody delete may remove, or project orchestrator
+// ownership.
+var ErrSessionHistoryProtected = errors.New("session history holds input custody or orchestrator ownership records")
+
 // WorkspaceDisposition is the session-level rollup of a terminated session's
 // workspace teardown, mirrored to session_cleanup_facts.workspace_disposition.
 // Per-repo state for workspace projects stays in session_worktrees.state so a

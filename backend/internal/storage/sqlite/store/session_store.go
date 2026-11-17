@@ -1073,9 +1073,10 @@ var sessionDeleteDrains = []string{
 // DeleteTerminatedSession removes a terminated session's row; its own
 // conversations, cleanup facts, PR facts and the other per-session rows go with
 // it through ON DELETE CASCADE. Callers decide whether the session's workspace
-// is released first; this only refuses live sessions and, with
-// domain.ErrSessionHistoryShared, shared conversation history. The final
-// transaction checks both again, so a concurrent restore cannot slip between
+// is released first; this only refuses live sessions, shared conversation
+// history (domain.ErrSessionHistoryShared) and protected history
+// (domain.ErrSessionHistoryProtected), before writing anything. The final
+// transaction checks them again, so a concurrent restore cannot slip between
 // the checks and the delete.
 //
 // The session's number is recorded in session_num_floors so the next spawn
@@ -1185,7 +1186,37 @@ SELECT EXISTS (
 	if shared {
 		return projectID, 0, false, fmt.Errorf("delete session %s: %w", id, domain.ErrSessionHistoryShared)
 	}
+	// The cascade would hit these rows partway through, after the history
+	// drains already ran. Custody is removed only by its own explicit delete.
+	var protected bool
+	if err := q.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM conversation_input_custody c
+    JOIN conversation_turns t ON t.id = c.turn_id
+    JOIN conversations v ON v.id = t.conversation_id
+    WHERE v.session_id = ?1
+) OR EXISTS (
+    SELECT 1 FROM project_orchestrator_owners
+    WHERE session_id = ?1 OR conversation_id IN (SELECT id FROM conversations WHERE session_id = ?1)
+) OR EXISTS (
+    SELECT 1 FROM owner_inbox_acceptances a
+    JOIN conversation_turns t ON t.id = a.turn_id
+    JOIN conversations v ON v.id = t.conversation_id
+    WHERE v.session_id = ?1
+)`, id).Scan(&protected); err != nil {
+		return projectID, 0, false, fmt.Errorf("delete session %s: check protected history: %w", id, err)
+	}
+	if protected {
+		return projectID, 0, false, fmt.Errorf("delete session %s: %w", id, domain.ErrSessionHistoryProtected)
+	}
 	return projectID, num, true, nil
+}
+
+// CheckTerminatedSessionDeletable runs DeleteTerminatedSession's refusals
+// without writing, so a caller can refuse before any other delete step.
+func (s *Store) CheckTerminatedSessionDeletable(ctx context.Context, id domain.SessionID) error {
+	_, _, _, err := deletableTerminatedSession(ctx, s.readDB, id)
+	return err
 }
 
 func (s *Store) drainSessionRows(ctx context.Context, query string, id domain.SessionID) error {
