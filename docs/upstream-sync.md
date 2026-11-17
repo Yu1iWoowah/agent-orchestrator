@@ -176,8 +176,9 @@ A 的試合併有 249 個衝突路徑與 216 個雙方修改但自動合併的�
   丟棄本機密碼或 device token，該 host 改由目錄管理；位址相同時不變。
 - `login-again` 的重複判定沿用 U 的規則；新增登入的占用判定仍是 fork 的規則。
 - GitHub Actions：`contributor-project.yml` 只服務上游 repo；
-  `harness-release-feeds.yml`、`release-latest-guard.yml` 在 fork 是
-  `disabled_fork`，fork 不需要它們的排程。
+  `release-latest-guard.yml` 在 fork 是 `disabled_fork`，fork 不需要。
+  `harness-release-feeds.yml` 已在 fork 啟用（使用者 `upsync-pr2f-feeds-1`＝enable，
+  2026-11-18），PR 改到版本解析檔時自動跑；排程在 fork 由 job 條件跳過。
 
 ### 驗證缺口
 
