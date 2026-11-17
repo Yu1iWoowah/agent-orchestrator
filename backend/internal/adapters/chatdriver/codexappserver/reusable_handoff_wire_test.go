@@ -13,9 +13,12 @@ import (
 func TestReusableHandoffProducer(t *testing.T) {
 	rh.RunSuite(t, func(input rh.Input) ports.ChatEvent {
 		item := map[string]any{"id": input.ID, "type": "commandExecution", "command": input.Command, "aggregatedOutput": input.Stdout}
-		completed := input.ExitCode != nil
-		if completed {
+		completed := input.ExitCode != nil || input.Settled != ""
+		if input.ExitCode != nil {
 			item["exitCode"] = *input.ExitCode
+		}
+		if input.ProcessHandle {
+			item["processId"] = input.ID
 		}
 		raw, err := json.Marshal(map[string]any{"threadId": "synthetic", "turnId": input.Turn, "item": item})
 		if err != nil {

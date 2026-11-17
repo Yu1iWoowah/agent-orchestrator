@@ -5,6 +5,7 @@ Only CLI mutations are permitted. HTTP is read-only; SQLite is scoped query_only
 This module has no import-time I/O. Tests inject the CLI, clock and observations.
 """
 import argparse
+import base64
 import contextlib
 from collections.abc import Mapping
 import datetime as dt
@@ -517,11 +518,11 @@ def quiescent(snapshot, settled_receipts=(), run=None):
     if any(t.get("state") in ("queued", "running") for t in transcript.get("turns", [])):
         return False
     helper = completed_old_helper(run, snapshot) if run else None
-    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"))
+    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"), transcript.get("turns", []))
                for entry in transcript.get("entries", []))
 
 
-def activity_quiescent(entry, receipts=(), run=None, sid=None):
+def activity_quiescent(entry, receipts=(), run=None, sid=None, turns=()):
     if entry.get("kind") != "activity":
         return True
     if entry.get("status") not in ("completed", "resolved", "cancelled", "failed", "recovered"):
@@ -531,10 +532,15 @@ def activity_quiescent(entry, receipts=(), run=None, sid=None):
         return False
     if run and known_helper(run, sid, entry):
         return True
+    handles = operation_handles(entry)
     if entry.get("activityKind") == "command" and detail.get("exitCode") is None:
-        return False
+        # A reconnectable process (Codex PTY, ACP terminal) without an exit needs a terminal receipt; AO
+        # settles a completed turn's leftovers as completed, so failed/cancelled there came from the provider.
+        turn = next((t.get("state") for t in turns if t.get("id") == entry.get("turnId")), None)
+        if not (entry["status"] in ("failed", "cancelled") and turn == "completed"):
+            handles += [{"reference": str(detail[key]), "state": "UNKNOWN"} for key in ("processId", "terminalId") if detail.get(key) is not None]
     return all(handle["reference"] != "UNKNOWN" and (handle["state"] in ("completed", "cancelled", "failed") or operation_terminal(entry, handle, receipts))
-               for handle in operation_handles(entry))
+               for handle in handles)
 
 
 def cli_environment(old, data_dir, run_file, temp):
@@ -1228,8 +1234,9 @@ def verify_gitlink_protection(links):
                 "gitlink protected objects changed")
 
 
-def workspace_git_inputs(workspace):
-    """Inventory names before preserving content; only unchanged committed templates qualify."""
+def workspace_git_inputs(workspace, worker=False):
+    """Inventory names before preserving content; only unchanged committed templates qualify.
+    A worker snapshot never reads ignored files, so only old (whose worktree is reclaimed) stops on them."""
     git = lambda *args: old_git(args, workspace=workspace)
     head = git("rev-parse", "HEAD").decode().strip()
     tree_raw = git("ls-tree", "-r", "-z", "--full-tree", head)
@@ -1248,7 +1255,7 @@ def workspace_git_inputs(workspace):
     others = git("ls-files", "--others", "--exclude-standard", "-z")
     ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
     files = set(index) | (set(others.split(b"\0")) - {b""})
-    names = set(tree) | files | (set(ignored.split(b"\0")) - {b""})
+    names = set(tree) | files | (set() if worker else set(ignored.split(b"\0")) - {b""})
     templates = {}
     for name in sorted(names):
         relative = os.fsdecode(name)
@@ -1314,7 +1321,7 @@ def git_snapshot(workspace, destination, write=True):
                                 stderr=subprocess.PIPE, timeout=30, check=False)
         require(result.returncode == 0, "workspace snapshot unavailable: " + result.stderr.decode(errors="replace"))
         return result.stdout
-    inputs = workspace_git_inputs(path)
+    inputs = workspace_git_inputs(path, worker=True)
     if write:
         mkdir(destination)
     branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
@@ -1346,7 +1353,7 @@ def git_snapshot(workspace, destination, write=True):
         if write and not committed_unchanged(inputs, raw_name, raw, mode):
             publish(Path(destination) / "objects" / sha, raw)
         values["files"][name] = {"sha256": sha, "mode": mode}
-    require(workspace_git_inputs(path) == inputs, "workspace source drift during snapshot")
+    require(workspace_git_inputs(path, worker=True) == inputs, "workspace source drift during snapshot")
     raw = canonical(values)
     if not write:
         return {"sha256": digest(raw), "raw": raw}
@@ -2085,7 +2092,7 @@ def worker_receipt(run):
     acting.execution = getattr(run.cli, "execution", None)
     run.cli = acting
     workspace = bound_workspace(run, sid)
-    workspace_git_inputs(workspace)
+    workspace_git_inputs(workspace, worker=True)
     statement_raw = private_read(directory / "draft/statement.json")
     statement = decode(statement_raw)
     require(statement.get("schema") == "rh-worker-statement/1" and statement.get("run_id") == run.run_id and statement.get("worker_id") == sid,
@@ -2114,7 +2121,7 @@ def worker_receipt(run):
     if proof["retained"] or proof["truncated_fields"]:
         reasons.append("other incomplete/unknown producer activity")
     for entry in entries(snap):
-        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid):
+        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid, snap["transcript"].get("turns", [])):
             reasons.append("other tool/operation not positively terminal: " + str(entry.get("id")))
     before = after = None
     try:
@@ -2238,11 +2245,20 @@ EXPORT_COLUMNS = {
 }
 
 
+def export_text(raw):
+    """Persisted bytes stay lossless: a cell that is not UTF-8 is carried as base64, never replaced."""
+    try:
+        return raw.decode()
+    except UnicodeDecodeError:
+        return {"non_utf8_base64": base64.b64encode(raw).decode()}
+
+
 def export_conversation(database, old, conversation, harness, latest_sequence):
     path = no_symlinks(database)
     uri = path.as_uri() + "?mode=ro"
     with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
         db.row_factory = sqlite3.Row
+        db.text_factory = export_text
         db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN")
         session = db.execute("SELECT id,project_id,harness,provider_conversation_id FROM sessions WHERE id=?", (old,)).fetchone()
@@ -2480,6 +2496,7 @@ def export_material(run, delta=False):
     for message in raw["conversation_messages"]:
         content = message["delivery_content_json"]
         if content:
+            require(isinstance(content, str), "non-UTF-8 delivery_content_json")
             for attachment in attachment_paths(decode(content)):
                 seeds.append(Path(old_workspace) / attachment if not Path(attachment).is_absolute() else Path(attachment))
     # Exact, already-bound locations are metadata, never additional file roots.
@@ -2511,7 +2528,10 @@ def export_material(run, delta=False):
                 "old_preservation": old_preservation,
                 "directory_references": directory_refs,
                 "raw": {"path": str(directory / "conversation.json"), "sha256": digest(canonical(raw)),
-                        "tables": list(EXPORT_COLUMNS)}, "dependencies": dependencies,
+                        "tables": list(EXPORT_COLUMNS),
+                        "non_utf8_cells": [{"table": table, "id": row["id"], "column": column} for table in EXPORT_COLUMNS
+                                           for row in raw[table] for column, value in row.items() if isinstance(value, dict)]},
+                "dependencies": dependencies,
                 "limitations": {"report_outbox": OUTBOX, "write_observation": "正常AO transcript可觀察範圍；非OS隔離或任意同UID程序保證"},
                 "controls": [str(p) for p in (run.root / "control").glob("*/payload.json")], "created_at": now()}
     path = directory / "manifest.json"
@@ -2680,8 +2700,8 @@ def bootstrap_prompt(run):
             "manifest_path": run.state["manifest"]["path"], "delta_path": run.state.get("delta", {}).get("path"),
             "receipt_path": str(run.root / "bootstrap/new/receipt.json"), "helper_command": command,
             "read_command": command.replace(" bootstrap --run", " inspect --run") + " --path start.json --offset 0",
-            "read_instructions": "inspect每頁最多4000字元，依next_offset續讀，path限本run相對路徑；按manifest的dependencies.path映射找到已保存的A–F與必要原件。先讀start、manifest、delta、A–F及必要原件，再bootstrap。",
-            "requirements": "先讀A–F、start、manifest、delta與必要原件；核原題owner/取消/hold。從本則起到runner確認bootstrap完成前（含report送達與bootstrap-continue續接回合），" + BOOTSTRAP_CALLS
+            "read_instructions": "inspect每頁最多4000字元，依next_offset續讀，path限本run相對路徑；按manifest的dependencies.path映射找到已保存的A–F。先讀start、manifest、delta、A–F，再bootstrap。必要原件依manifest定位（dependencies的path／sha256），只在核對原題、owner、取消或hold需要時以read_command加offset只讀相關段落，不全文閱讀。",
+            "requirements": "先讀A–F、start、manifest、delta；核原題owner/取消/hold時，必要原件依manifest定位、只讀相關段落。從本則起到runner確認bootstrap完成前（含report送達與bootstrap-continue續接回合），" + BOOTSTRAP_CALLS
             + "續接回合要核對既有結果時，只重跑helper_command（已有receipt會原樣回傳）或用read_command讀bootstrap/new/receipt.json。只用這兩種固定指令做讀取、正常帳號/native/target查驗及自己的managed receipt，不跑任意shell/Python，不直接寫shared或其他路徑。向使用者正式回報接手old、來源與待決後completed。不得自行exit/resume/spawn/改設定/提前復工。report中斷只補未完回報，不重寫成功managed效果。"}).decode()
 
 

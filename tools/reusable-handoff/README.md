@@ -26,6 +26,7 @@ python3 <private-run-root>/<run-id>/handoff.py continue --run <same-UUID>
 
 `_run`、`inspect`、`bootstrap`、`finalize` 是內部入口。
 new 依初始 prompt 使用固定 `inspect` 命令分頁讀取私有 run 材料，再以自己的 capability 執行 `bootstrap` managed write。
+必讀 start、manifest、delta、A–F；必要原件依 manifest 的 path／sha256 定位，只在核原題、owner、取消或 hold 時讀相關段落，不全文閱讀。
 `finalize` 必須等 runner 核過同 native 的唯一 nonce，才由 new 自己通知 worker。
 
 ## 固定位置與資格
@@ -141,8 +142,8 @@ runner 在 worker 停點、任何 lifecycle 之前做準備回合檢查，任一
 1. **worker 停點**：核本專案未 terminated 的 worker 集合。active worker 收具名 stop D，收束操作、保全 ref／dirty／原題，填語意 statement 後由固定 helper 原子寫 `workers/<id>/stop.json`（`rh-worker-stop/2`），填真 turn-id，completed 後 hold。
    靜止代記須正常 idle/exited、無 queued/running／未結工具，兩份相隔至少兩秒的 Git 內容快照相同，再核正常狀態；明標「未經worker自述」。quota／沒回本身不算 safe。
 2. **old 文件與原文**：全 safe 後一次具名 2a 控制訊息，old 用自己的 managed write／expected-hash 更新 A–F，正文含 2a 控制訊息給出的獨立一行 `handoff_run_id: <run-id>`（照抄），原子寫 `old/phase-2a.json`（`rh-old-2a/1`）。runner 核原 managed JSON、正本 hash、lease、run-id、真 completed。
-   之後保存 cap0 active-lineage CLI 投影，以及 query_only transaction 中唯一 old conversation 的全分支白名單原文、必要附件／依賴。cut 不可變，delta 以父 hash 相連。
-3. **切換與續接**：再核停點與 old idle，正常 kill 一次且正面 terminated 後，唯一精確 `RH3[<run-id>]` token spawn。new 以自己的 managed capability 寫接手收據 `bootstrap/new/receipt.json`（`rh-new-receipt/1`），向使用者正式回報後 completed。
+   之後保存 cap0 active-lineage CLI 投影，以及 query_only transaction 中唯一 old conversation 的全分支白名單原文（不合法 UTF-8 的格子無損保存並揭露）、必要附件／依賴。cut 不可變，delta 以父 hash 相連。
+3. **切換與續接**：再核停點與 old idle，正常 kill 一次且正面 terminated 後，唯一精確 `RH3[<run-id>]` token spawn。new 只讀必讀範圍（見上方 inspect 說明），以自己的 managed capability 寫接手收據 `bootstrap/new/receipt.json`（`rh-new-receipt/1`），向使用者正式回報後 completed。
    runner 核 actual account／target／approval／native／lease、原件 hash 與工具目的地。再以同回應的 S1/S2 序號、last completed turn、idle 及一秒窗口，正常 exit/resume 各一次；resumeMode 必須 native，同 new/native/binding 不漂移。唯一 nonce 需真正 assistant／completed/providerTurnId 與 known settings。
 
 回條詳細必填鍵及 producer 模板由具名控制 payload 提供；回報 note 不作機器資料來源。
@@ -153,6 +154,7 @@ CLI 的非空 AO_DATA_DIR 優先、否則 home/.ao/data；相對值在啟動時�
 session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、detached 都能定位，detached branch 記 null。保存原註冊清單與 path／Git metadata 身分；安全停點後 branch／HEAD／內容／註冊漂移仍停止。零筆、多筆、prunable、缺失、矛盾或別名均停止。
 同一輪會對所有 live worker 收檔或送出原保留 D；請求由 intent 冪等，不等第一位 safe 才通知下一位。
 正常 CLI `incomplete` 是 queued／running turn、streaming／未結工具的清單，交由各 predicate 有界等待；真正截斷仍停止。
+未結工具＝status 非終態；或帶 running job／session handle 而無完成收據；或 command 缺 exitCode 且帶 `processId`／`terminalId`，而沒有同一操作的終態收據。例外：所屬 turn 是 completed 時，failed／cancelled 只可能由 provider 回報（AO 在 completed turn 收尾只設 completed），視為已結束。缺 exitCode 本身不算未結。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
 
 ## old Git 保全與正常回收（v3.1 §6）
@@ -222,6 +224,7 @@ FYI 不帶 D、不解除既有 hold；確有原授權才由 new 用原保留 D �
 
 manifest 固定揭露：尚未送達的 report outbox 不在 conversation cut/delta 範圍，接手後才由 AO 既有機制送達；不查 reports 表，不手動搬移／ack outbox。
 DB 不讀 conversations 表；以正常 CLI 的 conversationId／latestSequence 綁 cut，核白名單 messages／activities 的 conversation_id／序號，再用 CLI 重核 cut 未漂移。
+DB 文字格不是合法 UTF-8 時，以 `{"non_utf8_base64": …}` 無損保存原 bytes，並在 manifest `raw.non_utf8_cells` 列出 table／id／column；`delivery_content_json` 不合法時停止。
 plan settle 可使 latestSequence 高於原文列最大序號；只要求列序號不超 cut，且 CLI 最新可見 entry 在匯出列中，不把合法序號空隙當缺文。
 
 ## 時間與故障等待
@@ -348,9 +351,10 @@ old 還要求 child common 位於 parent common 內、在 old workspace 與會�
 只有最末 component 恰為 .env.example、父路徑沒有敏感 component，且同一 HEAD 在精確路徑有普通 blob，才可能放行。
 index 必須是相同 mode/OID 的唯一 stage0，沒有隱藏 flags；工作檔的執行權及 raw bytes 必須與該 HEAD blob 相同。
 clean/smudge filter、Git status clean、只是 tracked 或只有 git add 都不是證明。
-.env.sample/.env.template、已 commit 的其他敏感名稱、未追蹤或 ignored 敏感檔、dirty/staged/deleted/renamed/conflicted 範本都停止。
+.env.sample/.env.template、已 commit 的其他敏感名稱、未追蹤敏感檔、dirty/staged/deleted/renamed/conflicted 範本都停止；ignored 敏感檔見下段。
 
-worker snapshot、old Git 保全及兩個固定 helper 都先核全部名稱（含 HEAD/index 的刪除路徑與 ignored），再保存內容。
+worker snapshot、old Git 保全及兩個固定 helper 都先核全部名稱（含 HEAD/index 的刪除路徑），再保存內容。
+ignored 敏感名稱只讓 old Git 保全與 old helper 停止：old 的 worktree 會被回收，ignored 檔不能複製又會被刪。worker 不讀也不保存 ignored 檔（例如依賴樹內附的 `.env`），只列入盤點供漂移比對。
 範本 objects 使用當次已比對的 raw bytes；old 以原 ref/object 保護，內容 hash 納入切前／切後漂移核對。
 兩種 patch 只含本次盤點的非敏感精確路徑，禁跨路徑 rename；空路徑集合產空 patch。
 過程中 HEAD/index/名稱/範本 bytes 或檔案觀測漂移，不發布有效證據；old 不能以 discardable/rebuildable 分類跳過此閘門。

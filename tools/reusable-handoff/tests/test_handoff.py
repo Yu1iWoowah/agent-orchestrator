@@ -594,6 +594,43 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(h.Stop):
             h.export_conversation(path, "old", "conv", "codex", 9)
 
+    def test_T03_invalid_utf8_cell_is_kept_as_base64_and_valid_cells_stay_text(self):
+        path = self.database()
+        invalid = b"Ran tests " + bytes.fromhex("e5ae9a") + b"\xef" + bytes.fromhex("e280a6")
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("UPDATE conversation_activities SET summary=CAST(? AS TEXT) WHERE id='one'", (invalid,))
+            db.execute("UPDATE conversation_messages SET text='合法文字' WHERE id='one'")
+        result = h.export_conversation(path, "old", "conv", "codex", 10)
+        cell = result["conversation_activities"][0]["summary"]
+        self.assertEqual(h.base64.b64decode(cell["non_utf8_base64"]), invalid)
+        self.assertEqual(result["conversation_messages"][0]["text"], "合法文字")
+        self.assertEqual(result["session"]["harness"], "codex")
+
+    def test_T03_export_discloses_non_utf8_cells_and_names_invalid_delivery_content(self):
+        invalid = b"Ran tests " + bytes.fromhex("e5ae9a") + b"\xef" + bytes.fromhex("e280a6")
+        for column in ("summary", "delivery_content_json"):
+            with self.subTest(column=column), tempfile.TemporaryDirectory() as temp:
+                fake = FlowFixture(Path(temp), "codex", "claude-code")
+                self.addCleanup(fake.transport.close)
+                with closing(sqlite3.connect(fake.data_dir / "ao.db")) as db, db:
+                    if column == "summary":
+                        db.execute("INSERT INTO conversation_activities(id,conversation_id,sequence,kind,status,summary) "
+                                   "VALUES('bytes','conv',1,'command','completed',CAST(? AS TEXT))", (invalid,))
+                    else:
+                        db.execute("INSERT INTO conversation_messages(id,conversation_id,sequence,role,text,delivery_content_json) "
+                                   "VALUES('bytes','conv',1,'user','synthetic',CAST(? AS TEXT))", (invalid,))
+                if column == "delivery_content_json":
+                    with self.assertRaisesRegex(h.Stop, "non-UTF-8 delivery_content_json"):
+                        h.run_protocol(fake.run)
+                    continue
+                h.run_protocol(fake.run)
+                self.assertEqual(fake.run.state["outcome"], "complete")
+                manifest = h.decode(h.private_read(fake.run.state["manifest"]["path"]))
+                self.assertEqual(manifest["raw"]["non_utf8_cells"], [{"table": "conversation_activities", "id": "bytes", "column": "summary"}])
+                raw = h.decode(h.private_read(manifest["raw"]["path"]))
+                row = next(x for x in raw["conversation_activities"] if x["id"] == "bytes")
+                self.assertEqual(h.base64.b64decode(row["summary"]["non_utf8_base64"]), invalid)
+
     def test_review_plan_settle_sequence_gap_preserves_cli_cut(self):
         fake = FlowFixture(self.root, "codex", "claude-code")
         fake.snapshots["old"]["transcript"]["latestSequence"] = 11
@@ -757,9 +794,16 @@ class ProtocolTests(unittest.TestCase):
     def test_bootstrap_and_its_continuation_require_single_fixed_calls(self):
         run = self.run_fixture()
         run.state.update(handoff={"path": "handoff", "sha256": "0" * 64}, manifest={"path": "manifest", "sha256": "1" * 64})
-        requirements = h.decode(h.bootstrap_prompt(run))["requirements"]
+        prompt = h.decode(h.bootstrap_prompt(run))
+        requirements = prompt["requirements"]
         for phrase in ("逐字等於read_command或helper_command", "換行", "2>&1", "不呼叫任何工具", "bootstrap-continue", "exit非0"):
             self.assertIn(phrase, requirements)
+        # Required originals are located through the manifest and read only where a check needs them.
+        for text in (prompt["read_instructions"], requirements):
+            self.assertIn("依manifest定位", text)
+            self.assertIn("只讀相關段落", text)
+            self.assertNotIn("及必要原件", text)
+            self.assertNotIn("與必要原件", text)
         interrupted = {"id": "original", "state": "interrupted", "startedAt": "2026-11-08T01:00:00Z", "completedAt": "2026-11-08T01:00:01Z"}
         report = dict(kind="message", role="user", origin="automation", clientMessageId="report-batch:123",
                       text="Reports [worker](ao://sessions/agent-orchestrator/worker)", createdAt="2026-11-08T01:00:02Z")
@@ -1204,8 +1248,9 @@ finally:
     def test_T01_quota_is_not_safe_and_pending_tools_block(self):
         self.assertFalse(h.quiescent(snapshot("blocked")))
         self.assertFalse(h.quiescent(snapshot(turns=[{"id": "queued", "state": "queued"}])))
-        self.assertFalse(h.quiescent(snapshot(entries=[{"kind": "activity", "status": "completed",
-                                                       "activityKind": "command", "detail": {"output": "session_id: 123"}}])))
+        # Free text is not a handle and a missing exitCode alone is not open (contract §5.1).
+        self.assertTrue(h.quiescent(snapshot(entries=[{"kind": "activity", "status": "completed",
+                                                      "activityKind": "command", "detail": {"output": "session_id: 123"}}])))
         self.assertTrue(h.quiescent(snapshot()))
         async_snapshot = snapshot(entries=[{"id": "tool", "kind": "activity", "status": "completed", "activityKind": "command",
                                             "detail": {"exitCode": 0, "output": "Script running with cell ID job42"}}])
@@ -1217,6 +1262,27 @@ finally:
         self.assertFalse(h.quiescent(async_snapshot, [dict(receipt, reference="other")]))
         with self.assertRaises(h.Stop):
             h.quiescent(async_snapshot, [dict(receipt, state="running")])
+
+    def test_T01_command_without_exit_code_is_open_only_while_its_process_handle_lacks_a_receipt(self):
+        source = self.root / "process-terminal.json"
+        h.publish(source, h.canonical(dict(reference="tool", activity_id="tool", state="completed")))
+        receipt = dict(reference="tool", activity_id="tool", state="completed", evidence_path=str(source), sha256=h.digest(source.read_bytes()))
+        # status is what the provider settles, or what AO's terminalActivityStatus gives a turn's leftovers.
+        for handle, status, turn, receipts, expected in [
+                (False, "completed", "completed", [], True), (False, "failed", "completed", [], True),
+                (True, "completed", "completed", [], False), (True, "completed", "completed", [receipt], True),
+                (True, "failed", "failed", [], False), (True, "cancelled", "interrupted", [], False),
+                (True, "recovered", "recovered", [], False), (True, "failed", "completed", [], True),
+                (True, "cancelled", "completed", [], True)]:
+            with self.subTest(handle=handle, status=status, turn=turn, receipt=bool(receipts)):
+                snap = produced_activity(snapshot(), "external-command", "", None, "worker", "turn", "tool", 5,
+                                         handle=handle, settled="failed" if status == "failed" else "completed")
+                entry = next(e for e in snap["transcript"]["entries"] if e.get("id") == "tool")
+                self.assertNotIn("exitCode", entry["detail"])
+                self.assertEqual(bool({"processId", "terminalId"} & set(entry["detail"])), handle)
+                entry["status"] = status
+                snap["transcript"]["turns"][-1]["state"] = turn
+                self.assertEqual(h.quiescent(snap, receipts), expected)
 
     def test_T04_duplicate_keys_bad_hash_and_symlink_are_rejected(self):
         with self.assertRaises(h.Stop):
