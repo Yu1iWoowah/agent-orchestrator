@@ -2704,9 +2704,15 @@ func (c *Controller) drainLockedWithLimit(ctx context.Context, allowDispatch boo
 func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, limit int) (map[string]error, error) {
 	var rejected map[string]error
 	c.mu.Lock()
-	cutoff := c.cancelQueuedAt
-	c.cancelQueuedAt = time.Time{}
 	busy := c.pendingTurnID != "" || c.pendingDeliveryID != "" || c.deliveryQuiescing
+	// A busy drain does nothing, so it must leave a Stop cutoff for the drain
+	// that runs once the agent is free; consuming it here would let the pre-Stop
+	// queue survive and dispatch later.
+	var cutoff time.Time
+	if !busy {
+		cutoff = c.cancelQueuedAt
+		c.cancelQueuedAt = time.Time{}
+	}
 	handoff := c.handoff
 	c.mu.Unlock()
 
