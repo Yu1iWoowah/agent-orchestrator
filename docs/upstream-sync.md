@@ -186,6 +186,12 @@ A 的試合併有 249 個衝突路徑與 216 個雙方修改但自動合併的�
   容量取不到機器，需要重跑。
 - 本機 Linux 沒有 zsh，`shellterm` 的 zsh 子測試只在 CI 執行。
 - Windows ConPTY、macOS 簽章與 updater 只能由 CI 原生 job 證明。
+- 真 Claude Code 的 isolated lab（2026-11-18）：Plan 會出現在 Chat；一個 session 串流時，
+  另一個 session 的恢復不受阻塞；daemon 重啟後，persistent host 讓進行中的 turn
+  對回原本的 turn 並完成，沒有重送。同一個 lab 中，idle hibernation 與 `ao stop`
+  都因 delivery 證據未結算（`shutdown_not_settled`）而被拒絕，provider 程序保留；
+  目錄沒有標示預設模型時，session 設定變更回 `AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE`。
+  這兩項待另行確認。
 
 ### u4 換版界線
 
