@@ -12,12 +12,16 @@ import urllib.request
 import urllib.error
 
 
-def activity(snapshot, command, stdout, exit_code, actor, turn, identifier, sequence):
+def activity(snapshot, command, stdout, exit_code, actor, turn, identifier, sequence, handle=False, settled=None):
     endpoint = os.environ.get("RH_ACTIVITY_PRODUCER")
     if not endpoint:
         raise RuntimeError("RH flow tests require README's CLI + both driver producer gate")
     body = dict(snapshot=snapshot, command=command, stdout=stdout, exit_code=exit_code,
                 actor=actor, turn=turn, id=identifier, sequence=sequence)
+    if handle:
+        body["process_handle"] = True
+    if settled:
+        body["settled"] = settled
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=60) as response:
         return json.load(response)

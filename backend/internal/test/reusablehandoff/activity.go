@@ -36,6 +36,11 @@ type Input struct {
 	ID        string          `json:"id"`
 	Sequence  int64           `json:"sequence"`
 	Snapshot  json.RawMessage `json:"snapshot"`
+
+	// ProcessHandle asks the driver for its own reconnectable process handle
+	// (Codex PTY processId, ACP terminal_info); Settled ends the tool without an exit code.
+	ProcessHandle bool   `json:"process_handle,omitempty"`
+	Settled       string `json:"settled,omitempty"`
 }
 
 // Repository finds the checkout for the isolated fixture binaries.
