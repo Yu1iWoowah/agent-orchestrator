@@ -1887,6 +1887,36 @@ class OSProcessTests(unittest.TestCase):
         with patch.object(h.Path, "read_bytes", broken), self.assertRaisesRegex(h.Stop, "process table UNKNOWN: " + str(child.pid)):
             h.proc_table()
 
+    def test_proc_table_keeps_a_process_whose_main_thread_exited_while_others_work(self):
+        code = ("import ctypes,threading,time;threading.Thread(target=time.sleep,args=(60,)).start();"
+                "print('ready',flush=True);ctypes.CDLL(None).pthread_exit(None)")
+        child = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.readlink(Path("/proc", str(child.pid), "cwd"))
+            except FileNotFoundError:
+                break
+            time.sleep(0.05)
+        with self.assertRaises(FileNotFoundError):
+            os.readlink(Path("/proc", str(child.pid), "cwd"))  # the group cwd is gone with the main thread
+        row = h.proc_table()[child.pid]
+        self.assertEqual((row["ppid"], row["cwd"], row["cwd_unknown"]), (os.getpid(), str(self.root), False))
+        # If no live thread exposes a cwd either, the process stays, marked, and counts as work (named, fail-closed).
+        readlink = os.readlink
+        def hidden(path):
+            if str(path).startswith("/proc/" + str(child.pid) + "/"):
+                raise FileNotFoundError(path)
+            return readlink(path)
+        with patch.object(h.os, "readlink", side_effect=hidden):
+            table = h.proc_table()
+        self.assertTrue(table[child.pid]["cwd_unknown"])
+        work = h.os_work_processes({child.pid: dict(table[child.pid], ppid=1)}, "worker", "/data", Path("/wt/worker"), lambda *a: None)
+        self.assertEqual([x["pid"] for x in work], [child.pid])
+
     def test_claude_tree_terminal_reviewer_and_reparented_attribution(self):
         calls = []
         def base_of(pid, tick, started):

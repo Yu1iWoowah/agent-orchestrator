@@ -543,8 +543,24 @@ def activity_quiescent(entry, receipts=(), run=None, sid=None, worker=False):
                for handle in handles)
 
 
+def proc_stat(directory):
+    """(state, ppid, start tick) parsed from bytes after the last b")" (comm may split a UTF-8 character); None when the PID is gone."""
+    try:
+        raw = (directory / "stat").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except OSError as exc:
+        raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
+    try:
+        fields = raw[raw.rindex(b")") + 2:].split()
+        return fields[0], int(fields[1]), int(fields[19])
+    except (ValueError, IndexError) as exc:
+        raise Stop("process table UNKNOWN: " + directory.name + ": unparsable stat") from exc
+
+
 def proc_table():
-    """pid -> ppid/start/cwd/argv and the AO terminal marker; environ is matched in memory only, never kept."""
+    """pid -> ppid/start/cwd/argv and the AO terminal marker; environ is matched in memory only, never kept.
+    Only a PID whose stat is gone (or reused) is dropped; a live process with a missing field is kept and marked."""
     with open("/proc/stat", "rb") as handle:
         btime = next(int(line.split()[1]) for line in handle if line.startswith(b"btime "))
     hz = os.sysconf("SC_CLK_TCK")
@@ -552,28 +568,38 @@ def proc_table():
     for directory in Path("/proc").iterdir():
         if not directory.name.isdigit():
             continue
-        try:
-            # comm is truncated to TASK_COMM_LEN and may split a UTF-8 character: parse bytes after the last b")".
-            raw = (directory / "stat").read_bytes()
-            argv = [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x]
+        stat = proc_stat(directory)
+        if stat is None:
+            continue
+        state, ppid, tick = stat
+        def read(reader, denied):
             try:
-                cwd = os.readlink(directory / "cwd")
+                return reader(), False
             except PermissionError:
-                cwd = None
-            try:
-                terminal = b"AO_SHELL_TERMINAL=1" in (directory / "environ").read_bytes().split(b"\0")
-            except PermissionError:
-                terminal = False  # unreadable (other uid): never treated as the user's terminal
-        except (FileNotFoundError, ProcessLookupError):
-            continue  # the process is gone
-        except OSError as exc:
-            raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
-        try:
-            fields = raw[raw.rindex(b")") + 2:].split()
-            ppid, tick = int(fields[1]), int(fields[19])
-        except (ValueError, IndexError) as exc:
-            raise Stop("process table UNKNOWN: " + directory.name + ": unparsable stat") from exc
-        table[int(directory.name)] = dict(ppid=ppid, tick=tick, start=btime + tick / hz, cwd=cwd, argv=argv, terminal=terminal)
+                return denied, False  # other uid: no attribution from this field
+            except (FileNotFoundError, ProcessLookupError):
+                return denied, True
+            except OSError as exc:
+                raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
+        argv, missing_argv = read(lambda: [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x], [])
+        cwd, missing_cwd = read(lambda: os.readlink(directory / "cwd"), None)
+        live_thread = state != b"Z"
+        if missing_cwd:
+            # After the main thread exits (pthread_exit) the leader shows Z and the group's cwd is only visible
+            # through its live threads; a real zombie has no live thread left.
+            for task in sorted((directory / "task").glob("*")) if (directory / "task").is_dir() else []:
+                if (proc_stat(task) or (b"Z",))[0] == b"Z":
+                    continue
+                live_thread = True
+                cwd, _ = read(lambda: os.readlink(task / "cwd"), None)
+                if cwd:
+                    missing_cwd = False
+                    break
+        terminal, _ = read(lambda: b"AO_SHELL_TERMINAL=1" in (directory / "environ").read_bytes().split(b"\0"), False)
+        if (missing_argv or missing_cwd) and (proc_stat(directory) or (None, None, None))[2] != tick:
+            continue  # the PID really went away (or was reused) while reading
+        table[int(directory.name)] = dict(ppid=ppid, tick=tick, start=btime + tick / hz, cwd=cwd, argv=argv, terminal=terminal,
+                                          cwd_unknown=missing_cwd and live_thread)
     return table
 
 
@@ -595,8 +621,9 @@ def os_work_processes(table, sid, data_dir, workspace, base_of, exclude=()):
     own = {pid for pid in hosts if table[pid]["argv"][2] == sid and os.path.realpath(table[pid]["argv"][3]) == os.path.realpath(data_dir)}
     terminal = tree(pid for pid, row in table.items() if row["terminal"])  # B9: the user's AO session terminal, whole tree
     host_trees = tree(hosts)  # B7: other actors' chat-hosts are never this worker's
-    candidates = tree(own) | {pid for pid, row in table.items() if row["cwd"] and pid not in host_trees and
-                              Path(row["cwd"]).is_relative_to(workspace)}
+    # A live process whose cwd cannot be read at all may be this worker's reparented work: fail closed and name it.
+    candidates = tree(own) | {pid for pid, row in table.items() if pid not in host_trees and (row.get("cwd_unknown") or
+                              (row["cwd"] and Path(row["cwd"]).is_relative_to(workspace)))}
     candidates -= terminal | tree(exclude)  # B8: RH itself
     roots = {pid for pid in candidates if table[pid]["ppid"] in own}  # B2
     providers = roots | {pid for pid in candidates if table[pid]["ppid"] in roots and name(pid) == "claude"}  # B3
