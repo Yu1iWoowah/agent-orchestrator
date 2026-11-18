@@ -553,21 +553,27 @@ def proc_table():
         if not directory.name.isdigit():
             continue
         try:
-            raw = (directory / "stat").read_text()
-            fields = raw[raw.rindex(")") + 2:].split()
+            # comm is truncated to TASK_COMM_LEN and may split a UTF-8 character: parse bytes after the last b")".
+            raw = (directory / "stat").read_bytes()
             argv = [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x]
             try:
                 cwd = os.readlink(directory / "cwd")
-            except OSError:
+            except PermissionError:
                 cwd = None
             try:
                 terminal = b"AO_SHELL_TERMINAL=1" in (directory / "environ").read_bytes().split(b"\0")
-            except OSError:
+            except PermissionError:
                 terminal = False  # unreadable (other uid): never treated as the user's terminal
-            table[int(directory.name)] = dict(ppid=int(fields[1]), tick=int(fields[19]), start=btime + int(fields[19]) / hz,
-                                              cwd=cwd, argv=argv, terminal=terminal)
-        except (OSError, ValueError, IndexError):
-            continue  # ended while reading
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # the process is gone
+        except OSError as exc:
+            raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
+        try:
+            fields = raw[raw.rindex(b")") + 2:].split()
+            ppid, tick = int(fields[1]), int(fields[19])
+        except (ValueError, IndexError) as exc:
+            raise Stop("process table UNKNOWN: " + directory.name + ": unparsable stat") from exc
+        table[int(directory.name)] = dict(ppid=ppid, tick=tick, start=btime + tick / hz, cwd=cwd, argv=argv, terminal=terminal)
     return table
 
 

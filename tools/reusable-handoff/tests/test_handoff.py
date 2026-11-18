@@ -7,6 +7,7 @@ import os
 import signal
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import time
@@ -1868,6 +1869,23 @@ class OSProcessTests(unittest.TestCase):
         self.assertEqual((row["ppid"], row["cwd"], row["terminal"]), (os.getppid(), os.getcwd(), False))
         self.assertLessEqual(row["start"], time.time())
         self.assertGreater(row["start"], time.time() - 3600)
+
+    def test_proc_table_keeps_a_live_process_whose_comm_splits_utf8_and_stops_on_unknown_stat(self):
+        code = "import time;open('/proc/self/comm','wb').write('worker-測試程式'.encode());print('ready',flush=True);time.sleep(60)"
+        child = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        stat = Path("/proc", str(child.pid), "stat").read_bytes()
+        with self.assertRaises(UnicodeDecodeError):
+            stat.decode()  # the kernel cut the name inside a multi-byte character
+        row = h.proc_table()[child.pid]
+        self.assertEqual((row["ppid"], row["cwd"]), (os.getpid(), str(self.root)))
+        original = Path.read_bytes
+        def broken(path):
+            return b"1 (x" if path == Path("/proc", str(child.pid), "stat") else original(path)
+        with patch.object(h.Path, "read_bytes", broken), self.assertRaisesRegex(h.Stop, "process table UNKNOWN: " + str(child.pid)):
+            h.proc_table()
 
     def test_claude_tree_terminal_reviewer_and_reparented_attribution(self):
         calls = []
