@@ -1084,6 +1084,40 @@ finally:
         with self.assertRaisesRegex(h.Stop, "wait deadline reached: workers.*worker.*open-terminal"):
             run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
 
+    def test_named_continue_workers_deadline_names_early_returns_after_reload(self):
+        # RH-NAMED-CONTINUE / F2: every early return keeps a reason, also on a Run rebuilt by continue.
+        cases = {"blocked": dict(state="blocked", block_reason="tool still running: activity-9", source_type="worker-self"),
+                 "evidence": dict(state="safe", source_type="worker-self", evidence_turn_id="dispatch"),
+                 "drift": None}
+        expected = {"blocked": "blocked: tool still running: activity-9", "evidence": "evidence turn not completed: dispatch",
+                    "drift": "workspace changed during quiescence check"}
+        for case, stop in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.root.chmod(0o700)
+                run = self.run_fixture()
+                idle = snapshot(turns=[{"id": "dispatch", "state": "running"}] if case == "evidence" else None)
+                idle["session"].update(id="worker", kind="worker")
+                self.worker_index(run)
+                run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
+                if stop:
+                    stop.update(stop_directive={"last_ack_d": "D-7"})
+                    h.publish(run.root / "workers/worker/stop.json", h.canonical(stop))
+                run = h.Run(run.root, run.cli)  # continue rebuilds Run; the reason is not persisted
+                run.cli.session = lambda _: idle
+                run.workspace = lambda _: str(self.root)
+                self.worker_index(run)
+                run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
+                elapsed = [0]
+                run.clock = lambda: elapsed[0]
+                run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
+                shots = iter([{"sha256": "a"}, {"sha256": "b"}] * 4)
+                with patch.object(h, "validate_stop"), patch.object(h, "git_snapshot", side_effect=lambda *a, **k: next(shots)), \
+                        self.assertRaises(h.Stop) as caught:
+                    run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+                self.assertIn("wait deadline reached: workers", str(caught.exception))
+                self.assertIn(json.dumps({"worker": [expected[case]]}), str(caught.exception))
+
     def test_T05_running_2a_and_bootstrap_receipts_wait_for_completed(self):
         for sid, phase in (("old", "old_2a"), ("new", "bootstrap")):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:

@@ -1795,11 +1795,13 @@ class Run:
             stop = decode(private_read(path))
             validate_stop(stop, self.run_id, sid, directory)
             if stop["state"] != "safe":
+                self.unsettled[sid] = [stop["state"] + ": " + str(stop.get("block_reason"))]
                 return False
             if stop["source_type"] == "worker-self":
                 require(rules and rules["reserved_stop_d"], "self stop lacks original reserved directive")
                 require(stop["stop_directive"]["last_ack_d"] == rules["reserved_stop_d"], "worker stop D does not match reserved directive")
                 if not completed(snap, stop["evidence_turn_id"]):
+                    self.unsettled[sid] = ["evidence turn not completed: " + stop["evidence_turn_id"]]
                     return False
             if not self.quiescent_worker(sid, snap, stop["settled"]["in_flight"]):
                 return False
@@ -1815,7 +1817,10 @@ class Run:
             before = git_snapshot(workspace, directory / ("before-" + uuid.uuid4().hex))
             self.sleep(2)
             after = git_snapshot(workspace, directory / ("after-" + uuid.uuid4().hex))
-            if before["sha256"] != after["sha256"] or not self.quiescent_worker(sid, self.snapshot(sid)):
+            if before["sha256"] != after["sha256"]:
+                self.unsettled[sid] = ["workspace changed during quiescence check"]
+                return False
+            if not self.quiescent_worker(sid, self.snapshot(sid)):
                 return False
             publish(directory / "quiescent-observation.raw", getattr(self.cli, "last_raw", canonical(snap)))
             publish(directory / "provenance.json", canonical([]))
