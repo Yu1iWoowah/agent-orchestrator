@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -144,15 +143,13 @@ func TestKilledHostEpochIsNotProofWhileItsProviderRuns(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = Shutdown(context.Background(), cfg.DataDir, cfg.SessionID) })
 	provider := requestProviderPID(t, first, 1, "pid")
-	t.Cleanup(func() { _ = syscall.Kill(provider, syscall.SIGKILL) })
+	t.Cleanup(func() { killPID(provider) })
 	old, err := readDescriptor(cfg.DataDir, cfg.SessionID)
 	if err != nil || old.BootID == "" {
 		t.Fatalf("host descriptor = %+v, %v", old, err)
 	}
 	oldEpoch := deliveryEpoch(old)
-	if err := syscall.Kill(old.PID, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
+	killPID(old.PID) // SIGKILL, as the OOM killer would
 	for deadline := time.Now().Add(5 * time.Second); processalive.Alive(old.PID) && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -169,5 +166,11 @@ func TestKilledHostEpochIsNotProofWhileItsProviderRuns(t *testing.T) {
 	}
 	if EpochFromPreviousBoot(oldEpoch) {
 		t.Fatalf("killed host's epoch %q judged from a previous boot while its provider %d still runs", oldEpoch, provider)
+	}
+}
+
+func killPID(pid int) {
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Kill()
 	}
 }
