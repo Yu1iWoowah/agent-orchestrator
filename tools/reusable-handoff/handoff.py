@@ -4024,6 +4024,9 @@ def retire_run(root, run_id, initial=None):
             # crash before intent. No fresh capture or dispatch on this branch.
             manifest_raw = private_read(manifest_path)
             manifest = decode(manifest_raw)
+            # No compatibility with the pre-RH-GATE1 manifest (no CLI binding): refuse it by name, never guess.
+            require(isinstance(manifest.get("cli"), dict) and isinstance(manifest["cli"].get("sha256"), str),
+                    "pending retirement manifest is the old format without a CLI binding; recovery is not supported")
             require(manifest["run"] == inputs["run"] and manifest["slot"] == inputs["slot"] and
                     manifest["authorization_sha256"] == digest(authorization_raw) and manifest["fence_token"] == fence["token"] and
                     private_manifest(directory / "journal.original") == manifest["journal"] and

@@ -1016,6 +1016,27 @@ c.call(['spawn','--help']);e.close()
             transport.assert_not_called()
         self.assertEqual(before, h.private_manifest(self.directory / "journal.original"))
 
+    def test_old_format_pending_manifest_is_refused_by_name_not_recovered(self):
+        # A manifest published by the pre-RH-GATE1 retire_run has no CLI binding; principle 3: refuse, no compatibility path.
+        publish = h.publish
+        def crash(path, raw):
+            if Path(path) == self.directory / "intent.json":
+                raise OSError("synthetic crash")
+            return publish(path, raw)
+        with patch.object(h, "publish", side_effect=crash), self.assertRaisesRegex(OSError, "synthetic crash"):
+            self.retire()
+        manifest = h.decode(h.private_read(self.directory / "manifest.json"))
+        del manifest["cli"]
+        h.replace_private(self.directory / "manifest.json", manifest)
+        h.publish(self.directory / "recovery-authorization.json", h.canonical(dict(operator_session_id="operator", directive_ref="D-92", fence_token=self.journal.state()["token"])))
+        with patch.dict(os.environ, AO_SESSION_ID="operator", PATH=str(self.path_cli.parent) + os.pathsep + os.environ["PATH"]), \
+                patch.object(h.subprocess, "run") as transport, \
+                self.assertRaisesRegex(h.Stop, "old format without a CLI binding; recovery is not supported"):
+            h.retire_run(self.root, self.run_id)
+        transport.assert_not_called()
+        self.assertFalse((self.directory / "intent.json").exists())
+        self.assertFalse((self.directory / "receipt.json").exists())
+
     def test_slot_drift_fences_without_receipt_and_cannot_reopen(self):
         (self.slot / "request.json").write_bytes(b"changed")
         with self.assertRaises(h.Stop):
