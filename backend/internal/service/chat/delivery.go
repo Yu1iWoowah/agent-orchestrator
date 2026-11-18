@@ -534,6 +534,68 @@ func (c *Controller) settleLegacyDelivery(ctx context.Context, a domain.ChatDeli
 	return true, nil
 }
 
+// goneHostEpoch reports whether the attempt's receipt names a provider host
+// other than the one attached now. Only one host owns a session at a time
+// (its O_EXCL launch lock is reclaimed only from a proven-gone owner), so a
+// different attached epoch proves the original host no longer runs.
+func (c *Controller) goneHostEpoch(a domain.ChatDeliveryAttempt) bool {
+	reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
+	if !ok || a.Receipt == nil || a.Receipt.ProviderEpoch == "" {
+		return false
+	}
+	current := reporter.OutboundProviderEpoch()
+	return current != "" && a.Receipt.ProviderEpoch != current
+}
+
+// settleGoneHostDelivery ends an attempt whose original host no longer exists
+// (user decision sdr-total-review-1 q1=b). No host can ever answer for it, and
+// no execution can still run. Like legacy settlement it writes the daemon's
+// incomplete receipt, never a provider one; the input is never replayed. The
+// error code tells a completed turn from one the host loss interrupted. Only
+// unknown or reserved attempts qualify: an accepted receipt cannot be
+// downgraded to unknown, so an accepted-but-unsettled turn keeps its rule.
+func (c *Controller) settleGoneHostDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (bool, error) {
+	if !c.goneHostEpoch(a) {
+		return false, nil
+	}
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
+	journal, ok := c.store.(chatDeliveryJournal)
+	if !ok {
+		return false, ports.ErrChatDeliveryUnverified
+	}
+	current, err := c.deliveryOwner(ctx, journal)
+	if err != nil {
+		return false, err
+	}
+	a, err = journal.ChatDeliveryAttempt(ctx, c.sessionID, a.ID)
+	if err != nil || a.ExecutionSettled || a.Disposition != domain.ChatDeliveryUnknown && a.Disposition != domain.ChatDeliveryReserved || !c.goneHostEpoch(a) {
+		return false, err
+	}
+	old := a.Receipt
+	r := domain.ChatDeliveryReceipt{AttemptID: a.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: c.now(),
+		ProviderEpoch: old.ProviderEpoch, ProviderRequestID: old.ProviderRequestID, ProviderTurnID: old.ProviderTurnID}
+	code := "CHAT_DELIVERY_HOST_GONE_SETTLED"
+	for _, id := range a.TurnIDs {
+		turn, err := c.store.TurnByID(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if turn.State != domain.TurnStateCompleted {
+			code = "CHAT_DELIVERY_HOST_GONE_INTERRUPTED"
+		}
+	}
+	a.Version++
+	a.UpdatedAt = laterChatTime(c.now(), a.UpdatedAt)
+	a.Disposition, a.Receipt, a.ExecutionSettled, a.EvidenceLevel = domain.ChatDeliveryUnknown, &r, true, 0
+	a.NextCheckAt, a.BlockedSince, a.ErrorCode = nil, nil, code
+	if _, err := journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current)); err != nil {
+		return false, err
+	}
+	c.releasePendingDelivery(a.ID)
+	return true, nil
+}
+
 func (c *Controller) startDeliveryMonitor() {
 	if _, ok := c.conv.(ports.ChatDeliveryObserver); !ok || c.reviewID != "" {
 		return
@@ -610,6 +672,14 @@ func (c *Controller) monitorDeliveries() {
 					due := a.LastProgressAt.Add(30 * time.Second)
 					if a.NextCheckAt != nil {
 						due = *a.NextCheckAt
+					}
+					if c.goneHostEpoch(a) {
+						settleCtx, settleCancel := c.deadlineContext(context.Background(), 5*time.Second)
+						settled, settleErr := c.settleGoneHostDelivery(settleCtx, a)
+						settleCancel()
+						if settled && settleErr == nil {
+							continue
+						}
 					}
 					if force || firstSweep && a.BlockedSince != nil || !due.After(c.now()) {
 						queryCtx, queryCancel := c.deadlineContext(context.Background(), 10*time.Second)

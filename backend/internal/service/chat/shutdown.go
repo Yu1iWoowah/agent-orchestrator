@@ -107,9 +107,21 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 		}
 		return nil
 	}
-	attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
+	pending, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 	if err != nil {
 		return errors.Join(ports.ErrChatShutdownNotSettled, err)
+	}
+	// An attempt from a host that no longer exists can never be answered by
+	// the attached one: settle it first instead of failing the flush on it.
+	attempts := make([]domain.ChatDeliveryAttempt, 0, len(pending))
+	for _, a := range pending {
+		settled, err := c.settleGoneHostDelivery(ctx, a)
+		if err != nil {
+			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+		}
+		if !settled {
+			attempts = append(attempts, a)
+		}
 	}
 	keys := make([]ports.ChatDeliveryLookup, 0, len(attempts))
 	for _, a := range attempts {
