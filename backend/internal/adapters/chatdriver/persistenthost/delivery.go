@@ -311,6 +311,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 		j.records[attempt] = record
 		if record.Receipt.ExecutionSettled {
 			j.clearWaiting(attempt, record.NativeTurn)
+			j.promptEnded(string(e.ID))
 		}
 		return j.append(record)
 	}
