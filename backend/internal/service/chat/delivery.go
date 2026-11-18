@@ -535,21 +535,23 @@ func (c *Controller) settleLegacyDelivery(ctx context.Context, a domain.ChatDeli
 }
 
 // goneHostEpoch reports whether the attempt's receipt names a provider host
-// other than the one attached now. Only one host owns a session at a time
-// (its O_EXCL launch lock is reclaimed only from a proven-gone owner), so a
-// different attached epoch proves the original host no longer runs.
+// from an earlier boot. A different attached epoch alone only proves the old
+// host process is gone: in the same boot a killed host's provider runs in its
+// own process group and may still be changing the workspace, so that stays
+// unconfirmed. Only a previous boot proves the provider and its tools ended.
 func (c *Controller) goneHostEpoch(a domain.ChatDeliveryAttempt) bool {
 	reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
-	if !ok || a.Receipt == nil || a.Receipt.ProviderEpoch == "" {
+	judge, judged := c.conv.(ports.ChatDeliveryEpochJudge)
+	if !ok || !judged || a.Receipt == nil || a.Receipt.ProviderEpoch == "" {
 		return false
 	}
 	current := reporter.OutboundProviderEpoch()
-	return current != "" && a.Receipt.ProviderEpoch != current
+	return current != "" && a.Receipt.ProviderEpoch != current && judge.DeliveryEpochFromPreviousBoot(a.Receipt.ProviderEpoch)
 }
 
-// settleGoneHostDelivery ends an attempt whose original host no longer exists
-// (user decision sdr-total-review-1 q1=b). No host can ever answer for it, and
-// no execution can still run. Like legacy settlement it writes the daemon's
+// settleGoneHostDelivery ends an attempt whose original host ran in an earlier
+// boot (user decision sdr-total-review-1 q1=b). No host can ever answer for it,
+// and no execution can still run. Like legacy settlement it writes the daemon's
 // incomplete receipt, never a provider one; the input is never replayed. The
 // error code tells a completed turn from one the host loss interrupted. Only
 // unknown or reserved attempts qualify: an accepted receipt cannot be

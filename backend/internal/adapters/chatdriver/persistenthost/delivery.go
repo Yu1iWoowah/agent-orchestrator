@@ -580,8 +580,42 @@ func (c *DeliveryClient) call(ctx context.Context, keys []ports.ChatDeliveryLook
 	return response.Deliveries, nil
 }
 
+// deliveryEpoch identifies one host process: pid, start time and, when the host
+// recorded it, the boot it ran in. A host started before boot ids existed keeps
+// the older form, which both sides still derive from the same descriptor.
 func deliveryEpoch(d Descriptor) string {
-	return "host-" + strconv.Itoa(d.PID) + "-" + strconv.FormatInt(d.StartedAt.UnixNano(), 10)
+	epoch := "host-" + strconv.Itoa(d.PID) + "-" + strconv.FormatInt(d.StartedAt.UnixNano(), 10)
+	if d.BootID != "" {
+		epoch += "-" + d.BootID
+	}
+	return epoch
+}
+
+// EpochFromPreviousBoot reports positive proof that a delivery epoch's host and
+// every process it started belong to an earlier boot. A host that died in this
+// boot proves nothing: its provider runs in its own process group and can
+// outlive it. Malformed or unknown epochs are never proof.
+func EpochFromPreviousBoot(epoch string) bool {
+	rest, ok := strings.CutPrefix(epoch, "host-")
+	if !ok {
+		return false
+	}
+	parts := strings.SplitN(rest, "-", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	if _, err := strconv.Atoi(parts[0]); err != nil {
+		return false
+	}
+	nanos, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	if len(parts) == 3 {
+		return parts[2] != "" && hostFromPreviousBoot(parts[2], time.Time{})
+	}
+	// u3 transition (sdr-total-review-1 q5=b): no boot id was recorded.
+	return hostFromPreviousBoot("", time.Unix(0, nanos))
 }
 
 // flushReplay confirms the ACP replay boundary before reporting custody. It

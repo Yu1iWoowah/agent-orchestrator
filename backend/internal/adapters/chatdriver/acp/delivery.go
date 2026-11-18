@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -26,6 +27,11 @@ func (c *conversation) OutboundProviderEpoch() string {
 		return ""
 	}
 	return c.proc.delivery.ProviderEpoch()
+}
+
+// DeliveryEpochFromPreviousBoot proves an epoch's host belongs to an earlier boot.
+func (*conversation) DeliveryEpochFromPreviousBoot(epoch string) bool {
+	return persistenthost.EpochFromPreviousBoot(epoch)
 }
 
 func (c *conversation) AcknowledgeDeliveryAttempt(ctx context.Context, key ports.ChatDeliveryLookup) error {

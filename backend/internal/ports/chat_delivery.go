@@ -68,6 +68,12 @@ func (e *ChatDeliveryGapError) Error() string {
 
 func (*ChatDeliveryGapError) Unwrap() error { return ErrChatShutdownNotSettled }
 
+// ChatDeliveryEpochJudge proves that a recorded provider epoch belongs to an
+// earlier boot, so neither its host nor any process it started can still run.
+type ChatDeliveryEpochJudge interface {
+	DeliveryEpochFromPreviousBoot(epoch string) bool
+}
+
 // ChatDeliveryEpochReporter names the provider host that currently holds
 // outbound custody; empty when no host is attached.
 type ChatDeliveryEpochReporter interface {

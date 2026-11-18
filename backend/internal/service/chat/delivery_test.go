@@ -1,6 +1,7 @@
 package chat_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -32,7 +33,7 @@ func (f *fakeConversation) fakeDeliveryReceipt(attempt, turn string, settled boo
 	if f.deliveryReceipts == nil {
 		f.deliveryReceipts = map[string]domain.ChatDeliveryReceipt{}
 	}
-	r := domain.ChatDeliveryReceipt{AttemptID: attempt, ProviderTurnID: turn, ProviderRequestID: "fake-rpc-" + attempt, ProviderEpoch: "fake-native-epoch", Disposition: domain.ChatDeliveryAccepted, Source: "provider_response", Complete: true, ObservedAt: f.deliveryNow(), ExecutionSettled: settled}
+	r := domain.ChatDeliveryReceipt{AttemptID: attempt, ProviderTurnID: turn, ProviderRequestID: "fake-rpc-" + attempt, ProviderEpoch: cmp.Or(f.deliveryEpoch, "fake-native-epoch"), Disposition: domain.ChatDeliveryAccepted, Source: "provider_response", Complete: true, ObservedAt: f.deliveryNow(), ExecutionSettled: settled}
 	if f.deliveryPrepared && !settled {
 		r.Disposition = domain.ChatDeliveryUnknown
 		r.Source = "incomplete"

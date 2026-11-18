@@ -1,10 +1,14 @@
 package chat_test
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,15 +22,37 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+// previousBootEpoch is a real host epoch recorded in another boot (its boot id
+// is not this machine's), judged by the real persistent-host rule.
+const previousBootEpoch = "host-4242-1700000000000000000-00000000-0000-0000-0000-000000000000"
+
+// sameBootEpoch is a real host epoch from this boot: a host that crashed or was
+// killed now, whose provider may still be running in its own process group.
+func sameBootEpoch(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		t.Skip("boot identity is recorded on Linux only")
+	}
+	return fmt.Sprintf("host-4242-%d-%s", time.Now().UnixNano(), strings.TrimSpace(string(raw)))
+}
+
+func requireBootIdentity(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("boot identity is recorded on Linux only")
+	}
+}
+
 // goneHostConversation starts attached to the host that recorded its
-// attempts; replaceProviderHost then models a reboot or host restart.
+// attempts; replaceProviderHost then models the next host.
 type goneHostConversation struct {
 	*fakeConversation
 }
 
-func newGoneHostConversation() *goneHostConversation {
+func newGoneHostConversation(epoch string) *goneHostConversation {
 	conv := &goneHostConversation{fakeConversation: newFakeConversation()}
-	conv.outboundEpoch = "fake-native-epoch"
+	conv.outboundEpoch, conv.deliveryEpoch = epoch, epoch
 	return conv
 }
 
@@ -35,6 +61,7 @@ func newGoneHostConversation() *goneHostConversation {
 // and through the delivery monitor, without a question or a replay. The code
 // tells a completed turn from one the host loss interrupted (SDR-PR1 AC3b).
 func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
+	requireBootIdentity(t)
 	for _, tc := range []struct {
 		name   string
 		member domain.TurnState
@@ -47,7 +74,7 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := newSettingsTestClock()
-			conv := newGoneHostConversation()
+			conv := newGoneHostConversation(previousBootEpoch)
 			h := deliveryHarness(t, conv, clock)
 			// ACP shape: the old host recorded the prompt (unknown, incomplete,
 			// epoch and request id) but never saw it settle.
@@ -57,7 +84,7 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
-			if err != nil || attempt.ExecutionSettled || attempt.Receipt == nil || attempt.Receipt.ProviderEpoch != "fake-native-epoch" {
+			if err != nil || attempt.ExecutionSettled || attempt.Receipt == nil || attempt.Receipt.ProviderEpoch != previousBootEpoch {
 				t.Fatalf("old-host attempt = %+v %v", attempt, err)
 			}
 			questionID := ""
@@ -88,7 +115,7 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 			}
 			saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
 			if err != nil || !saved.ExecutionSettled || saved.ErrorCode != tc.code || saved.Disposition != domain.ChatDeliveryUnknown ||
-				saved.Receipt == nil || saved.Receipt.Source != "incomplete" || saved.Receipt.ProviderEpoch != "fake-native-epoch" {
+				saved.Receipt == nil || saved.Receipt.Source != "incomplete" || saved.Receipt.ProviderEpoch != previousBootEpoch {
 				t.Fatalf("gone-host settlement = %+v receipt=%+v %v", saved, saved.Receipt, err)
 			}
 			if pending, err := h.st.PendingChatDeliveries(t.Context(), testSession); err != nil || len(pending) != 0 {
@@ -111,8 +138,9 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 
 // The attached host's own unsettled attempt is not proof of anything.
 func TestSameHostUnsettledAttemptStillBlocksPreflight(t *testing.T) {
+	requireBootIdentity(t)
 	clock := newSettingsTestClock()
-	conv := newGoneHostConversation()
+	conv := newGoneHostConversation(previousBootEpoch)
 	h := deliveryHarness(t, conv, clock)
 	conv.setDeliveryClock(clock.Now, true)
 	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "still the same host", ClientMessageID: "same-host"})
@@ -136,10 +164,11 @@ func TestSameHostUnsettledAttemptStillBlocksPreflight(t *testing.T) {
 // unsettled record belongs to a gone host it is accepted; a turn still in
 // flight keeps the 409 (SDR-PR1 AC4).
 func TestShutdownRouteAcceptsTakeoverAfterGoneHost(t *testing.T) {
+	requireBootIdentity(t)
 	for _, inFlight := range []bool{false, true} {
 		t.Run(map[bool]string{false: "gone-host record", true: "turn in flight"}[inFlight], func(t *testing.T) {
 			clock := newSettingsTestClock()
-			conv := newGoneHostConversation()
+			conv := newGoneHostConversation(previousBootEpoch)
 			h := deliveryHarness(t, conv, clock)
 			conv.setDeliveryClock(clock.Now, true)
 			turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "before the reboot", ClientMessageID: "takeover"})
@@ -185,6 +214,7 @@ func TestShutdownRouteAcceptsTakeoverAfterGoneHost(t *testing.T) {
 // settlement: a gone host's attempt no longer keeps either from stopping the
 // provider (SDR-PR1 AC1b, AC3b).
 func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) {
+	requireBootIdentity(t)
 	for _, path := range []string{"hibernation", "version refresh"} {
 		t.Run(path, func(t *testing.T) {
 			ctx := t.Context()
@@ -195,7 +225,7 @@ func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) 
 			} else {
 				h, conv, _ = versionRefreshHarness(t)
 			}
-			conv.outboundEpoch = "fake-native-epoch"
+			conv.outboundEpoch, conv.deliveryEpoch = previousBootEpoch, previousBootEpoch
 			conv.setDeliveryClock(h.now, true)
 			turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "before the reboot", ClientMessageID: "gone-" + path})
 			if err != nil {
@@ -237,5 +267,38 @@ func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) 
 				t.Fatalf("gone-host attempt after %s = %+v %v", path, saved, err)
 			}
 		})
+	}
+}
+
+// A host that died in this boot (SIGKILL, OOM) is replaced, but its provider
+// runs in its own process group and may still be changing the workspace. Its
+// attempt stays unconfirmed: preflight keeps refusing and nothing is settled
+// or released (SDR-PR1 review P1).
+func TestSameBootHostCrashKeepsAttemptUnconfirmed(t *testing.T) {
+	requireBootIdentity(t)
+	clock := newSettingsTestClock()
+	epoch := sameBootEpoch(t)
+	conv := newGoneHostConversation(epoch)
+	h := deliveryHarness(t, conv, clock)
+	conv.setDeliveryClock(clock.Now, true)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "before the host crash", ClientMessageID: "same-boot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted}
+	h.awaitSnapshot(t, func(snap store.ConversationSnapshot) bool {
+		return len(snap.Turns) == 1 && snap.Turns[0].State == domain.TurnStateCompleted
+	})
+	conv.replaceProviderHost()
+	var blocked *ports.ChatShutdownBlockedError
+	if err := h.svc.StopAll(t.Context()); !errors.As(err, &blocked) {
+		t.Fatalf("a same-boot host crash passed preflight: %v", err)
+	}
+	saved, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil || saved.ExecutionSettled || strings.HasPrefix(saved.ErrorCode, "CHAT_DELIVERY_HOST_GONE") || saved.Receipt == nil || saved.Receipt.ProviderEpoch != epoch {
+		t.Fatalf("same-boot attempt settled without proof the provider stopped: %+v %v", saved, err)
+	}
+	if len(conv.sentTexts()) != 1 {
+		t.Fatal("input replayed")
 	}
 }

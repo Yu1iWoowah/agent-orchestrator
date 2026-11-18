@@ -6,8 +6,11 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 )
 
 func stubBoot(t *testing.T, id string, booted time.Time, idErr error) {
@@ -102,5 +105,69 @@ func TestRebootLeftoverHostRecordsAreReclaimed(t *testing.T) {
 				t.Fatalf("new host descriptor = %+v, %v", d, err)
 			}
 		})
+	}
+}
+
+func TestEpochFromPreviousBootNeedsBootProof(t *testing.T) {
+	booted := time.Date(2026, 11, 18, 9, 48, 13, 0, time.UTC)
+	stubBoot(t, "boot-now", booted, nil)
+	for _, tc := range []struct {
+		epoch    string
+		previous bool
+	}{
+		{"host-42-" + strconv.FormatInt(booted.Add(time.Minute).UnixNano(), 10) + "-boot-old", true},
+		{"host-42-" + strconv.FormatInt(booted.Add(time.Minute).UnixNano(), 10) + "-boot-now", false},
+		{"host-42-" + strconv.FormatInt(booted.Add(-time.Hour).UnixNano(), 10), true},   // u3 epoch, started before this boot
+		{"host-42-" + strconv.FormatInt(booted.Add(time.Minute).UnixNano(), 10), false}, // u3 epoch, this boot
+		{"fake-native-epoch", false},
+		{"host-x-1", false},
+	} {
+		if got := EpochFromPreviousBoot(tc.epoch); got != tc.previous {
+			t.Errorf("EpochFromPreviousBoot(%q) = %v, want %v", tc.epoch, got, tc.previous)
+		}
+	}
+}
+
+// A host killed in this boot (SIGKILL/OOM) leaves its provider running in its
+// own process group. The next host may take over, but the killed host's epoch
+// must not count as proof that its work ended (SDR-PR1 review P1).
+func TestKilledHostEpochIsNotProofWhileItsProviderRuns(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("boot identity is recorded on Linux only")
+	}
+	cfg := Config{SessionID: "killed-host", DataDir: t.TempDir(), Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1", "AO_CHAT_HOST_IGNORE_STDIN=1"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	first, err := ConnectOrStart(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Shutdown(context.Background(), cfg.DataDir, cfg.SessionID) })
+	provider := requestProviderPID(t, first, 1, "pid")
+	t.Cleanup(func() { _ = syscall.Kill(provider, syscall.SIGKILL) })
+	old, err := readDescriptor(cfg.DataDir, cfg.SessionID)
+	if err != nil || old.BootID == "" {
+		t.Fatalf("host descriptor = %+v, %v", old, err)
+	}
+	oldEpoch := deliveryEpoch(old)
+	if err := syscall.Kill(old.PID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); processalive.Alive(old.PID) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processalive.Alive(old.PID) || !processalive.Alive(provider) {
+		t.Fatalf("host alive=%v provider alive=%v; want the host gone and its provider still running", processalive.Alive(old.PID), processalive.Alive(provider))
+	}
+	next, err := ConnectOrStart(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("next host: %v", err)
+	}
+	_ = next.Stdin.Close()
+	if next.Delivery.ProviderEpoch() == oldEpoch {
+		t.Fatal("next host reused the killed host's epoch")
+	}
+	if EpochFromPreviousBoot(oldEpoch) {
+		t.Fatalf("killed host's epoch %q judged from a previous boot while its provider %d still runs", oldEpoch, provider)
 	}
 }

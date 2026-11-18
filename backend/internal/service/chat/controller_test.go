@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/kimiacp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
@@ -93,6 +94,8 @@ type fakeConversation struct {
 	deliveryReceipts map[string]domain.ChatDeliveryReceipt
 	// outboundEpoch names the attached host; empty reports no host identity.
 	outboundEpoch string
+	// deliveryEpoch is the host epoch new receipts carry (default fake-native-epoch).
+	deliveryEpoch string
 
 	// noNetwork makes SandboxAllowsNetwork report a sandbox with no network.
 	noNetwork bool
@@ -314,6 +317,12 @@ func (f *fakeConversation) OutboundProviderEpoch() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.outboundEpoch
+}
+
+// DeliveryEpochFromPreviousBoot uses the real persistent-host judgment, so a
+// receipt epoch must be a real host epoch (boot id included) to count as gone.
+func (f *fakeConversation) DeliveryEpochFromPreviousBoot(epoch string) bool {
+	return persistenthost.EpochFromPreviousBoot(epoch)
 }
 
 // replaceProviderHost models a reboot or host restart: a new host epoch that
