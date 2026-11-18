@@ -34,23 +34,13 @@ new 依初始 prompt 使用固定 `inspect` 命令分頁讀取私有 run 材料�
 以正常 `ao project documents info --project agent-orchestrator --json` 得到 `sharedDir=S`，
 run root 固定為 `R=parent(S)/.private-handoff-runs`，位於 AO data root 下、shared 與 old worktree 外。
 目錄 0700，檔案 0600；拒絕 symlink、不同內容覆寫及越界參照。
-start 在 detach 前把已資格化的腳本原 bytes 保存在 `R/<run-id>/handoff.py`；runner、new helper 與人類 status 都使用這份固定副本。
+start 在 detach 前把腳本原 bytes 保存在 `R/<run-id>/handoff.py`；runner、new helper 與人類 status 都使用這份固定副本。
 old worktree 之後消失不影響入口。固定副本的 status 可直接讀本 run 狀態，不依賴 daemon 在線。
 
-初始定位只使用 PATH 上已安裝 CLI 的正常 documents 讀取。
-後續固定使用 `R/.qualified/ao`，以及 0600 的 `R/.qualified/qualification.json`：
-
-```json
-{
-  "schema": "rh-cli-qualification/2",
-  "call_protocol": "rh-calls/1",
-  "cli_sha256": "<qualified CLI bytes SHA256>",
-  "script_sha256": "<this handoff.py bytes SHA256>"
-}
-```
-
-這份資格資料與副本由另行授權的資格演練準備；腳本不安裝、不替換、不重啟 stable AO。
-資格版須包含本 PR 的 `spawn --approval-mode`，並與 daemon 既有 `approvalMode` wire 相容。
+整個 run 使用 PATH 上已安裝的 `ao`（取 realpath）。start 在 state 記錄它的 `cli_path`、`cli_sha256`、`cli_version`（`ao version`），以及 handoff.py 的 `script_sha256`。
+換手中每次呼叫 CLI 前、以及 continue 重建 run 時都核對這份 CLI 的 bytes；不符即 STOP，原因寫明「AO CLI changed since run start」與前後 sha256 前 8 碼。腳本不安裝、不替換、不重啟 stable AO。
+CLI 須包含 `spawn --approval-mode`，並與 daemon 既有 `approvalMode` wire 相容。
+換手期間不要更新 AO。中途換版而 STOP 時：old 還沒被 kill，可以退役後用新版重新 start；old 已被 kill，run 不能 continue 也不能退役，由使用者決定以 new 繼續或另行處理。
 start 也會核 CLI help、指定帳號的 email／signedIn／problem／quota，以及該帳號 catalog 的精確 model／effort。
 CLI／script hash 或 daemon 定位改變即停止，不改用別的入口或 binding。
 
@@ -133,14 +123,12 @@ runner 在 worker 停點、任何 lifecycle 之前做準備回合檢查，任一
 
 ### 資格切換
 
-正常執行只接受 qualification/2 與 rh-calls/1。原 qualification/1、原 script、CLI bytes 與失敗紀錄只作歷史證據，不能啟動或 continue。
-資格更新須另行具名授權；先完成原 run 的完整核收／退役 receipt，才發布新資格。不能覆寫原件後再補舊 hash。
 已 void 的墓碑與已退役 receipt 只讀核驗，禁止重用 UUID。不要對舊 run 執行新／舊 script 來補 intent。
 
 ## 三個階段與回條
 
 1. **worker 停點**：核本專案未 terminated 的 worker 集合。active worker 收具名 stop D，收束操作、保全 ref／dirty／原題，填語意 statement 後由固定 helper 原子寫 `workers/<id>/stop.json`（`rh-worker-stop/2`），填真 turn-id，completed 後 hold。
-   靜止代記須正常 idle/exited、無 queued/running／未結工具，兩份相隔至少兩秒的 Git 內容快照相同，再核正常狀態；明標「未經worker自述」。quota／沒回本身不算 safe。
+   靜止代記須正常 idle/exited、無 queued/running／未結工具且沒有工作程序，兩份相隔至少兩秒的 Git 內容快照相同，再核正常狀態；明標「未經worker自述」。quota／沒回本身不算 safe。
 2. **old 文件與原文**：全 safe 後一次具名 2a 控制訊息，old 用自己的 managed write／expected-hash 更新 A–F，正文含 2a 控制訊息給出的獨立一行 `handoff_run_id: <run-id>`（照抄），原子寫 `old/phase-2a.json`（`rh-old-2a/1`）。runner 核原 managed JSON、正本 hash、lease、run-id、真 completed。
    之後保存 cap0 active-lineage CLI 投影，以及 query_only transaction 中唯一 old conversation 的全分支白名單原文（不合法 UTF-8 的格子無損保存並揭露）、必要附件／依賴。cut 不可變，delta 以父 hash 相連。
 3. **切換與續接**：再核停點與 old idle，正常 kill 一次且正面 terminated 後，唯一精確 `RH3[<run-id>]` token spawn。new 只讀必讀範圍（見上方 inspect 說明），以自己的 managed capability 寫接手收據 `bootstrap/new/receipt.json`（`rh-new-receipt/1`），向使用者正式回報後 completed。
@@ -154,7 +142,9 @@ CLI 的非空 AO_DATA_DIR 優先、否則 home/.ao/data；相對值在啟動時�
 session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、detached 都能定位，detached branch 記 null。保存原註冊清單與 path／Git metadata 身分；安全停點後 branch／HEAD／內容／註冊漂移仍停止。零筆、多筆、prunable、缺失、矛盾或別名均停止。
 同一輪會對所有 live worker 收檔或送出原保留 D；請求由 intent 冪等，不等第一位 safe 才通知下一位。
 正常 CLI `incomplete` 是 queued／running turn、streaming／未結工具的清單，交由各 predicate 有界等待；真正截斷仍停止。
-未結工具＝status 非終態；或帶 running job／session handle 而無完成收據；或 command 缺 exitCode 且帶 `processId`／`terminalId`，而沒有同一操作的終態收據。status 與 turn 狀態都不能證明程序已結束（AO 與 ACP driver 會自行收尾遺留的 activity），只認同一操作的終態收據（使用者 rh-realdata-fix-q4-2＝strict-named）。worker 最近視窗內有這類 command 時，workers 階段會等到期限，STOP 原因指名該 worker 與 activity；要先正常結束該 worker，或等該筆移出最近視窗。缺 exitCode 本身不算未結。
+未結工具＝status 非終態；或帶遠端 job／async-operation handle（含 `Job running with ID`）而無完成收據。worker 的本機程序類 handle（exec／write_stdin session、`Process running`／`Script running` 續接）不要求收據，command 缺 exitCode 也不算未結，改由下述 OS 層檢查判定。old 與 new 仍要求本機 handle 的收據；command 缺 exitCode 且帶 `processId`／`terminalId`、沒有同一操作的終態收據時，old 與 new 仍算未結（status 證明不了程序已結束）。
+worker 停點另用 OS 層檢查該 worker 的工作程序：在 agent 程序樹內，或 cwd 在其 worktree；排除 AO／provider 基礎程序、provider 在啟動後第一個 turn 開始前就已啟動的直接子程序（MCP 伺服器；之後才出現的一律算工作程序，provider 重啟就重算基準），以及 AO session 終端機（`AO_SHELL_TERMINAL`）整棵樹。有工作程序就送停止 D，要求 worker 先停掉；回條後 runner 再核，仍有程序就 STOP 並指名 worker 與程序；沒有 controller 的 worker 有工作程序時直接 STOP 指名。
+workers 逾時 STOP 會指名每個未完成的 worker 與原因，包括 blocked／pending 回條、continue 之後，以及快照有變動的情形。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
 
 ## old Git 保全與正常回收（v3.1 §6）
@@ -221,6 +211,7 @@ report 有正面 structural batch／中斷／時間證據時，每個 phase 最�
 本 run 停點後至合法放行／收尾 FYI 前，worker 只用 `ao report --needs-input` 短通知，safe 後不送 checkpoint/done，不用 stuck。
 FYI 不帶 D、不解除既有 hold；確有原授權才由 new 用原保留 D 續原工作。
 通知記 accepted／未讀／未執行，不等全員 ACK；不重送已 accepted 的效果。
+對方 agent 沒在跑而被拒收（`CHAT_CONTROLLER_NOT_READY`）時記 accepted:false，照常完成 final，不解除 hold；其他錯誤仍 STOP。
 
 manifest 固定揭露：尚未送達的 report outbox 不在 conversation cut/delta 範圍，接手後才由 AO 既有機制送達；不查 reports 表，不手動搬移／ack outbox。
 DB 不讀 conversations 表；以正常 CLI 的 conversationId／latestSequence 綁 cut，核白名單 messages／activities 的 conversation_id／序號，再用 CLI 重核 cut 未漂移。
@@ -374,7 +365,7 @@ Git、唯讀 SQLite export、檔案保全不屬 AO transport；它們原有安�
 固定根是 `J=D/projects/agent-orchestrator/orchestrator/.handoff-journal/<run>/`，與 run／old workspace 分開。
 D 在第一筆 API 前由非空 AO_DATA_DIR（否則 HOME/.ao/data）絕對化。目錄 0700、檔案 0600；拒 symlink、hardlink 與 root alias。
 每個 execution 有 UUID、role、actor、PID／SID／boot／process-start identity 與獨立目錄，不共用 counter 或 append log。
-preflight 前在 J/bound 保存 start、qualification、固定 script 與來源原 bytes；即使尚未建立 run，證據也不依賴可變啟動槽位。
+preflight 前在 J/bound 保存 start、固定 script 與來源原 bytes；即使尚未建立 run，證據也不依賴可變啟動槽位。
 同一 old 的未決 journal 會阻擋另一 UUID；不能用換 request 避開 preflight 停點。
 每個 call 的私有目錄保存：
 
@@ -411,14 +402,14 @@ start 在 refresh 前以 request.authority 的原人類來源 refs 記錄 `J/cap
 ## 通用 retire 與歷史核收
 
 唯一入口 `retire --run <canonical-UUID>`。無 force、legacy、逐 run 分支或自動退役。
-呼叫前必須有 J/binding.json 綁定 root／old／start／原 qualification hash；舊 run 由已核離線核收提供，不能先 discovery 來繞過 fence。
+呼叫前必須有 J/binding.json 綁定 root／old／start；舊 run 由已核離線核收提供，不能先 discovery 來繞過 fence。
 
 固定 `.retirement/<run>/authorization.json` 使用 `rh-retirement-authorization/2`，綁 run_id、old_id、project_id、operator_session_id、decision_ref、本次 directive_ref（D 編號）、start_sha256、input_manifest_sha256、expected_effect_ids。
 必要時加 hold_evidence（原 snapshot／message 錨點）、materials（worker_id/path/hash/kind/basis）及已授權 evidence_roots。
 總審通用機制不是本次退役 D；授權必須指名原件與 run。
 
-`input-manifest.json` 列完整 run／slot 的 private_manifest、qualification_sha256、prior_retirement 舊原件清單；external_attempts 逐一列 scope/root/manifest/authorization_ref。
-原 qualification bytes 存 `qualification.original.json`。任何未知的舊前驗、缺檔或 hash／mode／layout 不符即 STOP。
+`input-manifest.json` 列完整 run／slot 的 private_manifest、prior_retirement 舊原件清單；external_attempts 逐一列 scope/root/manifest/authorization_ref。
+歷史 run 的原 qualification/1 bytes 存 `qualification.original.json`。退役綁定開始時 PATH 上的 `ao`（path／sha256 記入 manifest），每次呼叫前核對，所以 AO 換版後仍能退役舊 run。任何未知的舊前驗、缺檔或 hash／mode／layout 不符即 STOP。
 opaque 材料由 manifest／producer／核收清單綁定，不執行內容。partial snapshot 與 Git operation metadata 不能假作已完成保全。
 
 退役還須正面成立：
@@ -429,12 +420,13 @@ opaque 材料由 manifest／producer／核收清單綁定，不執行內容。pa
 - 每個 worker 的已接收 directive、實際 consuming turn completed、原 stop、ACK、hold 分開核對；後來 user／durable steer 指令使授權 UNKNOWN。
 - 受控 worker 的 stop.preservation 逐筆閉合：run 內副本核原 bytes/hash；run 外原件須有同 worker/path/hash 的唯一授權 materials，限原 workspace/artifact roots。每筆授權材料都先核存在與 hash，再由保存階段複製；缺項或漂移不得產生退役 receipt。
 - 沒新控制的 worker 有原持續 hold 與 quiescent 證據。不能為了退役先送指令或把 blocked 改 safe。
+- 整個 run 沒有任何已派送的 worker-control（沒有非 not-started 的 fact，也沒有帶 sent.json 的 worker-stop 目錄）時，只核 old 的責任與 lease，不核 worker 集合與 hold。
 - lifecycle／managed／ownership 已變而責任或資料保護無法證明，就保持 STOP；CLI returncode 0 不夠。
 
 progress-notification 只具固定進度回報能力，是 effect，不列 read。當本地呼叫終結且無其他在途，可記 attempt-terminal；送達仍可 UNKNOWN，不能推論已受理。
 metadata-refresh 也不是 read，須全域 scope／原授權與本地終態；保留成功或失敗。控制派送 UNKNOWN 不可套用通知規則。
 
-提交保存完整 journal 副本、原資格／CLI、必要材料與不可變 manifest／intent；同 filesystem 原子 rename run 到 `.retired/<uuid>`，整槽保存到其 retired-start-slot，再建空槽。
+提交保存完整 journal 副本、退役所用 CLI、必要材料與不可變 manifest／intent；同 filesystem 原子 rename run 到 `.retired/<uuid>`，整槽保存到其 retired-start-slot，再建空槽。
 receipt/2 綁授權、fence、固定 execution 集合及 effect／hold 原件；不改原 state 為 complete。
 pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manifest 後、intent 前中斷也沿原 manifest 恢復，不覆寫原件。
 
