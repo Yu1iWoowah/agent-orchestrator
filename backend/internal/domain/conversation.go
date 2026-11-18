@@ -92,6 +92,17 @@ const (
 	TurnStateHeld TurnState = "held"
 )
 
+// SettledTurnStateKeepingFailure is the state a settlement actually writes over
+// a stored turn. A history replay re-settles a turn without its error, which is
+// not portable; a resumed Codex thread also replays a turn AO already failed as
+// interrupted. The stored failure is what happened, so it is kept.
+func SettledTurnStateKeepingFailure(stored TurnState, storedErr string, next TurnState, nextErr string) TurnState {
+	if nextErr == "" && next == TurnStateInterrupted && stored == TurnStateFailed && storedErr != "" {
+		return TurnStateFailed
+	}
+	return next
+}
+
 // Terminal reports whether no further work is expected on the turn.
 func (s TurnState) Terminal() bool {
 	switch s {

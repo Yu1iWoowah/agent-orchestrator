@@ -1763,12 +1763,8 @@ func (s *Store) SettleTurnWithFailureCode(
 	}
 	// A history replay re-settles a turn without its error, which is not
 	// portable. Keep the live reason: a usage limit is classified from it.
-	// A resumed Codex thread also replays a turn AO already failed as interrupted.
-	// The stored failure is what happened; nobody interrupted that turn.
-	if errMessage == "" && state == domain.TurnStateInterrupted &&
-		turn.State == domain.TurnStateFailed && turn.ErrorMessage != "" {
-		state = domain.TurnStateFailed
-	}
+	// The native-history import shares this rule to tell a no-op replay.
+	state = domain.SettledTurnStateKeepingFailure(turn.State, turn.ErrorMessage, state, errMessage)
 	if errMessage == "" && turn.State == state {
 		errMessage = turn.ErrorMessage
 	}

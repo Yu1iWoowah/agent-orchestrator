@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1369,6 +1371,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}) {
 			historyErr = fmt.Errorf("%w: the provider returned no readable messages for the imported conversation", ports.ErrChatHistoryUnavailable)
 		}
+		replayed := len(events)
 		if historyErr != nil {
 			if cleanupErr := cleanupUnpublishedConversation(conv, false); cleanupErr != nil && (cfg.HistoryMode == ports.ChatHistoryRequired) {
 				return nil, fmt.Errorf("%w: failed history target shutdown: %w",
@@ -1382,6 +1385,16 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			return nil, err
 		}
 		events = reconcileNativeHistoryForHarness(cfg.Harness, events, existing.Turns, existing.Messages, existing.Activities)
+		reconciledKinds := chatEventKindCounts(events)
+		skippedEvents, skippedTurns := 0, 0
+		if providerBoundary == nil {
+			// A resume or wake re-reads the whole native history. Turns AO already
+			// holds with the same outcome and plan would only be rewritten.
+			events, skippedEvents, skippedTurns = skipSettledReplay(events, existing.Turns, existing.Activities)
+		}
+		s.log.Info("chat native history import", "session", cfg.SessionID, "replayed", replayed,
+			"reconciled", reconciledKinds, "skipped_events", skippedEvents, "skipped_turns", skippedTurns,
+			"projected", chatEventKindCounts(events))
 		if providerBoundary != nil {
 			if cfg.ProviderHandoff != nil {
 				// Visible, boundary-keyed provenance: earlier rows are retained but
@@ -2385,6 +2398,113 @@ type SnapshotPageReader interface {
 }
 
 // ConversationRows is the raw durable read.
+// skipSettledReplay drops a replayed turn's lifecycle and plan events when
+// projecting them would change nothing (SDR-PR1 D7): AO holds the same turn,
+// the settlement would write AO's current state (the store's own keep-failure
+// rule decides), no other event of that turn survived reconciliation, and its
+// last plan encodes as AO's plan row. Anything else is projected as before, in
+// order. It returns the kept events and the skipped event and turn counts.
+func skipSettledReplay(events []ports.ChatEvent, turns []domain.ConversationTurn, activities []domain.ConversationActivity) ([]ports.ChatEvent, int, int) {
+	stored := make(map[string]domain.ConversationTurn, len(turns))
+	for _, turn := range turns {
+		if turn.ProviderTurnID != "" {
+			stored[turn.ProviderTurnID] = turn
+		}
+	}
+	planRows := make(map[string][]byte)
+	for _, activity := range activities {
+		if activity.Kind == domain.ActivityKindPlan && strings.HasPrefix(activity.ProviderItemID, "ao-plan-") {
+			planRows[activity.ProviderItemID] = activity.Detail
+		}
+	}
+	type replayTurn struct {
+		completed *ports.ChatEvent
+		plan      *domain.ConversationPlan
+		other     bool
+	}
+	replay := make(map[string]*replayTurn)
+	for i, event := range events {
+		if event.ProviderTurnID == "" {
+			continue
+		}
+		turn := replay[event.ProviderTurnID]
+		if turn == nil {
+			turn = &replayTurn{}
+			replay[event.ProviderTurnID] = turn
+		}
+		switch event.Kind {
+		case ports.ChatEventTurnStarted:
+		case ports.ChatEventTurnCompleted:
+			turn.completed = &events[i]
+		case ports.ChatEventPlanUpdated:
+			if event.Plan != nil {
+				turn.plan = event.Plan
+			}
+		default:
+			turn.other = true
+		}
+	}
+	skip := make(map[string]bool)
+	for id, turn := range replay {
+		current, ok := stored[id]
+		if !ok || turn.other || turn.completed == nil || unknownCompaction(*turn.completed) {
+			continue
+		}
+		message := ""
+		if turn.completed.Err != nil {
+			message = turn.completed.Err.Error()
+		}
+		if domain.SettledTurnStateKeepingFailure(current.State, current.ErrorMessage, settledTurnState(*turn.completed), message) != current.State {
+			continue
+		}
+		if turn.plan != nil && !samePlanDetail(planDetail(*turn.plan, time.Time{}), planRows["ao-plan-"+id]) {
+			continue
+		}
+		skip[id] = true
+	}
+	if len(skip) == 0 {
+		return events, 0, 0
+	}
+	kept := make([]ports.ChatEvent, 0, len(events))
+	for _, event := range events {
+		if skip[event.ProviderTurnID] && (event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventPlanUpdated) {
+			continue
+		}
+		kept = append(kept, event)
+	}
+	return kept, len(events) - len(kept), len(skip)
+}
+
+// samePlanDetail compares two plan payloads by content. A cross-turn list's
+// writtenAt and superseded flag are AO's own bookkeeping (ReconcileSpanningPlans
+// recomputes which copy is current), not the plan, and a skipped turn leaves
+// AO's flags as they are.
+func samePlanDetail(replayed, stored []byte) bool {
+	var a, b map[string]any
+	if json.Unmarshal(replayed, &a) != nil || json.Unmarshal(stored, &b) != nil {
+		return false
+	}
+	for _, key := range []string{"writtenAt", "superseded"} {
+		delete(a, key)
+		delete(b, key)
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// chatEventKindCounts summarizes events by kind for the import log (counts only).
+func chatEventKindCounts(events []ports.ChatEvent) string {
+	counts := make(map[ports.ChatEventKind]int)
+	for _, event := range events {
+		counts[event.Kind]++
+	}
+	kinds := make([]string, 0, len(counts))
+	for kind, n := range counts {
+		kinds = append(kinds, string(kind)+"="+strconv.Itoa(n))
+	}
+	slices.Sort(kinds)
+	return strings.Join(kinds, ",")
+}
+
 type ConversationRows struct {
 	Conversation                     domain.ConversationRecord
 	ActiveBranch                     domain.ConversationBranch

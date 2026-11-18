@@ -89,3 +89,10 @@ func (s *Service) SetAfterSettleCutoffForTest(hook func()) { s.afterSettleCutoff
 func (c *Controller) RecordDeliveryReceiptForTest(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
 	return c.recordDeliveryReceipt(ctx, r)
 }
+
+// PendingTurnIDForTest reports the turn the controller believes is in flight.
+func (c *Controller) PendingTurnIDForTest() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pendingTurnID
+}
