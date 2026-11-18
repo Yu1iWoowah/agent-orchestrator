@@ -144,6 +144,7 @@ session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、
 正常 CLI `incomplete` 是 queued／running turn、streaming／未結工具的清單，交由各 predicate 有界等待；真正截斷仍停止。
 未結工具＝status 非終態；或帶遠端 job／async-operation handle（含 `Job running with ID`）而無完成收據。worker 的本機程序類 handle（exec／write_stdin session、`Process running`／`Script running` 續接）不要求收據，command 缺 exitCode 也不算未結，改由下述 OS 層檢查判定。old 與 new 仍要求本機 handle 的收據；command 缺 exitCode 且帶 `processId`／`terminalId`、沒有同一操作的終態收據時，old 與 new 仍算未結（status 證明不了程序已結束）。
 worker 停點另用 OS 層檢查該 worker 的工作程序：在 agent 程序樹內，或 cwd 在其 worktree；排除 AO／provider 基礎程序、provider 在啟動後第一個 turn 開始前就已啟動的直接子程序（MCP 伺服器；之後才出現的一律算工作程序，provider 重啟就重算基準），以及 AO session 終端機（`AO_SHELL_TERMINAL`）整棵樹。有工作程序就送停止 D，要求 worker 先停掉；回條後 runner 再核，仍有程序就 STOP 並指名 worker 與程序；沒有 controller 的 worker 有工作程序時直接 STOP 指名。
+讀 `/proc` 時只有 PID 已消失（或 start tick 不同）才當成已結束；其他讀取或解析錯誤一律 STOP「process table UNKNOWN」，不當成程序已停止。沒有任何存活執行緒的 zombie 不算工作程序。
 workers 逾時 STOP 會指名每個未完成的 worker 與原因，包括 blocked／pending 回條、continue 之後，以及快照有變動的情形。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
 
@@ -428,7 +429,8 @@ metadata-refresh 也不是 read，須全域 scope／原授權與本地終態；�
 
 提交保存完整 journal 副本、退役所用 CLI、必要材料與不可變 manifest／intent；同 filesystem 原子 rename run 到 `.retired/<uuid>`，整槽保存到其 retired-start-slot，再建空槽。
 receipt/2 綁授權、fence、固定 execution 集合及 effect／hold 原件；不改原 state 為 complete。
-pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manifest 後、intent 前中斷也沿原 manifest 恢復，不覆寫原件。
+pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manifest 後、intent 前中斷，只有帶 CLI 綁定（`cli`）的新格式 manifest 會沿原 manifest 恢復，不覆寫原件。
+本版之前發布、沒有 CLI 綁定的舊格式 pending manifest 不支援恢復：即使有新的具名 recovery 授權也會具名 STOP，不產 intent／receipt，fence 維持 retiring，持續阻擋同一 old 的新 start。已完成的退役 receipt 照舊可以驗證。
 
 ### Retrospective provenance 的保證上限
 
