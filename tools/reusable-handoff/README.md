@@ -34,6 +34,7 @@ new 依初始 prompt 使用固定 `inspect` 命令分頁讀取私有 run 材料�
 以正常 `ao project documents info --project agent-orchestrator --json` 得到 `sharedDir=S`，
 run root 固定為 `R=parent(S)/.private-handoff-runs`，位於 AO data root 下、shared 與 old worktree 外。
 目錄 0700，檔案 0600；拒絕 symlink、不同內容覆寫及越界參照。
+R 不存在時由 `prepare-request` 以 0700 建立；已存在但權限不是 0700 就停（「expected 0700 directory」）。不要手動建立 R。
 start 在 detach 前把腳本原 bytes 保存在 `R/<run-id>/handoff.py`；runner、new helper 與人類 status 都使用這份固定副本。
 old worktree 之後消失不影響入口。固定副本的 status 可直接讀本 run 狀態，不依賴 daemon 在線。
 
