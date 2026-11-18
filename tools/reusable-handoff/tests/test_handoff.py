@@ -401,6 +401,43 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(h.idle_window(run, "old", "old_idle")["turn_id"], "turn")
         self.assertEqual(run.state["waits"]["old_idle"]["elapsed"], 2)
 
+    def test_P6_bootstrap_owns_only_turns_at_or_after_the_spawn_prompt(self):
+        run = self.run_fixture()
+        prompt = "RH3[" + run.run_id + "] bootstrap"
+        h.publish(run.root / "control/spawn/intent.json", h.canonical(
+            {"argv": ["spawn", "--prompt", prompt], "created_at": "2026-11-18T19:07:38.722372+00:00"}))
+        run.state.update(new_id="new", handoff={"sha256": "h"}, manifest={"sha256": "m"})
+        # The project conversation still holds old's turns, one requested in the intent's own second.
+        turns = [{"id": "old-a", "state": "completed", "requestedAt": "2026-11-18T19:07:30Z", "completedAt": "2026-11-18T19:07:31Z"},
+                 {"id": "old-b", "state": "completed", "requestedAt": "2026-11-18T19:07:38Z", "completedAt": "2026-11-18T19:07:38Z"},
+                 {"id": "boot", "state": "completed", "requestedAt": "2026-11-18T19:07:38Z", "completedAt": "2026-11-18T19:07:50Z"},
+                 {"id": "later", "state": "completed", "requestedAt": "2026-11-18T19:07:51Z", "completedAt": "2026-11-18T19:07:52Z"}]
+        old_write = dict(kind="activity", id="old-cmd", turnId="old-b", sequence=2, activityKind="command", status="completed",
+                         detail={"command": "touch unknown", "exitCode": 0})
+        rows = [dict(kind="message", id="old-msg", role="user", turnId="old-a", sequence=1, text="earlier", origin="human"), old_write,
+                dict(kind="message", id="boot-msg", role="user", turnId="boot", sequence=3, text=prompt, origin="human"),
+                dict(kind="message", id="later-msg", role="assistant", turnId="later", sequence=4, text="ok")]
+        snap = snapshot(turns=turns, entries=rows)
+        snap["session"]["id"] = "new"
+        self.assertEqual(h.bootstrap_origin(run, snap), {"boot", "later"})
+        with self.assertRaisesRegex(h.Stop, "UNVERIFIABLE_WRITE"):
+            h.audit_bootstrap(snap, run.root)
+        with self.assertRaisesRegex(h.Stop, "bootstrap helper activity missing"):
+            h.audit_bootstrap(snap, run.root, {"boot", "later"})
+        receipt = {"schema": "rh-new-receipt/1", "run_id": run.run_id, "old_id": "old", "new_id": "new",
+                   "managed_reply": {"path": str(run.root / "bootstrap/new/reply.json")},
+                   "target": {k: run.target[k] for k in ("harness", "account", "model", "effort", "approval_mode")},
+                   "outcome": "ready", "created_at": "2026-11-18T19:07:50Z", "pending_question_refs": [], "diagnostics": [],
+                   "sources": {"handoff_sha256": "h", "manifest_sha256": "m", "delta_sha256": None}, "evidence_turn_id": "old-b"}
+        h.publish(run.root / "bootstrap/new/receipt.json", h.canonical(receipt))
+        run.cli.session = lambda _: snap
+        with self.assertRaisesRegex(h.Stop, "new receipt borrows an earlier controller's turn"):
+            h.new_receipt(run)
+        mismatch = copy.deepcopy(snap)
+        mismatch["transcript"]["entries"][2]["text"] = "something else"
+        with self.assertRaisesRegex(h.Stop, "initial bootstrap does not match"):
+            h.bootstrap_origin(run, mismatch)
+
     def test_audit_send_new_preserves_normal_incomplete_observation(self):
         run = self.run_fixture()
         run.state.update(new_id="new", bootstrap_sequence=1)

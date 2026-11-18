@@ -2763,13 +2763,9 @@ def bootstrap_origin(run, snapshot):
         "authorization_source": str(run.root / "start.json"), "start_sha256": run.state["start_sha256"]}
     require(type(message.get("sequence")) is int, "initial bootstrap sequence missing")
     run.state["bootstrap_sequence"] = message["sequence"]
-    started = dt.datetime.fromisoformat(intent["created_at"].replace("Z", "+00:00"))
-    owned = set()
-    for turn in snapshot["transcript"].get("turns", []):
-        owner = (turn.get("agentSettings") or {}).get("owner") or {}
-        requested = turn.get("requestedAt")
-        if owner.get("sessionId") == run.state["new_id"] or (requested and dt.datetime.fromisoformat(requested.replace("Z", "+00:00")) >= started):
-            owned.add(turn["id"])
+    # Project conversations carry old's turns; only entries at or after the sole spawn prompt belong to new.
+    owned = {e["turnId"] for e in entries(snapshot)
+             if e.get("turnId") and type(e.get("sequence")) is int and e["sequence"] >= message["sequence"]}
     require(message.get("turnId") in owned, "bootstrap turn not owned by new")
     run.save()
     return owned
