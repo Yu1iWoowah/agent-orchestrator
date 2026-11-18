@@ -642,9 +642,6 @@ class Journal:
                 require(digest(raw) == binding["start_sha256"], "preflight request changed before binding")
                 request = decode(raw)
                 publish(self.root / "bound/start.json", raw)
-                qualification = private_read(Path(binding["root"]) / ".qualified/qualification.json")
-                require(digest(qualification) == binding["qualification_sha256"], "preflight qualification changed")
-                publish(self.root / "bound/qualification.json", qualification)
                 publish(self.root / "bound/handoff.py", read_regular(Path(__file__)))
                 for source in request["sources"]:
                     original = private_read(confined(source_root, source["raw_relpath"]))
@@ -847,7 +844,7 @@ class Execution:
                         {"--project", "--all", "--include-terminated", "--json"}, "session list scope mismatch")
             elif args[:3] == ["project", "documents", "info"]:
                 require(value("--project") == PROJECT and set(args[3:]) <= {"--project", PROJECT, "--json"}, "documents scope mismatch")
-            elif args == ["spawn", "--help"]:
+            elif args in (["spawn", "--help"], ["version"]):
                 kind, capability = "local-help", "local-cli-usage"
             elif args[:2] == ["account", "ls"]:
                 require("--refresh" in args and set(x for x in args[2:] if x.startswith("--")) <=
@@ -1065,8 +1062,14 @@ class CLI:
     def transport_binding(self):
         return dict(data_dir=str(self.data_dir), run_file=str(self.run_file), run_file_sha256=self.run_file_sha256, daemon_base=self.base)
 
+    def unchanged(self, expected=None):
+        """The run's CLI is the PATH executable recorded at start; replaced bytes stop the run, never re-bind."""
+        current = digest(self.executable.read_bytes())
+        expected = expected or self.sha256
+        require(current == expected, "AO CLI changed since run start: " + str(self.executable) + " " + expected[:8] + " → " + current[:8])
+
     def call(self, args, timeout=30, deadline=None, on_dispatch=None, *, read=False, effect_id=None):
-        require(digest(self.executable.read_bytes()) == self.sha256, "qualified CLI changed")
+        self.unchanged()
         execution = getattr(self, "execution", None)
         require(execution is not None, "durable execution context required")
         descriptor = execution.descriptor(self, "cli", {"argv": args, "timeout": timeout}, read=read, effect_id=effect_id)
@@ -1099,7 +1102,8 @@ class CLI:
                 self.env["AO_DATA_DIR"] == str(self.data_dir) and self.env["AO_RUN_FILE"] == str(self.run_file) and
                 self.env["AO_PROJECT_ID"] == PROJECT and digest(self.run_file.read_bytes()) == self.run_file_sha256,
                 "transport actor/location drift before I/O")
-        require(digest(self.executable.read_bytes()) == self.sha256 == operation["cli_sha256"], "qualified CLI changed before dispatch")
+        require(self.sha256 == operation["cli_sha256"], "AO CLI binding changed before dispatch")
+        self.unchanged()
         self.last_dispatched = time.monotonic()
         if deadline is not None and self.last_dispatched > deadline:
             self.last_dispatched = None
@@ -3102,17 +3106,10 @@ def locate(old=None, create=False, execution=None):
     return root, initial
 
 
-def qualified(root, old, initial, temp):
-    directory = root / ".qualified"
-    qualification = decode(private_read(directory / "qualification.json"))
-    executable = directory / "ao"
-    require(digest(read_regular(executable)) == qualification.get("cli_sha256") and
-            digest(read_regular(Path(__file__).absolute())) == qualification.get("script_sha256") and
-            qualification.get("schema") == "rh-cli-qualification/2" and qualification.get("call_protocol") == CALL_PROTOCOL,
-            "fixed CLI/script qualification mismatch")
-    cli = CLI(executable, old, initial.data_dir, initial.run_file, temp)
+def path_cli(old, initial, temp):
+    """The ao found on PATH at start (initial) is the run's CLI; its path and bytes are recorded in state."""
+    cli = CLI(initial.executable, old, initial.data_dir, initial.run_file, temp)
     cli.execution = initial.execution
-    cli.script_sha256 = qualification["script_sha256"]
     return cli
 
 
@@ -3177,7 +3174,7 @@ def prepare_request(root, initial, old, human_id, control_id, run_id):
         slot = root / ".start" / identifier(old)
         require(not (slot / "request.json").exists(), "start slot already holds a request")
         mkdir(slot / "evidence")
-        cli = qualified(root, old, initial, slot)
+        cli = path_cli(old, initial, slot)
         cli.execution.bindings = {old}
         pages = transcript_pages(cli, old, {human_id, control_id})
         session = pages[0][1]["session"]
@@ -3261,10 +3258,9 @@ def prepared_turn_ready(run):
 def write_initial_state(root, req, raw, cli):
     state = {"schema": "rh-state/1", "run_id": req["request_id"], "project_id": PROJECT, "old_id": req["old_id"],
              "call_protocol": CALL_PROTOCOL, "journal": str(cli.execution.journal.root),
-             "qualification_sha256": digest(private_read(root.parent / ".qualified/qualification.json")),
              "target": req["target"], "start_sha256": digest(raw), "authority_source_refs": req["authority"]["source_refs"],
              "worker_index_sha256": digest(canonical(req["workers"])), "original_t0": req["authority"],
-             "cli_path": str(cli.executable), "cli_sha256": cli.sha256,
+             "cli_path": str(cli.executable), "cli_sha256": cli.sha256, "cli_version": cli.call(["version"]).decode().strip(),
              "script_sha256": digest(private_read(root / "handoff.py")), "data_dir": str(cli.data_dir), "run_file": str(cli.run_file),
              "daemon_base": getattr(cli, "base", None),
              "location": location_info(cli), "retirement_sources": retirement_guard(root.parent, req["old_id"]),
@@ -3770,19 +3766,15 @@ def retire_run(root, run_id, initial=None):
             verify_partial_snapshots(current)
             require(actual == inputs["run"] and private_manifest(slot_source) == inputs["slot"] and
                     private_read(slot_source / "request.json") == request_raw, "retirement original/slot drift")
-            qualification_raw = private_read(directory / "qualification.original.json")
-            require(digest(qualification_raw) == inputs["qualification_sha256"] == binding["qualification_sha256"], "original qualification changed")
-            executable = no_symlinks(state["cli_path"])
-            require(digest(read_regular(executable)) == state["cli_sha256"], "retirement transport CLI changed")
+            # Retirement is separately authorized maintenance: it binds the ao on PATH now, then checks it before each call.
+            installed = shutil.which("ao")
+            require(installed, "ao CLI missing")
+            executable = no_symlinks(Path(installed).resolve())
             manifest_path = directory / "manifest.json"
             if not manifest_path.exists():
                 native = state.get("call_protocol") == CALL_PROTOCOL
                 if native:
-                    require(state.get("qualification_sha256") == digest(qualification_raw), "native qualification binding changed")
-                    qualification = decode(qualification_raw)
-                    require(qualification.get("schema") == "rh-cli-qualification/2" and qualification.get("call_protocol") == CALL_PROTOCOL and
-                            qualification.get("script_sha256") == state["script_sha256"] and qualification.get("cli_sha256") == state["cli_sha256"] and
-                            state.get("journal") == str(journal.root), "native qualification identity mismatch")
+                    require(state.get("journal") == str(journal.root), "native journal identity mismatch")
                     facts = journal.facts(require_ended=True)
                     require(fence["frozen_executions"], "native execution set missing")
                 else:
@@ -3832,7 +3824,6 @@ def retire_run(root, run_id, initial=None):
                 for source in request["sources"]:
                     require(digest(private_read(confined(current, source["raw_relpath"]))) == source["raw_sha256"], "authority source changed")
                 saved = mkdir(directory / "saved")
-                publish(saved / "qualification.json", qualification_raw)
                 publish(saved / "cli.bytes", read_regular(executable))
                 for item in authorization.get("materials", []):
                     sid = identifier(item["worker_id"])
@@ -3843,6 +3834,7 @@ def retire_run(root, run_id, initial=None):
                 copy_private_tree(journal.root, directory / "journal.original")
                 manifest = dict(run=inputs["run"], slot=inputs["slot"], journal=private_manifest(directory / "journal.original"),
                     journal_root=str(journal.root), saved=private_manifest(saved), closed_effects=closed,
+                    cli=dict(path=str(executable), sha256=cli.sha256),
                     call_facts_sha256=digest(canonical(facts)), native_preconditions=all_facts,
                     authorization_sha256=digest(authorization_raw), fence_token=fence["token"])
                 publish(manifest_path, canonical(manifest))
@@ -3913,8 +3905,7 @@ def start(root, initial, old, target, selector=None):
         if (destination / "start.json").exists():
             require(private_read(destination / "start.json") == raw, "UUID bound to different request")
             state = decode(private_read(destination / "state.json"))
-            require(state.get("call_protocol") == CALL_PROTOCOL and state.get("script_sha256") == digest(Path(__file__).read_bytes()) and
-                    state.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
+            require(state.get("call_protocol") == CALL_PROTOCOL and state.get("script_sha256") == digest(Path(__file__).read_bytes()),
                     "cached historical generation cannot execute")
             return state
         for directory in root.iterdir():
@@ -3923,12 +3914,11 @@ def start(root, initial, old, target, selector=None):
             require((directory / "state.json").exists(), "incomplete prior run requires inspection")
             state = decode(private_read(directory / "state.json"))
             require(state["old_id"] != old or state["outcome"] == "complete", "old already has unresolved run")
-        cli = qualified(root, old, initial, slot)
+        cli = path_cli(old, initial, slot)
         prior_journal_guard(cli.execution.journal, old)
         cli.execution.configure(req, digest(raw), load_refresh=False)
         cli.execution.phase = "preflight"
-        cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw),
-            qualification_sha256=digest(private_read(root / ".qualified/qualification.json"))), source_root=slot)
+        cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw)), source_root=slot)
         old_snap = validate_sources_live(req, cli)
         journal = cli.execution.journal
         # start records the original human refs itself; this is a record, not proof of consent.
@@ -3941,9 +3931,7 @@ def start(root, initial, old, target, selector=None):
         preflight = target_preflight(cli, target)
         mkdir(destination)
         publish(destination / "start.json", raw)
-        script = read_regular(Path(__file__).absolute())
-        require(digest(script) == getattr(cli, "script_sha256", digest(script)), "qualified script changed during preflight")
-        publish(destination / "handoff.py", script)
+        publish(destination / "handoff.py", read_regular(Path(__file__).absolute()))
         for source in req["sources"]:
             publish(destination / source["raw_relpath"], private_read(confined(slot, source["raw_relpath"])))
         write_initial_state(destination, req, raw, cli)
@@ -3970,17 +3958,15 @@ def load_run(root, run_id, initial, execution=None):
     state = decode(private_read(directory / "state.json"))
     retirement_guard(root, state["old_id"], run_id)
     require(state["script_sha256"] == digest(Path(__file__).read_bytes()), "run script changed")
-    require(state.get("call_protocol") == CALL_PROTOCOL and
-            state.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
-            "run qualification/protocol mismatch; historical runs cannot execute")
+    require(state.get("call_protocol") == CALL_PROTOCOL, "run protocol mismatch; historical runs cannot execute")
     require(execution is not None and state.get("journal") == str(execution.journal.root), "normal loader requires fixed journal")
     binding = decode(private_read(execution.journal.root / "binding.json"))
     require(binding.get("root") == str(root) and binding.get("old_id") == state["old_id"] and
-            binding.get("start_sha256") == state["start_sha256"] == digest(private_read(directory / "start.json")) and
-            binding.get("qualification_sha256") == state["qualification_sha256"], "run/journal immutable binding mismatch")
+            binding.get("start_sha256") == state["start_sha256"] == digest(private_read(directory / "start.json")),
+            "run/journal immutable binding mismatch")
     cli = CLI(state["cli_path"], state["old_id"], state["data_dir"], state["run_file"], directory)
     cli.execution = execution
-    require(cli.sha256 == state["cli_sha256"], "run CLI changed")
+    cli.unchanged(state["cli_sha256"])
     require(cli.base == state["daemon_base"], "run daemon location changed")
     return Run(directory, cli)
 

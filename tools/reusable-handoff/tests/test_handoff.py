@@ -111,14 +111,14 @@ class ProtocolTests(unittest.TestCase):
                 return b'{"accepted":true}'
         return h.Run(self.root, FakeCLI())
 
-    def test_retired_UUID_is_rejected_before_cached_state_or_qualification(self):
+    def test_retired_UUID_is_rejected_before_cached_state_or_cli(self):
         req = self.request()
         root = h.mkdir(self.root / "runs")
         slot = h.mkdir(root / ".start/old")
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         h.publish(slot / "request.json", h.canonical(req))
         retired = h.mkdir(root / ".voided" / req["request_id"])
-        with patch.object(h, "qualified") as qualified:
+        with patch.object(h, "path_cli") as path_cli:
             # Even an incomplete archive reserves the retired UUID.
             with self.assertRaisesRegex(h.Stop, "retired"):
                 h.start(root, None, "old", target(), req["request_id"])
@@ -128,7 +128,7 @@ class ProtocolTests(unittest.TestCase):
             h.publish(destination / "state.json", h.canonical({"outcome": "pending"}))
             with self.assertRaisesRegex(h.Stop, "retired"):
                 h.start(root, None, "old", target(), req["request_id"])
-            qualified.assert_not_called()
+            path_cli.assert_not_called()
 
     def test_new_UUID_ignores_hidden_archive_but_not_unresolved_active_run(self):
         req = self.request()
@@ -137,14 +137,14 @@ class ProtocolTests(unittest.TestCase):
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         h.publish(slot / "request.json", h.canonical(req))
         h.mkdir(root / ".voided" / str(uuid.uuid4()))
-        with patch.object(h, "qualified", side_effect=h.Stop("qualification reached")):
-            with self.assertRaisesRegex(h.Stop, "qualification reached"):
+        with patch.object(h, "path_cli", side_effect=h.Stop("run CLI reached")):
+            with self.assertRaisesRegex(h.Stop, "run CLI reached"):
                 h.start(root, None, "old", target(), req["request_id"])
         prior = h.mkdir(root / str(uuid.uuid4()))
         h.publish(prior / "state.json", h.canonical({"old_id": "old", "outcome": "pending"}))
-        with patch.object(h, "qualified") as qualified, self.assertRaisesRegex(h.Stop, "unresolved run"):
+        with patch.object(h, "path_cli") as path_cli, self.assertRaisesRegex(h.Stop, "unresolved run"):
             h.start(root, None, "old", target(), req["request_id"])
-        qualified.assert_not_called()
+        path_cli.assert_not_called()
 
     def test_T06_unknown_effect_never_replayed(self):
         run = self.run_fixture()
@@ -1249,11 +1249,13 @@ finally:
                 return {"sharedDir": str(shared)}
             def sessions(self):
                 return []
+            def call(self, args, *rest, **kwargs):
+                assert args == ["version"], args
+                return b"0.42.0\n"
         cli = PreparedCLI()
         cli.execution = h.Journal(self.root, req["request_id"]).register("start", "old")
         self.addCleanup(cli.execution.close)
-        h.publish(root / ".qualified/qualification.json", h.canonical(dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL)))
-        with patch.object(h, "qualified", return_value=cli), patch.object(h, "validate_sources_live", return_value=snapshot()), \
+        with patch.object(h, "path_cli", return_value=cli), patch.object(h, "validate_sources_live", return_value=snapshot()), \
              patch.object(h, "target_preflight", return_value={}), patch.object(h, "native_identity", return_value="old-native"), \
              patch.object(h, "launch") as launch:
             first = h.start(root, cli, "old", target(), req["request_id"])
@@ -1472,12 +1474,8 @@ class FlowFixture:
         self.executable = self.transport.cli
         self.sha256 = h.digest(self.executable.read_bytes())
         self.run_file = self.transport.run_file
-        qualification = dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL,
-                             cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
-        h.publish(directory.parent / ".qualified/qualification.json", h.canonical(qualification))
         journal = h.Journal(self.data_dir, self.run_id)
         self.run.state.update(call_protocol=h.CALL_PROTOCOL, journal=str(journal.root),
-                              qualification_sha256=h.digest(h.canonical(qualification)),
                               schema="rh-state/1", run_id=self.run_id, old_id="old", target=self.target,
                               data_dir=str(root), run_file=str(self.run_file), daemon_base=self.transport.base,
                               cli_path=str(self.executable), cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
@@ -1732,7 +1730,7 @@ class SpeedPreparationTests(unittest.TestCase):
         return root, cli, raw
 
     def package(self, root, cli, run_id=None):
-        with patch.object(h, "qualified", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
+        with patch.object(h, "path_cli", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
             return h.prepare_request(root, None, "old", "human", "control", run_id or str(uuid.uuid4()))
 
     def test_packaging_helper_builds_request_from_original_bytes(self):
@@ -1774,7 +1772,7 @@ class SpeedPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Stop, "conflicting immutable file"):
             self.package(root, cli, run_id)
         root, cli, _ = self.packaging_fixture()
-        with self.assertRaisesRegex(h.Stop, "must run as old"), patch.object(h, "qualified", return_value=cli), \
+        with self.assertRaisesRegex(h.Stop, "must run as old"), patch.object(h, "path_cli", return_value=cli), \
              patch.dict(os.environ, {"AO_SESSION_ID": "worker"}):
             h.prepare_request(root, None, "old", "human", "control", str(uuid.uuid4()))
 

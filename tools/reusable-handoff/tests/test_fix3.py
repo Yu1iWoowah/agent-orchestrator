@@ -306,11 +306,10 @@ class WorkspaceTests(unittest.TestCase):
     def test_unknown_partial_snapshot_object_type_is_rejected_before_history(self):
         root = h.mkdir(self.root / "runs")
         run = h.mkdir(root / "00000000-0000-4000-8000-000000000123")
-        h.publish(root / ".qualified/qualification.json", b"{}")
         h.publish(run / "workers" / "worker" / ("before-" + "a" * 32) / "objects", b"not an objects directory")
         state = dict(effects={}, old_id="historical-old", project_id=h.PROJECT, target={}, script_sha256="fixture", cli_sha256="fixture",
                      error="sensitive workspace content cannot be preserved: cloud/.env.example")
-        authorization = dict(state, expected_effects=[], qualification_sha256=h.digest(b"{}"))
+        authorization = dict(state, expected_effects=[])
         with self.assertRaisesRegex(h.Stop, "partial snapshot"):
             h.verify_partial_snapshots(run)
 

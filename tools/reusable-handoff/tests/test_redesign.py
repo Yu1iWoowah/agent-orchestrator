@@ -62,11 +62,6 @@ class RefreshProofStartTests(unittest.TestCase):
         self.cli = h.mkdir(self.home / "bin") / "ao"
         self.cli.write_bytes(b"synthetic CLI bytes")
         self.cli.chmod(0o700)
-        h.publish(self.root / ".qualified/ao", self.cli.read_bytes())
-        (self.root / ".qualified/ao").chmod(0o700)
-        h.publish(self.root / ".qualified/qualification.json", h.canonical(dict(schema="rh-cli-qualification/2",
-            call_protocol=h.CALL_PROTOCOL, cli_sha256=h.digest(self.cli.read_bytes()),
-            script_sha256=h.digest(Path(h.__file__).read_bytes()))))
         self.run_file = self.home / ".ao/running.json"
         h.publish(self.run_file, b'{"port":1}')
         with closing(sqlite3.connect(self.data / "ao.db")) as db, db:
@@ -75,9 +70,11 @@ class RefreshProofStartTests(unittest.TestCase):
         self.refreshes, self.source_reads = 0, 0
 
     def cli_transport(self, argv, **kwargs):
-        if Path(argv[0]) not in (self.cli, self.root / ".qualified/ao"):
+        if Path(argv[0]) != self.cli:
             return self.real_run(argv, **kwargs)
         args = argv[1:]
+        if args == ["version"]:
+            return SimpleNamespace(stdout=b"0.42.0 commit fixture\n", stderr=b"", returncode=0)
         if args[:3] == ["project", "documents", "info"]:
             result = dict(documents=dict(sharedDir=str(self.root.parent / "shared")))
         elif args[:2] == ["session", "get"]:
@@ -138,9 +135,23 @@ class RefreshProofStartTests(unittest.TestCase):
         self.assertEqual(self.refreshes, 1)
         journal = h.Journal(self.data, self.run_id)
         execution = journal.register("_run", "old")
-        cli = h.CLI(self.root / ".qualified/ao", "old", self.data, self.run_file, self.data)
+        cli = h.CLI(self.cli, "old", self.data, self.run_file, self.data)
         run = h.load_run(self.root, self.run_id, cli, execution)
         self.assertEqual(run.cli.execution.refresh_authority, h.file_reference(journal.root / "capabilities.json"))
+        # The run CLI is the PATH executable recorded at start, with its version and the script bytes.
+        self.assertEqual((run.state["cli_path"], run.state["cli_sha256"], run.state["cli_version"], run.state["script_sha256"]),
+                         (str(self.cli), h.digest(self.cli.read_bytes()), "0.42.0 commit fixture", h.digest(Path(h.__file__).read_bytes())))
+        self.assertFalse((self.root / ".qualified").exists())
+        execution.close()
+        # Replacing the CLI bytes mid-run stops every later call and every continue, naming both hashes.
+        before, after = h.digest(self.cli.read_bytes()), h.digest(b"updated CLI bytes")
+        self.cli.write_bytes(b"updated CLI bytes")
+        expected = "AO CLI changed since run start: " + str(self.cli) + " " + before[:8] + " → " + after[:8]
+        with self.assertRaisesRegex(h.Stop, expected):
+            run.cli.call(["spawn", "--help"])
+        execution = journal.register("continue", "old")
+        with self.assertRaisesRegex(h.Stop, expected):
+            h.load_run(self.root, self.run_id, cli, execution)
         execution.close()
         facts = journal.facts()
         self.assertEqual(sum(x["kind"] == "metadata-refresh" for x in facts), 1)
@@ -438,9 +449,7 @@ h.Journal(pathlib.Path(sys.argv[2]),sys.argv[3]).register('start','old')
         request = dict(old_id="old", target={}, authority=dict(source_refs=[]), workers=[], sources=[])
         raw = h.canonical(request)
         h.publish(slot / "request.json", raw)
-        qraw = h.canonical(dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL))
-        h.publish(root / ".qualified/qualification.json", qraw)
-        cli.execution.journal.bind(dict(root=str(root), old_id="old", start_sha256=h.digest(raw), qualification_sha256=h.digest(qraw)), source_root=slot)
+        cli.execution.journal.bind(dict(root=str(root), old_id="old", start_sha256=h.digest(raw)), source_root=slot)
         cli.execution.configure(request, h.digest(raw))
         with patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{}', stderr=b"")):
             cli.session("old")
@@ -638,7 +647,7 @@ class HistoricalDatasetTests(unittest.TestCase):
             self.assertEqual(h.effect_closure(historical), {})
             h.publish(c.data / "running.json", b'{"port":1}')
             journal = h.Journal(c.data, c.run_id)
-            journal.bind(dict(root=str(c.root), old_id="old", start_sha256=h.digest(h.canonical(c.request)), qualification_sha256="a" * 64))
+            journal.bind(dict(root=str(c.root), old_id="old", start_sha256=h.digest(h.canonical(c.request))))
             fence = journal.freeze("operator", "D-99", "b" * 64)
             execution = journal.register("retire", "operator", maintenance=fence["token"])
             execution.configure(c.request)
@@ -892,19 +901,18 @@ class RetirementTests(unittest.TestCase):
         h.publish(self.run / "runner.lock", b"")
         h.publish(self.data / "running.json", b'{"port":1}')
         executable = true_cli(self.data)
-        qualification = dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL,
-                             script_sha256=h.digest(Path(h.__file__).read_bytes()), cli_sha256=h.digest(executable.read_bytes()))
-        qraw = h.canonical(qualification)
-        h.publish(self.directory / "qualification.original.json", qraw)
-        h.publish(self.root / ".qualified/qualification.json", qraw)
+        # Retirement binds the ao on PATH when it starts, not the run's original CLI.
+        self.path_cli = h.mkdir(self.data / "bin") / "ao"
+        self.path_cli.write_bytes(b"#!/bin/sh\nexit 0\n")
+        self.path_cli.chmod(0o700)
         self.state = dict(schema="rh-state/1", run_id=self.run_id, project_id=h.PROJECT, old_id="old", target={},
-                          start_sha256=h.digest(raw), script_sha256=qualification["script_sha256"], cli_sha256=qualification["cli_sha256"],
+                          start_sha256=h.digest(raw), script_sha256=h.digest(Path(h.__file__).read_bytes()), cli_sha256=h.digest(executable.read_bytes()),
                           cli_path=str(executable), data_dir=str(self.data), run_file=str(self.data / "running.json"),
                           daemon_base="http://127.0.0.1:1/api/v1/", journal=str(self.data / "projects" / h.PROJECT / "orchestrator/.handoff-journal" / self.run_id), call_protocol=h.CALL_PROTOCOL,
-                          qualification_sha256=h.digest(qraw), stage="prepared", outcome="stopped", effects={})
+                          stage="prepared", outcome="stopped", effects={})
         h.publish(self.run / "state.json", h.canonical(self.state))
         self.journal = h.Journal(self.data, self.run_id)
-        self.journal.bind(dict(root=str(self.root), old_id="old", start_sha256=h.digest(raw), qualification_sha256=h.digest(qraw)))
+        self.journal.bind(dict(root=str(self.root), old_id="old", start_sha256=h.digest(raw)))
         # Real ended process, not a mocked process probe.
         code = """import importlib.util,pathlib,sys
 s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
@@ -926,7 +934,7 @@ c.call(['spawn','--help']);e.close()
             path = self.directory / "holds" / (sid + ".json")
             h.publish(path, h.canonical(snap))
             holds[sid] = dict(snapshot=h.file_reference(path), message_id=anchor["id"], held=True)
-        self.inputs = dict(run=h.private_manifest(self.run), slot=h.private_manifest(self.slot), qualification_sha256=h.digest(qraw),
+        self.inputs = dict(run=h.private_manifest(self.run), slot=h.private_manifest(self.slot),
                            prior_retirement=[x for x in h.private_manifest(self.directory) if x["path"].startswith("holds/")])
         h.publish(self.directory / "input-manifest.json", h.canonical(self.inputs))
         self.authorization = dict(schema="rh-retirement-authorization/2", run_id=self.run_id, old_id="old", project_id=h.PROJECT,
@@ -948,7 +956,8 @@ c.call(['spawn','--help']);e.close()
         return SimpleNamespace(returncode=0, stdout=h.canonical(value), stderr=b"")
 
     def retire(self):
-        with patch.dict(os.environ, AO_SESSION_ID="operator"), patch.object(h.subprocess, "run", side_effect=self.transport):
+        with patch.dict(os.environ, AO_SESSION_ID="operator", PATH=str(self.path_cli.parent) + os.pathsep + os.environ["PATH"]), \
+                patch.object(h.subprocess, "run", side_effect=self.transport):
             return h.retire_run(self.root, self.run_id)
 
     def test_arbitrary_uuid_retirement_preserves_original_and_journal_and_guards(self):
@@ -966,6 +975,13 @@ c.call(['spawn','--help']);e.close()
             h.retirement_guard(self.root, run_id=self.run_id)
         self.assertTrue(list((self.directory / "journal.original/executions").glob("*/calls/*/stdout.raw")))
 
+    def test_retirement_after_ao_update_binds_its_own_path_cli(self):
+        # The run's original CLI was replaced by an AO update; retirement still runs with the ao on PATH now.
+        Path(self.state["cli_path"]).write_bytes(b"#!/bin/sh\n# updated\nexit 0\n")
+        self.retire()
+        manifest = h.decode(h.private_read(self.directory / "manifest.json"))
+        self.assertEqual(manifest["cli"], dict(path=str(self.path_cli), sha256=h.digest(self.path_cli.read_bytes())))
+
     def test_crash_after_manifest_before_intent_recovers_without_another_io(self):
         publish = h.publish
         def crash(path, raw):
@@ -979,7 +995,8 @@ c.call(['spawn','--help']);e.close()
         with self.assertRaises(h.Stop):
             h.retirement_guard(self.root, "old")
         h.publish(self.directory / "recovery-authorization.json", h.canonical(dict(operator_session_id="operator", directive_ref="D-92", fence_token=self.journal.state()["token"])))
-        with patch.dict(os.environ, AO_SESSION_ID="operator"), patch.object(h.subprocess, "run") as transport:
+        with patch.dict(os.environ, AO_SESSION_ID="operator", PATH=str(self.path_cli.parent) + os.pathsep + os.environ["PATH"]), \
+                patch.object(h.subprocess, "run") as transport:
             h.retire_run(self.root, self.run_id)
             transport.assert_not_called()
         self.assertEqual(before, h.private_manifest(self.directory / "journal.original"))
