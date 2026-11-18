@@ -196,6 +196,79 @@ class RefreshProofStartTests(unittest.TestCase):
         self.assertEqual(h.private_read(journal.root / "capabilities.json"), original)
 
 
+class PrepareRequestEntryTests(unittest.TestCase):
+    """The operator's first entry on a data root holding only what AO itself creates (no RH directories)."""
+    def setUp(self):
+        from test_handoff import snapshot, target
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.real_run = subprocess.run
+        self.home = h.mkdir(Path(temp.name) / "home")
+        self.data = h.mkdir(self.home / ".ao/data")
+        self.shared = h.mkdir(self.data / "projects" / h.PROJECT / "orchestrator/shared")
+        self.root = self.shared.parent / ".private-handoff-runs"
+        self.repo = h.mkdir(self.home / "repo")
+        self.cli = h.mkdir(self.home / "bin") / "ao"
+        self.cli.write_bytes(b"synthetic CLI bytes")
+        self.cli.chmod(0o700)
+        self.run_file = self.home / ".ao/running.json"
+        h.publish(self.run_file, b'{"port":1}')
+        block = {"schema": "rh-control-record/1", "stop": "無具名停", "workers": [],
+                 "target": {k: v for k, v in target().items() if k != "mode"},
+                 "workspace_index": [{"session_id": "old", "kind": "orchestrator", "path": str(self.data / "worktrees" / h.PROJECT / "orchestrator/old")}]}
+        self.page = snapshot(entries=[
+            dict(id="human", kind="message", role="user", origin="human", turnId="preparing", revision=0, sequence=1,
+                 text="請交接", createdAt="2026-11-18T05:43:51Z"),
+            dict(id="control", kind="message", role="assistant", turnId="preparing", revision=1, sequence=2,
+                 text="準備完成\n```rh-control\n" + json.dumps(block, ensure_ascii=False) + "\n```")])
+        self.page["transcript"]["turns"].append({"id": "preparing", "state": "running"})
+
+    def cli_transport(self, argv, **kwargs):
+        if Path(argv[0]) != self.cli:
+            return self.real_run(argv, **kwargs)
+        args = argv[1:]
+        if args[:3] == ["project", "documents", "info"]:
+            result = dict(documents=dict(sharedDir=str(self.shared)))
+        elif args[:2] == ["session", "get"]:
+            result = self.page
+        else:
+            raise AssertionError(args)
+        return SimpleNamespace(stdout=h.canonical(result), stderr=b"", returncode=0)
+
+    def http_transport(self, url, **kwargs):
+        path = url.split("/api/v1/", 1)[1]
+        if path != "projects/" + h.PROJECT:
+            raise AssertionError(path)
+        return io.BytesIO(h.canonical(dict(project=dict(id=h.PROJECT, path=str(self.repo)))))
+
+    def invoke(self):
+        with patch.dict(os.environ, dict(HOME=str(self.home), AO_DATA_DIR=str(self.data), AO_RUN_FILE=str(self.run_file),
+                                         AO_SESSION_ID="old", PATH=str(self.cli.parent) + os.pathsep + os.environ["PATH"])), \
+                patch.object(h.subprocess, "run", side_effect=self.cli_transport), \
+                patch.object(h.urllib.request.OpenerDirector, "open", side_effect=self.http_transport), \
+                patch("sys.stdout", new_callable=io.StringIO) as output, patch("sys.stderr", new_callable=io.StringIO) as errors:
+            code = h.main(["prepare-request", "--old", "old", "--human", "human", "--control", "control"])
+        return code, output.getvalue(), errors.getvalue()
+
+    def test_first_prepare_request_creates_the_private_run_root(self):
+        self.assertFalse(self.root.exists())
+        code, output, errors = self.invoke()
+        self.assertEqual((code, errors), (0, ""))
+        self.assertEqual(h.stat.S_IMODE(self.root.stat().st_mode), 0o700)
+        result = json.loads(output)
+        self.assertEqual(Path(result["request"]), self.root / ".start/old/request.json")
+        self.assertTrue(Path(result["request"]).is_file())
+        self.assertIn("start --run " + result["run_id"], result["start_command"])
+
+    def test_existing_run_root_that_is_not_0700_stops_without_publishing(self):
+        self.root.mkdir()
+        self.root.chmod(0o755)
+        code, output, errors = self.invoke()
+        self.assertEqual((code, output), (1, ""))
+        self.assertIn("expected 0700 directory", errors)
+        self.assertFalse((self.root / ".start").exists())
+
+
 class JournalTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

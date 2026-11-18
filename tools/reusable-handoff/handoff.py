@@ -4223,7 +4223,7 @@ def main(argv=None):
                     initial = CLI(Path(shutil.which("ao")).resolve(), args.old, data, run_file, data)
                     initial.execution = execution
             else:
-                root, initial = locate(getattr(args, "old", None), create=args.action == "start", execution=execution)
+                root, initial = locate(getattr(args, "old", None), create=args.action in ("start", "prepare-request"), execution=execution)
         if args.action == "prepare-request":
             result = prepare_request(root, initial, args.old, args.human, args.control, args.run)
         elif args.action == "start":
