@@ -156,9 +156,11 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 			"session/set_mode", "session/set_model", "session/set_config_option",
 			"thread/start", "thread/resume", "thread/read", "thread/list", "thread/name/set", "thread/unsubscribe",
 			"thread/backgroundTerminals/list", "turn/interrupt", "session/cancel",
-			"config/read", "model/list", "skills/list", "account/read", "account/rateLimits/read", "mcpServerStatus/list":
+			"config/read", "model/list", "skills/list", "account/read", "account/rateLimits/read", "mcpServerStatus/list",
+			"_ao/session/can_hibernate":
 			// Initialization is covered by launch admission; settings by the attempt
-			// checkpoint (or the enclosing prompt reservation). Reads/control add no input.
+			// checkpoint (or the enclosing prompt reservation). Reads/control add no input;
+			// AO's own hibernation probe only asks whether background work ended.
 			return frame, nil
 		default:
 			// An unclassified native method must not disappear from the denominator

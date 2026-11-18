@@ -52,6 +52,30 @@ func TestExplicitUnsupportedControlDoesNotPoisonFallback(t *testing.T) {
 		}
 	}
 }
+
+// AO's hibernation probe reads whether Claude background work ended; it adds
+// no input, so neither its request nor its answer may block the flush that
+// hibernation and shutdown run right after it.
+func TestHibernationProbeLeavesNoJournalGap(t *testing.T) {
+	j, err := newDeliveryJournal(filepath.Join(t.TempDir(), "journal"), "epoch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.file.Close()
+	if _, err = j.prepare([]byte(`{"jsonrpc":"2.0","id":7,"method":"_ao/session/can_hibernate","params":{"sessionId":"native"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = j.query(nil, true); err != nil {
+		t.Fatalf("in-flight hibernation probe blocked the flush: %v", err)
+	}
+	if err = j.observe([]byte(`{"jsonrpc":"2.0","id":7,"result":{"canHibernate":true}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = j.query(nil, true); err != nil {
+		t.Fatalf("answered hibernation probe blocked the flush: %v", err)
+	}
+}
+
 func TestCompactNativeEventsBeforeAckStillConverge(t *testing.T) {
 	j, err := newDeliveryJournal(filepath.Join(t.TempDir(), "journal"), "epoch")
 	if err != nil {
