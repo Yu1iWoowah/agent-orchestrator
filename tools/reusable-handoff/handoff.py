@@ -486,14 +486,14 @@ def operation_handles(entry):
         return [{"reference": "UNKNOWN", "state": "UNKNOWN"}]
     name = detail.get("toolName", "").rsplit(".", 1)[-1]
     if name in ("exec_command", "write_stdin") and isinstance(result, dict) and result.get("session_id") is not None:
-        return [{"reference": str(result["session_id"]), "state": "running" if result.get("exit_code") is None else "completed"}]
+        return [{"reference": str(result["session_id"]), "state": "running" if result.get("exit_code") is None else "completed", "local": True}]
     if isinstance(result, dict) and (result.get("type") in ("async-operation", "job") or "job_id" in result):
         reference = result.get("reference") or result.get("job_id")
         return [{"reference": str(reference or "UNKNOWN"), "state": result.get("state", "UNKNOWN") if reference else "UNKNOWN"}]
     # A transport-level textual continuation is not a normal JSON key or an input quotation.
     text = result if isinstance(result, str) else detail.get("output", "")
-    match = re.match(r"^(?:Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
-    return [{"reference": match[1], "state": "UNKNOWN"}] if match else []
+    match = re.match(r"^(Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
+    return [{"reference": match[2], "state": "UNKNOWN", "local": not match[1].startswith("Job")}] if match else []
 
 
 def operation_terminal(entry, handle, receipts):
@@ -509,7 +509,7 @@ def operation_terminal(entry, handle, receipts):
     return False
 
 
-def quiescent(snapshot, settled_receipts=(), run=None):
+def quiescent(snapshot, settled_receipts=(), run=None, worker=False):
     session, transcript = snapshot["session"], snapshot["transcript"]
     if session.get("activity", {}).get("state") not in ("idle", "exited"):
         return False
@@ -518,11 +518,11 @@ def quiescent(snapshot, settled_receipts=(), run=None):
     if any(t.get("state") in ("queued", "running") for t in transcript.get("turns", [])):
         return False
     helper = completed_old_helper(run, snapshot) if run else None
-    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"))
+    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"), worker)
                for entry in transcript.get("entries", []))
 
 
-def activity_quiescent(entry, receipts=(), run=None, sid=None):
+def activity_quiescent(entry, receipts=(), run=None, sid=None, worker=False):
     if entry.get("kind") != "activity":
         return True
     if entry.get("status") not in ("completed", "resolved", "cancelled", "failed", "recovered"):
@@ -532,13 +532,110 @@ def activity_quiescent(entry, receipts=(), run=None, sid=None):
         return False
     if run and known_helper(run, sid, entry):
         return True
-    handles = operation_handles(entry)
-    if entry.get("activityKind") == "command" and detail.get("exitCode") is None:
+    # A worker's local processes (exec sessions, running scripts, exit-less commands) are judged by the OS-level
+    # process check instead (q1=b); remote jobs still need receipts, and old/new keep every receipt rule.
+    handles = [x for x in operation_handles(entry) if not (worker and x.get("local"))]
+    if not worker and entry.get("activityKind") == "command" and detail.get("exitCode") is None:
         # A reconnectable process (Codex PTY, ACP terminal) without an exit needs a terminal receipt of that same
         # operation: AO and the ACP driver settle leftovers themselves, so neither status nor turn proves it ended.
         handles += [{"reference": str(detail[key]), "state": "UNKNOWN"} for key in ("processId", "terminalId") if detail.get(key) is not None]
     return all(handle["reference"] != "UNKNOWN" and (handle["state"] in ("completed", "cancelled", "failed") or operation_terminal(entry, handle, receipts))
                for handle in handles)
+
+
+def proc_table():
+    """pid -> ppid/start/cwd/argv and the AO terminal marker; environ is matched in memory only, never kept."""
+    with open("/proc/stat", "rb") as handle:
+        btime = next(int(line.split()[1]) for line in handle if line.startswith(b"btime "))
+    hz = os.sysconf("SC_CLK_TCK")
+    table = {}
+    for directory in Path("/proc").iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            raw = (directory / "stat").read_text()
+            fields = raw[raw.rindex(")") + 2:].split()
+            argv = [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x]
+            try:
+                cwd = os.readlink(directory / "cwd")
+            except OSError:
+                cwd = None
+            try:
+                terminal = b"AO_SHELL_TERMINAL=1" in (directory / "environ").read_bytes().split(b"\0")
+            except OSError:
+                terminal = False  # unreadable (other uid): never treated as the user's terminal
+            table[int(directory.name)] = dict(ppid=int(fields[1]), tick=int(fields[19]), start=btime + int(fields[19]) / hz,
+                                              cwd=cwd, argv=argv, terminal=terminal)
+        except (OSError, ValueError, IndexError):
+            continue  # ended while reading
+    return table
+
+
+def os_work_processes(table, sid, data_dir, workspace, base_of, exclude=()):
+    """A worker's work processes: its chat-host tree plus reparented processes in its worktree, minus contract §5.2 B1-B10."""
+    children = {}
+    for pid, row in table.items():
+        children.setdefault(row["ppid"], []).append(pid)
+    def tree(roots):
+        found, stack = set(), list(roots)
+        while stack:
+            pid = stack.pop()
+            if pid not in found:
+                found.add(pid)
+                stack.extend(children.get(pid, []))
+        return found
+    name = lambda pid: Path(table[pid]["argv"][0]).name if table[pid]["argv"] else "?"
+    hosts = {pid for pid, row in table.items() if len(row["argv"]) >= 4 and row["argv"][1] == "chat-host"}
+    own = {pid for pid in hosts if table[pid]["argv"][2] == sid and os.path.realpath(table[pid]["argv"][3]) == os.path.realpath(data_dir)}
+    terminal = tree(pid for pid, row in table.items() if row["terminal"])  # B9: the user's AO session terminal, whole tree
+    host_trees = tree(hosts)  # B7: other actors' chat-hosts are never this worker's
+    candidates = tree(own) | {pid for pid, row in table.items() if row["cwd"] and pid not in host_trees and
+                              Path(row["cwd"]).is_relative_to(workspace)}
+    candidates -= terminal | tree(exclude)  # B8: RH itself
+    roots = {pid for pid in candidates if table[pid]["ppid"] in own}  # B2
+    providers = roots | {pid for pid in candidates if table[pid]["ppid"] in roots and name(pid) == "claude"}  # B3
+    base = None
+    if len(roots) == 1:
+        root = next(iter(roots))
+        base = base_of(root, table[root]["tick"], table[root]["start"])
+    infrastructure = own | providers
+    for pid in candidates:
+        argv, parent = table[pid]["argv"], table[pid]["ppid"]
+        if parent in providers and (argv[1:] in (["mcp"], ["usage", "delegation", "mcp"]) or  # B4
+                                    (parent in roots and (name(pid) == "node_repl" or argv[:2] == ["node", "./mcp/launch.mjs"])) or  # B5, B6
+                                    (base is not None and table[pid]["start"] < base)):  # B10
+            infrastructure.add(pid)
+    return [dict(pid=pid, exe=name(pid)) for pid in sorted(candidates - infrastructure)]
+
+
+def provider_base(read, sid, started, evidence, clock=time.time):
+    """B10 baseline: the earliest startedAt among turns not ended before the provider started; pages back to that point."""
+    floor = int(started)
+    epoch = lambda value: dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    ended_before = lambda turn: bool(turn.get("completedAt")) and epoch(turn["completedAt"]) < floor
+    turns, cursor, conversation = {}, None, None
+    try:
+        while True:
+            page = read(["session", "get", sid, "--transcript", "500", "--cap", "0"] + (["--before", str(cursor)] if cursor is not None else []))
+            transcript = page["transcript"]
+            conversation = conversation or transcript["conversationId"]
+            require(transcript["conversationId"] == conversation, "conversation changed")
+            evidence(cursor)
+            page_turns = transcript.get("turns", [])
+            turns.update((turn["id"], turn) for turn in page_turns)
+            if any(ended_before(turn) for turn in page_turns) or not transcript.get("hasMoreBefore"):
+                break
+            before = transcript["next"]["before"]
+            require(type(before) is int and (cursor is None or before < cursor), "cursor did not advance")
+            cursor = before
+    except (Stop, OSError, KeyError, TypeError, ValueError) as exc:
+        raise Stop("B10 baseline paging failed: " + sid + ": " + str(exc)) from exc
+    starts = [epoch(turn["startedAt"]) for turn in turns.values() if turn.get("startedAt") and not ended_before(turn)]
+    return min(starts) if starts else clock()
+
+
+def processes_text(work):
+    return ", ".join(str(row["pid"]) + " " + row["exe"] for row in work[:10])
 
 
 def cli_environment(old, data_dir, run_file, temp):
@@ -1625,10 +1722,10 @@ class Run:
         require(self.clock() - start["monotonic"] < start["limit"], "wait deadline reached: " + phase + named)
 
     def quiescent_worker(self, sid, snap, receipts=()):
-        if quiescent(snap, receipts, self):
+        if quiescent(snap, receipts, self, worker=True):
             self.unsettled.pop(sid, None)
             return True
-        self.unsettled[sid] = [e.get("id") for e in entries(snap) if not activity_quiescent(e, receipts, self, sid)] or ["session/turn"]
+        self.unsettled[sid] = [e.get("id") for e in entries(snap) if not activity_quiescent(e, receipts, self, sid, True)] or ["session/turn"]
         return False
 
     def rearm_wait(self):
@@ -1789,6 +1886,21 @@ class Run:
         self.save()
         return str(path)
 
+    def work(self, sid):
+        """OS-level work processes of a worker (contract §5.2); only the B10 baseline and its B2 identity persist."""
+        def base_of(pid, tick, started):
+            records = self.state.setdefault("workers_infra_cutoff", {})
+            record = records.get(sid)
+            if record and (record["b2_pid"], record["b2_starttime"]) == (pid, tick):
+                return record["base"]
+            def evidence(cursor):
+                publish(self.root / "workers" / sid / ("baseline-page-" + str(cursor if cursor is not None else "latest") + "-" +
+                        uuid.uuid4().hex + ".raw"), getattr(self.cli, "last_raw", b""))
+            records[sid] = dict(b2_pid=pid, b2_starttime=tick, base=provider_base(self.cli.read, sid, started, evidence))
+            self.save()
+            return records[sid]["base"]
+        return os_work_processes(proc_table(), sid, self.cli.data_dir, Path(workspace_entry(self.request, sid)["path"]), base_of, [os.getpid()])
+
     def worker_stop(self, worker):
         sid = identifier(worker["id"])
         require(workspace_entry(self.request, sid).get("kind") == "worker", "worker missing bound workspace")
@@ -1816,8 +1928,11 @@ class Run:
             if actual["sha256"] != stop["workspace"]["after_snapshot"]["sha256"]:
                 publish(directory / ("verify-" + uuid.uuid4().hex) / "snapshot.json", actual["raw"])
                 raise Stop("worker content drift: " + sid)
+            work = self.work(sid)
+            require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
             return stop
-        if self.quiescent_worker(sid, snap):
+        work = self.work(sid)
+        if not work and self.quiescent_worker(sid, snap):
             workspace = self.workspace(sid)
             before = git_snapshot(workspace, directory / ("before-" + uuid.uuid4().hex))
             self.sleep(2)
@@ -1826,6 +1941,8 @@ class Run:
                 self.unsettled[sid] = ["workspace changed during quiescence check"]
                 return False
             if not self.quiescent_worker(sid, self.snapshot(sid)):
+                return False
+            if self.work(sid):
                 return False
             publish(directory / "quiescent-observation.raw", getattr(self.cli, "last_raw", canonical(snap)))
             publish(directory / "provenance.json", canonical([]))
@@ -1836,9 +1953,20 @@ class Run:
             validate_stop(stop, self.run_id, sid, directory)
             publish(path, canonical(stop))
             return stop
+        if work:
+            require(rules and rules["reserved_stop_d"], "worker processes running without a reserved stop directive: " + sid + ": " + processes_text(work))
+            require(any(len(row["argv"]) >= 4 and row["argv"][1] == "chat-host" and row["argv"][2] == sid and
+                        os.path.realpath(row["argv"][3]) == os.path.realpath(self.cli.data_dir) for row in proc_table().values()),
+                    "worker processes running without an agent to stop them: " + sid + ": " + processes_text(work))
+            self.unsettled[sid] = ["work processes: " + processes_text(work)]
         if rules and rules["reserved_stop_d"]:
+            # The first observed list is kept so a recovery resend carries the identical payload.
+            listed = self.state.setdefault("worker_stop_processes", {}).get(sid)
+            if listed is None:
+                listed = self.state["worker_stop_processes"][sid] = work[:10]
+                self.save()
             self.send(sid, "worker-stop", dict(directive=rules["reserved_stop_d"], output=str(path),
-                      schema="rh-worker-stop/2", rules=rules, **producer_description(self, "worker-receipt", sid)))
+                      schema="rh-worker-stop/2", rules=rules, processes=listed, **producer_description(self, "worker-receipt", sid)))
         return False
 
     def workers(self):
@@ -2144,7 +2272,7 @@ def worker_receipt(run):
     if proof["retained"] or proof["truncated_fields"]:
         reasons.append("other incomplete/unknown producer activity")
     for entry in entries(snap):
-        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid):
+        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid, True):
             reasons.append("other tool/operation not positively terminal: " + str(entry.get("id")))
     before = after = None
     try:
@@ -2181,7 +2309,7 @@ def producer_description(run, action, sid):
     return {"command": helper_command(run.root, action, sid), "statement": str(directory / "draft/statement.json"), "template": template,
             "permissions": "目錄0700／檔0600／拒symlink；只填語意statement，不自行產snapshot/stop/phase或完成時刻。",
             "evidence_root": str(directory), **rule,
-            "completion": "先完成statement/managed等準備，再另開獨立tool command activity原樣執行command，stdout直接回原tool；不加heredoc、重導、前後hash/ls/echo/exit、pipeline或背景符號。只接受原固定命令或原支援的一層可逆shell wrapper。成功後短回覆並completed/hold，runner在原turn結束後核實際結果；不要輪詢等自身完成。任何STOP不重試或改回條。"}
+            "completion": ("先停止你啟動的所有工作程序（含背景程序；payload.processes列出runner看到的部分；不要停AO基礎程序、MCP伺服器與使用者終端機裡的程序），確認都已停止後才執行command。完成後回報「已停止所有程序」。runner會在回合結束後用OS層再核。" if action == "worker-receipt" else "") + "先完成statement/managed等準備，再另開獨立tool command activity原樣執行command，stdout直接回原tool；不加heredoc、重導、前後hash/ls/echo/exit、pipeline或背景符號。只接受原固定命令或原支援的一層可逆shell wrapper。成功後短回覆並completed/hold，runner在原turn結束後核實際結果；不要輪詢等自身完成。任何STOP不重試或改回條。"}
 
 
 def old_receipt(run):
@@ -3603,7 +3731,13 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
     for sid, rules in workers.items():
         snap = cli.session(sid)
         require(snap["session"].get("id") == sid and snap["session"].get("kind") == "worker" and
-                snap["session"].get("projectId") == PROJECT and quiescent(snap), "worker not terminal/held")
+                snap["session"].get("projectId") == PROJECT and quiescent(snap, worker=True), "worker not terminal/held")
+        # A worker's local processes are judged by the OS (q1=b); the baseline is reused, never re-persisted here.
+        record = state.get("workers_infra_cutoff", {}).get(sid) or {}
+        base_of = lambda pid, tick, started: (record["base"] if (record.get("b2_pid"), record.get("b2_starttime")) == (pid, tick) else
+                                              provider_base(cli.read, sid, started, lambda cursor: None))
+        work = os_work_processes(proc_table(), sid, state["data_dir"], Path(workspace_entry(request, sid)["path"]), base_of, [os.getpid()])
+        require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
         declared = [item for item in materials if item["worker_id"] == sid]
         verified = []
         if declared:

@@ -101,6 +101,7 @@ class ProtocolTests(unittest.TestCase):
             calls = []
             fail = False
             last_received = 0
+            data_dir = self.root
 
             def call(self, args, timeout=30, deadline=None, on_dispatch=None, **kwargs):
                 if on_dispatch:
@@ -1070,20 +1071,6 @@ finally:
         self.assertEqual(len(run.cli.calls), 1)
         self.assertEqual(run.state["waits"]["workers"]["monotonic"], 0)
 
-    def test_T01_workers_deadline_names_the_worker_and_its_open_activity(self):
-        run = self.run_fixture()
-        idle = snapshot(entries=[{"id": "open-terminal", "sequence": 3, "kind": "activity", "activityKind": "command",
-                                  "status": "failed", "turnId": "turn", "detail": {"terminalId": "open-terminal"}}])
-        idle["session"].update(id="worker", kind="worker")
-        run.cli.session = lambda _: idle
-        self.worker_index(run)
-        run.request["workers"] = []
-        elapsed = [0]
-        run.clock = lambda: elapsed[0]
-        run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
-        with self.assertRaisesRegex(h.Stop, "wait deadline reached: workers.*worker.*open-terminal"):
-            run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
-
     def test_named_continue_workers_deadline_names_early_returns_after_reload(self):
         # RH-NAMED-CONTINUE / F2: every early return keeps a reason, also on a Run rebuilt by continue.
         cases = {"blocked": dict(state="blocked", block_reason="tool still running: activity-9", source_type="worker-self"),
@@ -1374,6 +1361,8 @@ finally:
                 entry["status"] = status
                 snap["transcript"]["turns"][-1]["state"] = turn
                 self.assertEqual(h.quiescent(snap, receipts), expected)
+                # A worker's exit-less command is judged by the OS-level process check instead (F15: old/new keep it).
+                self.assertTrue(h.quiescent(snap, receipts, worker=True))
 
     def test_T04_duplicate_keys_bad_hash_and_symlink_are_rejected(self):
         with self.assertRaises(h.Stop):
@@ -1844,6 +1833,193 @@ class SpeedPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Stop, "wait deadline reached: prepare"):
             h.run_protocol(fake.run)
         self.assertEqual(fake.mutations, [])
+
+
+def proc(ppid, argv, cwd=None, start=100.0, terminal=False):
+    return dict(ppid=ppid, tick=int(start * 100), start=start, cwd=cwd, argv=argv, terminal=terminal)
+
+
+class OSProcessTests(unittest.TestCase):
+    """RH-GATE1 .11: OS-level worker work processes (contract rev3.3 §5.2-§5.3) on synthetic process tables."""
+    request, run_fixture, worker_index = ProtocolTests.request, ProtocolTests.run_fixture, ProtocolTests.worker_index
+
+    def table(self, data="/data", ws="/wt/worker"):
+        return {
+            10: proc(1, ["/usr/bin/ao", "chat-host", "worker", data, ws, "acp", "fp", "--", "node", "index.js"]),  # B1
+            11: proc(10, ["node", "/x/claude-agent-acp/dist/index.js"], start=100.0),  # B2
+            12: proc(11, ["/home/u/.local/bin/claude", "--setting-sources=user,project,local"], start=101.0),  # B3
+            13: proc(12, ["/usr/bin/ao", "mcp"]),  # B4
+            14: proc(12, ["npx", "user-mcp"], start=102.0),  # B10 when started before the baseline
+            15: proc(12, ["/bin/bash", "-c", "npm run dev"], start=300.0),  # a tool: work
+            16: proc(15, ["claude"], start=301.0),  # same name, parent is not the provider: work
+            17: proc(15, ["/usr/bin/ao", "mcp"], start=301.0),  # same argv under a tool: work
+            30: proc(1, ["/usr/bin/ao", "chat-host", "review-1", data, ws], cwd=ws),  # B7
+            31: proc(30, ["git", "status"], cwd=ws),
+            40: proc(1, ["node", "server.js"], cwd=ws + "/app"),  # reparented background server: work
+            50: proc(49, ["bash"], cwd=ws, terminal=True),  # B9 shell
+            51: proc(50, ["vim"], cwd=ws),  # B9 descendant
+            52: proc(1, ["sleep", "999"], cwd=ws, terminal=True),  # B9 even after setsid
+            60: proc(1, ["/usr/bin/ao", "chat-host", "worker", "/stable/data", "/stable/wt"]),  # same id, other data dir
+            61: proc(60, ["node", "elsewhere.js"], cwd="/stable/wt"),
+        }
+
+    def test_proc_table_reads_the_real_running_process(self):
+        row = h.proc_table()[os.getpid()]
+        self.assertEqual((row["ppid"], row["cwd"], row["terminal"]), (os.getppid(), os.getcwd(), False))
+        self.assertLessEqual(row["start"], time.time())
+        self.assertGreater(row["start"], time.time() - 3600)
+
+    def test_claude_tree_terminal_reviewer_and_reparented_attribution(self):
+        calls = []
+        def base_of(pid, tick, started):
+            calls.append((pid, tick, started))
+            return 200.0
+        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), base_of)
+        self.assertEqual(work, [dict(pid=15, exe="bash"), dict(pid=16, exe="claude"), dict(pid=17, exe="ao"), dict(pid=40, exe="node")])
+        self.assertEqual(calls, [(11, 10000, 100.0)])
+        # Without a baseline the user's MCP server is fail-closed work; RH itself is excluded (B8).
+        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), lambda *a: None, exclude=[40])
+        self.assertEqual([x["pid"] for x in work], [14, 15, 16, 17])
+
+    def test_codex_tree_and_B10_second_boundary(self):
+        table = {20: proc(1, ["ao", "chat-host", "cworker", "/data", "/wt/c", "--", "codex", "app-server"]),
+                 21: proc(20, ["codex", "app-server"]), 22: proc(21, ["/opt/codex/node_repl"]), 23: proc(21, ["node", "./mcp/launch.mjs"]),
+                 24: proc(21, ["/bin/bash", "-lc", "pytest"], start=300.0), 25: proc(21, ["user-mcp"], start=199.9),
+                 26: proc(21, ["exec-session"], start=200.0)}
+        work = h.os_work_processes(table, "cworker", "/data", Path("/wt/c"), lambda *a: 200.0)
+        self.assertEqual([x["pid"] for x in work], [24, 26])
+
+    def test_baseline_pages_back_to_the_provider_start_and_fails_closed(self):
+        pages = {None: dict(conversationId="c", hasMoreBefore=True, next=dict(before=50), turns=[
+                     dict(id="t9", state="completed", startedAt="2026-11-18T00:10:00Z", completedAt="2026-11-18T00:10:05Z")]),
+                 50: dict(conversationId="c", hasMoreBefore=True, next=dict(before=20), turns=[
+                     dict(id="t2", state="completed", startedAt="2026-11-18T00:01:00Z", completedAt="2026-11-18T00:01:10Z")]),
+                 20: dict(conversationId="c", hasMoreBefore=True, next=dict(before=5), turns=[
+                     dict(id="t1", state="completed", startedAt="2026-11-18T00:00:10Z", completedAt="2026-11-18T00:00:20Z")])}
+        started = h.dt.datetime(2026, 11, 18, 0, 0, 30, tzinfo=h.dt.timezone.utc).timestamp()
+        read, seen = [], []
+        def reader(args):
+            cursor = int(args[args.index("--before") + 1]) if "--before" in args else None
+            read.append(cursor)
+            return dict(transcript=pages[cursor])
+        base = h.provider_base(reader, "worker", started, seen.append)
+        # The first turn after the provider started sits on page two; t1 ended before it, so paging stops there.
+        self.assertEqual(base, h.dt.datetime(2026, 11, 18, 0, 1, 0, tzinfo=h.dt.timezone.utc).timestamp())
+        self.assertEqual((read, seen), ([None, 50, 20], [None, 50, 20]))
+        # A turn running when a lazily started provider came up is the baseline; no turn at all means "now".
+        lazy = dict(conversationId="c", hasMoreBefore=False, turns=[
+            dict(id="t0", state="completed", startedAt="2026-11-18T00:00:25Z", completedAt="2026-11-18T00:00:40Z")])
+        self.assertEqual(h.provider_base(lambda a: dict(transcript=lazy), "worker", started, lambda c: None),
+                         h.dt.datetime(2026, 11, 18, 0, 0, 25, tzinfo=h.dt.timezone.utc).timestamp())
+        empty = dict(conversationId="c", hasMoreBefore=False, turns=[])
+        self.assertEqual(h.provider_base(lambda a: dict(transcript=empty), "worker", started, lambda c: None, clock=lambda: 42.0), 42.0)
+        for change in (dict(next=dict(before=50)), dict(conversationId="other")):
+            broken = dict(pages)
+            broken[50] = dict(pages[50], **change)
+            with self.assertRaisesRegex(h.Stop, "B10 baseline paging failed: worker"):
+                h.provider_base(lambda a: dict(transcript=broken[int(a[a.index("--before") + 1]) if "--before" in a else None]),
+                                "worker", started, lambda c: None)
+
+    def stop_run(self, table, reserved="D-7"):
+        run = self.run_fixture()
+        idle = snapshot(entries=[{"id": "exitless", "sequence": 3, "kind": "activity", "activityKind": "command", "status": "failed",
+                                  "turnId": "turn", "detail": {"terminalId": "open-terminal"}},
+                                 {"id": "exec", "sequence": 4, "kind": "activity", "activityKind": "command", "status": "completed", "turnId": "turn",
+                                  "detail": {"toolName": "exec_command", "exitCode": 0, "result": {"session_id": 7, "exit_code": None}}}])
+        idle["session"].update(id="worker", kind="worker")
+        run.cli.session = lambda _: idle
+        self.worker_index(run)
+        run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": reserved}]
+        run.cli.read = lambda args: dict(transcript=dict(conversationId="c", hasMoreBefore=False, turns=[]))
+        patcher = patch.object(h, "proc_table", side_effect=lambda: table)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return run
+
+    def ws(self):
+        return str(self.root / "worktrees" / h.PROJECT / "worker")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.root.chmod(0o700)
+
+    def worker_table(self, *extra):
+        ws = self.ws()
+        table = {10: proc(1, ["ao", "chat-host", "worker", str(self.root), ws]), 11: proc(10, ["codex", "app-server"])}
+        table.update(extra)
+        return table, ws
+
+    def test_worker_with_processes_gets_the_stop_D_and_is_named_until_stopped(self):
+        table, ws = self.worker_table()
+        table[12] = proc(11, ["/bin/bash", "-lc", "npm run dev"], start=10 ** 10)
+        run = self.stop_run(table)
+        elapsed = [0]
+        run.clock = lambda: elapsed[0]
+        run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
+        with self.assertRaisesRegex(h.Stop, r"wait deadline reached: workers.*work processes: 12 bash"):
+            run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+        sent = [a for a in run.cli.calls if a[0] == "send"]
+        self.assertEqual(len(sent), 1)
+        instruction = json.loads(sent[0][sent[0].index("--message") + 1])["instruction"]
+        self.assertEqual(instruction["processes"], [dict(pid=12, exe="bash")])
+        self.assertTrue(instruction["completion"].startswith("先停止你啟動的所有工作程序"))
+        self.assertEqual(run.state["workers_infra_cutoff"]["worker"]["b2_pid"], 11)
+        # A safe receipt does not end it while the process still runs.
+        h.publish(run.root / "workers/worker/stop.json", h.canonical(dict(state="safe", source_type="script-quiescent",
+                  settled=dict(in_flight=[]), workspace=dict(path=ws, after_snapshot=dict(sha256="s")))))
+        run.workspace = lambda _: ws
+        with patch.object(h, "validate_stop"), patch.object(h, "git_snapshot", return_value=dict(sha256="s")), \
+                self.assertRaisesRegex(h.Stop, "worker processes still running: worker: 12 bash"):
+            run.worker_stop({"id": "worker"})
+
+    def test_processes_without_reserved_D_or_agent_stop_immediately(self):
+        table, ws = self.worker_table((40, proc(1, ["node", "server.js"], cwd=self.ws())))
+        with self.assertRaisesRegex(h.Stop, "without a reserved stop directive: worker: 40 node"):
+            self.stop_run(table, reserved=None).worker_stop({"id": "worker"})
+        self.root = h.mkdir(self.root / "exited")
+        table, ws = self.worker_table((40, proc(1, ["node", "server.js"], cwd=self.ws())))
+        del table[10], table[11]
+        with self.assertRaisesRegex(h.Stop, "without an agent to stop them: worker: 40 node"):
+            self.stop_run(table).worker_stop({"id": "worker"})
+
+    def test_idle_worker_with_open_terminal_and_exitless_local_handles_is_recorded_without_D(self):
+        # The exit-less terminal command and the running exec session no longer block a worker (q1=b, strict-named removed),
+        # and the user's open terminal tab is theirs (B9): no stop D is sent.
+        table, ws = self.worker_table((50, proc(49, ["bash"], cwd=None, terminal=True)), (51, proc(50, ["vim"], cwd=None)))
+        run = self.stop_run(table)
+        run.workspace = lambda _: str(self.root)
+        with patch.object(h, "git_snapshot", return_value=dict(sha256="s", raw=b"")), patch.object(h, "worker_record", return_value={}), \
+                patch.object(h, "validate_stop"):
+            run.worker_stop({"id": "worker"})
+        self.assertEqual([a for a in run.cli.calls if a[0] == "send"], [])
+        self.assertTrue((run.root / "workers/worker/stop.json").exists())
+        snap = run.cli.session("worker")
+        self.assertFalse(h.quiescent(snap))  # old/new keep every receipt rule (F15)
+        self.assertTrue(h.quiescent(snap, worker=True))
+        job = dict(snap["transcript"]["entries"][1], detail={"toolName": "exec_command", "output": "Job running with ID j-1"})
+        self.assertFalse(h.activity_quiescent(job, worker=True))
+
+    def test_provider_restart_recomputes_the_baseline_and_same_provider_reuses_it(self):
+        table, ws = self.worker_table((13, proc(11, ["user-mcp"], start=150.0)))
+        run = self.stop_run(table)
+        reads = []
+        run.cli.read = lambda args: reads.append(args) or dict(transcript=dict(conversationId="c", hasMoreBefore=False, turns=[
+            dict(id="t", state="completed", startedAt="1970-01-01T00:03:20Z", completedAt="1970-01-01T00:03:30Z")]))
+        self.assertEqual(run.work("worker"), [])  # 150 < baseline 200
+        self.assertEqual(run.work("worker"), [])
+        self.assertEqual(len(reads), 1)
+        # A restarted provider (new pid/starttime) gets a new baseline: its MCP is infrastructure; the old one's orphan in the worktree is work.
+        table.update({11: proc(10, ["codex", "app-server"], start=400.0), 13: proc(11, ["user-mcp"], start=401.0),
+                      14: proc(1, ["old-tool"], cwd=self.ws())})
+        run.cli.read = lambda args: reads.append(args) or dict(transcript=dict(conversationId="c", hasMoreBefore=False, turns=[
+            dict(id="t2", state="completed", startedAt="1970-01-01T00:07:00Z", completedAt="1970-01-01T00:07:10Z")]))
+        self.assertEqual(run.work("worker"), [dict(pid=14, exe="old-tool")])
+        self.assertEqual(run.state["workers_infra_cutoff"]["worker"], dict(b2_pid=11, b2_starttime=40000, base=420.0))
+        del table[10], table[11]
+        self.assertEqual(run.work("worker"), [dict(pid=14, exe="old-tool")])  # no agent left: no baseline, nothing re-persisted
+        self.assertEqual(run.state["workers_infra_cutoff"]["worker"]["base"], 420.0)
 
 
 if __name__ == "__main__":

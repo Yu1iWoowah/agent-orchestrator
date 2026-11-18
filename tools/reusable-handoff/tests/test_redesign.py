@@ -827,7 +827,7 @@ class ControlledMaterialTests(unittest.TestCase):
                 handle = run_id + ":worker-stop:" + sid
                 rules = dict(worker_id=sid, reserved_stop_d="D-77", hold_state="held", release=dict(mode="keep-held"))
                 request = dict(old_id="old", workers=[rules], workspace_index=[dict(session_id=sid, kind="worker", path=str(workspace))])
-                state = dict(run_id=run_id)
+                state = dict(run_id=run_id, data_dir=str(data))
                 payload = dict(run_id=run_id, recipient=sid, old_id="old", phase="worker-stop", instruction=dict(directive="D-77", rules=rules))
                 raw = h.canonical(payload)
                 control = current / "control" / ("worker-stop-" + sid)
@@ -893,7 +893,9 @@ class RetirementTests(unittest.TestCase):
         workers = [dict(worker_id="arbitrary-worker-" + str(i), reserved_stop_d="D-" + str(77 + i), hold_state="held",
                         release=dict(mode="keep-held")) for i in range(3 if "three_workers" in self._testMethodName else 0)]
         self.request = dict(schema="rh-start-request/1", request_id=self.run_id, project_id=h.PROJECT, old_id="old",
-                            authority=dict(source_refs=["human"]), workers=workers, target={}, sources=[])
+                            authority=dict(source_refs=["human"]), workers=workers, target={}, sources=[],
+                            workspace_index=[dict(session_id=w["worker_id"], kind="worker", path=str(self.data / "worktrees" / h.PROJECT / w["worker_id"]))
+                                             for w in workers])
         raw = h.canonical(self.request)
         for path in (self.run / "start.json", self.slot / "request.json"):
             h.publish(path, raw)
@@ -1012,7 +1014,12 @@ c.call(['spawn','--help']);e.close()
     def test_three_workers_with_other_reserved_directives_keep_their_holds(self):
         # Once any worker received control, the uncontrolled workers' original holds are closed too.
         self.dispatch_control(0)
-        receipt = self.retire()
+        # q1=b: a worker's leftover exec-session handle is judged by the OS check, not by a receipt.
+        self.snaps[self.request["workers"][2]["worker_id"]]["transcript"]["entries"].append(dict(
+            id="exec", kind="activity", activityKind="command", status="completed", sequence=2, turnId="turn",
+            detail=dict(toolName="exec_command", exitCode=0, result=dict(session_id=7, exit_code=None))))
+        with patch.object(h, "proc_table", return_value={}):
+            receipt = self.retire()
         self.assertEqual(len(receipt["closed_effects"]), 3)
         self.assertTrue(all(x["held"] for x in receipt["closed_effects"]))
         self.assertEqual([w["reserved_stop_d"] for w in self.request["workers"]], ["D-77", "D-78", "D-79"])
