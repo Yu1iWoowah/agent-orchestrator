@@ -176,6 +176,43 @@ class WireContractTests(unittest.TestCase):
                     h.producer(run, "finalize")
                 self.assertEqual(len(sends), 1 if outcome else 0)
 
+    def test_finalize_recovers_a_journaled_refusal_after_a_crash_without_resending(self):
+        # dispatch persisted the CHAT_CONTROLLER_NOT_READY result, then the helper died before the notification receipt.
+        refused = b"the agent controller for this session is not running (CHAT_CONTROLLER_NOT_READY) [request r-1]\n"
+        self.cli.execution.close()
+        run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old", request={"workers": []},
+                              state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256})
+        result = self.root / "bootstrap/new/notifications/worker/result.json"
+        sends = []
+        def transport(args, **kwargs):
+            if args[1] == "send":
+                sends.append(args)
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=refused)
+            return SimpleNamespace(returncode=0, stdout=wire_bytes("list" if args[1:3] == ["session", "ls"] else "active"), stderr=b"")
+        original = h.publish
+        def crash(path, raw):
+            if Path(path) == result:
+                raise OSError("synthetic crash before the notification receipt")
+            return original(path, raw)
+        for attempt in ("crash", "recover"):
+            execution = self.cli.execution.journal.register("finalize", "old")
+            self.addCleanup(execution.close)
+            execution.phase, execution.bindings = "final", {"old", "new", "worker"}
+            self.cli.execution = execution
+            with patch.object(h, "CLI", return_value=self.cli), patch.object(h.subprocess, "run", side_effect=transport), \
+                 patch.object(h, "publish", side_effect=crash if attempt == "crash" else original), \
+                 patch.dict(os.environ, AO_SESSION_ID="old", TMPDIR=str(self.root / "bootstrap/new/draft")):
+                if attempt == "crash":
+                    with self.assertRaisesRegex(OSError, "synthetic crash"):
+                        h.producer(run, "finalize")
+                    execution.close()
+                    continue
+                final = h.producer(run, "finalize")
+        receipt = h.decode(h.private_read(result))
+        self.assertEqual((receipt["accepted"], receipt["error_code"]), (False, "CHAT_CONTROLLER_NOT_READY"))
+        self.assertEqual([n["accepted"] for n in final["notifications"]], [False])
+        self.assertEqual(len(sends), 1)
+
     def test_actor_adapter_keeps_the_run_cli_hash_across_an_update_while_waiting(self):
         # The run CLI was checked at load; AO is updated while the producer waits for new_id.
         self.cli.execution.close()

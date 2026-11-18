@@ -3180,7 +3180,15 @@ def producer(run, action):
         if not result.exists():
             handle = run.run_id + ":release:" + wid
             known = acting.execution.successful_effect(handle) if getattr(acting, "execution", None) else None
-            require(not intent.exists() or known, "UNKNOWN final notification; recover original handle")
+            refused = None
+            if intent.exists() and not known and getattr(acting, "execution", None):
+                # The journal may already hold the canonical refusal (dispatch persists it before this receipt).
+                ended = [x for x in acting.execution.effect_attempts(handle) if x[1]]
+                last = ended[-1] if ended else None
+                if (last and last[1]["terminal"] == "returned" and last[1]["returncode"] == 1 and
+                        b"(CHAT_CONTROLLER_NOT_READY)" in private_read(last[2] / "stderr.raw")):
+                    refused = last
+            require(not intent.exists() or known or refused, "UNKNOWN final notification; recover original handle")
             if intent.exists():
                 require(decode(private_read(intent)).get("sha256") == digest(text.encode()), "final payload changed")
             else:
@@ -3188,6 +3196,9 @@ def producer(run, action):
             receipt = {"accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"}
             if known:
                 raw, call_id = private_read(known[2] / "stdout.raw"), known[0]["call_id"]
+            elif refused:
+                raw, call_id = b"", refused[0]["call_id"]
+                receipt.update(accepted=False, error_code="CHAT_CONTROLLER_NOT_READY")
             else:
                 try:
                     raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", handle, "--message", text], 60)
