@@ -91,6 +91,8 @@ type fakeConversation struct {
 	deliveryPrepared bool
 	deliveryDenied   bool // a missing receipt answers like a host without a record
 	deliveryReceipts map[string]domain.ChatDeliveryReceipt
+	// outboundEpoch names the attached host; empty reports no host identity.
+	outboundEpoch string
 
 	// noNetwork makes SandboxAllowsNetwork report a sandbox with no network.
 	noNetwork bool
@@ -307,6 +309,21 @@ func (f *fakeConversation) setCapabilities(caps ports.ChatCapabilities) {
 	f.mu.Unlock()
 }
 func (f *fakeConversation) Events() <-chan ports.ChatEvent { return f.events }
+
+func (f *fakeConversation) OutboundProviderEpoch() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.outboundEpoch
+}
+
+// replaceProviderHost models a reboot or host restart: a new host epoch that
+// has never seen the old host's delivery records.
+func (f *fakeConversation) replaceProviderHost() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outboundEpoch = "replacement-host-epoch"
+	f.deliveryReceipts = nil
+}
 
 func (f *fakeConversation) SendTurn(_ context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	f.mu.Lock()

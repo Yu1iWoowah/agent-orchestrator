@@ -14,28 +14,20 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
-// goneHostConversation is a provider whose original host was replaced (a
-// reboot or a host restart): the attached host has a new epoch and has never
-// heard of attempts the old host carried.
+// goneHostConversation starts attached to the host that recorded its
+// attempts; replaceProviderHost then models a reboot or host restart.
 type goneHostConversation struct {
 	*fakeConversation
-	epoch string
 }
 
-func (c *goneHostConversation) OutboundProviderEpoch() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.epoch
-}
-
-func (c *goneHostConversation) replaceHost() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.epoch = "replacement-host-epoch"
-	c.deliveryReceipts = nil
+func newGoneHostConversation() *goneHostConversation {
+	conv := &goneHostConversation{fakeConversation: newFakeConversation()}
+	conv.outboundEpoch = "fake-native-epoch"
+	return conv
 }
 
 // An attempt left by a host that no longer exists ends with the daemon's
@@ -55,7 +47,7 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := newSettingsTestClock()
-			conv := &goneHostConversation{fakeConversation: newFakeConversation(), epoch: "fake-native-epoch"}
+			conv := newGoneHostConversation()
 			h := deliveryHarness(t, conv, clock)
 			// ACP shape: the old host recorded the prompt (unknown, incomplete,
 			// epoch and request id) but never saw it settle.
@@ -84,7 +76,7 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 			h.awaitSnapshot(t, func(snap store.ConversationSnapshot) bool {
 				return len(snap.Turns) == 1 && snap.Turns[0].State == tc.member
 			})
-			conv.replaceHost()
+			conv.replaceProviderHost()
 			if tc.path == "monitor" {
 				conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
 				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
@@ -120,7 +112,7 @@ func TestGoneHostAttemptSettlesWithoutQuestionOrReplay(t *testing.T) {
 // The attached host's own unsettled attempt is not proof of anything.
 func TestSameHostUnsettledAttemptStillBlocksPreflight(t *testing.T) {
 	clock := newSettingsTestClock()
-	conv := &goneHostConversation{fakeConversation: newFakeConversation(), epoch: "fake-native-epoch"}
+	conv := newGoneHostConversation()
 	h := deliveryHarness(t, conv, clock)
 	conv.setDeliveryClock(clock.Now, true)
 	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "still the same host", ClientMessageID: "same-host"})
@@ -147,7 +139,7 @@ func TestShutdownRouteAcceptsTakeoverAfterGoneHost(t *testing.T) {
 	for _, inFlight := range []bool{false, true} {
 		t.Run(map[bool]string{false: "gone-host record", true: "turn in flight"}[inFlight], func(t *testing.T) {
 			clock := newSettingsTestClock()
-			conv := &goneHostConversation{fakeConversation: newFakeConversation(), epoch: "fake-native-epoch"}
+			conv := newGoneHostConversation()
 			h := deliveryHarness(t, conv, clock)
 			conv.setDeliveryClock(clock.Now, true)
 			turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "before the reboot", ClientMessageID: "takeover"})
@@ -159,7 +151,7 @@ func TestShutdownRouteAcceptsTakeoverAfterGoneHost(t *testing.T) {
 				h.awaitSnapshot(t, func(snap store.ConversationSnapshot) bool {
 					return len(snap.Turns) == 1 && snap.Turns[0].State == domain.TurnStateCompleted
 				})
-				conv.replaceHost()
+				conv.replaceProviderHost()
 			}
 			var requested atomic.Bool
 			router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{},
@@ -184,6 +176,64 @@ func TestShutdownRouteAcceptsTakeoverAfterGoneHost(t *testing.T) {
 			}
 			if requested.Load() == inFlight {
 				t.Fatalf("shutdown requested=%v with a turn in flight=%v", requested.Load(), inFlight)
+			}
+		})
+	}
+}
+
+// Idle hibernation and the move to an installed harness release share the
+// settlement: a gone host's attempt no longer keeps either from stopping the
+// provider (SDR-PR1 AC1b, AC3b).
+func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) {
+	for _, path := range []string{"hibernation", "version refresh"} {
+		t.Run(path, func(t *testing.T) {
+			ctx := t.Context()
+			var h *harness
+			var conv *hibernationConversation
+			if path == "hibernation" {
+				h, conv = settledHibernationHarness(t, "")
+			} else {
+				h, conv, _ = versionRefreshHarness(t)
+			}
+			conv.outboundEpoch = "fake-native-epoch"
+			conv.setDeliveryClock(h.now, true)
+			turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "before the reboot", ClientMessageID: "gone-" + path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The turn ended, but the old host's settled receipt never arrived.
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted}
+			h.awaitSnapshot(t, func(snap store.ConversationSnapshot) bool {
+				for _, candidate := range snap.Turns {
+					if candidate.ID == turn.ID {
+						return candidate.State == domain.TurnStateCompleted
+					}
+				}
+				return false
+			})
+			conv.replaceProviderHost()
+			var stopped bool
+			if path == "hibernation" {
+				rec, found, err := h.st.GetSession(ctx, testSession)
+				if err != nil || !found {
+					t.Fatalf("get session = %v, %v", found, err)
+				}
+				rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-chatsvc.IdleBeforeHibernate)}
+				if err := h.st.UpdateSession(ctx, rec); err != nil {
+					t.Fatal(err)
+				}
+				stopped, err = h.svc.HibernateChat(ctx, testSession)
+			} else {
+				markStale(t, h)
+				h.advance(refreshIdle)
+				stopped, err = h.svc.HibernateChatForVersionRefresh(ctx, testSession, refreshIdle)
+			}
+			if err != nil || !stopped {
+				t.Fatalf("%s blocked by a gone host's attempt: stopped=%v err=%v", path, stopped, err)
+			}
+			saved, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
+			if err != nil || !saved.ExecutionSettled || saved.ErrorCode != "CHAT_DELIVERY_HOST_GONE_SETTLED" || saved.AttentionID != "" {
+				t.Fatalf("gone-host attempt after %s = %+v %v", path, saved, err)
 			}
 		})
 	}
