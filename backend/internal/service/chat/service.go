@@ -2397,7 +2397,6 @@ type SnapshotPageReader interface {
 	LoadConversationSnapshotPage(ctx context.Context, conversationID string, beforeSequence, afterSequence, limit int64) (ConversationRows, error)
 }
 
-// ConversationRows is the raw durable read.
 // skipSettledReplay drops a replayed turn's lifecycle and plan events when
 // projecting them would change nothing (SDR-PR1 D7): AO holds the same turn,
 // the settlement would write AO's current state (the store's own keep-failure
@@ -2505,6 +2504,7 @@ func chatEventKindCounts(events []ports.ChatEvent) string {
 	return strings.Join(kinds, ",")
 }
 
+// ConversationRows is the raw durable read.
 type ConversationRows struct {
 	Conversation                     domain.ConversationRecord
 	ActiveBranch                     domain.ConversationBranch
